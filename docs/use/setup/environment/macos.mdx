@@ -24,6 +24,19 @@ sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 sudo xcodebuild -license accept
 ```
 
+## Install the Metal toolchain
+
+Install the optional Metal compiler component when `xcrun metal` reports that
+the Metal Toolchain is missing:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+xcrun -sdk macosx metal --version
+```
+
+Keep the selected Xcode developer directory and the downloaded Metal component
+from the same Xcode installation.
+
 ## Install Homebrew packages
 
 Install the native build tools used by Byte's Rust dependencies.

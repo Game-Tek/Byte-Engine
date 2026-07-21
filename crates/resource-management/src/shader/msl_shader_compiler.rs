@@ -197,6 +197,15 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 			.status
 			.code()
 			.map_or_else(|| metal_output.status.to_string(), |code| code.to_string());
+		if metal_toolchain_missing(&metal_output.stderr) {
+			return Err(format_tool_failure(
+				"Failed to compile MSL shader",
+				"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
+				&exit_status,
+				&metal_output.stdout,
+				&metal_output.stderr,
+			));
+		}
 		return Err(format_tool_failure(
 			"Failed to compile MSL shader",
 			"The Metal compiler reported an error",
@@ -242,6 +251,12 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 	Ok(binary.into_boxed_slice())
 }
 
+/// Detects the missing optional Metal compiler component in `xcrun` diagnostics.
+fn metal_toolchain_missing(stderr: &[u8]) -> bool {
+	let stderr = String::from_utf8_lossy(stderr);
+	stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'")
+}
+
 fn sanitize_shader_name(name: &str) -> String {
 	let mut sanitized = String::with_capacity(name.len());
 
@@ -282,7 +297,7 @@ pub use Compiler as MSLShaderCompiler;
 mod tests {
 	use utils::Extent;
 
-	use super::{format_tool_failure, reflected_workgroup_extent, CompiledShaderBinding};
+	use super::{format_tool_failure, metal_toolchain_missing, reflected_workgroup_extent, CompiledShaderBinding};
 	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
 	use crate::shader::generator::ShaderGenerationSettings;
 
@@ -422,5 +437,22 @@ stderr:\n\
 stdout:\n\
 metallib: malformed AIR input"
 		);
+	}
+
+	#[test]
+	fn missing_metal_toolchain_failure_has_an_actionable_cause() {
+		let stderr = b"error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain";
+		assert!(metal_toolchain_missing(stderr));
+		assert!(!metal_toolchain_missing(b"shader.metal:7:3: error: unknown identifier"));
+		let failure = format_tool_failure(
+			"Failed to compile MSL shader",
+			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
+			"1",
+			b"",
+			stderr,
+		);
+
+		assert!(failure.contains("The Metal Toolchain is missing"));
+		assert!(failure.contains("xcodebuild -downloadComponent MetalToolchain"));
 	}
 }

@@ -31,6 +31,40 @@ use crate::{
 };
 
 const BESL_DOCS_PATH: &str = "reference/besl";
+const MACOS_SETUP_DOCS_PATH: &str = "use/setup/environment/macos";
+const WINDOWS_SETUP_DOCS_PATH: &str = "use/setup/environment/windows";
+
+/// Selects recovery documentation only when the compiler error identifies an actionable user configuration problem.
+fn shader_compilation_docs_path(error: &str) -> Option<&'static str> {
+	if error.contains("missing Metal Toolchain")
+		|| error.contains("Metal Toolchain is missing")
+		|| error.contains("Failed to invoke the Metal compiler")
+		|| error.contains("Failed to invoke metallib")
+		|| error.contains("MSL compilation is only supported on macOS")
+	{
+		Some(MACOS_SETUP_DOCS_PATH)
+	} else if error.contains("DirectX Shader Compiler runtime is unavailable")
+		|| error.contains("DXIL compilation is only supported on Windows")
+	{
+		Some(WINDOWS_SETUP_DOCS_PATH)
+	} else if error.starts_with("Failed to parse BESL source")
+		|| error.starts_with("Failed to link BESL source")
+		|| error.starts_with("Missing BESL main function")
+	{
+		Some(BESL_DOCS_PATH)
+	} else {
+		None
+	}
+}
+
+/// Formats a standalone shader compiler failure with recovery documentation when one applies.
+fn shader_compilation_error_message(id: &str, error: &str) -> String {
+	let message = format!("Failed to compile standalone BESL shader '{id}': {error}");
+	match shader_compilation_docs_path(error) {
+		Some(path) => format!("{message} See {}.", online_docs_url(path)),
+		None => message,
+	}
+}
 
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 pub struct BESLShaderAssetHandler {
@@ -99,11 +133,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 				.await
 				.map_err(|_| LoadErrors::FailedToProcess)?
 				.map_err(|error| {
-					log::error!(
-						"Failed to compile standalone BESL shader '{}': {error}. See {}.",
-						id.as_ref(),
-						online_docs_url(BESL_DOCS_PATH)
-					);
+					log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
 					LoadErrors::FailedToProcess
 				})?;
 
@@ -470,7 +500,9 @@ mod tests {
 	use std::sync::Arc;
 
 	use super::{
-		hash_shader_source, parse_shader_settings, prepare_shader, BESLShaderAssetHandler, BESLShaderSettings, ShaderCompiler,
+		hash_shader_source, parse_shader_settings, prepare_shader, shader_compilation_docs_path,
+		shader_compilation_error_message, BESLShaderAssetHandler, BESLShaderSettings, ShaderCompiler, BESL_DOCS_PATH,
+		MACOS_SETUP_DOCS_PATH, WINDOWS_SETUP_DOCS_PATH,
 	};
 	use crate::{
 		asset::{
@@ -538,6 +570,36 @@ mod tests {
 				},
 				b"compiled-shader".to_vec().into_boxed_slice(),
 			))
+		}
+	}
+
+	#[test]
+	fn compiler_errors_link_only_to_relevant_recovery_documentation() {
+		let missing_metal = "Failed to compile MSL shader. The Metal compiler reported an error.\nerror: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain";
+		assert_eq!(shader_compilation_docs_path(missing_metal), Some(MACOS_SETUP_DOCS_PATH));
+		let message = shader_compilation_error_message("passes/resolve.besl", missing_metal);
+		assert!(message.contains("/use/setup/environment/macos"));
+		assert!(!message.contains("/reference/besl"));
+
+		assert_eq!(
+			shader_compilation_docs_path("Failed to create DXC. The DirectX Shader Compiler runtime is unavailable"),
+			Some(WINDOWS_SETUP_DOCS_PATH)
+		);
+		assert_eq!(
+			shader_compilation_docs_path("Failed to parse BESL source (UnexpectedToken)"),
+			Some(BESL_DOCS_PATH)
+		);
+	}
+
+	#[test]
+	fn backend_source_and_native_compiler_errors_do_not_claim_to_be_besl_guidance() {
+		for error in [
+			"Failed to generate MSL shader source. The MSL shader generator returned an error.",
+			"Failed to compile MSL shader. The Metal compiler reported an error.\nstderr:\nshader.metal:7:3: error: unknown identifier",
+			"Failed to compile HLSL shader. DXC reported an invalid generated expression.",
+		] {
+			assert_eq!(shader_compilation_docs_path(error), None);
+			assert!(!shader_compilation_error_message("passes/resolve.besl", error).contains(" See "));
 		}
 	}
 

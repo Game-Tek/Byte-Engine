@@ -6,6 +6,21 @@ use super::{
 use crate::asset::asset_manager::AssetManager;
 use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
+const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+	Some(url) => url,
+	None => "https://byte-engine.0x44491229.dev/docs",
+};
+const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
+
+/// Adds shared recovery guidance to an asset lookup error.
+fn asset_lookup_error(message: &str) -> String {
+	format!(
+		"{message} If the 'byte-engine' path is missing from the assets directory, its symlink was probably not configured. See {}/{}.",
+		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
+		BAKING_APP_RESOURCES_DOCS_PATH
+	)
+}
+
 /// The `ResourceManager` struct provides typed resource loading and caching across storage backends.
 ///
 /// Debug builds can use an asset manager to bake missing source assets on demand.
@@ -62,7 +77,7 @@ impl ResourceManager {
 	/// Use [`Reference::load`](crate::Reference::load) to load the binary data into
 	/// caller-provided memory or reader-owned storage. After loading, access the
 	/// typed metadata through [`Reference::resource`](crate::Reference::resource).
-	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
+	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, String>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
 		SerializableResource: TryInto<ReferenceModel<T::Model>>,
@@ -76,23 +91,27 @@ impl ResourceManager {
 			#[cfg(debug_assertions)]
 			{
 				let Some(asset_manager) = self.asset_manager.get() else {
-					return Err("Resource does not exist and an asset manager is not available");
+					return Err(asset_lookup_error(
+						"Resource does not exist and an asset manager is not available.",
+					));
 				};
 				let runtime = compio::runtime::Runtime::new().unwrap();
 
 				runtime
 					.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
-					.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
+					.map_err(|_| asset_lookup_error("Failed to load asset. The asset manager could not bake the resource."))?
 			}
 			#[cfg(not(debug_assertions))]
 			{
-				return Err("Resource does not exist in the baked release resource store");
+				return Err(asset_lookup_error(
+					"Resource does not exist in the baked release resource store.",
+				));
 			}
 		};
 
 		let reference: Reference<T> = reference_model
 			.solve(self.get_storage_backend())
-			.map_err(Into::<&'static str>::into)?;
+			.map_err(|error| Into::<&'static str>::into(error).to_string())?;
 
 		Ok(reference)
 	}
@@ -135,6 +154,7 @@ mod debug_tests {
 	use crate::{
 		asset::{asset_manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resources::material::Shader,
 	};
 
 	#[test]
@@ -148,6 +168,19 @@ mod debug_tests {
 			.try_set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()))
 			.is_err());
 	}
+
+	#[test]
+	fn failed_asset_lookup_suggests_checking_the_engine_asset_symlink() {
+		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		resource_manager.set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()));
+
+		let error = resource_manager.request::<Shader>("missing.asset").unwrap_err();
+
+		assert!(error.contains("If the 'byte-engine' path is missing from the assets directory"));
+		assert!(
+			error.contains("https://byte-engine.0x44491229.dev/docs/develop/design/resource-management/baking-app-resources")
+		);
+	}
 }
 
 #[cfg(all(test, not(debug_assertions)))]
@@ -160,9 +193,8 @@ mod release_tests {
 		let resource_manager = ResourceManager::new(TestStorageBackend::new());
 		let result = resource_manager.request::<Shader>("missing/render-pass.besl");
 
-		assert!(matches!(
-			result,
-			Err("Resource does not exist in the baked release resource store")
-		));
+		assert!(
+			matches!(result, Err(error) if error.starts_with("Resource does not exist in the baked release resource store."))
+		);
 	}
 }

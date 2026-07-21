@@ -1,7 +1,7 @@
 use super::{element::Id, flow::Location, layout::LayoutElement};
 use crate::ui::flow::{Location3, Size};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct QueryElement {
 	id: u32,
 	position: Location3,
@@ -11,10 +11,10 @@ struct QueryElement {
 /// The `MouseClickAcceleration` struct provides a uniform-grid index for pointer
 /// hit testing.
 pub(crate) struct MouseClickAcceleration<'a> {
-	cell_size: u32,
+	cell_size: f32,
 	columns: usize,
 	rows: usize,
-	bounds: (u32, u32),
+	bounds: (f32, f32),
 	elements: Vec<QueryElement, &'a bumpalo::Bump>,
 	buckets: Vec<Vec<usize, &'a bumpalo::Bump>, &'a bumpalo::Bump>,
 }
@@ -25,47 +25,45 @@ impl<'a> MouseClickAcceleration<'a> {
 			let mut buckets = Vec::with_capacity_in(1, frame_allocator);
 			buckets.push(Vec::new_in(frame_allocator));
 			return Self {
-				cell_size: 1,
+				cell_size: 1.0,
 				columns: 1,
 				rows: 1,
-				bounds: (1, 1),
+				bounds: (1.0, 1.0),
 				elements: Vec::new_in(frame_allocator),
 				buckets,
 			};
 		}
 
-		let mut max_x = 0;
-		let mut max_y = 0;
+		let mut max_x: f32 = 0.0;
+		let mut max_y: f32 = 0.0;
 
 		for element in layout.iter() {
-			max_x = max_x.max(element.position.x().saturating_add(element.size.x()));
-			max_y = max_y.max(element.position.y().saturating_add(element.size.y()));
+			max_x = max_x.max(element.position.x() + element.size.x());
+			max_y = max_y.max(element.position.y() + element.size.y());
 		}
 
-		let bounds = (max_x.max(1), max_y.max(1));
+		let bounds = (max_x.max(1.0), max_y.max(1.0));
 		let largest_dimension = bounds.0.max(bounds.1);
-		let cell_size = (largest_dimension / 32).max(1);
+		let cell_size = (largest_dimension / 32.0).max(1.0);
 
-		let columns = bounds.0.div_ceil(cell_size) as usize;
-		let rows = bounds.1.div_ceil(cell_size) as usize;
+		let columns = (bounds.0 / cell_size).ceil() as usize;
+		let rows = (bounds.1 / cell_size).ceil() as usize;
 		let mut buckets = Vec::with_capacity_in(columns * rows, frame_allocator);
 		for _ in 0..columns * rows {
 			buckets.push(Vec::new_in(frame_allocator));
 		}
 
 		for (index, element) in layout.iter().enumerate() {
-			if element.size.x() == 0 || element.size.y() == 0 {
+			if element.size.x() <= 0.0 || element.size.y() <= 0.0 {
 				continue;
 			}
 
-			let start_col = (element.position.x() / cell_size) as usize;
-			let start_row = (element.position.y() / cell_size) as usize;
+			let start_col = (element.position.x() / cell_size).floor() as usize;
+			let start_row = (element.position.y() / cell_size).floor() as usize;
 
-			let end_x = element.position.x().saturating_add(element.size.x()).saturating_sub(1);
-			let end_y = element.position.y().saturating_add(element.size.y()).saturating_sub(1);
-
-			let end_col = (end_x / cell_size) as usize;
-			let end_row = (end_y / cell_size) as usize;
+			// Rectangles use half-open bounds, so an edge on a cell boundary does not occupy the next cell.
+			let end_col = ((element.position.x() + element.size.x()) / cell_size).ceil().max(1.0) as usize - 1;
+			let end_row = ((element.position.y() + element.size.y()) / cell_size).ceil().max(1.0) as usize - 1;
 
 			for row in start_row..=end_row.min(rows.saturating_sub(1)) {
 				for col in start_col..=end_col.min(columns.saturating_sub(1)) {
@@ -88,12 +86,12 @@ impl<'a> MouseClickAcceleration<'a> {
 	/// Returns the ID of the topmost element under the pointer position.
 	pub(crate) fn query(&self, mouse_position: Location) -> Option<u32> {
 		let (x, y) = mouse_position.into();
-		if x >= self.bounds.0 || y >= self.bounds.1 {
+		if x < 0.0 || y < 0.0 || x >= self.bounds.0 || y >= self.bounds.1 {
 			return None;
 		}
 
-		let col = (x / self.cell_size) as usize;
-		let row = (y / self.cell_size) as usize;
+		let col = (x / self.cell_size).floor() as usize;
+		let row = (y / self.cell_size).floor() as usize;
 		if col >= self.columns || row >= self.rows {
 			return None;
 		}
@@ -126,8 +124,8 @@ impl<'a> MouseClickAcceleration<'a> {
 fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	let (x, y) = point.into();
 	let (left, top) = Into::<Location>::into(element.position).into();
-	let right = left.saturating_add(element.size.x());
-	let bottom = top.saturating_add(element.size.y());
+	let right = left + element.size.x();
+	let bottom = top + element.size.y();
 
 	x >= left && x < right && y >= top && y < bottom
 }
@@ -230,5 +228,23 @@ mod tests {
 		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
+	}
+
+	#[test]
+	fn mouse_click_acceleration_preserves_fractional_visual_bounds() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut layout = Vec::with_capacity_in(1, &frame_allocator);
+		layout.push(QueryElement {
+			id: 1,
+			position: Location3::new(10.25, 20.5, 0),
+			size: Size::new(5.5, 3.25),
+		});
+
+		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
+
+		assert_eq!(acceleration.query(Location::new(10.24, 21.0)), None);
+		assert_eq!(acceleration.query(Location::new(10.25, 20.5)), Some(1));
+		assert_eq!(acceleration.query(Location::new(15.749, 23.749)), Some(1));
+		assert_eq!(acceleration.query(Location::new(15.75, 22.0)), None);
 	}
 }

@@ -93,7 +93,7 @@ impl Container {
 		}
 	}
 
-	pub fn absolute_position(self, x: i32, y: i32) -> Self {
+	pub fn absolute_position(self, x: impl Into<f64>, y: impl Into<f64>) -> Self {
 		self.position(Position::absolute(x, y))
 	}
 

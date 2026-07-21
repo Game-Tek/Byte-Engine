@@ -2092,7 +2092,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
 		assert_eq!(toast.size, Size::new(20, 20));
 	}
 
@@ -2119,7 +2119,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
 		assert_eq!(toast.size, Size::new(20, 20));
 		assert_eq!(toast.clip, None);
 	}
@@ -2782,7 +2782,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let modal = render.elements().find(|element| element.position.x() == 30).unwrap();
+		let modal = render.elements().find(|element| element.position.x() == 30.0).unwrap();
 		assert_eq!(modal.size, Size::new(80, 30));
 		assert_eq!(modal.clip, None);
 	}
@@ -3212,7 +3212,7 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 		let frame = render.elements().next().unwrap();
 
-		assert_eq!(frame.position, Location3::new(5, 9, 0));
+		assert_eq!(frame.position, Location3::new(5.0, 8.5, 0));
 		assert_eq!(frame.size, Size::new(10, 5));
 	}
 
@@ -3411,7 +3411,7 @@ mod tests {
 		let text = render.texts().next().unwrap();
 
 		assert_eq!(text.content, "Hello");
-		assert!(text.size.x() > 0);
+		assert!(text.size.x() > 0.0);
 		assert!(render.texts().nth(1).is_none());
 	}
 
@@ -3580,7 +3580,7 @@ mod tests {
 		std::thread::sleep(Duration::from_millis(20));
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(second.elements.len(), 1);
-		assert!(second.elements[0].size.x() > 10);
+		assert!(second.elements[0].size.x() > 10.0);
 	}
 
 	#[test]

@@ -703,15 +703,15 @@ fn blur_shader_workgroup(shader: &crate::rendering::shader_store::LoadedShader, 
 
 fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
 	clip.map(|clip| DrawClip {
-		position: [clip.x() as f32, clip.y() as f32],
-		size: [clip.width() as f32, clip.height() as f32],
+		position: [clip.x(), clip.y()],
+		size: [clip.width(), clip.height()],
 	})
 }
 
 fn draw_feather_mask_from_layout(mask: Option<FeatherMask>) -> Option<DrawFeatherMask> {
 	mask.map(|mask| DrawFeatherMask {
-		position: [mask.geometry.x() as f32, mask.geometry.y() as f32],
-		size: [mask.geometry.width() as f32, mask.geometry.height() as f32],
+		position: [mask.geometry.x(), mask.geometry.y()],
+		size: [mask.geometry.width(), mask.geometry.height()],
 		edges: [mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left],
 		corner: [mask.corner_radius, mask.corner_exponent],
 	})
@@ -735,7 +735,7 @@ fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f32) -> DrawF
 fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 	let root_size = render.root().size;
 
-	draw_list.layout_size = [root_size.x() as f32, root_size.y() as f32];
+	draw_list.layout_size = [root_size.x(), root_size.y()];
 	draw_list.elements.clear();
 	draw_list.blurs.clear();
 	draw_list.curves.clear();
@@ -763,8 +763,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			draw_list.elements.push(UiDrawElement {
 				depth: position.z(),
 				order: element.id,
-				position: [position.x() as f32, position.y() as f32],
-				size: [size.x() as f32, size.y() as f32],
+				position: [position.x(), position.y()],
+				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
 				feather_mask: draw_feather_mask_from_layout(element.feather_mask),
 				color: color.into(),
@@ -791,8 +791,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			draw_list.blurs.push(UiBlurDrawElement {
 				depth: position.z(),
 				order: element.id,
-				position: [position.x() as f32, position.y() as f32],
-				size: [size.x() as f32, size.y() as f32],
+				position: [position.x(), position.y()],
+				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
 				feather_mask: draw_feather_mask_from_layout(element.feather_mask),
 				color: color.into(),
@@ -825,8 +825,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			draw_list.curves.push(UiCurveDrawElement {
 				depth: position.z(),
 				order: curve.id,
-				position: [position.x() as f32, position.y() as f32],
-				size: [size.x() as f32, size.y() as f32],
+				position: [position.x(), position.y()],
+				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(curve.clip),
 				feather_mask: draw_feather_mask_from_layout(curve.feather_mask),
 				color: color.into(),
@@ -845,8 +845,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			source_width: image.source_width,
 			source_height: image.source_height,
 			pixels: Arc::clone(&image.pixels),
-			position: [image.position.x() as f32, image.position.y() as f32],
-			size: [image.size.x() as f32, image.size.y() as f32],
+			position: [image.position.x(), image.position.y()],
+			size: [image.size.x(), image.size.y()],
 			clip: draw_clip_from_geometry(image.clip),
 			feather_mask: draw_feather_mask_from_layout(image.feather_mask),
 			opacity: image.opacity,
@@ -859,8 +859,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 		let text = UiTextDrawElement {
 			depth: text.position.z(),
 			order: text.id,
-			position: [text.position.x() as f32, text.position.y() as f32],
-			size: [text.size.x() as f32, text.size.y() as f32],
+			position: [text.position.x(), text.position.y()],
+			size: [text.size.x(), text.size.y()],
 			clip: draw_clip_from_geometry(text.clip),
 			feather_mask: draw_feather_mask_from_layout(text.feather_mask),
 			color,

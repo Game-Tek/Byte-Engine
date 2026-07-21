@@ -1,24 +1,24 @@
 use std::ops::Add;
 
 /// The `Offset` struct stores signed screen-space movement during UI layout.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Offset(i32, i32);
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Offset(f32, f32);
 
 /// The `Location` struct stores an absolute two-dimensional UI position.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Location(u32, u32);
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Location(f32, f32);
 
 /// The `Location3` struct stores an absolute UI position with depth ordering.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Location3(u32, u32, u32);
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Location3(f32, f32, u32);
 
 /// The `Size` struct stores a two-dimensional UI extent in logical pixels.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Size(u32, u32);
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Size(f32, f32);
 
 /// The `FlowInput` struct passes parent space, cursor, and child size
 /// into reusable layout flow functions.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FlowInput {
 	parent_size: Size,
 	cursor: Offset,
@@ -27,24 +27,24 @@ pub struct FlowInput {
 
 /// The `FlowOutput` struct returns a child's offset and the next cursor
 /// from reusable layout flow functions.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FlowOutput {
 	child_offset: Offset,
 	next_cursor: Offset,
 }
 
 impl Offset {
-	pub fn new(x: i32, y: i32) -> Self {
-		Self(x, y)
+	pub fn new(x: impl Into<f64>, y: impl Into<f64>) -> Self {
+		Self(x.into() as f32, y.into() as f32)
 	}
 
 	#[inline]
-	pub fn x(&self) -> i32 {
+	pub fn x(&self) -> f32 {
 		self.0
 	}
 
 	#[inline]
-	pub fn y(&self) -> i32 {
+	pub fn y(&self) -> f32 {
 		self.1
 	}
 }
@@ -59,22 +59,22 @@ impl Add for Offset {
 
 impl From<Offset> for Location {
 	fn from(val: Offset) -> Self {
-		Location(val.0 as u32, val.1 as u32)
+		Location(val.0, val.1)
 	}
 }
 
 impl Location {
-	pub fn new(x: u32, y: u32) -> Self {
-		Self(x, y)
+	pub fn new(x: impl Into<f64>, y: impl Into<f64>) -> Self {
+		Self(x.into() as f32, y.into() as f32)
 	}
 
 	#[inline]
-	pub fn x(&self) -> u32 {
+	pub fn x(&self) -> f32 {
 		self.0
 	}
 
 	#[inline]
-	pub fn y(&self) -> u32 {
+	pub fn y(&self) -> f32 {
 		self.1
 	}
 }
@@ -89,28 +89,28 @@ impl Add for Location {
 
 impl From<Location> for Offset {
 	fn from(val: Location) -> Self {
-		Offset(val.0 as i32, val.1 as i32)
+		Offset(val.0, val.1)
 	}
 }
 
-impl From<Location> for (u32, u32) {
+impl From<Location> for (f32, f32) {
 	fn from(val: Location) -> Self {
 		(val.0, val.1)
 	}
 }
 
 impl Size {
-	pub fn new(width: u32, height: u32) -> Self {
-		Self(width, height)
+	pub fn new(width: impl Into<f64>, height: impl Into<f64>) -> Self {
+		Self(width.into() as f32, height.into() as f32)
 	}
 
 	#[inline]
-	pub fn x(&self) -> u32 {
+	pub fn x(&self) -> f32 {
 		self.0
 	}
 
 	#[inline]
-	pub fn y(&self) -> u32 {
+	pub fn y(&self) -> f32 {
 		self.1
 	}
 }
@@ -168,66 +168,68 @@ impl FlowOutput {
 
 	#[inline]
 	pub fn anchored(offset: Offset, size: Size) -> Self {
-		Self::new(offset, Offset(offset.0 + size.0 as i32, offset.1))
+		Self::new(offset, Offset(offset.0 + size.0, offset.1))
 	}
 }
 
 pub fn row(input: FlowInput) -> FlowOutput {
 	let offset = input.cursor;
 	let size = input.child_size;
-	FlowOutput::new(offset, Offset(offset.0 + size.0 as i32, offset.1))
+	FlowOutput::new(offset, Offset(offset.0 + size.0, offset.1))
 }
 
 pub fn column(input: FlowInput) -> FlowOutput {
 	let offset = input.cursor;
 	let size = input.child_size;
-	FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 as i32))
+	FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1))
 }
 
 pub fn grid(input: FlowInput) -> FlowOutput {
 	let offset = input.cursor;
 	let size = input.child_size;
-	FlowOutput::new(offset, Offset(offset.0 + size.0 as i32, offset.1 + size.1 as i32))
+	FlowOutput::new(offset, Offset(offset.0 + size.0, offset.1 + size.1))
 }
 
-pub fn row_with_gap(gap: u32) -> impl FlowFunction {
+pub fn row_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
+	let gap = gap.into() as f32;
 	move |input| {
 		let offset = input.cursor;
 		let size = input.child_size;
-		FlowOutput::new(offset, Offset(offset.0 + size.0 as i32 + gap as i32, offset.1))
+		FlowOutput::new(offset, Offset(offset.0 + size.0 + gap, offset.1))
 	}
 }
 
-pub fn column_with_gap(gap: u32) -> impl FlowFunction {
+pub fn column_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
+	let gap = gap.into() as f32;
 	move |input| {
 		let offset = input.cursor;
 		let size = input.child_size;
-		FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 as i32 + gap as i32))
+		FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 + gap))
 	}
 }
 
 pub fn centered_row(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0,
-		input.cursor.1 + ((input.parent_size.1 as i32 - input.child_size.1 as i32) / 2).max(0),
+		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
 	);
 
-	FlowOutput::new(offset, Offset(input.cursor.0 + input.child_size.0 as i32, input.cursor.1))
+	FlowOutput::new(offset, Offset(input.cursor.0 + input.child_size.0, input.cursor.1))
 }
 
 pub fn centered_column(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
-		input.cursor.0 + ((input.parent_size.0 as i32 - input.child_size.0 as i32) / 2).max(0),
+		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
 		input.cursor.1,
 	);
 
-	FlowOutput::new(offset, Offset(input.cursor.0, input.cursor.1 + input.child_size.1 as i32))
+	FlowOutput::new(offset, Offset(input.cursor.0, input.cursor.1 + input.child_size.1))
 }
 
 pub fn center(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
-		input.cursor.0 + ((input.parent_size.0 as i32 - input.child_size.0 as i32) / 2).max(0),
-		input.cursor.1 + ((input.parent_size.1 as i32 - input.child_size.1 as i32) / 2).max(0),
+		input.cursor.0 + ((input.parent_size.0 - input.child_size.0) * 0.5).max(0.0),
+		input.cursor.1 + ((input.parent_size.1 - input.child_size.1) * 0.5).max(0.0),
 	);
 
 	FlowOutput::new(offset, input.cursor)
@@ -236,15 +238,15 @@ pub fn center(input: FlowInput) -> FlowOutput {
 pub trait FlowFunction = Fn(FlowInput) -> FlowOutput + Copy;
 
 impl Location3 {
-	pub fn new(x: u32, y: u32, z: u32) -> Self {
-		Self(x, y, z)
+	pub fn new(x: impl Into<f64>, y: impl Into<f64>, z: u32) -> Self {
+		Self(x.into() as f32, y.into() as f32, z)
 	}
 
-	pub fn x(&self) -> u32 {
+	pub fn x(&self) -> f32 {
 		self.0
 	}
 
-	pub fn y(&self) -> u32 {
+	pub fn y(&self) -> f32 {
 		self.1
 	}
 

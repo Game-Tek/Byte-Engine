@@ -24,6 +24,9 @@ fn asset_lookup_error(message: &str) -> String {
 /// File-system paths are relative to the assets directory.
 /// After construction, optionally install an asset manager in debug builds,
 /// then obtain typed resources through [`Self::request`].
+/// See [debug asset loading](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management/debug-loading)
+/// and [resource loading](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management/resources)
+/// for the development and release workflows.
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,

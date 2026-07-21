@@ -5,6 +5,9 @@
 //! other [`Primitive`] values through the layout context. Send the resulting
 //! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
 //! integrating UI into a graphics application.
+//!
+//! See the [UI guide](https://byte-engine.0x44491229.dev/docs/develop/design/ui)
+//! for component, layout, event, focus, and rendering guidance.
 
 use crate::core::Entity;
 

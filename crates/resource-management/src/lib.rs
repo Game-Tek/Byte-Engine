@@ -1,4 +1,7 @@
 //! Load, cache, and bake engine resources from local or remote storage.
+//!
+//! Start with the [resource management guide](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management)
+//! to choose between development-time asset baking and runtime resource loading.
 
 #![feature(stmt_expr_attributes)]
 #![feature(future_join)]

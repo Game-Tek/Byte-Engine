@@ -9,6 +9,9 @@
 //! [`InputManager`] owns device and action state. [`Value`] is the erased value
 //! passed through that runtime; typed action declarations use
 //! [`action::InputValue`] to constrain supported value types.
+//!
+//! See the [input handling guide](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling)
+//! for the device, trigger, action, and event workflow.
 
 use super::utils::RGBA;
 use crate::core::factory::Handle;

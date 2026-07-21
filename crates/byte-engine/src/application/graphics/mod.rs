@@ -7,6 +7,9 @@
 //! Rendering setup remains in this module because it coordinates the world,
 //! renderer, and application factories. General startup defaults and external
 //! adapters are kept behind the setup functions re-exported from this module.
+//!
+//! Follow the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+//! for the complete application setup sequence.
 
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
@@ -23,6 +26,9 @@
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
+///
+/// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+/// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
 	application: BaseApplication,
 

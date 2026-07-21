@@ -15,6 +15,9 @@ struct EnvironmentTexture {
 }
 
 /// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
+///
+/// See the [visibility render-model guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering/render-models/visibility)
+/// for its frame stages, resource ownership, and material evaluation path.
 pub struct VisibilityPipelineManager {
 	/// Materials data buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,

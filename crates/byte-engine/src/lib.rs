@@ -14,6 +14,9 @@
 //! let mut application = GraphicsApplication::new("example", &[] as &[Parameter]);
 //! default_setup(&mut application);
 //! ```
+//!
+//! Start with the [getting started guide](https://byte-engine.0x44491229.dev/docs/get-started)
+//! for installation, project setup, and the first application workflow.
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, unsize)]
 #![cfg_attr(feature = "headed", feature(future_join, slice_pattern, trait_alias))]

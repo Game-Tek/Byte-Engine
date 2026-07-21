@@ -1814,8 +1814,6 @@ mod tests {
 		let shader = shader_generator.transform(shader_node, &material);
 
 		println!("{:#?}", shader);
-
-		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
 	}
 
 	/// Verifies material texture variables produce valid BESL.

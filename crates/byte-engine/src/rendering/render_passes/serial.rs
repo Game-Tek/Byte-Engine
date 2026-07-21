@@ -26,6 +26,10 @@ impl SerialRenderPass {
 }
 
 impl RenderPass for SerialRenderPass {
+	fn name(&self) -> &'static str {
+		"serial"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

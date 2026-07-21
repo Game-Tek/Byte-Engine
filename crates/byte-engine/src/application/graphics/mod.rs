@@ -761,6 +761,10 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 		}
 
 		impl rendering::RenderPass for CustomRenderPass {
+			fn name(&self) -> &'static str {
+				self.render_pass.name()
+			}
+
 			fn prepare<'a>(
 				&mut self,
 				frame: &mut ghi::implementation::Frame,

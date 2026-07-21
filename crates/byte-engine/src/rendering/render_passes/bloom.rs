@@ -309,6 +309,10 @@ impl BloomPass {
 }
 
 impl RenderPass for BloomPass {
+	fn name(&self) -> &'static str {
+		"bloom"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

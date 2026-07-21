@@ -2212,6 +2212,10 @@ impl UiRenderPass {
 }
 
 impl RenderPass for UiRenderPass {
+	fn name(&self) -> &'static str {
+		"ui"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

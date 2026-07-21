@@ -50,6 +50,10 @@ impl AgxToneMapPass {
 impl Entity for AgxToneMapPass {}
 
 impl RenderPass for AgxToneMapPass {
+	fn name(&self) -> &'static str {
+		"agx"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

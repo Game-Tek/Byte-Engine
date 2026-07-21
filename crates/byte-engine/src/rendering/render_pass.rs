@@ -30,6 +30,9 @@ pub fn allocate_render_command<'a>(
 /// return frame-local recording work from [`Self::prepare`]. Register the
 /// implementation with [`crate::rendering::renderer::Renderer`].
 pub trait RenderPass {
+	/// Returns the stable name used to control every sink-local instance of this pass.
+	fn name(&self) -> &'static str;
+
 	/// Prepares the render pass when its rendering condition is active.
 	fn prepare<'a>(
 		&mut self,
@@ -78,6 +81,11 @@ impl RenderPassHarness {
 	/// Returns the pass state used for the next frame preparation.
 	pub fn state(&self) -> RenderPassState {
 		self.state
+	}
+
+	/// Returns the stable name supplied by the render pass implementation.
+	pub fn name(&self) -> &'static str {
+		self.render_pass.name()
 	}
 
 	/// Selects whether future frame preparation applies or bypasses the pass.
@@ -288,6 +296,10 @@ mod tests {
 	struct TestRenderPass;
 
 	impl RenderPass for TestRenderPass {
+		fn name(&self) -> &'static str {
+			"test"
+		}
+
 		fn prepare<'a>(
 			&mut self,
 			_frame: &mut ghi::implementation::Frame,
@@ -316,6 +328,7 @@ mod tests {
 	#[test]
 	fn render_pass_harness_starts_enabled_and_retains_state_changes() {
 		let mut harness = RenderPassHarness::new(Box::new(TestRenderPass));
+		assert_eq!(harness.name(), "test");
 		assert_eq!(harness.state(), RenderPassState::Enabled);
 
 		harness.set_state(RenderPassState::Bypassed);

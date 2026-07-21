@@ -48,6 +48,10 @@ impl AcesToneMapPass {
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
+	fn name(&self) -> &'static str {
+		"aces"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

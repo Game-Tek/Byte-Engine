@@ -141,6 +141,10 @@ fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
 }
 
 impl RenderPass for LutRenderPass {
+	fn name(&self) -> &'static str {
+		"lut"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

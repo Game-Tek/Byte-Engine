@@ -113,6 +113,10 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
+	fn name(&self) -> &'static str {
+		"bilateral blur"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		_frame: &mut ghi::implementation::Frame,

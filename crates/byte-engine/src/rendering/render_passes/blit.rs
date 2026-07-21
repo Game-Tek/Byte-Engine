@@ -112,6 +112,10 @@ impl SwapchainBlitPass {
 impl Entity for SwapchainBlitPass {}
 
 impl RenderPass for SwapchainBlitPass {
+	fn name(&self) -> &'static str {
+		"swapchain blit"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

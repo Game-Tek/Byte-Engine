@@ -154,6 +154,10 @@ impl AtmosphereSkyRenderPass {
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {
+	fn name(&self) -> &'static str {
+		"atmosphere sky"
+	}
+
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,

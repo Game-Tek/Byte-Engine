@@ -328,6 +328,14 @@ impl Renderer {
 		self.render_passes_by_sink.push((render_pass_id, sink_id));
 	}
 
+	/// Changes the state of every sink-local render pass with the requested stable name.
+	///
+	/// Returns the number of updated instances. A return value of `0` means that no registered render pass uses
+	/// `name`. Pass names come from [`RenderPass::name`].
+	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
+		set_render_pass_state_by_name(&mut self.render_passes, name, state)
+	}
+
 	/// Registers a render pass factory that will be instantiated for every current and future sink.
 	pub fn add_post_scene_render_pass_for_all_sinks<F>(&mut self, render_pass_factory: F)
 	where
@@ -992,10 +1000,70 @@ impl RenderTargets {
 	}
 }
 
+/// Updates every sink-local instance because one render-pass factory may create the same named pass for many sinks.
+fn set_render_pass_state_by_name(render_passes: &mut [RenderPassHarness], name: &str, state: RenderPassState) -> usize {
+	let mut updated = 0;
+	for render_pass in render_passes {
+		if render_pass.name() == name {
+			render_pass.set_state(state);
+			updated += 1;
+		}
+	}
+	updated
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
+	use utils::Box;
+
 	use super::*;
+
+	struct NamedRenderPass(&'static str);
+
+	impl RenderPass for NamedRenderPass {
+		fn name(&self) -> &'static str {
+			self.0
+		}
+
+		fn prepare<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+
+		fn bypass<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+	}
+
+	#[test]
+	fn render_pass_state_updates_every_sink_instance_with_the_requested_name() {
+		let mut render_passes = [
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("ui"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+		];
+
+		let updated = set_render_pass_state_by_name(&mut render_passes, "bloom", RenderPassState::Bypassed);
+
+		assert_eq!(updated, 2);
+		assert_eq!(render_passes[0].state(), RenderPassState::Bypassed);
+		assert_eq!(render_passes[1].state(), RenderPassState::Enabled);
+		assert_eq!(render_passes[2].state(), RenderPassState::Bypassed);
+		assert_eq!(
+			set_render_pass_state_by_name(&mut render_passes, "missing", RenderPassState::Enabled),
+			0
+		);
+	}
 
 	#[test]
 	fn test_render_targets_new() {
@@ -1129,7 +1197,7 @@ use utils::{
 	Extent, RGBA,
 };
 
-use super::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness};
+use super::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState};
 use crate::{
 	application::parameters::Parameters,
 	core::{

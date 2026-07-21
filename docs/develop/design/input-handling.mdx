@@ -138,3 +138,11 @@ The default seat keeps the API shape consistent, and code written against seats 
 
 Keep action payloads small.
 Input is hot-path code, so prefer compact values and local state over allocating per-binding structures in the app loop.
+
+## Rust API
+
+- [`input` module](https://docs.rs/byte-engine/latest/byte_engine/input/)
+- [`InputManager`](https://docs.rs/byte-engine/latest/byte_engine/input/input_manager/struct.InputManager.html)
+- [`Action`](https://docs.rs/byte-engine/latest/byte_engine/input/action/struct.Action.html)
+- [`ActionEvent`](https://docs.rs/byte-engine/latest/byte_engine/input/struct.ActionEvent.html)
+- [`process_default_window_input`](https://docs.rs/byte-engine/latest/byte_engine/application/graphics/fn.process_default_window_input.html)

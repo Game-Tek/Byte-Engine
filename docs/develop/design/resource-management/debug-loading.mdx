@@ -59,3 +59,10 @@ If a resource does not load in a debug build, check these items in order:
 - whether dependent assets can also be baked
 - whether the resources directory was invalidated and rebuilt
 - whether the requested resource type matches the resource class stored in the cache
+
+## Rust API
+
+- [`ResourceManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html)
+- [`ResourceManager::set_asset_manager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html#method.set_asset_manager)
+- [`AssetManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html)
+- [`AssetManager::bake`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html#method.bake)

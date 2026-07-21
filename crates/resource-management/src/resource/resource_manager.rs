@@ -3,17 +3,36 @@ use super::{
 	StorageBackend,
 };
 #[cfg(debug_assertions)]
-use crate::asset::{asset_manager::AssetManager, ResourceTrace};
+use crate::asset::{
+	asset_handler::LoadErrors,
+	asset_manager::{AssetManager, LoadMessages},
+	ResourceTrace,
+};
 use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
+#[cfg(debug_assertions)]
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
-/// Adds shared recovery guidance to an asset lookup error.
-fn asset_lookup_error(message: &str) -> String {
-	format!(
-		"{message} If the 'byte-engine' path is missing from the assets directory, its symlink was probably not configured. See {}.",
-		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-	)
+/// Adds engine asset setup guidance only when an engine asset failed to load and its source root is inaccessible.
+#[cfg(debug_assertions)]
+fn asset_lookup_error(message: &str, id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
+	let byte_engine_root_inaccessible = matches!(
+		error,
+		LoadMessages::FailedToBake {
+			error: LoadErrors::AssetCouldNotBeLoaded,
+			..
+		}
+	) && (id == "byte-engine" || id.starts_with("byte-engine/"))
+		&& asset_manager.source_directory_accessible(std::path::Path::new("byte-engine")) == Some(false);
+
+	if byte_engine_root_inaccessible {
+		format!(
+			"{message} The 'byte-engine' path in the assets directory is inaccessible, so its symlink was probably not configured. See {}.",
+			online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+		)
+	} else {
+		message.to_string()
+	}
 }
 
 /// The `ResourceManager` struct provides typed resource loading and caching across storage backends.
@@ -98,21 +117,24 @@ impl ResourceManager {
 			#[cfg(debug_assertions)]
 			{
 				let Some(asset_manager) = self.asset_manager.get() else {
-					return Err(asset_lookup_error(
-						"Resource does not exist and an asset manager is not available.",
-					));
+					return Err("Resource does not exist and an asset manager is not available.".to_string());
 				};
 				let runtime = compio::runtime::Runtime::new().unwrap();
 
 				runtime
 					.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
-					.map_err(|_| asset_lookup_error("Failed to load asset. The asset manager could not bake the resource."))?
+					.map_err(|error| {
+						asset_lookup_error(
+							"Failed to load asset. The asset manager could not bake the resource.",
+							id,
+							&error,
+							asset_manager,
+						)
+					})?
 			}
 			#[cfg(not(debug_assertions))]
 			{
-				return Err(asset_lookup_error(
-					"Resource does not exist in the baked release resource store.",
-				));
+				return Err("Resource does not exist in the baked release resource store.".to_string());
 			}
 		};
 
@@ -155,17 +177,51 @@ impl ResourceManager {
 
 #[cfg(all(test, debug_assertions))]
 mod debug_tests {
-	use std::sync::Arc;
+	use std::{
+		fs,
+		sync::Arc,
+		time::{SystemTime, UNIX_EPOCH},
+	};
 
 	use super::ResourceManager;
 	use crate::{
 		asset::{
-			asset_manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
-			ResourceTraceLevel,
+			asset_handler::{AssetHandler, BakeContext, LoadErrors},
+			asset_manager::AssetManager,
+			storage_backend::{tests::TestStorageBackend as AssetTestStorageBackend, FileStorageBackend},
+			ResourceId, ResourceTraceLevel,
 		},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::Shader,
 	};
+
+	struct ResolvingAssetHandler;
+
+	impl AssetHandler for ResolvingAssetHandler {
+		fn can_handle(&self, extension: &str) -> bool {
+			extension == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			context.resolve(id).await.map(|_| ())
+		}
+	}
+
+	fn temporary_asset_directory(name: &str) -> std::path::PathBuf {
+		std::env::temp_dir().join(format!(
+			"byte-engine-resource-manager-{name}-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		))
+	}
+
+	fn resource_manager_with_file_assets(path: std::path::PathBuf) -> ResourceManager {
+		let mut asset_manager = AssetManager::new(FileStorageBackend::new(path));
+		asset_manager.add_asset_handler(ResolvingAssetHandler);
+		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		resource_manager.set_asset_manager(asset_manager);
+		resource_manager
+	}
 
 	#[test]
 	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
@@ -181,20 +237,33 @@ mod debug_tests {
 	}
 
 	#[test]
-	fn failed_asset_lookup_suggests_checking_the_engine_asset_symlink() {
-		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
-		resource_manager.set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()));
+	fn inaccessible_engine_asset_root_suggests_configuring_the_symlink() {
+		let assets = temporary_asset_directory("missing-root");
+		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
-		let error = resource_manager.request::<Shader>("missing.asset").unwrap_err();
+		let error = resource_manager.request::<Shader>("byte-engine/missing.test").unwrap_err();
 
-		assert!(error.contains("If the 'byte-engine' path is missing from the assets directory"));
+		assert!(error.contains("The 'byte-engine' path in the assets directory is inaccessible"));
 		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
+		fs::remove_dir_all(assets).unwrap();
+	}
+
+	#[test]
+	fn individual_asset_failure_omits_engine_symlink_hint_when_root_is_accessible() {
+		let assets = temporary_asset_directory("accessible-root");
+		fs::create_dir_all(assets.join("byte-engine")).unwrap();
+		let resource_manager = resource_manager_with_file_assets(assets.clone());
+
+		let error = resource_manager.request::<Shader>("byte-engine/missing.test").unwrap_err();
+
+		assert_eq!(error, "Failed to load asset. The asset manager could not bake the resource.");
 		let trace = resource_manager
 			.resource_trace()
 			.expect("installed asset management should expose its trace");
-		let items = trace.items("missing.asset");
+		let items = trace.items("byte-engine/missing.test");
 		assert_eq!(items.len(), 1);
 		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+		fs::remove_dir_all(assets).unwrap();
 	}
 }
 

@@ -99,6 +99,11 @@ impl AssetManager {
 		self.storage_backend.as_ref()
 	}
 
+	/// Reports whether a source directory can be read when the storage backend exposes paths.
+	pub(crate) fn source_directory_accessible(&self, path: &std::path::Path) -> Option<bool> {
+		self.storage_backend.directory_accessible(path)
+	}
+
 	/// Returns the development trace populated by this manager's latest resource bakes.
 	///
 	/// Next, call [`ResourceTrace::items`] with a requested resource ID.

@@ -1,4 +1,8 @@
-use std::{alloc::Allocator, ops::Deref, path::PathBuf};
+use std::{
+	alloc::Allocator,
+	ops::Deref,
+	path::{Path, PathBuf},
+};
 
 use super::{read_asset_from_source, BEADType, ResourceId};
 use crate::{
@@ -42,6 +46,11 @@ impl Deref for AssetStorageBytes<'_> {
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
 
 pub trait StorageBackend: Send + Sync {
+	/// Reports whether a source directory exists and can be read when the backend exposes paths.
+	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
+		None
+	}
+
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, None, &std::alloc::Global))
 	}
@@ -65,6 +74,11 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
+	fn directory_accessible(&self, path: &Path) -> Option<bool> {
+		let path = self.base_path.join(path);
+		Some(path.is_dir() && std::fs::read_dir(path).is_ok())
+	}
+
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
 	}

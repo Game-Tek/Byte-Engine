@@ -114,6 +114,13 @@ impl Parameters for BaseApplication {
 	}
 }
 
+impl BaseApplication {
+	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
+	pub(crate) fn parameters(&self) -> &[Parameter] {
+		&self.parameters
+	}
+}
+
 /// Replaces a previous parameter with the same name so later sources have deterministic precedence.
 fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {

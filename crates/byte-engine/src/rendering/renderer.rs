@@ -41,6 +41,9 @@ pub struct Renderer {
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
+	configuration: ConfigurationPort,
+	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
+	render_pass_states: HashMap<String, RenderPassState>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
@@ -69,7 +72,7 @@ impl Renderer {
 	///
 	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
 	/// render passes that load resources.
-	pub fn new(parameters: &dyn Parameters) -> Self {
+	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Self {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -205,6 +208,9 @@ impl Renderer {
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 			pending_swapchain_captures: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
+			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
+			pending_configuration: VecDeque::new(),
+			render_pass_states: HashMap::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
@@ -324,7 +330,8 @@ impl Renderer {
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
 		let render_pass_id = self.render_passes.len();
-		self.render_passes.push(RenderPassHarness::new(render_pass));
+		self.render_passes
+			.push(render_pass_harness_with_state(render_pass, &self.render_pass_states));
 		self.render_passes_by_sink.push((render_pass_id, sink_id));
 	}
 
@@ -333,7 +340,18 @@ impl Renderer {
 	/// Returns the number of updated instances. A return value of `0` means that no registered render pass uses
 	/// `name`. Pass names come from [`RenderPass::name`].
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
+		self.render_pass_states.insert(name.to_string(), state);
 		set_render_pass_state_by_name(&mut self.render_passes, name, state)
+	}
+
+	/// Applies queued render-pass configuration after passes exist and before they prepare frame work.
+	fn apply_configuration(&mut self) {
+		apply_render_pass_configuration(
+			&self.configuration,
+			&mut self.pending_configuration,
+			&mut self.render_pass_states,
+			&mut self.render_passes,
+		);
 	}
 
 	/// Registers a render pass factory that will be instantiated for every current and future sink.
@@ -438,6 +456,7 @@ impl Renderer {
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
 		}
+		self.apply_configuration();
 
 		self.context.start_frame_capture();
 
@@ -1012,12 +1031,106 @@ fn set_render_pass_state_by_name(render_passes: &mut [RenderPassHarness], name: 
 	updated
 }
 
+const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
+
+/// Builds a render-pass harness with the state previously selected for its stable name.
+fn render_pass_harness_with_state(
+	render_pass: Box<dyn RenderPass>,
+	render_pass_states: &HashMap<String, RenderPassState>,
+) -> RenderPassHarness {
+	let mut harness = RenderPassHarness::new(render_pass);
+	if let Some(state) = render_pass_states.get(harness.name()) {
+		harness.set_state(*state);
+	}
+	harness
+}
+
+/// Applies valid queued states and retains updates whose named pass has not been installed yet.
+fn apply_render_pass_configuration(
+	configuration: &ConfigurationPort,
+	pending: &mut VecDeque<PendingRenderPassConfiguration>,
+	render_pass_states: &mut HashMap<String, RenderPassState>,
+	render_passes: &mut [RenderPassHarness],
+) {
+	while let Some(update) = configuration.read() {
+		match PendingRenderPassConfiguration::from_update(update) {
+			Ok(update) => pending.push_back(update),
+			Err((id, reason)) => configuration.not_set(id, reason),
+		}
+	}
+
+	// Try each retained update once per call. A pass that has not been installed yet keeps the event pending.
+	let pending_count = pending.len();
+	for _ in 0..pending_count {
+		let update = pending.pop_front().expect("pending configuration count changed");
+		let updated = set_render_pass_state_by_name(render_passes, &update.render_pass_name, update.state);
+		if updated == 0 {
+			pending.push_back(update);
+			continue;
+		}
+
+		render_pass_states.insert(update.render_pass_name.clone(), update.state);
+		configuration.set(update.event, ConfigurationValue::from(update.state.as_parameter_value()));
+	}
+}
+
+struct PendingRenderPassConfiguration {
+	event: ConfigurationEventId,
+	render_pass_name: String,
+	state: RenderPassState,
+}
+
+impl PendingRenderPassConfiguration {
+	/// Validates a generic configuration message once before retaining it for renderer application.
+	fn from_update(update: ConfigurationUpdate) -> Result<Self, (ConfigurationEventId, String)> {
+		let event = update.id();
+		let Some(render_pass_name) = update.parameter().strip_prefix(RENDER_PASS_PARAMETER_PREFIX) else {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the parameter is outside the `render.pass.` namespace."
+					.to_string(),
+			));
+		};
+		if render_pass_name.is_empty() {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the parameter does not name a render pass."
+					.to_string(),
+			));
+		}
+		let Some(value) = update.value().as_text() else {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the requested value is not text.".to_string(),
+			));
+		};
+		let state = match value {
+			"enabled" => RenderPassState::Enabled,
+			"bypassed" => RenderPassState::Bypassed,
+			_ => {
+				return Err((
+					event,
+					"Render pass state was not set. The most likely cause is that the value is neither `enabled` nor `bypassed`."
+						.to_string(),
+				));
+			}
+		};
+
+		Ok(Self {
+			event,
+			render_pass_name: render_pass_name.to_string(),
+			state,
+		})
+	}
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
 	use utils::Box;
 
 	use super::*;
+	use crate::configuration::ConfigurationUpdateState;
 
 	struct NamedRenderPass(&'static str);
 
@@ -1063,6 +1176,73 @@ mod tests {
 			set_render_pass_state_by_name(&mut render_passes, "missing", RenderPassState::Enabled),
 			0
 		);
+	}
+
+	#[test]
+	fn render_configuration_sets_existing_and_future_pass_instances() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "bypassed");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+		];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
+		assert_eq!(passes[1].state(), RenderPassState::Bypassed);
+		assert!(matches!(
+			configuration.event(event).unwrap().state(),
+			ConfigurationUpdateState::Set { value }
+				if value == &ConfigurationValue::from("bypassed")
+		));
+
+		let future = render_pass_harness_with_state(Box::new(NamedRenderPass("bloom")), &states);
+		assert_eq!(future.state(), RenderPassState::Bypassed);
+	}
+
+	#[test]
+	fn render_configuration_stays_pending_until_the_pass_exists() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "bypassed");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert_eq!(pending.len(), 1);
+		assert_eq!(
+			configuration.event(event).unwrap().state(),
+			&ConfigurationUpdateState::Pending
+		);
+
+		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		assert_eq!(pending.len(), 0);
+		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
+	}
+
+	#[test]
+	fn render_configuration_reports_an_unsupported_state() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "disabled");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert!(matches!(
+			configuration.event(event).unwrap().state(),
+			ConfigurationUpdateState::NotSet { reason } if reason.contains("neither `enabled` nor `bypassed`")
+		));
+		assert_eq!(passes[0].state(), RenderPassState::Enabled);
 	}
 
 	#[test]
@@ -1170,6 +1350,7 @@ type RenderPassId = usize;
 type PipelineManagerId = usize;
 
 use std::{
+	collections::VecDeque,
 	io::Write,
 	ops::{Deref, DerefMut},
 	rc::Rc,
@@ -1200,6 +1381,7 @@ use utils::{
 use super::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState};
 use crate::{
 	application::parameters::Parameters,
+	configuration::{Configuration, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::Handle,

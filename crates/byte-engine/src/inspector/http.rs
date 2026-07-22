@@ -46,6 +46,15 @@ impl HttpInspectorServer {
 		let i = inspector.clone();
 
 		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
+			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
+				Ok(body) => Response::builder().body(Body::from(body)).unwrap(),
+				Err(error) => Response::builder()
+					.status(StatusCode::INTERNAL_SERVER_ERROR)
+					.body(Body::from(format!(
+						"Configuration events could not be serialized. The most likely cause is an unsupported configuration value: {error}"
+					)))
+					.unwrap(),
+			},
 			(&Method::GET, "/entities") => {
 				let mut body = String::new();
 
@@ -148,7 +157,7 @@ mod tests {
 	};
 
 	use super::HttpInspectorServer;
-	use crate::{application::Sender, core::EntityHandle, inspector::Inspector};
+	use crate::{application::Sender, configuration::Configuration, core::EntityHandle, inspector::Inspector};
 
 	#[test]
 	fn server_answers_entity_requests_over_http() {
@@ -157,7 +166,7 @@ mod tests {
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let inspector = EntityHandle::from(Inspector::new(Sender::new(1)));
+		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
 		let _server = HttpInspectorServer::spawn(inspector, [SocketAddr::from(address)]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
@@ -173,5 +182,34 @@ mod tests {
 
 		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
 		assert!(response.ends_with("No entities found"), "unexpected response: {response}");
+	}
+
+	#[test]
+	fn server_exposes_configuration_event_values() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let configuration = Configuration::new();
+		let _port = configuration.register("render.pass.");
+		configuration.update("render.pass.bloom", "bypassed");
+		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), configuration));
+		let _server = HttpInspectorServer::spawn(inspector, [SocketAddr::from(address)]).expect("start inspector test server");
+
+		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
+		stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		stream
+			.write_all(b"GET /configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.expect("request inspector configuration");
+
+		let mut response = String::new();
+		stream.read_to_string(&mut response).expect("read inspector response");
+
+		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+		assert!(response.contains("\"parameter\":\"render.pass.bloom\""));
+		assert!(response.contains("\"requested\":\"bypassed\""));
+		assert!(response.contains("\"status\":\"pending\""));
 	}
 }

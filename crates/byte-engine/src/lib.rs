@@ -125,6 +125,7 @@ pub mod utils {
 pub mod application;
 #[cfg(feature = "headed")]
 pub mod audio;
+pub mod configuration;
 pub mod core;
 pub mod input;
 #[cfg(feature = "headed")]

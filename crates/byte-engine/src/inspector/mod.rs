@@ -11,6 +11,7 @@ use utils::sync::Mutex;
 use crate::application::{Receiver, Sender};
 use crate::{
 	application::Events,
+	configuration::{Configuration, ConfigurationEvent},
 	core::{listener::Listener, Entity, EntityHandle},
 };
 
@@ -43,14 +44,24 @@ pub trait Inspectable: Send + Sync {
 pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
 	events: Sender<Events>,
+	configuration: Configuration,
 }
 
 impl Inspector {
 	/// Creates an inspector that can close the owning application through its event channel.
-	pub fn new(tx: Sender<Events>) -> Self {
+	pub fn new(tx: Sender<Events>, configuration: Configuration) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
-		Self { entities, events: tx }
+		Self {
+			entities,
+			events: tx,
+			configuration,
+		}
+	}
+
+	/// Returns the latest configuration event states for protocol adapters.
+	pub fn configuration_events(&self) -> Vec<ConfigurationEvent> {
+		self.configuration.events()
 	}
 
 	/// Returns inspectable entities, optionally filtered by class name.

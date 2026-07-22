@@ -60,6 +60,16 @@ pub enum RenderPassState {
 	Bypassed,
 }
 
+impl RenderPassState {
+	/// Returns the startup-parameter value representing this render-pass state.
+	pub(crate) fn as_parameter_value(self) -> &'static str {
+		match self {
+			Self::Enabled => "enabled",
+			Self::Bypassed => "bypassed",
+		}
+	}
+}
+
 /// The `RenderPassHarness` struct owns one render pass and keeps its execution state outside the implementation.
 ///
 /// Construct a harness with [`Self::new`], then change its state with [`Self::set_state`]. Call [`Self::prepare`]

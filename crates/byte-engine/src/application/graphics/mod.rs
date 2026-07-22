@@ -26,6 +26,7 @@
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
+/// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
 ///
 /// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -40,6 +41,7 @@ pub struct GraphicsApplication {
 
 	application_events: (Sender<Events>, Receiver<Events>),
 	http_inspector: HttpInspectorServer,
+	configuration: Configuration,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
@@ -104,8 +106,10 @@ impl Application for GraphicsApplication {
 		// the first frame has reached the screen.
 		let gamepad_system = None;
 
-		let mut renderer = rendering::renderer::Renderer::new(&application);
+		let configuration = Configuration::new();
+		let mut renderer = rendering::renderer::Renderer::new(&application, &configuration);
 		renderer.set_resource_manager(&resource_manager);
+		queue_render_pass_startup_parameters(application.parameters(), &configuration);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
@@ -122,7 +126,7 @@ impl Application for GraphicsApplication {
 		})
 		.unwrap();
 
-		let inspector = EntityHandle::from(Inspector::new(tx.clone()));
+		let inspector = EntityHandle::from(Inspector::new(tx.clone(), configuration.clone()));
 		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let rx = tx.spawn_rx();
@@ -140,6 +144,7 @@ impl Application for GraphicsApplication {
 
 			application_events,
 			http_inspector,
+			configuration,
 
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
@@ -190,6 +195,11 @@ impl GraphicsApplication {
 	/// Returns frame-local storage for temporary allocations during the current tick.
 	pub fn frame_allocator(&self) -> &bumpalo::Bump {
 		&self.application.frame_allocator
+	}
+
+	/// Returns the configuration exchange used to inspect startup update results.
+	pub fn configuration(&self) -> &Configuration {
+		&self.configuration
 	}
 
 	/// Runs one graphics tick and lets application code update state before rendering.
@@ -489,6 +499,17 @@ impl Parameters for GraphicsApplication {
 		self.application.get_parameter(name)
 	}
 }
+
+/// Converts resolved render-pass startup parameters into asynchronous configuration events.
+fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration: &Configuration) {
+	for parameter in parameters {
+		if parameter.name().starts_with(RENDER_PASS_PARAMETER_PREFIX) {
+			configuration.update(parameter.name(), parameter.value());
+		}
+	}
+}
+
+const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
 /// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
@@ -860,6 +881,24 @@ mod tests {
 	}
 
 	#[test]
+	fn startup_parameters_queue_only_render_pass_configuration() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let parameters = [
+			Parameter::new("render.pass.bloom", "bypassed"),
+			Parameter::new("audio.master.gain", "0.5"),
+		];
+
+		queue_render_pass_startup_parameters(&parameters, &configuration);
+
+		let update = port.read().expect("render-pass startup configuration");
+		assert_eq!(update.parameter(), "render.pass.bloom");
+		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::from("bypassed"));
+		assert!(port.read().is_none());
+		assert_eq!(configuration.events().len(), 1);
+	}
+
+	#[test]
 	#[ignore] // Renderer broken.
 	fn create_graphics_application() {
 		let mut app = GraphicsApplication::new("Test", &[]);
@@ -897,6 +936,7 @@ use super::{
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
+	configuration::Configuration,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Factory},

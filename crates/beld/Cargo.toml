@@ -1,6 +1,6 @@
 [package]
 name = "beld"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Command-line asset baking and resource inspection for Byte-Engine."
@@ -12,11 +12,15 @@ keywords = ["byte-engine", "assets", "resources", "baking", "cli"]
 categories = ["command-line-utilities", "game-development"]
 rust-version.workspace = true
 
+[package.metadata.docs.rs]
+rustc-args = ["-C", "target-feature=+aes,+sse2"]
+rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
+
 [dependencies]
-byte-engine = { path = "../byte-engine", version = "0.1.0" }
+byte-engine = { path = "../byte-engine", version = "0.1.1" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
-utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
-resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.0" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1" }
 
 bumpalo = { version = "3.20.0", features = ["allocator_api"] }
 clap = { version = "4.5.32", features = ["derive"] }

@@ -157,7 +157,7 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "beld"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bumpalo",
  "byte-engine",
@@ -214,7 +214,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "artnet_protocol",
  "bitflags 2.13.0",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-betp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "byte-engine-utils",
  "tinyvec",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-ghi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ash",
  "bitflags 2.13.0",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-resource-management"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "byte-engine-besl",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-utils"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "gxhash",

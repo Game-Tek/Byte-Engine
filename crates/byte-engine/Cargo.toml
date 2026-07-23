@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "A composable Rust game engine focused on graphics, input, audio, physics, and retained UI."
@@ -14,6 +14,11 @@ categories = ["game-engines", "graphics", "rendering"]
 
 rust-version.workspace = true
 build = "build.rs"
+
+[package.metadata.docs.rs]
+rustc-args = ["-C", "target-feature=+aes,+sse2"]
+rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
+
 [features]
 default = ["headed", "network"]
 headed = ["dep:ahi", "dep:ghi", "dep:besl"]
@@ -24,13 +29,13 @@ tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
 serde_json = "1.0.140"
-utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
-ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.0", optional = true }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
+ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.1", optional = true }
 ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.1.0", optional = true }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0", optional = true }
-resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.0" }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1" }
 math = { package = "byte-engine-math", path = "../math", version = "0.1.0" }
-betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.0", optional = true }
+betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.1", optional = true }
 
 dual_quaternion = "0.3.0"
 serde = "1.0.219"

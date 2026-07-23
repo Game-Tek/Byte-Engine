@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-07-23
+
+- Configured docs.rs builds to enable the AES and SSE2 target features required by `gxhash`.
+
 ## 0.1.0 - 2026-07-23
 
 - Published `byte-engine`, `beld`, and the engine's internal support crates.

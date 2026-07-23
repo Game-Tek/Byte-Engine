@@ -131,7 +131,7 @@ byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
 | `crates/betp` | Byte Engine transport protocol primitives for local and remote sessions. |
 | `crates/math` | Shared math aliases and helpers. |
 | `crates/utils` | Shared allocation, async, sync, collection, and geometry utilities. |
-| `crates/beld` | Workspace asset/resource CLI. It is intentionally `publish = false`. |
+| `crates/beld` | Installable asset baking and resource inspection CLI. |
 | `docs` | Documentation source for setup, usage, reference, and engine design notes. |
 | `docs-site` | Documentation site project. |
 
@@ -171,13 +171,19 @@ Byte-Engine separates the files you author from runtime-ready resources:
 - When debug or development loading is enabled, the resource manager can read an
   existing resource or ask an asset handler to bake it.
 
-Use `beld` from the workspace to inspect and manage resources:
+Install `beld` to inspect and manage resources:
 
 ```sh
-cargo run -p beld -- --source assets --destination resources bake texture.png scene.glb character.fbx
-cargo run -p beld -- --destination resources list
-cargo run -p beld -- --destination resources inspect texture.png
-cargo run -p beld -- --destination resources query Material group=opaque --format json
+cargo install beld
+```
+
+Then run its resource commands:
+
+```sh
+beld --source assets --destination resources bake texture.png scene.glb character.fbx
+beld --destination resources list
+beld --destination resources inspect texture.png
+beld --destination resources query Material group=opaque --format json
 ```
 
 For design information, see

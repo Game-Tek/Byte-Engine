@@ -2,11 +2,18 @@
 name = "beld"
 version = "0.1.0"
 edition = "2021"
-publish = false
-
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Command-line asset baking and resource inspection for Byte-Engine."
+license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+readme = "../../README.md"
+keywords = ["byte-engine", "assets", "resources", "baking", "cli"]
+categories = ["command-line-utilities", "game-development"]
 rust-version.workspace = true
+
 [dependencies]
-byte-engine = { path = "../byte-engine" }
+byte-engine = { path = "../byte-engine", version = "0.1.0" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.0" }

@@ -26,21 +26,6 @@ const ACTIVE_TRANSFER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 type CompletionList = SmallVec<[VisibilityResourceCompletion; 16]>;
 
-/// Yields once so ready resource commands remain inside the application runtime's per-tick budget.
-async fn yield_to_runtime() {
-	let mut yielded = false;
-	std::future::poll_fn(move |context| {
-		if yielded {
-			std::task::Poll::Ready(())
-		} else {
-			yielded = true;
-			context.waker().wake_by_ref();
-			std::task::Poll::Pending
-		}
-	})
-	.await;
-}
-
 impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
 		context: &mut ghi::implementation::Context,
@@ -822,7 +807,7 @@ impl VisibilityPipelineResourceManagerWorker {
 
 			// Kanal can complete buffered receives synchronously. Yield after one
 			// command so a backlog cannot monopolize an application tick.
-			yield_to_runtime().await;
+			crate::core::async_runtime::yield_now().await;
 		}
 	}
 

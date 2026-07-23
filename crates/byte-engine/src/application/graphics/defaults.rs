@@ -23,7 +23,10 @@ use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
 use crate::{
 	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
-	audio::audio_system::{AudioSystem, DefaultAudioSystem},
+	audio::{
+		audio_system::{AudioSystem, DefaultAudioSystem},
+		sample_loader::AudioSampleLoader,
+	},
 	core::listener::Listener as _,
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
@@ -123,13 +126,28 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	input_system.create_device(&gamepad);
 }
 
-/// Starts the audio worker and connects generators created through the
-/// application's generator factory.
+/// Starts the audio worker, its async resource loader, and the standard audio
+/// entity listeners.
 ///
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
-/// worker.
+/// worker, or create an [`crate::audio::AudioSamplePlayer`] through
+/// [`crate::gameplay::world::DefaultWorld::audio_sample_player_factory_mut`].
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
+	let players_created_before_setup = application
+		.world
+		.audio_sample_player_factory_mut()
+		.drain_created_before_listener();
+	if !players_created_before_setup.is_empty() {
+		log::warn!(
+			"Audio sample players created before audio setup were ignored. The audio worker must be installed before players are created."
+		);
+	}
+	let mut sample_players_listener = application.world.audio_sample_player_factory().listener();
+	let mut deletions_listener = application.world.delete_channel().listener();
+	let (mut sample_loader_client, sample_loader) = AudioSampleLoader::new(application.resource_manager.clone());
+	application.tasks.push(application.runtime.spawn(sample_loader.run()));
+
 	application
 		.threads
 		.push(Thread::new(application.application_events.0.spawn_rx(), {
@@ -147,13 +165,34 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 				let _entered = span.enter();
 
 				loop {
-					if let Ok(Events::Close) = receiver.try_recv() {
+					if receiver.closed() || matches!(receiver.try_recv(), Ok(Events::Close)) {
 						break;
 					}
 
 					while let Some(message) = generators_listener.read() {
 						audio_system.create_generator(message.into_data());
 					}
+
+					while let Some(message) = sample_players_listener.read() {
+						let handle = *message.handle();
+						// A derived creation replaces the old generation before
+						// any completion can be adopted for the same handle.
+						audio_system.remove_sample_player(handle);
+						sample_loader_client.queue(handle, message.into_data(), audio_system.sample_player_count());
+					}
+
+					while let Some(message) = deletions_listener.read() {
+						let handle = message.into_handle();
+						sample_loader_client.remove(handle);
+						audio_system.remove_sample_player(handle);
+					}
+
+					if audio_system.take_sample_cache_prune_request() {
+						sample_loader_client.request_cache_prune();
+					}
+					sample_loader_client.update(|handle, sample, gain, playback_mode| {
+						audio_system.create_sample_player(handle, sample, gain, playback_mode);
+					});
 
 					if !audio_system.render_available() {
 						break;

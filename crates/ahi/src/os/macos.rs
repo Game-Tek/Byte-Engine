@@ -22,6 +22,8 @@ use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Stream
 const DEFAULT_PERIOD_SIZE: usize = 1024;
 const RING_PERIOD_COUNT: usize = 4;
 const AUDIO_UNIT_SUBTYPE_REMOTE_IO: u32 = u32::from_be_bytes(*b"rioc");
+const IO_ENABLED: u32 = 1;
+const IO_DISABLED: u32 = 0;
 
 pub struct Device {
 	audio_unit: AudioUnit,
@@ -78,24 +80,22 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 		let configuration_result = (|| -> Result<(), String> {
 			if subtype != kAudioUnitSubType_DefaultOutput {
-				let output_enabled: u32 = 1;
 				set_audio_unit_property(
 					audio_unit,
 					kAudioOutputUnitProperty_EnableIO,
 					kAudioUnitScope_Output,
 					0,
-					&output_enabled,
+					&IO_ENABLED,
 					"Failed to enable output IO on audio unit",
 					"The most likely cause is that the selected output unit rejected the requested IO bus configuration.",
 				)?;
 
-				let input_disabled: u32 = 1;
 				set_audio_unit_property(
 					audio_unit,
 					kAudioOutputUnitProperty_EnableIO,
 					kAudioUnitScope_Input,
 					1,
-					&input_disabled,
+					&IO_DISABLED,
 					"Failed to disable input IO on audio unit",
 					"The most likely cause is that the selected output unit rejected the requested input bus configuration.",
 				)?;
@@ -244,7 +244,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			let start_status = unsafe { AudioOutputUnitStart(self.audio_unit) };
 			if start_status != 0 {
 				self.started.store(false, Ordering::Release);
-				return Err(AudioPlayError::StartFailed);
+				return Err(AudioPlayError::StartFailed {
+					platform_status: start_status,
+				});
 			}
 		}
 
@@ -429,11 +431,7 @@ fn validate_stream_format(requested: &AudioStreamBasicDescription, actual: &Audi
 }
 
 fn find_output_component() -> Result<(AudioComponent, u32), String> {
-	for subtype in [
-		AUDIO_UNIT_SUBTYPE_REMOTE_IO,
-		kAudioUnitSubType_HALOutput,
-		kAudioUnitSubType_DefaultOutput,
-	] {
+	for subtype in output_component_subtypes() {
 		let mut description = AudioComponentDescription {
 			componentType: kAudioUnitType_Output,
 			componentSubType: subtype,
@@ -449,7 +447,15 @@ fn find_output_component() -> Result<(AudioComponent, u32), String> {
 		}
 	}
 
-	Err("Failed to find a Core Audio output unit. The most likely cause is that neither RemoteIO nor HAL/default output units are available.".into())
+	Err("Failed to find a Core Audio output unit. The most likely cause is that the default, HAL, and RemoteIO components are unavailable.".into())
+}
+
+fn output_component_subtypes() -> [u32; 3] {
+	[
+		kAudioUnitSubType_DefaultOutput,
+		kAudioUnitSubType_HALOutput,
+		AUDIO_UNIT_SUBTYPE_REMOTE_IO,
+	]
 }
 
 struct SpscByteRing {
@@ -568,7 +574,17 @@ mod tests {
 	use std::sync::mpsc;
 	use std::time::Duration;
 
-	use super::SpscByteRing;
+	use super::{kAudioUnitSubType_DefaultOutput, output_component_subtypes, SpscByteRing, IO_DISABLED};
+
+	#[test]
+	fn default_output_is_the_first_macos_component_candidate() {
+		assert_eq!(output_component_subtypes()[0], kAudioUnitSubType_DefaultOutput);
+	}
+
+	#[test]
+	fn input_io_is_disabled_for_non_default_output_units() {
+		assert_eq!(IO_DISABLED, 0);
+	}
 
 	#[test]
 	fn ring_rejects_zero_capacity() {

@@ -5,6 +5,28 @@ use super::{
 };
 use crate::{processors::audio_processor::process_audio_in, resources::audio::Audio, types::BitDepths};
 
+/// Appends a planar decoder block in the interleaved frame order expected by
+/// the runtime audio resource contract.
+fn append_interleaved_pcm<A: std::alloc::Allocator>(
+	data: &mut Vec<u8, A>,
+	channels: &[&[f32]],
+	bit_depth: BitDepths,
+) -> Result<(), String> {
+	let Some(frame_count) = channels.first().map(|channel| channel.len()) else {
+		return Ok(());
+	};
+	if channels.iter().any(|channel| channel.len() != frame_count) {
+		return Err("Invalid OGG channel block. The decoder returned channels with different frame counts.".to_string());
+	}
+
+	for frame in 0..frame_count {
+		for channel in channels {
+			push_pcm_sample(data, channel[frame], bit_depth);
+		}
+	}
+	Ok(())
+}
+
 impl Default for OGGAssetHandler {
 	fn default() -> Self {
 		Self::new()
@@ -34,11 +56,7 @@ impl OGGAssetHandler {
 			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
 		{
 			let samples = block.samples();
-			for &channel in samples {
-				for sample in channel {
-					push_pcm_sample(&mut data, *sample, bit_depth);
-				}
-			}
+			append_interleaved_pcm(&mut data, samples, bit_depth)?;
 		}
 
 		let sample_count = sample_count_from_pcm_len(data.len(), channel_count as u16, bit_depth);
@@ -101,6 +119,9 @@ impl AssetHandler for OGGAssetHandler {
 
 #[cfg(test)]
 mod tests {
+	use std::alloc::Global;
+
+	use super::append_interleaved_pcm;
 	use crate::{
 		asset::{self, asset_manager::AssetManager, ogg_asset_handler::OGGAssetHandler, ResourceId},
 		r#async, resource,
@@ -160,6 +181,21 @@ mod tests {
 			assert_eq!(audio.sample_count, 1024);
 			assert_eq!(data.len(), 1024 * bytes_per_sample);
 		}
+	}
+
+	#[test]
+	fn planar_decoder_channels_are_written_as_interleaved_pcm_frames() {
+		let left = [-1.0, 0.0, 1.0];
+		let right = [0.5, 0.0, -0.5];
+		let mut bytes = Vec::new_in(Global);
+
+		append_interleaved_pcm(&mut bytes, &[&left, &right], BitDepths::Sixteen).unwrap();
+
+		let samples: Vec<i16> = bytes
+			.chunks_exact(2)
+			.map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+			.collect();
+		assert_eq!(samples, [-32_767, 16_384, 0, 0, 32_767, -16_384]);
 	}
 
 	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.

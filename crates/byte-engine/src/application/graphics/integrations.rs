@@ -42,7 +42,7 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: De
 			socket.set_broadcast(true).unwrap();
 
 			loop {
-				if let Ok(Events::Close) = events.try_recv() {
+				if events.closed() || matches!(events.try_recv(), Ok(Events::Close)) {
 					return;
 				}
 

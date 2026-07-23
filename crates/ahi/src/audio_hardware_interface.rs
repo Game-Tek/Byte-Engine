@@ -55,7 +55,10 @@ pub enum AudioPlayError {
 	/// The backend could not recover the hardware stream after an audio device error.
 	RecoveryFailed,
 	/// The backend could not start the hardware stream after audio data was queued.
-	StartFailed,
+	StartFailed {
+		/// The status returned by the platform audio API.
+		platform_status: i32,
+	},
 	/// The requested audio format is not supported by the active backend.
 	UnsupportedFormat,
 }
@@ -67,9 +70,9 @@ impl std::fmt::Display for AudioPlayError {
 				formatter,
 				"Audio stream recovery failed. The most likely cause is that the audio device entered an unrecoverable error state."
 			),
-			Self::StartFailed => write!(
+			Self::StartFailed { platform_status } => write!(
 				formatter,
-				"Audio stream start failed. The most likely cause is that the audio device rejected the configured playback stream."
+				"Audio stream start failed with platform status {platform_status}. The most likely cause is that the audio device rejected the configured playback stream."
 			),
 			Self::UnsupportedFormat => write!(
 				formatter,
@@ -242,12 +245,19 @@ mod tests {
 	fn playback_errors_include_failure_and_likely_cause() {
 		for error in [
 			AudioPlayError::RecoveryFailed,
-			AudioPlayError::StartFailed,
+			AudioPlayError::StartFailed { platform_status: -10867 },
 			AudioPlayError::UnsupportedFormat,
 		] {
 			let message = error.to_string();
 			assert!(message.contains("failed") || message.contains("unsupported"));
 			assert!(message.contains("most likely cause"));
 		}
+	}
+
+	#[test]
+	fn start_failure_reports_the_platform_status() {
+		let message = AudioPlayError::StartFailed { platform_status: -10867 }.to_string();
+
+		assert!(message.contains("-10867"));
 	}
 }

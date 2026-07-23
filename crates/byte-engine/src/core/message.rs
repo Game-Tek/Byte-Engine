@@ -3,7 +3,11 @@ use crate::core::{channel::DefaultChannel, factory::Handle, listener::FilteredLi
 pub trait Message {}
 
 #[derive(Debug, Clone)]
-/// The `DeleteMessage` struct carries an entity removal request across world systems.
+/// The `DeleteMessage` struct carries a terminal entity removal request across
+/// world systems.
+///
+/// After sending this message, create a new factory value when you need another
+/// entity. Do not derive a new representation from the deleted handle.
 pub struct DeleteMessage {
 	handle: Handle,
 }

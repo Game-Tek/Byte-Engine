@@ -9,6 +9,7 @@ use std::alloc::Allocator;
 
 use crate::{
 	application::Time,
+	audio::AudioSamplePlayer,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::Factory,
@@ -32,6 +33,7 @@ pub struct DefaultWorld {
 	cameras: Factory<Camera>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 	light_factory: Factory<Lights>,
+	audio_sample_player_factory: Factory<AudioSamplePlayer>,
 
 	anchor_system: AnchorSystem,
 	physics_system: dynabit::World,
@@ -62,6 +64,7 @@ impl DefaultWorld {
 			cameras,
 			renderable_factory,
 			light_factory: Factory::new(),
+			audio_sample_player_factory: Factory::new(),
 
 			anchor_system,
 			physics_system,
@@ -129,6 +132,17 @@ impl DefaultWorld {
 
 	pub fn light_factory_mut(&mut self) -> &mut Factory<Lights> {
 		&mut self.light_factory
+	}
+
+	/// Returns the factory used to spawn resource-backed audio players.
+	pub fn audio_sample_player_factory(&self) -> &Factory<AudioSamplePlayer> {
+		&self.audio_sample_player_factory
+	}
+
+	/// Returns mutable access to the factory used to spawn resource-backed
+	/// audio players.
+	pub fn audio_sample_player_factory_mut(&mut self) -> &mut Factory<AudioSamplePlayer> {
+		&mut self.audio_sample_player_factory
 	}
 
 	pub fn camera_factory(&self) -> &Factory<Camera> {
@@ -223,5 +237,18 @@ mod tests {
 		assert!(matches!(light.data(), Lights::Point(point) if point.position == Vector3::new(3.0, 2.0, 1.0)));
 		assert_eq!(cone.handle(), &cone_handle);
 		assert!(matches!(cone.data(), Lights::Cone(light) if light.direction == Vector3::new(0.0, -1.0, 0.0)));
+	}
+
+	#[test]
+	fn audio_sample_player_factory_publishes_the_player_with_its_lifecycle_handle() {
+		let mut world = DefaultWorld::new();
+		let mut listener = world.audio_sample_player_factory().listener();
+		let player = crate::audio::AudioSamplePlayer::looping("audio/ambience.ogg").with_gain(0.5);
+
+		let handle = world.audio_sample_player_factory_mut().create(player.clone());
+		let created = listener.read().expect("audio sample player creation");
+
+		assert_eq!(created.handle(), &handle);
+		assert_eq!(created.data(), &player);
 	}
 }

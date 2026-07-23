@@ -128,7 +128,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				};
 
 				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
-					pcm.start().map_err(|_| AudioPlayError::StartFailed)?;
+					pcm.start().map_err(|error| AudioPlayError::StartFailed {
+						platform_status: error.errno(),
+					})?;
 				}
 
 				Ok(frames)
@@ -174,7 +176,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				};
 
 				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
-					pcm.start().map_err(|_| AudioPlayError::StartFailed)?;
+					pcm.start().map_err(|error| AudioPlayError::StartFailed {
+						platform_status: error.errno(),
+					})?;
 				}
 
 				Ok(frames)

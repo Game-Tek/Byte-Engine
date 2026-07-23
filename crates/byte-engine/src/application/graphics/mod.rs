@@ -434,11 +434,22 @@ impl GraphicsApplication {
 	/// Stops asynchronous tasks and worker threads before recording final debug run stats.
 	fn close_workers_and_record_stats(&mut self) {
 		self.stop_async_tasks();
-		let _ = self.application_events.0.send(Events::Close);
+		self.stop_worker_threads();
+		self.close();
+	}
+
+	/// Drains application-side lifecycle events, then signals and joins every
+	/// application worker.
+	fn stop_worker_threads(&mut self) {
+		if self.threads.is_empty() {
+			return;
+		}
+
+		while self.application_events.1.try_recv().is_ok() {}
+		let _ = self.application_events.0.blocking_send(Events::Close);
 		self.threads.drain(..).for_each(|thread| {
 			let _ = thread.join();
 		});
-		self.close();
 	}
 
 	/// Flags the application for closing.
@@ -541,6 +552,7 @@ impl Drop for GraphicsApplication {
 		// `tick_with` normally stops tasks explicitly. This fallback also covers
 		// setup errors and callers that drop the application without closing it.
 		self.stop_async_tasks();
+		self.stop_worker_threads();
 	}
 }
 

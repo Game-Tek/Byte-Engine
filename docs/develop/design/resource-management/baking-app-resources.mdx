@@ -30,7 +30,14 @@ cargo vendor --locked --versioned-dirs vendor
 ln -s ../vendor/byte-engine-0.1.0/assets assets/byte-engine
 ```
 
-Use the version Cargo actually placed in `vendor/`. Commit both the vendor directory and symlink, or recreate them in the same bootstrap step in every developer and CI checkout. BELD is not published as a separate crate, so install it from a matching Byte Engine tag, revision, or source checkout when the application consumes Byte Engine from a registry.
+Use the version Cargo actually placed in `vendor/`. Commit both the vendor
+directory and symlink, or recreate them in the same bootstrap step in every
+developer and CI checkout. Install the matching BELD release so its handlers
+and resource formats stay aligned with the engine:
+
+```bash
+cargo install beld --version 0.1.0 --locked
+```
 
 On Windows, the checkout must preserve directory symlinks. Enable Developer Mode or otherwise grant link creation permission and make sure Git does not materialize the link as a plain text file. The current automated symlink coverage runs on Unix hosts.
 

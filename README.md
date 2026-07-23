@@ -11,9 +11,8 @@ shader processing, transport, math, or utilities. Each crate provides a small,
 composable engine layer.
 
 > [!WARNING]
-> **Status:** Byte-Engine is early, so expect breaking API changes. The workspace
-> is preparing its first public package flow. For now, use a source checkout for
-> the most reliable setup.
+> **Status:** Byte-Engine is early, so expect breaking API changes. Pin the
+> package version and review the changelog before you update.
 
 ## ✨ What you can use
 
@@ -104,7 +103,13 @@ fn main() {
 }
 ```
 
-Until the package workflow is ready, add the engine from a checkout or Git dependency:
+Add the published engine to your application:
+
+```sh
+cargo add byte-engine@0.1.0
+```
+
+To follow an unreleased revision, use a Git dependency:
 
 ```toml
 [dependencies]

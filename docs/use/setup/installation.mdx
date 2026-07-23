@@ -4,16 +4,29 @@ description: How to install the Byte Engine on your system.
 icon: Package
 ---
 
-Use Byte Engine from a source checkout while the public package workflow is in
-development.
-
-Add the engine as a path or Git dependency from the checkout that you use for
-development.
-
-The future packaged installation command is:
+Add Byte Engine to your Rust application:
 
 ```bash
-cargo install byte-engine
+cargo add byte-engine@0.1.0
 ```
 
-If Cargo cannot find the package, continue to use the source checkout.
+Byte Engine uses unstable Rust features. Add a `rust-toolchain.toml` file that
+selects the engine's supported nightly toolchain:
+
+```toml
+[toolchain]
+channel = "nightly-2026-05-31"
+```
+
+Next, follow the [environment setup guide](/docs/use/setup/environment) for your
+platform's graphics, audio, and native build dependencies.
+
+## Use an unreleased revision
+
+To test work that has not reached crates.io, add the Git repository:
+
+```bash
+cargo add byte-engine --git https://github.com/Game-Tek/Byte-Engine
+```
+
+For engine development, clone the repository and use a path dependency instead.

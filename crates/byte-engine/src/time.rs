@@ -20,9 +20,13 @@ const NANOS_PER_SECOND: i128 = 1_000_000_000;
 pub struct MediaTime(i64);
 
 impl MediaTime {
+	/// A time value at the engine timeline origin.
 	pub const ZERO: Self = Self(0);
+	/// The earliest representable engine time.
 	pub const MIN: Self = Self(i64::MIN);
+	/// The latest representable engine time.
 	pub const MAX: Self = Self(i64::MAX);
+	/// The number of engine ticks in one second.
 	pub const TICKS_PER_SECOND: i64 = TICKS_PER_SECOND;
 
 	/// Creates a time value from raw engine ticks.

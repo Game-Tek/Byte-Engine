@@ -2285,7 +2285,7 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
+			&[PushConstantRange::new(0, 16 * 4)],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),

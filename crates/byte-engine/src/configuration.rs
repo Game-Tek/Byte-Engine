@@ -27,9 +27,13 @@ pub struct ConfigurationEventId(u64);
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ConfigurationValue {
+	/// A Boolean configuration value.
 	Bool(bool),
+	/// A signed integer configuration value.
 	Integer(i64),
+	/// A floating-point configuration value.
 	Float(f64),
+	/// An owned text configuration value.
 	Text(String),
 }
 
@@ -59,9 +63,18 @@ impl From<String> for ConfigurationValue {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ConfigurationUpdateState {
+	/// The owning system has not processed the update yet.
 	Pending,
-	Set { value: ConfigurationValue },
-	NotSet { reason: String },
+	/// The owning system applied the update.
+	Set {
+		/// The value stored by the owning system.
+		value: ConfigurationValue,
+	},
+	/// The owning system rejected or could not apply the update.
+	NotSet {
+		/// The cause reported by the owning system.
+		reason: String,
+	},
 }
 
 /// The `ConfigurationEvent` struct provides the requested value and latest application state for debugging tools.

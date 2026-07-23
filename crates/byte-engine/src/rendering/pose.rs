@@ -10,14 +10,17 @@ pub struct UpdatePose {
 }
 
 impl UpdatePose {
+	/// Creates a pose update for one renderable.
 	pub fn new(handle: Handle, global_matrices: Vec<Matrix4>) -> Self {
 		Self { handle, global_matrices }
 	}
 
+	/// Returns the renderable that owns the pose.
 	pub fn handle(&self) -> Handle {
 		self.handle
 	}
 
+	/// Returns the global matrix for each skeleton joint.
 	pub fn global_matrices(&self) -> &[Matrix4] {
 		&self.global_matrices
 	}

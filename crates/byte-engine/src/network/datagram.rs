@@ -37,14 +37,17 @@ impl EncodedDatagram {
 		Ok(Self { bytes, len })
 	}
 
+	/// Returns the encoded packet without unused capacity.
 	pub fn as_bytes(&self) -> &[u8] {
 		&self.bytes[..self.len]
 	}
 
+	/// Returns the encoded packet length.
 	pub fn len(&self) -> usize {
 		self.len
 	}
 
+	/// Returns whether the encoded packet contains no bytes.
 	pub fn is_empty(&self) -> bool {
 		self.len == 0
 	}
@@ -66,9 +69,15 @@ pub enum DatagramOutcome {
 	/// A payload passed framing, endpoint, session, and receive-window validation.
 	Accepted([u8; 1024]),
 	/// A handshake established a session with this connection identifier.
-	Connected { id: u64 },
+	Connected {
+		/// The established connection identifier.
+		id: u64,
+	},
 	/// A validated disconnect or timeout ended this session.
-	Disconnected { id: u64 },
+	Disconnected {
+		/// The ended connection identifier.
+		id: u64,
+	},
 	/// The packet was valid protocol traffic but produced no application event.
 	Handled,
 	/// The packet was rejected before it could become application-visible.
@@ -80,7 +89,10 @@ pub enum DatagramOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatagramDrop {
 	/// The datagram exceeds every canonical BETP packet size.
-	TooLarge { actual: usize },
+	TooLarge {
+		/// The received datagram length.
+		actual: usize,
+	},
 	/// The datagram is not a canonical BETP packet.
 	Decode(PacketReadError),
 	/// The packet is not valid for this endpoint or lifecycle state.
@@ -137,10 +149,12 @@ impl ClientDatagramPipeline {
 		}
 	}
 
+	/// Returns whether the client handshake has established a session.
 	pub fn is_connected(&self) -> bool {
 		self.session.is_connected()
 	}
 
+	/// Returns the active connection identifier after the handshake completes.
 	pub fn connection_id(&self) -> Option<u64> {
 		self.connection_id.filter(|_| self.session.is_connected())
 	}
@@ -221,6 +235,7 @@ impl ClientDatagramPipeline {
 		Ok(DatagramOutcome::Handled)
 	}
 
+	/// Queues one application payload for reliable or unreliable delivery.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		self.session.send(reliable, data);
 	}
@@ -262,6 +277,7 @@ pub struct ServerDatagramPipeline {
 }
 
 impl ServerDatagramPipeline {
+	/// Creates a server pipeline that challenges peers with the supplied salt.
 	pub fn new(server_salt: u64) -> Self {
 		Self {
 			session: ServerSession::new(),
@@ -271,10 +287,12 @@ impl ServerDatagramPipeline {
 		}
 	}
 
+	/// Returns whether this peer route has established a session.
 	pub fn is_connected(&self) -> bool {
 		self.session.is_connected()
 	}
 
+	/// Returns the active connection identifier after the handshake completes.
 	pub fn connection_id(&self) -> Option<u64> {
 		self.session.connection_id()
 	}
@@ -359,6 +377,7 @@ impl ServerDatagramPipeline {
 		Ok(DatagramOutcome::Handled)
 	}
 
+	/// Queues one application payload for reliable or unreliable delivery.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		self.session.send(reliable, data);
 	}

@@ -31,10 +31,10 @@ pub fn wipe(destination_path: String) -> Result<(), i32> {
 	Ok(())
 }
 
-pub fn list(destination_path: String) -> Result<(), i32> {
+pub async fn list(destination_path: String) -> Result<(), i32> {
 	let storage_backend = RedbStorageBackend::new(destination_path.into());
 
-	match storage_backend.list() {
+	match storage_backend.list().await {
 		Ok(resources) => {
 			if resources.is_empty() {
 				log::info!("No resources found.");
@@ -54,7 +54,7 @@ pub fn list(destination_path: String) -> Result<(), i32> {
 }
 
 /// Finds resources by class and indexed property values.
-pub fn query(
+pub async fn query(
 	destination_path: String,
 	class: String,
 	properties: Vec<String>,
@@ -78,14 +78,14 @@ pub fn query(
 		query = query.cursor(decode_query_cursor(&cursor)?);
 	}
 
-	let page = storage_backend.query(query).map_err(|error| {
+	let page = storage_backend.query(query).await.map_err(|error| {
 		log::error!("{}", query_error_message(error));
 		1
 	})?;
 
 	match format {
-		QueryFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref())?,
-		QueryFormat::Json => print_json_query_page(&storage_backend, &page.items, page.cursor.as_ref())?,
+		QueryFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
+		QueryFormat::Json => print_json_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
 	}
 
 	Ok(())
@@ -123,7 +123,7 @@ fn query_error_message(error: QueryError) -> &'static str {
 }
 
 /// Prints query results in a compact human-readable form.
-fn print_human_query_page(
+async fn print_human_query_page(
 	_storage_backend: &RedbStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
@@ -143,7 +143,7 @@ fn print_human_query_page(
 			println!();
 		}
 		#[cfg(debug_assertions)]
-		print_human_trace(&read_resource_trace(_storage_backend, resource.id())?, 2);
+		print_human_trace(&read_resource_trace(_storage_backend, resource.id()).await?, 2);
 	}
 
 	if let Some(cursor) = cursor {
@@ -154,7 +154,7 @@ fn print_human_query_page(
 }
 
 /// Prints query results as JSON for scripts and editor integrations.
-fn print_json_query_page(
+async fn print_json_query_page(
 	_storage_backend: &RedbStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
@@ -171,7 +171,7 @@ fn print_json_query_page(
 			"properties": queryable_properties_json(resource.queryable_properties()),
 		});
 		#[cfg(debug_assertions)]
-		insert_trace_json(&mut value, &read_resource_trace(_storage_backend, resource.id())?);
+		insert_trace_json(&mut value, &read_resource_trace(_storage_backend, resource.id()).await?);
 		resources.push(value);
 	}
 
@@ -196,8 +196,8 @@ fn print_json_query_page(
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
-fn read_resource_trace(storage_backend: &RedbStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
-	storage_backend.read_trace(ResourceId::new(id)).map_err(|error| {
+async fn read_resource_trace(storage_backend: &RedbStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
+	storage_backend.read_trace(ResourceId::new(id)).await.map_err(|error| {
 		log::error!(
 			"Failed to read the resource trace for '{}'. The most likely cause is an unreadable resources database. Error: {}",
 			id,
@@ -330,13 +330,13 @@ fn decode_hex_digit(value: u8) -> Option<u8> {
 	}
 }
 
-pub fn inspect(destination_path: String, id: String, format: InspectFormat) -> Result<(), i32> {
+pub async fn inspect(destination_path: String, id: String, format: InspectFormat) -> Result<(), i32> {
 	let storage_backend = RedbStorageBackend::new(destination_path.into());
-	let resource = read_resource(&storage_backend, &id);
+	let resource = read_resource(&storage_backend, &id).await;
 	let Some(resource) = resource else {
 		#[cfg(debug_assertions)]
 		{
-			let trace = read_resource_trace(&storage_backend, &id)?;
+			let trace = read_resource_trace(&storage_backend, &id).await?;
 			if !trace.is_empty() {
 				return print_trace_only_inspection(&id, &trace, format);
 			}
@@ -361,7 +361,7 @@ pub fn inspect(destination_path: String, id: String, format: InspectFormat) -> R
 	}
 	let mut output = inspection.json;
 	#[cfg(debug_assertions)]
-	let trace = read_resource_trace(&storage_backend, resource.id())?;
+	let trace = read_resource_trace(&storage_backend, resource.id()).await?;
 	#[cfg(debug_assertions)]
 	insert_trace_json(&mut output, &trace);
 
@@ -408,14 +408,14 @@ fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem], format: In
 	Ok(())
 }
 
-fn read_resource(storage_backend: &RedbStorageBackend, id: &str) -> Option<resource_management::SerializableResource> {
+async fn read_resource(storage_backend: &RedbStorageBackend, id: &str) -> Option<resource_management::SerializableResource> {
 	if let Some(uid) = ResourceUid::from_uid_hex(id) {
-		if let Some((resource, _)) = storage_backend.read_uid(uid) {
+		if let Some((resource, _)) = storage_backend.read_uid(uid).await {
 			return Some(resource);
 		}
 	}
 
-	storage_backend.read(ResourceId::new(id)).map(|(resource, _)| resource)
+	storage_backend.read(ResourceId::new(id)).await.map(|(resource, _)| resource)
 }
 
 fn print_human_value(value: &Value, indent: usize) {
@@ -925,11 +925,16 @@ mod tests {
 			Err(1)
 		);
 
+		let executor = resource_management::r#async::Executor::new().unwrap();
 		let resource_storage = RedbStorageBackend::new(resources_path.clone());
-		let failed_trace = resource_storage.read_trace(ResourceId::new("broken.png")).unwrap();
+		let failed_trace = executor
+			.block_on(resource_storage.read_trace(ResourceId::new("broken.png")))
+			.unwrap();
 		assert_eq!(failed_trace.len(), 1);
 		assert_eq!(failed_trace[0].level(), ResourceTraceLevel::Error);
-		assert!(resource_storage.read(ResourceId::new("broken.png")).is_none());
+		assert!(executor
+			.block_on(resource_storage.read(ResourceId::new("broken.png")))
+			.is_none());
 
 		let successful_id = ResourceId::new("successful.audio");
 		resource_storage
@@ -958,30 +963,30 @@ mod tests {
 		drop(resource_storage);
 
 		assert_eq!(
-			inspect(
+			executor.block_on(inspect(
 				resources_path.to_string_lossy().into_owned(),
 				"broken.png".to_string(),
 				InspectFormat::Json,
-			),
+			)),
 			Ok(())
 		);
 		assert_eq!(
-			inspect(
+			executor.block_on(inspect(
 				resources_path.to_string_lossy().into_owned(),
 				"successful.audio".to_string(),
 				InspectFormat::Json,
-			),
+			)),
 			Ok(())
 		);
 		assert_eq!(
-			query(
+			executor.block_on(query(
 				resources_path.to_string_lossy().into_owned(),
 				"Audio".to_string(),
 				Vec::new(),
 				None,
 				None,
 				QueryFormat::Json,
-			),
+			)),
 			Ok(())
 		);
 		std::fs::remove_dir_all(root).unwrap();

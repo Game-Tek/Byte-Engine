@@ -7,13 +7,14 @@
 use std::{hash::Hasher, path::Path};
 
 use redb::{ReadableDatabase as _, ReadableTable};
-use utils::sync::{remove_file, File, Write};
+use utils::sync::{remove_file, File as SyncFile, Write};
 
 use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 #[cfg(debug_assertions)]
 use crate::ResourceTraceItem;
 use crate::{
 	asset,
+	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId},
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource,
 };
@@ -297,32 +298,31 @@ impl RedbStorageBackend {
 		}
 	}
 
-	fn open_reader(&self, id: [u8; 16]) -> Option<MultiResourceReader> {
+	async fn open_reader(&self, id: [u8; 16]) -> Option<MultiResourceReader> {
 		let file_id = resource_key_hex(id);
-		Some(Box::new(FileResourceReader::new(
-			File::open(self.base_path.join(file_id)).ok()?,
-		)))
+		let file = AsyncFile::open(self.base_path.join(file_id)).await.ok()?;
+		let size = file.metadata().await.ok()?.len();
+		Some(Box::new(FileResourceReader::new(&file, size).ok()?))
 	}
 
-	pub fn read_uid(&self, id: ResourceId) -> Option<(SerializableResource, MultiResourceReader)> {
-		let read = self.begin_read().unwrap();
-		let table = read.open_table(RESOURCES_TABLE).unwrap();
-
-		if let Some(d) = table.get(&id).unwrap() {
-			let resource: SerializableResource = crate::from_slice(d.value()).unwrap();
-			let resource_reader = self.open_reader(id.0)?;
+	pub fn read_uid(&self, id: ResourceId) -> BoxedFuture<'_, Option<(SerializableResource, MultiResourceReader)>> {
+		r#async::future(async move {
+			let resource = {
+				let read = self.begin_read().unwrap();
+				let table = read.open_table(RESOURCES_TABLE).unwrap();
+				table.get(&id).unwrap().map(|data| crate::from_slice(data.value()).unwrap())
+			}?;
+			let resource_reader = self.open_reader(id.0).await?;
 
 			Some((resource, resource_reader))
-		} else {
-			None
-		}
+		})
 	}
 
 	fn query_index(
 		&self,
 		query: &Query,
 		use_property_index: bool,
-	) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
+	) -> Result<QueryPage<(SerializableResource, [u8; 16])>, QueryError> {
 		let cursor = query.cursor.as_ref().map(|cursor| cursor.token.as_slice());
 		let read = self.begin_read().map_err(|_| QueryError::StorageFailure)?;
 		let resources_table = read.open_table(RESOURCES_TABLE).map_err(|_| QueryError::StorageFailure)?;
@@ -373,8 +373,7 @@ impl RedbStorageBackend {
 
 				let resource: SerializableResource =
 					crate::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
-				let reader = self.open_reader(resource_key).ok_or(QueryError::StorageFailure)?;
-				items.push((resource, reader));
+				items.push((resource, resource_key));
 				last_key = Some(key.to_vec());
 			}
 		} else {
@@ -417,8 +416,7 @@ impl RedbStorageBackend {
 
 				let resource: SerializableResource =
 					crate::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
-				let reader = self.open_reader(resource_key).ok_or(QueryError::StorageFailure)?;
-				items.push((resource, reader));
+				items.push((resource, resource_key));
 				last_key = Some(key.to_vec());
 			}
 		}
@@ -431,68 +429,85 @@ impl RedbStorageBackend {
 }
 
 impl ReadStorageBackend for RedbStorageBackend {
-	fn list(&self) -> Result<Vec<String>, String> {
-		let mut resources = Vec::new();
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+		r#async::future(async {
+			let mut resources = Vec::new();
 
-		let read = self.begin_read().unwrap();
-		let table = read.open_table(RESOURCES_TABLE).unwrap();
+			let read = self.begin_read().unwrap();
+			let table = read.open_table(RESOURCES_TABLE).unwrap();
 
-		for doc in table.iter().unwrap() {
-			let doc = doc.unwrap();
-			let resource: SerializableResource = crate::from_slice(doc.1.value()).unwrap();
-			resources.push(resource.id);
-		}
+			for doc in table.iter().unwrap() {
+				let doc = doc.unwrap();
+				let resource: SerializableResource = crate::from_slice(doc.1.value()).unwrap();
+				resources.push(resource.id);
+			}
 
-		Ok(resources)
+			Ok(resources)
+		})
 	}
 
-	fn read<'s, 'a, 'b>(&'s self, id: asset::ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)> {
-		let read = self.begin_read().unwrap();
-		let table = read.open_table(RESOURCES_TABLE).unwrap();
-
-		let id = ResourceId::from(id.as_ref());
-
-		if let Some(d) = table.get(&id).unwrap() {
-			let resource: SerializableResource = crate::from_slice(d.value()).unwrap();
-			let resource_reader = self.open_reader(id.0)?;
+	fn read<'a>(&'a self, id: asset::ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+		r#async::future(async move {
+			let id = ResourceId::from(id.as_ref());
+			let resource = {
+				let read = self.begin_read().unwrap();
+				let table = read.open_table(RESOURCES_TABLE).unwrap();
+				table.get(&id).unwrap().map(|data| crate::from_slice(data.value()).unwrap())
+			}?;
+			let resource_reader = self.open_reader(id.0).await?;
 
 			Some((resource, resource_reader))
-		} else {
-			None
-		}
+		})
 	}
 
-	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
-		if query.limit == 0 {
-			return Ok(QueryPage {
-				items: Vec::new(),
-				cursor: None,
-			});
-		}
-
-		if let Some(cursor) = &query.cursor {
-			if cursor.token.is_empty() {
-				return Err(QueryError::InvalidCursor);
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+		r#async::future(async move {
+			if query.limit == 0 {
+				return Ok(QueryPage {
+					items: Vec::new(),
+					cursor: None,
+				});
 			}
-		}
 
-		self.query_index(&query, query.first_indexed_predicate().is_some())
+			if let Some(cursor) = &query.cursor {
+				if cursor.token.is_empty() {
+					return Err(QueryError::InvalidCursor);
+				}
+			}
+
+			let page = self.query_index(&query, query.first_indexed_predicate().is_some())?;
+			let mut items = Vec::with_capacity(page.items.len());
+			for (resource, resource_key) in page.items {
+				let reader = self.open_reader(resource_key).await.ok_or(QueryError::StorageFailure)?;
+				items.push((resource, reader));
+			}
+
+			Ok(QueryPage {
+				items,
+				cursor: page.cursor,
+			})
+		})
 	}
 
 	#[cfg(debug_assertions)]
-	fn read_trace(&self, id: asset::ResourceId<'_>) -> Result<Vec<ResourceTraceItem>, String> {
-		let read = self
-			.begin_read()
-			.map_err(|_| "Failed to begin resource trace read".to_string())?;
-		let table = read
-			.open_table(RESOURCE_TRACES_TABLE)
-			.map_err(|_| "Failed to open resource traces table".to_string())?;
-		let id = ResourceId::from(id.as_ref());
-		let Some(items) = table.get(&id).map_err(|_| "Failed to read resource trace".to_string())? else {
-			return Ok(Vec::new());
-		};
+	fn read_trace<'a>(&'a self, id: asset::ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<ResourceTraceItem>, String>> {
+		r#async::future(async move {
+			let read = self
+				.begin_read()
+				.map_err(|_| "Failed to begin resource trace read".to_string())?;
+			let table = read
+				.open_table(RESOURCE_TRACES_TABLE)
+				.map_err(|_| "Failed to open resource traces table".to_string())?;
+			let id = ResourceId::from(id.as_ref());
+			let Some(items) = table.get(&id).map_err(|_| "Failed to read resource trace".to_string())? else {
+				return Ok(Vec::new());
+			};
 
-		crate::from_slice(items.value()).map_err(|_| "Failed to deserialize resource trace".to_string())
+			crate::from_slice(items.value()).map_err(|_| "Failed to deserialize resource trace".to_string())
+		})
 	}
 }
 
@@ -579,7 +594,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 
 		let id: String = rid.into();
 		let resource_path = self.base_path.join(id);
-		let mut file = File::create(resource_path).unwrap();
+		let mut file = SyncFile::create(resource_path).unwrap();
 
 		file.write_all(data).or(Err(()))?;
 		file.flush().or(Err(()))?;
@@ -827,13 +842,13 @@ mod tests {
 		backend.store(asset, id.as_bytes()).unwrap();
 	}
 
-	fn query_ids(backend: &RedbStorageBackend, query: Query) -> (Vec<String>, Option<super::QueryCursor>) {
-		let page = backend.query(query).unwrap();
+	async fn query_ids(backend: &RedbStorageBackend, query: Query) -> (Vec<String>, Option<super::QueryCursor>) {
+		let page = backend.query(query).await.unwrap();
 		(page.items.into_iter().map(|(resource, _)| resource.id).collect(), page.cursor)
 	}
 
-	#[test]
-	fn query_by_class_pages_results() {
+	#[crate::r#async::test]
+	async fn query_by_class_pages_results() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -860,11 +875,11 @@ mod tests {
 			},
 		);
 
-		let (first_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2));
+		let (first_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
 		assert_eq!(first_ids.len(), 2);
 		assert!(cursor.is_some());
 
-		let (second_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2).cursor(cursor.unwrap()));
+		let (second_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2).cursor(cursor.unwrap())).await;
 		assert_eq!(second_ids.len(), 1);
 		assert!(cursor.is_none());
 
@@ -874,8 +889,8 @@ mod tests {
 		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
 	}
 
-	#[test]
-	fn query_by_name_uses_property_index() {
+	#[crate::r#async::test]
+	async fn query_by_name_uses_property_index() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -894,13 +909,13 @@ mod tests {
 			},
 		);
 
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/b").limit(10));
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/b").limit(10)).await;
 		assert_eq!(ids, vec!["materials/b"]);
 		assert!(cursor.is_none());
 	}
 
-	#[test]
-	fn query_filters_multiple_predicates() {
+	#[crate::r#async::test]
+	async fn query_filters_multiple_predicates() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -930,12 +945,13 @@ mod tests {
 		let (ids, _) = query_ids(
 			&backend,
 			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero").limit(10),
-		);
+		)
+		.await;
 		assert_eq!(ids, vec!["materials/a"]);
 	}
 
-	#[test]
-	fn query_isolates_types() {
+	#[crate::r#async::test]
+	async fn query_isolates_types() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -953,15 +969,15 @@ mod tests {
 			},
 		);
 
-		let (material_ids, _) = query_ids(&backend, Query::new("MockMaterial").limit(10));
-		let (shader_ids, _) = query_ids(&backend, Query::new("MockShader").limit(10));
+		let (material_ids, _) = query_ids(&backend, Query::new("MockMaterial").limit(10)).await;
+		let (shader_ids, _) = query_ids(&backend, Query::new("MockShader").limit(10)).await;
 
 		assert_eq!(material_ids, vec!["materials/shared"]);
 		assert_eq!(shader_ids, vec!["shaders/shared"]);
 	}
 
-	#[test]
-	fn query_returns_empty_for_unknown_name() {
+	#[crate::r#async::test]
+	async fn query_returns_empty_for_unknown_name() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -972,14 +988,14 @@ mod tests {
 			},
 		);
 
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/missing").limit(10));
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/missing").limit(10)).await;
 		assert!(ids.is_empty());
 		assert!(cursor.is_none());
 	}
 
 	#[cfg(debug_assertions)]
-	#[test]
-	fn trace_round_trips_without_creating_a_resource_and_delete_clears_it() {
+	#[crate::r#async::test]
+	async fn trace_round_trips_without_creating_a_resource_and_delete_clears_it() {
 		let backend = backend();
 		let id = crate::asset::ResourceId::new("broken.asset");
 		let items = vec![ResourceTraceItem::new(
@@ -989,16 +1005,16 @@ mod tests {
 
 		backend.replace_trace(id, &items).unwrap();
 
-		assert_eq!(backend.read_trace(id).unwrap(), items);
-		assert!(backend.read(id).is_none());
-		assert!(backend.list().unwrap().is_empty());
+		assert_eq!(backend.read_trace(id).await.unwrap(), items);
+		assert!(backend.read(id).await.is_none());
+		assert!(backend.list().await.unwrap().is_empty());
 
 		backend.delete(id).unwrap();
-		assert!(backend.read_trace(id).unwrap().is_empty());
+		assert!(backend.read_trace(id).await.unwrap().is_empty());
 	}
 
-	#[test]
-	fn delete_updates_indexes() {
+	#[crate::r#async::test]
+	async fn delete_updates_indexes() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -1010,12 +1026,12 @@ mod tests {
 		);
 		backend.delete(crate::asset::ResourceId::new("materials/a")).unwrap();
 
-		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10));
+		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
 		assert!(ids.is_empty());
 	}
 
-	#[test]
-	fn malformed_cursor_returns_error() {
+	#[crate::r#async::test]
+	async fn malformed_cursor_returns_error() {
 		let backend = backend();
 		store_mock(
 			&backend,
@@ -1033,6 +1049,7 @@ mod tests {
 				limit: 2,
 				cursor: Some(QueryCursor::new(Vec::new())),
 			})
+			.await
 			.unwrap_err();
 
 		assert_eq!(error, QueryError::InvalidCursor);

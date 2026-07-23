@@ -12,10 +12,10 @@ use crate::{
 /// The `Reference` struct provides metadata, runtime state, and deferred binary data for a loaded resource.
 ///
 /// Use the size metadata to reserve destination memory before loading the binary
-/// data. A reader from [`ResourceManager::request`](crate::ResourceManager::request)
-/// supplies the resource data.
-/// Inspect typed metadata through [`Self::resource`], then call [`Self::load`] if
-/// the consuming system also needs the binary payload.
+/// data. Await [`ResourceManager::request`](crate::ResourceManager::request) to
+/// obtain a reader that supplies the resource data.
+/// Inspect typed metadata through [`Self::resource`], then await [`Self::load`]
+/// if the consuming system also needs the binary payload.
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,
@@ -94,18 +94,20 @@ impl<'a, T: Resource + 'a> Reference<T> {
 	/// backing storage is unavailable, the resource falls back to an owned buffer. Explicit buffer,
 	/// box, and stream targets are still filled by reading into the caller-selected target.
 	///
-	/// After loading, pass the returned [`ReadTargets`] to the renderer, audio
-	/// system, or other consumer together with the metadata from [`Self::resource`].
-	pub fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
+	/// Await this method, then pass the returned [`ReadTargets`] to the renderer,
+	/// audio system, or other consumer together with the metadata from
+	/// [`Self::resource`].
+	pub async fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
 		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 
 		if matches!(read_target, ReadTargetsMut::BackingStorage) {
-			return match reader.into_backing_storage() {
+			return match reader.into_backing_storage().await {
 				Ok(backing) => Ok(ReadTargets::Backing(backing)),
 				Err(mut reader) => {
 					let read_target = ReadTargetsMut::create_buffer(self);
 					reader
 						.read_into(self.streams.as_deref(), read_target)
+						.await
 						.map_err(|_| LoadResults::LoadFailed)
 				}
 			};
@@ -114,6 +116,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		let mut reader = reader;
 		reader
 			.read_into(self.streams.as_deref(), read_target)
+			.await
 			.map_err(|_| LoadResults::LoadFailed)
 	}
 }
@@ -130,8 +133,8 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 #[derive(Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 /// The `ReferenceModel` struct stores the serializable form of a [`Reference`].
 ///
-/// Resolve this model through [`Solver::solve`](crate::Solver::solve) before you
-/// load binary data or access dependent resources.
+/// Await [`Solver::solve`](crate::Solver::solve) before you load binary data or
+/// access dependent resources.
 pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,
@@ -258,8 +261,8 @@ mod tests {
 		assert!(original.streams.is_none());
 	}
 
-	#[test]
-	fn default_reference_load_uses_reader_backing_storage() {
+	#[crate::r#async::test]
+	async fn default_reference_load_uses_reader_backing_storage() {
 		let path = temporary_file_path();
 		let expected = b"default-load-bytes";
 
@@ -270,11 +273,11 @@ mod tests {
 		}
 
 		let model = ReferenceModel::<DefaultLoadModel>::new("default-load", 0, expected.len(), &DefaultLoadModel, None);
-		let reader = Box::new(FileResourceReader::new(fs::File::open(&path).unwrap()));
+		let reader = Box::new(FileResourceReader::new(&fs::File::open(&path).unwrap(), expected.len() as u64).unwrap());
 		let mut reference = Reference::from_model(model, DefaultLoadResource, reader);
 		assert_eq!(reference.resource.get_class(), DefaultLoadModel::get_class());
 		let target = ReadTargetsMut::from(&reference);
-		let result = reference.load(target).unwrap();
+		let result = reference.load(target).await.unwrap();
 
 		assert_eq!(result.buffer().unwrap(), expected);
 		assert!(matches!(result, ReadTargets::Backing(ResourceReaderBacking::MappedFile(_))));

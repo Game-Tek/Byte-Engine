@@ -31,7 +31,7 @@ pub fn load_shader_resource(
 	id: &str,
 	name: &str,
 ) -> Result<LoadedShader, String> {
-	let mut shader: Reference<Shader> = resource_manager.request(id).map_err(|error| {
+	let mut shader: Reference<Shader> = crate::rendering::resource_loading::request(resource_manager, id).map_err(|error| {
 		format!(
 			"Failed to load baked shader resource '{id}': {error}. The most likely cause is that BELD did not bake the shader or its source asset is unavailable."
 		)
@@ -39,9 +39,12 @@ pub fn load_shader_resource(
 	let stage = shader.resource.stage;
 	let interface = shader.resource.interface.clone();
 	let artifact = shader.resource.artifact.clone();
-	let backing = shader.consume_reader().into_backing_storage().map_err(|_| {
-		format!("Failed to load baked shader bytes for '{id}'. The most likely cause is an unsupported shader resource reader.")
-	})?;
+	let backing =
+		crate::rendering::resource_loading::block_on(shader.consume_reader().into_backing_storage()).map_err(|_| {
+			format!(
+				"Failed to load baked shader bytes for '{id}'. The most likely cause is an unsupported shader resource reader."
+			)
+		})?;
 	let source = shader_artifact_source(&artifact, interface.workgroup_size, backing.as_slice())?;
 	let handle = context
 		.create_shader(
@@ -69,7 +72,7 @@ pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSo
 	let source_hash = hash_shader_source(descriptor);
 	let resource_id = ResourceId::new(descriptor.id);
 
-	if storage_backend.read(resource_id).is_some() {
+	if crate::rendering::resource_loading::block_on(storage_backend.read(resource_id)).is_some() {
 		let shader = load_shader_reference(storage_backend, descriptor.id)?.into_resource();
 		if shader.source_hash == source_hash {
 			return Ok(shader);
@@ -94,9 +97,10 @@ pub fn create_shader(
 	if let Some(storage_backend) = storage_backend {
 		upsert_shader(storage_backend, descriptor)?;
 		let mut shader = load_shader_reference(storage_backend, descriptor.id)?;
-		let backing = shader.consume_reader().into_backing_storage().map_err(|_| {
-			"Failed to load baked shader bytes. The most likely cause is an unsupported shader resource reader.".to_string()
-		})?;
+		let backing =
+			crate::rendering::resource_loading::block_on(shader.consume_reader().into_backing_storage()).map_err(|_| {
+				"Failed to load baked shader bytes. The most likely cause is an unsupported shader resource reader.".to_string()
+			})?;
 		let bytes = backing.as_slice();
 		let source = shader_artifact_source(&shader.resource.artifact, shader.resource.interface.workgroup_size, bytes)?;
 		return context
@@ -195,12 +199,10 @@ fn with_shader_source<T>(
 }
 
 fn load_shader_reference(storage_backend: &dyn StorageBackend, id: &str) -> Result<Reference<Shader>, String> {
-	let (resource, _) = storage_backend
-		.read(ResourceId::new(id))
+	let (resource, _) = crate::rendering::resource_loading::block_on(storage_backend.read(ResourceId::new(id)))
 		.ok_or_else(|| "Failed to load baked shader. The most likely cause is a missing shader resource.".to_string())?;
 	let model: ReferenceModel<Shader> = resource.into();
-	model
-		.solve(storage_backend)
+	crate::rendering::resource_loading::block_on(model.solve(storage_backend))
 		.map_err(|_| "Failed to solve baked shader. The most likely cause is invalid shader resource metadata.".to_string())
 }
 

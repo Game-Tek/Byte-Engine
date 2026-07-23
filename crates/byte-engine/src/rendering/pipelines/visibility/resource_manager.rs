@@ -162,7 +162,8 @@ impl VisibilityPipelineResourceManager {
 
 	/// Reads material variant metadata while scheduling texture and pipeline dependencies.
 	fn load_variant_metadata(&mut self, id: &str, index: u32) -> Result<FactoryMaterial, ()> {
-		let mut reference: Reference<ResourceVariant> = self.resource_manager.request(id).map_err(|_| {
+		let mut reference: Reference<ResourceVariant> =
+			crate::rendering::resource_loading::request(&self.resource_manager, id).map_err(|_| {
 			log::error!(
 				"Visibility material variant request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
 				id
@@ -265,7 +266,8 @@ impl VisibilityPipelineResourceManager {
 
 	/// Loads texture bytes and builds detached GPU resources for render-thread adoption.
 	fn load_texture_with_factory(&mut self, id: &str, index: u32) -> Result<FactoryTexture, ()> {
-		let mut reference: Reference<ResourceImage> = self.resource_manager.request(id).map_err(|_| {
+		let mut reference: Reference<ResourceImage> =
+			crate::rendering::resource_loading::request(&self.resource_manager, id).map_err(|_| {
 			log::error!(
 				"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
 				id
@@ -277,12 +279,13 @@ impl VisibilityPipelineResourceManager {
 
 		// Image resources may append mips or baked IBL streams after the base image; material textures upload only mip zero.
 		let mut source = vec![0u8; compact_image_byte_size(format, extent)];
-		let load_target = reference.load(source.as_mut_slice().into()).map_err(|_| {
-			log::error!(
+		let load_target =
+			crate::rendering::resource_loading::block_on(reference.load(source.as_mut_slice().into())).map_err(|_| {
+				log::error!(
 				"Visibility texture load failed for {}. The most likely cause is that the texture payload could not be read from storage.",
 				id
 			);
-		})?;
+			})?;
 		let source = load_target.buffer().ok_or_else(|| {
 			log::error!(
 				"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.",
@@ -323,7 +326,8 @@ impl VisibilityPipelineResourceManager {
 
 	/// Loads the diffuse and roughness-prefiltered streams, then creates detached single-mip images for render-thread adoption.
 	fn load_environment_with_factory(&mut self, id: &str) -> Result<FactoryEnvironment, ()> {
-		let mut reference: Reference<ResourceImage> = self.resource_manager.request(id).map_err(|_| {
+		let mut reference: Reference<ResourceImage> =
+			crate::rendering::resource_loading::request(&self.resource_manager, id).map_err(|_| {
 			log::error!(
 				"Visibility environment request failed for {}. The most likely cause is that the image resource is missing or the asset database is not loaded.",
 				id
@@ -378,7 +382,7 @@ impl VisibilityPipelineResourceManager {
 		for (name, data) in specular_stream_names.iter().zip(specular_data.iter_mut()) {
 			streams.push(resource_management::stream::StreamMut::new(name, data.as_mut_slice()));
 		}
-		let loaded = reference.load(streams.into()).map_err(|_| {
+		let loaded = crate::rendering::resource_loading::block_on(reference.load(streams.into())).map_err(|_| {
 			log::error!(
 				"Visibility environment IBL stream load failed for {}. The most likely cause is that the baked image payload is missing one or more named IBL streams.",
 				id
@@ -507,7 +511,8 @@ impl VisibilityPipelineResourceManager {
 	) -> Result<crate::rendering::pipelines::visibility::pipeline_manager::MeshData, ()> {
 		match mesh_source {
 			MeshSource::Resource(id) => {
-				let mut resource: Reference<ResourceMesh> = self.resource_manager.request(id).map_err(|_| {
+				let mut resource: Reference<ResourceMesh> =
+					crate::rendering::resource_loading::request(&self.resource_manager, id).map_err(|_| {
 					log::error!(
 						"Visibility mesh resource request failed for {}. The most likely cause is that the mesh id is missing or the asset database is not loaded.",
 						id
@@ -1455,11 +1460,12 @@ impl VisibilityPipelineResourceManager {
 
 	/// Loads shader bytes from reader backing storage and falls back to an owned buffer when direct backing is unavailable.
 	fn load_shader_backing(shader: &mut Reference<Shader>) -> Result<ResourceReaderBacking, ()> {
-		match shader.consume_reader().into_backing_storage() {
+		match crate::rendering::resource_loading::block_on(shader.consume_reader().into_backing_storage()) {
 			Ok(backing) => Ok(backing),
 			Err(mut reader) => {
 				let read_target = ReadTargetsMut::create_buffer(shader);
-				let load_request = reader.read_into(None, read_target).map_err(|_| {
+				let load_request =
+					crate::rendering::resource_loading::block_on(reader.read_into(None, read_target)).map_err(|_| {
 					log::error!(
 						"Failed to load shader bytes for {}. The most likely cause is that the shader resource no longer has an available read target.",
 						shader.id(),

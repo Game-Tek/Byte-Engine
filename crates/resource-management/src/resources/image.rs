@@ -70,8 +70,8 @@ mod tests {
 		ProcessedAsset, ReferenceModel, Resource, Solver,
 	};
 
-	#[test]
-	fn image_reference_solve_restores_metadata_and_binary_reader() {
+	#[crate::r#async::test]
+	async fn image_reference_solve_restores_metadata_and_binary_reader() {
 		let image = Image {
 			format: Formats::BC7SRGB,
 			gamma: Gamma::SRGB,
@@ -98,7 +98,7 @@ mod tests {
 			.store(ProcessedAsset::new(ResourceId::new("texture.image"), image), &[1, 2, 3])
 			.unwrap();
 
-		let reference = model.solve(&storage).expect("stored image metadata");
+		let reference = model.solve(&storage).await.expect("stored image metadata");
 		assert_eq!(reference.id(), "texture.image");
 		assert_eq!(reference.hash(), 99);
 		assert_eq!(reference.size, 3);
@@ -113,8 +113,8 @@ mod tests {
 		assert_eq!(reference.resource.get_class(), "Image");
 	}
 
-	#[test]
-	fn image_reference_solve_distinguishes_missing_and_malformed_storage() {
+	#[crate::r#async::test]
+	async fn image_reference_solve_distinguishes_missing_and_malformed_storage() {
 		let image = Image {
 			format: Formats::RGBA8,
 			gamma: Gamma::Linear,
@@ -124,7 +124,7 @@ mod tests {
 		};
 		let missing = ReferenceModel::new("missing.image", 0, 0, &image, None);
 		assert!(matches!(
-			missing.solve(&TestStorageBackend::new()),
+			missing.solve(&TestStorageBackend::new()).await,
 			Err(SolveErrors::StorageError)
 		));
 
@@ -136,7 +136,10 @@ mod tests {
 			)
 			.unwrap();
 		let broken = ReferenceModel::new("broken.image", 0, 0, &image, None);
-		assert!(matches!(broken.solve(&storage), Err(SolveErrors::DeserializationFailed(_))));
+		assert!(matches!(
+			broken.solve(&storage).await,
+			Err(SolveErrors::DeserializationFailed(_))
+		));
 	}
 
 	#[test]

@@ -100,13 +100,13 @@ impl DefaultAudioSystem {
 		})
 	}
 
-	// fn load_asset<'a>(&'a mut self, audio_asset_url: &'a str) {
+	// async fn load_asset<'a>(&'a mut self, audio_asset_url: &'a str) {
 	// 	if let Some(a) = self.audio_resources.get(audio_asset_url) {
 	// 		Some(a);
 	// 	} else {
 	// 		let resource_manager = self.resource_manager.read();
-	// 		let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
-	// 		let load_target = audio_resource_reference.load(ReadTargetsMut::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
+	// 		let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).await.unwrap();
+	// 		let load_target = audio_resource_reference.load(ReadTargetsMut::create_buffer(&audio_resource_reference)).await.unwrap(); // Request resource be written into a managed buffer.
 
 	// 		let audio_resource = audio_resource_reference.resource_mut();
 

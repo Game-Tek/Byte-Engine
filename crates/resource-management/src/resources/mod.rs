@@ -26,15 +26,18 @@ macro_rules! impl_direct_resource {
 			/// Restores direct resource metadata while retaining its binary-data reader.
 			fn solve(
 				self,
-				storage_backend: &dyn $crate::resource::ReadStorageBackend,
-			) -> Result<$crate::Reference<$resource>, $crate::solver::SolveErrors> {
-				let (stored, reader) = storage_backend
-					.read(self.id())
-					.ok_or($crate::solver::SolveErrors::StorageError)?;
-				let resource: $resource = $crate::from_slice(stored.resource())
-					.map_err(|error| $crate::solver::SolveErrors::DeserializationFailed(error.to_string()))?;
+				storage_backend: &'de dyn $crate::resource::ReadStorageBackend,
+			) -> $crate::r#async::BoxedFuture<'de, Result<$crate::Reference<$resource>, $crate::solver::SolveErrors>> {
+				$crate::r#async::future(async move {
+					let (stored, reader) = storage_backend
+						.read(self.id())
+						.await
+						.ok_or($crate::solver::SolveErrors::StorageError)?;
+					let resource: $resource = $crate::from_slice(stored.resource())
+						.map_err(|error| $crate::solver::SolveErrors::DeserializationFailed(error.to_string()))?;
 
-				Ok($crate::Reference::from_model(self, resource, reader))
+					Ok($crate::Reference::from_model(self, resource, reader))
+				})
 			}
 		}
 	};

@@ -299,7 +299,7 @@ impl GPUVertexDataManager {
 			streams.push(resource_management::stream::StreamMut::new("Vertex.Weights", weights_buffer));
 		}
 
-		let Ok(load_target) = resource_request.load(streams.into()) else {
+		let Ok(load_target) = crate::rendering::resource_loading::block_on(resource_request.load(streams.into())) else {
 			log::warn!("Failed to load mesh data");
 			return None;
 		};

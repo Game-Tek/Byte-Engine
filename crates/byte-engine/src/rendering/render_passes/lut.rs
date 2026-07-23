@@ -173,7 +173,7 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 		offset: 0,
 		size: None,
 	};
-	let read_result = reference.load(read_target).expect(
+	let read_result = crate::rendering::resource_loading::block_on(reference.load(read_target)).expect(
 		"Failed to read LUT resource data. The most likely cause is that the cached LUT payload is missing or unreadable.",
 	);
 

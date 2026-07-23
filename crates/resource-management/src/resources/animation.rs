@@ -151,29 +151,39 @@ super::impl_resource_model!(Animation, AnimationModel, "Animation");
 
 impl<'de> Solver<'de, Animation> for AnimationModel {
 	/// Resolves the target skeleton and rejects clip data that a CPU graph could not evaluate deterministically.
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Animation, SolveErrors> {
-		let skeleton = self.skeleton.solve(storage_backend)?;
-		validate_animation(self.duration, &self.tracks, skeleton.resource().nodes.len())?;
-		Ok(Animation {
-			name: self.name,
-			skeleton,
-			duration: self.duration,
-			tracks: self.tracks,
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Animation, SolveErrors>> {
+		crate::r#async::future(async move {
+			let skeleton = self.skeleton.solve(storage_backend).await?;
+			validate_animation(self.duration, &self.tracks, skeleton.resource().nodes.len())?;
+			Ok(Animation {
+				name: self.name,
+				skeleton,
+				duration: self.duration,
+				tracks: self.tracks,
+			})
 		})
 	}
 }
 
 impl<'de> Solver<'de, Reference<Animation>> for ReferenceModel<AnimationModel> {
 	/// Resolves a stored clip and its skeleton dependency for CPU pose sampling and blending.
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Animation>, SolveErrors> {
-		let (stored, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let model: AnimationModel = crate::from_slice(stored.resource()).map_err(|error| {
-			SolveErrors::DeserializationFailed(format!(
-				"Animation resource could not be deserialized. The most likely cause is incompatible or corrupted clip data: {error}."
-			))
-		})?;
-		let animation = model.solve(storage_backend)?;
-		Ok(Reference::from_model(self, animation, reader))
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Animation>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let model: AnimationModel = crate::from_slice(stored.resource()).map_err(|error| {
+				SolveErrors::DeserializationFailed(format!(
+					"Animation resource could not be deserialized. The most likely cause is incompatible or corrupted clip data: {error}."
+				))
+			})?;
+			let animation = model.solve(storage_backend).await?;
+			Ok(Reference::from_model(self, animation, reader))
+		})
 	}
 }
 
@@ -290,10 +300,13 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn solving_preserves_pose_tracks_and_resolves_their_skeleton() {
+	#[crate::r#async::test]
+	async fn solving_preserves_pose_tracks_and_resolves_their_skeleton() {
 		let storage = TestStorageBackend::new();
-		let animation: Animation = valid_model(&storage).solve(&storage).expect("Valid animation should solve");
+		let animation: Animation = valid_model(&storage)
+			.solve(&storage)
+			.await
+			.expect("Valid animation should solve");
 
 		assert_eq!(animation.name.as_deref(), Some("walk"));
 		assert_eq!(animation.skeleton.resource().nodes.len(), 2);
@@ -301,8 +314,8 @@ mod tests {
 		assert!(matches!(animation.tracks[0].translation, Some(Vector3Curve::Linear { .. })));
 	}
 
-	#[test]
-	fn solving_rejects_unsorted_duplicate_and_out_of_range_tracks() {
+	#[crate::r#async::test]
+	async fn solving_rejects_unsorted_duplicate_and_out_of_range_tracks() {
 		let storage = TestStorageBackend::new();
 		let mut model = valid_model(&storage);
 		model.tracks.insert(
@@ -317,15 +330,15 @@ mod tests {
 				}),
 			},
 		);
-		assert!(model.solve(&storage).is_err());
+		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);
 		model.tracks[0].node = 2;
-		assert!(model.solve(&storage).is_err());
+		assert!(model.solve(&storage).await.is_err());
 	}
 
-	#[test]
-	fn solving_rejects_invalid_curve_cardinality_timing_and_numbers() {
+	#[crate::r#async::test]
+	async fn solving_rejects_invalid_curve_cardinality_timing_and_numbers() {
 		let storage = TestStorageBackend::new();
 		let mut model = valid_model(&storage);
 		model.tracks[0].translation = Some(Vector3Curve::CubicSpline {
@@ -334,22 +347,22 @@ mod tests {
 			in_tangents: vec![[0.0; 3]],
 			out_tangents: vec![[0.0; 3], [f32::NAN; 3]],
 		});
-		assert!(model.solve(&storage).is_err());
+		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);
 		model.duration = f32::INFINITY;
-		assert!(model.solve(&storage).is_err());
+		assert!(model.solve(&storage).await.is_err());
 	}
 
-	#[test]
-	fn solving_rejects_non_unit_rotation_values_but_accepts_arbitrary_finite_cubic_tangents() {
+	#[crate::r#async::test]
+	async fn solving_rejects_non_unit_rotation_values_but_accepts_arbitrary_finite_cubic_tangents() {
 		let storage = TestStorageBackend::new();
 		let mut model = valid_model(&storage);
 		model.tracks[0].rotation = Some(QuaternionCurve::Linear {
 			times: vec![0.0],
 			values: vec![[0.0; 4]],
 		});
-		assert!(model.solve(&storage).is_err());
+		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);
 		model.tracks[0].rotation = Some(QuaternionCurve::CubicSpline {
@@ -359,6 +372,6 @@ mod tests {
 			out_tangents: vec![[-8.0, 9.0, 10.0, 12.0], [4.0, 3.0, 2.0, 1.0]],
 		});
 
-		assert!(model.solve(&storage).is_ok());
+		assert!(model.solve(&storage).await.is_ok());
 	}
 }

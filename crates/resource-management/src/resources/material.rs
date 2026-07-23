@@ -55,33 +55,41 @@ impl Material {
 super::impl_resource_model!(Material, MaterialModel, "Material");
 
 impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let MaterialModel {
-			double_sided,
-			alpha_mode,
-			shaders,
-			model,
-			parameters,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Material {
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let MaterialModel {
 				double_sided,
 				alpha_mode,
-				shaders: shaders
-					.into_iter()
-					.map(|s| s.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
+				shaders,
 				model,
-				parameters: parameters
-					.into_iter()
-					.map(|p| p.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
-			},
-			reader,
-		))
+				parameters,
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+			let mut resolved_shaders = Vec::with_capacity(shaders.len());
+			for shader in shaders {
+				resolved_shaders.push(shader.solve(storage_backend).await?);
+			}
+			let mut resolved_parameters = Vec::with_capacity(parameters.len());
+			for parameter in parameters {
+				resolved_parameters.push(parameter.solve(storage_backend).await?);
+			}
+
+			Ok(Reference::from_model(
+				self,
+				Material {
+					double_sided,
+					alpha_mode,
+					shaders: resolved_shaders,
+					model,
+					parameters: resolved_parameters,
+				},
+				reader,
+			))
+		})
 	}
 }
 
@@ -115,16 +123,21 @@ pub struct VariantVariableModel {
 }
 
 impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
-		Ok(VariantVariable {
-			name: self.name,
-			r#type: self.r#type,
-			value: match self.value {
-				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
-				ValueModel::Vector3(vector) => Value::Vector3(vector),
-				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
-			},
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<VariantVariable, SolveErrors>> {
+		crate::r#async::future(async move {
+			Ok(VariantVariable {
+				name: self.name,
+				r#type: self.r#type,
+				value: match self.value {
+					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector3(vector) => Value::Vector3(vector),
+					ValueModel::Vector4(vector) => Value::Vector4(vector),
+					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				},
+			})
 		})
 	}
 }
@@ -145,26 +158,34 @@ pub struct VariantModel {
 super::impl_resource_model!(Variant, VariantModel, "Variant");
 
 impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let VariantModel {
-			material,
-			variables,
-			alpha_mode,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Variant {
-				material: material.solve(storage_backend)?,
-				variables: variables
-					.into_iter()
-					.map(|v| v.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let VariantModel {
+				material,
+				variables,
 				alpha_mode,
-			},
-			reader,
-		))
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+			let material = material.solve(storage_backend).await?;
+			let mut resolved_variables = Vec::with_capacity(variables.len());
+			for variable in variables {
+				resolved_variables.push(variable.solve(storage_backend).await?);
+			}
+
+			Ok(Reference::from_model(
+				self,
+				Variant {
+					material,
+					variables: resolved_variables,
+					alpha_mode,
+				},
+				reader,
+			))
+		})
 	}
 }
 
@@ -281,16 +302,21 @@ pub struct ParameterModel {
 }
 
 impl<'de> Solver<'de, Parameter> for ParameterModel {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
-		Ok(Parameter {
-			r#type: self.r#type,
-			name: self.name,
-			value: match self.value {
-				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
-				ValueModel::Vector3(vector) => Value::Vector3(vector),
-				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
-			},
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Parameter, SolveErrors>> {
+		crate::r#async::future(async move {
+			Ok(Parameter {
+				r#type: self.r#type,
+				name: self.name,
+				value: match self.value {
+					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector3(vector) => Value::Vector3(vector),
+					ValueModel::Vector4(vector) => Value::Vector4(vector),
+					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				},
+			})
 		})
 	}
 }

@@ -142,8 +142,8 @@ impl AssetManager {
 
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
-	/// Next, request the stored output through [`crate::ResourceManager::request`]
-	/// or inspect it through the storage backend.
+	/// Next, await [`crate::ResourceManager::request`] for the stored output or
+	/// inspect it through the storage backend.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
 		self.bake_in(id, resource_storage_backend, &Global).await
 	}
@@ -288,11 +288,11 @@ impl AssetManager {
 	) -> Result<ReferenceModel<M>, LoadMessages> {
 		let id = ResourceId::new(id);
 
-		if resource_storage_backend.read(id).is_none() {
+		if resource_storage_backend.read(id).await.is_none() {
 			self.bake_in(id.as_ref(), resource_storage_backend, allocator).await?;
 		}
 
-		if let Some(result) = resource_storage_backend.read(id) {
+		if let Some(result) = resource_storage_backend.read(id).await {
 			let (resource, _) = result;
 			let resource: ReferenceModel<M> = resource.into();
 			return Ok(resource);
@@ -459,7 +459,10 @@ pub mod tests {
 		assert_eq!(items[1].level(), ResourceTraceLevel::Warn);
 		assert_eq!(items[1].message(), "Discarded 1 optional test value.");
 		assert_eq!(
-			resource_storage_backend.read_trace(ResourceId::new("messages.test")).unwrap(),
+			resource_storage_backend
+				.read_trace(ResourceId::new("messages.test"))
+				.await
+				.unwrap(),
 			items
 		);
 	}
@@ -492,7 +495,10 @@ pub mod tests {
 			"Test resource is malformed. The most likely cause is the intentionally invalid fixture data."
 		);
 		assert_eq!(
-			resource_storage_backend.read_trace(ResourceId::new("failed.test")).unwrap(),
+			resource_storage_backend
+				.read_trace(ResourceId::new("failed.test"))
+				.await
+				.unwrap(),
 			items
 		);
 		assert_eq!(asset_manager.resource_trace().resource_ids(), vec!["failed.test"]);

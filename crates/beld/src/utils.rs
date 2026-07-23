@@ -101,6 +101,7 @@ mod tests {
 				);
 			let (serialized, _) = resource_storage
 				.read(ResourceId::new("triangle_move.fbx"))
+				.await
 				.expect("Baked FBX mesh is missing. The most likely cause is a resource storage failure.");
 			let streams = serialized
 				.streams()
@@ -112,6 +113,7 @@ mod tests {
 			}
 			let resources = resource_storage
 				.list()
+				.await
 				.expect("Resource list is unreadable. The most likely cause is a test storage failure.");
 			assert_eq!(resources.len(), 5);
 			assert!(resources.iter().any(|resource| resource == "triangle_move.fbx#skeleton"));

@@ -3,10 +3,10 @@
 pub mod redb_storage_backend;
 
 use super::resource_handler::MultiResourceReader;
-use crate::QueryableValue;
 use crate::{
 	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
 };
+use crate::{r#async::BoxedFuture, QueryableValue};
 
 /// The `QueryCursor` struct provides an opaque continuation point for paginated resource queries.
 #[derive(
@@ -117,15 +117,18 @@ pub enum QueryError {
 }
 
 pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
-	fn list(&self) -> Result<Vec<String>, String>;
-	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)>;
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
+	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
 
-	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
 
 	/// Returns development-time bake messages even when the requested resource was not stored.
 	#[cfg(debug_assertions)]
-	fn read_trace(&self, _: ResourceId<'_>) -> Result<Vec<crate::ResourceTraceItem>, String> {
-		Ok(Vec::new())
+	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		crate::r#async::future(async { Ok(Vec::new()) })
 	}
 
 	/// Returns the asset type from its URL when the backend can determine it.
@@ -135,8 +138,8 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 		Some(url.get_extension())
 	}
 
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> bool {
-		self.read(id).is_some()
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
+		crate::r#async::future(async move { self.read(id).await.is_some() })
 	}
 }
 
@@ -250,33 +253,38 @@ pub mod tests {
 	}
 
 	impl ReadStorageBackend for TestStorageBackend {
-		fn list<'a>(&'a self) -> Result<Vec<String>, String> {
-			Ok(self.resources.lock().keys().map(|x| x.to_string()).collect())
+		fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+			crate::r#async::future(async { Ok(self.resources.lock().keys().map(|x| x.to_string()).collect()) })
 		}
 
-		fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)> {
-			let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
-				(e.0.clone(), e.1.clone())
-			} else {
-				return None;
-			};
+		fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+			crate::r#async::future(async move {
+				let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
+					(e.0.clone(), e.1.clone())
+				} else {
+					return None;
+				};
 
-			let _ = id.get_base().to_string();
+				let _ = id.get_base().to_string();
 
-			let resource: SerializableResource = crate::from_slice(&resource).unwrap();
+				let resource: SerializableResource = crate::from_slice(&resource).unwrap();
 
-			let resource_reader = Box::new(MemoryResourceReader::new(data));
+				let resource_reader: MultiResourceReader = Box::new(MemoryResourceReader::new(data));
 
-			Some((resource, resource_reader))
+				Some((resource, resource_reader))
+			})
 		}
 
-		fn query(&self, _: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
-			Err(QueryError::StorageFailure)
+		fn query(
+			&self,
+			_: Query,
+		) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+			crate::r#async::future(async { Err(QueryError::StorageFailure) })
 		}
 
 		#[cfg(debug_assertions)]
-		fn read_trace(&self, id: ResourceId<'_>) -> Result<Vec<crate::ResourceTraceItem>, String> {
-			Ok(self.traces.lock().get(id.as_ref()).cloned().unwrap_or_default())
+		fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+			crate::r#async::future(async move { Ok(self.traces.lock().get(id.as_ref()).cloned().unwrap_or_default()) })
 		}
 	}
 

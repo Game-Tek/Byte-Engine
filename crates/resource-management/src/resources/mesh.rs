@@ -44,25 +44,30 @@ impl Primitive {
 super::impl_resource_model!(Primitive, PrimitiveModel, "Primitive");
 
 impl<'de> Solver<'de, Primitive> for PrimitiveModel {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Primitive, SolveErrors> {
-		let PrimitiveModel {
-			material,
-			transform_node,
-			skin,
-			streams,
-			quantization,
-			bounding_box,
-			vertex_count,
-		} = self;
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Primitive, SolveErrors>> {
+		crate::r#async::future(async move {
+			let PrimitiveModel {
+				material,
+				transform_node,
+				skin,
+				streams,
+				quantization,
+				bounding_box,
+				vertex_count,
+			} = self;
 
-		Ok(Primitive {
-			material: material.solve(storage_backend)?,
-			transform_node,
-			skin,
-			streams,
-			quantization,
-			bounding_box,
-			vertex_count,
+			Ok(Primitive {
+				material: material.solve(storage_backend).await?,
+				transform_node,
+				skin,
+				streams,
+				quantization,
+				bounding_box,
+				vertex_count,
+			})
 		})
 	}
 }
@@ -163,37 +168,47 @@ super::impl_resource_model!(Mesh, MeshModel, "Mesh");
 
 impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 	/// Resolves mesh dependencies only after confirming its skin tables are safe for CPU pose and GPU palette workflows.
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let MeshModel {
-			skeleton,
-			skins,
-			vertex_components,
-			streams,
-			primitives,
-		} = crate::from_slice(&gr.resource).map_err(|error| {
-			SolveErrors::DeserializationFailed(format!(
-				"Mesh resource could not be deserialized. The most likely cause is incompatible or corrupted mesh metadata: {error}."
-			))
-		})?;
-
-		let skeleton = skeleton.map(|skeleton| skeleton.solve(storage_backend)).transpose()?;
-		validate_skin_metadata(skeleton.as_ref(), &skins, &vertex_components, &primitives)?;
-
-		Ok(Reference::from_model(
-			self,
-			Mesh {
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Mesh>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let MeshModel {
 				skeleton,
 				skins,
 				vertex_components,
 				streams,
-				primitives: primitives
-					.into_iter()
-					.map(|p| p.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
-			},
-			reader,
-		))
+				primitives,
+			} = crate::from_slice(&gr.resource).map_err(|error| {
+				SolveErrors::DeserializationFailed(format!(
+					"Mesh resource could not be deserialized. The most likely cause is incompatible or corrupted mesh metadata: {error}."
+				))
+			})?;
+
+			let skeleton = match skeleton {
+				Some(skeleton) => Some(skeleton.solve(storage_backend).await?),
+				None => None,
+			};
+			validate_skin_metadata(skeleton.as_ref(), &skins, &vertex_components, &primitives)?;
+
+			let mut resolved_primitives = Vec::with_capacity(primitives.len());
+			for primitive in primitives {
+				resolved_primitives.push(primitive.solve(storage_backend).await?);
+			}
+
+			Ok(Reference::from_model(
+				self,
+				Mesh {
+					skeleton,
+					skins,
+					vertex_components,
+					streams,
+					primitives: resolved_primitives,
+				},
+				reader,
+			))
+		})
 	}
 }
 
@@ -416,10 +431,10 @@ mod tests {
 		assert_eq!(mesh.primitive_count(), 0);
 	}
 
-	#[test]
-	fn skin_metadata_accepts_a_complete_palette_and_paired_vertex_streams() {
+	#[crate::r#async::test]
+	async fn skin_metadata_accepts_a_complete_palette_and_paired_vertex_streams() {
 		let storage = TestStorageBackend::new();
-		let skeleton = test_skeleton(&storage);
+		let skeleton = test_skeleton(&storage).await;
 		let skins = vec![SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Node(0),
@@ -431,8 +446,8 @@ mod tests {
 		assert!(validate_skin_metadata(Some(&skeleton), &skins, &skin_vertex_layout(), &primitives).is_ok());
 	}
 
-	#[test]
-	fn skin_metadata_rejects_missing_skeletons_invalid_indices_and_unpaired_streams() {
+	#[crate::r#async::test]
+	async fn skin_metadata_rejects_missing_skeletons_invalid_indices_and_unpaired_streams() {
 		let skin = SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Identity,
@@ -442,7 +457,7 @@ mod tests {
 		assert!(validate_skin_metadata(None, std::slice::from_ref(&skin), &skin_vertex_layout(), &[]).is_err());
 
 		let storage = TestStorageBackend::new();
-		let skeleton = test_skeleton(&storage);
+		let skeleton = test_skeleton(&storage).await;
 		assert!(validate_skin_metadata(
 			Some(&skeleton),
 			std::slice::from_ref(&skin),
@@ -459,14 +474,14 @@ mod tests {
 		.is_err());
 	}
 
-	#[test]
-	fn primitive_transform_nodes_require_a_matching_skeleton_node() {
+	#[crate::r#async::test]
+	async fn primitive_transform_nodes_require_a_matching_skeleton_node() {
 		let mut primitive = test_primitive(None, false, false);
 		primitive.transform_node = Some(0);
 		assert!(validate_skin_metadata(None, &[], &[], std::slice::from_ref(&primitive)).is_err());
 
 		let storage = TestStorageBackend::new();
-		let skeleton = test_skeleton(&storage);
+		let skeleton = test_skeleton(&storage).await;
 		assert!(validate_skin_metadata(Some(&skeleton), &[], &[], std::slice::from_ref(&primitive)).is_ok());
 
 		primitive.transform_node = Some(1);
@@ -488,7 +503,7 @@ mod tests {
 		]
 	}
 
-	fn test_skeleton(storage: &TestStorageBackend) -> Reference<Skeleton> {
+	async fn test_skeleton(storage: &TestStorageBackend) -> Reference<Skeleton> {
 		let model = SkeletonModel {
 			nodes: vec![SkeletonNode {
 				name: Some("root".into()),
@@ -500,7 +515,7 @@ mod tests {
 			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), model), &[])
 			.expect("Test skeleton should store")
 			.into();
-		reference.solve(storage).expect("Test skeleton should solve")
+		reference.solve(storage).await.expect("Test skeleton should solve")
 	}
 
 	fn test_primitive(skin: Option<u32>, joints: bool, weights: bool) -> PrimitiveModel {

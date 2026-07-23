@@ -262,23 +262,33 @@ pub struct SkeletonModel {
 super::impl_resource_model!(Skeleton, SkeletonModel, "Skeleton");
 
 impl<'de> Solver<'de, Skeleton> for SkeletonModel {
-	fn solve(self, _storage_backend: &dyn resource::ReadStorageBackend) -> Result<Skeleton, SolveErrors> {
-		validate_nodes(&self.nodes)?;
-		Ok(Skeleton { nodes: self.nodes })
+	fn solve(
+		self,
+		_storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Skeleton, SolveErrors>> {
+		crate::r#async::future(async move {
+			validate_nodes(&self.nodes)?;
+			Ok(Skeleton { nodes: self.nodes })
+		})
 	}
 }
 
 impl<'de> Solver<'de, Reference<Skeleton>> for ReferenceModel<SkeletonModel> {
 	/// Resolves a stored hierarchy for animation graphs after validating its serialized node model.
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Skeleton>, SolveErrors> {
-		let (stored, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let model: SkeletonModel = crate::from_slice(stored.resource()).map_err(|error| {
-			SolveErrors::DeserializationFailed(format!(
-				"Skeleton resource could not be deserialized. The most likely cause is incompatible or corrupted skeleton data: {error}."
-			))
-		})?;
-		let skeleton = model.solve(storage_backend)?;
-		Ok(Reference::from_model(self, skeleton, reader))
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Skeleton>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let model: SkeletonModel = crate::from_slice(stored.resource()).map_err(|error| {
+				SolveErrors::DeserializationFailed(format!(
+					"Skeleton resource could not be deserialized. The most likely cause is incompatible or corrupted skeleton data: {error}."
+				))
+			})?;
+			let skeleton = model.solve(storage_backend).await?;
+			Ok(Reference::from_model(self, skeleton, reader))
+		})
 	}
 }
 
@@ -362,8 +372,8 @@ mod tests {
 		assert_eq!(LocalTransform::default(), transform);
 	}
 
-	#[test]
-	fn solving_preserves_parent_before_child_rest_pose() {
+	#[crate::r#async::test]
+	async fn solving_preserves_parent_before_child_rest_pose() {
 		let child_pose = LocalTransform {
 			translation: [0.0, 2.0, 0.0],
 			..LocalTransform::identity()
@@ -385,13 +395,14 @@ mod tests {
 
 		let skeleton: Skeleton = model
 			.solve(&TestStorageBackend::new())
+			.await
 			.expect("A parent-before-child skeleton should solve");
 		assert_eq!(skeleton.nodes[1].parent, Some(0));
 		assert_eq!(skeleton.nodes[1].rest_local, child_pose);
 	}
 
-	#[test]
-	fn solving_rejects_forward_and_self_parent_references() {
+	#[crate::r#async::test]
+	async fn solving_rejects_forward_and_self_parent_references() {
 		for parent in [0, 1] {
 			let model = SkeletonModel {
 				nodes: vec![SkeletonNode {
@@ -401,12 +412,12 @@ mod tests {
 				}],
 			};
 
-			assert!(model.solve(&TestStorageBackend::new()).is_err());
+			assert!(model.solve(&TestStorageBackend::new()).await.is_err());
 		}
 	}
 
-	#[test]
-	fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
+	#[crate::r#async::test]
+	async fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
 		for rest_local in [
 			LocalTransform {
 				translation: [f32::NAN, 0.0, 0.0],
@@ -429,7 +440,7 @@ mod tests {
 				}],
 			};
 
-			assert!(model.solve(&TestStorageBackend::new()).is_err());
+			assert!(model.solve(&TestStorageBackend::new()).await.is_err());
 		}
 	}
 

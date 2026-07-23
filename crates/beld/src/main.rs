@@ -114,18 +114,25 @@ fn main() -> Result<(), i32> {
 	let destination_path = cli.destination;
 	let _color = cli.color;
 
+	let executor = resource_management::r#async::Executor::new().map_err(|error| {
+		log::error!(
+			"Failed to start BELD asynchronous resource access. The most likely cause is that the platform I/O driver could not be initialized. Error: {error}"
+		);
+		1
+	})?;
+
 	match command {
 		Commands::Wipe {} => commands::wipe(destination_path),
 		Commands::Clear {} => commands::wipe(destination_path),
-		Commands::List {} => commands::list(destination_path),
+		Commands::List {} => executor.block_on(commands::list(destination_path)),
 		Commands::Query {
 			class,
 			properties,
 			limit,
 			cursor,
 			format,
-		} => commands::query(destination_path, class, properties, limit, cursor, format),
-		Commands::Inspect { id, format } => commands::inspect(destination_path, id, format),
+		} => executor.block_on(commands::query(destination_path, class, properties, limit, cursor, format)),
+		Commands::Inspect { id, format } => executor.block_on(commands::inspect(destination_path, id, format)),
 		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids),
 		Commands::Delete { ids } => commands::delete(destination_path, ids),
 	}

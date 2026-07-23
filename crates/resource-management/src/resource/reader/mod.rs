@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use memmap2::{Mmap, MmapOptions};
 
 use super::{ReadTargets, ReadTargetsMut};
-use crate::StreamDescription;
+use crate::{r#async::BoxedFuture, StreamDescription};
 
 #[derive(Debug)]
 /// The `ResourceReaderBacking` enum provides reusable, reader-owned storage for resource bytes.
@@ -32,7 +32,7 @@ pub struct MappedFileBacking {
 
 impl MappedFileBacking {
 	/// Creates a mapped-file backing for the full file contents.
-	pub fn new(file: &std::fs::File) -> Result<Self, ()> {
+	pub fn new(file: impl memmap2::MmapAsRawDesc) -> Result<Self, ()> {
 		let map = unsafe { MmapOptions::new().map(file) }.map_err(|_| ())?;
 		Ok(Self { map })
 	}
@@ -49,8 +49,8 @@ pub trait ResourceReader: Send + Sync + Debug {
 		&'b mut self,
 		stream_descriptions: Option<&'c [StreamDescription]>,
 		read_target: ReadTargetsMut<'a>,
-	) -> Result<ReadTargets<'a>, ()>;
+	) -> BoxedFuture<'b, Result<ReadTargets<'a>, ()>>;
 
 	/// Consumes the reader and returns its owned backing when the caller can reuse it directly.
-	fn into_backing_storage(self: Box<Self>) -> Result<ResourceReaderBacking, Box<dyn ResourceReader>>;
+	fn into_backing_storage(self: Box<Self>) -> BoxedFuture<'static, Result<ResourceReaderBacking, Box<dyn ResourceReader>>>;
 }

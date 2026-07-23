@@ -100,17 +100,20 @@ impl ResourceManager {
 
 	/// Loads resource metadata and dependencies, then returns a deferred binary-data [`Reference`].
 	///
+	/// Await the request because development builds may need to bake a missing
+	/// source asset before resolving the stored resource.
+	///
 	/// Use [`Reference::load`](crate::Reference::load) to load the binary data into
 	/// caller-provided memory or reader-owned storage. After loading, access the
 	/// typed metadata through [`Reference::resource`](crate::Reference::resource).
-	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, String>
+	pub async fn request<T: Resource>(&self, id: &str) -> Result<Reference<T>, String>
 	where
-		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
+		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
 		SerializableResource: TryInto<ReferenceModel<T::Model>>,
 	{
 		let storage_backend = self.get_storage_backend();
 
-		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
+		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)).await {
 			let (resource, _) = result;
 			resource.into()
 		} else {
@@ -119,18 +122,15 @@ impl ResourceManager {
 				let Some(asset_manager) = self.asset_manager.get() else {
 					return Err("Resource does not exist and an asset manager is not available.".to_string());
 				};
-				let runtime = compio::runtime::Runtime::new().unwrap();
 
-				runtime
-					.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
-					.map_err(|error| {
-						asset_lookup_error(
-							"Failed to load asset. The asset manager could not bake the resource.",
-							id,
-							&error,
-							asset_manager,
-						)
-					})?
+				asset_manager.bake_if_not_exists(id, storage_backend).await.map_err(|error| {
+					asset_lookup_error(
+						"Failed to load asset. The asset manager could not bake the resource.",
+						id,
+						&error,
+						asset_manager,
+					)
+				})?
 			}
 			#[cfg(not(debug_assertions))]
 			{
@@ -140,6 +140,7 @@ impl ResourceManager {
 
 		let reference: Reference<T> = reference_model
 			.solve(self.get_storage_backend())
+			.await
 			.map_err(|error| Into::<&'static str>::into(error).to_string())?;
 
 		Ok(reference)
@@ -147,31 +148,76 @@ impl ResourceManager {
 
 	/// Returns one page of typed resources that match indexed metadata.
 	///
-	/// Next, use each [`Reference::resource`](crate::Reference::resource) for
-	/// metadata and call [`Reference::load`](crate::Reference::load) only when the
-	/// binary payload is needed.
-	pub fn query<'a, T: Resource + 'a>(&'a self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
+	/// Await this query, then use each
+	/// [`Reference::resource`](crate::Reference::resource) for metadata and await
+	/// [`Reference::load`](crate::Reference::load) only when the binary payload is
+	/// needed.
+	pub async fn query<T: Resource>(&self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
 	where
-		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
+		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
 		SerializableResource: Into<ReferenceModel<T::Model>>,
 	{
-		let page = self.get_storage_backend().query(Query {
-			class: T::Model::get_class().to_string(),
-			..query
-		})?;
+		let page = self
+			.get_storage_backend()
+			.query(Query {
+				class: T::Model::get_class().to_string(),
+				..query
+			})
+			.await?;
+
+		let mut items = Vec::with_capacity(page.items.len());
+		for (resource, _) in page.items {
+			let model: ReferenceModel<T::Model> = resource.into();
+			items.push(model.solve(self.get_storage_backend()).await.unwrap());
+		}
 
 		Ok(QueryPage {
-			items: page
-				.items
-				.into_iter()
-				.map(|e| {
-					let r: ReferenceModel<T::Model> = e.0.into();
-					let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap();
-					r
-				})
-				.collect(),
+			items,
 			cursor: page.cursor,
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ResourceManager;
+	use crate::{
+		asset::ResourceId,
+		r#async,
+		resource::{storage_backend::tests::TestStorageBackend, ReadTargetsMut, WriteStorageBackend},
+		resources::audio::Audio,
+		types::BitDepths,
+		ProcessedAsset,
+	};
+
+	#[r#async::test]
+	async fn stored_request_awaits_metadata_and_preserves_deferred_payload_loading() {
+		let storage = TestStorageBackend::new();
+		let audio = Audio {
+			bit_depth: BitDepths::Sixteen,
+			channel_count: 1,
+			sample_rate: 48_000,
+			sample_count: 2,
+		};
+		storage
+			.store(ProcessedAsset::new(ResourceId::new("audio/loop.wav"), audio), &[1, 2, 3, 4])
+			.unwrap();
+		let resource_manager = ResourceManager::new(storage);
+
+		let mut reference = resource_manager
+			.request::<Audio>("audio/loop.wav")
+			.await
+			.expect("stored audio resource");
+
+		assert_eq!(reference.resource().bit_depth, audio.bit_depth);
+		assert_eq!(reference.resource().channel_count, audio.channel_count);
+		assert_eq!(reference.resource().sample_rate, audio.sample_rate);
+		assert_eq!(reference.resource().sample_count, audio.sample_count);
+		let loaded = reference
+			.load(ReadTargetsMut::backing_storage())
+			.await
+			.expect("deferred payload");
+		assert_eq!(loaded.buffer(), Some([1, 2, 3, 4].as_slice()));
 	}
 }
 
@@ -191,6 +237,7 @@ mod debug_tests {
 			storage_backend::{tests::TestStorageBackend as AssetTestStorageBackend, FileStorageBackend},
 			ResourceId, ResourceTraceLevel,
 		},
+		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::Shader,
 	};
@@ -236,25 +283,31 @@ mod debug_tests {
 			.is_err());
 	}
 
-	#[test]
-	fn inaccessible_engine_asset_root_suggests_configuring_the_symlink() {
+	#[r#async::test]
+	async fn inaccessible_engine_asset_root_suggests_configuring_the_symlink() {
 		let assets = temporary_asset_directory("missing-root");
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
-		let error = resource_manager.request::<Shader>("byte-engine/missing.test").unwrap_err();
+		let error = resource_manager
+			.request::<Shader>("byte-engine/missing.test")
+			.await
+			.unwrap_err();
 
 		assert!(error.contains("The 'byte-engine' path in the assets directory is inaccessible"));
 		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
 		fs::remove_dir_all(assets).unwrap();
 	}
 
-	#[test]
-	fn individual_asset_failure_omits_engine_symlink_hint_when_root_is_accessible() {
+	#[r#async::test]
+	async fn individual_asset_failure_omits_engine_symlink_hint_when_root_is_accessible() {
 		let assets = temporary_asset_directory("accessible-root");
 		fs::create_dir_all(assets.join("byte-engine")).unwrap();
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
-		let error = resource_manager.request::<Shader>("byte-engine/missing.test").unwrap_err();
+		let error = resource_manager
+			.request::<Shader>("byte-engine/missing.test")
+			.await
+			.unwrap_err();
 
 		assert_eq!(error, "Failed to load asset. The asset manager could not bake the resource.");
 		let trace = resource_manager
@@ -270,12 +323,12 @@ mod debug_tests {
 #[cfg(all(test, not(debug_assertions)))]
 mod release_tests {
 	use super::ResourceManager;
-	use crate::{resource::storage_backend::tests::TestStorageBackend, resources::material::Shader};
+	use crate::{r#async, resource::storage_backend::tests::TestStorageBackend, resources::material::Shader};
 
-	#[test]
-	fn missing_release_resource_fails_without_running_asset_processors() {
+	#[r#async::test]
+	async fn missing_release_resource_fails_without_running_asset_processors() {
 		let resource_manager = ResourceManager::new(TestStorageBackend::new());
-		let result = resource_manager.request::<Shader>("missing/render-pass.besl");
+		let result = resource_manager.request::<Shader>("missing/render-pass.besl").await;
 
 		assert!(
 			matches!(result, Err(error) if error.starts_with("Resource does not exist in the baked release resource store."))

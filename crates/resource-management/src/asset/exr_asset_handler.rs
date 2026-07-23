@@ -201,6 +201,7 @@ mod tests {
 			.expect("the registered EXR handler must bake the image");
 		let (stored, _) = resource_storage
 			.read(ResourceId::new("studio.exr"))
+			.await
 			.expect("the baked EXR image must be stored");
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored EXR metadata must deserialize");
 		let data = resource_storage
@@ -248,6 +249,6 @@ mod tests {
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
 		assert!(asset_manager.bake("broken.exr", &resource_storage).await.is_err());
-		assert!(resource_storage.read(ResourceId::new("broken.exr")).is_none());
+		assert!(resource_storage.read(ResourceId::new("broken.exr")).await.is_none());
 	}
 }

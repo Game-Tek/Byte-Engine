@@ -17,7 +17,7 @@ The binary payload contains the actual bytes consumed by a renderer, audio syste
 
 ## Typed references
 
-`ResourceManager::request<T>()` returns a typed `Reference<T>`.
+`ResourceManager::request<T>().await` returns a typed `Reference<T>`.
 The reference contains the typed resource metadata and a reader for the payload.
 
 This split lets you:

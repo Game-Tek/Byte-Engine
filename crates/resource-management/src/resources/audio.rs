@@ -20,8 +20,8 @@ mod tests {
 		ProcessedAsset, ReferenceModel, Resource, Solver,
 	};
 
-	#[test]
-	fn audio_reference_solve_preserves_playback_metadata() {
+	#[crate::r#async::test]
+	async fn audio_reference_solve_preserves_playback_metadata() {
 		let audio = Audio {
 			bit_depth: BitDepths::TwentyFour,
 			channel_count: 2,
@@ -34,7 +34,7 @@ mod tests {
 			.store(ProcessedAsset::new(ResourceId::new("sound.audio"), audio), &[1, 2, 3, 4, 5])
 			.unwrap();
 
-		let reference = model.solve(&storage).expect("stored audio metadata");
+		let reference = model.solve(&storage).await.expect("stored audio metadata");
 		assert_eq!(reference.id(), "sound.audio");
 		assert_eq!(reference.hash(), 7);
 		assert_eq!(reference.size, 5);

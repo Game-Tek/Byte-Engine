@@ -1,9 +1,12 @@
 use std::{
 	collections::hash_map::DefaultHasher,
+	fmt,
 	hash::Hasher as _,
 	sync::{Arc, OnceLock},
 };
 
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize as _;
 use utils::{
 	json::{JsonContainerTrait as _, JsonValueTrait as _},
 	Extent,
@@ -252,11 +255,10 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<BESLShaderSettings, 
 	};
 
 	let workgroup_size = if matches!(stage, ShaderTypes::Compute | ShaderTypes::Task | ShaderTypes::Mesh) {
-		Some(parse_workgroup_size(spec.get("workgroup").ok_or_else(|| {
-			format!(
-				"Missing {stage:?} workgroup. The most likely cause is that `workgroup` is absent from the shader's `.besl.bead` file."
-			)
-		})?)?)
+		Some(match spec.get("workgroup") {
+			Some(workgroup) => parse_workgroup_size(workgroup)?,
+			None => WorkgroupSize::DEFAULT.into(),
+		})
 	} else {
 		None
 	};
@@ -312,38 +314,98 @@ fn parse_positive_u32_setting(spec: &BEADType, key: &str, description: &str) -> 
 	Ok(value)
 }
 
-/// Validates the three positive dimensions required by a compute, task, or mesh workgroup contract.
-fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
-	let dimensions = value.as_array().ok_or_else(|| {
-		"Invalid shader workgroup. The most likely cause is that `workgroup` is not an array of three positive integers."
-			.to_string()
-	})?;
-	if dimensions.len() != 3 {
-		return Err(format!(
-			"Invalid shader workgroup length {}. The most likely cause is that `workgroup` does not contain exactly three dimensions.",
-			dimensions.len()
-		));
-	}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The `WorkgroupSize` struct exists to deserialize positional or named shader workgroup dimensions.
+struct WorkgroupSize([u32; 3]);
 
-	let mut parsed = [0; 3];
-	for (index, dimension) in dimensions.iter().enumerate() {
-		let dimension = dimension
-			.as_u64()
-			.and_then(|dimension| u32::try_from(dimension).ok())
-			.ok_or_else(|| {
-				format!(
-				"Invalid shader workgroup dimension {index}. The most likely cause is that the dimension is not a positive 32-bit integer."
-			)
-			})?;
-		if dimension == 0 {
-			return Err(format!(
-				"Invalid zero shader workgroup dimension {index}. The most likely cause is that every workgroup dimension was not configured as at least one."
-			));
+impl WorkgroupSize {
+	const DEFAULT: Self = Self([1; 3]);
+}
+
+impl From<WorkgroupSize> for (u32, u32, u32) {
+	fn from(value: WorkgroupSize) -> Self {
+		(value.0[0], value.0[1], value.0[2])
+	}
+}
+
+impl<'de> serde::Deserialize<'de> for WorkgroupSize {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		struct WorkgroupSizeVisitor;
+
+		impl<'de> Visitor<'de> for WorkgroupSizeVisitor {
+			type Value = WorkgroupSize;
+
+			fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+				formatter.write_str("up to three positive dimensions or an object with width, height, and depth")
+			}
+
+			fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+			where
+				A: SeqAccess<'de>,
+			{
+				const DIMENSION_NAMES: [&str; 3] = ["0", "1", "2"];
+				let mut dimensions = WorkgroupSize::DEFAULT.0;
+				for (index, dimension) in dimensions.iter_mut().enumerate() {
+					let Some(value) = sequence.next_element::<u64>()? else {
+						return Ok(WorkgroupSize(dimensions));
+					};
+					*dimension = positive_dimension::<A::Error>(value, DIMENSION_NAMES[index])?;
+				}
+				if sequence.next_element::<de::IgnoredAny>()?.is_some() {
+					return Err(de::Error::invalid_length(4, &self));
+				}
+				Ok(WorkgroupSize(dimensions))
+			}
+
+			fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+			where
+				A: MapAccess<'de>,
+			{
+				let mut dimensions = WorkgroupSize::DEFAULT.0;
+				let mut present = [false; 3];
+				while let Some(key) = map.next_key::<String>()? {
+					let index = match key.as_str() {
+						"width" => 0,
+						"height" => 1,
+						"depth" => 2,
+						_ => return Err(de::Error::unknown_field(&key, &["width", "height", "depth"])),
+					};
+					if present[index] {
+						return Err(de::Error::duplicate_field(match index {
+							0 => "width",
+							1 => "height",
+							_ => "depth",
+						}));
+					}
+					let value = map.next_value::<u64>()?;
+					dimensions[index] = positive_dimension::<A::Error>(value, &key)?;
+					present[index] = true;
+				}
+				Ok(WorkgroupSize(dimensions))
+			}
 		}
-		parsed[index] = dimension;
-	}
 
-	Ok((parsed[0], parsed[1], parsed[2]))
+		deserializer.deserialize_any(WorkgroupSizeVisitor)
+	}
+}
+
+/// Rejects zero and values that cannot fit the shader workgroup contract.
+fn positive_dimension<E: de::Error>(value: u64, name: &str) -> Result<u32, E> {
+	let value = u32::try_from(value).map_err(|_| E::custom(format!("workgroup dimension `{name}` exceeds u32")))?;
+	if value == 0 {
+		return Err(E::custom(format!("workgroup dimension `{name}` must be at least one")));
+	}
+	Ok(value)
+}
+
+/// Deserializes positional or named workgroup dimensions and defaults omitted dimensions to one.
+fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
+	WorkgroupSize::deserialize(value).map(Into::into).map_err(|error| {
+		format!("Invalid shader workgroup: {error}. The most likely cause is that `workgroup` contains an invalid dimension.")
+	})
 }
 
 /// Parses, links, and reflects a standalone shader before platform lowering starts.
@@ -500,7 +562,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use super::{
-		hash_shader_source, parse_shader_settings, prepare_shader, shader_compilation_docs_path,
+		hash_shader_source, parse_shader_settings, parse_workgroup_size, prepare_shader, shader_compilation_docs_path,
 		shader_compilation_error_message, BESLShaderAssetHandler, BESLShaderSettings, ShaderCompiler, BESL_DOCS_PATH,
 		MACOS_SETUP_DOCS_PATH, WINDOWS_SETUP_DOCS_PATH,
 	};
@@ -710,7 +772,7 @@ mod tests {
 	}
 
 	#[test]
-	fn shader_settings_require_workgroups_and_stage_specific_mesh_limits() {
+	fn shader_settings_default_workgroups_and_require_stage_specific_mesh_limits() {
 		for (stage, expected) in [("Vertex", ShaderTypes::Vertex), ("Fragment", ShaderTypes::Fragment)] {
 			let spec = crate::asset::parse_json(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
 			assert_eq!(
@@ -726,7 +788,12 @@ mod tests {
 		}
 
 		let compute_without_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute" }"#).unwrap();
-		assert!(parse_shader_settings(Some(&compute_without_workgroup)).is_err());
+		assert_eq!(
+			parse_shader_settings(Some(&compute_without_workgroup))
+				.expect("an omitted compute workgroup should use the unit extent")
+				.workgroup_size,
+			Some((1, 1, 1))
+		);
 		let zero_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute", "workgroup": [8, 0, 1] }"#).unwrap();
 		assert!(parse_shader_settings(Some(&zero_workgroup)).is_err());
 
@@ -783,6 +850,46 @@ mod tests {
 		] {
 			let invalid = crate::asset::parse_json(invalid).unwrap();
 			assert!(parse_shader_settings(Some(&invalid)).is_err());
+		}
+	}
+
+	#[test]
+	fn workgroup_dimensions_accept_positional_and_named_omissions() {
+		for (workgroup, expected) in [
+			("[]", (1, 1, 1)),
+			("[32]", (32, 1, 1)),
+			("[32, 4]", (32, 4, 1)),
+			("[32, 4, 2]", (32, 4, 2)),
+			("{}", (1, 1, 1)),
+			("{ width: 32 }", (32, 1, 1)),
+			("{ height: 4 }", (1, 4, 1)),
+			("{ depth: 2, width: 32 }", (32, 1, 2)),
+		] {
+			let value = crate::asset::parse_json(workgroup).expect("workgroup fixture should be valid JSON5");
+			assert_eq!(
+				parse_workgroup_size(&value),
+				Ok(expected),
+				"failed to deserialize {workgroup}"
+			);
+		}
+	}
+
+	#[test]
+	fn workgroup_dimensions_reject_invalid_values_and_shapes() {
+		for workgroup in [
+			"[1, 1, 1, 1]",
+			"[0]",
+			"[-1]",
+			"[4294967296]",
+			"{ width: 0 }",
+			"{ x: 1 }",
+			"\"32\"",
+		] {
+			let value = crate::asset::parse_json(workgroup).expect("workgroup fixture should be valid JSON5");
+			assert!(
+				parse_workgroup_size(&value).is_err(),
+				"accepted invalid workgroup {workgroup}"
+			);
 		}
 	}
 

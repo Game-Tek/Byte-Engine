@@ -12,14 +12,27 @@
   "$defs": {
     "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
     "workgroup": {
-      "type": "array",
-      "description": "Three positive workgroup dimensions: width, height, and depth.",
-      "prefixItems": [
-        { "$ref": "#/$defs/positiveInteger" },
-        { "$ref": "#/$defs/positiveInteger" },
-        { "$ref": "#/$defs/positiveInteger" }
-      ],
-      "items": false
+      "description": "Positive workgroup dimensions. Omitted width, height, or depth dimensions default to 1.",
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/positiveInteger" },
+            { "$ref": "#/$defs/positiveInteger" },
+            { "$ref": "#/$defs/positiveInteger" }
+          ],
+          "items": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "width": { "$ref": "#/$defs/positiveInteger" },
+            "height": { "$ref": "#/$defs/positiveInteger" },
+            "depth": { "$ref": "#/$defs/positiveInteger" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "raster": {
       "type": "object",
@@ -30,7 +43,7 @@
     "compute": {
       "type": "object",
       "properties": { "$schema": { "type": "string" }, "stage": { "const": "Compute" }, "workgroup": { "$ref": "#/$defs/workgroup" } },
-      "required": ["stage", "workgroup"],
+      "required": ["stage"],
       "additionalProperties": false
     },
     "task": {
@@ -41,7 +54,7 @@
         "workgroup": { "$ref": "#/$defs/workgroup" },
         "maximum_mesh_threadgroups": { "$ref": "#/$defs/positiveInteger" }
       },
-      "required": ["stage", "workgroup", "maximum_mesh_threadgroups"],
+      "required": ["stage", "maximum_mesh_threadgroups"],
       "additionalProperties": false
     },
     "mesh": {
@@ -53,7 +66,7 @@
         "maximum_vertices": { "$ref": "#/$defs/positiveInteger" },
         "maximum_primitives": { "$ref": "#/$defs/positiveInteger" }
       },
-      "required": ["stage", "workgroup", "maximum_vertices", "maximum_primitives"],
+      "required": ["stage", "maximum_vertices", "maximum_primitives"],
       "additionalProperties": false
     }
   }

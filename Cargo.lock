@@ -227,6 +227,7 @@ dependencies = [
  "byte-engine-resource-management",
  "byte-engine-utils",
  "colored",
+ "compio",
  "ctrlc",
  "downcast-rs 2.0.2",
  "dual_quaternion",
@@ -234,6 +235,7 @@ dependencies = [
  "fontdue",
  "half",
  "hidapi",
+ "kanal",
  "log",
  "mid",
  "oxhttp",
@@ -1405,6 +1407,16 @@ checksum = "733a844dbd6fef128e98cb4487b887cb55454d92cd9994b1bafe004fabbe670c"
 dependencies = [
  "serde",
  "ucd-trie",
+]
+
+[[package]]
+name = "kanal"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e3953adf0cd667798b396c2fa13552d6d9b3269d7dd1154c4c416442d1ff574"
+dependencies = [
+ "futures-core",
+ "lock_api",
 ]
 
 [[package]]

@@ -11,6 +11,9 @@
 //! Follow the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
 //! for the complete application setup sequence.
 
+// Bound ready work while the temporary Compio runtime still shares the application thread.
+const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
+
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
 ///
@@ -57,9 +60,12 @@ pub struct GraphicsApplication {
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
 	gamepad_device_class_handle: Option<input::device_class::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
+	tasks: SmallVec<[compio::runtime::JoinHandle<()>; 64]>,
 	renderer: Renderer,
 
 	threads: SmallVec<[Thread; 64]>,
+
+	runtime: compio::runtime::Runtime,
 
 	#[cfg(debug_assertions)]
 	ttff: MediaTime,
@@ -159,10 +165,17 @@ impl Application for GraphicsApplication {
 			input_system,
 			gamepad_system,
 			gamepad_device_class_handle: None,
-			renderer,
 			resource_manager,
+			tasks: SmallVec::new(),
+			renderer,
 
 			threads: SmallVec::new(),
+			runtime: compio::runtime::Runtime::builder()
+				.event_interval(ASYNC_TASK_POLL_BUDGET_PER_TICK)
+				.build()
+				.expect(
+					"Application async runtime could not start. The most likely cause is unavailable platform I/O support.",
+				),
 
 			close: false,
 
@@ -350,6 +363,12 @@ impl GraphicsApplication {
 		}
 
 		{
+			let span = debug_span!("GraphicsApplication::drive_async_runtime");
+			let _enter = span.enter();
+			self.drive_async_runtime();
+		}
+
+		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
 			let frame_allocator = &self.application.frame_allocator;
@@ -390,8 +409,31 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Stops worker threads before recording final debug run stats.
+	/// Advances ready application tasks and polls completed I/O without waiting for new events.
+	fn drive_async_runtime(&self) {
+		self.runtime.enter(|| {
+			self.runtime.poll_with(Some(std::time::Duration::ZERO));
+			self.runtime.run();
+		});
+	}
+
+	/// Cancels application tasks and drives their destructors before renderer resources are released.
+	fn stop_async_tasks(&mut self) {
+		if self.tasks.is_empty() {
+			return;
+		}
+
+		let tasks = std::mem::take(&mut self.tasks);
+		self.runtime.block_on(async move {
+			for task in tasks {
+				let _ = task.cancel().await;
+			}
+		});
+	}
+
+	/// Stops asynchronous tasks and worker threads before recording final debug run stats.
 	fn close_workers_and_record_stats(&mut self) {
+		self.stop_async_tasks();
 		let _ = self.application_events.0.send(Events::Close);
 		self.threads.drain(..).for_each(|thread| {
 			let _ = thread.join();
@@ -494,6 +536,14 @@ impl GraphicsApplication {
 	}
 }
 
+impl Drop for GraphicsApplication {
+	fn drop(&mut self) {
+		// `tick_with` normally stops tasks explicitly. This fallback also covers
+		// setup errors and callers that drop the application without closing it.
+		self.stop_async_tasks();
+	}
+}
+
 impl Parameters for GraphicsApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.application.get_parameter(name)
@@ -580,79 +630,31 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
+	let runtime = &application.runtime;
+	let tasks = &mut application.tasks;
 	let renderer = &mut application.renderer;
 	let transfer_queue_handle = renderer.transfer_queue_handle;
 	let context = renderer.context_mut();
 	let mut transfer_queue = context.queue(transfer_queue_handle);
-	let transfer_finished_synchronizer = context.create_synchronizer(Some("Transfer Thread Synchronizer"), true);
-	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Transfer Command Buffer"));
+	let transfer_finished_synchronizer = context.create_synchronizer(Some("Async Resource Transfer Synchronizer"), true);
+	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Async Resource Transfer Command Buffer"));
 
-	const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 32;
-	const NO_WORK_SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1);
-
-	let upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]> = context.build_buffer(
+	let upload_buffer: ghi::BufferHandle<
+		[u8; rendering::pipelines::visibility::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT],
+	> = context.build_buffer(
 		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 			.name("Renderer Async Upload Buffer")
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
 
-	let (resource_manager_client, mut resource_manager) =
+	let (resource_manager_client, resource_manager) =
 		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
-
-	application
-		.threads
-		.push(Thread::new(application.application_events.1.clone(), {
-			move |mut application_events| {
-				let mut started_frame_count = 0;
-
-				loop {
-					if let Ok(Events::Close) = application_events.try_recv() {
-						break;
-					}
-
-					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
-
-					if let Some(completed_frame) = started_frame.completed_frame {
-						resource_manager.signal_completed_frame(completed_frame);
-					}
-
-					if !resource_manager.drain_pending_upload_work() {
-						std::thread::sleep(NO_WORK_SLEEP_DURATION);
-						started_frame_count += 1;
-						continue;
-					}
-
-					let mut frame = started_frame.frame;
-					let frame_key = frame.key();
-
-					let mut transfer_recording =
-						frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
-					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
-					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
-
-					let prepared_uploads =
-						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
-
-					if prepared_uploads.recorded_work {
-						// The transfer worker writes into GHI CPU shadow memory while recording.
-						// Flush the upload buffer before the submitted copy commands read it.
-						transfer_recording.sync_buffer(upload_buffer);
-						transfer_recording.execute(transfer_finished_synchronizer);
-					} else {
-						drop(transfer_recording);
-					}
-
-					resource_manager.track_submitted_uploads(frame_key, prepared_uploads.completions);
-
-					if !prepared_uploads.recorded_work {
-						// TODO: maybe get GHI to track work submissions
-						std::thread::sleep(NO_WORK_SLEEP_DURATION);
-					}
-
-					started_frame_count += 1;
-				}
-			}
-		}));
+	tasks.push(runtime.spawn(resource_manager.run(
+		transfer_queue,
+		transfer_finished_synchronizer,
+		transfer_command_buffer,
+		upload_buffer,
+	)));
 
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,

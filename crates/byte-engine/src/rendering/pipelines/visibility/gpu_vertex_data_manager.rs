@@ -102,9 +102,9 @@ impl GPUVertexDataManager {
 	/// Writes a mesh resource to GPU storage and returns its GPU mesh data.
 	/// Does not check if the resource is already loaded.
 	/// This operation uploads mesh data but does not make the mesh ready for rendering.
-	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'slf, 'buffer>(
+	pub async fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'slf, 'buffer>(
 		&'slf mut self,
-		c: &mut ghi::implementation::CommandBufferRecording,
+		c: &mut ghi::implementation::CommandBufferRecording<'_>,
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 		resource_request: &mut Reference<Mesh>,
@@ -299,7 +299,7 @@ impl GPUVertexDataManager {
 			streams.push(resource_management::stream::StreamMut::new("Vertex.Weights", weights_buffer));
 		}
 
-		let Ok(load_target) = crate::rendering::resource_loading::block_on(resource_request.load(streams.into())) else {
+		let Ok(load_target) = resource_request.load(streams.into()).await else {
 			log::warn!("Failed to load mesh data");
 			return None;
 		};

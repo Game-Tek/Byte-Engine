@@ -4,10 +4,26 @@ use super::AudioGraph;
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
-/// Next, pass the graph to `loop`, [`gain`], or [`varispeed`], or publish it through
+/// Next, pass the graph to [`round_robin`], `loop`, [`gain`], or [`varispeed`],
+/// or publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 	AudioGraph::sample(resource_id)
+}
+
+/// Selects the next input chain each time this graph is submitted for playback.
+///
+/// Inputs can contain any supported source, processing, or nested round-robin
+/// chain. A looping selected chain remains selected until that play is stopped.
+/// Keep the returned graph and pass it mutably to
+/// [`super::AudioGraphFactory::create`] again to select the next input.
+///
+/// # Panics
+///
+/// Panics if no inputs are provided or if the combined graph would contain
+/// more than 64 nodes.
+pub fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
+	AudioGraph::round_robin(inputs)
 }
 
 /// Repeats the input graph until its lifecycle handle is deleted.
@@ -17,7 +33,7 @@ pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 ///
 /// # Panics
 ///
-/// Panics if the input graph already contains eight nodes.
+/// Panics if the input graph already contains 64 nodes.
 pub fn r#loop(input: AudioGraph) -> AudioGraph {
 	input.looping()
 }
@@ -30,7 +46,7 @@ pub fn r#loop(input: AudioGraph) -> AudioGraph {
 /// # Panics
 ///
 /// Panics if `gain` is negative, infinite, or not a number, or if the input
-/// graph already contains eight nodes.
+/// graph already contains 64 nodes.
 pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 	input.with_gain(gain)
 }
@@ -46,7 +62,7 @@ pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 ///
 /// Panics if `rate` is outside `0.25..=4.0`, infinite, or not a number, if the
 /// input already contains a varispeed node, or if the graph already contains
-/// eight nodes.
+/// 64 nodes.
 pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 	input.with_varispeed(rate)
 }
@@ -62,7 +78,7 @@ pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 ///
 /// Panics if `ratio` is outside `0.5..=2.0`, infinite, or not a number, if the
 /// input already contains a pitch-shift node, or if the graph already contains
-/// eight nodes.
+/// 64 nodes.
 pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 	input.with_pitch_shift(ratio)
 }

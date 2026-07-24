@@ -5,6 +5,11 @@
 //! default audio worker validates and compiles each graph before its sample
 //! resources cross to the audio thread.
 
+use std::{
+	sync::atomic::{AtomicU64, Ordering},
+	time::{SystemTime, UNIX_EPOCH},
+};
+
 use smallbox::{smallbox, space::S4, SmallBox};
 use smallvec::SmallVec;
 
@@ -18,11 +23,14 @@ pub mod fns;
 mod pitch_shift;
 
 const INLINE_AUDIO_NODE_CAPACITY: usize = 8;
-const INLINE_ROUND_ROBIN_INPUT_CAPACITY: usize = 4;
+const INLINE_SELECTOR_INPUT_CAPACITY: usize = 4;
 pub(crate) const MAX_AUDIO_GRAPH_NODES: usize = 64;
+const RANDOM_STATE_INCREMENT: u64 = 0x9E37_79B9_7F4A_7C15;
+static NEXT_RANDOM_SEED: AtomicU64 = AtomicU64::new(0x243F_6A88_85A3_08D3);
 pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CAPACITY]>;
 pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
-type SelectedRoundRobins = SmallVec<[AudioNodeId; MAX_AUDIO_GRAPH_NODES]>;
+type SelectorInputs = SmallVec<[AudioNodeId; INLINE_SELECTOR_INPUT_CAPACITY]>;
+type SelectorCommits = SmallVec<[SelectorCommit; MAX_AUDIO_GRAPH_NODES]>;
 
 /// The `AudioNodeId` struct identifies one node inside an [`AudioGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,11 +39,11 @@ struct AudioNodeId(usize);
 /// The `AudioGraph` struct describes resource-backed sources and the nodes that
 /// select and process one source for the default audio output.
 ///
-/// Build it with [`fns::sample`], [`fns::round_robin`], `loop`, [`fns::gain`],
-/// [`fns::varispeed`], and [`fns::pitch_shift`]. Next, submit the same mutable
-/// graph again through
+/// Build it with [`fns::sample`], [`fns::round_robin`], [`fns::random`], `loop`,
+/// [`fns::gain`], [`fns::varispeed`], and [`fns::pitch_shift`]. Next, submit the
+/// same mutable graph again through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`] to advance
-/// its round-robin nodes. Stop its current play through
+/// its selector nodes. Stop its current play through
 /// [`crate::gameplay::world::DefaultWorld::delete_channel_mut`].
 #[must_use = "Audio graphs do not play until they are published through the world's audio graph factory"]
 #[derive(Debug, Clone, PartialEq)]
@@ -59,13 +67,38 @@ impl AudioGraph {
 
 	/// Combines independent input graphs under one stateful selector node.
 	fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
+		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "round-robin");
+		let output = AudioNodeId(nodes.len());
+		nodes.push(SmallBox::new(AudioNode::RoundRobin(Box::new(RoundRobinNode {
+			inputs: input_ids,
+			next_index: 0,
+		}))));
+		Self { nodes, output }
+	}
+
+	/// Combines independent input graphs under one non-repeating random selector.
+	fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
+		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "random");
+		let output = AudioNodeId(nodes.len());
+		nodes.push(SmallBox::new(AudioNode::Random(Box::new(RandomNode::new(input_ids)))));
+		Self { nodes, output }
+	}
+
+	/// Remaps independent graph inputs into one selector-ready node list.
+	fn combine_selector_inputs(
+		inputs: impl IntoIterator<Item = AudioGraph>,
+		selector_name: &str,
+	) -> (
+		SmallVec<[SmallBox<AudioNode, S4>; INLINE_AUDIO_NODE_CAPACITY]>,
+		SelectorInputs,
+	) {
 		let mut nodes = SmallVec::new();
 		let mut input_ids = SmallVec::new();
 
 		for input in inputs {
 			assert!(
 				nodes.len() + input.nodes.len() < MAX_AUDIO_GRAPH_NODES,
-				"Audio graph is too large. Combining the round-robin inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
+				"Audio graph is too large. Combining the {selector_name} inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
 			);
 			let offset = nodes.len();
 			input_ids.push(AudioNodeId(input.output.0 + offset));
@@ -77,14 +110,9 @@ impl AudioGraph {
 
 		assert!(
 			!input_ids.is_empty(),
-			"Invalid audio round-robin node. No input chains were provided."
+			"Invalid audio {selector_name} node. No input chains were provided."
 		);
-		let output = AudioNodeId(nodes.len());
-		nodes.push(SmallBox::new(AudioNode::RoundRobin(Box::new(RoundRobinNode {
-			inputs: input_ids,
-			next_index: 0,
-		}))));
-		Self { nodes, output }
+		(nodes, input_ids)
 	}
 
 	/// Appends a loop node and makes it the graph output.
@@ -145,14 +173,14 @@ impl AudioGraph {
 	}
 
 	/// Validates the complete authored graph and compiles its current selection
-	/// without advancing round-robin state.
+	/// without advancing selector state.
 	pub(crate) fn compile(&self) -> Result<CompiledAudioGraph, String> {
 		self.compile_selection().map(|(compiled, _)| compiled)
 	}
 
-	/// Resolves the current path and returns the round-robin nodes that a
-	/// successful factory submission must advance.
-	fn compile_selection(&self) -> Result<(CompiledAudioGraph, SelectedRoundRobins), String> {
+	/// Resolves the current path and returns the choices that a successful
+	/// factory submission must commit.
+	fn compile_selection(&self) -> Result<(CompiledAudioGraph, SelectorCommits), String> {
 		if self.nodes.is_empty() || self.nodes.len() > MAX_AUDIO_GRAPH_NODES {
 			return Err(format!(
 				"Invalid audio graph. A graph must contain between 1 and {MAX_AUDIO_GRAPH_NODES} nodes."
@@ -160,22 +188,32 @@ impl AudioGraph {
 		}
 		self.validate()?;
 
-		let mut selected_round_robins = SelectedRoundRobins::new();
-		let compiled = self.compile_selected(self.output, &mut selected_round_robins)?;
-		Ok((compiled, selected_round_robins))
+		let mut selector_commits = SelectorCommits::new();
+		let compiled = self.compile_selected(self.output, &mut selector_commits)?;
+		Ok((compiled, selector_commits))
 	}
 
 	/// Commits selection state only after the compiled play has been published.
-	fn advance_round_robins(&mut self, selected_round_robins: &SelectedRoundRobins) {
-		for node_id in selected_round_robins {
-			let AudioNode::RoundRobin(node) = &mut *self.nodes[node_id.0] else {
-				unreachable!("validated round-robin selection referred to another node type");
-			};
-			node.next_index = (node.next_index + 1) % node.inputs.len();
+	fn commit_selectors(&mut self, selector_commits: &SelectorCommits) {
+		for commit in selector_commits {
+			match *commit {
+				SelectorCommit::RoundRobin { node_id } => {
+					let AudioNode::RoundRobin(node) = &mut *self.nodes[node_id.0] else {
+						unreachable!("validated round-robin selection referred to another node type");
+					};
+					node.next_index = (node.next_index + 1) % node.inputs.len();
+				}
+				SelectorCommit::Random { node_id, selection } => {
+					let AudioNode::Random(node) = &mut *self.nodes[node_id.0] else {
+						unreachable!("validated random selection referred to another node type");
+					};
+					node.commit(selection);
+				}
+			}
 		}
 	}
 
-	/// Validates every selectable path without changing round-robin state.
+	/// Validates every selectable path without changing selector state.
 	fn validate(&self) -> Result<(), String> {
 		if self.output.0 >= self.nodes.len() {
 			return Err("Invalid audio graph output. The output refers to a node outside this graph.".to_string());
@@ -230,6 +268,19 @@ impl AudioGraph {
 				}
 				combined
 			}
+			AudioNode::Random(node) => {
+				if node.inputs.is_empty() {
+					return Err("Invalid audio random node. No input chains were provided.".to_string());
+				}
+				if node.last_index.is_some_and(|index| index >= node.inputs.len()) {
+					return Err("Invalid audio random node state. Its previous selection is outside its inputs.".to_string());
+				}
+				let mut combined = NodeProperties::default();
+				for input in &node.inputs {
+					combined.include(self.validate_node(*input, cached, visiting)?);
+				}
+				combined
+			}
 			AudioNode::Loop { input } => self.validate_node(*input, cached, visiting)?,
 			AudioNode::Gain { input, gain } => {
 				if !gain.is_finite() || *gain < 0.0 {
@@ -276,7 +327,7 @@ impl AudioGraph {
 	fn compile_selected(
 		&self,
 		node_id: AudioNodeId,
-		selected_round_robins: &mut SelectedRoundRobins,
+		selector_commits: &mut SelectorCommits,
 	) -> Result<CompiledAudioGraph, String> {
 		let node = self
 			.nodes
@@ -292,26 +343,31 @@ impl AudioGraph {
 			}),
 			AudioNode::RoundRobin(node) => {
 				let selected = node.inputs[node.next_index % node.inputs.len()];
-				selected_round_robins.push(node_id);
-				self.compile_selected(selected, selected_round_robins)
+				selector_commits.push(SelectorCommit::RoundRobin { node_id });
+				self.compile_selected(selected, selector_commits)
+			}
+			AudioNode::Random(node) => {
+				let selection = node.selection();
+				selector_commits.push(SelectorCommit::Random { node_id, selection });
+				self.compile_selected(node.inputs[selection.index], selector_commits)
 			}
 			AudioNode::Loop { input } => {
-				let mut compiled = self.compile_selected(*input, selected_round_robins)?;
+				let mut compiled = self.compile_selected(*input, selector_commits)?;
 				compiled.playback_mode = SamplePlaybackMode::Loop;
 				Ok(compiled)
 			}
 			AudioNode::Gain { input, gain } => {
-				let mut compiled = self.compile_selected(*input, selected_round_robins)?;
+				let mut compiled = self.compile_selected(*input, selector_commits)?;
 				compiled.processors.push(AudioProcessor::Gain(*gain));
 				Ok(compiled)
 			}
 			AudioNode::Varispeed { input, rate } => {
-				let mut compiled = self.compile_selected(*input, selected_round_robins)?;
+				let mut compiled = self.compile_selected(*input, selector_commits)?;
 				compiled.playback_rate = PlaybackRate::from_rate(*rate);
 				Ok(compiled)
 			}
 			AudioNode::PitchShift { input, ratio } => {
-				let mut compiled = self.compile_selected(*input, selected_round_robins)?;
+				let mut compiled = self.compile_selected(*input, selector_commits)?;
 				if *ratio != 1.0 {
 					compiled.processors.push(AudioProcessor::PitchShift(*ratio));
 				}
@@ -352,29 +408,29 @@ impl AudioGraphFactory {
 
 	/// Compiles and publishes a graph with a new lifecycle handle.
 	///
-	/// This advances each round-robin node on the selected path. Keep the graph
-	/// and submit it again to play its next selection.
+	/// This commits each selector node on the selected path. Keep the graph and
+	/// submit it again to play its next selection.
 	///
 	/// Send the returned handle through
 	/// [`crate::gameplay::world::DefaultWorld::delete_channel_mut`] to stop the
 	/// graph.
 	pub fn create(&mut self, graph: &mut AudioGraph) -> Handle {
-		let (compiled, selected_round_robins) = compile_for_factory(graph);
+		let (compiled, selector_commits) = compile_for_factory(graph);
 		let handle = self.compiled_graphs.create(compiled);
-		graph.advance_round_robins(&selected_round_robins);
+		graph.commit_selectors(&selector_commits);
 		handle
 	}
 
 	/// Compiles and publishes a replacement with an existing lifecycle handle.
 	///
-	/// This advances each round-robin node on the selected path.
+	/// This commits each selector node on the selected path.
 	///
 	/// Use this to replace a graph while preserving the identity returned by
 	/// [`Self::create`].
 	pub fn derive(&mut self, handle: Handle, graph: &mut AudioGraph) {
-		let (compiled, selected_round_robins) = compile_for_factory(graph);
+		let (compiled, selector_commits) = compile_for_factory(graph);
 		self.compiled_graphs.derive(handle, compiled);
-		graph.advance_round_robins(&selected_round_robins);
+		graph.commit_selectors(&selector_commits);
 	}
 
 	pub(crate) fn listener(&self) -> DefaultListener<CreateMessage<CompiledAudioGraph>> {
@@ -388,7 +444,7 @@ impl AudioGraphFactory {
 
 /// Compiles an authored graph on its creating thread before the factory sends
 /// any work to the audio worker.
-fn compile_for_factory(graph: &AudioGraph) -> (CompiledAudioGraph, SelectedRoundRobins) {
+fn compile_for_factory(graph: &AudioGraph) -> (CompiledAudioGraph, SelectorCommits) {
 	graph
 		.compile_selection()
 		.unwrap_or_else(|error| panic!("Audio graph was not created. The authored graph is invalid: {error}"))
@@ -399,6 +455,7 @@ fn compile_for_factory(graph: &AudioGraph) -> (CompiledAudioGraph, SelectedRound
 enum AudioNode {
 	Sample { resource_id: String },
 	RoundRobin(Box<RoundRobinNode>),
+	Random(Box<RandomNode>),
 	Loop { input: AudioNodeId },
 	Gain { input: AudioNodeId, gain: f32 },
 	Varispeed { input: AudioNodeId, rate: f32 },
@@ -407,11 +464,16 @@ enum AudioNode {
 
 impl AudioNode {
 	/// Moves every input connection by the offset assigned while graphs are
-	/// merged under a round-robin node.
+	/// merged under a selector node.
 	fn remap_inputs(&mut self, offset: usize) {
 		match self {
 			Self::Sample { .. } => {}
 			Self::RoundRobin(node) => {
+				for input in &mut node.inputs {
+					input.0 += offset;
+				}
+			}
+			Self::Random(node) => {
 				for input in &mut node.inputs {
 					input.0 += offset;
 				}
@@ -428,8 +490,92 @@ impl AudioNode {
 /// selection state for an authored round-robin node.
 #[derive(Debug, Clone, PartialEq)]
 struct RoundRobinNode {
-	inputs: SmallVec<[AudioNodeId; INLINE_ROUND_ROBIN_INPUT_CAPACITY]>,
+	inputs: SelectorInputs,
 	next_index: usize,
+}
+
+/// The `RandomNode` struct keeps branch connections and per-instance
+/// pseudo-random state for a non-repeating authored selector.
+#[derive(Debug, Clone, PartialEq)]
+struct RandomNode {
+	inputs: SelectorInputs,
+	state: u64,
+	last_index: Option<usize>,
+}
+
+impl RandomNode {
+	/// Creates a random selector with state unique to this authored node.
+	fn new(inputs: SelectorInputs) -> Self {
+		Self {
+			inputs,
+			state: new_random_seed(),
+			last_index: None,
+		}
+	}
+
+	/// Peeks at the next selection without changing authored graph state.
+	fn selection(&self) -> RandomSelection {
+		let next_state = self.state.wrapping_add(RANDOM_STATE_INCREMENT);
+		let random = mix_random_bits(next_state);
+		let index = match (self.inputs.len(), self.last_index) {
+			(1, _) => 0,
+			(input_count, Some(previous)) => {
+				// Draw from N - 1 slots, then skip the previous input. This
+				// preserves a uniform choice without retrying or allocating.
+				let slot = (random % (input_count - 1) as u64) as usize;
+				if slot >= previous {
+					slot + 1
+				} else {
+					slot
+				}
+			}
+			(input_count, None) => (random % input_count as u64) as usize,
+		};
+		RandomSelection { index, next_state }
+	}
+
+	/// Commits the selection that was published by the graph factory.
+	fn commit(&mut self, selection: RandomSelection) {
+		debug_assert_eq!(self.selection(), selection);
+		self.state = selection.next_state;
+		self.last_index = Some(selection.index);
+	}
+}
+
+/// The `RandomSelection` struct pairs one selected input with the generator
+/// state to commit after publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RandomSelection {
+	index: usize,
+	next_state: u64,
+}
+
+/// Records one state transition to apply after a graph is published.
+#[derive(Debug, Clone, Copy)]
+enum SelectorCommit {
+	RoundRobin {
+		node_id: AudioNodeId,
+	},
+	Random {
+		node_id: AudioNodeId,
+		selection: RandomSelection,
+	},
+}
+
+/// Produces a distinct initial state without adding work to the audio thread.
+fn new_random_seed() -> u64 {
+	let sequence = NEXT_RANDOM_SEED.fetch_add(RANDOM_STATE_INCREMENT, Ordering::Relaxed);
+	let time = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map_or(0, |duration| duration.as_nanos() as u64);
+	mix_random_bits(sequence ^ time.rotate_left(17))
+}
+
+/// Mixes one generator state into well-distributed pseudo-random bits.
+fn mix_random_bits(mut value: u64) -> u64 {
+	value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+	value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+	value ^ (value >> 31)
 }
 
 /// The `NodeProperties` struct summarizes constraints present on any selectable
@@ -591,16 +737,30 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 #[cfg(test)]
 mod tests {
 	use super::{
-		fns::{gain, pitch_shift, r#loop, round_robin, sample, varispeed},
+		fns::{gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
 		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate,
 		SamplePlaybackMode,
 	};
 	use crate::core::listener::Listener;
 
 	fn compile_submission(graph: &mut AudioGraph) -> CompiledAudioGraph {
-		let (compiled, selected_round_robins) = graph.compile_selection().expect("valid graph");
-		graph.advance_round_robins(&selected_round_robins);
+		let (compiled, selector_commits) = graph.compile_selection().expect("valid graph");
+		graph.commit_selectors(&selector_commits);
 		compiled
+	}
+
+	/// Fixes a random node's authored state so behavior tests are reproducible.
+	fn set_random_state(graph: &mut AudioGraph, state: u64, last_index: Option<usize>) {
+		let node = graph
+			.nodes
+			.iter_mut()
+			.find_map(|node| match &mut **node {
+				AudioNode::Random(node) => Some(node),
+				_ => None,
+			})
+			.expect("graph must contain a random node");
+		node.state = state;
+		node.last_index = last_index;
 	}
 
 	#[test]
@@ -727,6 +887,133 @@ mod tests {
 	}
 
 	#[test]
+	fn random_selects_all_inputs_without_consecutive_repeats() {
+		let mut graph = random([sample("audio/a.wav"), sample("audio/b.wav"), sample("audio/c.wav")]);
+		set_random_state(&mut graph, 0, None);
+		let mut previous = None;
+		let mut seen = [false; 3];
+
+		for _ in 0..96 {
+			let resource_id = compile_submission(&mut graph).resource_id;
+			assert_ne!(previous.as_deref(), Some(resource_id.as_str()));
+			match resource_id.as_str() {
+				"audio/a.wav" => seen[0] = true,
+				"audio/b.wav" => seen[1] = true,
+				"audio/c.wav" => seen[2] = true,
+				_ => panic!("random selector chose an unknown input"),
+			}
+			previous = Some(resource_id);
+		}
+
+		assert!(seen.into_iter().all(|was_selected| was_selected));
+	}
+
+	#[test]
+	fn random_selects_complete_processing_chains() {
+		let mut graph = gain(
+			random([
+				gain(r#loop(sample("audio/a.wav")), 0.5),
+				varispeed(sample("audio/b.wav"), 1.5),
+			]),
+			0.25,
+		);
+		set_random_state(&mut graph, 0, None);
+
+		let first = compile_submission(&mut graph);
+		let second = compile_submission(&mut graph);
+		assert_ne!(first.resource_id, second.resource_id);
+		for compiled in [first, second] {
+			match compiled.resource_id.as_str() {
+				"audio/a.wav" => {
+					assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
+					assert_eq!(
+						&compiled.processors[..],
+						&[AudioProcessor::Gain(0.5), AudioProcessor::Gain(0.25)]
+					);
+				}
+				"audio/b.wav" => {
+					assert_eq!(compiled.playback_rate, PlaybackRate::from_rate(1.5));
+					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.25)]);
+				}
+				_ => panic!("random selector chose an unknown input"),
+			}
+		}
+	}
+
+	#[test]
+	fn random_factory_submissions_commit_the_published_choice() {
+		let mut graph = random([sample("audio/a.wav"), sample("audio/b.wav")]);
+		set_random_state(&mut graph, 0, None);
+		let expected_first = graph.compile().expect("valid graph").resource_id;
+		assert_eq!(graph.compile().expect("valid graph").resource_id, expected_first);
+		let mut factory = AudioGraphFactory::new();
+		let mut listener = factory.listener();
+
+		factory.create(&mut graph);
+		factory.create(&mut graph);
+		let first = listener.read().expect("first random selection");
+		let second = listener.read().expect("second random selection");
+
+		assert_eq!(first.data().resource_id, expected_first);
+		assert_ne!(second.data().resource_id, first.data().resource_id);
+	}
+
+	#[test]
+	fn nested_random_nodes_advance_only_on_the_selected_path() {
+		let mut graph = round_robin([random([sample("audio/a.wav"), sample("audio/b.wav")]), sample("audio/c.wav")]);
+		set_random_state(&mut graph, 0, None);
+
+		let sequence = (0..6).map(|_| compile_submission(&mut graph).resource_id).collect::<Vec<_>>();
+
+		assert_eq!(sequence[1], "audio/c.wav");
+		assert_eq!(sequence[3], "audio/c.wav");
+		assert_eq!(sequence[5], "audio/c.wav");
+		assert_ne!(sequence[0], sequence[2]);
+		assert_eq!(sequence[0], sequence[4]);
+	}
+
+	#[test]
+	fn cloned_graphs_keep_independent_random_state() {
+		let mut original = random([sample("audio/a.wav"), sample("audio/b.wav"), sample("audio/c.wav")]);
+		set_random_state(&mut original, 0, None);
+		compile_submission(&mut original);
+		let mut cloned = original.clone();
+
+		let cloned_next = cloned.compile().expect("valid clone").resource_id;
+		assert_eq!(compile_submission(&mut original).resource_id, cloned_next);
+		compile_submission(&mut original);
+		assert_eq!(compile_submission(&mut cloned).resource_id, cloned_next);
+	}
+
+	#[test]
+	fn one_input_random_selects_the_same_chain_each_time() {
+		let mut graph = random([gain(sample("audio/a.wav"), 0.5)]);
+
+		for _ in 0..3 {
+			let compiled = compile_submission(&mut graph);
+			assert_eq!(compiled.resource_id, "audio/a.wav");
+			assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "No input chains were provided")]
+	fn random_rejects_empty_inputs() {
+		let _ = random([]);
+	}
+
+	#[test]
+	fn random_accepts_the_node_limit_and_rejects_larger_graphs() {
+		let inputs = (0..63).map(|index| sample(format!("audio/{index}.wav")));
+		let maximum = random(inputs);
+		assert_eq!(maximum.nodes.len(), 64);
+		assert!(maximum.compile().is_ok());
+
+		let too_many = std::panic::catch_unwind(|| random((0..64).map(|index| sample(format!("audio/{index}.wav")))));
+		assert!(too_many.is_err());
+	}
+
+	#[test]
 	fn invalid_unselected_branch_does_not_advance_the_cursor() {
 		let mut graph = round_robin([sample("audio/a.wav"), sample("")]);
 		assert!(graph.compile().unwrap_err().contains("resource ID is empty"));
@@ -741,7 +1028,24 @@ mod tests {
 	}
 
 	#[test]
-	fn compiler_rejects_cycles_and_disconnected_round_robin_inputs() {
+	fn invalid_unselected_branch_does_not_advance_random_state() {
+		let mut expected = random([sample("audio/a.wav"), sample("audio/b.wav")]);
+		set_random_state(&mut expected, 0, None);
+		let expected_first = compile_submission(&mut expected).resource_id;
+
+		let mut graph = random([sample("audio/a.wav"), sample("")]);
+		set_random_state(&mut graph, 0, None);
+		assert!(graph.compile().unwrap_err().contains("resource ID is empty"));
+		let AudioNode::Sample { resource_id } = &mut *graph.nodes[1] else {
+			panic!("second input must remain a sample node");
+		};
+		*resource_id = "audio/b.wav".to_string();
+
+		assert_eq!(compile_submission(&mut graph).resource_id, expected_first);
+	}
+
+	#[test]
+	fn compiler_rejects_cycles_and_disconnected_selector_inputs() {
 		let mut cyclic = gain(sample("audio/a.wav"), 0.5);
 		let AudioNode::Gain { input, .. } = &mut *cyclic.nodes[cyclic.output.0] else {
 			panic!("graph output must be a gain node");
@@ -752,6 +1056,13 @@ mod tests {
 		let mut disconnected = round_robin([sample("audio/a.wav"), sample("audio/b.wav")]);
 		let AudioNode::RoundRobin(node) = &mut *disconnected.nodes[disconnected.output.0] else {
 			panic!("graph output must be a round-robin node");
+		};
+		node.inputs.pop();
+		assert!(disconnected.compile().unwrap_err().contains("not connected"));
+
+		let mut disconnected = random([sample("audio/a.wav"), sample("audio/b.wav")]);
+		let AudioNode::Random(node) = &mut *disconnected.nodes[disconnected.output.0] else {
+			panic!("graph output must be a random node");
 		};
 		node.inputs.pop();
 		assert!(disconnected.compile().unwrap_err().contains("not connected"));

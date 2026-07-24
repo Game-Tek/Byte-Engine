@@ -4,8 +4,8 @@ use super::AudioGraph;
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
-/// Next, pass the graph to [`round_robin`], `loop`, [`gain`], or [`varispeed`],
-/// or publish it through
+/// Next, pass the graph to [`round_robin`], [`random`], `loop`, [`gain`], or
+/// [`varispeed`], or publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 	AudioGraph::sample(resource_id)
@@ -24,6 +24,21 @@ pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 /// more than 64 nodes.
 pub fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 	AudioGraph::round_robin(inputs)
+}
+
+/// Selects a random input chain each time this graph is submitted for playback.
+///
+/// The same input is never selected twice in sequence when two or more inputs
+/// are available. Inputs can contain any supported source, processing, or
+/// selector chain. Keep the returned graph and pass it mutably to
+/// [`super::AudioGraphFactory::create`] again to make another selection.
+///
+/// # Panics
+///
+/// Panics if no inputs are provided or if the combined graph would contain
+/// more than 64 nodes.
+pub fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
+	AudioGraph::random(inputs)
 }
 
 /// Repeats the input graph until its lifecycle handle is deleted.

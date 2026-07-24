@@ -20,6 +20,7 @@ use crate::core::{
 };
 
 pub mod fns;
+mod optimization;
 mod pitch_shift;
 
 const INLINE_AUDIO_NODE_CAPACITY: usize = 8;
@@ -68,20 +69,48 @@ impl AudioGraph {
 	/// Combines independent input graphs under one stateful selector node.
 	fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
 		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "round-robin");
+		if input_ids.len() == 1 {
+			let mut graph = Self {
+				nodes,
+				output: input_ids[0],
+			};
+			graph.optimize();
+			return graph;
+		}
+		assert!(
+			nodes.len() < MAX_AUDIO_GRAPH_NODES,
+			"Audio graph is too large. Combining the round-robin inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
+		);
 		let output = AudioNodeId(nodes.len());
 		nodes.push(SmallBox::new(AudioNode::RoundRobin(Box::new(RoundRobinNode {
 			inputs: input_ids,
 			next_index: 0,
 		}))));
-		Self { nodes, output }
+		let mut graph = Self { nodes, output };
+		graph.optimize();
+		graph
 	}
 
 	/// Combines independent input graphs under one non-repeating random selector.
 	fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
 		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "random");
+		if input_ids.len() == 1 {
+			let mut graph = Self {
+				nodes,
+				output: input_ids[0],
+			};
+			graph.optimize();
+			return graph;
+		}
+		assert!(
+			nodes.len() < MAX_AUDIO_GRAPH_NODES,
+			"Audio graph is too large. Combining the random inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
+		);
 		let output = AudioNodeId(nodes.len());
 		nodes.push(SmallBox::new(AudioNode::Random(Box::new(RandomNode::new(input_ids)))));
-		Self { nodes, output }
+		let mut graph = Self { nodes, output };
+		graph.optimize();
+		graph
 	}
 
 	/// Remaps independent graph inputs into one selector-ready node list.
@@ -97,7 +126,7 @@ impl AudioGraph {
 
 		for input in inputs {
 			assert!(
-				nodes.len() + input.nodes.len() < MAX_AUDIO_GRAPH_NODES,
+				nodes.len() + input.nodes.len() <= MAX_AUDIO_GRAPH_NODES,
 				"Audio graph is too large. Combining the {selector_name} inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
 			);
 			let offset = nodes.len();
@@ -113,6 +142,11 @@ impl AudioGraph {
 			"Invalid audio {selector_name} node. No input chains were provided."
 		);
 		(nodes, input_ids)
+	}
+
+	/// Applies the authoring-graph optimization pipeline in place.
+	fn optimize(&mut self) {
+		optimization::optimize(self);
 	}
 
 	/// Appends a loop node and makes it the graph output.
@@ -444,7 +478,8 @@ impl AudioGraphFactory {
 
 /// Compiles an authored graph on its creating thread before the factory sends
 /// any work to the audio worker.
-fn compile_for_factory(graph: &AudioGraph) -> (CompiledAudioGraph, SelectorCommits) {
+fn compile_for_factory(graph: &mut AudioGraph) -> (CompiledAudioGraph, SelectorCommits) {
+	graph.optimize();
 	graph
 		.compile_selection()
 		.unwrap_or_else(|error| panic!("Audio graph was not created. The authored graph is invalid: {error}"))
@@ -487,7 +522,7 @@ impl AudioNode {
 }
 
 /// The `RoundRobinNode` struct keeps branch connections and per-instance
-/// selection state for an authored round-robin node.
+/// selection state for an authored round-robin node with at least two inputs.
 #[derive(Debug, Clone, PartialEq)]
 struct RoundRobinNode {
 	inputs: SelectorInputs,
@@ -495,7 +530,8 @@ struct RoundRobinNode {
 }
 
 /// The `RandomNode` struct keeps branch connections and per-instance
-/// pseudo-random state for a non-repeating authored selector.
+/// pseudo-random state for a non-repeating authored selector with at least two
+/// inputs.
 #[derive(Debug, Clone, PartialEq)]
 struct RandomNode {
 	inputs: SelectorInputs,
@@ -517,9 +553,9 @@ impl RandomNode {
 	fn selection(&self) -> RandomSelection {
 		let next_state = self.state.wrapping_add(RANDOM_STATE_INCREMENT);
 		let random = mix_random_bits(next_state);
-		let index = match (self.inputs.len(), self.last_index) {
-			(1, _) => 0,
-			(input_count, Some(previous)) => {
+		let input_count = self.inputs.len();
+		let index = match self.last_index {
+			Some(previous) => {
 				// Draw from N - 1 slots, then skip the previous input. This
 				// preserves a uniform choice without retrying or allocating.
 				let slot = (random % (input_count - 1) as u64) as usize;
@@ -529,7 +565,7 @@ impl RandomNode {
 					slot
 				}
 			}
-			(input_count, None) => (random % input_count as u64) as usize,
+			None => (random % input_count as u64) as usize,
 		};
 		RandomSelection { index, next_state }
 	}
@@ -738,8 +774,8 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 mod tests {
 	use super::{
 		fns::{gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
-		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate,
-		SamplePlaybackMode,
+		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate, RandomNode,
+		RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
 	};
 	use crate::core::listener::Listener;
 
@@ -761,6 +797,41 @@ mod tests {
 			.expect("graph must contain a random node");
 		node.state = state;
 		node.last_index = last_index;
+	}
+
+	/// Verifies that factory optimization reconnects a selector's consumer.
+	fn assert_factory_eliminates_single_input_selector(selector: AudioNode) {
+		let mut graph = sample("audio/a.wav");
+		graph.push(selector);
+		let selector = graph.output;
+		graph.push(AudioNode::Gain {
+			input: selector,
+			gain: 0.5,
+		});
+		assert_eq!(graph.nodes.len(), 3);
+		let mut factory = AudioGraphFactory::new();
+
+		factory.create(&mut graph);
+
+		assert_eq!(graph.nodes.len(), 2);
+		assert_eq!(graph.output, AudioNodeId(1));
+		let AudioNode::Gain { input, .. } = &*graph.nodes[graph.output.0] else {
+			panic!("optimized output must remain a gain node");
+		};
+		assert_eq!(*input, AudioNodeId(0));
+		assert!(!graph.nodes.iter().any(|node| {
+			matches!(&**node, AudioNode::RoundRobin(node) if node.inputs.len() == 1)
+				|| matches!(&**node, AudioNode::Random(node) if node.inputs.len() == 1)
+		}));
+	}
+
+	/// Builds the largest graph that can be authored before adding a selector.
+	fn maximum_node_chain() -> AudioGraph {
+		let mut input = sample("audio/a.wav");
+		for _ in 1..MAX_AUDIO_GRAPH_NODES {
+			input = gain(input, 1.0);
+		}
+		input
 	}
 
 	#[test]
@@ -859,8 +930,10 @@ mod tests {
 	}
 
 	#[test]
-	fn one_input_round_robin_selects_the_same_chain_each_time() {
+	fn one_input_round_robin_is_eliminated() {
 		let mut graph = round_robin([gain(sample("audio/a.wav"), 0.5)]);
+		assert_eq!(graph.nodes.len(), 2);
+		assert!(!graph.nodes.iter().any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
 
 		for _ in 0..3 {
 			let compiled = compile_submission(&mut graph);
@@ -986,14 +1059,51 @@ mod tests {
 	}
 
 	#[test]
-	fn one_input_random_selects_the_same_chain_each_time() {
+	fn one_input_random_is_eliminated() {
 		let mut graph = random([gain(sample("audio/a.wav"), 0.5)]);
+		assert_eq!(graph.nodes.len(), 2);
+		assert!(!graph.nodes.iter().any(|node| matches!(&**node, AudioNode::Random(_))));
 
 		for _ in 0..3 {
 			let compiled = compile_submission(&mut graph);
 			assert_eq!(compiled.resource_id, "audio/a.wav");
 			assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
 		}
+	}
+
+	#[test]
+	fn factory_optimization_reconnects_consumers_of_one_input_selector_nodes() {
+		let mut random_inputs = SelectorInputs::new();
+		random_inputs.push(AudioNodeId(0));
+		assert_factory_eliminates_single_input_selector(AudioNode::Random(Box::new(RandomNode {
+			inputs: random_inputs,
+			state: 0,
+			last_index: None,
+		})));
+
+		let mut round_robin_inputs = SelectorInputs::new();
+		round_robin_inputs.push(AudioNodeId(0));
+		assert_factory_eliminates_single_input_selector(AudioNode::RoundRobin(Box::new(RoundRobinNode {
+			inputs: round_robin_inputs,
+			next_index: 0,
+		})));
+	}
+
+	#[test]
+	fn eliminated_selectors_do_not_consume_the_node_limit() {
+		let optimized_random = random([maximum_node_chain()]);
+		assert_eq!(optimized_random.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert!(!optimized_random
+			.nodes
+			.iter()
+			.any(|node| matches!(&**node, AudioNode::Random(_))));
+
+		let optimized_round_robin = round_robin([maximum_node_chain()]);
+		assert_eq!(optimized_round_robin.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert!(!optimized_round_robin
+			.nodes
+			.iter()
+			.any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
 	}
 
 	#[test]

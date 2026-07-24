@@ -13,9 +13,10 @@ pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 
 /// Selects the next input chain each time this graph is submitted for playback.
 ///
-/// Inputs can contain any supported source, processing, or nested round-robin
-/// chain. A looping selected chain remains selected until that play is stopped.
-/// Keep the returned graph and pass it mutably to
+/// A single input is returned directly without a selector node. Inputs can
+/// contain any supported source, processing, or nested selector chain. A
+/// looping selected chain remains selected until that play is stopped. Keep the
+/// returned graph and pass it mutably to
 /// [`super::AudioGraphFactory::create`] again to select the next input.
 ///
 /// # Panics
@@ -28,10 +29,11 @@ pub fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 
 /// Selects a random input chain each time this graph is submitted for playback.
 ///
-/// The same input is never selected twice in sequence when two or more inputs
-/// are available. Inputs can contain any supported source, processing, or
-/// selector chain. Keep the returned graph and pass it mutably to
-/// [`super::AudioGraphFactory::create`] again to make another selection.
+/// The same input is never selected twice in sequence. A single input is
+/// returned directly without a selector node. Inputs can contain any supported
+/// source, processing, or selector chain. Keep the returned graph and pass it
+/// mutably to [`super::AudioGraphFactory::create`] again to make another
+/// selection.
 ///
 /// # Panics
 ///

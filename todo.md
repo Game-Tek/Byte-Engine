@@ -29,6 +29,7 @@
 - Remove material names from non-debug visibility builds.
 - Add reusable or allocator-aware listener draining.
 - Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
+- Coalesce visibility instance render calls into one dispatch over a compact instance and meshlet work list.
 - Sort visibility and transparent work by camera distance where required.
 
 ## UI

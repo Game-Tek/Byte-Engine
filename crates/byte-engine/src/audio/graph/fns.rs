@@ -4,7 +4,7 @@ use super::AudioGraph;
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
-/// Next, pass the graph to `loop` or [`gain`], or publish it through
+/// Next, pass the graph to `loop`, [`gain`], or [`varispeed`], or publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 	AudioGraph::sample(resource_id)
@@ -33,6 +33,22 @@ pub fn r#loop(input: AudioGraph) -> AudioGraph {
 /// graph already contains eight nodes.
 pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 	input.with_gain(gain)
+}
+
+/// Changes the input playback speed and pitch by the same rate.
+///
+/// A rate of `1.0` leaves the input unchanged. A rate of `2.0` plays it twice
+/// as fast and one octave higher, while `0.5` plays it at half speed and one
+/// octave lower. Next, publish the graph through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+///
+/// # Panics
+///
+/// Panics if `rate` is outside `0.25..=4.0`, infinite, or not a number, if the
+/// input already contains a varispeed node, or if the graph already contains
+/// eight nodes.
+pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
+	input.with_varispeed(rate)
 }
 
 /// Shifts the input pitch by a frequency ratio without changing its duration.

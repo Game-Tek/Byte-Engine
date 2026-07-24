@@ -470,7 +470,7 @@ mod tests {
 	use crate::{
 		audio::graph::{
 			fns::{gain, r#loop, sample},
-			AudioGraphRenderPlan, AudioProcessor, PreparedAudioGraphRenderPlan, SamplePlaybackMode,
+			AudioGraphRenderPlan, AudioProcessor, PlaybackRate, PreparedAudioGraphRenderPlan, SamplePlaybackMode,
 		},
 		core::{factory::Factory, listener::Listener},
 	};
@@ -481,6 +481,7 @@ mod tests {
 	) -> PreparedAudioGraphRenderPlan {
 		AudioGraphRenderPlan {
 			playback_mode,
+			playback_rate: PlaybackRate::UNITY,
 			processors: processors.into_iter().collect(),
 		}
 		.prepare()

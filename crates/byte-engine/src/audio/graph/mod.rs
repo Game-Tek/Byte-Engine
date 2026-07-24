@@ -30,8 +30,8 @@ struct AudioNodeId(usize);
 /// route it to the default audio output.
 ///
 /// The current graph format accepts one sample source and up to seven unary
-/// processing nodes. Build it with [`fns::sample`], `loop`, [`fns::gain`], and
-/// [`fns::pitch_shift`].
+/// processing nodes. Build it with [`fns::sample`], `loop`, [`fns::gain`],
+/// [`fns::varispeed`], and [`fns::pitch_shift`].
 /// Next,
 /// publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
@@ -73,6 +73,21 @@ impl AudioGraph {
 		self
 	}
 
+	/// Appends a varispeed node that changes playback speed and pitch together.
+	fn with_varispeed(mut self, rate: f32) -> Self {
+		assert!(
+			rate.is_finite() && (0.25..=4.0).contains(&rate),
+			"Invalid audio graph varispeed rate. The provided rate is not finite or is outside 0.25..=4.0."
+		);
+		assert!(
+			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::Varispeed { .. })),
+			"Invalid audio graph varispeed. A second varispeed node was added to the graph."
+		);
+		let input = self.output;
+		self.push(AudioNode::Varispeed { input, rate });
+		self
+	}
+
 	/// Appends a duration-preserving pitch-shift node.
 	fn with_pitch_shift(mut self, ratio: f32) -> Self {
 		assert!(
@@ -110,7 +125,9 @@ impl AudioGraph {
 		let mut current = None;
 		let mut resource_id = None;
 		let mut playback_mode = SamplePlaybackMode::Once;
+		let mut playback_rate = PlaybackRate::UNITY;
 		let mut processors = SmallVec::new();
+		let mut has_varispeed = false;
 		let mut has_pitch_shift = false;
 
 		for (index, node) in self.nodes.into_iter().enumerate() {
@@ -141,6 +158,19 @@ impl AudioGraph {
 					}
 					processors.push(AudioProcessor::Gain(gain));
 				}
+				AudioNode::Varispeed { input, rate } => {
+					validate_input(current, input)?;
+					if !rate.is_finite() || !(0.25..=4.0).contains(&rate) {
+						return Err(
+							"Invalid audio varispeed node. Its rate is not finite or is outside 0.25..=4.0.".to_string(),
+						);
+					}
+					if has_varispeed {
+						return Err("Invalid audio graph. It contains more than one varispeed node.".to_string());
+					}
+					has_varispeed = true;
+					playback_rate = PlaybackRate::from_rate(rate);
+				}
 				AudioNode::PitchShift { input, ratio } => {
 					validate_input(current, input)?;
 					if !ratio.is_finite() || !(0.5..=2.0).contains(&ratio) {
@@ -169,6 +199,7 @@ impl AudioGraph {
 		Ok(CompiledAudioGraph {
 			resource_id,
 			playback_mode,
+			playback_rate,
 			processors,
 		})
 	}
@@ -253,6 +284,7 @@ enum AudioNode {
 	Sample { resource_id: String },
 	Loop { input: AudioNodeId },
 	Gain { input: AudioNodeId, gain: f32 },
+	Varispeed { input: AudioNodeId, rate: f32 },
 	PitchShift { input: AudioNodeId, ratio: f32 },
 }
 
@@ -262,6 +294,7 @@ enum AudioNode {
 pub(crate) struct CompiledAudioGraph {
 	pub(crate) resource_id: String,
 	pub(crate) playback_mode: SamplePlaybackMode,
+	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: AudioProcessors,
 }
 
@@ -273,6 +306,7 @@ impl CompiledAudioGraph {
 			self.resource_id,
 			AudioGraphRenderPlan {
 				playback_mode: self.playback_mode,
+				playback_rate: self.playback_rate,
 				processors: self.processors,
 			},
 		)
@@ -284,6 +318,7 @@ impl CompiledAudioGraph {
 #[derive(Debug)]
 pub(crate) struct AudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
+	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: AudioProcessors,
 }
 
@@ -292,6 +327,39 @@ pub(crate) struct AudioGraphRenderPlan {
 pub(crate) enum SamplePlaybackMode {
 	Once,
 	Loop,
+}
+
+/// The `PlaybackRate` struct keeps one authored varispeed rate as an exact
+/// rational value for drift-free source-phase accumulation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaybackRate {
+	pub(crate) numerator: u64,
+	pub(crate) denominator: u64,
+}
+
+impl PlaybackRate {
+	pub(crate) const UNITY: Self = Self {
+		numerator: 1,
+		denominator: 1,
+	};
+
+	/// Converts the exact binary value of a validated positive `f32` rate into
+	/// its smallest power-of-two fraction.
+	fn from_rate(rate: f32) -> Self {
+		debug_assert!(rate.is_finite() && rate > 0.0);
+		let bits = rate.to_bits();
+		let significand = u64::from((bits & 0x7f_ffff) | 0x80_0000);
+		let binary_exponent = ((bits >> 23) & 0xff) as i32 - 127 - 23;
+		let (mut numerator, mut denominator) = if binary_exponent >= 0 {
+			(significand << binary_exponent, 1)
+		} else {
+			(significand, 1_u64 << -binary_exponent)
+		};
+		let common_power_of_two = numerator.trailing_zeros().min(denominator.trailing_zeros());
+		numerator >>= common_power_of_two;
+		denominator >>= common_power_of_two;
+		Self { numerator, denominator }
+	}
 }
 
 /// Describes one allocation-free scalar processor in a compiled graph.
@@ -347,6 +415,7 @@ impl AudioGraphRenderPlan {
 	pub(crate) fn prepare(self) -> PreparedAudioGraphRenderPlan {
 		PreparedAudioGraphRenderPlan {
 			playback_mode: self.playback_mode,
+			playback_rate: self.playback_rate,
 			processors: self.processors.into_iter().map(AudioProcessor::prepare).collect(),
 		}
 	}
@@ -356,14 +425,15 @@ impl AudioGraphRenderPlan {
 /// ready to move to the audio worker.
 pub(crate) struct PreparedAudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
+	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: RuntimeAudioProcessors,
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		fns::{gain, pitch_shift, r#loop, sample},
-		AudioProcessor, SamplePlaybackMode,
+		fns::{gain, pitch_shift, r#loop, sample, varispeed},
+		AudioProcessor, PlaybackRate, SamplePlaybackMode,
 	};
 
 	#[test]
@@ -394,6 +464,25 @@ mod tests {
 	}
 
 	#[test]
+	fn varispeed_compiles_as_an_exact_source_playback_rate() {
+		let compiled = gain(varispeed(sample("audio/music.ogg"), 1.5), 0.5)
+			.compile()
+			.expect("valid graph");
+
+		assert_eq!(
+			compiled.playback_rate,
+			PlaybackRate {
+				numerator: 3,
+				denominator: 2,
+			}
+		);
+		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
+
+		let unity = varispeed(sample("audio/music.ogg"), 1.0).compile().expect("valid graph");
+		assert_eq!(unity.playback_rate, PlaybackRate::UNITY);
+	}
+
+	#[test]
 	fn prepared_processors_keep_small_nodes_inline_and_large_state_node_local() {
 		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.5)
 			.compile()
@@ -419,11 +508,24 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic(expected = "Invalid audio graph varispeed rate")]
+	fn varispeed_rejects_out_of_range_rates_when_authored() {
+		let _ = varispeed(sample("audio/music.ogg"), 4.1);
+	}
+
+	#[test]
+	#[should_panic(expected = "A second varispeed node")]
+	fn graph_rejects_a_second_varispeed_when_authored() {
+		let _ = varispeed(varispeed(sample("audio/music.ogg"), 0.5), 2.0);
+	}
+
+	#[test]
 	fn direct_sample_compiles_as_an_unprocessed_one_shot() {
 		let compiled = sample("audio/impact.wav").compile().expect("valid graph");
 
 		assert_eq!(compiled.resource_id, "audio/impact.wav");
 		assert_eq!(compiled.playback_mode, SamplePlaybackMode::Once);
+		assert_eq!(compiled.playback_rate, PlaybackRate::UNITY);
 		assert!(compiled.processors.is_empty());
 	}
 

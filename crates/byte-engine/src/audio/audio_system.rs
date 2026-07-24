@@ -8,7 +8,7 @@ use ahi::{
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
-	graph::{PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
+	graph::{PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
 	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
 };
 use crate::core::{factory::Handle, Entity};
@@ -264,16 +264,18 @@ struct Source {
 struct SampleNode {
 	sample: Arc<LoadedAudioSample>,
 	playback_mode: SamplePlaybackMode,
+	playback_rate: PlaybackRate,
 	source_frame: u64,
 	rate_phase: u64,
 	finished: bool,
 }
 
 impl SampleNode {
-	fn new(sample: Arc<LoadedAudioSample>, playback_mode: SamplePlaybackMode) -> Self {
+	fn new(sample: Arc<LoadedAudioSample>, playback_mode: SamplePlaybackMode, playback_rate: PlaybackRate) -> Self {
 		Self {
 			sample,
 			playback_mode,
+			playback_rate,
 			source_frame: 0,
 			rate_phase: 0,
 			finished: false,
@@ -305,12 +307,13 @@ impl SampleNode {
 		};
 		let current = self.sample.mono_frame(current_frame);
 		let next = self.sample.mono_frame(next_frame);
-		let fraction = self.rate_phase as f32 / output_sample_rate as f32;
+		let phase_denominator = output_sample_rate * self.playback_rate.denominator;
+		let fraction = self.rate_phase as f32 / phase_denominator as f32;
 		let output = current + (next - current) * fraction;
 
-		self.rate_phase += source_sample_rate;
-		self.source_frame += self.rate_phase / output_sample_rate;
-		self.rate_phase %= output_sample_rate;
+		self.rate_phase += source_sample_rate * self.playback_rate.numerator;
+		self.source_frame += self.rate_phase / phase_denominator;
+		self.rate_phase %= phase_denominator;
 
 		if self.playback_mode == SamplePlaybackMode::Loop {
 			self.source_frame %= frame_count;
@@ -335,7 +338,7 @@ impl AudioGraphPlayer {
 	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: PreparedAudioGraphRenderPlan) -> Self {
 		Self {
 			handle,
-			sample: SampleNode::new(sample, render_plan.playback_mode),
+			sample: SampleNode::new(sample, render_plan.playback_mode, render_plan.playback_rate),
 			processors: render_plan.processors,
 			drain_remaining: None,
 		}
@@ -388,7 +391,7 @@ mod tests {
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
-			graph::{AudioGraphRenderPlan, AudioProcessor, SamplePlaybackMode},
+			graph::{AudioGraphRenderPlan, AudioProcessor, PlaybackRate, SamplePlaybackMode},
 			sample_loader::LoadedAudioSample,
 		},
 		core::{factory::Factory, listener::Listener},
@@ -465,6 +468,7 @@ mod tests {
 				samples.to_vec().into_boxed_slice(),
 			)),
 			playback_mode,
+			PlaybackRate::UNITY,
 		)
 	}
 
@@ -481,6 +485,7 @@ mod tests {
 		samples: &[f32],
 		source_rate: u32,
 		playback_mode: SamplePlaybackMode,
+		playback_rate: PlaybackRate,
 		processors: impl IntoIterator<Item = AudioProcessor>,
 	) -> AudioGraphPlayer {
 		let mut factory = Factory::new();
@@ -496,6 +501,7 @@ mod tests {
 			)),
 			AudioGraphRenderPlan {
 				playback_mode,
+				playback_rate,
 				processors: processors.into_iter().collect(),
 			}
 			.prepare(),
@@ -583,11 +589,67 @@ mod tests {
 	}
 
 	#[test]
+	fn varispeed_changes_playback_duration_and_sample_pitch_together() {
+		let mut faster = graph_player(
+			&[0.0, 1.0, 2.0, 3.0, 4.0],
+			4,
+			SamplePlaybackMode::Once,
+			PlaybackRate {
+				numerator: 2,
+				denominator: 1,
+			},
+			[],
+		);
+		let mut faster_output = [0.0; 5];
+		faster.render(4, &mut faster_output);
+		assert_eq!(faster_output, [0.0, 2.0, 4.0, 0.0, 0.0]);
+		assert!(faster.finished());
+
+		let mut slower = graph_player(
+			&[0.0, 1.0, 2.0],
+			4,
+			SamplePlaybackMode::Once,
+			PlaybackRate {
+				numerator: 1,
+				denominator: 2,
+			},
+			[],
+		);
+		let mut slower_output = [0.0; 6];
+		slower.render(4, &mut slower_output);
+		assert_eq!(slower_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
+		assert!(slower.finished());
+	}
+
+	#[test]
+	fn varispeed_phase_is_stable_across_output_periods() {
+		let rate = PlaybackRate {
+			numerator: 3,
+			denominator: 2,
+		};
+		let mut split = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
+		let mut first = [0.0; 3];
+		let mut second = [0.0; 5];
+		split.render(3, &mut first);
+		split.render(3, &mut second);
+
+		let mut contiguous = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
+		let mut whole = [0.0; 8];
+		contiguous.render(3, &mut whole);
+
+		assert_samples_close(&first, &whole[..3]);
+		assert_samples_close(&second, &whole[3..]);
+		assert_eq!(split.sample.source_frame, contiguous.sample.source_frame);
+		assert_eq!(split.sample.rate_phase, contiguous.sample.rate_phase);
+	}
+
+	#[test]
 	fn gain_node_scales_a_looping_sample_after_the_source_node() {
 		let mut graph = graph_player(
 			&[0.0, 1.0, 2.0],
 			48_000,
 			SamplePlaybackMode::Loop,
+			PlaybackRate::UNITY,
 			[AudioProcessor::Gain(0.5)],
 		);
 		let mut first = [0.0; 2];
@@ -603,7 +665,13 @@ mod tests {
 
 	#[test]
 	fn sample_node_has_unity_output_without_a_gain_node() {
-		let mut graph = graph_player(&[0.25, -0.5], 48_000, SamplePlaybackMode::Once, std::iter::empty());
+		let mut graph = graph_player(
+			&[0.25, -0.5],
+			48_000,
+			SamplePlaybackMode::Once,
+			PlaybackRate::UNITY,
+			std::iter::empty(),
+		);
 		let mut output = [0.0; 2];
 
 		graph.render(48_000, &mut output);

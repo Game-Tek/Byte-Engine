@@ -8,8 +8,8 @@ use ahi::{
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
-	sample_loader::{LoadedAudioSample, AUDIO_SAMPLE_PLAYER_CAPACITY},
-	PlaybackMode,
+	graph::{AudioGraphRenderPlan, AudioProcessors, SamplePlaybackMode},
+	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
 };
 use crate::core::{factory::Handle, Entity};
 
@@ -37,13 +37,13 @@ pub trait AudioSystem: Entity {
 /// [`crate::application::graphics::setup_default_audio`] rather than directly.
 /// After setup, publish a [`Generator`] through
 /// [`crate::application::graphics::GraphicsApplication::generator_factory`] so
-/// the worker can mix it into the hardware stream, or create an
-/// [`super::AudioSamplePlayer`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_sample_player_factory_mut`].
+/// the worker can mix it into the hardware stream, or publish an
+/// [`super::graph::AudioGraph`] through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub struct DefaultAudioSystem {
 	device: Device,
 	sources: Vec<Source>,
-	sample_players: Vec<SamplePlayer>,
+	audio_graphs: Vec<AudioGraphPlayer>,
 	params: HardwareParameters,
 	mix_buffer: Vec<f32>,
 	last_reported_underrun_count: usize,
@@ -68,7 +68,7 @@ impl DefaultAudioSystem {
 		Ok(Self {
 			device,
 			sources: Vec::with_capacity(64),
-			sample_players: Vec::with_capacity(AUDIO_SAMPLE_PLAYER_CAPACITY),
+			audio_graphs: Vec::with_capacity(AUDIO_GRAPH_CAPACITY),
 			params,
 			mix_buffer: vec![0.0; period_size],
 			last_reported_underrun_count: 0,
@@ -100,38 +100,36 @@ impl DefaultAudioSystem {
 		});
 	}
 
-	/// Adds a loaded player without allocating audio-thread container storage.
-	pub(crate) fn create_sample_player(
+	/// Adds a loaded graph without allocating audio-thread container storage.
+	pub(crate) fn create_audio_graph(
 		&mut self,
 		handle: Handle,
 		sample: Arc<LoadedAudioSample>,
-		gain: f32,
-		playback_mode: PlaybackMode,
+		render_plan: AudioGraphRenderPlan,
 	) {
-		self.remove_sample_player(handle);
-		if self.sample_players.len() >= AUDIO_SAMPLE_PLAYER_CAPACITY {
+		self.remove_audio_graph(handle);
+		if self.audio_graphs.len() >= AUDIO_GRAPH_CAPACITY {
 			log::warn!(
-				"Audio sample player was not created. The audio worker already has the maximum of {} active players.",
-				AUDIO_SAMPLE_PLAYER_CAPACITY
+				"Audio graph was not created. The audio worker already has the maximum of {} active graphs.",
+				AUDIO_GRAPH_CAPACITY
 			);
 			self.sample_cache_prune_requested = true;
 			return;
 		}
-		self.sample_players
-			.push(SamplePlayer::new(handle, sample, gain, playback_mode));
+		self.audio_graphs.push(AudioGraphPlayer::new(handle, sample, render_plan));
 	}
 
-	/// Removes a resource-backed player at the next period boundary.
-	pub(crate) fn remove_sample_player(&mut self, handle: Handle) {
-		if let Some(index) = self.sample_players.iter().position(|player| player.handle == handle) {
-			let player = self.sample_players.swap_remove(index);
-			drop(player);
+	/// Removes a resource-backed graph at the next period boundary.
+	pub(crate) fn remove_audio_graph(&mut self, handle: Handle) {
+		if let Some(index) = self.audio_graphs.iter().position(|graph| graph.handle == handle) {
+			let graph = self.audio_graphs.swap_remove(index);
+			drop(graph);
 			self.sample_cache_prune_requested = true;
 		}
 	}
 
-	pub(crate) fn sample_player_count(&self) -> usize {
-		self.sample_players.len()
+	pub(crate) fn audio_graph_count(&self) -> usize {
+		self.audio_graphs.len()
 	}
 
 	pub(crate) fn take_sample_cache_prune_request(&mut self) -> bool {
@@ -150,11 +148,11 @@ fn render_sources(sources: &[Source], sample_rate: u32, buffer: &mut [f32]) {
 	}
 }
 
-/// Mixes resource players after procedural generators so both source types use
+/// Mixes resource graphs after procedural generators so both source types use
 /// the same output buffer and clipping boundary.
-fn render_sample_players(sample_players: &mut [SamplePlayer], sample_rate: u32, buffer: &mut [f32]) {
-	for player in sample_players {
-		player.render(sample_rate, buffer);
+fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32]) {
+	for graph in audio_graphs {
+		graph.render(sample_rate, buffer);
 	}
 }
 
@@ -165,7 +163,7 @@ impl AudioSystem for DefaultAudioSystem {
 		let Self {
 			device,
 			sources,
-			sample_players,
+			audio_graphs,
 			params,
 			mix_buffer,
 			..
@@ -176,13 +174,13 @@ impl AudioSystem for DefaultAudioSystem {
 			Streams::MonoFloat32(buffer) => {
 				buffer.fill(0.0);
 				render_sources(sources, sample_rate, buffer);
-				render_sample_players(sample_players, sample_rate, buffer);
+				render_audio_graphs(audio_graphs, sample_rate, buffer);
 			}
 			Streams::Mono16Bit(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_sample_players(sample_players, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
 
 				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*destination = f32_to_i16(*sample);
@@ -192,7 +190,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_sample_players(sample_players, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					let sample = f32_to_i16(*sample);
@@ -204,7 +202,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_sample_players(sample_players, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*left = *sample;
@@ -246,9 +244,9 @@ impl AudioSystem for DefaultAudioSystem {
 				!playing_sound.generator.done(settings, state)
 			});
 		}
-		let sample_player_count = self.sample_players.len();
-		self.sample_players.retain(|player| !player.finished);
-		self.sample_cache_prune_requested |= self.sample_players.len() != sample_player_count;
+		let audio_graph_count = self.audio_graphs.len();
+		self.audio_graphs.retain(|graph| !graph.finished());
+		self.sample_cache_prune_requested |= self.audio_graphs.len() != audio_graph_count;
 
 		true
 	}
@@ -261,24 +259,20 @@ struct Source {
 	current_sample: u32,
 }
 
-/// The `SamplePlayer` struct retains resampling state for one immutable loaded
-/// sample.
-struct SamplePlayer {
-	handle: Handle,
+/// The `SampleNode` struct retains resampling state for one immutable loaded
+/// sample within an audio graph.
+struct SampleNode {
 	sample: Arc<LoadedAudioSample>,
-	gain: f32,
-	playback_mode: PlaybackMode,
+	playback_mode: SamplePlaybackMode,
 	source_frame: u64,
 	rate_phase: u64,
 	finished: bool,
 }
 
-impl SamplePlayer {
-	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, gain: f32, playback_mode: PlaybackMode) -> Self {
+impl SampleNode {
+	fn new(sample: Arc<LoadedAudioSample>, playback_mode: SamplePlaybackMode) -> Self {
 		Self {
-			handle,
 			sample,
-			gain,
 			playback_mode,
 			source_frame: 0,
 			rate_phase: 0,
@@ -286,45 +280,81 @@ impl SamplePlayer {
 		}
 	}
 
-	/// Mixes one output period with exact rational phase accumulation. Linear
+	/// Produces one output sample with exact rational phase accumulation. Linear
 	/// interpolation wraps at a loop boundary and clamps at a one-shot boundary.
-	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
+	fn next(&mut self, output_sample_rate: u32) -> Option<f32> {
 		if self.finished {
-			return;
+			return None;
 		}
 
 		let frame_count = self.sample.frame_count() as u64;
 		let output_sample_rate = u64::from(output_sample_rate);
 		let source_sample_rate = u64::from(self.sample.sample_rate());
-		for destination in buffer {
-			if self.source_frame >= frame_count {
-				self.finished = true;
-				break;
-			}
-
-			let current_frame = self.source_frame as usize;
-			let next_frame = if self.source_frame + 1 < frame_count {
-				current_frame + 1
-			} else if self.playback_mode == PlaybackMode::Loop {
-				0
-			} else {
-				current_frame
-			};
-			let current = self.sample.mono_frame(current_frame);
-			let next = self.sample.mono_frame(next_frame);
-			let fraction = self.rate_phase as f32 / output_sample_rate as f32;
-			*destination += (current + (next - current) * fraction) * self.gain;
-
-			self.rate_phase += source_sample_rate;
-			self.source_frame += self.rate_phase / output_sample_rate;
-			self.rate_phase %= output_sample_rate;
-
-			if self.playback_mode == PlaybackMode::Loop {
-				self.source_frame %= frame_count;
-			} else if self.source_frame >= frame_count {
-				self.finished = true;
-			}
+		if self.source_frame >= frame_count {
+			self.finished = true;
+			return None;
 		}
+
+		let current_frame = self.source_frame as usize;
+		let next_frame = if self.source_frame + 1 < frame_count {
+			current_frame + 1
+		} else if self.playback_mode == SamplePlaybackMode::Loop {
+			0
+		} else {
+			current_frame
+		};
+		let current = self.sample.mono_frame(current_frame);
+		let next = self.sample.mono_frame(next_frame);
+		let fraction = self.rate_phase as f32 / output_sample_rate as f32;
+		let output = current + (next - current) * fraction;
+
+		self.rate_phase += source_sample_rate;
+		self.source_frame += self.rate_phase / output_sample_rate;
+		self.rate_phase %= output_sample_rate;
+
+		if self.playback_mode == SamplePlaybackMode::Loop {
+			self.source_frame %= frame_count;
+		} else if self.source_frame >= frame_count {
+			self.finished = true;
+		}
+
+		Some(output)
+	}
+}
+
+/// The `AudioGraphPlayer` struct retains one loaded source and its compiled
+/// processing chain for real-time playback.
+struct AudioGraphPlayer {
+	handle: Handle,
+	sample: SampleNode,
+	processors: AudioProcessors,
+}
+
+impl AudioGraphPlayer {
+	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: AudioGraphRenderPlan) -> Self {
+		Self {
+			handle,
+			sample: SampleNode::new(sample, render_plan.playback_mode),
+			processors: render_plan.processors,
+		}
+	}
+
+	/// Renders one graph period by processing each source sample through the
+	/// precompiled scalar node chain before mixing it into the destination.
+	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
+		for destination in buffer {
+			let Some(mut sample) = self.sample.next(output_sample_rate) else {
+				break;
+			};
+			for processor in &self.processors {
+				sample = processor.process(sample);
+			}
+			*destination += sample;
+		}
+	}
+
+	fn finished(&self) -> bool {
+		self.sample.finished
 	}
 }
 
@@ -341,12 +371,12 @@ fn f32_to_i16(sample: f32) -> i16 {
 mod tests {
 	use std::sync::{Arc, Mutex};
 
-	use super::{f32_to_i16, i16_to_f32, render_sources, SamplePlayer, Source};
+	use super::{f32_to_i16, i16_to_f32, render_sources, AudioGraphPlayer, SampleNode, Source};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
+			graph::{AudioGraphRenderPlan, AudioProcessor, SamplePlaybackMode},
 			sample_loader::LoadedAudioSample,
-			PlaybackMode,
 		},
 		core::{factory::Factory, listener::Listener},
 	};
@@ -414,20 +444,47 @@ mod tests {
 		assert_eq!(*observed.lock().unwrap(), [(48_000, 128), (48_000, 256)]);
 	}
 
-	fn player(samples: &[f32], source_rate: u32, output_mode: PlaybackMode) -> SamplePlayer {
+	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {
+		SampleNode::new(
+			Arc::new(LoadedAudioSample::from_normalized_samples(
+				source_rate,
+				1,
+				samples.to_vec().into_boxed_slice(),
+			)),
+			playback_mode,
+		)
+	}
+
+	fn render_sample_node(node: &mut SampleNode, output_sample_rate: u32, buffer: &mut [f32]) {
+		for destination in buffer {
+			let Some(sample) = node.next(output_sample_rate) else {
+				break;
+			};
+			*destination += sample;
+		}
+	}
+
+	fn graph_player(
+		samples: &[f32],
+		source_rate: u32,
+		playback_mode: SamplePlaybackMode,
+		processors: impl IntoIterator<Item = AudioProcessor>,
+	) -> AudioGraphPlayer {
 		let mut factory = Factory::new();
 		let mut listener = factory.listener();
 		let handle = factory.create(());
 		let _ = listener.read();
-		SamplePlayer::new(
+		AudioGraphPlayer::new(
 			handle,
 			Arc::new(LoadedAudioSample::from_normalized_samples(
 				source_rate,
 				1,
 				samples.to_vec().into_boxed_slice(),
 			)),
-			1.0,
-			output_mode,
+			AudioGraphRenderPlan {
+				playback_mode,
+				processors: processors.into_iter().collect(),
+			},
 		)
 	}
 
@@ -440,12 +497,12 @@ mod tests {
 
 	#[test]
 	fn looping_sample_continues_across_output_periods() {
-		let mut player = player(&[0.0, 1.0, 2.0], 48_000, PlaybackMode::Loop);
+		let mut player = sample_node(&[0.0, 1.0, 2.0], 48_000, SamplePlaybackMode::Loop);
 		let mut first = [0.0; 2];
 		let mut second = [0.0; 5];
 
-		player.render(48_000, &mut first);
-		player.render(48_000, &mut second);
+		render_sample_node(&mut player, 48_000, &mut first);
+		render_sample_node(&mut player, 48_000, &mut second);
 
 		assert_eq!(first, [0.0, 1.0]);
 		assert_eq!(second, [2.0, 0.0, 1.0, 2.0, 0.0]);
@@ -454,25 +511,25 @@ mod tests {
 
 	#[test]
 	fn one_shot_clamps_its_last_resampled_frame_then_finishes() {
-		let mut same_rate = player(&[0.0, 1.0, 2.0], 48_000, PlaybackMode::Once);
+		let mut same_rate = sample_node(&[0.0, 1.0, 2.0], 48_000, SamplePlaybackMode::Once);
 		let mut same_rate_output = [0.0; 5];
-		same_rate.render(48_000, &mut same_rate_output);
+		render_sample_node(&mut same_rate, 48_000, &mut same_rate_output);
 		assert_eq!(same_rate_output, [0.0, 1.0, 2.0, 0.0, 0.0]);
 		assert!(same_rate.finished);
 
-		let mut upsampled = player(&[0.0, 1.0, 2.0], 2, PlaybackMode::Once);
+		let mut upsampled = sample_node(&[0.0, 1.0, 2.0], 2, SamplePlaybackMode::Once);
 		let mut upsampled_output = [0.0; 6];
-		upsampled.render(4, &mut upsampled_output);
+		render_sample_node(&mut upsampled, 4, &mut upsampled_output);
 		assert_eq!(upsampled_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
 		assert!(upsampled.finished);
 	}
 
 	#[test]
 	fn downsampling_advances_over_intermediate_source_frames() {
-		let mut player = player(&[0.0, 1.0, 2.0, 3.0, 4.0], 4, PlaybackMode::Once);
+		let mut player = sample_node(&[0.0, 1.0, 2.0, 3.0, 4.0], 4, SamplePlaybackMode::Once);
 		let mut output = [0.0; 3];
 
-		player.render(2, &mut output);
+		render_sample_node(&mut player, 2, &mut output);
 
 		assert_eq!(output, [0.0, 2.0, 4.0]);
 		assert!(player.finished);
@@ -481,15 +538,15 @@ mod tests {
 	#[test]
 	fn rational_resampling_is_stable_across_period_boundaries() {
 		let expected = [0.0, 6.666_666_5, 13.333_333, 20.0, 6.666_666_5, 3.333_333_3, 10.0, 16.666_666];
-		let mut split = player(&[0.0, 10.0, 20.0], 2, PlaybackMode::Loop);
+		let mut split = sample_node(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop);
 		let mut first = [0.0; 3];
 		let mut second = [0.0; 5];
-		split.render(3, &mut first);
-		split.render(3, &mut second);
+		render_sample_node(&mut split, 3, &mut first);
+		render_sample_node(&mut split, 3, &mut second);
 
-		let mut contiguous = player(&[0.0, 10.0, 20.0], 2, PlaybackMode::Loop);
+		let mut contiguous = sample_node(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop);
 		let mut whole = [0.0; 8];
-		contiguous.render(3, &mut whole);
+		render_sample_node(&mut contiguous, 3, &mut whole);
 
 		assert_samples_close(&first, &expected[..3]);
 		assert_samples_close(&second, &expected[3..]);
@@ -501,13 +558,43 @@ mod tests {
 	#[test]
 	fn rational_phase_has_no_long_term_44100_to_48000_drift() {
 		let samples = vec![0.0; 50_000];
-		let mut player = player(&samples, 44_100, PlaybackMode::Once);
+		let mut player = sample_node(&samples, 44_100, SamplePlaybackMode::Once);
 		let mut output = vec![0.0; 48_000];
 
-		player.render(48_000, &mut output);
+		render_sample_node(&mut player, 48_000, &mut output);
 
 		assert_eq!(player.source_frame, 44_100);
 		assert_eq!(player.rate_phase, 0);
 		assert!(!player.finished);
+	}
+
+	#[test]
+	fn gain_node_scales_a_looping_sample_after_the_source_node() {
+		let mut graph = graph_player(
+			&[0.0, 1.0, 2.0],
+			48_000,
+			SamplePlaybackMode::Loop,
+			[AudioProcessor::Gain(0.5)],
+		);
+		let mut first = [0.0; 2];
+		let mut second = [0.0; 5];
+
+		graph.render(48_000, &mut first);
+		graph.render(48_000, &mut second);
+
+		assert_eq!(first, [0.0, 0.5]);
+		assert_eq!(second, [1.0, 0.0, 0.5, 1.0, 0.0]);
+		assert!(!graph.finished());
+	}
+
+	#[test]
+	fn sample_node_has_unity_output_without_a_gain_node() {
+		let mut graph = graph_player(&[0.25, -0.5], 48_000, SamplePlaybackMode::Once, std::iter::empty());
+		let mut output = [0.0; 2];
+
+		graph.render(48_000, &mut output);
+
+		assert_eq!(output, [0.25, -0.5]);
+		assert!(graph.finished());
 	}
 }

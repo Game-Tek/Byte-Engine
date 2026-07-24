@@ -131,19 +131,16 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 ///
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
-/// worker, or create an [`crate::audio::AudioSamplePlayer`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_sample_player_factory_mut`].
+/// worker, or create an [`crate::audio::graph::AudioGraph`] through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
-	let players_created_before_setup = application
-		.world
-		.audio_sample_player_factory_mut()
-		.drain_created_before_listener();
-	if !players_created_before_setup.is_empty() {
+	let graphs_created_before_setup = application.world.audio_graph_factory_mut().drain_created_before_listener();
+	if !graphs_created_before_setup.is_empty() {
 		log::warn!(
-			"Audio sample players created before audio setup were ignored. The audio worker must be installed before players are created."
+			"Audio graphs created before audio setup were ignored. The audio worker must be installed before graphs are created."
 		);
 	}
-	let mut sample_players_listener = application.world.audio_sample_player_factory().listener();
+	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 	let mut deletions_listener = application.world.delete_channel().listener();
 	let (mut sample_loader_client, sample_loader) = AudioSampleLoader::new(application.resource_manager.clone());
 	application.tasks.push(application.runtime.spawn(sample_loader.run()));
@@ -173,25 +170,25 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 						audio_system.create_generator(message.into_data());
 					}
 
-					while let Some(message) = sample_players_listener.read() {
+					while let Some(message) = audio_graphs_listener.read() {
 						let handle = *message.handle();
 						// A derived creation replaces the old generation before
 						// any completion can be adopted for the same handle.
-						audio_system.remove_sample_player(handle);
-						sample_loader_client.queue(handle, message.into_data(), audio_system.sample_player_count());
+						audio_system.remove_audio_graph(handle);
+						sample_loader_client.queue(handle, message.into_data(), audio_system.audio_graph_count());
 					}
 
 					while let Some(message) = deletions_listener.read() {
 						let handle = message.into_handle();
 						sample_loader_client.remove(handle);
-						audio_system.remove_sample_player(handle);
+						audio_system.remove_audio_graph(handle);
 					}
 
 					if audio_system.take_sample_cache_prune_request() {
 						sample_loader_client.request_cache_prune();
 					}
-					sample_loader_client.update(|handle, sample, gain, playback_mode| {
-						audio_system.create_sample_player(handle, sample, gain, playback_mode);
+					sample_loader_client.update(|handle, sample, render_plan| {
+						audio_system.create_audio_graph(handle, sample, render_plan);
 					});
 
 					if !audio_system.render_available() {

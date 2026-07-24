@@ -9,7 +9,7 @@ use std::alloc::Allocator;
 
 use crate::{
 	application::Time,
-	audio::AudioSamplePlayer,
+	audio::graph::AudioGraphFactory,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::Factory,
@@ -33,7 +33,7 @@ pub struct DefaultWorld {
 	cameras: Factory<Camera>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 	light_factory: Factory<Lights>,
-	audio_sample_player_factory: Factory<AudioSamplePlayer>,
+	audio_graph_factory: AudioGraphFactory,
 
 	anchor_system: AnchorSystem,
 	physics_system: dynabit::World,
@@ -64,7 +64,7 @@ impl DefaultWorld {
 			cameras,
 			renderable_factory,
 			light_factory: Factory::new(),
-			audio_sample_player_factory: Factory::new(),
+			audio_graph_factory: AudioGraphFactory::new(),
 
 			anchor_system,
 			physics_system,
@@ -134,15 +134,15 @@ impl DefaultWorld {
 		&mut self.light_factory
 	}
 
-	/// Returns the factory used to spawn resource-backed audio players.
-	pub fn audio_sample_player_factory(&self) -> &Factory<AudioSamplePlayer> {
-		&self.audio_sample_player_factory
+	/// Returns the factory used to spawn resource-backed audio graphs.
+	pub fn audio_graph_factory(&self) -> &AudioGraphFactory {
+		&self.audio_graph_factory
 	}
 
 	/// Returns mutable access to the factory used to spawn resource-backed
-	/// audio players.
-	pub fn audio_sample_player_factory_mut(&mut self) -> &mut Factory<AudioSamplePlayer> {
-		&mut self.audio_sample_player_factory
+	/// audio graphs.
+	pub fn audio_graph_factory_mut(&mut self) -> &mut AudioGraphFactory {
+		&mut self.audio_graph_factory
 	}
 
 	pub fn camera_factory(&self) -> &Factory<Camera> {
@@ -240,15 +240,22 @@ mod tests {
 	}
 
 	#[test]
-	fn audio_sample_player_factory_publishes_the_player_with_its_lifecycle_handle() {
-		let mut world = DefaultWorld::new();
-		let mut listener = world.audio_sample_player_factory().listener();
-		let player = crate::audio::AudioSamplePlayer::looping("audio/ambience.ogg");
+	fn audio_graph_factory_publishes_the_graph_with_its_lifecycle_handle() {
+		use crate::audio::graph::{
+			fns::{gain, r#loop, sample},
+			AudioProcessor, SamplePlaybackMode,
+		};
 
-		let handle = world.audio_sample_player_factory_mut().create(player.clone());
-		let created = listener.read().expect("audio sample player creation");
+		let mut world = DefaultWorld::new();
+		let mut listener = world.audio_graph_factory().listener();
+		let graph = gain(r#loop(sample("audio/ambience.ogg")), 0.5);
+
+		let handle = world.audio_graph_factory_mut().create(graph);
+		let created = listener.read().expect("audio graph creation");
 
 		assert_eq!(created.handle(), &handle);
-		assert_eq!(created.data(), &player);
+		assert_eq!(created.data().resource_id, "audio/ambience.ogg");
+		assert_eq!(created.data().playback_mode, SamplePlaybackMode::Loop);
+		assert_eq!(&created.data().processors[..], &[AudioProcessor::Gain(0.5)]);
 	}
 }

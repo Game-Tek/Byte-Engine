@@ -7,7 +7,7 @@ use resource_management::{
 	Reference,
 };
 
-use super::{AudioSamplePlayer, PlaybackMode};
+use super::graph::{AudioGraphRenderPlan, CompiledAudioGraph};
 use crate::{
 	core::async_runtime,
 	core::{factory::Handle, EntityHandle},
@@ -15,7 +15,7 @@ use crate::{
 
 /// Keep both sides bounded so the application loader and audio worker exert
 /// backpressure instead of growing queues during a resource burst.
-pub(crate) const AUDIO_SAMPLE_PLAYER_CAPACITY: usize = 64;
+pub(crate) const AUDIO_GRAPH_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// The `AudioSampleCacheKey` struct distinguishes PCM payload and playback
@@ -162,7 +162,7 @@ impl LoadedAudioSample {
 }
 
 #[derive(Debug)]
-/// The `AudioLoadRequest` struct identifies one version of a player resource
+/// The `AudioLoadRequest` struct identifies one version of a graph resource
 /// request sent from the audio worker.
 struct AudioLoadRequest {
 	handle: Handle,
@@ -191,13 +191,12 @@ enum AudioLoadCompletion {
 	},
 }
 
-/// The `PendingAudioSamplePlayer` struct retains player settings and an
-/// unsent request while the real-time channel is busy.
-struct PendingAudioSamplePlayer {
+/// The `PendingAudioGraph` struct retains a render plan and an unsent request
+/// while the real-time channel is busy.
+struct PendingAudioGraph {
 	handle: Handle,
 	generation: u64,
-	gain: f32,
-	playback_mode: PlaybackMode,
+	render_plan: AudioGraphRenderPlan,
 	request: Option<AudioLoaderCommand>,
 }
 
@@ -206,7 +205,7 @@ struct PendingAudioSamplePlayer {
 pub(crate) struct AudioSampleLoaderClient {
 	commands: kanal::Sender<AudioLoaderCommand>,
 	completions: kanal::Receiver<AudioLoadCompletion>,
-	pending: Vec<PendingAudioSamplePlayer>,
+	pending: Vec<PendingAudioGraph>,
 	next_generation: u64,
 	cache_prune_requested: bool,
 	commands_closed: bool,
@@ -218,7 +217,7 @@ impl AudioSampleLoaderClient {
 		Self {
 			commands,
 			completions,
-			pending: Vec::with_capacity(AUDIO_SAMPLE_PLAYER_CAPACITY),
+			pending: Vec::with_capacity(AUDIO_GRAPH_CAPACITY),
 			next_generation: 0,
 			cache_prune_requested: false,
 			commands_closed: false,
@@ -226,30 +225,28 @@ impl AudioSampleLoaderClient {
 		}
 	}
 
-	/// Queues one player without allocating new audio-thread container storage.
+	/// Queues one graph without allocating new audio-thread container storage.
 	///
-	/// `active_player_count` lets this bridge enforce one shared limit across
-	/// players that are loading and players that are already mixing.
-	pub(crate) fn queue(&mut self, handle: Handle, player: AudioSamplePlayer, active_player_count: usize) -> bool {
+	/// `active_graph_count` lets this bridge enforce one shared limit across
+	/// graphs that are loading and graphs that are already mixing.
+	pub(crate) fn queue(&mut self, handle: Handle, graph: CompiledAudioGraph, active_graph_count: usize) -> bool {
 		self.remove(handle);
-		if self.pending.len() + active_player_count >= AUDIO_SAMPLE_PLAYER_CAPACITY {
+		if self.pending.len() + active_graph_count >= AUDIO_GRAPH_CAPACITY {
 			log::warn!(
-				"Audio sample player was not created. The audio worker already has the maximum of {} active or loading players.",
-				AUDIO_SAMPLE_PLAYER_CAPACITY
+				"Audio graph was not created. The audio worker already has the maximum of {} active or loading graphs.",
+				AUDIO_GRAPH_CAPACITY
 			);
 			return false;
 		}
 
 		let generation = self.next_generation;
 		self.next_generation = self.next_generation.wrapping_add(1);
+		let (resource_id, render_plan) = graph.into_parts();
 
-		let (resource_id, playback_mode) = player.into_parts();
-
-		self.pending.push(PendingAudioSamplePlayer {
+		self.pending.push(PendingAudioGraph {
 			handle,
 			generation,
-			gain: 1.0,
-			playback_mode,
+			render_plan,
 			request: Some(AudioLoaderCommand::Load(AudioLoadRequest {
 				handle,
 				generation,
@@ -259,10 +256,10 @@ impl AudioSampleLoaderClient {
 		true
 	}
 
-	/// Removes a pending player. A completion already in flight is rejected by
+	/// Removes a pending graph. A completion already in flight is rejected by
 	/// its handle and generation when it arrives.
 	pub(crate) fn remove(&mut self, handle: Handle) {
-		if let Some(index) = self.pending.iter().position(|player| player.handle == handle) {
+		if let Some(index) = self.pending.iter().position(|graph| graph.handle == handle) {
 			self.pending.swap_remove(index);
 		}
 	}
@@ -275,7 +272,7 @@ impl AudioSampleLoaderClient {
 
 	/// Submits waiting requests and adopts ready samples at a hardware-period
 	/// boundary. The callback runs only for a still-live request generation.
-	pub(crate) fn update(&mut self, mut create_player: impl FnMut(Handle, Arc<LoadedAudioSample>, f32, PlaybackMode)) {
+	pub(crate) fn update(&mut self, mut create_graph: impl FnMut(Handle, Arc<LoadedAudioSample>, AudioGraphRenderPlan)) {
 		self.submit_requests();
 
 		if self.completions_closed {
@@ -283,7 +280,7 @@ impl AudioSampleLoaderClient {
 		}
 		loop {
 			match self.completions.try_recv_realtime() {
-				Ok(Some(completion)) => self.process_completion(completion, &mut create_player),
+				Ok(Some(completion)) => self.process_completion(completion, &mut create_graph),
 				Ok(None) => break,
 				Err(_) => {
 					self.completions_closed = true;
@@ -298,14 +295,14 @@ impl AudioSampleLoaderClient {
 			return;
 		}
 
-		for player in &mut self.pending {
-			let Some(_) = player.request else {
+		for graph in &mut self.pending {
+			let Some(_) = graph.request else {
 				continue;
 			};
 			// Kanal does not wait for its channel mutex or queue capacity here.
 			// A successful send can still wake the application executor, so this
 			// is a soft real-time boundary rather than a hard real-time guarantee.
-			match self.commands.try_send_option_realtime(&mut player.request) {
+			match self.commands.try_send_option_realtime(&mut graph.request) {
 				Ok(true) | Ok(false) => {}
 				Err(_) => {
 					self.commands_closed = true;
@@ -314,7 +311,7 @@ impl AudioSampleLoaderClient {
 			}
 		}
 
-		// Queue pruning after loads so a replacement player can renew cache
+		// Queue pruning after loads so a replacement graph can renew cache
 		// ownership before an immediately preceding deletion is reclaimed.
 		if !self.commands_closed && self.cache_prune_requested {
 			let mut command = Some(AudioLoaderCommand::PruneCache);
@@ -329,7 +326,7 @@ impl AudioSampleLoaderClient {
 	fn process_completion(
 		&mut self,
 		completion: AudioLoadCompletion,
-		create_player: &mut impl FnMut(Handle, Arc<LoadedAudioSample>, f32, PlaybackMode),
+		create_graph: &mut impl FnMut(Handle, Arc<LoadedAudioSample>, AudioGraphRenderPlan),
 	) {
 		let (handle, generation) = match &completion {
 			AudioLoadCompletion::Ready { handle, generation, .. } | AudioLoadCompletion::Failed { handle, generation } => {
@@ -339,7 +336,7 @@ impl AudioSampleLoaderClient {
 		let Some(index) = self
 			.pending
 			.iter()
-			.position(|player| player.handle == handle && player.generation == generation)
+			.position(|graph| graph.handle == handle && graph.generation == generation)
 		else {
 			if matches!(completion, AudioLoadCompletion::Ready { .. }) {
 				self.cache_prune_requested = true;
@@ -349,7 +346,7 @@ impl AudioSampleLoaderClient {
 		let pending = self.pending.swap_remove(index);
 
 		if let AudioLoadCompletion::Ready { sample, .. } = completion {
-			create_player(handle, sample, pending.gain, pending.playback_mode);
+			create_graph(handle, sample, pending.render_plan);
 		}
 	}
 }
@@ -366,8 +363,8 @@ pub(crate) struct AudioSampleLoader {
 impl AudioSampleLoader {
 	/// Creates the bounded real-time client and its application-runtime worker.
 	pub(crate) fn new(resource_manager: EntityHandle<ResourceManager>) -> (AudioSampleLoaderClient, Self) {
-		let (commands, command_receiver) = kanal::bounded_async(AUDIO_SAMPLE_PLAYER_CAPACITY);
-		let (completion_sender, completions) = kanal::bounded_async(AUDIO_SAMPLE_PLAYER_CAPACITY);
+		let (commands, command_receiver) = kanal::bounded_async(AUDIO_GRAPH_CAPACITY);
+		let (completion_sender, completions) = kanal::bounded_async(AUDIO_GRAPH_CAPACITY);
 
 		(
 			AudioSampleLoaderClient::new(commands.to_sync(), completions.to_sync()),
@@ -375,7 +372,7 @@ impl AudioSampleLoader {
 				resource_manager,
 				commands: command_receiver,
 				completions: completion_sender,
-				cache: HashMap::with_capacity(AUDIO_SAMPLE_PLAYER_CAPACITY),
+				cache: HashMap::with_capacity(AUDIO_GRAPH_CAPACITY),
 			},
 		)
 	}
@@ -465,7 +462,10 @@ mod tests {
 
 	use super::{AudioLoadCompletion, AudioLoaderCommand, AudioSampleCacheKey, AudioSampleLoaderClient, LoadedAudioSample};
 	use crate::{
-		audio::{AudioSamplePlayer, PlaybackMode},
+		audio::graph::{
+			fns::{gain, r#loop, sample},
+			AudioProcessor, SamplePlaybackMode,
+		},
 		core::{factory::Factory, listener::Listener},
 	};
 
@@ -558,9 +558,9 @@ mod tests {
 		let handle = factory.create(());
 		let _ = listener.read();
 
-		assert!(client.queue(handle, AudioSamplePlayer::looping("first.wav"), 0));
+		assert!(client.queue(handle, r#loop(sample("first.wav")).compile().unwrap(), 0));
 		let first_generation = client.pending[0].generation;
-		assert!(client.queue(handle, AudioSamplePlayer::once("second.wav"), 0));
+		assert!(client.queue(handle, gain(sample("second.wav"), 0.25).compile().unwrap(), 0));
 		let second_generation = client.pending[0].generation;
 		assert_ne!(first_generation, second_generation);
 
@@ -574,7 +574,7 @@ mod tests {
 			.unwrap();
 
 		let mut created = Vec::new();
-		client.update(|handle, _, gain, mode| created.push((handle, gain, mode)));
+		client.update(|handle, _, plan| created.push((handle, plan.playback_mode, plan.processors.to_vec())));
 		assert!(created.is_empty());
 		assert_eq!(client.pending.len(), 1);
 		assert!(client.cache_prune_requested);
@@ -586,9 +586,39 @@ mod tests {
 				sample,
 			})
 			.unwrap();
-		client.update(|handle, _, gain, mode| created.push((handle, gain, mode)));
-		assert_eq!(created, [(handle, 1.0, PlaybackMode::Once)]);
+		client.update(|handle, _, plan| created.push((handle, plan.playback_mode, plan.processors.to_vec())));
+		assert_eq!(
+			created,
+			[(handle, SamplePlaybackMode::Once, vec![AudioProcessor::Gain(0.25)])]
+		);
 		assert!(client.pending.is_empty());
+	}
+
+	#[test]
+	fn deleted_graph_rejects_a_completion_that_was_already_in_flight() {
+		let (commands, _command_receiver) = kanal::bounded_async(4);
+		let (completion_sender, completions) = kanal::bounded_async(4);
+		let completion_sender = completion_sender.to_sync();
+		let mut client = AudioSampleLoaderClient::new(commands.to_sync(), completions.to_sync());
+		let mut factory = Factory::new();
+		let handle = factory.create(());
+
+		assert!(client.queue(handle, sample("deleted.wav").compile().unwrap(), 0));
+		let generation = client.pending[0].generation;
+		client.remove(handle);
+		completion_sender
+			.send(AudioLoadCompletion::Ready {
+				handle,
+				generation,
+				sample: Arc::new(LoadedAudioSample::from_normalized_samples(48_000, 1, Box::from([0.0]))),
+			})
+			.unwrap();
+
+		let mut created = false;
+		client.update(|_, _, _| created = true);
+
+		assert!(!created);
+		assert!(client.cache_prune_requested);
 	}
 
 	#[test]
@@ -599,7 +629,7 @@ mod tests {
 		let mut client = AudioSampleLoaderClient::new(commands.to_sync(), completions.to_sync());
 		let mut factory = Factory::new();
 		let handle = factory.create(());
-		assert!(client.queue(handle, AudioSamplePlayer::looping("replacement.wav"), 0));
+		assert!(client.queue(handle, r#loop(sample("replacement.wav")).compile().unwrap(), 0));
 
 		client.request_cache_prune();
 		client.request_cache_prune();

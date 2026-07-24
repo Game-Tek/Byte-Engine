@@ -241,6 +241,7 @@ dependencies = [
  "oxhttp",
  "serde",
  "serde_json",
+ "smallbox",
  "smallvec",
  "tracing",
  "tracing-log",

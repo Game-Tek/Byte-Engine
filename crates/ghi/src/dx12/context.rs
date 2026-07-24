@@ -7082,9 +7082,7 @@ impl Device {
 
 	/// Resolves a frame-aware index using the optional frame offset.
 	fn frame_index_with_offset(&self, frame_index: usize, frame_offset: Option<i32>, total_frames: usize) -> usize {
-		let total = (total_frames.max(1)) as i32;
-		let offset = frame_offset.unwrap_or(0);
-		(frame_index as i32 + offset).rem_euclid(total) as usize
+		crate::frame_resources::frame_index_with_offset(frame_index, frame_offset.unwrap_or(0), total_frames)
 	}
 
 	/// Resolves per-frame descriptor resources, falling back to single-resource handles for DX12.

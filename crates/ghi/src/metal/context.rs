@@ -28,6 +28,8 @@ pub struct Context {
 		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,
 	pub(crate) descriptor_set_to_resource:
 		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), HashSet<PrivateHandles>>,
+	descriptor_sources:
+		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), (crate::descriptors::WriteData, i32)>,
 
 	pub settings: crate::device::Features,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
@@ -132,6 +134,7 @@ impl Context {
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
+			descriptor_sources: HashMap::default(),
 			settings,
 			states: HashMap::default(),
 			pending_buffer_syncs: VecDeque::new(),
@@ -482,14 +485,14 @@ impl Context {
 	}
 
 	/// Resolves a descriptor write into the concrete per-frame Metal resources referenced by the current sequence.
-	/// TODO: fix delta indexing in this function
 	fn resolve_descriptor_for_frame(
 		&self,
 		descriptor: crate::descriptors::WriteData,
 		sequence_index: u8,
 		frame_offset: i32,
 	) -> Option<Descriptor> {
-		let resource_frame_index = (sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize;
+		let resource_frame_index =
+			crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize);
 
 		match descriptor {
 			crate::descriptors::WriteData::Buffer { handle, size } => {
@@ -537,6 +540,8 @@ impl Context {
 		frame_offset: i32,
 		sequence_index: u8,
 	) {
+		self.descriptor_sources
+			.insert((set_handle, slot, array_element, sequence_index), (descriptor, frame_offset));
 		if let Some(descriptor) = self.resolve_descriptor_for_frame(descriptor, sequence_index, frame_offset) {
 			self.update_descriptor_slot(set_handle, slot, descriptor, sequence_index, array_element);
 		}
@@ -614,34 +619,25 @@ impl Context {
 		handles
 	}
 
-	/// Moves frame-local descriptor references from any fallback resource to the deferred resource.
-	fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles], replacement: PrivateHandles, frame_index: u8) {
+	/// Re-resolves retained descriptor writes after a deferred frame resource extends its chain.
+	fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles]) {
 		let descriptor_bindings = candidates
 			.iter()
 			.copied()
-			.filter(|candidate| *candidate != replacement)
 			.filter_map(|candidate| self.resource_to_descriptor.get(&candidate))
 			.flat_map(|bindings| bindings.iter().copied())
-			.filter(|(_, _, _, descriptor_frame_index)| *descriptor_frame_index == frame_index)
 			.collect::<HashSet<_>>();
 
-		for (set_handle, slot, array_element, _) in descriptor_bindings {
-			let Some(descriptor) = self.descriptor_sets[set_handle.0 as usize]
-				.descriptors
-				.get(&slot)
-				.and_then(|descriptors| descriptors.get(&array_element))
+		for (set_handle, slot, array_element, frame_index) in descriptor_bindings {
+			let Some((source, frame_offset)) = self
+				.descriptor_sources
+				.get(&(set_handle, slot, array_element, frame_index))
 				.copied()
 			else {
 				continue;
 			};
-
-			let descriptor = match (descriptor, replacement) {
-				(Descriptor::Buffer { size, .. }, PrivateHandles::Buffer(buffer)) => Descriptor::Buffer { buffer, size },
-				(Descriptor::Image { layout, .. }, PrivateHandles::Image(image)) => Descriptor::Image { image, layout },
-				(Descriptor::CombinedImageSampler { sampler, layout, .. }, PrivateHandles::Image(image)) => {
-					Descriptor::CombinedImageSampler { image, sampler, layout }
-				}
-				_ => continue,
+			let Some(descriptor) = self.resolve_descriptor_for_frame(source, frame_index, frame_offset) else {
+				continue;
 			};
 
 			self.update_descriptor_slot(set_handle, slot, descriptor, frame_index, array_element);
@@ -719,7 +715,7 @@ impl Context {
 					);
 
 					let candidates = self.image_chain_handles(builder.master.0);
-					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Image(handle), sequence_index);
+					self.rewrite_deferred_descriptors(&candidates);
 
 					let next_frame = sequence_index + 1;
 					if next_frame < self.frames {
@@ -741,7 +737,7 @@ impl Context {
 					let handle = self.create_buffer_internal(Some(builder.previous), name.as_deref(), size, uses, access);
 
 					let candidates = self.buffer_chain_handles(builder.master);
-					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Buffer(handle), sequence_index);
+					self.rewrite_deferred_descriptors(&candidates);
 
 					let next_frame = sequence_index + 1;
 					if next_frame < self.frames {

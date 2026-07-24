@@ -2524,6 +2524,8 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn multiframe_resources(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
+		//! Tests frame-local image creation, previous-frame bindings, and sequence wraparound.
+
 		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
@@ -2604,12 +2606,11 @@ pub(super) mod tests {
 			ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 		));
 
-		let image = device.build_image(
+		let image = device.build_dynamic_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
 				.name("Image")
 				.extent(Extent::square(2))
-				.device_accesses(DeviceAccesses::DeviceToHost)
-				.use_case(UseCases::DYNAMIC),
+				.device_accesses(DeviceAccesses::DeviceToHost),
 		);
 
 		let descriptor_set = device.create_descriptor_set(None);
@@ -2660,7 +2661,6 @@ pub(super) mod tests {
 		device.wait();
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
-
 		assert!(
 			pixels[0]
 				== RGBAu8 {
@@ -2763,22 +2763,7 @@ pub(super) mod tests {
 		device.wait();
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
-
-		assert!(
-			pixels[0]
-				== RGBAu8 {
-					r: 127,
-					g: 127,
-					b: 127,
-					a: 255
-				} || pixels[0]
-				== RGBAu8 {
-					r: 128,
-					g: 128,
-					b: 128,
-					a: 255
-				}
-		);
+		assert_eq!(pixels[0], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 
 		assert!(!device.has_errors());
@@ -2807,23 +2792,14 @@ pub(super) mod tests {
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
-		assert_eq!(
-			pixels[0],
-			RGBAu8 {
-				r: 255,
-				g: 255,
-				b: 255,
-				a: 255
-			}
-		);
 		assert!(
-			pixels[1]
+			pixels[0]
 				== RGBAu8 {
 					r: 127,
 					g: 127,
 					b: 127,
 					a: 255
-				} || pixels[1]
+				} || pixels[0]
 				== RGBAu8 {
 					r: 128,
 					g: 128,
@@ -2831,6 +2807,7 @@ pub(super) mod tests {
 					a: 255
 				}
 		);
+		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 
 		assert!(!device.has_errors());
 	}

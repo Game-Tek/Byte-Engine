@@ -192,6 +192,7 @@ impl DescriptorWrite {
 		self
 	}
 
+	/// Selects a relative frame resource. Use `-1` for the previous frame.
 	pub fn with_frame_offset(mut self, frame_offset: i32) -> Self {
 		self.frame_offset = Some(frame_offset);
 		self

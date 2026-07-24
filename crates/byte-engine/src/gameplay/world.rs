@@ -243,7 +243,7 @@ mod tests {
 	fn audio_sample_player_factory_publishes_the_player_with_its_lifecycle_handle() {
 		let mut world = DefaultWorld::new();
 		let mut listener = world.audio_sample_player_factory().listener();
-		let player = crate::audio::AudioSamplePlayer::looping("audio/ambience.ogg").with_gain(0.5);
+		let player = crate::audio::AudioSamplePlayer::looping("audio/ambience.ogg");
 
 		let handle = world.audio_sample_player_factory_mut().create(player.clone());
 		let created = listener.read().expect("audio sample player creation");

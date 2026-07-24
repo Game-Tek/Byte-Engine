@@ -242,11 +242,13 @@ impl AudioSampleLoaderClient {
 
 		let generation = self.next_generation;
 		self.next_generation = self.next_generation.wrapping_add(1);
-		let (resource_id, gain, playback_mode) = player.into_parts();
+
+		let (resource_id, playback_mode) = player.into_parts();
+
 		self.pending.push(PendingAudioSamplePlayer {
 			handle,
 			generation,
-			gain,
+			gain: 1.0,
 			playback_mode,
 			request: Some(AudioLoaderCommand::Load(AudioLoadRequest {
 				handle,

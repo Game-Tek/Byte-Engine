@@ -1,0 +1,9 @@
+main: fn () -> void {
+	let sum: u32 = 0;
+	for (let i: u32 = 0; i <= 4; i = i + 1) {
+		if (i >= 2) {
+			continue;
+		}
+		sum = sum + i;
+	}
+}

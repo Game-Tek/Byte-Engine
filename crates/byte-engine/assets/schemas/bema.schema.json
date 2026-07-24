@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/bema.schema.json",
+  "title": "Byte Engine material declaration",
+  "description": "A source material or material variant consumed by the .bema asset handler.",
+  "oneOf": [
+    { "$ref": "#/$defs/material" },
+    { "$ref": "#/$defs/variant" }
+  ],
+  "$defs": {
+    "material": {
+      "type": "object",
+      "required": ["domain", "shaders", "variables"],
+      "properties": {
+		"$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+        "domain": { "type": "string", "description": "The material render domain." },
+        "type": { "type": "string", "description": "An optional material classification retained for authoring tools." },
+        "shaders": {
+          "type": "object",
+          "description": "BESL source paths indexed by shader stage.",
+          "properties": {
+            "Vertex": { "$ref": "#/$defs/shaderPath" },
+            "Fragment": { "$ref": "#/$defs/shaderPath" },
+            "Compute": { "$ref": "#/$defs/shaderPath" }
+          },
+          "additionalProperties": false
+        },
+        "variables": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/materialVariable" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "variant": {
+      "type": "object",
+      "required": ["parent", "variables"],
+      "properties": {
+		"$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+        "parent": { "type": "string", "pattern": "\\.bema$", "description": "The parent material asset ID." },
+        "variables": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variantVariable" }
+        },
+        "transparency": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "enum": ["Opaque", "Blend"] }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "shaderPath": { "type": "string", "pattern": "\\.besl$" },
+    "materialVariable": {
+      "type": "object",
+      "required": ["name", "data_type", "value"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "data_type": { "enum": ["vec3f", "vec4f", "float", "Texture2D"] },
+        "type": { "type": "string", "description": "Optional parameter classification." },
+        "value": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "variantVariable": {
+      "type": "object",
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

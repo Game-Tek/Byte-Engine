@@ -1,0 +1,26 @@
+BloomParameters: struct {
+	prefilter: vec4f[1],
+	blur_data: vec4f[1],
+}
+
+source_texture: descriptor<Texture2D, 0, read>;
+result_texture: descriptor<StorageImage<rgba16>, 1, write>;
+bloom_parameters: descriptor<BloomParameters, 2, read>;
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let source_size: vec2u = texture_size(source_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(source_size.x), f32(source_size.y));
+	let sampled: vec4f = texture_lod(source_texture, uv);
+	let brightness: f32 = max(max(sampled.x, sampled.y), sampled.z);
+	let threshold: f32 = bloom_parameters.prefilter[0].x;
+	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
+	let knee: f32 = max(threshold * soft_knee, 0.00001);
+	let soft: f32 = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
+	soft = (soft * soft) / (4.0 * knee + 0.00001);
+	let contribution: f32 = max(soft, brightness - threshold);
+	contribution = contribution / max(brightness, 0.00001);
+	let bloom_color: vec3f = vec3f(sampled.x * contribution, sampled.y * contribution, sampled.z * contribution);
+	write(result_texture, coord, vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0));
+}

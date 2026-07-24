@@ -9,9 +9,9 @@ use crate::core::Entity;
 /// [`crate::gameplay::transform::Transform`]; the blanket implementation will
 /// provide this trait.
 pub trait Positionable {
-	/// Get the position of the object.
+	/// Returns the object's world-space position.
 	fn position(&self) -> Vector3;
 
-	/// Set the position of the object.
+	/// Sets the object's world-space position.
 	fn set_position(&mut self, position: Vector3);
 }

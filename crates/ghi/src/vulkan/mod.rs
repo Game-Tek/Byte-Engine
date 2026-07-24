@@ -244,7 +244,7 @@ struct AccelerationStructure {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of a memory backed resource.
+/// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
 pub struct MemoryBackedResourceCreationResult<T> {
 	/// The resource.
 	resource: T,
@@ -271,15 +271,15 @@ pub(crate) struct BuildBuffer {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
-	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan image at the frame selected by [`Task`].
 	DeleteVulkanImage {
 		handle: vk::Image,
 	},
-	/// Delete a Vulkan image view. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan image view at the frame selected by [`Task`].
 	DeleteVulkanImageView {
 		handle: vk::ImageView,
 	},
-	/// Delete a Vulkan buffer. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan buffer at the frame selected by [`Task`].
 	DeleteVulkanBuffer {
 		handle: vk::Buffer,
 	},
@@ -301,8 +301,7 @@ pub(crate) enum Tasks {
 	BuildBuffer(BuildBuffer),
 }
 
-/// The `Task` struct represents a deferred task that needs to be executed at a later time.
-/// This is because some tasks need to be executed at a particular time or frame.
+/// The `Task` struct schedules backend work for a required time or frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
@@ -397,108 +396,10 @@ impl DescriptorWrite {
 	}
 }
 
-/// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
+/// The `StoredQueue` struct provides per-queue device data to internal submission paths.
 #[derive(Clone)]
 pub(super) struct StoredQueue {
 	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn create_default_device_setup() -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
-		let features = crate::device::Features::new().validation(true);
-		create_default_device_setup_with_features(features)
-	}
-
-	fn create_default_device_setup_with_features(
-		features: crate::device::Features,
-	) -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut queue_handle = None;
-		let device = instance
-			.create_device(
-				features.clone(),
-				&mut [(
-					crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
-					&mut queue_handle,
-				)],
-			)
-			.expect("Failed to create VulkanGHI.");
-		let context = crate::device::Device::create_context(&device).expect("Failed to create Vulkan context.");
-		(instance, context, queue_handle.unwrap())
-	}
-
-	#[test]
-	fn render_triangle() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
-	}
-
-	#[test]
-	#[ignore = "test is broken because of WSI"]
-	fn render_present() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::present(&mut device, queue_handle);
-	}
-
-	#[test]
-	#[ignore = "test is broken because of WSI"]
-	fn render_multiframe_present() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::multiframe_present(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_multiframe() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_change_frames() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_resize() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::resize(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_dynamic_data() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_dynamic_textures() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_with_descriptor_sets() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
-	}
-
-	#[test]
-	fn render_with_multiframe_resources() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
-		graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
-	}
-
-	#[test]
-	#[ignore = "not working on supporting rt right now"]
-	fn render_with_ray_tracing() {
-		let (_instance, mut device, queue_handle) =
-			create_default_device_setup_with_features(crate::device::Features::new().validation(true).ray_tracing(true));
-		graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
-	}
 }

@@ -49,6 +49,7 @@ impl World {
 		time: Time,
 		transforms_rx: &mut impl Listener<TransformationUpdate>,
 		transforms_tx: &mut impl Channel<TransformationUpdate>,
+		allocator: &mut bumpalo::Bump,
 	) {
 		while let Some(message) = self.body_listener.read() {
 			let handle = *message.handle();
@@ -75,13 +76,13 @@ impl World {
 
 		self.update_velocities(dt);
 
-		let dt = dt - self.update_collisions(dt);
+		let dt = dt - self.update_collisions(dt, allocator);
 		self.update_bodies(dt, transforms_tx);
 	}
 
-	/// Applies all initial impulses to bodies based on forces.
-	pub fn update_velocities(&mut self, dt: Duration) {
-		let dt = dt.as_secs_f32();
+	/// Applies force-derived impulses to dynamic bodies.
+	pub fn update_velocities(&mut self, dt: MediaTime) {
+		let dt = dt.as_seconds_f32();
 
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
@@ -99,23 +100,26 @@ impl World {
 		}
 	}
 
-	/// Calculates and solves collisions.
-	pub fn update_collisions(&mut self, dt: Duration) -> Duration {
+	/// Detects and resolves collisions for the current time step.
+	pub fn update_collisions(&mut self, dt: MediaTime, allocator: &mut bumpalo::Bump) -> MediaTime {
 		let use_broadphase = true;
 
-		let mut contacts = if use_broadphase {
-			let broadphase = broadphase(self.bodies.indexed_iter(), dt.as_secs_f32());
-			self.detect_collisions_from_pairs(&broadphase, dt.as_secs_f32())
+		let mut contacts = bumpalo::collections::Vec::with_capacity_in(64, allocator);
+
+		if use_broadphase {
+			let broadphase = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
+
+			contacts.extend(self.detect_collisions_from_pairs(&broadphase, dt.as_seconds_f32()));
 		} else {
-			self.detect_collisions(dt)
+			contacts.extend(self.detect_collisions(dt));
 		};
 
 		contacts.sort(); // Sort contacts by time of impact
 
-		let mut accumulated_time = Duration::ZERO;
+		let mut accumulated_time = MediaTime::ZERO;
 
 		for contact in &contacts {
-			let contact_time = Duration::from_secs_f32(contact.toi.max(0.0));
+			let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
 			let dt = contact_time.saturating_sub(accumulated_time);
 
 			// Contacts from dynamic detection are expressed at their time of impact, so
@@ -132,13 +136,13 @@ impl World {
 		accumulated_time
 	}
 
-	/// Brute-force collision detection for all bodies in the world.
-	fn detect_collisions(&self, dt: Duration) -> Vec<Contact> {
-		detect_collisions_for_bodies(&self.bodies, dt.as_secs_f32())
+	/// Detects collisions by testing every body pair.
+	fn detect_collisions(&self, dt: MediaTime) -> impl Iterator<Item = Contact> + '_ {
+		detect_collisions_for_bodies(&self.bodies, dt.as_seconds_f32())
 	}
 
-	/// Collision detection for a subset of body pairs.
-	fn detect_collisions_from_pairs(&self, pairs: &[Pair], dt: f32) -> Vec<Contact> {
+	/// Detects collisions for the specified body pairs.
+	fn detect_collisions_from_pairs<'a>(&'a self, pairs: &'a [Pair], dt: f32) -> impl Iterator<Item = Contact> + 'a {
 		let pairs = pairs.iter().filter_map(|p| {
 			let a = self.bodies.get_slot(p.a)?;
 			let b = self.bodies.get_slot(p.b)?;
@@ -148,8 +152,8 @@ impl World {
 		detect_collisions_for_body_pairs(pairs, dt)
 	}
 
-	/// Updates bodies' positions and orientation based on their velocities.
-	pub fn update_bodies(&mut self, dt: Duration, transforms_tx: &mut impl Channel<TransformationUpdate>) {
+	/// Advances dynamic body transforms from their velocities.
+	pub fn update_bodies(&mut self, dt: MediaTime, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
 				BodyTypes::Dynamic => {
@@ -300,29 +304,23 @@ impl World {
 }
 
 /// Detects intersections and builds contact data for each unique body pair.
-fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> Vec<Contact> {
-	let iter = bodies.indexed_iter().flat_map(|(i, a)| {
+fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> impl Iterator<Item = Contact> + '_ {
+	let pairs = bodies.indexed_iter().flat_map(|(i, a)| {
 		bodies
 			.indexed_iter()
 			.filter(move |(j, _)| *j > i)
 			.map(move |(j, b)| ((i, a), (j, b)))
 	});
 
-	detect_collisions_for_body_pairs(iter, dt)
+	detect_collisions_for_body_pairs(pairs, dt)
 }
 
 /// Detects intersections and builds contact data for each unique body pair.
 fn detect_collisions_for_body_pairs<'a>(
-	pairs: impl Iterator<Item = ((usize, &'a PhysicsBody), (usize, &'a PhysicsBody))>,
+	pairs: impl Iterator<Item = ((usize, &'a PhysicsBody), (usize, &'a PhysicsBody))> + 'a,
 	dt: f32,
-) -> Vec<Contact> {
-	let mut contacts = Vec::with_capacity((pairs.size_hint().0 as f32 * 16f32).sqrt() as usize); // Arbitrary heuristic
-
-	pairs
-		.filter_map(|((i, a), (j, b))| intersect((a, i), (b, j), dt))
-		.collect_into(&mut contacts);
-
-	contacts
+) -> impl Iterator<Item = Contact> + 'a {
+	pairs.filter_map(move |((i, a), (j, b))| intersect((a, i), (b, j), dt))
 }
 
 #[cfg(test)]
@@ -384,7 +382,7 @@ mod tests {
 		let mut world = World::new(listener, delete_listener);
 		world.bodies = std::mem::take(&mut bodies).into_iter().collect();
 
-		let contacts = detect_collisions_for_bodies(&world.bodies, dt);
+		let contacts = detect_collisions_for_bodies(&world.bodies, dt).collect::<SmallVec<[Contact; 8]>>();
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
@@ -399,7 +397,7 @@ mod tests {
 	#[test]
 	fn detects_each_pair_once() {
 		let bodies = [make_ground_body(), make_sphere_body()].into_iter().collect();
-		let contacts = detect_collisions_for_bodies(&bodies, 1.0);
+		let contacts = detect_collisions_for_bodies(&bodies, 1.0).collect::<SmallVec<[Contact; 8]>>();
 
 		assert_eq!(contacts.len(), 1);
 		assert_eq!((contacts[0].a.object, contacts[0].b.object), (0, 1));
@@ -428,7 +426,7 @@ mod tests {
 		.into_iter()
 		.collect();
 
-		let contacts = detect_collisions_for_bodies(&world.bodies, 1.0);
+		let contacts = detect_collisions_for_bodies(&world.bodies, 1.0).collect::<SmallVec<[Contact; 8]>>();
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
@@ -437,7 +435,7 @@ mod tests {
 	}
 }
 
-use std::{ops::Deref, time::Duration};
+use std::{alloc::Allocator, ops::Deref};
 
 use math::{
 	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
@@ -449,6 +447,7 @@ use math::{
 	sphere::Sphere,
 	Base, Matrix3, Quaternion, Vector3,
 };
+use smallvec::SmallVec;
 use utils::{
 	hash::{HashMap, HashMapExt},
 	StableVec, StableVecHandle,
@@ -473,4 +472,5 @@ use crate::{
 		},
 		intersection::broadphase,
 	},
+	time::MediaTime,
 };

@@ -1,23 +1,13 @@
-use std::collections::HashMap;
-use std::f32::consts::PI;
-
-use math::{normalize, Base, Vector2, Vector3};
-
-use super::action::TriggerMapping;
-use super::records::Record;
-use super::{ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types, Value};
-use crate::core::factory::Handle;
-
 /// The `InputAction` struct stores resolved trigger mappings and emission policy for one action.
 pub(super) struct InputAction {
 	pub(super) name: String,
 	pub(super) r#type: Types,
-	pub(super) trigger_mappings: Vec<TriggerMapping>,
+	pub(super) trigger_mappings: SmallVec<[TriggerMapping; 8]>, // TODO: wire allocator
 	pub(super) handle: Option<Handle>,
 	pub(super) tick_policy: TickPolicy,
 }
 
-/// The `InputEventState` struct represents the latest resolved value of an action for one device.
+/// The `InputEventState` struct stores the latest resolved action value for one device.
 pub struct InputEventState {
 	pub(super) seat_handle: SeatHandle,
 	pub(super) device_handle: DeviceHandle,
@@ -194,6 +184,20 @@ fn active_boolean_mappings<'a>(
 }
 
 fn unsupported_conversion<T>() -> Option<T> {
-	log::error!("Input action conversion is not implemented for this value combination");
+	log::error!(
+		"Input action conversion is not implemented for this value combination. The most likely cause is that a trigger mapping produces a value that the action output type cannot accept. See {}.",
+		crate::online_docs_url("develop/design/input-handling")
+	);
 	None
 }
+
+use std::collections::HashMap;
+use std::f32::consts::PI;
+
+use math::{normalize, Base, Vector2, Vector3};
+use smallvec::SmallVec;
+
+use super::action::TriggerMapping;
+use super::records::Record;
+use super::{ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types, Value};
+use crate::core::factory::Handle;

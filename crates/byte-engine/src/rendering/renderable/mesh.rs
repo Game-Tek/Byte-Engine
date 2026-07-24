@@ -16,8 +16,7 @@ use crate::{
 	space::Transformable,
 };
 
-/// The [`RenderableMesh`] trait exposes geometry and transform state to scene
-/// pipeline managers.
+/// The [`RenderableMesh`] trait supplies geometry and transform state to scene pipeline managers.
 pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;
 }

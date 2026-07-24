@@ -1,13 +1,14 @@
-//! The graphics hardware interface implements easy to use rendering functionality.
-//! It provides useful abstractions to interact with the GPU.
-//! It's not tied to any particular render pipeline implementation.
+//! Defines backend-independent handles and resource descriptions for GPU rendering.
+//!
+//! These types do not require a specific render-pipeline architecture.
 
 use utils::{Extent, RGBA};
 
+#[cfg(all(test, target_os = "linux"))]
+use crate::AccessPolicies;
 use crate::{
 	descriptors::{self, DescriptorType},
-	shader::BindingDescriptor,
-	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
+	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
 };
 
 // HANDLES
@@ -15,7 +16,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct QueueHandle(pub(crate) u64);
 
-/// The `BaseBufferHandle` allows addressing any static buffer irregardless of it's underlying type.
+/// The `BaseBufferHandle` struct identifies a static buffer without exposing its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
 
@@ -29,11 +30,11 @@ impl MasterHandle for BaseBufferHandle {
 	}
 }
 
-/// The `BufferHandle` allows addressing a buffer static buffer with a specific underlying type.
+/// The `BufferHandle` struct identifies a static buffer with its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct BufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
-/// The `DynamicBufferHandle` allows addressing a dynamic buffer with a specific underlying type.
+/// The `DynamicBufferHandle` struct identifies a resizable buffer with its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct DynamicBufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
@@ -110,20 +111,21 @@ impl MasterHandle for SynchronizerHandle {
 pub struct DescriptorSetTemplateHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// The `DescriptorSetHandle` struct identifies a retained group of flat shader resource writes.
 pub struct DescriptorSetHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetBindingHandle(pub(super) u64);
 
-/// Handle to a Pipeline Layout
+/// The `PipelineLayoutHandle` struct identifies a pipeline resource layout.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineLayoutHandle(pub(super) u64);
 
-/// Handle to a Sampler
+/// The `SamplerHandle` struct identifies an image sampler.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SamplerHandle(pub(super) u64);
 
-/// Handle to a Sampler
+/// The `SwapchainHandle` struct identifies a presentation swapchain.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SwapchainHandle(pub(super) u64);
 
@@ -211,17 +213,14 @@ pub(crate) trait PrivateHandle: Copy {
 
 // HANDLES
 
-/// Describes the dimesions of a dispatch operation.
+/// The `DispatchExtent` struct converts invocation dimensions into workgroup counts.
 pub struct DispatchExtent {
 	workgroup_extent: Extent,
 	dispatch_extent: Extent,
 }
 
 impl DispatchExtent {
-	/// Creates a new dispatch extent.
-	/// # Arguments
-	/// * `dispatch_extent` - The extent of the dispatch. (How many threads to have in each dimension).
-	/// * `workgroup_extent` - The extent of the workgroup. (The workgroup extent defined in the shader).
+	/// Creates dispatch dimensions from the invocation count and shader workgroup size.
 	pub fn new(dispatch_extent: Extent, workgroup_extent: Extent) -> Self {
 		Self {
 			workgroup_extent,
@@ -229,9 +228,7 @@ impl DispatchExtent {
 		}
 	}
 
-	/// Returns the extent for a dispatch operation.
-	/// # Returns
-	/// The extent for a dispatch operation, which is the result of dividing the dispatch extent by the workgroup extent, rounded up.
+	/// Returns the workgroup count, rounded up in each dimension.
 	pub fn get_extent(&self) -> Extent {
 		Extent::new(
 			self.dispatch_extent
@@ -366,19 +363,19 @@ impl From<SwapchainHandle> for ImageOrSwapchain {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of an attachment.
+/// The `AttachmentInformation` struct configures one render-pass attachment.
 pub struct AttachmentInformation {
 	/// The image view of the attachment.
 	pub(crate) target: ImageOrSwapchain,
-	/// The format of the attachment. If `None`, the format will be determined by the target image.
+	/// The attachment format, or `None` to use the target image's format.
 	pub(crate) format: Option<Formats>,
 	/// The layout of the attachment.
 	pub(crate) layout: Layouts,
 	/// The clear color of the attachment.
 	pub(crate) clear: ClearValue,
-	/// Whether to load the contents of the attchment when starting a render pass.
+	/// Whether the render pass loads the attachment's existing contents.
 	pub(crate) load: bool,
-	/// Whether to store the contents of the attachment when ending a render pass.
+	/// Whether the render pass stores the attachment's final contents.
 	pub(crate) store: bool,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
@@ -472,28 +469,28 @@ impl DescriptorSetBindingType for AccelerationStructureDescriptorBinding {
 	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::AccelerationStructure;
 }
 
-/// Stores the information of a descriptor set layout binding.
+/// The `DescriptorSetBindingTemplate` struct defines one resource binding in a retained descriptor set.
 #[derive(Clone)]
 pub struct DescriptorSetBindingTemplate {
-	/// The binding of the descriptor set layout binding.
+	/// The shader-visible binding index.
 	pub(crate) binding: u32,
-	/// The descriptor type of the descriptor set layout binding.
+	/// The resource type expected at the binding.
 	pub(crate) descriptor_type: DescriptorType,
-	/// The number of descriptors in the descriptor set layout binding.
+	/// The number of resources in the binding.
 	pub(crate) descriptor_count: u32,
-	/// The stages the descriptor set layout binding will be used in.
+	/// The shader stages that can access the binding.
 	pub(crate) stages: Stages,
-	/// The immutable samplers of the descriptor set layout binding.
+	/// The immutable samplers assigned to the binding.
 	pub(crate) immutable_samplers: Option<Vec<SamplerHandle>>,
 	/// The texture view type expected by this binding when it references textures.
 	pub(crate) texture_view_type: TextureViewTypes,
 	/// The structured element byte stride expected by this binding when it references buffers.
 	pub(crate) buffer_stride: u32,
-	/// Whether a storage-buffer binding is read-only and should use SRV-style binding on APIs that distinguish it.
+	/// Whether a storage buffer uses read-only binding on APIs that distinguish access.
 	pub(crate) buffer_read_only: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextureViewTypes {
 	Texture2D,
 	Texture2DArray,
@@ -567,18 +564,24 @@ pub type SamplerDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate
 pub type AccelerationStructureDescriptorSetBindingTemplate =
 	TypedDescriptorSetBindingTemplate<AccelerationStructureDescriptorBinding>;
 
+// Generates paired convenience constructors so each single/array pair shares one descriptor type.
+macro_rules! descriptor_template_constructors {
+	($( $single:ident, $array:ident => $descriptor_type:ident; )+) => {
+		$(
+			pub const fn $single(binding: u32, stages: Stages) -> Self {
+				Self::new(binding, DescriptorType::$descriptor_type, stages)
+			}
+
+			pub const fn $array(binding: u32, stages: Stages, count: u32) -> Self {
+				Self::new_array(binding, DescriptorType::$descriptor_type, stages, count)
+			}
+		)+
+	};
+}
+
 impl DescriptorSetBindingTemplate {
 	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages) -> Self {
-		Self {
-			binding,
-			descriptor_type,
-			descriptor_count: 1,
-			stages,
-			immutable_samplers: None,
-			texture_view_type: TextureViewTypes::Texture2D,
-			buffer_stride: 4,
-			buffer_read_only: false,
-		}
+		Self::new_array(binding, descriptor_type, stages, 1)
 	}
 
 	pub const fn new_array(binding: u32, descriptor_type: DescriptorType, stages: Stages, count: u32) -> Self {
@@ -609,85 +612,21 @@ impl DescriptorSetBindingTemplate {
 		self
 	}
 
-	pub const fn uniform_buffer(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::UniformBuffer, stages)
-	}
-
-	pub const fn uniform_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::UniformBuffer, stages, count)
-	}
-
-	pub const fn storage_buffer(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::StorageBuffer, stages)
-	}
-
-	pub const fn storage_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::StorageBuffer, stages, count)
-	}
-
-	pub const fn sampled_image(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::SampledImage, stages)
-	}
-
-	pub const fn sampled_image_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::SampledImage, stages, count)
-	}
-
-	pub const fn combined_image_sampler(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::CombinedImageSampler, stages)
-	}
-
-	pub const fn combined_image_sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::CombinedImageSampler, stages, count)
-	}
-
-	pub const fn storage_image(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::StorageImage, stages)
-	}
-
-	pub const fn storage_image_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::StorageImage, stages, count)
-	}
-
-	pub const fn input_attachment(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::InputAttachment, stages)
-	}
-
-	pub const fn input_attachment_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::InputAttachment, stages, count)
-	}
-
-	pub const fn sampler(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::Sampler, stages)
-	}
-
-	pub const fn sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::Sampler, stages, count)
-	}
-
-	pub const fn acceleration_structure(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::AccelerationStructure, stages)
-	}
-
-	pub const fn acceleration_structure_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::AccelerationStructure, stages, count)
+	descriptor_template_constructors! {
+		uniform_buffer, uniform_buffer_array => UniformBuffer;
+		storage_buffer, storage_buffer_array => StorageBuffer;
+		sampled_image, sampled_image_array => SampledImage;
+		combined_image_sampler, combined_image_sampler_array => CombinedImageSampler;
+		storage_image, storage_image_array => StorageImage;
+		input_attachment, input_attachment_array => InputAttachment;
+		sampler, sampler_array => Sampler;
+		acceleration_structure, acceleration_structure_array => AccelerationStructure;
 	}
 
 	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
-		Self {
-			binding,
-			descriptor_type: DescriptorType::Sampler,
-			descriptor_count: 1,
-			stages,
-			immutable_samplers: samplers,
-			texture_view_type: TextureViewTypes::Texture2D,
-			buffer_stride: 4,
-			buffer_read_only: false,
-		}
-	}
-
-	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> BindingDescriptor {
-		BindingDescriptor::new(set, self.binding, access_policies)
+		let mut template = Self::sampler(binding, stages);
+		template.immutable_samplers = samplers;
+		template
 	}
 
 	/// Returns the binding index of the descriptor set layout binding.
@@ -698,60 +637,52 @@ impl DescriptorSetBindingTemplate {
 
 pub struct BindingConstructor<'a> {
 	pub(super) descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-	/// The index of the array element to write to in the binding(if the binding is an array).
+	/// The array element to update when the binding is an array.
 	pub(super) array_element: u32,
-	/// Information describing the descriptor.
+	/// The resource update to apply.
 	pub(super) descriptor: descriptors::WriteData,
 	pub(super) frame_offset: Option<i8>,
 }
 
 impl<'a> BindingConstructor<'a> {
-	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
+	fn new(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, descriptor: descriptors::WriteData) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: descriptors::WriteData::Buffer {
-				handle: buffer_handle,
-				size: Ranges::Whole,
-			},
+			descriptor,
 			frame_offset: None,
 		}
+	}
+
+	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
+		Self::new(descriptor_set_binding_template, descriptors::WriteData::buffer(buffer_handle))
 	}
 
 	pub fn image(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
 		image_handle: impl Into<BaseImageHandle>,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Image {
-				handle: image_handle.into(),
-				layout: crate::Layouts::General,
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::image(image_handle, crate::Layouts::General),
+		)
 	}
 
 	pub fn swapchain(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
 		swapchain_handle: SwapchainHandle,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Swapchain(swapchain_handle),
-			frame_offset: None,
-		}
+			descriptors::WriteData::Swapchain(swapchain_handle),
+		)
 	}
 
 	pub fn sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, sampler_handle: SamplerHandle) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Sampler(sampler_handle),
-			frame_offset: None,
-		}
+			descriptors::WriteData::Sampler(sampler_handle),
+		)
 	}
 
 	pub fn combined_image_sampler(
@@ -760,26 +691,17 @@ impl<'a> BindingConstructor<'a> {
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::combined_image_sampler(image_handle, sampler_handle, layout, None),
+		)
 	}
 
 	pub fn combined_image_sampler_array(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSamplerArray,
-			frame_offset: None,
-		}
+			descriptors::WriteData::CombinedImageSamplerArray,
+		)
 	}
 
 	pub fn combined_image_sampler_layer(
@@ -789,40 +711,24 @@ impl<'a> BindingConstructor<'a> {
 		layout: Layouts,
 		layer_index: u32,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: Some(layer_index),
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::combined_image_sampler(image_handle, sampler_handle, layout, Some(layer_index)),
+		)
 	}
 
 	pub fn sampler_with_immutable_samplers(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
-		Self {
-			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::StaticSamplers,
-			frame_offset: None,
-		}
+		Self::new(descriptor_set_binding_template, descriptors::WriteData::StaticSamplers)
 	}
 
 	pub fn acceleration_structure(
 		bindings: &'a DescriptorSetBindingTemplate,
 		top_level_acceleration_structure: TopLevelAccelerationStructureHandle,
 	) -> Self {
-		BindingConstructor {
-			descriptor_set_binding_template: bindings,
-			array_element: 0,
-			descriptor: descriptors::WriteData::AccelerationStructure {
-				handle: top_level_acceleration_structure,
-			},
-			frame_offset: None,
-		}
+		Self::new(
+			bindings,
+			descriptors::WriteData::acceleration_structure(top_level_acceleration_structure),
+		)
 	}
 
 	pub fn frame(mut self, frame_offset: i8) -> Self {
@@ -849,9 +755,9 @@ impl<'a> BindingConstructor<'a> {
 	}
 }
 
-/// Describes the details of the memory layout of a particular image.
+/// The `ImageSubresourceLayout` struct defines how one image subresource maps to memory.
 pub struct ImageSubresourceLayout {
-	/// The offset inside a memory region where the texture will read it's first texel from.
+	/// The byte offset of the first texel in its memory region.
 	pub offset: usize,
 	/// The size of the texture in bytes.
 	pub size: usize,
@@ -899,14 +805,7 @@ impl QueueSelection {
 #[cfg(test)]
 pub(super) mod tests {
 
-	#[cfg(target_os = "linux")]
-	use std::borrow::Borrow as _;
-
-	#[cfg(target_os = "linux")]
-	use resource_management::shader::glsl_compile as glsl;
-
 	use super::*;
-	#[cfg(target_os = "linux")]
 	use crate::{
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
@@ -920,7 +819,7 @@ pub(super) mod tests {
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
 		},
-		shader::Sources,
+		shader::{CompiledShaderSource, ShaderSource},
 		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
 		ShaderTypes, UseCases, Uses, Window,
 	};
@@ -984,93 +883,82 @@ pub(super) mod tests {
 	}
 
 	#[test]
-	fn descriptor_set_binding_template_type_specific_variants() {
-		let stages = Stages::COMPUTE;
+	fn descriptor_write_constructors_preserve_set_slot_array_and_frame_semantics() {
+		let set = DescriptorSetHandle(1);
+		let slot = crate::shader::ResourceSlot::new(9);
+		let buffer = BaseBufferHandle(2);
+		let image = ImageHandle(BaseImageHandle(3));
+		let sampler = SamplerHandle(4);
+		let acceleration_structure = TopLevelAccelerationStructureHandle(5);
 
-		let templates = [
-			DescriptorSetBindingTemplate::uniform_buffer(0, stages),
-			DescriptorSetBindingTemplate::storage_buffer(1, stages),
-			DescriptorSetBindingTemplate::sampled_image(2, stages),
-			DescriptorSetBindingTemplate::combined_image_sampler(3, stages),
-			DescriptorSetBindingTemplate::storage_image(4, stages),
-			DescriptorSetBindingTemplate::input_attachment(5, stages),
-			DescriptorSetBindingTemplate::sampler(6, stages),
-			DescriptorSetBindingTemplate::acceleration_structure(7, stages),
-		];
+		let buffer_write = descriptors::DescriptorWrite::buffer(set, slot, buffer);
+		assert_eq!(buffer_write.descriptor_set, set);
+		assert_eq!(buffer_write.slot, slot);
+		assert_eq!(buffer_write.array_element, 0);
+		assert_eq!(buffer_write.frame_offset, None);
+		assert!(matches!(
+			buffer_write.descriptor,
+			descriptors::WriteData::Buffer {
+				handle,
+				size: Ranges::Whole
+			} if handle == buffer
+		));
 
-		assert!(matches!(templates[0].descriptor_type, DescriptorType::UniformBuffer));
-		assert!(matches!(templates[1].descriptor_type, DescriptorType::StorageBuffer));
-		assert!(matches!(templates[2].descriptor_type, DescriptorType::SampledImage));
-		assert!(matches!(templates[3].descriptor_type, DescriptorType::CombinedImageSampler));
-		assert!(matches!(templates[4].descriptor_type, DescriptorType::StorageImage));
-		assert!(matches!(templates[5].descriptor_type, DescriptorType::InputAttachment));
-		assert!(matches!(templates[6].descriptor_type, DescriptorType::Sampler));
-		assert!(matches!(templates[7].descriptor_type, DescriptorType::AccelerationStructure));
+		let image_write = descriptors::DescriptorWrite::image_with_frame(set, slot, image, Layouts::General, -1);
+		assert_eq!(image_write.frame_offset, Some(-1));
+		assert!(matches!(
+			image_write.descriptor,
+			descriptors::WriteData::Image {
+				handle,
+				layout: Layouts::General
+			} if handle == BaseImageHandle(3)
+		));
 
-		for template in templates {
-			assert_eq!(template.descriptor_count, 1);
-		}
-
-		let array_templates = [
-			DescriptorSetBindingTemplate::uniform_buffer_array(8, stages, 2),
-			DescriptorSetBindingTemplate::storage_buffer_array(9, stages, 3),
-			DescriptorSetBindingTemplate::sampled_image_array(10, stages, 4),
-			DescriptorSetBindingTemplate::combined_image_sampler_array(11, stages, 5),
-			DescriptorSetBindingTemplate::storage_image_array(12, stages, 6),
-			DescriptorSetBindingTemplate::input_attachment_array(13, stages, 7),
-			DescriptorSetBindingTemplate::sampler_array(14, stages, 8),
-			DescriptorSetBindingTemplate::acceleration_structure_array(15, stages, 9),
-		];
-
-		assert_eq!(array_templates[0].descriptor_count, 2);
-		assert_eq!(array_templates[1].descriptor_count, 3);
-		assert_eq!(array_templates[2].descriptor_count, 4);
-		assert_eq!(array_templates[3].descriptor_count, 5);
-		assert_eq!(array_templates[4].descriptor_count, 6);
-		assert_eq!(array_templates[5].descriptor_count, 7);
-		assert_eq!(array_templates[6].descriptor_count, 8);
-		assert_eq!(array_templates[7].descriptor_count, 9);
-	}
-
-	#[test]
-	fn binding_constructor_layout_updates_combined_image_sampler() {
-		let template = DescriptorSetBindingTemplate::combined_image_sampler(0, Stages::FRAGMENT);
-		let constructor = BindingConstructor::combined_image_sampler(
-			&template,
-			ImageHandle(BaseImageHandle(3)),
-			SamplerHandle(4),
+		let array_write = descriptors::DescriptorWrite::combined_image_sampler_array_with_frame(
+			set,
+			slot,
+			image,
+			sampler,
 			Layouts::Read,
-		)
-		.layout(Layouts::General);
-
+			7,
+			2,
+		);
+		assert_eq!(array_write.array_element, 7);
+		assert_eq!(array_write.frame_offset, Some(2));
 		assert!(matches!(
-			constructor.descriptor,
+			array_write.descriptor,
 			descriptors::WriteData::CombinedImageSampler {
-				layout: Layouts::General,
-				..
-			}
+				image_handle,
+				sampler_handle,
+				layout: Layouts::Read,
+				layer: None,
+			} if image_handle == BaseImageHandle(3) && sampler_handle == sampler
+		));
+
+		let sampler_write = descriptors::DescriptorWrite::sampler(set, slot, sampler);
+		assert!(matches!(sampler_write.descriptor, descriptors::WriteData::Sampler(value) if value == sampler));
+		let acceleration_write = descriptors::DescriptorWrite::acceleration_structure(set, slot, acceleration_structure);
+		assert!(matches!(
+			acceleration_write.descriptor,
+			descriptors::WriteData::AccelerationStructure { handle } if handle == acceleration_structure
 		));
 	}
 
 	#[test]
-	fn typed_descriptor_set_binding_templates() {
-		let stages = Stages::COMPUTE;
+	fn descriptor_write_variants_without_frame_offsets_remain_frame_invariant() {
+		let set = DescriptorSetHandle(8);
+		let slot = crate::shader::ResourceSlot::new(12);
+		let image = ImageHandle(BaseImageHandle(9));
+		let sampler = SamplerHandle(10);
 
-		let storage_buffer = StorageBufferDescriptorSetBindingTemplate::new(0, stages);
-		let storage_image = StorageImageDescriptorSetBindingTemplate::new(1, stages);
-		let storage_buffer_array = StorageBufferDescriptorSetBindingTemplate::new_array(2, stages, 8);
-		let sampler = SamplerDescriptorSetBindingTemplate::new_with_immutable_samplers(3, stages, None);
+		let image_write = descriptors::DescriptorWrite::image(set, slot, image, Layouts::Read);
+		let combined = descriptors::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, Layouts::Read);
+		let array = descriptors::DescriptorWrite::combined_image_sampler_array(set, slot, image, sampler, Layouts::Read, 3);
 
-		assert!(matches!(
-			storage_buffer.as_raw().descriptor_type,
-			DescriptorType::StorageBuffer
-		));
-		assert!(matches!(storage_image.as_raw().descriptor_type, DescriptorType::StorageImage));
-		assert_eq!(storage_buffer_array.as_raw().descriptor_count, 8);
-		assert!(matches!(sampler.as_raw().descriptor_type, DescriptorType::Sampler));
-
-		let raw_template: DescriptorSetBindingTemplate = storage_buffer.into();
-		assert!(matches!(raw_template.descriptor_type, DescriptorType::StorageBuffer));
+		assert_eq!(image_write.frame_offset, None);
+		assert_eq!(combined.frame_offset, None);
+		assert_eq!(array.frame_offset, None);
+		assert_eq!(array.array_element, 3);
 	}
 
 	#[test]
@@ -1251,8 +1139,7 @@ pub(super) mod tests {
 		assert_eq!(format.size(), 1);
 	}
 
-	#[cfg(target_os = "linux")]
-	fn compile_shaders() -> (glsl::CompiledShader, glsl::CompiledShader) {
+	fn compile_shaders() -> (CompiledShaderSource, CompiledShaderSource) {
 		let vertex_shader_code = "
 			#version 450
 			#pragma shader_stage(vertex)
@@ -1280,15 +1167,74 @@ pub(super) mod tests {
 				out_color = in_color;
 			}
 		";
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(VertexInput input [[stage_in]]) {
+				return VertexOutput { float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(VertexOutput input [[stage_in]]) {
+				return input.color;
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = float4(input.position, 1.0);
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 { return input.color; }
+		"#;
 
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect("Failed to compile GHI test vertex shader. The most likely cause is invalid native shader source.");
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect("Failed to compile GHI test fragment shader. The most likely cause is invalid native shader source.");
 
 		(vertex_shader_artifact, fragment_shader_artifact)
 	}
 
-	#[cfg(target_os = "linux")]
-	fn compile_shaders_with_model_matrix() -> (glsl::CompiledShader, glsl::CompiledShader) {
+	fn compile_shaders_with_model_matrix() -> (CompiledShaderSource, CompiledShaderSource) {
 		let vertex_shader_code = "
 			#version 450
 			#pragma shader_stage(vertex)
@@ -1320,9 +1266,75 @@ pub(super) mod tests {
 				out_color = in_color;
 			}
 		";
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(
+				VertexInput input [[stage_in]],
+				constant float4x4& model_matrix [[buffer(15)]]) {
+				return VertexOutput { model_matrix * float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(VertexOutput input [[stage_in]]) {
+				return input.color;
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			struct PushConstant { float4x4 model_matrix; };
+			ConstantBuffer<PushConstant> push_constant : register(b0, space0);
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = mul(push_constant.model_matrix, float4(input.position, 1.0));
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 { return input.color; }
+		"#;
 
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI model-matrix test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect(
+			"Failed to compile GHI model-matrix test vertex shader. The most likely cause is invalid native shader source.",
+		);
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI model-matrix test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect("Failed to compile GHI test fragment shader. The most likely cause is invalid native shader source.");
 
 		(vertex_shader_artifact, fragment_shader_artifact)
 	}
@@ -1336,7 +1348,6 @@ pub(super) mod tests {
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
 	}
 
-	#[cfg(target_os = "linux")]
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -1415,7 +1426,6 @@ pub(super) mod tests {
 		);
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn render_triangle(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
@@ -1441,20 +1451,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1470,7 +1470,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1527,7 +1526,149 @@ pub(super) mod tests {
 		check_triangle(pixels, extent);
 	}
 
-	#[cfg(target_os = "linux")]
+	#[cfg(target_os = "macos")]
+	/// Uploads one overlapping triangle with a constant depth and color for native Metal depth-state validation.
+	fn add_depth_state_test_triangle(
+		device: &mut impl crate::context::Context,
+		depth: f32,
+		color: [f32; 4],
+		scale: f32,
+		vertex_layout: &[VertexElement],
+	) -> MeshHandle {
+		let vertices: [f32; 21] = [
+			0.0, scale, depth, color[0], color[1], color[2], color[3], scale, -scale, depth, color[0], color[1], color[2],
+			color[3], -scale, -scale, depth, color[0], color[1], color[2], color[3],
+		];
+		let indices = [0u16, 1u16, 2u16];
+
+		// The upload API accepts bytes, and both stack arrays remain alive for the complete synchronous upload call.
+		unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(vertices.as_ptr().cast(), std::mem::size_of_val(&vertices)),
+				std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(&indices)),
+				vertex_layout,
+			)
+		}
+	}
+
+	#[cfg(target_os = "macos")]
+	/// Verifies that a Metal raster pipeline can depth-test without replacing the retained reverse-Z depth.
+	pub(crate) fn render_without_depth_writes(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
+		let signal = device.create_synchronizer(None, false);
+		let vertex_layout = [
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
+		];
+		let first = add_depth_state_test_triangle(device, 0.8, [1.0, 0.0, 0.0, 1.0], 1.0, &vertex_layout);
+		let no_write = add_depth_state_test_triangle(device, 0.9, [0.0, 1.0, 0.0, 1.0], 1.0, &vertex_layout);
+		let last = add_depth_state_test_triangle(device, 0.85, [0.0, 0.0, 1.0, 1.0], 0.5, &vertex_layout);
+		let behind = add_depth_state_test_triangle(device, 0.7, [1.0, 1.0, 0.0, 1.0], 1.0, &vertex_layout);
+
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
+		let vertex_shader = device
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
+			.expect(
+				"Failed to create the Metal depth-state test vertex shader. The most likely cause is invalid native shader source.",
+			);
+		let fragment_shader = device
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
+			.expect(
+				"Failed to create the Metal depth-state test fragment shader. The most likely cause is invalid native shader source.",
+			);
+		let shaders = [
+			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+		];
+		let attachment_descriptors = [
+			AttachmentDescriptor::new(Formats::RGBA8UNORM),
+			AttachmentDescriptor::new(Formats::Depth32),
+		];
+		let depth_write_pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
+			&[],
+			&vertex_layout,
+			&shaders,
+			&attachment_descriptors,
+		));
+		let no_depth_write_pipeline = device.create_raster_pipeline(
+			pipelines::raster::Builder::new(&[], &vertex_layout, &shaders, &attachment_descriptors).depth_write(false),
+		);
+
+		let extent = Extent::rectangle(9, 9);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::STATIC),
+		);
+		let depth_target = device.build_image(
+			crate::image::Builder::new(Formats::Depth32, Uses::DepthStencil)
+				.extent(extent)
+				.use_case(UseCases::STATIC),
+		);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+
+		let texture_copy_handles = {
+			let mut command_buffer = device.command_buffer(command_buffer_handle);
+			let mut recording = command_buffer.create_command_buffer_recording();
+			let attachments = [
+				AttachmentInformation::new(
+					render_target,
+					Layouts::RenderTarget,
+					ClearValue::Color(RGBA::black()),
+					false,
+					true,
+				),
+				AttachmentInformation::new(depth_target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true),
+			];
+			let render_pass = recording.start_render_pass(extent, &attachments);
+
+			// With reverse-Z, the middle draw passes at 0.9 but must leave the first draw's 0.8 depth intact.
+			render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&first);
+			render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&no_write);
+			render_pass.bind_raster_pipeline(depth_write_pipeline).draw_mesh(&last);
+			// A later no-write draw behind retained opaque depth must still be rejected by the depth test.
+			render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&behind);
+			render_pass.end_render_pass();
+
+			let texture_copy_handles = recording.transfer_textures(&[render_target.into()]);
+			recording.execute(signal);
+			texture_copy_handles
+		};
+
+		device.wait();
+		assert!(
+			!device.has_errors(),
+			"Metal depth-state rendering failed. The most likely cause is an invalid pipeline or render-pass attachment configuration.",
+		);
+		let copy_handle = *texture_copy_handles.first().expect(
+			"Missing Metal depth-state test readback. The most likely cause is that the color target was not created for CPU access.",
+		);
+		let image_data = device.get_image_data(copy_handle);
+		let expected_byte_count = (extent.width() * extent.height()) as usize * std::mem::size_of::<RGBAu8>();
+		assert_eq!(
+			image_data.len(),
+			expected_byte_count,
+			"Unexpected Metal depth-state test readback size. The most likely cause is a non-compact RGBA8 staging layout.",
+		);
+		let center_pixel = (extent.width() * (extent.height() / 2) + extent.width() / 2) as usize;
+		let center_byte = center_pixel * std::mem::size_of::<RGBAu8>();
+		let full_triangle_pixel = (extent.width() * (extent.height() - 2) + extent.width() / 2) as usize;
+		let full_triangle_byte = full_triangle_pixel * std::mem::size_of::<RGBAu8>();
+
+		assert_eq!(
+			&image_data[center_byte..center_byte + std::mem::size_of::<RGBAu8>()],
+			&[0, 0, 255, 255],
+			"Unexpected center color after disabling depth writes. The most likely cause is that Metal replaced retained depth or stopped depth-testing the no-write pipeline.",
+		);
+		assert_eq!(
+			&image_data[full_triangle_byte..full_triangle_byte + std::mem::size_of::<RGBAu8>()],
+			&[0, 255, 0, 255],
+			"Unexpected color outside the final triangle. The most likely cause is that the visible no-write draw was skipped or the behind draw bypassed depth testing.",
+		);
+	}
+
 	pub(crate) fn present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
@@ -1560,26 +1701,15 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1642,7 +1772,6 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
@@ -1675,26 +1804,15 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1758,7 +1876,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_rendering(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1790,20 +1907,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1819,7 +1926,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[PushConstantRange::new(0, 16 * 4)],
 			&vertex_layout,
 			&[
@@ -1889,7 +1995,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn change_frames(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1918,20 +2023,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let extent = Extent::rectangle(1920, 1080);
@@ -1946,7 +2041,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -2020,7 +2114,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn resize(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while resize the render targets.
 
@@ -2048,20 +2141,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let mut extent = Extent::rectangle(1280, 720);
@@ -2076,7 +2159,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -2156,7 +2238,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_data(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -2185,20 +2266,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -2214,8 +2285,7 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
-			&[],
+			&[PushConstantRange::new(0, 16 * 4)],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -2363,7 +2433,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors())
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_textures(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
 
@@ -2449,7 +2518,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_resources(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
@@ -2469,32 +2537,64 @@ pub(super) mod tests {
 				imageStore(img, ivec2(1, 0), imageLoad(last_frame_img, ivec2(0, 0)));
 			}
 		";
-
-		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
+		let compute_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct Resources {
+				texture2d<float, access::write> image [[id(0)]];
+				texture2d<float, access::read> last_frame_image [[id(1)]];
+			};
+			kernel void compute_main(
+				uint2 gid [[thread_position_in_grid]],
+				constant Resources& resources [[buffer(16)]],
+				constant float& value [[buffer(15)]]) {
+				resources.image.write(float4(value, value, value, 1.0), uint2(0, 0));
+				resources.image.write(resources.last_frame_image.read(uint2(0, 0)), uint2(1, 0));
+			}
+		"#;
+		let compute_shader_hlsl = r#"
+			RWTexture2D<float4> image : register(u0, space0);
+			RWTexture2D<float4> last_frame_image : register(u1, space0);
+			struct PushConstant { float value; };
+			ConstantBuffer<PushConstant> push_constant : register(b0, space0);
+			[numthreads(1, 1, 1)]
+			void compute_main(uint3 gid : SV_DispatchThreadID) {
+				image[uint2(0, 0)] = float4(push_constant.value.xxx, 1.0);
+				image[uint2(1, 0)] = last_frame_image[uint2(0, 0)];
+			}
+		"#;
+		let compute_shader_artifact = crate::shader::compile(
+			"GHI multiframe resource test compute shader",
+			ShaderSource::PlatformNative {
+				glsl: compute_shader_string,
+				msl: compute_shader_msl,
+				msl_entry_point: "compute_main",
+				hlsl: compute_shader_hlsl,
+				hlsl_entry_point: "compute_main",
+			},
+		)
+		.expect("Failed to compile the multiframe resource shader. The most likely cause is invalid native shader source.");
+		let image_resource = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(0),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let last_frame_image_resource = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(1),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::READ,
+		);
 
 		let compute_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(compute_shader_artifact.borrow().into()),
+				compute_shader_artifact.as_source(),
 				ShaderTypes::Compute,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::WRITE),
-					BindingDescriptor::new(0, 1, AccessPolicies::READ),
-				],
+				[image_resource, last_frame_image_resource],
 			)
 			.expect("Failed to create compute shader");
 
-		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
-		let last_frame_image_binding_template =
-			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
-
-		let descriptor_set_template = device.create_descriptor_set_template(
-			None,
-			&[image_binding_template.clone(), last_frame_image_binding_template.clone()],
-		);
-
 		let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
-			&[descriptor_set_template],
 			&[PushConstantRange { offset: 0, size: 4 }],
 			ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 		));
@@ -2507,13 +2607,17 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
-
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image));
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(&last_frame_image_binding_template, image).frame(-1),
-		);
+		let descriptor_set = device.create_descriptor_set(None);
+		device.write(&[
+			crate::DescriptorWrite::image(descriptor_set, image_resource.slot(), image, Layouts::General),
+			crate::DescriptorWrite::image_with_frame(
+				descriptor_set,
+				last_frame_image_resource.slot(),
+				image,
+				Layouts::General,
+				-1,
+			),
+		]);
 
 		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 
@@ -2726,7 +2830,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn descriptor_sets(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
@@ -2783,27 +2886,114 @@ pub(super) mod tests {
 				out_color = texture(sampler2D(tex, smpl), vec2(0, 0));
 			}
 		";
-
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexResources { constant float4x4* matrix [[id(0)]]; };
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(
+				VertexInput input [[stage_in]],
+				constant VertexResources& resources [[buffer(16)]]) {
+				return VertexOutput { resources.matrix[0] * float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct FragmentResources {
+				sampler texture_sampler [[id(0)]];
+				texture2d<float> texture [[id(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(
+				VertexOutput input [[stage_in]],
+				constant FragmentResources& resources [[buffer(16)]]) {
+				return resources.texture.sample(resources.texture_sampler, float2(0.0));
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			StructuredBuffer<float4x4> matrices : register(t1, space0);
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = mul(matrices[0], float4(input.position, 1.0));
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			SamplerState texture_sampler : register(s0, space0);
+			Texture2D<float4> texture_image : register(t2, space0);
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 {
+				return texture_image.Sample(texture_sampler, float2(0.0, 0.0));
+			}
+		"#;
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI descriptor test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect("Failed to compile the descriptor test vertex shader. The most likely cause is invalid native shader source.");
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI descriptor test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect(
+			"Failed to compile the descriptor test fragment shader. The most likely cause is invalid native shader source.",
+		);
+		let sampler_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(0),
+			crate::ResourceKind::Sampler,
+			crate::AccessPolicies::READ,
+		);
+		let buffer_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(1),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let image_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(2),
+			crate::ResourceKind::SampledImage,
+			crate::AccessPolicies::READ,
+		);
 
 		let vertex_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
+				vertex_shader_artifact.as_source(),
 				ShaderTypes::Vertex,
-				[BindingDescriptor::new(0, 1, AccessPolicies::READ)],
+				[buffer_resource],
 			)
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
+				fragment_shader_artifact.as_source(),
 				ShaderTypes::Fragment,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::READ),
-					BindingDescriptor::new(0, 2, AccessPolicies::READ),
-				],
+				[sampler_resource, image_resource],
 			)
 			.expect("Failed to create fragment shader");
 
@@ -2856,39 +3046,12 @@ pub(super) mod tests {
 				.max_lod(0.0f32),
 		);
 
-		let descriptor_set_layout_handle = device.create_descriptor_set_template(
-			None,
-			&[
-				DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
-				DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
-				DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
-			],
-		);
-
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout_handle);
-
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::sampler(
-				&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT),
-				sampler,
-			),
-		);
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(
-				&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
-				buffer.into(),
-			),
-		);
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(
-				&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
-				sampled_texture,
-			)
-			.layout(Layouts::Read),
-		);
+		let descriptor_set = device.create_descriptor_set(None);
+		device.write(&[
+			crate::DescriptorWrite::sampler(descriptor_set, sampler_resource.slot(), sampler),
+			crate::DescriptorWrite::buffer(descriptor_set, buffer_resource.slot(), buffer.into()),
+			crate::DescriptorWrite::image(descriptor_set, image_resource.slot(), sampled_texture, Layouts::Read),
+		]);
 
 		assert!(!device.has_errors());
 
@@ -2905,7 +3068,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[descriptor_set_layout_handle],
 			&[],
 			&vertex_layout,
 			&[
@@ -2976,7 +3138,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn ray_tracing(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -3102,40 +3263,84 @@ void main() {
 }
 		";
 
-		let raygen_shader_artifact = glsl::compile(raygen_shader_code, "raygen").unwrap();
-		let closest_hit_shader_artifact = glsl::compile(closest_hit_shader_code, "closest_hit").unwrap();
-		let miss_shader_artifact = glsl::compile(miss_shader_code, "miss").unwrap();
+		// Metal ray tracing execution is still intentionally ignored, but native source keeps this shared test portable.
+		let raygen_shader_artifact = crate::shader::compile(
+			"GHI ray generation test shader",
+			ShaderSource::PlatformNative {
+				glsl: raygen_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void raygen_main() {}",
+				msl_entry_point: "raygen_main",
+				hlsl: "[shader(\"raygeneration\")] void raygen_main() {}",
+				hlsl_entry_point: "raygen_main",
+			},
+		)
+		.expect("Failed to compile the ray generation test shader. The most likely cause is invalid native shader source.");
+		let closest_hit_shader_artifact = crate::shader::compile(
+			"GHI closest-hit test shader",
+			ShaderSource::PlatformNative {
+				glsl: closest_hit_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void closest_hit_main() {}",
+				msl_entry_point: "closest_hit_main",
+				hlsl: "[shader(\"closesthit\")] void closest_hit_main() {}",
+				hlsl_entry_point: "closest_hit_main",
+			},
+		)
+		.expect("Failed to compile the closest-hit test shader. The most likely cause is invalid native shader source.");
+		let miss_shader_artifact = crate::shader::compile(
+			"GHI miss test shader",
+			ShaderSource::PlatformNative {
+				glsl: miss_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void miss_main() {}",
+				msl_entry_point: "miss_main",
+				hlsl: "[shader(\"miss\")] void miss_main() {}",
+				hlsl_entry_point: "miss_main",
+			},
+		)
+		.expect("Failed to compile the miss test shader. The most likely cause is invalid native shader source.");
+		let acceleration_structure_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(0),
+			crate::ResourceKind::AccelerationStructure,
+			crate::AccessPolicies::READ,
+		);
+		let output_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(1),
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let position_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(2),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let color_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(3),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let index_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(4),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
 
 		let raygen_shader = renderer
 			.create_shader(
 				None,
-				Sources::SPIRV(raygen_shader_artifact.borrow().into()),
+				raygen_shader_artifact.as_source(),
 				ShaderTypes::RayGen,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::READ),
-					BindingDescriptor::new(0, 1, AccessPolicies::WRITE),
-				],
+				[acceleration_structure_resource, output_resource],
 			)
 			.expect("Failed to create raygen shader");
 		let closest_hit_shader = renderer
 			.create_shader(
 				None,
-				Sources::SPIRV(closest_hit_shader_artifact.borrow().into()),
+				closest_hit_shader_artifact.as_source(),
 				ShaderTypes::ClosestHit,
-				[
-					BindingDescriptor::new(0, 2, AccessPolicies::READ),
-					BindingDescriptor::new(0, 3, AccessPolicies::READ),
-					BindingDescriptor::new(0, 4, AccessPolicies::READ),
-				],
+				[position_resource, color_resource, index_resource],
 			)
 			.expect("Failed to create closest hit shader");
 		let miss_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(miss_shader_artifact.borrow().into()),
-				ShaderTypes::Miss,
-				[],
-			)
+			.create_shader(None, miss_shader_artifact.as_source(), ShaderTypes::Miss, [])
 			.expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
@@ -3149,17 +3354,7 @@ void main() {
 				},
 			});
 
-		let bindings = [
-			DescriptorSetBindingTemplate::new(0, DescriptorType::AccelerationStructure, Stages::RAYGEN),
-			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::RAYGEN),
-			DescriptorSetBindingTemplate::new(2, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-			DescriptorSetBindingTemplate::new(3, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-			DescriptorSetBindingTemplate::new(4, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-		];
-
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &bindings);
-
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
+		let descriptor_set = renderer.create_descriptor_set(None);
 
 		let render_target = renderer.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
@@ -3168,24 +3363,19 @@ void main() {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure),
-		);
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target));
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()),
-		);
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()),
-		);
-		let _ =
-			renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
+		renderer.write(&[
+			crate::DescriptorWrite::acceleration_structure(
+				descriptor_set,
+				acceleration_structure_resource.slot(),
+				top_level_acceleration_structure,
+			),
+			crate::DescriptorWrite::image(descriptor_set, output_resource.slot(), render_target, Layouts::General),
+			crate::DescriptorWrite::buffer(descriptor_set, position_resource.slot(), vertex_positions_buffer.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, color_resource.slot(), vertex_colors_buffer.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, index_resource.slot(), index_buffer.into()),
+		]);
 
 		let pipeline = renderer.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
-			&[descriptor_set_layout_handle],
 			&[],
 			&[
 				ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen),

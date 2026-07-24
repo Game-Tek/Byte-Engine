@@ -1,4 +1,4 @@
 {
 	"title": "Resource Management",
-	"pages": ["index", "assets", "resources", "bema", "beld", "debug-loading"]
+	"pages": ["index", "assets", "resources", "bema", "beld", "install-beld", "baking-app-resources", "bundling-applications", "debug-loading"]
 }

@@ -15,3 +15,5 @@ pub mod lut;
 pub mod sky;
 
 pub mod serial;
+
+mod tone_map;

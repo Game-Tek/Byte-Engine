@@ -31,7 +31,7 @@ pub(crate) struct PathSegment {
 	pub(crate) ordinal: u32,
 }
 
-/// Describes an element layed out for an screen.
+/// The `LayoutElement` struct stores an element positioned and sized for a viewport.
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
 	pub(crate) position: Location3,
@@ -39,7 +39,7 @@ pub(crate) struct LayoutElement {
 	pub(crate) hit_testable: bool,
 }
 
-/// Describes an element ready for rendering.
+/// The `RenderElement` struct stores an element prepared for rendering.
 #[derive(Clone)]
 pub(crate) struct RenderElement {
 	pub(crate) id: u32,
@@ -176,8 +176,10 @@ impl LayoutGraph {
 	}
 }
 
-/// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
-/// The relation map describes embedded elements.
+/// Lays out the elements for a viewport and returns their calculated positions
+/// and sizes.
+///
+/// `relations` describes parent-child element relationships.
 fn layout_elements<'a>(
 	elements: impl AsRef<[IdedElement]>,
 	relation_map: &[(Id, Id)],
@@ -287,7 +289,7 @@ fn layout_elements<'a>(
 						let flow_output = if let Some(position) = absolute_position(child) {
 							FlowOutput::new(position, cursor)
 						} else if reset_layout {
-							FlowOutput::new(Offset::new(0, 0), cursor)
+							FlowOutput::new(Offset::new(0.0, 0.0), cursor)
 						} else {
 							flow.call(FlowInput::new(size, cursor, expected_child_size))
 						};
@@ -360,7 +362,7 @@ fn layout_elements<'a>(
 	}
 
 	fn location_from_offset(offset: Offset, depth: i32) -> Location3 {
-		Location3::new(offset.x().max(0) as u32, offset.y().max(0) as u32, clamp_depth(depth))
+		Location3::new(offset.x().max(0.0), offset.y().max(0.0), clamp_depth(depth))
 	}
 
 	let root_id = graph.root.expect("Root container not found");
@@ -378,7 +380,7 @@ fn layout_elements<'a>(
 		},
 		TraversalState {
 			available_space,
-			offset: Offset::new(0, 0),
+			offset: Offset::new(0.0, 0.0),
 			depth: 0,
 			is_root: true,
 		},
@@ -395,10 +397,10 @@ pub enum Depth {
 	Absolute(i32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Position {
 	Flow,
-	Absolute { x: i32, y: i32 },
+	Absolute { x: f32, y: f32 },
 }
 
 impl Position {
@@ -406,8 +408,11 @@ impl Position {
 		Self::Flow
 	}
 
-	pub fn absolute(x: i32, y: i32) -> Self {
-		Self::Absolute { x, y }
+	pub fn absolute(x: impl Into<f64>, y: impl Into<f64>) -> Self {
+		Self::Absolute {
+			x: x.into() as f32,
+			y: y.into() as f32,
+		}
 	}
 }
 
@@ -425,11 +430,17 @@ impl From<(i32, i32)> for Position {
 
 impl From<(u32, u32)> for Position {
 	fn from((x, y): (u32, u32)) -> Self {
-		Self::absolute(x.min(i32::MAX as u32) as i32, y.min(i32::MAX as u32) as i32)
+		Self::absolute(x, y)
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl From<(f32, f32)> for Position {
+	fn from((x, y): (f32, f32)) -> Self {
+		Self::absolute(x, y)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Geometry {
 	pub position: Location3,
 	pub size: Size,
@@ -440,11 +451,11 @@ impl Geometry {
 		Self { position, size }
 	}
 
-	pub fn x(&self) -> u32 {
+	pub fn x(&self) -> f32 {
 		self.position.x()
 	}
 
-	pub fn y(&self) -> u32 {
+	pub fn y(&self) -> f32 {
 		self.position.y()
 	}
 
@@ -452,24 +463,24 @@ impl Geometry {
 		self.position.z()
 	}
 
-	pub fn width(&self) -> u32 {
+	pub fn width(&self) -> f32 {
 		self.size.x()
 	}
 
-	pub fn height(&self) -> u32 {
+	pub fn height(&self) -> f32 {
 		self.size.y()
 	}
 
-	pub fn right(&self) -> u32 {
-		self.x().saturating_add(self.width())
+	pub fn right(&self) -> f32 {
+		self.x() + self.width()
 	}
 
-	pub fn bottom(&self) -> u32 {
-		self.y().saturating_add(self.height())
+	pub fn bottom(&self) -> f32 {
+		self.y() + self.height()
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.width() == 0 || self.height() == 0
+		self.width() <= 0.0 || self.height() <= 0.0
 	}
 
 	pub fn intersect(self, other: Self) -> Option<Self> {
@@ -520,7 +531,7 @@ impl From<i32> for Depth {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sizing {
 	Relative(u16, u16),
-	Absolute(u32),
+	Absolute(f32),
 }
 
 impl Sizing {
@@ -528,13 +539,13 @@ impl Sizing {
 		Self::Relative(1, 1)
 	}
 
-	pub fn pixels(value: u32) -> Self {
-		Self::Absolute(value)
+	pub fn pixels(value: impl Into<f64>) -> Self {
+		Self::Absolute(value.into() as f32)
 	}
 
-	pub fn calculate(&self, available: u32) -> u32 {
+	pub fn calculate(&self, available: f32) -> f32 {
 		match self {
-			Sizing::Relative(num, denom) => (available * *num as u32) / *denom as u32,
+			Sizing::Relative(num, denom) => available * *num as f32 / *denom as f32,
 			Sizing::Absolute(value) => *value,
 		}
 	}
@@ -548,6 +559,12 @@ impl Default for Sizing {
 
 impl From<u32> for Sizing {
 	fn from(val: u32) -> Self {
+		Sizing::Absolute(val as f32)
+	}
+}
+
+impl From<f32> for Sizing {
+	fn from(val: f32) -> Self {
 		Sizing::Absolute(val)
 	}
 }
@@ -677,10 +694,10 @@ mod tests {
 	fn layout_column() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::column);
-		let a = Container::default().size(Sizing::Absolute(64));
-		let b = Container::default().size(Sizing::Absolute(64));
-		let c = Container::default().size(Sizing::Absolute(64));
-		let d = Container::default().size(Sizing::Absolute(64));
+		let a = Container::default().size(Sizing::pixels(64));
+		let b = Container::default().size(Sizing::pixels(64));
+		let c = Container::default().size(Sizing::pixels(64));
+		let d = Container::default().size(Sizing::pixels(64));
 
 		let elements = make_elements([root, a, b, c, d]);
 
@@ -823,10 +840,10 @@ mod tests {
 	fn layout_absolute_depth_resets_position_to_root_origin() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::row_with_gap(10));
-		let menu_item = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let menu_item = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 		let modal = Container::default()
-			.width(Sizing::Absolute(30))
-			.height(Sizing::Absolute(30))
+			.width(Sizing::pixels(30))
+			.height(Sizing::pixels(30))
 			.depth(Depth::absolute(1));
 
 		let elements = make_elements([root, menu_item, modal]);
@@ -853,12 +870,12 @@ mod tests {
 	fn layout_absolute_position_places_child_without_advancing_flow() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::row);
-		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 		let positioned = Container::default()
-			.width(Sizing::Absolute(30))
-			.height(Sizing::Absolute(30))
+			.width(Sizing::pixels(30))
+			.height(Sizing::pixels(30))
 			.position(Position::absolute(70, 12));
-		let second = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let second = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 
 		let elements = make_elements([root, first, positioned, second]);
 
@@ -890,13 +907,13 @@ mod tests {
 	fn layout_absolute_depth_uses_absolute_position_in_root_space() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::row);
-		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 		let dropdown = Container::default()
-			.width(Sizing::Absolute(30))
-			.height(Sizing::Absolute(30))
+			.width(Sizing::pixels(30))
+			.height(Sizing::pixels(30))
 			.depth(Depth::absolute(1))
 			.absolute_position(24, 32);
-		let child = Container::default().width(Sizing::Absolute(10)).height(Sizing::Absolute(10));
+		let child = Container::default().width(Sizing::pixels(10)).height(Sizing::pixels(10));
 
 		let elements = make_elements([root, first, dropdown, child]);
 
@@ -929,8 +946,8 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default();
 		let child = Container::default()
-			.width(Sizing::Absolute(30))
-			.height(Sizing::Absolute(30))
+			.width(Sizing::pixels(30))
+			.height(Sizing::pixels(30))
 			.position(Position::absolute(-10, -20));
 
 		let elements = make_elements([root, child]);
@@ -955,12 +972,12 @@ mod tests {
 	fn layout_absolute_depth_does_not_advance_parent_flow_cursor() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::row_with_gap(10));
-		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 		let modal = Container::default()
-			.width(Sizing::Absolute(30))
-			.height(Sizing::Absolute(30))
+			.width(Sizing::pixels(30))
+			.height(Sizing::pixels(30))
 			.depth(Depth::absolute(1));
-		let second = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let second = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
 
 		let elements = make_elements([root, first, modal, second]);
 
@@ -1021,8 +1038,8 @@ mod tests {
 	fn layout_centered_column() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::centered_column);
-		let a = Container::default().width(Sizing::Absolute(64)).height(Sizing::Absolute(32));
-		let b = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(16));
+		let a = Container::default().width(Sizing::pixels(64)).height(Sizing::pixels(32));
+		let b = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(16));
 
 		let elements = make_elements([root, a, b]);
 
@@ -1055,8 +1072,8 @@ mod tests {
 	fn layout_centered_row_keeps_siblings_on_same_baseline() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::centered_row);
-		let a = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
-		let b = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
+		let a = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
+		let b = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
 
 		let elements = make_elements([root, a, b]);
 
@@ -1083,8 +1100,8 @@ mod tests {
 	fn layout_center() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::center);
-		let a = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
-		let b = Container::default().width(Sizing::Absolute(40)).height(Sizing::Absolute(20));
+		let a = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
+		let b = Container::default().width(Sizing::pixels(40)).height(Sizing::pixels(20));
 
 		let elements = make_elements([root, a, b]);
 

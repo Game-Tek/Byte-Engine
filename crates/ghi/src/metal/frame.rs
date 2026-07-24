@@ -3,24 +3,22 @@ use objc2_foundation::NSString;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
+use smallvec::SmallVec;
 
 use super::*;
 use crate::image::ImageHandle;
 use crate::SwapchainHandle;
 
-/// The `Frame` struct represents a single frame's worth of Metal rendering state.
+/// The `Frame` struct scopes Metal rendering state to one frame.
 ///
-/// It owns an `NSAutoreleasePool` that covers the entire frame lifetime. This is
-/// critical because Metal API calls (command buffer creation, encoder creation, etc.)
-/// internally produce autoreleased Objective-C objects. Without a pool spanning the
-/// whole frame, those objects accumulate on non-main threads where no run-loop pool
-/// exists.
+/// Its `NSAutoreleasePool` releases temporary Metal objects at the end of the frame.
+/// Without this pool, objects accumulate on threads that do not have a run-loop pool.
 ///
 /// Field order matters: Rust drops fields in declaration order. The drawables must be
 /// released before the autorelease pool drains, so `_autorelease_pool` is declared last.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
-	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
+	drawables: SmallVec<[(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>); 4]>,
 	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
@@ -30,7 +28,7 @@ impl<'a> Frame<'a> {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
-			drawables: Vec::with_capacity(4),
+			drawables: SmallVec::new(),
 			device,
 			_autorelease_pool: pool,
 		}
@@ -126,7 +124,7 @@ impl Frame<'_> {
 		self.device.pending_image_syncs.push_back(handle);
 	}
 
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -189,21 +187,6 @@ impl Frame<'_> {
 
 		self.drawables.push((swapchain_handle, drawable));
 
-		let swapchain_handle = crate::swapchain::SwapchainHandle(swapchain_handle.0);
-
-		if let Some(descriptors) = self.device.resource_to_descriptor.get(&swapchain_handle.into()) {
-			for (binding_handle, ..) in descriptors {
-				self.device.encode_binding(
-					*binding_handle,
-					Descriptor::Swapchain {
-						handle: swapchain_handle,
-					},
-					self.frame_key.sequence_index,
-					0,
-				);
-			}
-		}
-
 		(present_key, extent)
 	}
 
@@ -221,10 +204,14 @@ impl Frame<'_> {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
 			state_updates,
-			texture_copies,
 			_marker,
 		} = cbr;
-		let mut present_drawables = Vec::with_capacity(present_keys.len());
+		let mut present_drawables = SmallVec::<
+			[(
+				graphics_hardware_interface::PresentKey,
+				Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+			); 4],
+		>::new();
 
 		for &present_key in present_keys {
 			let drawable = self
@@ -240,7 +227,9 @@ impl Frame<'_> {
 				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
 			);
 			#[cfg(debug_assertions)]
-			blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
+			if self.device.settings.debug_labels {
+				blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
+			}
 
 			for (present_key, drawable) in &present_drawables {
 				let Some(drawable) = drawable else {
@@ -273,7 +262,6 @@ impl Frame<'_> {
 			.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, self.frame_key.sequence_index);
 
 		self.device.states.extend(state_updates);
-		self.device.intern_texture_copies(texture_copies);
 	}
 }
 
@@ -306,7 +294,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.pending_image_syncs.push_back(handle);
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -364,34 +352,14 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		self.device
-			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[crate::DescriptorSetBindingTemplate],
-	) -> crate::DescriptorSetTemplateHandle {
-		self.device.create_descriptor_set_template(name, binding_templates)
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
-	) -> crate::DescriptorSetHandle {
-		self.device.create_descriptor_set(name, descriptor_set_template_handle)
-	}
-
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: crate::DescriptorSetHandle,
-		binding_constructor: crate::BindingConstructor,
-	) -> crate::DescriptorSetBindingHandle {
-		self.device.create_descriptor_binding(descriptor_set, binding_constructor)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> crate::DescriptorSetHandle {
+		self.device.create_descriptor_set(name)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {

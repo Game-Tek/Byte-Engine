@@ -1,0 +1,22 @@
+# Keep the default mutation run focused on BETP's hostile-input contracts.
+examine_globs = [
+	"crates/betp/src/lib.rs",
+	"crates/betp/src/local.rs",
+	"crates/betp/src/packet_buffer.rs",
+	"crates/betp/src/remote.rs",
+	"crates/betp/src/client/session.rs",
+	"crates/betp/src/server/session.rs",
+]
+examine_re = [
+	"read_packet",
+	"sequence_greater_than",
+	"acknowledge_packet",
+	"gather_unsent_packets_for_retry",
+	"session.rs.*update",
+]
+test_package = ["byte-engine-betp"]
+# For equal sequences, the branch's distance guard remains false, so widening this outer comparison is equivalent.
+exclude_re = ["replace < with <= in sequence_greater_than"]
+gitignore = true
+timeout_multiplier = 5.0
+minimum_test_timeout = 20.0

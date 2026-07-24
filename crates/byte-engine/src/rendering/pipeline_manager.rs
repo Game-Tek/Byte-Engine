@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use utils::{
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
@@ -22,7 +23,7 @@ pub trait PipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<Vec<RenderPassReturn<'a>>>;
+	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>>;
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder);
 }

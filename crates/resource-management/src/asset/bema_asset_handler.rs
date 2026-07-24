@@ -1,22 +1,24 @@
 use std::sync::Arc;
 
-use utils::{
-	json::{self, JsonContainerTrait, JsonValueTrait},
-	Extent,
-};
+use serde_json::Value;
+use utils::Extent;
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	asset_manager::AssetManager,
 	ResourceId,
 };
-use crate::shader::besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage};
+use crate::shader::{
+	artifact::finalize_platform_shader_artifact,
+	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+};
 use crate::{
-	asset,
-	r#async::{spawn_cpu_task, BoxedFuture},
+	asset::{self, JsonObject},
+	online_docs_url,
+	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,
+		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
 		VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
@@ -24,19 +26,58 @@ use crate::{
 	ProcessedAsset, ReferenceModel,
 };
 
+const BEMA_DOCS_PATH: &str = "develop/design/resource-management/bema";
+const BESL_DOCS_PATH: &str = "reference/besl";
+
+/// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
-	/// Transforms a program.
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;
+	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a>;
 }
 
 impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 		self.as_ref().transform(node, material)
+	}
+}
+
+/// The `ShaderCompiler` trait isolates BEMA resource orchestration from platform shader toolchains.
+trait ShaderCompiler: Send + Sync {
+	fn compile(
+		&self,
+		generator: &dyn ProgramGenerator,
+		name: &str,
+		shader_code: &str,
+		format: &str,
+		domain: &str,
+		material: &JsonObject,
+		shader_json: &Value,
+		stage: &str,
+	) -> Result<(Shader, Box<[u8]>), ()>;
+}
+
+/// The `PlatformShaderCompiler` struct routes production BEMA shaders through the active platform compiler.
+struct PlatformShaderCompiler;
+
+impl ShaderCompiler for PlatformShaderCompiler {
+	fn compile(
+		&self,
+		generator: &dyn ProgramGenerator,
+		name: &str,
+		shader_code: &str,
+		format: &str,
+		domain: &str,
+		material: &JsonObject,
+		shader_json: &Value,
+		stage: &str,
+	) -> Result<(Shader, Box<[u8]>), ()> {
+		compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage)
 	}
 }
 
 pub struct BEMAAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	compiler: Arc<dyn ShaderCompiler>,
 }
 
 impl Default for BEMAAssetHandler {
@@ -47,7 +88,10 @@ impl Default for BEMAAssetHandler {
 
 impl BEMAAssetHandler {
 	pub fn new() -> BEMAAssetHandler {
-		BEMAAssetHandler { generator: None }
+		BEMAAssetHandler {
+			generator: None,
+			compiler: Arc::new(PlatformShaderCompiler),
+		}
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
@@ -60,181 +104,159 @@ impl AssetHandler for BEMAAssetHandler {
 		r#type == "bema"
 	}
 
-	fn bake<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "bema" {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let (data, _, at) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			if at != "bema" {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
+			if dt != "bema" {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
+		let (data, _, at) = context.resolve(url).await?;
 
-			let asset: json::Value = json::from_str(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+		if at != "bema" {
+			return Err(LoadErrors::UnsupportedType);
+		}
 
-			let is_material = asset.get("parent").is_none();
+		let asset = asset::parse_json(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
+			.map_err(|_| LoadErrors::FailedToProcess)?;
 
-			if is_material {
-				let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
-				let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+		let is_material = asset.get("parent").is_none();
 
-				let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
+		if is_material {
+			let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
+			let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 
-				let asset_shaders = match asset["shaders"].as_object() {
-					Some(v) => v,
-					None => {
-						return Err(LoadErrors::FailedToProcess);
-					}
-				};
+			let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
 
-				let mut shaders = Vec::with_capacity(asset_shaders.len());
-				for (s_type, shader_json) in asset_shaders.iter() {
-					let shader = transform_shader(
-						generator.clone(),
-						storage_backend,
-						asset_storage_backend,
-						material_domain,
-						asset_object,
-						shader_json,
-						s_type,
-						allocator,
-					)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
-					shaders.push(shader);
+			let asset_shaders = match asset["shaders"].as_object() {
+				Some(v) => v,
+				None => {
+					return Err(LoadErrors::FailedToProcess);
 				}
+			};
 
-				let asset_variables = match asset["variables"].as_array() {
-					Some(v) => v,
-					None => {
-						return Err(LoadErrors::FailedToProcess);
-					}
-				};
+			let mut shaders = Vec::with_capacity(asset_shaders.len());
+			for (s_type, shader_json) in asset_shaders.iter() {
+				let shader = compile_and_store_shader(
+					context,
+					self.compiler.clone(),
+					generator.clone(),
+					material_domain,
+					asset_object,
+					shader_json,
+					s_type,
+				)
+				.await?;
+				shaders.push(shader);
+			}
 
-				let mut values = Vec::with_capacity(asset_variables.len());
-				for v in asset_variables.iter() {
+			let asset_variables = match asset["variables"].as_array() {
+				Some(v) => v,
+				None => {
+					return Err(LoadErrors::FailedToProcess);
+				}
+			};
+
+			let mut values = Vec::with_capacity(asset_variables.len());
+			for v in asset_variables.iter() {
+				let data_type = v["data_type"].as_str().unwrap().to_string();
+				let value = v["value"].as_str().unwrap().to_string();
+
+				let value = resolve_value(context, &data_type, &value).await?;
+				values.push(value);
+			}
+
+			let parameters = asset_variables
+				.iter()
+				.zip(values)
+				.map(|(v, value)| {
+					let name = v["name"].as_str().unwrap().to_string();
 					let data_type = v["data_type"].as_str().unwrap().to_string();
-					let value = v["value"].as_str().unwrap().to_string();
 
-					let value = resolve_value(asset_manager, storage_backend, &data_type, &value)
-						.await
-						.map_err(|_| LoadErrors::FailedToProcess)?;
-					values.push(value);
-				}
+					ParameterModel {
+						name,
+						r#type: data_type.clone(),
+						value,
+					}
+				})
+				.collect();
 
-				let parameters = asset_variables
-					.iter()
-					.zip(values)
-					.map(|(v, value)| {
-						let name = v["name"].as_str().unwrap().to_string();
-						let data_type = v["data_type"].as_str().unwrap().to_string();
+			let resource = MaterialModel {
+				double_sided: false,
+				alpha_mode: AlphaMode::Opaque,
+				model: RenderModel {
+					name: "Visibility".to_string(),
+					pass: "MaterialEvaluation".to_string(),
+				},
+				shaders,
+				parameters,
+			};
 
-						ParameterModel {
-							name,
-							r#type: data_type.clone(),
-							value,
-						}
-					})
-					.collect();
+			let resource = ProcessedAsset::new(url, resource);
 
-				let resource = MaterialModel {
-					double_sided: false,
-					alpha_mode: AlphaMode::Opaque,
-					model: RenderModel {
-						name: "Visibility".to_string(),
-						pass: "MaterialEvaluation".to_string(),
-					},
-					shaders: shaders.into_iter().map(|(s, _)| s).collect(),
-					parameters,
-				};
+			context.store_primary(resource, &[])
+		} else {
+			let parent_material_url = asset["parent"].as_str().unwrap();
 
-				let resource = ProcessedAsset::new(url, resource);
+			let material = context.bake_dependency(parent_material_url).await?;
 
-				Ok((resource, Vec::new().into_boxed_slice()))
-			} else {
-				let parent_material_url = asset["parent"].as_str().unwrap();
+			let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
-				let material = asset_manager
-					.bake_if_not_exists(parent_material_url, storage_backend)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
-
-				let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
-
-				let mut values = Vec::with_capacity(material_repr.parameters.len());
-				for v in material_repr.parameters.iter() {
-					let value = match asset["variables"].as_array() {
-						Some(variables) => match variables.iter().find(|v2| v2["name"].as_str().unwrap() == v.name) {
-							Some(v) => v["value"].as_str().unwrap().to_string(),
-							None => {
-								return Err(LoadErrors::FailedToProcess);
-							}
-						},
+			let mut values = Vec::with_capacity(material_repr.parameters.len());
+			for v in material_repr.parameters.iter() {
+				let value = match asset["variables"].as_array() {
+					Some(variables) => match variables.iter().find(|v2| v2["name"].as_str().unwrap() == v.name) {
+						Some(v) => v["value"].as_str().unwrap().to_string(),
 						None => {
 							return Err(LoadErrors::FailedToProcess);
 						}
-					};
-
-					let resolved = resolve_value(asset_manager, storage_backend, &v.r#type, &value)
-						.await
-						.map_err(|_| LoadErrors::FailedToProcess)?;
-					values.push(resolved);
-				}
-
-				let variables = material_repr
-					.parameters
-					.iter()
-					.zip(values)
-					.map(|(v, value)| VariantVariableModel {
-						value,
-						name: v.name.clone(),
-						r#type: v.r#type.clone(),
-					})
-					.collect();
-
-				let alpha_mode = match asset.get("transparency").map(|e| e.as_ref()) {
-					Some(json::ValueRef::Bool(v)) => {
-						if v {
-							AlphaMode::Blend
-						} else {
-							AlphaMode::Opaque
-						}
-					}
-					Some(json::ValueRef::String(s)) => match s {
-						"Opaque" => AlphaMode::Opaque,
-						"Blend" => AlphaMode::Blend,
-						_ => AlphaMode::Opaque,
 					},
-					_ => AlphaMode::Opaque,
+					None => {
+						return Err(LoadErrors::FailedToProcess);
+					}
 				};
 
-				let resource = ProcessedAsset::new(
-					url,
-					VariantModel {
-						material,
-						variables,
-						alpha_mode,
-					},
-				);
-
-				Ok((resource, Vec::new().into_boxed_slice()))
+				let resolved = resolve_value(context, &v.r#type, &value).await?;
+				values.push(resolved);
 			}
-		})
+
+			let variables = material_repr
+				.parameters
+				.iter()
+				.zip(values)
+				.map(|(v, value)| VariantVariableModel {
+					value,
+					name: v.name.clone(),
+					r#type: v.r#type.clone(),
+				})
+				.collect();
+
+			let alpha_mode = match asset.get("transparency") {
+				Some(Value::Bool(v)) => {
+					if *v {
+						AlphaMode::Blend
+					} else {
+						AlphaMode::Opaque
+					}
+				}
+				Some(Value::String(s)) => match s.as_str() {
+					"Opaque" => AlphaMode::Opaque,
+					"Blend" => AlphaMode::Blend,
+					_ => AlphaMode::Opaque,
+				},
+				_ => AlphaMode::Opaque,
+			};
+
+			let resource = ProcessedAsset::new(
+				url,
+				VariantModel {
+					material,
+					variables,
+					alpha_mode,
+				},
+			);
+
+			context.store_primary(resource, &[])
+		}
 	}
 }
 
@@ -245,8 +267,8 @@ fn compile_shader(
 	shader_code: &str,
 	format: &str,
 	_domain: &str,
-	material: &json::Object,
-	_shader_json: &json::Value,
+	material: &JsonObject,
+	_shader_json: &Value,
 	stage: &str,
 ) -> Result<(Shader, Box<[u8]>), ()> {
 	let root_node = if format == "glsl" {
@@ -256,11 +278,17 @@ fn compile_shader(
 		if let Ok(e) = besl::parse(shader_code) {
 			e
 		} else {
-			log::error!("Error compiling shader");
+			log::error!(
+				"Failed to parse BESL material shader. The most likely cause is invalid BESL syntax. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 			return Err(());
 		}
 	} else {
-		log::error!("Unknown shader format");
+		log::error!(
+			"Unknown material shader format '{format}'. The most likely cause is an unsupported format in the .bema declaration. See {}.",
+			online_docs_url(BEMA_DOCS_PATH)
+		);
 		return Err(());
 	};
 
@@ -273,7 +301,7 @@ pub(crate) fn compile_shader_program(
 	name: &str,
 	root_node: besl::parser::Node<'_>,
 	_domain: &str,
-	material: &json::Object,
+	material: &JsonObject,
 	stage: &str,
 ) -> Result<(Shader, Box<[u8]>), ()> {
 	let root = generator.transform(root_node, material);
@@ -281,12 +309,24 @@ pub(crate) fn compile_shader_program(
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,
 		Err(e) => {
-			log::error!("Error compiling shader: {:#?}", e);
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}': {e:#?}. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 			return Err(());
 		}
 	};
 
-	let main_node = root_node.get_main().ok_or(())?;
+	let main_node = match root_node.get_main() {
+		Some(main_node) => main_node,
+		None => {
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}'. The generated BESL program has no main function. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
+			return Err(());
+		}
+	};
 
 	let settings = match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
@@ -295,11 +335,17 @@ pub(crate) fn compile_shader_program(
 		_ => {
 			panic!("Invalid shader stage")
 		}
-	};
+	}
+	.name(name.to_string());
 
-	let shader_program = PlatformShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
-		log::error!("Error compiling shader: {:#?}", e);
-	})?;
+	let shader_program = PlatformShaderGenerator::new()
+		.generate(&settings, &main_node)
+		.map_err(|error| {
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}': {error}. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
+		})?;
 
 	let stage = match stage {
 		"Vertex" => ShaderTypes::Vertex,
@@ -315,25 +361,21 @@ pub(crate) fn compile_shader_program(
 		bindings: shader_program
 			.bindings()
 			.iter()
-			.map(|b| Binding::new(b.set, b.binding, b.read, b.write))
+			.map(|b| Binding::new(b.slot, b.kind, b.count, b.read, b.write))
 			.collect(),
 	};
 
-	let artifact = match PlatformShaderLanguage::current_platform() {
-		PlatformShaderLanguage::Hlsl => ShaderArtifact::Hlsl {
-			entry_point: shader_program
-				.entry_point()
-				.unwrap_or(PlatformShaderLanguage::Hlsl.entry_point())
-				.to_string(),
-		},
-		PlatformShaderLanguage::Msl => ShaderArtifact::Mtlb {
-			entry_point: shader_program
-				.entry_point()
-				.unwrap_or(PlatformShaderLanguage::Msl.entry_point())
-				.to_string(),
-		},
-		PlatformShaderLanguage::Glsl => ShaderArtifact::Spirv,
-	};
+	let language = PlatformShaderLanguage::current_platform();
+	let entry_point = shader_program.entry_point();
+	let (artifact, payload) =
+		finalize_platform_shader_artifact(language, stage, name, entry_point, shader_program.into_binary()).map_err(
+			|error| {
+				log::error!(
+					"Failed to finalize shader artifact '{name}' for stage '{stage:?}': {error}. See {}.",
+					online_docs_url(BESL_DOCS_PATH)
+				);
+			},
+		)?;
 
 	let shader = Shader {
 		id: name.to_string(),
@@ -343,30 +385,25 @@ pub(crate) fn compile_shader_program(
 		source_hash: 0,
 	};
 
-	Ok((shader, shader_program.into_binary()))
+	Ok((shader, payload))
 }
 
-/// Loads and compiles a shader definition into a stored resource.
-async fn transform_shader(
+/// Compiles a shader definition and stores the resulting resource and binary payload.
+async fn compile_and_store_shader(
+	context: BakeContext<'_>,
+	compiler: Arc<dyn ShaderCompiler>,
 	generator: Arc<dyn ProgramGenerator>,
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
 	domain: &str,
-	material: &json::Object,
-	shader_json: &json::Value,
+	material: &JsonObject,
+	shader_json: &Value,
 	stage: &str,
-	allocator: &dyn std::alloc::Allocator,
-) -> Result<(ReferenceModel<Shader>, Box<[u8]>), String> {
-	let path = shader_json
-		.as_str()
-		.ok_or("Invalid shader path. The shader entry is missing a file path.".to_string())?;
+) -> Result<ReferenceModel<Shader>, LoadErrors> {
+	let path = shader_json.as_str().ok_or(LoadErrors::FailedToProcess)?;
 	let path = ResourceId::new(path);
-	let (arlp, _, format) = asset_storage_backend.resolve_in(path, allocator).await.or(Err(
-		"Failed to load shader source. The shader file is missing or unreadable.".to_string(),
-	))?;
+	let (arlp, _, format) = context.resolve(path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp)
-		.map_err(|_| "Failed to decode shader source. The shader file is not valid UTF-8.".to_string())?
+		.map_err(|_| LoadErrors::FailedToProcess)?
 		.to_string();
 
 	let material = material.clone();
@@ -377,7 +414,7 @@ async fn transform_shader(
 	let shader_json = shader_json.clone();
 
 	let (shader, result_shader_bytes) = spawn_cpu_task(move || {
-		compile_shader(
+		compiler.compile(
 			generator.as_ref(),
 			&name,
 			&shader_code,
@@ -389,25 +426,16 @@ async fn transform_shader(
 		)
 	})
 	.await
-	.map_err(|_| "Failed to compile shader. The compilation task was cancelled.".to_string())?
-	.map_err(|_| "Failed to compile shader. The shader source likely contains errors.".to_string())?;
+	.map_err(|_| LoadErrors::FailedToProcess)?
+	.map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let r = storage_backend
-		.store(ProcessedAsset::new(path, shader), &result_shader_bytes)
-		.or(Err(
-			"Failed to store shader resource. The storage backend likely rejected the write.".to_string(),
-		))?;
-
-	Ok((r.into(), result_shader_bytes))
+	context
+		.store_generated(ProcessedAsset::new(path, shader), &result_shader_bytes)
+		.map(Into::into)
 }
 
 /// Resolves a material parameter value based on its type.
-async fn resolve_value(
-	asset_manager: &AssetManager,
-	storage_backend: &dyn resource::StorageBackend,
-	data_type: &str,
-	value: &str,
-) -> Result<ValueModel, String> {
+async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -> Result<ValueModel, LoadErrors> {
 	let to_color = |name: &str| match name {
 		"Red" => [1f32, 0f32, 0f32, 1f32],
 		"Green" => [0f32, 1f32, 0f32, 1f32],
@@ -429,21 +457,21 @@ async fn resolve_value(
 		}
 		"float" => Ok(ValueModel::Scalar(0f32)),
 		"Texture2D" => {
-			let image = asset_manager
-				.bake_if_not_exists(value, storage_backend)
-				.await
-				.map_err(|_| "Failed to load texture value. The referenced texture asset could not be loaded.".to_string())?;
+			let image = context.bake_dependency(value).await?;
 			Ok(ValueModel::Image(image))
 		}
-		_ => Err("Unknown data type. The material variable type is unsupported.".to_string()),
+		_ => Err(LoadErrors::FailedToProcess),
 	}
 }
 
 #[cfg(test)]
 pub mod tests {
-	use utils::json;
+	use std::sync::Arc;
+
+	use serde_json::Value;
 
 	use super::ProgramGenerator;
+	use crate::asset::JsonObject;
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler,
@@ -455,9 +483,63 @@ pub mod tests {
 		ReferenceModel,
 	};
 
-	static BEMA_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	struct TestShaderCompiler;
 
+	impl super::ShaderCompiler for TestShaderCompiler {
+		fn compile(
+			&self,
+			_generator: &dyn ProgramGenerator,
+			name: &str,
+			_shader_code: &str,
+			format: &str,
+			_domain: &str,
+			_material: &JsonObject,
+			_shader_json: &Value,
+			stage: &str,
+		) -> Result<(crate::resources::material::Shader, Box<[u8]>), ()> {
+			assert_eq!(format, "besl");
+			let stage = match stage {
+				"Vertex" => crate::types::ShaderTypes::Vertex,
+				"Fragment" => crate::types::ShaderTypes::Fragment,
+				"Compute" => crate::types::ShaderTypes::Compute,
+				_ => return Err(()),
+			};
+
+			Ok((
+				crate::resources::material::Shader {
+					id: name.to_string(),
+					stage,
+					interface: crate::resources::material::ShaderInterface {
+						workgroup_size: Some((128, 0, 0)),
+						bindings: vec![crate::resources::material::Binding::new(
+							0,
+							crate::resources::material::BindingKind::StorageBuffer,
+							1,
+							true,
+							false,
+						)],
+					},
+					artifact: crate::resources::material::ShaderArtifact::Msl {
+						entry_point: "test_main".to_string(),
+					},
+					source_hash: 42,
+				},
+				b"compiled-test-shader".to_vec().into_boxed_slice(),
+			))
+		}
+	}
+
+	/// The `RootTestShaderGenerator` struct supplies the complete test renderer contract used by BEMA integration tests.
 	pub struct RootTestShaderGenerator {}
+
+	/// The `MinimalTestShaderGenerator` struct isolates importer tests from renderer-specific material shader contracts.
+	pub struct MinimalTestShaderGenerator;
+
+	impl ProgramGenerator for MinimalTestShaderGenerator {
+		fn transform<'a>(&self, _: besl::parser::Node<'a>, _: &'a JsonObject) -> besl::parser::Node<'a> {
+			besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())])
+		}
+	}
 
 	impl RootTestShaderGenerator {
 		pub fn new() -> RootTestShaderGenerator {
@@ -466,7 +548,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function =
@@ -489,11 +571,10 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 			let binding = besl::parser::Node::binding(
 				"materials",
 				besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]),
-				0,
 				0,
 				true,
 				false,
@@ -516,7 +597,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("material_index", "u32")]);
 
 			let main = besl::parser::Node::function(
@@ -538,25 +619,23 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn load_material() {
-		// BEMA shader generation uses shared compiler state, so these bake tests
-		// must not compile material shaders concurrently.
-		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
-			"domain": "World",
-				"type": "Surface",
-				"shaders": {
-					"Compute": "load_material_fragment.besl"
+			// Authored material files accept the JSON5 conveniences used by hand-written assets.
+			domain: 'World',
+				type: 'Surface',
+				shaders: {
+					Compute: 'load_material_fragment.besl',
 				},
-			"variables": [
+			variables: [
 				{
-					"name": "color",
-					"data_type": "vec4f",
-					"type": "Static",
-					"value": "Purple"
-				}
-			]
+					name: 'color',
+					data_type: 'vec4f',
+					type: 'Static',
+					value: 'Purple',
+				},
+			],
 		}"#;
 
 		asset_storage_backend.add_file("load_material.bema", material_json.as_bytes());
@@ -569,26 +648,19 @@ pub mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = BEMAAssetHandler::new();
+		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
+		asset_manager.add_asset_handler(asset_handler);
 
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				asset_manager.get_storage_backend(),
-				ResourceId::new("load_material.bema"),
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("load_material.bema", &resource_storage_backend)
 			.await
 			.expect("Failed to load material");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Failed to store material");
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -606,7 +678,17 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(!shader_spirv.is_empty());
+		assert_eq!(shader_spirv, "compiled-test-shader");
+		let shader_model: crate::resources::material::Shader = crate::from_slice(&shader.resource).unwrap();
+		assert_eq!(shader_model.id, "load_material_fragment.besl");
+		assert!(matches!(shader_model.stage, crate::types::ShaderTypes::Compute));
+		assert_eq!(shader_model.interface.workgroup_size, Some((128, 0, 0)));
+		assert_eq!(shader_model.interface.bindings.len(), 1);
+		assert_eq!(shader_model.source_hash, 42);
+		assert!(matches!(
+			shader_model.artifact,
+			crate::resources::material::ShaderArtifact::Msl { ref entry_point } if entry_point == "test_main"
+		));
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("load_material.bema"))
@@ -618,9 +700,6 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn load_variant() {
-		// BEMA shader generation uses shared compiler state, so these bake tests
-		// must not compile material shaders concurrently.
-		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
@@ -663,6 +742,7 @@ pub mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = BEMAAssetHandler::new();
+		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 

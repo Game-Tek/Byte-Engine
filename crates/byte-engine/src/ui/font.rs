@@ -171,7 +171,7 @@ impl TextSystem {
 
 	pub fn measure(&mut self, text: &str, font_size: f32) -> Size {
 		if text.is_empty() {
-			return Size::new(0, 0);
+			return Size::new(0.0, 0.0);
 		}
 
 		let font_size = font_size.max(1.0);
@@ -298,7 +298,7 @@ fn measure_with_font(font: &Font, text: &str, font_size: f32) -> Size {
 	let line_box_height = (ascent - descent).max(font_size);
 	let height = line_box_height + (line_count.saturating_sub(1) as f32 * line_height);
 
-	Size::new(max_width.ceil().max(0.0) as u32, height.ceil().max(0.0) as u32)
+	Size::new(max_width.max(0.0), height.max(0.0))
 }
 
 fn measure_with_fallback(text: &str, font_size: f32) -> Size {
@@ -310,7 +310,7 @@ fn measure_with_fallback(text: &str, font_size: f32) -> Size {
 		.fold(0.0, f32::max);
 	let height = line_count * font_size * FALLBACK_LINE_HEIGHT_FACTOR;
 
-	Size::new(max_width.ceil().max(0.0) as u32, height.ceil().max(0.0) as u32)
+	Size::new(max_width.max(0.0), height.max(0.0))
 }
 
 fn line_metrics(font: &Font, font_size: f32) -> (f32, f32, f32) {

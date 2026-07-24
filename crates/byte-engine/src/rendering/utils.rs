@@ -1,4 +1,4 @@
-use std::{hash::Hash, marker::PhantomData, usize};
+use std::{alloc::Allocator, hash::Hash, marker::PhantomData, usize};
 
 use utils::{
 	hash::{HashMap, HashMapExt as _},
@@ -57,7 +57,7 @@ pub struct MeshBuffersStats<I> {
 	instances: StableVec<(usize, I)>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstanceBatch {
 	base_index: usize,
 	base_vertex: usize,
@@ -154,7 +154,19 @@ impl<I> MeshBuffersStats<I> {
 	}
 
 	pub fn get_instance_batches(&self) -> InstanceBatches<'_, I> {
-		let mut batches = Vec::with_capacity(self.instances.len());
+		InstanceBatches {
+			batches: self.collect_instance_batches_in(std::alloc::Global),
+			_marker: PhantomData,
+		}
+	}
+
+	pub fn get_instance_batches_in<'a>(&self, allocator: &'a bumpalo::Bump) -> Vec<InstanceBatch, &'a bumpalo::Bump> {
+		self.collect_instance_batches_in(allocator)
+	}
+
+	/// Collects contiguous mesh batches with the caller-selected allocation strategy.
+	fn collect_instance_batches_in<A: Allocator>(&self, allocator: A) -> Vec<InstanceBatch, A> {
+		let mut batches = Vec::with_capacity_in(self.instances.len(), allocator);
 		let mut current_batch: Option<(usize, InstanceBatch)> = None;
 
 		for instance_id in 0..self.instances.slots_len() {
@@ -204,10 +216,7 @@ impl<I> MeshBuffersStats<I> {
 			batches.push(batch);
 		}
 
-		InstanceBatches {
-			batches,
-			_marker: PhantomData,
-		}
+		batches
 	}
 
 	pub fn vertex_offset(&self) -> usize {
@@ -424,5 +433,29 @@ mod tests {
 		assert_eq!(batches[0].instance_count(), 1);
 		assert_eq!(batches[1].base_instance(), third.index());
 		assert_eq!(batches[1].instance_count(), 1);
+	}
+
+	#[test]
+	fn heap_and_frame_allocators_preserve_mesh_switch_and_hole_batches() {
+		let mut mesh_buffer_stats = MeshBuffersStats::default();
+		let first_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(10, 30), 1);
+		let second_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(20, 60), 2);
+
+		mesh_buffer_stats.add_instance(first_mesh.id(), "first");
+		let removed = mesh_buffer_stats.add_instance(first_mesh.id(), "removed");
+		mesh_buffer_stats.add_instance(second_mesh.id(), "second-a");
+		mesh_buffer_stats.add_instance(second_mesh.id(), "second-b");
+		mesh_buffer_stats.add_instance(first_mesh.id(), "last");
+		assert_eq!(mesh_buffer_stats.remove_instance(removed), Some("removed"));
+
+		let heap_batches = mesh_buffer_stats.get_instance_batches();
+		let frame_allocator = bumpalo::Bump::new();
+		let frame_batches = mesh_buffer_stats.get_instance_batches_in(&frame_allocator);
+
+		assert_eq!(heap_batches.batches.as_slice(), frame_batches.as_slice());
+		assert_eq!(frame_batches.len(), 3);
+		assert_eq!((frame_batches[0].index_count(), frame_batches[0].base_instance()), (30, 0));
+		assert_eq!((frame_batches[1].index_count(), frame_batches[1].instance_count()), (60, 2));
+		assert_eq!((frame_batches[2].index_count(), frame_batches[2].base_instance()), (30, 4));
 	}
 }

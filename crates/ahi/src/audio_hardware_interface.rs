@@ -1,35 +1,35 @@
-/// The `Mono16Bit` type represents a reference to a mono (single channel) audio buffer with signed 16-bit samples.
+/// A borrowed mono audio buffer with signed 16-bit samples.
 pub type Mono16Bit<'a> = &'a [i16];
-/// The `Stereo16Bit` type represents a reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+/// A borrowed stereo audio buffer with signed 16-bit samples.
 pub type Stereo16Bit<'a> = &'a [(i16, i16)];
-/// The `MonoFloat32` type represents a reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+/// A borrowed mono audio buffer with 32-bit floating-point samples.
 pub type MonoFloat32<'a> = &'a [f32];
-/// The `StereoFloat32` type represents a reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+/// A borrowed stereo audio buffer with 32-bit floating-point samples.
 pub type StereoFloat32<'a> = &'a [(f32, f32)];
 
-/// The `Mono16Bit` type represents a mutable reference to a mono (single channel) audio buffer with signed 16-bit samples.
+/// A mutably borrowed mono audio buffer with signed 16-bit samples.
 pub type Mono16BitMut<'a> = &'a mut [i16];
-/// The `Stereo16Bit` type represents a mutable reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+/// A mutably borrowed stereo audio buffer with signed 16-bit samples.
 pub type Stereo16BitMut<'a> = &'a mut [(i16, i16)];
-/// The `MonoFloat32` type represents a mutable reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+/// A mutably borrowed mono audio buffer with 32-bit floating-point samples.
 pub type MonoFloat32Mut<'a> = &'a mut [f32];
-/// The `StereoFloat32` type represents a mutable reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+/// A mutably borrowed stereo audio buffer with 32-bit floating-point samples.
 pub type StereoFloat32Mut<'a> = &'a mut [(f32, f32)];
 
-/// The `Streams` enum represents a buffer of audio in different formats.
+/// An audio buffer in a format supported by the active backend.
 pub enum Streams<'a> {
-	/// Represents a mono (single channel) audio buffer with signed 16-bit samples.
+	/// Mono audio with signed 16-bit samples.
 	Mono16Bit(Mono16BitMut<'a>),
-	/// Represents a stereo (two channels) audio buffer with signed 16-bit samples.
+	/// Stereo audio with signed 16-bit samples.
 	Stereo16Bit(Stereo16BitMut<'a>),
-	/// Represents a mono (single channel) audio buffer with 32-bit floating-point samples.
+	/// Mono audio with 32-bit floating-point samples.
 	MonoFloat32(MonoFloat32Mut<'a>),
-	/// Represents a stereo (two channels) audio buffer with 32-bit floating-point samples.
+	/// Stereo audio with 32-bit floating-point samples.
 	StereoFloat32(StereoFloat32Mut<'a>),
 }
 
 impl Streams<'_> {
-	/// The `zero` method fills the buffer with zeros.
+	/// Fills every sample with silence.
 	pub fn zero(&mut self) {
 		match self {
 			Self::Mono16Bit(buf) => buf.fill(0),
@@ -41,21 +41,24 @@ impl Streams<'_> {
 
 	pub fn frames(&self) -> usize {
 		match self {
-			Self::Mono16Bit(buf) => buf.len() / 2,
-			Self::Stereo16Bit(buf) => buf.len() / 2 / 2,
-			Self::MonoFloat32(buf) => buf.len() / 4,
-			Self::StereoFloat32(buf) => buf.len() / 4 / 2,
+			Self::Mono16Bit(buf) => buf.len(),
+			Self::Stereo16Bit(buf) => buf.len(),
+			Self::MonoFloat32(buf) => buf.len(),
+			Self::StereoFloat32(buf) => buf.len(),
 		}
 	}
 }
 
-/// Playback failed.
+/// An error that prevents audio playback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioPlayError {
 	/// The backend could not recover the hardware stream after an audio device error.
 	RecoveryFailed,
 	/// The backend could not start the hardware stream after audio data was queued.
-	StartFailed,
+	StartFailed {
+		/// The status returned by the platform audio API.
+		platform_status: i32,
+	},
 	/// The requested audio format is not supported by the active backend.
 	UnsupportedFormat,
 }
@@ -67,9 +70,9 @@ impl std::fmt::Display for AudioPlayError {
 				formatter,
 				"Audio stream recovery failed. The most likely cause is that the audio device entered an unrecoverable error state."
 			),
-			Self::StartFailed => write!(
+			Self::StartFailed { platform_status } => write!(
 				formatter,
-				"Audio stream start failed. The most likely cause is that the audio device rejected the configured playback stream."
+				"Audio stream start failed with platform status {platform_status}. The most likely cause is that the audio device rejected the configured playback stream."
 			),
 			Self::UnsupportedFormat => write!(
 				formatter,
@@ -86,11 +89,10 @@ pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
 pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
 pub trait StereoFloat32BufferPlayFunction = FnOnce(StereoFloat32);
 
-/// The `WritePlayFunction` trait represents a function object that writes audio data into a buffer.
-/// This buffer is owned by the hardware and the client writes to it.
+/// The `WritePlayFunction` trait lets clients write audio into a hardware-owned buffer.
 pub trait WritePlayFunction = FnOnce(Streams);
 
-/// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
+/// The `AudioHardwareInterface` trait provides a platform-independent playback boundary.
 pub trait AudioHardwareInterface {
 	fn new(params: HardwareParameters) -> Result<Self, String>
 	where
@@ -112,11 +114,9 @@ pub trait AudioHardwareInterface {
 		std::thread::yield_now();
 	}
 
-	/// Sends audio data to the hardware.
+	/// Writes audio data to a hardware buffer and submits it for playback.
 	///
-	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
-	///
-	/// Returns the number of frames played.
+	/// Returns the number of submitted frames.
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
 
 	/// Notifies the hardware that playback has been paused.
@@ -124,7 +124,7 @@ pub trait AudioHardwareInterface {
 	fn pause(&self);
 }
 
-/// The `HardwareParameters` struct represents the parameters for the audio hardware.
+/// The `HardwareParameters` struct configures the format requested from an audio device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HardwareParameters {
 	/// The sample rate of the audio hardware, in Hz.
@@ -136,12 +136,13 @@ pub struct HardwareParameters {
 }
 
 impl HardwareParameters {
-	/// Creates a new `HardwareParameters` instance with default values.
+	/// Creates parameters for 48 kHz, stereo, 16-bit playback.
 	///
-	/// # Default Values
-	/// - Sample Rate: 48000 Hz
+	/// # Defaults
+	///
+	/// - Sample rate: 48,000 Hz
 	/// - Channels: 2
-	/// - Bit Depth: 16
+	/// - Bit depth: 16
 	pub fn new() -> Self {
 		HardwareParameters {
 			sample_rate: 48000,
@@ -194,5 +195,69 @@ mod tests {
 		assert_eq!(params.sample_rate, 48000);
 		assert_eq!(params.channels, 2);
 		assert_eq!(params.bit_depth, 16);
+	}
+
+	#[test]
+	fn stream_frame_count_uses_typed_samples_not_byte_width() {
+		let mut mono_i16 = [1i16, 2, 3];
+		let mut stereo_i16 = [(1i16, 2i16), (3, 4), (5, 6)];
+		let mut mono_f32 = [1.0f32, 2.0, 3.0];
+		let mut stereo_f32 = [(1.0f32, 2.0f32), (3.0, 4.0), (5.0, 6.0)];
+
+		assert_eq!(Streams::Mono16Bit(&mut mono_i16).frames(), 3);
+		assert_eq!(Streams::Stereo16Bit(&mut stereo_i16).frames(), 3);
+		assert_eq!(Streams::MonoFloat32(&mut mono_f32).frames(), 3);
+		assert_eq!(Streams::StereoFloat32(&mut stereo_f32).frames(), 3);
+	}
+
+	#[test]
+	fn zero_silences_every_supported_stream_format() {
+		let mut mono_i16 = [1i16, -2, 3];
+		let mut stereo_i16 = [(1i16, -2i16), (3, -4)];
+		let mut mono_f32 = [1.0f32, -2.0, 3.0];
+		let mut stereo_f32 = [(1.0f32, -2.0f32), (3.0, -4.0)];
+
+		Streams::Mono16Bit(&mut mono_i16).zero();
+		Streams::Stereo16Bit(&mut stereo_i16).zero();
+		Streams::MonoFloat32(&mut mono_f32).zero();
+		Streams::StereoFloat32(&mut stereo_f32).zero();
+
+		assert_eq!(mono_i16, [0; 3]);
+		assert_eq!(stereo_i16, [(0, 0); 2]);
+		assert_eq!(mono_f32, [0.0; 3]);
+		assert_eq!(stereo_f32, [(0.0, 0.0); 2]);
+	}
+
+	#[test]
+	fn hardware_parameter_builders_are_independent() {
+		let defaults = HardwareParameters::default();
+		let configured = defaults.sample_rate(96_000).channels(1).bit_depth(32);
+
+		assert_eq!(defaults.get_sample_rate(), 48_000);
+		assert_eq!(defaults.get_channels(), 2);
+		assert_eq!(defaults.get_bit_depth(), 16);
+		assert_eq!(configured.get_sample_rate(), 96_000);
+		assert_eq!(configured.get_channels(), 1);
+		assert_eq!(configured.get_bit_depth(), 32);
+	}
+
+	#[test]
+	fn playback_errors_include_failure_and_likely_cause() {
+		for error in [
+			AudioPlayError::RecoveryFailed,
+			AudioPlayError::StartFailed { platform_status: -10867 },
+			AudioPlayError::UnsupportedFormat,
+		] {
+			let message = error.to_string();
+			assert!(message.contains("failed") || message.contains("unsupported"));
+			assert!(message.contains("most likely cause"));
+		}
+	}
+
+	#[test]
+	fn start_failure_reports_the_platform_status() {
+		let message = AudioPlayError::StartFailed { platform_status: -10867 }.to_string();
+
+		assert!(message.contains("-10867"));
 	}
 }

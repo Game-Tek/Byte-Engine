@@ -298,7 +298,10 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				besl::BindingTypes::Image { .. } => {}
 				besl::BindingTypes::CombinedImageSampler { .. } => {}
 			},
-			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
+			besl::Nodes::Input { format, .. }
+			| besl::Nodes::Output { format, .. }
+			| besl::Nodes::TaskPayload { format, .. }
+			| besl::Nodes::Workgroup { format, .. } => {
 				build_graph_impl(node.clone(), format.clone(), graph, expanded, active, allocator.clone());
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {

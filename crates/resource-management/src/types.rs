@@ -28,7 +28,7 @@ pub enum AlphaMode {
 	Blend,
 }
 
-/// Enumerates the types of shaders that can be created.
+/// The `ShaderTypes` enum identifies the stage for a shader resource.
 #[derive(
 	Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq, Eq,
 )]
@@ -122,6 +122,10 @@ pub struct Stream {
 impl Stream {
 	/// Returns the number of logical elements (not bytes) in the stream.
 	pub fn count(&self) -> usize {
+		assert!(
+			self.stride > 0,
+			"Stream stride is zero. The most likely cause is malformed resource metadata for a typed stream."
+		);
 		self.size / self.stride
 	}
 }
@@ -211,4 +215,78 @@ pub enum Formats {
 	RGB16,
 	RGBA16,
 	BC7SRGB,
+	RGBA16F,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{BitDepths, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics};
+
+	#[test]
+	fn bit_depths_convert_to_their_exact_number_of_bits() {
+		assert_eq!(usize::from(BitDepths::Eight), 8);
+		assert_eq!(usize::from(BitDepths::Sixteen), 16);
+		assert_eq!(usize::from(BitDepths::TwentyFour), 24);
+		assert_eq!(usize::from(BitDepths::ThirtyTwo), 32);
+	}
+
+	#[test]
+	fn integral_and_vertex_sizes_match_the_binary_contract() {
+		let integral_sizes = [
+			(IntegralTypes::U8, 1),
+			(IntegralTypes::I8, 1),
+			(IntegralTypes::U16, 2),
+			(IntegralTypes::I16, 2),
+			(IntegralTypes::U32, 4),
+			(IntegralTypes::I32, 4),
+			(IntegralTypes::F16, 2),
+			(IntegralTypes::F32, 4),
+			(IntegralTypes::F64, 8),
+		];
+		for (kind, expected) in integral_sizes {
+			assert_eq!(kind.size(), expected);
+		}
+
+		let components = vec![
+			VertexComponent {
+				semantic: VertexSemantics::Position,
+				format: "float3".into(),
+				channel: 0,
+			},
+			VertexComponent {
+				semantic: VertexSemantics::UV,
+				format: "float2".into(),
+				channel: 0,
+			},
+			VertexComponent {
+				semantic: VertexSemantics::Joints,
+				format: "ushort4".into(),
+				channel: 0,
+			},
+		];
+		assert_eq!(components.size(), 12 + 8 + 8);
+	}
+
+	#[test]
+	fn stream_count_uses_byte_size_and_stride() {
+		let stream = Stream {
+			stream_type: Streams::Vertices(VertexSemantics::Position),
+			offset: 64,
+			size: 120,
+			stride: 12,
+		};
+		assert_eq!(stream.count(), 10);
+	}
+
+	#[test]
+	#[should_panic(expected = "Stream stride is zero")]
+	fn stream_count_rejects_zero_stride_metadata() {
+		Stream {
+			stream_type: Streams::Meshlets,
+			offset: 0,
+			size: 10,
+			stride: 0,
+		}
+		.count();
+	}
 }

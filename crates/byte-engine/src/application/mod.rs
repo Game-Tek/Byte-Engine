@@ -8,7 +8,7 @@
 //! The `triangle` example demonstrates the standard setup path, while the
 //! `window` example demonstrates selecting only one setup component.
 
-use std::time::Duration;
+use crate::time::MediaTime;
 
 pub mod application;
 #[doc(hidden)]
@@ -28,23 +28,23 @@ pub mod graphics;
 /// the lifecycle clock owned by the application.
 #[derive(Debug, Clone, Copy)]
 pub struct Time {
-	elapsed: Duration,
-	delta: Duration,
+	elapsed: MediaTime,
+	delta: MediaTime,
 }
 
 impl Time {
 	/// Creates frame timing data for systems that run inside an application tick.
-	pub fn new(elapsed: Duration, delta: Duration) -> Self {
+	pub fn new(elapsed: MediaTime, delta: MediaTime) -> Self {
 		Self { elapsed, delta }
 	}
 
 	/// Returns the total time since the application started.
-	pub fn elapsed(&self) -> Duration {
+	pub fn elapsed(&self) -> MediaTime {
 		self.elapsed
 	}
 
 	/// Returns the time since the previous application tick.
-	pub fn delta(&self) -> Duration {
+	pub fn delta(&self) -> MediaTime {
 		self.delta
 	}
 }
@@ -77,9 +77,9 @@ impl Parameter {
 	}
 
 	/// Parses the parameter's value as a bool.
-	/// Some(True) if param equals "true", "TRUE", "1"
-	/// Some(False) if param equals "false", "FALSE", "0"
-	/// Else None
+	///
+	/// Returns `Some(true)` for `true`, `TRUE`, or `1`. Returns `Some(false)` for
+	/// `false`, `FALSE`, or `0`. Returns `None` for all other values.
 	pub fn as_bool(&self) -> Option<bool> {
 		match self.value.as_str() {
 			"true" | "TRUE" | "1" => Some(true),
@@ -88,8 +88,10 @@ impl Parameter {
 		}
 	}
 
-	/// Parses the parameter's value as bool using `as_bool` but return false if it could not be parsed.
-	/// This is provided as a convenience.
+	/// Parses the parameter as a Boolean value and returns `false` if parsing fails.
+	///
+	/// Use [`Self::as_bool`] when the caller must distinguish `false` from an
+	/// invalid value.
 	pub fn as_bool_simple(&self) -> bool {
 		self.as_bool().unwrap_or(false)
 	}
@@ -108,6 +110,6 @@ impl Parameter {
 /// The [`Events`] enum defines messages shared with application-owned worker threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
-	/// Request the application to close.
+	/// Requests that the application close.
 	Close,
 }

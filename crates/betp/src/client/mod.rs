@@ -1,4 +1,4 @@
-//! The client module contains all code related to the client side of the implmentation of the BETP.
+//! Provides the API and protocol state for BETP clients.
 
 pub mod interface;
 pub mod session;

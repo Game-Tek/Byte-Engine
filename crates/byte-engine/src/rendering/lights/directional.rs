@@ -7,9 +7,8 @@ use crate::{
 	rendering::lights::{Light, LightClasses},
 };
 
-/// The `DirectionalLight` struct represents a directional light source in a scene.
-///
-/// It is used to simulate light that comes from a distant source, such as the sun.
+/// The `DirectionalLight` struct provides parallel scene lighting from a distant
+/// source, such as the sun.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalLight {
 	pub direction: Vector3,

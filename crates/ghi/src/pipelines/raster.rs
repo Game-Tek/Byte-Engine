@@ -2,35 +2,35 @@ use std::borrow::Cow;
 
 use crate::{
 	pipelines::{ShaderParameter, VertexElement},
-	DescriptorSetTemplateHandle, Formats,
+	Formats,
 };
 
+/// The `Builder` struct collects portable raster state before a backend creates its native pipeline.
 pub struct Builder<'a> {
-	pub(crate) descriptor_set_templates: Cow<'a, [DescriptorSetTemplateHandle]>,
 	pub(crate) push_constant_ranges: Cow<'a, [crate::pipelines::PushConstantRange]>,
 	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
 	pub(crate) shaders: Cow<'a, [ShaderParameter<'a>]>,
 	pub(crate) face_winding: FaceWinding,
 	pub(crate) cull_mode: CullMode,
+	pub(crate) depth_write: bool,
 }
 
 impl<'a> Builder<'a> {
 	pub fn new(
-		descriptor_set_templates: &'a [DescriptorSetTemplateHandle],
 		push_constant_ranges: &'a [crate::pipelines::PushConstantRange],
 		vertex_elements: &'a [VertexElement],
 		shaders: &'a [ShaderParameter],
 		render_targets: &'a [AttachmentDescriptor],
 	) -> Self {
 		Self {
-			descriptor_set_templates: Cow::Borrowed(descriptor_set_templates),
 			push_constant_ranges: Cow::Borrowed(push_constant_ranges),
 			vertex_elements: Cow::Borrowed(vertex_elements),
 			shaders: Cow::Borrowed(shaders),
 			render_targets: Cow::Borrowed(render_targets),
 			face_winding: FaceWinding::Clockwise,
 			cull_mode: CullMode::Back,
+			depth_write: true,
 		}
 	}
 
@@ -41,6 +41,12 @@ impl<'a> Builder<'a> {
 
 	pub fn cull_mode(mut self, cull_mode: CullMode) -> Self {
 		self.cull_mode = cull_mode;
+		self
+	}
+
+	/// Selects whether passing depth fragments update the bound depth attachment.
+	pub fn depth_write(mut self, depth_write: bool) -> Self {
+		self.depth_write = depth_write;
 		self
 	}
 }
@@ -64,6 +70,7 @@ pub enum CullMode {
 pub enum BlendMode {
 	#[default]
 	None,
+	/// Applies straight-alpha source-over blending to both color and alpha.
 	Alpha,
 }
 
@@ -118,9 +125,23 @@ mod tests {
 
 	#[test]
 	fn builder_defaults_to_clockwise_backface_culling() {
-		let builder = Builder::new(&[], &[], &[], &[], &[]);
+		let builder = Builder::new(&[], &[], &[], &[]);
 
 		assert!(matches!(builder.face_winding, FaceWinding::Clockwise));
 		assert!(matches!(builder.cull_mode, CullMode::Back));
+	}
+
+	#[test]
+	fn builder_defaults_to_depth_writes() {
+		let builder = Builder::new(&[], &[], &[], &[]);
+
+		assert!(builder.depth_write);
+	}
+
+	#[test]
+	fn builder_can_disable_depth_writes() {
+		let builder = Builder::new(&[], &[], &[], &[]).depth_write(false);
+
+		assert!(!builder.depth_write);
 	}
 }

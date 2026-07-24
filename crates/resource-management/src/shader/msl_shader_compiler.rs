@@ -9,8 +9,11 @@ use std::{
 
 pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
-	besl::backends::msl::MSLShaderGenerator,
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
+	besl::{
+		backends::msl::MSLShaderGenerator,
+		evaluation::{collect_bindings, BindingKind, BindingRecord},
+	},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
 };
 
 /// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
@@ -20,6 +23,16 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 }
 
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
+
+impl BindingRecord for CompiledShaderBinding {
+	fn from_usage(_name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self {
+		Self::new(slot, kind, count, read, write)
+	}
+
+	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {
+		(self.slot, self.kind, self.count, self.read, self.write)
+	}
+}
 
 impl Default for Compiler<Global> {
 	fn default() -> Self {
@@ -68,8 +81,6 @@ impl<A: Allocator + Clone> Compiler<A> {
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name)?;
 
-		let mut bindings = Vec::with_capacity(16);
-
 		{
 			let node_borrow = RefCell::borrow(main_function_node);
 			let node_ref = node_borrow.node();
@@ -82,159 +93,20 @@ impl<A: Allocator + Clone> Compiler<A> {
 			}
 		}
 
-		self.build_graph(&mut bindings, main_function_node);
-
-		bindings.sort_by(|a, b| {
-			if a.set == b.set {
-				a.binding.cmp(&b.binding)
-			} else {
-				a.set.cmp(&b.set)
-			}
-		});
+		let bindings = collect_bindings::<CompiledShaderBinding>(main_function_node)?;
 
 		Ok(CompiledShader::new(
 			binary,
 			bindings,
-			match shader_compilation_settings.stage {
-				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
-				_ => None,
-			},
+			reflected_workgroup_extent(shader_compilation_settings),
 		))
 	}
+}
 
-	fn build_graph(&mut self, bindings: &mut Vec<CompiledShaderBinding>, node: &besl::NodeReference) {
-		let node_borrow = RefCell::borrow(node);
-		let node_ref = node_borrow.node();
-
-		match node_ref {
-			besl::Nodes::Function { statements, .. } => {
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::Conditional { condition, statements } => {
-				self.build_graph(bindings, condition);
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				self.build_graph(bindings, initializer);
-				self.build_graph(bindings, condition);
-				self.build_graph(bindings, update);
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::Expression(expresions) => {
-				match expresions {
-					besl::Expressions::FunctionCall { parameters, function } => {
-						self.build_graph(bindings, function);
-						for parameter in parameters {
-							self.build_graph(bindings, parameter);
-						}
-					}
-					besl::Expressions::Accessor { left, right } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::Expression { elements } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-					}
-					besl::Expressions::IntrinsicCall { intrinsic, elements, .. } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-						self.build_graph(bindings, intrinsic);
-					}
-					besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {
-						// Do nothing
-					}
-					besl::Expressions::Macro { body, .. } => {
-						self.build_graph(bindings, body);
-					}
-					besl::Expressions::Member { source, .. } => {
-						self.build_graph(bindings, source);
-					}
-					besl::Expressions::Operator { left, right, .. } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						self.build_graph(bindings, r#type);
-					}
-				}
-			}
-			besl::Nodes::Binding {
-				set,
-				binding,
-				read,
-				write,
-				..
-			} => {
-				if bindings.iter().find(|b| b.binding == *binding && b.set == *set).is_none() {
-					bindings.push(CompiledShaderBinding::new(*set, *binding, *read, *write));
-				}
-			}
-			besl::Nodes::Raw { input, output, .. } => {
-				for input in input {
-					self.build_graph(bindings, input);
-				}
-				for output in output {
-					self.build_graph(bindings, output);
-				}
-			}
-			besl::Nodes::Struct { fields, .. } => {
-				for member in fields {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Intrinsic { elements, r#return, .. } => {
-				for element in elements {
-					self.build_graph(bindings, element);
-				}
-				self.build_graph(bindings, r#return);
-			}
-			besl::Nodes::Literal { value, .. } => {
-				self.build_graph(bindings, value);
-			}
-			besl::Nodes::Member { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
-				self.build_graph(bindings, format);
-			}
-			besl::Nodes::Null => {
-				// Do nothing
-			}
-			besl::Nodes::Parameter { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::PushConstant { members } => {
-				for member in members {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Scope { children, .. } => {
-				for child in children {
-					self.build_graph(bindings, child);
-				}
-			}
-			besl::Nodes::Specialization { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::Const { r#type, value, .. } => {
-				self.build_graph(bindings, r#type);
-				self.build_graph(bindings, value);
-			}
-		}
+fn reflected_workgroup_extent(settings: &ShaderGenerationSettings) -> Option<utils::Extent> {
+	match &settings.stage {
+		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => Some(*local_size),
+		Stages::Vertex | Stages::Fragment => None,
 	}
 }
 
@@ -321,11 +193,25 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		})?;
 
 	if !metal_output.status.success() {
-		let stderr = String::from_utf8_lossy(&metal_output.stderr);
-		return Err(error_with_details(
+		let exit_status = metal_output
+			.status
+			.code()
+			.map_or_else(|| metal_output.status.to_string(), |code| code.to_string());
+		if metal_toolchain_missing(&metal_output.stderr) {
+			return Err(format_tool_failure(
+				"Failed to compile MSL shader",
+				"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
+				&exit_status,
+				&metal_output.stdout,
+				&metal_output.stderr,
+			));
+		}
+		return Err(format_tool_failure(
 			"Failed to compile MSL shader",
 			"The Metal compiler reported an error",
-			&stderr,
+			&exit_status,
+			&metal_output.stdout,
+			&metal_output.stderr,
 		));
 	}
 
@@ -346,11 +232,16 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		.map_err(|_| error("Failed to invoke metallib", "The Xcode command line tools may be missing"))?;
 
 	if !metallib_output.status.success() {
-		let stderr = String::from_utf8_lossy(&metallib_output.stderr);
-		return Err(error_with_details(
+		let exit_status = metallib_output
+			.status
+			.code()
+			.map_or_else(|| metallib_output.status.to_string(), |code| code.to_string());
+		return Err(format_tool_failure(
 			"Failed to link Metal library",
 			"The metallib tool reported an error",
-			&stderr,
+			&exit_status,
+			&metallib_output.stdout,
+			&metallib_output.stderr,
 		));
 	}
 
@@ -358,6 +249,12 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		.map_err(|_| error("Failed to read compiled Metal library", "The metallib output was not created"))?;
 
 	Ok(binary.into_boxed_slice())
+}
+
+/// Detects the missing optional Metal compiler component in `xcrun` diagnostics.
+fn metal_toolchain_missing(stderr: &[u8]) -> bool {
+	let stderr = String::from_utf8_lossy(stderr);
+	stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'")
 }
 
 fn sanitize_shader_name(name: &str) -> String {
@@ -383,13 +280,179 @@ fn error(message: &str, cause: &str) -> String {
 	format!("{message}. {cause}.")
 }
 
-fn error_with_details(message: &str, cause: &str, details: &str) -> String {
-	let details = details.trim();
-	if details.is_empty() {
-		return error(message, cause);
-	}
+fn format_tool_failure(message: &str, cause: &str, exit_status: &str, stdout: &[u8], stderr: &[u8]) -> String {
+	let stdout = String::from_utf8_lossy(stdout);
+	let stdout = stdout.trim();
+	let stdout = if stdout.is_empty() { "<empty>" } else { stdout };
+	let stderr = String::from_utf8_lossy(stderr);
+	let stderr = stderr.trim();
+	let stderr = if stderr.is_empty() { "<empty>" } else { stderr };
 
-	format!("{message}. {cause}.\n{details}")
+	format!("{message}. {cause}.\nExit status: {exit_status}\nstderr:\n{stderr}\nstdout:\n{stdout}")
 }
 
 pub use Compiler as MSLShaderCompiler;
+
+#[cfg(test)]
+mod tests {
+	use utils::Extent;
+
+	use super::{format_tool_failure, metal_toolchain_missing, reflected_workgroup_extent, CompiledShaderBinding};
+	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
+	use crate::shader::generator::ShaderGenerationSettings;
+
+	#[test]
+	fn workgroup_reflection_includes_compute_task_and_mesh_stages() {
+		let extent = Extent::new(32, 1, 1);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::compute(extent)),
+			Some(extent)
+		);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::task(extent, 32)),
+			Some(extent)
+		);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::mesh(64, 126, extent)),
+			Some(extent)
+		);
+		assert_eq!(reflected_workgroup_extent(&ShaderGenerationSettings::fragment()), None);
+	}
+
+	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
+		besl::Node::binding(
+			name,
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			slot,
+			read,
+			write,
+		)
+		.into()
+	}
+
+	fn usage<T: BindingRecord>(bindings: &[T]) -> Vec<(u32, bool, bool)> {
+		bindings
+			.iter()
+			.map(|binding| {
+				let (slot, _, _, read, write) = binding.usage();
+				(slot, read, write)
+			})
+			.collect()
+	}
+
+	#[test]
+	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
+			"binding_order_fixture",
+			vec![
+				binding("definition_first", 0, true, false),
+				binding("definition_only", 2, true, true),
+			],
+			void_type.clone(),
+		)
+		.into();
+		// The intrinsic definition is only a template; emitted bindings come from the instantiated elements.
+		let call = besl::Node::expression(besl::Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: Vec::new(),
+			elements: vec![binding("instantiated", 100, true, false)],
+		})
+		.into();
+		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
+
+		let compiled = collect_bindings::<CompiledShaderBinding>(&main).expect("Expected instantiated flat resource metadata");
+		assert_eq!(usage(&compiled), vec![(100, true, false)]);
+
+		let evaluated = collect_bindings::<BindingUsage>(&main).expect("Expected instantiated flat resource metadata");
+		assert_eq!(usage(&evaluated), vec![(100, true, false)]);
+	}
+
+	#[test]
+	fn binding_collector_deduplicates_shared_binding_references() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let shared = binding("shared", 3, true, false);
+		let main: besl::NodeReference =
+			besl::Node::function("main", Vec::new(), void_type, vec![shared.clone(), shared]).into();
+
+		let bindings = collect_bindings::<BindingUsage>(&main).expect("Expected one shared flat resource declaration");
+		assert_eq!(usage(&bindings), vec![(3, true, false)]);
+	}
+
+	#[test]
+	fn binding_collector_rejects_distinct_same_slot_declarations() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let main: besl::NodeReference = besl::Node::function(
+			"main",
+			Vec::new(),
+			void_type,
+			vec![binding("first", 3, true, false), binding("second", 3, false, true)],
+		)
+		.into();
+
+		let error = collect_bindings::<BindingUsage>(&main).expect_err("Expected distinct same-slot declarations to fail");
+		assert!(error.contains("Duplicate resource declaration at slot 3"));
+	}
+
+	#[test]
+	fn tool_failure_includes_exit_status_and_stderr() {
+		let failure = format_tool_failure(
+			"Failed to compile MSL shader",
+			"The Metal compiler reported an error",
+			"1",
+			b"",
+			b"shader.metal:7:3: error: unknown identifier\n",
+		);
+
+		assert_eq!(
+			failure,
+			"Failed to compile MSL shader. The Metal compiler reported an error.\n\
+Exit status: 1\n\
+stderr:\n\
+shader.metal:7:3: error: unknown identifier\n\
+stdout:\n\
+<empty>"
+		);
+	}
+
+	#[test]
+	fn tool_failure_includes_stdout_when_stderr_is_empty() {
+		let failure = format_tool_failure(
+			"Failed to link Metal library",
+			"The metallib tool reported an error",
+			"2",
+			b"metallib: malformed AIR input\n",
+			b"",
+		);
+
+		assert_eq!(
+			failure,
+			"Failed to link Metal library. The metallib tool reported an error.\n\
+Exit status: 2\n\
+stderr:\n\
+<empty>\n\
+stdout:\n\
+metallib: malformed AIR input"
+		);
+	}
+
+	#[test]
+	fn missing_metal_toolchain_failure_has_an_actionable_cause() {
+		let stderr = b"error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain";
+		assert!(metal_toolchain_missing(stderr));
+		assert!(!metal_toolchain_missing(b"shader.metal:7:3: error: unknown identifier"));
+		let failure = format_tool_failure(
+			"Failed to compile MSL shader",
+			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
+			"1",
+			b"",
+			stderr,
+		);
+
+		assert!(failure.contains("The Metal Toolchain is missing"));
+		assert!(failure.contains("xcodebuild -downloadComponent MetalToolchain"));
+	}
+}

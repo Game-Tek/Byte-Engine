@@ -4,10 +4,15 @@
 //! through [`crate::application::graphics::setup_default_audio`]. Implement
 //! [`generator::Generator`] for procedural or streamed audio, or
 //! [`synthesizer::Synthesizer`] when producing samples from a synthesizer model.
+//! Build an [`graph::AudioGraph`] and publish it through the default world's
+//! audio graph factory when playback starts from a baked PCM resource.
 //! [`emitter::Emitter`] connects generated sound to a position in the game world.
 
 #[doc(hidden)]
 pub mod audio_system;
+
+pub mod graph;
+pub(crate) mod sample_loader;
 
 #[doc(hidden)]
 pub mod source;

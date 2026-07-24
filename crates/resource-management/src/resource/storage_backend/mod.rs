@@ -1,14 +1,14 @@
-//! The storage backend provides a way to store and retrieve assets and resources from a storage backend.
+//! Store, retrieve, and query baked resources through interchangeable backends.
 
 pub mod redb_storage_backend;
 
 use super::resource_handler::MultiResourceReader;
-use crate::QueryableValue;
 use crate::{
 	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
 };
+use crate::{r#async::BoxedFuture, QueryableValue};
 
-/// The `QueryCursor` struct represents an opaque position for paginated resource queries.
+/// The `QueryCursor` struct provides an opaque continuation point for paginated resource queries.
 #[derive(
 	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -22,13 +22,13 @@ impl QueryCursor {
 	}
 }
 
-/// The `QueryPredicate` enum represents a property constraint for a resource query.
+/// The `QueryPredicate` enum defines one indexed property constraint for a resource query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryPredicate {
 	Eq { property: String, value: QueryableValue },
 }
 
-/// The `Query` struct represents a paged resource query against a storage backend.
+/// The `Query` struct provides a class-filtered, paginated request to a storage backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
 	pub class: String,
@@ -77,7 +77,7 @@ impl Query {
 		})
 	}
 
-	/// Checks whether an archived resource satisfies this query without deserializing its metadata.
+	/// Returns whether archived metadata matches this query without deserializing it.
 	pub fn matches_archived(&self, resource: &ArchivedSerializableResource) -> bool {
 		if resource.class.as_str() != self.class {
 			return false;
@@ -102,14 +102,14 @@ impl Query {
 	}
 }
 
-/// The `QueryPage` struct represents a page of query results and the cursor for the next page.
+/// The `QueryPage` struct carries one result page and its optional continuation cursor.
 #[derive(Debug)]
 pub struct QueryPage<T> {
 	pub items: Vec<T>,
 	pub cursor: Option<QueryCursor>,
 }
 
-/// The `QueryError` enum represents a failure while executing a resource query.
+/// The `QueryError` enum identifies failures while a storage backend executes a query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
 	InvalidCursor,
@@ -117,19 +117,29 @@ pub enum QueryError {
 }
 
 pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
-	fn list(&self) -> Result<Vec<String>, String>;
-	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)>;
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
+	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
 
-	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
 
-	/// Returns the type of the asset, if attainable from the url.
-	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
+	/// Returns development-time bake messages even when the requested resource was not stored.
+	#[cfg(debug_assertions)]
+	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		crate::r#async::future(async { Ok(Vec::new()) })
+	}
+
+	/// Returns the asset type from its URL when the backend can determine it.
+	///
+	/// Asset handlers use this value to skip unsupported sources before loading them.
 	fn get_type<'a>(&'a self, url: ResourceId<'a>) -> Option<&'a str> {
 		Some(url.get_extension())
 	}
 
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> bool {
-		self.read(id).is_some()
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
+		crate::r#async::future(async move { self.read(id).await.is_some() })
 	}
 }
 
@@ -145,6 +155,12 @@ pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 		allocator: &dyn std::alloc::Allocator,
 	) -> Result<SerializableResource, ()>;
 	fn sync(&self, _: &dyn ReadStorageBackend) {}
+
+	/// Replaces development-time bake messages without creating a resource entry.
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
+		Ok(())
+	}
 
 	fn start(&self, _: ResourceId<'_>) {}
 }
@@ -166,16 +182,25 @@ pub mod tests {
 	use super::*;
 	use crate::resource::resource_handler::tests::MemoryResourceReader;
 
+	/// The `TestStorageBackend` struct keeps baked resources and development traces in memory for focused tests.
 	#[derive(Clone)]
-	pub struct TestStorageBackend(pub Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>);
+	pub struct TestStorageBackend {
+		resources: Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>,
+		#[cfg(debug_assertions)]
+		traces: Arc<Mutex<HashMap<String, Vec<crate::ResourceTraceItem>>>>,
+	}
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
-			Self(Arc::new(Mutex::new(HashMap::new())))
+			Self {
+				resources: Arc::new(Mutex::new(HashMap::new())),
+				#[cfg(debug_assertions)]
+				traces: Arc::new(Mutex::new(HashMap::new())),
+			}
 		}
 
 		pub fn get_resources(&self) -> Vec<ProcessedAsset> {
-			self.0
+			self.resources
 				.lock()
 				.iter()
 				.map(|x| {
@@ -192,7 +217,7 @@ pub mod tests {
 		}
 
 		pub fn get_resource(&self, name: ResourceId<'_>) -> Option<ProcessedAsset> {
-			self.0
+			self.resources
 				.lock()
 				.iter()
 				.find(|x| {
@@ -213,7 +238,7 @@ pub mod tests {
 
 		pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
 			Some(
-				self.0
+				self.resources
 					.lock()
 					.iter()
 					.find(|x| {
@@ -228,34 +253,46 @@ pub mod tests {
 	}
 
 	impl ReadStorageBackend for TestStorageBackend {
-		fn list<'a>(&'a self) -> Result<Vec<String>, String> {
-			Ok(self.0.lock().keys().map(|x| x.to_string()).collect())
+		fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+			crate::r#async::future(async { Ok(self.resources.lock().keys().map(|x| x.to_string()).collect()) })
 		}
 
-		fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)> {
-			let (resource, data) = if let Some(e) = self.0.lock().get(id.as_ref()) {
-				(e.0.clone(), e.1.clone())
-			} else {
-				return None;
-			};
+		fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+			crate::r#async::future(async move {
+				let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
+					(e.0.clone(), e.1.clone())
+				} else {
+					return None;
+				};
 
-			let _ = id.get_base().to_string();
+				let _ = id.get_base().to_string();
 
-			let resource: SerializableResource = crate::from_slice(&resource).unwrap();
+				let resource: SerializableResource = crate::from_slice(&resource).unwrap();
 
-			let resource_reader = Box::new(MemoryResourceReader::new(data));
+				let resource_reader: MultiResourceReader = Box::new(MemoryResourceReader::new(data));
 
-			Some((resource, resource_reader))
+				Some((resource, resource_reader))
+			})
 		}
 
-		fn query(&self, _: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
-			Err(QueryError::StorageFailure)
+		fn query(
+			&self,
+			_: Query,
+		) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+			crate::r#async::future(async { Err(QueryError::StorageFailure) })
+		}
+
+		#[cfg(debug_assertions)]
+		fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+			crate::r#async::future(async move { Ok(self.traces.lock().get(id.as_ref()).cloned().unwrap_or_default()) })
 		}
 	}
 
 	impl WriteStorageBackend for TestStorageBackend {
 		fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
-			self.0.lock().remove(id.as_ref());
+			self.resources.lock().remove(id.as_ref());
+			#[cfg(debug_assertions)]
+			self.traces.lock().remove(id.as_ref());
 			Ok(())
 		}
 
@@ -279,9 +316,22 @@ pub mod tests {
 			let container = resource.into_serializable(hash, size);
 			let serialized_container = crate::to_vec_in(&container, allocator).unwrap();
 
-			self.0.lock().insert(id, (serialized_container.to_vec().into(), data.into()));
+			self.resources
+				.lock()
+				.insert(id, (serialized_container.to_vec().into(), data.into()));
 
 			Ok(container)
+		}
+
+		#[cfg(debug_assertions)]
+		fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
+			let mut traces = self.traces.lock();
+			if items.is_empty() {
+				traces.remove(id.as_ref());
+			} else {
+				traces.insert(id.to_string(), items.to_vec());
+			}
+			Ok(())
 		}
 
 		fn sync<'s, 'a>(&'s self, _: &'a dyn ReadStorageBackend) -> () {

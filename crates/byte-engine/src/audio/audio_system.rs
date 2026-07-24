@@ -1,48 +1,32 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use ahi::{
 	self,
 	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
 	Device,
 };
-use resource_management::{
-	resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut},
-	resources::audio::Audio,
-	types::BitDepths,
-	Reference,
-};
-use smallvec::SmallVec;
-use utils::Box as Boxy;
 
 use super::{
-	sound::{self, Sound},
-	synthesizer::Synthesizer,
+	generator::{Generator, PlaybackSettings, PlaybackState},
+	graph::{AudioGraphRenderPlan, AudioProcessors, SamplePlaybackMode},
+	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
 };
-use crate::{
-	audio::{
-		emitter::Emitter,
-		generator::{Generator, PlaybackSettings, PlaybackState},
-		round_robin::RoundRobin,
-	},
-	core::{listener::Listener, Entity, EntityHandle},
-	space::Positionable,
-};
+use crate::core::{factory::Handle, Entity};
 
 /// The [`AudioSystem`] trait defines the playback boundary used by application
 /// audio workers.
 ///
 /// Use [`DefaultAudioSystem`] for hardware output. Alternative implementations
 /// can target offline rendering or tests while preserving generator handling.
+/// After construction, add generators or loaded audio sources, then call
+/// [`Self::render_available`] from the audio worker until no period is ready.
 pub trait AudioSystem: Entity {
-	/// Plays an audio asset.
-	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
-
-	/// Renders audio indefinitely.
+	/// Renders audio until the audio system stops.
 	fn render(&mut self) {
 		while self.render_available() {}
 	}
 
-	/// Processes audio data and sends it to the audio hardware interface.
+	/// Processes audio data and submits it to the audio hardware interface.
 	fn render_available(&mut self) -> bool;
 }
 
@@ -51,93 +35,45 @@ pub trait AudioSystem: Entity {
 ///
 /// It is normally created by
 /// [`crate::application::graphics::setup_default_audio`] rather than directly.
+/// After setup, publish a [`Generator`] through
+/// [`crate::application::graphics::GraphicsApplication::generator_factory`] so
+/// the worker can mix it into the hardware stream, or publish an
+/// [`super::graph::AudioGraph`] through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub struct DefaultAudioSystem {
 	device: Device,
-	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
 	sources: Vec<Source>,
-	channels: HashMap<String, Channel>,
+	audio_graphs: Vec<AudioGraphPlayer>,
 	params: HardwareParameters,
 	mix_buffer: Vec<f32>,
 	last_reported_underrun_count: usize,
+	sample_cache_prune_requested: bool,
 }
 
 impl DefaultAudioSystem {
+	/// Opens the default audio device and preallocates its source and mix storage.
+	///
+	/// Applications normally call
+	/// [`crate::application::graphics::setup_default_audio`] instead. Custom audio
+	/// workers can add sources next and repeatedly call [`AudioSystem::render_available`].
 	pub fn try_new() -> Result<Self, &'static str> {
-		let mut channels = HashMap::with_capacity(16);
-
 		let params = HardwareParameters::new().channels(1);
 
 		let device = Device::new(params).map_err(|e| {
 			log::error!("Failed to create audio device: {}", e);
 			"Failed to create audio device. Audio parameters may be invalid or device may not exist or be available."
 		})?;
-
-		channels.insert(
-			"master".to_string(),
-			Channel {
-				samples: vec![0; device.get_period_size() * 2].into_boxed_slice(),
-				gain: 1f32,
-			},
-		);
+		let period_size = device.get_period_size();
 
 		Ok(Self {
 			device,
-			audio_resources: HashMap::with_capacity(1024),
 			sources: Vec::with_capacity(64),
-			channels,
+			audio_graphs: Vec::with_capacity(AUDIO_GRAPH_CAPACITY),
 			params,
-			mix_buffer: Vec::new(),
+			mix_buffer: vec![0.0; period_size],
 			last_reported_underrun_count: 0,
+			sample_cache_prune_requested: false,
 		})
-	}
-
-	// fn load_asset<'a>(&'a mut self, audio_asset_url: &'a str) {
-	// 	if let Some(a) = self.audio_resources.get(audio_asset_url) {
-	// 		Some(a);
-	// 	} else {
-	// 		let resource_manager = self.resource_manager.read();
-	// 		let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
-	// 		let load_target = audio_resource_reference.load(ReadTargetsMut::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
-
-	// 		let audio_resource = audio_resource_reference.resource_mut();
-
-	// 		let bytes = match load_target.buffer() {
-	// 			Some(b) => {
-	// 				match audio_resource.bit_depth {
-	// 					BitDepths::Eight => {
-	// 						if b.len() % 1 != 0 {
-	// 							return; // Invalid length for 8-bit audio.
-	// 						}
-
-	// 						b.iter().map(|&byte| (byte as i8) as i16 * 256).collect::<Vec<_>>()
-	// 					},
-	// 					BitDepths::Sixteen => {
-	// 						if b.len() % 2 != 0 {
-	// 							return; // Invalid length for 16-bit audio.
-	// 						}
-
-	// 						b.chunks_exact(2).map(|chunk| {
-	// 							let mut bytes = [0; 2];
-	// 							bytes.copy_from_slice(chunk);
-	// 							i16::from_le_bytes(bytes)
-	// 						}).collect::<Vec<_>>()
-	// 					},
-	// 					_ => {
-	// 						return; // Unsupported bit depth.
-	// 					}
-	// 				}
-	// 			},
-	// 			None => return,
-	// 		};
-
-	// 		self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, bytes));
-
-	// 		Some(self.audio_resources.get(audio_asset_url).unwrap());
-	// 	}
-	// }
-
-	fn render_sources(&self, buffer: &mut [f32]) {
-		render_sources(&self.audio_resources, &self.sources, self.params.get_sample_rate(), buffer);
 	}
 
 	/// Reports newly observed underruns since the previous render call.
@@ -158,129 +94,136 @@ impl DefaultAudioSystem {
 	}
 
 	pub fn create_generator(&mut self, generator: Arc<dyn Generator>) {
-		let idx = self.sources.len();
 		self.sources.push(Source {
 			generator,
 			current_sample: 0,
-			gain: 1f32,
 		});
+	}
+
+	/// Adds a loaded graph without allocating audio-thread container storage.
+	pub(crate) fn create_audio_graph(
+		&mut self,
+		handle: Handle,
+		sample: Arc<LoadedAudioSample>,
+		render_plan: AudioGraphRenderPlan,
+	) {
+		self.remove_audio_graph(handle);
+		if self.audio_graphs.len() >= AUDIO_GRAPH_CAPACITY {
+			log::warn!(
+				"Audio graph was not created. The audio worker already has the maximum of {} active graphs.",
+				AUDIO_GRAPH_CAPACITY
+			);
+			self.sample_cache_prune_requested = true;
+			return;
+		}
+		self.audio_graphs.push(AudioGraphPlayer::new(handle, sample, render_plan));
+	}
+
+	/// Removes a resource-backed graph at the next period boundary.
+	pub(crate) fn remove_audio_graph(&mut self, handle: Handle) {
+		if let Some(index) = self.audio_graphs.iter().position(|graph| graph.handle == handle) {
+			let graph = self.audio_graphs.swap_remove(index);
+			drop(graph);
+			self.sample_cache_prune_requested = true;
+		}
+	}
+
+	pub(crate) fn audio_graph_count(&self) -> usize {
+		self.audio_graphs.len()
+	}
+
+	pub(crate) fn take_sample_cache_prune_request(&mut self) -> bool {
+		std::mem::take(&mut self.sample_cache_prune_requested)
 	}
 }
 
-fn render_sources(
-	audio_resources: &HashMap<String, (Audio, Vec<i16>)>,
-	sources: &[Source],
-	sample_rate: u32,
-	buffer: &mut [f32],
-) {
-	let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
-
+fn render_sources(sources: &[Source], sample_rate: u32, buffer: &mut [f32]) {
 	let settings = PlaybackSettings { sample_rate };
 
-	for (idx, playing_sound) in sources.iter().enumerate() {
+	for playing_sound in sources {
 		let current_sample = playing_sound.current_sample;
-		let gain = playing_sound.gain;
-
-		let play_sound = |url: &str| {
-			let (audio, audio_data) = audio_resources.get(url).unwrap();
-
-			if current_sample >= audio.sample_count {
-				return;
-			}
-
-			let current_sample = current_sample.min(audio.sample_count);
-
-			let audio_data = &audio_data[current_sample as usize..];
-
-			for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
-				*b += i16_to_f32(*s) * gain;
-			}
-		};
 
 		let state = PlaybackState { current_sample };
+		let _ = playing_sound.generator.render(settings, state, buffer);
+	}
+}
 
-		if playing_sound.generator.render(settings, state, buffer).is_none() {
-			to_destroy.push(idx);
-		}
+/// Mixes resource graphs after procedural generators so both source types use
+/// the same output buffer and clipping boundary.
+fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32]) {
+	for graph in audio_graphs {
+		graph.render(sample_rate, buffer);
 	}
 }
 
 impl Entity for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
-	fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
-		// self.load_asset(audio_asset_url);
-
-		// self.sources.push(Source { generator: Generator::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
-	}
-
 	fn render_available(&mut self) -> bool {
 		let Self {
 			device,
-			audio_resources,
 			sources,
+			audio_graphs,
 			params,
 			mix_buffer,
 			..
 		} = self;
 		let sample_rate = params.get_sample_rate();
 
-		let frames = device
-			.play(|streams| {
-				match streams {
-					Streams::MonoFloat32(buffer) => {
-						// Hardware is the same format as what we use for rendering
-						render_sources(audio_resources, sources, sample_rate, buffer);
-					}
-					Streams::Mono16Bit(buffer) => {
-						if mix_buffer.len() < buffer.len() {
-							mix_buffer.resize(buffer.len(), 0.0);
-						}
+		let frames = match device.play(|streams| match streams {
+			Streams::MonoFloat32(buffer) => {
+				buffer.fill(0.0);
+				render_sources(sources, sample_rate, buffer);
+				render_audio_graphs(audio_graphs, sample_rate, buffer);
+			}
+			Streams::Mono16Bit(buffer) => {
+				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+				mix_buffer.fill(0.0);
+				render_sources(sources, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
 
-						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-						mix_buffer.fill(0.0);
-						render_sources(audio_resources, sources, sample_rate, mix_buffer);
-
-						for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-							*destination = f32_to_i16(*sample);
-						}
-					}
-					Streams::Stereo16Bit(buffer) => {
-						if mix_buffer.len() < buffer.len() {
-							mix_buffer.resize(buffer.len(), 0.0);
-						}
-
-						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-						mix_buffer.fill(0.0);
-						render_sources(audio_resources, sources, sample_rate, mix_buffer);
-
-						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-							let sample = f32_to_i16(*sample);
-							*left = sample;
-							*right = sample;
-						}
-					}
-					Streams::StereoFloat32(buffer) => {
-						if mix_buffer.len() < buffer.len() {
-							mix_buffer.resize(buffer.len(), 0.0);
-						}
-
-						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-						mix_buffer.fill(0.0);
-						render_sources(audio_resources, sources, sample_rate, mix_buffer);
-
-						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-							*left = *sample;
-							*right = *sample;
-						}
-					}
+				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+					*destination = f32_to_i16(*sample);
 				}
-			})
-			.unwrap();
+			}
+			Streams::Stereo16Bit(buffer) => {
+				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+				mix_buffer.fill(0.0);
+				render_sources(sources, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
+
+				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+					let sample = f32_to_i16(*sample);
+					*left = sample;
+					*right = sample;
+				}
+			}
+			Streams::StereoFloat32(buffer) => {
+				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+				mix_buffer.fill(0.0);
+				render_sources(sources, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
+
+				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+					*left = *sample;
+					*right = *sample;
+				}
+			}
+		}) {
+			Ok(frames) => frames,
+			Err(error) => {
+				log::error!(
+					"Audio playback stopped. The hardware device rejected a playback period: {}",
+					error
+				);
+				return false;
+			}
+		};
 
 		self.report_new_underruns();
 
 		if frames == 0 {
+			self.device.wait_for_playback_space();
 			return true;
 		}
 
@@ -301,27 +244,357 @@ impl AudioSystem for DefaultAudioSystem {
 				!playing_sound.generator.done(settings, state)
 			});
 		}
+		let audio_graph_count = self.audio_graphs.len();
+		self.audio_graphs.retain(|graph| !graph.finished());
+		self.sample_cache_prune_requested |= self.audio_graphs.len() != audio_graph_count;
 
 		true
 	}
 }
 
-/// The `Channel` struct represents a channel in the audio system.
-struct Channel {
-	samples: Box<[i16]>,
-	gain: f32,
-}
-
+/// The `Source` struct retains one procedural generator and its output
+/// timeline.
 struct Source {
 	generator: Arc<dyn Generator>,
 	current_sample: u32,
-	gain: f32,
 }
 
+/// The `SampleNode` struct retains resampling state for one immutable loaded
+/// sample within an audio graph.
+struct SampleNode {
+	sample: Arc<LoadedAudioSample>,
+	playback_mode: SamplePlaybackMode,
+	source_frame: u64,
+	rate_phase: u64,
+	finished: bool,
+}
+
+impl SampleNode {
+	fn new(sample: Arc<LoadedAudioSample>, playback_mode: SamplePlaybackMode) -> Self {
+		Self {
+			sample,
+			playback_mode,
+			source_frame: 0,
+			rate_phase: 0,
+			finished: false,
+		}
+	}
+
+	/// Produces one output sample with exact rational phase accumulation. Linear
+	/// interpolation wraps at a loop boundary and clamps at a one-shot boundary.
+	fn next(&mut self, output_sample_rate: u32) -> Option<f32> {
+		if self.finished {
+			return None;
+		}
+
+		let frame_count = self.sample.frame_count() as u64;
+		let output_sample_rate = u64::from(output_sample_rate);
+		let source_sample_rate = u64::from(self.sample.sample_rate());
+		if self.source_frame >= frame_count {
+			self.finished = true;
+			return None;
+		}
+
+		let current_frame = self.source_frame as usize;
+		let next_frame = if self.source_frame + 1 < frame_count {
+			current_frame + 1
+		} else if self.playback_mode == SamplePlaybackMode::Loop {
+			0
+		} else {
+			current_frame
+		};
+		let current = self.sample.mono_frame(current_frame);
+		let next = self.sample.mono_frame(next_frame);
+		let fraction = self.rate_phase as f32 / output_sample_rate as f32;
+		let output = current + (next - current) * fraction;
+
+		self.rate_phase += source_sample_rate;
+		self.source_frame += self.rate_phase / output_sample_rate;
+		self.rate_phase %= output_sample_rate;
+
+		if self.playback_mode == SamplePlaybackMode::Loop {
+			self.source_frame %= frame_count;
+		} else if self.source_frame >= frame_count {
+			self.finished = true;
+		}
+
+		Some(output)
+	}
+}
+
+/// The `AudioGraphPlayer` struct retains one loaded source and its compiled
+/// processing chain for real-time playback.
+struct AudioGraphPlayer {
+	handle: Handle,
+	sample: SampleNode,
+	processors: AudioProcessors,
+}
+
+impl AudioGraphPlayer {
+	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: AudioGraphRenderPlan) -> Self {
+		Self {
+			handle,
+			sample: SampleNode::new(sample, render_plan.playback_mode),
+			processors: render_plan.processors,
+		}
+	}
+
+	/// Renders one graph period by processing each source sample through the
+	/// precompiled scalar node chain before mixing it into the destination.
+	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
+		for destination in buffer {
+			let Some(mut sample) = self.sample.next(output_sample_rate) else {
+				break;
+			};
+			for processor in &self.processors {
+				sample = processor.process(sample);
+			}
+			*destination += sample;
+		}
+	}
+
+	fn finished(&self) -> bool {
+		self.sample.finished
+	}
+}
+
+#[cfg(test)]
 fn i16_to_f32(sample: i16) -> f32 {
 	sample as f32 / 32768.0
 }
 
 fn f32_to_i16(sample: f32) -> i16 {
 	(sample * 32768.0) as i16
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::{Arc, Mutex};
+
+	use super::{f32_to_i16, i16_to_f32, render_sources, AudioGraphPlayer, SampleNode, Source};
+	use crate::{
+		audio::{
+			generator::{Generator, PlaybackSettings, PlaybackState},
+			graph::{AudioGraphRenderPlan, AudioProcessor, SamplePlaybackMode},
+			sample_loader::LoadedAudioSample,
+		},
+		core::{factory::Factory, listener::Listener},
+	};
+
+	struct ConstantGenerator {
+		value: f32,
+		observed: Arc<Mutex<Vec<(u32, u32)>>>,
+	}
+
+	impl Generator for ConstantGenerator {
+		fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]> {
+			self.observed
+				.lock()
+				.unwrap()
+				.push((settings.sample_rate, state.current_sample));
+			for sample in buffer.iter_mut() {
+				*sample += self.value;
+			}
+			Some(buffer)
+		}
+
+		fn done(&self, _settings: PlaybackSettings, _state: PlaybackState) -> bool {
+			false
+		}
+	}
+
+	#[test]
+	fn pcm_conversion_preserves_zero_endpoints_and_monotonic_order() {
+		assert_eq!(i16_to_f32(i16::MIN), -1.0);
+		assert_eq!(i16_to_f32(0), 0.0);
+		assert!(i16_to_f32(i16::MAX) < 1.0);
+		assert_eq!(f32_to_i16(-1.0), i16::MIN);
+		assert_eq!(f32_to_i16(0.0), 0);
+		assert_eq!(f32_to_i16(1.0), i16::MAX);
+
+		let samples = [-1.0, -0.5, 0.0, 0.5, 1.0];
+		for pair in samples.windows(2) {
+			assert!(f32_to_i16(pair[0]) < f32_to_i16(pair[1]));
+		}
+	}
+
+	#[test]
+	fn render_sources_mixes_all_generators_and_forwards_timeline_state() {
+		let observed = Arc::new(Mutex::new(Vec::new()));
+		let sources = [
+			Source {
+				generator: Arc::new(ConstantGenerator {
+					value: 0.25,
+					observed: observed.clone(),
+				}),
+				current_sample: 128,
+			},
+			Source {
+				generator: Arc::new(ConstantGenerator {
+					value: -0.1,
+					observed: observed.clone(),
+				}),
+				current_sample: 256,
+			},
+		];
+		let mut buffer = [0.5; 4];
+
+		render_sources(&sources, 48_000, &mut buffer);
+		assert_eq!(buffer, [0.65; 4]);
+		assert_eq!(*observed.lock().unwrap(), [(48_000, 128), (48_000, 256)]);
+	}
+
+	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {
+		SampleNode::new(
+			Arc::new(LoadedAudioSample::from_normalized_samples(
+				source_rate,
+				1,
+				samples.to_vec().into_boxed_slice(),
+			)),
+			playback_mode,
+		)
+	}
+
+	fn render_sample_node(node: &mut SampleNode, output_sample_rate: u32, buffer: &mut [f32]) {
+		for destination in buffer {
+			let Some(sample) = node.next(output_sample_rate) else {
+				break;
+			};
+			*destination += sample;
+		}
+	}
+
+	fn graph_player(
+		samples: &[f32],
+		source_rate: u32,
+		playback_mode: SamplePlaybackMode,
+		processors: impl IntoIterator<Item = AudioProcessor>,
+	) -> AudioGraphPlayer {
+		let mut factory = Factory::new();
+		let mut listener = factory.listener();
+		let handle = factory.create(());
+		let _ = listener.read();
+		AudioGraphPlayer::new(
+			handle,
+			Arc::new(LoadedAudioSample::from_normalized_samples(
+				source_rate,
+				1,
+				samples.to_vec().into_boxed_slice(),
+			)),
+			AudioGraphRenderPlan {
+				playback_mode,
+				processors: processors.into_iter().collect(),
+			},
+		)
+	}
+
+	fn assert_samples_close(actual: &[f32], expected: &[f32]) {
+		assert_eq!(actual.len(), expected.len());
+		for (actual, expected) in actual.iter().zip(expected) {
+			assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
+		}
+	}
+
+	#[test]
+	fn looping_sample_continues_across_output_periods() {
+		let mut player = sample_node(&[0.0, 1.0, 2.0], 48_000, SamplePlaybackMode::Loop);
+		let mut first = [0.0; 2];
+		let mut second = [0.0; 5];
+
+		render_sample_node(&mut player, 48_000, &mut first);
+		render_sample_node(&mut player, 48_000, &mut second);
+
+		assert_eq!(first, [0.0, 1.0]);
+		assert_eq!(second, [2.0, 0.0, 1.0, 2.0, 0.0]);
+		assert!(!player.finished);
+	}
+
+	#[test]
+	fn one_shot_clamps_its_last_resampled_frame_then_finishes() {
+		let mut same_rate = sample_node(&[0.0, 1.0, 2.0], 48_000, SamplePlaybackMode::Once);
+		let mut same_rate_output = [0.0; 5];
+		render_sample_node(&mut same_rate, 48_000, &mut same_rate_output);
+		assert_eq!(same_rate_output, [0.0, 1.0, 2.0, 0.0, 0.0]);
+		assert!(same_rate.finished);
+
+		let mut upsampled = sample_node(&[0.0, 1.0, 2.0], 2, SamplePlaybackMode::Once);
+		let mut upsampled_output = [0.0; 6];
+		render_sample_node(&mut upsampled, 4, &mut upsampled_output);
+		assert_eq!(upsampled_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
+		assert!(upsampled.finished);
+	}
+
+	#[test]
+	fn downsampling_advances_over_intermediate_source_frames() {
+		let mut player = sample_node(&[0.0, 1.0, 2.0, 3.0, 4.0], 4, SamplePlaybackMode::Once);
+		let mut output = [0.0; 3];
+
+		render_sample_node(&mut player, 2, &mut output);
+
+		assert_eq!(output, [0.0, 2.0, 4.0]);
+		assert!(player.finished);
+	}
+
+	#[test]
+	fn rational_resampling_is_stable_across_period_boundaries() {
+		let expected = [0.0, 6.666_666_5, 13.333_333, 20.0, 6.666_666_5, 3.333_333_3, 10.0, 16.666_666];
+		let mut split = sample_node(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop);
+		let mut first = [0.0; 3];
+		let mut second = [0.0; 5];
+		render_sample_node(&mut split, 3, &mut first);
+		render_sample_node(&mut split, 3, &mut second);
+
+		let mut contiguous = sample_node(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop);
+		let mut whole = [0.0; 8];
+		render_sample_node(&mut contiguous, 3, &mut whole);
+
+		assert_samples_close(&first, &expected[..3]);
+		assert_samples_close(&second, &expected[3..]);
+		assert_samples_close(&whole, &expected);
+		assert_eq!(split.source_frame, contiguous.source_frame);
+		assert_eq!(split.rate_phase, contiguous.rate_phase);
+	}
+
+	#[test]
+	fn rational_phase_has_no_long_term_44100_to_48000_drift() {
+		let samples = vec![0.0; 50_000];
+		let mut player = sample_node(&samples, 44_100, SamplePlaybackMode::Once);
+		let mut output = vec![0.0; 48_000];
+
+		render_sample_node(&mut player, 48_000, &mut output);
+
+		assert_eq!(player.source_frame, 44_100);
+		assert_eq!(player.rate_phase, 0);
+		assert!(!player.finished);
+	}
+
+	#[test]
+	fn gain_node_scales_a_looping_sample_after_the_source_node() {
+		let mut graph = graph_player(
+			&[0.0, 1.0, 2.0],
+			48_000,
+			SamplePlaybackMode::Loop,
+			[AudioProcessor::Gain(0.5)],
+		);
+		let mut first = [0.0; 2];
+		let mut second = [0.0; 5];
+
+		graph.render(48_000, &mut first);
+		graph.render(48_000, &mut second);
+
+		assert_eq!(first, [0.0, 0.5]);
+		assert_eq!(second, [1.0, 0.0, 0.5, 1.0, 0.0]);
+		assert!(!graph.finished());
+	}
+
+	#[test]
+	fn sample_node_has_unity_output_without_a_gain_node() {
+		let mut graph = graph_player(&[0.25, -0.5], 48_000, SamplePlaybackMode::Once, std::iter::empty());
+		let mut output = [0.0; 2];
+
+		graph.render(48_000, &mut output);
+
+		assert_eq!(output, [0.25, -0.5]);
+		assert!(graph.finished());
+	}
 }

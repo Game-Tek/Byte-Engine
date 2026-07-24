@@ -7,11 +7,17 @@ use crate::{core::Entity, network::server::udp};
 ///
 /// Call [`Server::update`] from the application loop to process connection
 /// events. Transport details are provided by the private UDP adapter.
+/// Create the server with [`Self::new`], then call [`Self::update`] once per
+/// application tick.
 pub struct Server {
 	server: udp::Server,
 }
 
 impl Server {
+	/// Binds the default BETP server endpoint.
+	///
+	/// Next, call [`Self::update`] from every application tick so the server can
+	/// accept connections, detect timeouts, and deliver events.
 	pub fn new() -> Result<Server, String> {
 		Ok(Server {
 			server: udp::Server::new("0.0.0.0:6669").map_err(|_| "Failed to create BETP server".to_string())?,

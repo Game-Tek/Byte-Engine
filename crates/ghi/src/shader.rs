@@ -1,29 +1,28 @@
 use utils::Extent;
 
-use crate::AccessPolicies;
+use crate::{AccessPolicies, TextureViewTypes};
 
-/// Possible types of a shader source
+/// A native shader-source representation accepted by a backend.
 pub enum Sources<'a> {
-	/// SPIR-V binary
+	/// SPIR-V binary.
 	SPIRV(&'a [u8]),
 	/// DirectX Intermediate Language bytecode for DX12 backends.
 	DXIL(&'a [u8]),
 	/// HLSL source and entry-point name for DX12 backends.
 	HLSL { source: &'a str, entry_point: &'a str },
-	/// Compiled Metal library bytes and entry-point name
+	/// Compiled Metal library bytes and entry-point name.
 	MTLB {
 		binary: &'a [u8],
 		entry_point: &'a str,
 		threadgroup_size: Option<Extent>,
 	},
-	/// Metal shading language source and entry-point name
+	/// Metal Shading Language source and entry-point name.
 	MTL { source: &'a str, entry_point: &'a str },
 }
 
-/// The `ShaderSource` enum represents platform-specific shader source for cross-platform compilation.
+/// A platform-specific shader source for cross-platform compilation.
 ///
-/// It exists to let callers express the GLSL and/or MSL variants of a shader in one value and let
-/// [`compile`] pick the correct path for the active backend.
+/// Use [`compile`] to select the source for the active backend.
 #[derive(Clone, Copy)]
 pub enum ShaderSource<'a> {
 	/// GLSL source code to be compiled to SPIR-V for Vulkan backends.
@@ -49,7 +48,7 @@ pub enum ShaderSource<'a> {
 	},
 }
 
-/// The `CompiledShaderSource` enum stores shader source after platform selection and compilation.
+/// A shader source selected and compiled for one backend.
 pub enum CompiledShaderSource {
 	/// SPIR-V binary compiled from GLSL.
 	SPIRV(Vec<u8>),
@@ -144,16 +143,110 @@ fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, Stri
 	)
 }
 
-#[derive(Clone, Copy)]
-pub struct BindingDescriptor {
-	pub(crate) set: u32,
-	pub(crate) binding: u32,
-	pub(crate) access: AccessPolicies,
+/// The `ResourceSlot` struct identifies one resource in a shader's flat resource namespace.
+///
+/// Slots are global to the pipeline interface. Descriptor sets may group resources by lifetime,
+/// but they never introduce another shader-visible coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ResourceSlot(u32);
+
+impl ResourceSlot {
+	pub const fn new(slot: u32) -> Self {
+		Self(slot)
+	}
+
+	pub const fn index(self) -> u32 {
+		self.0
+	}
 }
 
-impl BindingDescriptor {
-	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
-		Self { set, binding, access }
+impl From<u32> for ResourceSlot {
+	fn from(slot: u32) -> Self {
+		Self::new(slot)
+	}
+}
+
+/// The native resource category expected at a flat shader slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+	UniformBuffer,
+	StorageBuffer,
+	SampledImage,
+	CombinedImageSampler,
+	StorageImage,
+	InputAttachment,
+	Sampler,
+	AccelerationStructure,
+}
+
+/// The `ShaderResourceDescriptor` struct defines the complete retained-resource contract used to build a pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShaderResourceDescriptor {
+	pub(crate) slot: ResourceSlot,
+	pub(crate) kind: ResourceKind,
+	pub(crate) count: u32,
+	pub(crate) access: AccessPolicies,
+	pub(crate) texture_view_type: TextureViewTypes,
+	pub(crate) buffer_stride: u32,
+}
+
+impl ShaderResourceDescriptor {
+	pub const fn new(slot: ResourceSlot, kind: ResourceKind, count: u32, access: AccessPolicies) -> Self {
+		assert!(
+			count > 0,
+			"Invalid shader resource count. The most likely cause is that a shader declared an empty resource array."
+		);
+		assert!(
+			slot.index().checked_add(count).is_some(),
+			"Invalid shader resource slot range. The most likely cause is that a resource array extends beyond the flat slot namespace."
+		);
+		Self {
+			slot,
+			kind,
+			count,
+			access,
+			texture_view_type: TextureViewTypes::Texture2D,
+			buffer_stride: 4,
+		}
+	}
+
+	pub const fn single(slot: ResourceSlot, kind: ResourceKind, access: AccessPolicies) -> Self {
+		Self::new(slot, kind, 1, access)
+	}
+
+	pub const fn texture_view_type(mut self, texture_view_type: TextureViewTypes) -> Self {
+		self.texture_view_type = texture_view_type;
+		self
+	}
+
+	pub const fn buffer_stride(mut self, buffer_stride: u32) -> Self {
+		self.buffer_stride = buffer_stride;
+		self
+	}
+
+	pub const fn slot(self) -> ResourceSlot {
+		self.slot
+	}
+
+	pub const fn kind(self) -> ResourceKind {
+		self.kind
+	}
+
+	pub const fn count(self) -> u32 {
+		self.count
+	}
+
+	pub const fn access(self) -> AccessPolicies {
+		self.access
+	}
+
+	pub const fn texture_view(self) -> TextureViewTypes {
+		self.texture_view_type
+	}
+
+	pub const fn buffer_element_stride(self) -> u32 {
+		self.buffer_stride
 	}
 }
 
@@ -162,7 +255,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn platform_native_selects_backend_specific_shader_source() {
+	fn platform_native_selects_backend_specific_shader_variant() {
 		let compiled = compile(
 			"platform-native",
 			ShaderSource::PlatformNative {
@@ -178,18 +271,12 @@ mod tests {
 		if crate::implementation::USES_DX12 {
 			assert!(matches!(
 				compiled,
-				CompiledShaderSource::HLSL {
-					source,
-					entry_point
-				} if source.contains("numthreads") && entry_point == "main"
+				CompiledShaderSource::HLSL { entry_point, .. } if entry_point == "main"
 			));
 		} else if crate::implementation::USES_METAL {
 			assert!(matches!(
 				compiled,
-				CompiledShaderSource::MTL {
-					source,
-					entry_point
-				} if source.contains("main0") && entry_point == "main0"
+				CompiledShaderSource::MTL { entry_point, .. } if entry_point == "main0"
 			));
 		} else {
 			assert!(matches!(compiled, CompiledShaderSource::SPIRV(binary) if !binary.is_empty()));

@@ -5,15 +5,18 @@ use crate::{
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
-	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	window, AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle,
+	BufferHandle, CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle,
+	ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
-/// Its purpose is to be a "ownership context" that delineates the lifetime of GPU resources.
+/// Implementations use the context lifetime to bound the lifetime of owned GPU resources.
+///
+/// Create resources through [`ContextCreate`], obtain a command
+/// buffer with [`Self::command_buffer`], then submit recorded work through a
+/// queue returned by [`Self::queue`] or [`Self::queue_reference`].
 pub trait Context: ContextCreate {
 	type Queue: crate::queue::Queue;
 	type QueueReference<'a>: crate::queue::Queue
@@ -27,10 +30,9 @@ pub trait Context: ContextCreate {
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
 
-	/// Returns whether the GPU device supports BC block-compressed texture
-	/// formats (BC5, BC7). On Apple Silicon this is always true; on Intel
-	/// Macs and iOS Simulator it may be false. Callers should check this
-	/// before creating any BC-compressed images or samplers.
+	/// Returns whether the GPU supports BC5 and BC7 block-compressed textures.
+	///
+	/// Check this value before you create BC-compressed images or samplers.
 	fn supports_bc_texture_compression(&self) -> bool;
 
 	/// Returns an owned queue wrapper that exposes queue-local command submission.
@@ -42,9 +44,9 @@ pub trait Context: ContextCreate {
 	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
 	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;
 
-	/// Updates the number of maximum frames in flight.
-	/// This operation creates extra resources to support the new number of frames in flight.
-	/// > THIS IS AN EXPENSIVE OPERATION
+	/// Changes the maximum number of frames in flight.
+	///
+	/// This expensive operation can create more frame resources.
 	fn set_frames_in_flight(&mut self, frames: u8);
 
 	/// Returns a device accessible address for the provided buffer handle.
@@ -65,12 +67,15 @@ pub trait Context: ContextCreate {
 	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: ImageHandle);
 
-	/// Enables writing to a texture and queues a copy operation for it.
-	/// Texture must still be synchronized by calling `sync` on a command buffer.
+	/// Enables writes to a texture and queues a copy operation.
+	///
+	/// Call `sync` on a command buffer before the GPU uses the texture.
 	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
-	/// Writes descriptor set updates.
-	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
+	/// Updates retained descriptor-set state before command recording.
+	///
+	/// Rendering only binds complete retained sets; resource overrides are not recorded per draw.
+	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
 	/// Writes one top-level acceleration-structure instance into an instance buffer.
 	fn write_instance(
@@ -102,8 +107,8 @@ pub trait Context: ContextCreate {
 		uses: Uses,
 	) -> SwapchainHandle;
 
-	/// Returns CPU-visible bytes previously copied from an image.
-	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
+	/// Returns CPU-visible bytes for an image synchronized by `transfer_textures`.
+	fn get_image_data(&mut self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
 	/// Resizes a dynamic buffer to the specified size.
 	fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
@@ -138,50 +143,25 @@ pub trait ContextCreate {
 		vertex_layout: &[VertexElement],
 	) -> MeshHandle;
 
-	/// Creates a shader.
-	/// # Arguments
-	/// * `name` - The name of the shader.
-	/// * `shader_source_type` - The type of the shader source.
-	/// * `stage` - The stage of the shader.
-	/// * `shader_binding_descriptors` - The binding descriptors of the shader.
-	/// # Returns
-	/// The handle of the shader.
+	/// Creates a shader and returns its handle.
+	///
 	/// # Errors
-	/// Returns an error if the shader source was GLSL source code and could not be compiled.
-	/// Returns an error if the shader source was SPIR-V binary and could not aligned to 4 bytes.
+	///
+	/// Returns an error when GLSL compilation fails or SPIR-V input is not aligned
+	/// to four bytes.
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
-	/// Creates a reusable descriptor-set template from binding descriptions.
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[DescriptorSetBindingTemplate],
-	) -> DescriptorSetTemplateHandle;
-
-	/// Creates a descriptor set from a descriptor-set template.
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
-	) -> DescriptorSetHandle;
-
-	/// ```rust,ignore
-	///	let views_data_binding = device.create_descriptor_binding(
-	///		descriptor_set,
-	///		ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
-	/// );
-	/// ```
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: DescriptorSetHandle,
-		binding_constructor: BindingConstructor,
-	) -> DescriptorSetBindingHandle;
+	/// Creates an empty retained descriptor set.
+	///
+	/// The set is a lifetime/update grouping only. Its shader-visible slots are established by
+	/// [`Context::write`] calls and validated against the active pipeline when it is bound.
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> DescriptorSetHandle;
 
 	/// Creates a graphics/rasterization pipeline from a builder.
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle;
@@ -208,7 +188,7 @@ pub trait ContextCreate {
 
 	/// Creates an image sampler from a builder.
 	///
-	/// Sampler builders are limited on multiple devices so you are encouraged to reuse them.
+	/// Devices can limit their sampler count. Reuse samplers when possible.
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
 
 	/// Creates a buffer that stores top-level acceleration-structure instances.

@@ -9,6 +9,11 @@
 ///
 /// Prefer the setup helpers in [`crate::application::graphics`] unless building
 /// a custom headed runtime.
+/// For custom composition, create the renderer, call [`Self::set_resource_manager`],
+/// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
+/// windows and cameras before calling [`Self::prepare`] each frame.
+/// See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
+/// before composing a custom render system, domain, or model.
 pub struct Renderer {
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,
@@ -21,20 +26,24 @@ pub struct Renderer {
 
 	frame_queue_depth: usize,
 
-	/// A list of display windows and their associated swapchains.
+	/// Display windows and their swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
-	/// A list of sink indices and their associated camera handles.
+	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
-	/// A list of cameras and their associated handles.
+	/// Cameras and their stable handles.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
+	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
 
-	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
+	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
+	configuration: ConfigurationPort,
+	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
+	render_pass_states: HashMap<String, RenderPassState>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
@@ -50,16 +59,20 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	/// Creates a new renderer. Accepts a paramters interface.
+	/// Creates a renderer from application configuration parameters.
 	///
-	/// # Paramters
+	/// # Parameters
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+	/// - `render.debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `render.debug`.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
-	pub fn new(parameters: &dyn Parameters) -> Self {
+	///
+	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
+	/// render passes that load resources.
+	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Self {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -80,6 +93,13 @@ impl Renderer {
 			settings
 		};
 
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.labels") {
+			settings.debug_labels(param.as_bool_simple())
+		} else {
+			let validation = settings.validation;
+			settings.debug_labels(validation)
+		};
+
 		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
 			settings.mesh_shading(param.as_bool_simple())
 		} else {
@@ -94,6 +114,7 @@ impl Renderer {
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
+			.debug_labels(settings.debug_labels)
 			.debug_log_function(|message| {
 				let backtrace = std::backtrace::Backtrace::force_capture().to_string();
 				let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -123,9 +144,14 @@ impl Renderer {
 			Ok(instance) => instance,
 			Err(error) if settings.validation => {
 				log::warn!(
-					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled."
+					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled. The most likely cause is missing or unsupported platform graphics tooling. See {}.",
+					crate::online_docs_url("use/setup/environment")
 				);
-				features = features.validation(false).gpu_validation(false).api_dump(false);
+				features = features
+					.validation(false)
+					.gpu_validation(false)
+					.api_dump(false)
+					.debug_labels(false);
 				ghi::implementation::Instance::new(features).unwrap()
 			}
 			Err(error) => panic!("Failed to create GHI instance: {error}"),
@@ -175,12 +201,16 @@ impl Renderer {
 			cameras: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
+			resource_manager: None,
 
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 			pending_swapchain_captures: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
+			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
+			pending_configuration: VecDeque::new(),
+			render_pass_states: HashMap::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
@@ -194,6 +224,24 @@ impl Renderer {
 		}
 	}
 
+	/// Supplies the externally owned resource manager used by render passes to resolve baked shaders.
+	///
+	/// The renderer retains a weak reference so it does not extend application-owned resource lifetimes.
+	/// Debug asset management is installed through the resource manager's one-time initialization seam.
+	/// The owner must keep `resource_manager` alive for as long as render passes may load resources.
+	/// Connects the renderer to the resource manager used by pipelines and passes.
+	///
+	/// Next, call [`Self::add_pipeline_manager`] and register sink-local render
+	/// passes before creating windows.
+	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
+		self.resource_manager = Some(resource_manager.weak());
+	}
+
+	/// Registers a scene pipeline manager with the renderer.
+	///
+	/// Next, add post-scene passes with
+	/// [`Self::add_post_scene_render_pass_for_all_sinks`] or create a window with
+	/// [`Self::create_window`].
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
 		{
@@ -207,7 +255,14 @@ impl Renderer {
 					continue;
 				}
 
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					rpb = rpb.with_shader_resources(resource_manager);
+				}
 
 				pipeline_manager.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
@@ -234,13 +289,20 @@ impl Renderer {
 			let Renderer {
 				context,
 				render_targets,
+				resource_manager,
 				pipeline_managers,
 				pipeline_manager_resources_by_sink,
 				..
 			} = self;
 
 			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
+				let resource_manager = resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(context, render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					rpb = rpb.with_shader_resources(resource_manager);
+				}
 
 				sm.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
@@ -268,8 +330,28 @@ impl Renderer {
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
 		let render_pass_id = self.render_passes.len();
-		self.render_passes.push(render_pass);
+		self.render_passes
+			.push(render_pass_harness_with_state(render_pass, &self.render_pass_states));
 		self.render_passes_by_sink.push((render_pass_id, sink_id));
+	}
+
+	/// Changes the state of every sink-local render pass with the requested stable name.
+	///
+	/// Returns the number of updated instances. A return value of `0` means that no registered render pass uses
+	/// `name`. Pass names come from [`RenderPass::name`].
+	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
+		self.render_pass_states.insert(name.to_string(), state);
+		set_render_pass_state_by_name(&mut self.render_passes, name, state)
+	}
+
+	/// Applies queued render-pass configuration after passes exist and before they prepare frame work.
+	fn apply_configuration(&mut self) {
+		apply_render_pass_configuration(
+			&self.configuration,
+			&mut self.pending_configuration,
+			&mut self.render_pass_states,
+			&mut self.render_passes,
+		);
 	}
 
 	/// Registers a render pass factory that will be instantiated for every current and future sink.
@@ -283,8 +365,15 @@ impl Renderer {
 		for sink_id in sink_ids {
 			let render_pass = {
 				let swapchain = self.windows[sink_id].1;
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder =
 					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
+				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -302,8 +391,15 @@ impl Renderer {
 
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder =
 					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
+				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -337,9 +433,10 @@ impl Renderer {
 		});
 	}
 
-	/// This function prepares a frame by invoking multiple render passes.
-	/// If no swapchains are available no rendering/execution will be performed.
-	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
+	/// Prepares a frame by invoking the configured render passes.
+	///
+	/// The renderer skips execution when no swapchain is available or when any
+	/// swapchain surface has a zero-sized dimension.
 	pub fn prepare(
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
@@ -359,6 +456,7 @@ impl Renderer {
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
 		}
+		self.apply_configuration();
 
 		self.context.start_frame_capture();
 
@@ -477,7 +575,7 @@ impl Renderer {
 
 					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<RenderPassReturn<'_>>); 16]> = {
+					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, SmallVec<[RenderPassReturn<'_>; 16]>); 16]> = {
 						let span = debug_span!("Renderer::prepare_pipeline_managers");
 						let _enter = span.enter();
 						pipeline_managers
@@ -583,6 +681,10 @@ impl Renderer {
 		&mut self.context
 	}
 
+	/// Creates the swapchain and sink state for a window.
+	///
+	/// Next, create a camera with [`Self::create_camera`] and associate it with the
+	/// sink through the application or world integration.
 	pub fn create_window(&mut self, window: Window) {
 		let name = window.name();
 		let extent = window.extent();
@@ -629,7 +731,10 @@ impl Renderer {
 				}
 			}
 			Err(msg) => {
-				log::error!("Failed to create GHI window: {}", msg);
+				log::error!(
+					"Failed to create GHI window: {msg}. The most likely cause is missing platform graphics support or an incomplete environment setup. See {}.",
+					crate::online_docs_url("use/setup/environment")
+				);
 			}
 		}
 	}
@@ -653,7 +758,8 @@ struct Attachment {
 	image: ghi::BaseImageHandle,
 }
 
-/// The `SwapchainCapture` struct exists to defer one swapchain-to-buffer capture request until the next frame.
+/// The `SwapchainCapture` struct defers one swapchain-to-buffer capture until the
+/// next frame.
 #[derive(Clone, Copy)]
 struct SwapchainCapture {
 	sink_id: SinkId,
@@ -663,20 +769,28 @@ struct SwapchainCapture {
 	destination_bytes_per_image: usize,
 }
 
-/// This struct holds the settings to configure a `Renderer` during it's creation.
+/// The `Settings` struct configures a [`Renderer`] during creation.
 pub struct Settings {
-	/// Controls whether validation layers will be enabled or not on the GHI context.
+	/// Controls whether the GHI context enables validation layers.
 	validation: bool,
-	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
+	/// Controls whether the renderer logs parameters sent to the underlying graphics API.
+	///
+	/// This option requires `validation`.
 	api_dump: bool,
-	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
+	/// Controls whether the graphics API performs additional validation, including
+	/// GPU validation.
+	///
+	/// This option can be expensive and requires `validation`.
 	extended_validation: bool,
-	/// Controls whether to enable or not mesh shading on the GHI context.
+	/// Controls whether graphics API object labels and command debug groups are emitted.
+	debug_labels: bool,
+	/// Controls whether the GHI context enables mesh shading.
 	mesh_shading: bool,
 }
 
 impl Settings {
-	/// Creates a new `Settings` struct.
+	/// Creates renderer settings with the engine defaults.
+	///
 	/// - `validation` is true by default in debug builds and false in release.
 	/// - `api_dump` is false by default.
 	/// - `extended_validation` is false by default.
@@ -685,6 +799,7 @@ impl Settings {
 			validation: cfg!(debug_assertions),
 			api_dump: false,
 			extended_validation: false,
+			debug_labels: cfg!(debug_assertions),
 			mesh_shading: true,
 		}
 	}
@@ -701,6 +816,11 @@ impl Settings {
 
 	pub fn extended_validation(mut self, value: bool) -> Self {
 		self.extended_validation = value;
+		self
+	}
+
+	pub fn debug_labels(mut self, value: bool) -> Self {
+		self.debug_labels = value;
 		self
 	}
 
@@ -739,8 +859,7 @@ impl RenderTargets {
 		}
 	}
 
-	/// Inserts a new render target image, associated to a sink index.
-	/// Returns the index of the image in the internal storage.
+	/// Inserts a render-target image for a sink and returns its storage index.
 	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
 		if self.get_image_index(&name, sink_id).is_some() {
 			panic!(
@@ -796,7 +915,7 @@ impl RenderTargets {
 		self.get_image_index(name, sink_id).and_then(|index| self.images.get(index))
 	}
 
-	pub fn get_attachment_infos(&self, sink_id: usize) -> Vec<ghi::AttachmentInformation> {
+	pub fn get_attachment_infos(&self, sink_id: usize) -> SmallVec<[ghi::AttachmentInformation; 8]> {
 		let attachments = self
 			.by_sink_index
 			.iter()
@@ -829,13 +948,17 @@ impl RenderTargets {
 		&self,
 		sink_id: usize,
 		resources: &[(String, ghi::AccessPolicies)],
-	) -> Vec<ghi::AttachmentInformation> {
-		let mut accesses_by_name = HashMap::new();
+	) -> SmallVec<[ghi::AttachmentInformation; 8]> {
+		let mut accesses_by_name = SmallVec::<[(&str, ghi::AccessPolicies); 8]>::new();
 		for (name, access) in resources {
-			accesses_by_name
-				.entry(name.as_str())
-				.and_modify(|existing| *existing |= *access)
-				.or_insert(*access);
+			if let Some((_, existing)) = accesses_by_name
+				.iter_mut()
+				.find(|(existing_name, _)| *existing_name == name.as_str())
+			{
+				*existing |= *access;
+			} else {
+				accesses_by_name.push((name.as_str(), *access));
+			}
 		}
 
 		accesses_by_name
@@ -896,10 +1019,231 @@ impl RenderTargets {
 	}
 }
 
+/// Updates every sink-local instance because one render-pass factory may create the same named pass for many sinks.
+fn set_render_pass_state_by_name(render_passes: &mut [RenderPassHarness], name: &str, state: RenderPassState) -> usize {
+	let mut updated = 0;
+	for render_pass in render_passes {
+		if render_pass.name() == name {
+			render_pass.set_state(state);
+			updated += 1;
+		}
+	}
+	updated
+}
+
+const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
+
+/// Builds a render-pass harness with the state previously selected for its stable name.
+fn render_pass_harness_with_state(
+	render_pass: Box<dyn RenderPass>,
+	render_pass_states: &HashMap<String, RenderPassState>,
+) -> RenderPassHarness {
+	let mut harness = RenderPassHarness::new(render_pass);
+	if let Some(state) = render_pass_states.get(harness.name()) {
+		harness.set_state(*state);
+	}
+	harness
+}
+
+/// Applies valid queued states and retains updates whose named pass has not been installed yet.
+fn apply_render_pass_configuration(
+	configuration: &ConfigurationPort,
+	pending: &mut VecDeque<PendingRenderPassConfiguration>,
+	render_pass_states: &mut HashMap<String, RenderPassState>,
+	render_passes: &mut [RenderPassHarness],
+) {
+	while let Some(update) = configuration.read() {
+		match PendingRenderPassConfiguration::from_update(update) {
+			Ok(update) => pending.push_back(update),
+			Err((id, reason)) => configuration.not_set(id, reason),
+		}
+	}
+
+	// Try each retained update once per call. A pass that has not been installed yet keeps the event pending.
+	let pending_count = pending.len();
+	for _ in 0..pending_count {
+		let update = pending.pop_front().expect("pending configuration count changed");
+		let updated = set_render_pass_state_by_name(render_passes, &update.render_pass_name, update.state);
+		if updated == 0 {
+			pending.push_back(update);
+			continue;
+		}
+
+		render_pass_states.insert(update.render_pass_name.clone(), update.state);
+		configuration.set(update.event, ConfigurationValue::from(update.state.as_parameter_value()));
+	}
+}
+
+struct PendingRenderPassConfiguration {
+	event: ConfigurationEventId,
+	render_pass_name: String,
+	state: RenderPassState,
+}
+
+impl PendingRenderPassConfiguration {
+	/// Validates a generic configuration message once before retaining it for renderer application.
+	fn from_update(update: ConfigurationUpdate) -> Result<Self, (ConfigurationEventId, String)> {
+		let event = update.id();
+		let Some(render_pass_name) = update.parameter().strip_prefix(RENDER_PASS_PARAMETER_PREFIX) else {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the parameter is outside the `render.pass.` namespace."
+					.to_string(),
+			));
+		};
+		if render_pass_name.is_empty() {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the parameter does not name a render pass."
+					.to_string(),
+			));
+		}
+		let Some(value) = update.value().as_text() else {
+			return Err((
+				event,
+				"Render pass state was not set. The most likely cause is that the requested value is not text.".to_string(),
+			));
+		};
+		let state = match value {
+			"enabled" => RenderPassState::Enabled,
+			"bypassed" => RenderPassState::Bypassed,
+			_ => {
+				return Err((
+					event,
+					"Render pass state was not set. The most likely cause is that the value is neither `enabled` nor `bypassed`."
+						.to_string(),
+				));
+			}
+		};
+
+		Ok(Self {
+			event,
+			render_pass_name: render_pass_name.to_string(),
+			state,
+		})
+	}
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
+	use utils::Box;
+
 	use super::*;
+	use crate::configuration::ConfigurationUpdateState;
+
+	struct NamedRenderPass(&'static str);
+
+	impl RenderPass for NamedRenderPass {
+		fn name(&self) -> &'static str {
+			self.0
+		}
+
+		fn prepare<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+
+		fn bypass<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+	}
+
+	#[test]
+	fn render_pass_state_updates_every_sink_instance_with_the_requested_name() {
+		let mut render_passes = [
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("ui"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+		];
+
+		let updated = set_render_pass_state_by_name(&mut render_passes, "bloom", RenderPassState::Bypassed);
+
+		assert_eq!(updated, 2);
+		assert_eq!(render_passes[0].state(), RenderPassState::Bypassed);
+		assert_eq!(render_passes[1].state(), RenderPassState::Enabled);
+		assert_eq!(render_passes[2].state(), RenderPassState::Bypassed);
+		assert_eq!(
+			set_render_pass_state_by_name(&mut render_passes, "missing", RenderPassState::Enabled),
+			0
+		);
+	}
+
+	#[test]
+	fn render_configuration_sets_existing_and_future_pass_instances() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "bypassed");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
+		];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
+		assert_eq!(passes[1].state(), RenderPassState::Bypassed);
+		assert!(matches!(
+			configuration.event(event).unwrap().state(),
+			ConfigurationUpdateState::Set { value }
+				if value == &ConfigurationValue::from("bypassed")
+		));
+
+		let future = render_pass_harness_with_state(Box::new(NamedRenderPass("bloom")), &states);
+		assert_eq!(future.state(), RenderPassState::Bypassed);
+	}
+
+	#[test]
+	fn render_configuration_stays_pending_until_the_pass_exists() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "bypassed");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert_eq!(pending.len(), 1);
+		assert_eq!(
+			configuration.event(event).unwrap().state(),
+			&ConfigurationUpdateState::Pending
+		);
+
+		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		assert_eq!(pending.len(), 0);
+		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
+	}
+
+	#[test]
+	fn render_configuration_reports_an_unsupported_state() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let event = configuration.update("render.pass.bloom", "disabled");
+		let mut pending = VecDeque::new();
+		let mut states = HashMap::new();
+		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
+
+		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
+		assert!(matches!(
+			configuration.event(event).unwrap().state(),
+			ConfigurationUpdateState::NotSet { reason } if reason.contains("neither `enabled` nor `bypassed`")
+		));
+		assert_eq!(passes[0].state(), RenderPassState::Enabled);
+	}
 
 	#[test]
 	fn test_render_targets_new() {
@@ -1001,11 +1345,12 @@ mod tests {
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 
 type SinkId = usize;
-/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
+/// Identifies a render pass created by a render-pass factory.
 type RenderPassId = usize;
 type PipelineManagerId = usize;
 
 use std::{
+	collections::VecDeque,
 	io::Write,
 	ops::{Deref, DerefMut},
 	rc::Rc,
@@ -1033,9 +1378,10 @@ use utils::{
 	Extent, RGBA,
 };
 
-use super::render_pass::{RenderPass, RenderPassBuilder};
+use super::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState};
 use crate::{
 	application::parameters::Parameters,
+	configuration::{Configuration, ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::Handle,

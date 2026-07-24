@@ -1,9 +1,10 @@
-//! The `lexer` module resolves parsed BESL syntax into a linked semantic tree that later compilation stages can execute.
+//! Resolves parsed BESL syntax into a linked semantic tree for compilation.
 
 use std::hash::Hash;
 use std::{
 	cell::RefCell,
-	num::NonZeroUsize,
+	fmt::Write as _,
+	num::{NonZeroU32, NonZeroUsize},
 	ops::Deref,
 	rc::{Rc, Weak},
 };
@@ -50,6 +51,11 @@ impl NodeReference {
 
 	pub fn get_children(&self) -> Option<Vec<NodeReference>> {
 		self.borrow().get_children()
+	}
+
+	/// Returns the stable pointer identity used to deduplicate linked semantic nodes without borrowing their contents.
+	pub(crate) fn identity(&self) -> usize {
+		Rc::as_ptr(&self.0) as usize
 	}
 
 	/// Returns the main function of the program.
@@ -135,8 +141,7 @@ impl Node {
 		NodeReference(Rc::new(RefCell::new(node)))
 	}
 
-	/// Creates a root node which is the parent of all other nodes in a program.
-	/// Only one root node should exist in a program.
+	/// Creates the single root node that owns a program's other nodes.
 	pub fn root() -> Node {
 		let void = primitive_type("void");
 		let bool_t = primitive_type("bool");
@@ -147,6 +152,15 @@ impl Node {
 		let f32_t = primitive_type("f32");
 
 		let vec2u16 = record_type("vec2u16", [("x", u16_t.clone()), ("y", u16_t.clone())]);
+		let vec4u16 = record_type(
+			"vec4u16",
+			[
+				("x", u16_t.clone()),
+				("y", u16_t.clone()),
+				("z", u16_t.clone()),
+				("w", u16_t.clone()),
+			],
+		);
 		let vec2u32 = record_type("vec2u", [("x", u32_t.clone()), ("y", u32_t.clone())]);
 		let vec2i32 = record_type("vec2i", [("x", i32_t.clone()), ("y", i32_t.clone())]);
 		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
@@ -192,246 +206,224 @@ impl Node {
 		let texture_2d = primitive_type("Texture2D");
 		let texture_3d = primitive_type("Texture3D");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
-		let sample_intrinsic = builtin_intrinsic(
-			"sample",
-			vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
-			vec4f32.clone(),
-		);
-		let fetch_intrinsic = builtin_intrinsic(
-			"fetch",
-			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
-			vec4f32.clone(),
-		);
-		let fetch_u32_intrinsic = builtin_intrinsic(
-			"fetch_u32",
-			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
-			u32_t.clone(),
-		);
-		let dot_intrinsic = builtin_intrinsic(
-			"dot",
-			vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
-			f32_t.clone(),
-		);
-		let vec3_dot_intrinsic = builtin_intrinsic(
-			"dot",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			f32_t.clone(),
-		);
-		let cross_intrinsic = builtin_intrinsic(
-			"cross",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
-		let vec3_length_intrinsic = builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone());
-		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
-		let vec3_normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let scalar_max_intrinsic =
-			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
-		let scalar_min_intrinsic =
-			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
-		let vec2_max_intrinsic = builtin_intrinsic(
-			"max",
-			vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
-			vec2f32.clone(),
-		);
-		let max_intrinsic = builtin_intrinsic(
-			"max",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let scalar_clamp_intrinsic = builtin_intrinsic(
-			"clamp",
-			vec![
-				("value", f32_t.clone()),
-				("minimum", f32_t.clone()),
-				("maximum", f32_t.clone()),
-			],
-			f32_t.clone(),
-		);
-		let clamp_intrinsic = builtin_intrinsic(
-			"clamp",
-			vec![
-				("value", vec3f32.clone()),
-				("minimum", vec3f32.clone()),
-				("maximum", vec3f32.clone()),
-			],
-			vec3f32.clone(),
-		);
-		let log2_intrinsic = builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let pow_intrinsic = builtin_intrinsic(
-			"pow",
-			vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let scalar_pow_intrinsic = builtin_intrinsic(
-			"pow",
-			vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let reflect_intrinsic = builtin_intrinsic(
-			"reflect",
-			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
-			vec4f32.clone(),
-		);
-		let abs_intrinsic = builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone());
-		let vec2_abs_intrinsic = builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone());
-		let sqrt_intrinsic = builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone());
-		let exp_intrinsic = builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone());
-		let vec3_exp_intrinsic = builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let sin_intrinsic = builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone());
-		let cos_intrinsic = builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone());
-		let tan_intrinsic = builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone());
-		let round_intrinsic = builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone());
-		let fract_intrinsic = builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone());
-		let fwidth_intrinsic = builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone());
-		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
-		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
-		let f32_from_u32_intrinsic = builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone());
-		let u32_from_f32_intrinsic = builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone());
-		let smoothstep_intrinsic = builtin_intrinsic(
-			"smoothstep",
-			vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let step_intrinsic = builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone());
-		let mix_intrinsic = builtin_intrinsic(
-			"mix",
-			vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
-		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
-		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
-		let set_mesh_output_counts_intrinsic = builtin_intrinsic(
-			"set_mesh_output_counts",
-			vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
-			void.clone(),
-		);
-		let set_mesh_vertex_position_intrinsic = builtin_intrinsic(
-			"set_mesh_vertex_position",
-			vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
-			void.clone(),
-		);
-		let set_mesh_triangle_intrinsic = builtin_intrinsic(
-			"set_mesh_triangle",
-			vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
-			void.clone(),
-		);
-		let image_load_intrinsic = builtin_intrinsic(
-			"image_load",
-			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
-			vec4f32.clone(),
-		);
-		let texture_size_intrinsic = builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone());
-		let image_size_intrinsic = builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone());
-		let guard_image_bounds_intrinsic = builtin_intrinsic(
-			"guard_image_bounds",
-			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
-			void.clone(),
-		);
-		let write_intrinsic = builtin_intrinsic(
-			"write",
-			vec![
-				("image", texture_2d.clone()),
-				("coord", vec2u32.clone()),
-				("value", vec4f32.clone()),
-			],
-			void.clone(),
-		);
-		let image_atomic_or_intrinsic = builtin_intrinsic(
-			"image_atomic_or",
-			vec![
-				("image", texture_2d.clone()),
-				("coord", vec2u32.clone()),
-				("value", u32_t.clone()),
-			],
-			u32_t.clone(),
-		);
-		let texture_lod_intrinsic = builtin_intrinsic(
-			"texture_lod",
-			vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
-			vec4f32.clone(),
-		);
-		let texture_lod_3d_intrinsic = builtin_intrinsic(
-			"texture_lod",
-			vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
-			vec4f32.clone(),
-		);
+		let atomic_u32 = primitive_type("atomicu32");
 
 		let builtins = vec![
-			void,
+			void.clone(),
 			bool_t,
-			u8_t,
-			u16_t,
-			u32_t,
-			i32_t,
-			f32_t,
+			u8_t.clone(),
+			u16_t.clone(),
+			u32_t.clone(),
+			i32_t.clone(),
+			f32_t.clone(),
 			vec2u16,
-			vec2u32,
+			vec4u16,
+			vec2u32.clone(),
 			vec2i32,
-			vec2f32,
-			vec3u32,
-			vec3f32,
+			vec2f32.clone(),
+			vec3u32.clone(),
+			vec3f32.clone(),
 			vec4u32,
-			vec4f32,
+			vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
-			texture_2d,
-			texture_3d,
+			texture_2d.clone(),
+			texture_3d.clone(),
 			array_texture_2d,
-			sample_intrinsic,
-			texture_lod_intrinsic,
-			texture_lod_3d_intrinsic,
-			fetch_intrinsic,
-			fetch_u32_intrinsic,
-			dot_intrinsic,
-			vec3_dot_intrinsic,
-			cross_intrinsic,
-			length_intrinsic,
-			vec3_length_intrinsic,
-			normalize_intrinsic,
-			vec3_normalize_intrinsic,
-			scalar_max_intrinsic,
-			scalar_min_intrinsic,
-			vec2_max_intrinsic,
-			max_intrinsic,
-			scalar_clamp_intrinsic,
-			clamp_intrinsic,
-			log2_intrinsic,
-			pow_intrinsic,
-			scalar_pow_intrinsic,
-			reflect_intrinsic,
-			abs_intrinsic,
-			vec2_abs_intrinsic,
-			sqrt_intrinsic,
-			exp_intrinsic,
-			vec3_exp_intrinsic,
-			sin_intrinsic,
-			cos_intrinsic,
-			tan_intrinsic,
-			round_intrinsic,
-			fract_intrinsic,
-			fwidth_intrinsic,
-			radians_intrinsic,
-			inversesqrt_intrinsic,
-			f32_from_u32_intrinsic,
-			u32_from_f32_intrinsic,
-			smoothstep_intrinsic,
-			step_intrinsic,
-			mix_intrinsic,
-			thread_idx_intrinsic,
-			threadgroup_position_intrinsic,
-			thread_id_intrinsic,
-			set_mesh_output_counts_intrinsic,
-			set_mesh_vertex_position_intrinsic,
-			set_mesh_triangle_intrinsic,
-			image_load_intrinsic,
-			texture_size_intrinsic,
-			image_size_intrinsic,
-			guard_image_bounds_intrinsic,
-			write_intrinsic,
-			image_atomic_or_intrinsic,
+			atomic_u32.clone(),
+			builtin_intrinsic(
+				"sample",
+				vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"fetch",
+				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"fetch_u32",
+				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"cross",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone()),
+			builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone()),
+			builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone()),
+			builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic(
+				"max",
+				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
+				vec2f32.clone(),
+			),
+			builtin_intrinsic(
+				"max",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic(
+				"clamp",
+				vec![
+					("value", f32_t.clone()),
+					("minimum", f32_t.clone()),
+					("maximum", f32_t.clone()),
+				],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"clamp",
+				vec![
+					("value", vec3f32.clone()),
+					("minimum", vec3f32.clone()),
+					("maximum", vec3f32.clone()),
+				],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic(
+				"pow",
+				vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic(
+				"pow",
+				vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"reflect",
+				vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone()),
+			builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
+			builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("f32", vec![("value", i32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", i32_t)], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
+			builtin_intrinsic(
+				"smoothstep",
+				vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic(
+				"mix",
+				vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic("thread_idx", vec![], u32_t.clone()),
+			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
+			builtin_intrinsic("thread_position", vec![], u32_t.clone()),
+			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
+			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
+			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),
+			builtin_intrinsic(
+				"set_mesh_output_counts",
+				vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"set_mesh_vertex_position",
+				vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"set_mesh_triangle",
+				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"image_load",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"image_load_u32",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"atomic_add",
+				vec![("value", atomic_u32.clone()), ("increment", u32_t.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic("atomic_load", vec![("value", atomic_u32.clone())], u32_t.clone()),
+			builtin_intrinsic(
+				"atomic_store",
+				vec![("value", atomic_u32), ("stored", u32_t.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone()),
+			builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone()),
+			builtin_intrinsic(
+				"guard_image_bounds",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"write",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", vec4f32.clone()),
+				],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"image_atomic_or",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				u32_t.clone(),
+			),
 		];
 
 		let mut root = Node::scope("root".to_string());
@@ -440,7 +432,7 @@ impl Node {
 		root
 	}
 
-	/// Creates a scope node which is a logical container for other nodes.
+	/// Creates a scope that groups child nodes.
 	pub fn scope(name: String) -> Node {
 		Node {
 			// parent: None,
@@ -451,16 +443,7 @@ impl Node {
 		}
 	}
 
-	/// Creates a struct node which is a type definition.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the struct.
-	/// * `fields` - The fields of the struct.
-	///
-	/// # Returns
-	///
-	/// The struct node.
+	/// Creates a named struct definition from its fields.
 	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> Node {
 		Node {
 			node: Nodes::Struct {
@@ -537,41 +520,18 @@ impl Node {
 	}
 
 	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: Some(code),
-				hlsl: None,
-				msl: None,
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(Some(code), None, None, inputs, outputs)
 	}
 
 	pub fn hlsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: None,
-				hlsl: Some(code),
-				msl: None,
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(None, Some(code), None, inputs, outputs)
 	}
 
 	pub fn msl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: None,
-				hlsl: None,
-				msl: Some(code),
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(None, None, Some(code), inputs, outputs)
 	}
 
+	/// Builds linked raw code with explicit backend sources and interface nodes.
 	pub fn raw(
 		glsl: Option<String>,
 		hlsl: Option<String>,
@@ -599,25 +559,23 @@ impl Node {
 		}
 	}
 
-	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> Node {
-		Self::binding_with_count(name, r#type, set, binding, read, write, None)
+	pub fn binding(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
+		Self::binding_with_count(name, r#type, slot, read, write, None)
 	}
 
 	fn binding_with_count(
 		name: &str,
 		r#type: BindingTypes,
-		set: u32,
-		binding: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	) -> Node {
 		Node {
 			node: Nodes::Binding {
 				name: name.to_string(),
 				r#type,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				count,
@@ -625,24 +583,13 @@ impl Node {
 		}
 	}
 
-	pub fn binding_array(
-		name: &str,
-		r#type: BindingTypes,
-		set: u32,
-		binding: u32,
-		read: bool,
-		write: bool,
-		count: usize,
-	) -> Node {
-		Self::binding_with_count(
-			name,
-			r#type,
-			set,
-			binding,
-			read,
-			write,
-			Some(NonZeroUsize::new(count).expect("Invalid count")),
-		)
+	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
+		let count = u32::try_from(count)
+			.expect("Invalid binding array count. The most likely cause is that a resource array exceeds u32::MAX elements.");
+		let count = NonZeroU32::new(count).expect(
+			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
+		);
+		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
@@ -709,6 +656,28 @@ impl Node {
 		}
 	}
 
+	pub fn task_payload(name: &str, format: NodeReference, count: u32) -> Node {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
+		);
+		Node {
+			node: Nodes::TaskPayload {
+				name: name.to_string(),
+				format,
+				count,
+			},
+		}
+	}
+
+	pub fn workgroup(name: &str, format: NodeReference) -> Node {
+		Node {
+			node: Nodes::Workgroup {
+				name: name.to_string(),
+				format,
+			},
+		}
+	}
+
 	pub fn new(node: Nodes) -> Node {
 		Node { node }
 	}
@@ -762,7 +731,10 @@ impl Node {
 			| Nodes::Specialization { name, .. }
 			| Nodes::Literal { name, .. }
 			| Nodes::Const { name, .. } => Some(name),
-			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
+			Nodes::Input { name, .. }
+			| Nodes::Output { name, .. }
+			| Nodes::TaskPayload { name, .. }
+			| Nodes::Workgroup { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => Some("push_constant"),
 			Nodes::Expression(Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. }) => Some(name),
 			_ => None,
@@ -876,12 +848,11 @@ pub enum Nodes {
 	},
 	Binding {
 		name: String,
-		set: u32,
-		binding: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		r#type: BindingTypes,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	},
 	PushConstant {
 		members: Vec<NodeReference>,
@@ -902,6 +873,15 @@ pub enum Nodes {
 		location: u8,
 		count: Option<NonZeroUsize>,
 	},
+	TaskPayload {
+		name: String,
+		format: NodeReference,
+		count: NonZeroUsize,
+	},
+	Workgroup {
+		name: String,
+		format: NodeReference,
+	},
 	Parameter {
 		name: String,
 		r#type: NodeReference,
@@ -910,7 +890,7 @@ pub enum Nodes {
 		name: String,
 		value: NodeReference,
 	},
-	/// A module-level constant variable declaration. Stores a named, typed value that is known at compile time.
+	/// A named module-level value known at compile time.
 	Const {
 		name: String,
 		r#type: NodeReference,
@@ -926,7 +906,7 @@ impl Nodes {
 			Nodes::Struct { .. } => false,
 			Nodes::Binding { .. } => false,
 			Nodes::PushConstant { .. } => false,
-			Nodes::Input { .. } | Nodes::Output { .. } => false,
+			Nodes::Input { .. } | Nodes::Output { .. } | Nodes::TaskPayload { .. } | Nodes::Workgroup { .. } => false,
 			Nodes::Specialization { .. } => false,
 			Nodes::Const { .. } => false,
 			Nodes::Literal { .. } => true,
@@ -941,10 +921,23 @@ impl Nodes {
 	}
 
 	pub fn is_indexable(&self) -> bool {
+		fn type_is_indexable(r#type: &NodeReference) -> bool {
+			let r#type = r#type.borrow();
+			matches!(r#type.node(), Nodes::Struct { template: Some(_), .. })
+				|| r#type
+					.get_name()
+					.is_some_and(|name| name.starts_with("vec") || name.starts_with("mat"))
+		}
+
 		match self {
-			Nodes::Member { count, .. } => count.is_some(),
-			Nodes::Output { count, .. } => count.is_some(),
-			Nodes::Const { r#type, .. } => matches!(r#type.borrow().node(), Nodes::Struct { template: Some(_), .. }),
+			Nodes::Member { r#type, count, .. } => count.is_some() || type_is_indexable(r#type),
+			Nodes::Input { format, .. } => type_is_indexable(format),
+			Nodes::Output { format, count, .. } => count.is_some() || type_is_indexable(format),
+			Nodes::TaskPayload { .. } => true,
+			Nodes::Parameter { r#type, .. }
+			| Nodes::Specialization { r#type, .. }
+			| Nodes::Const { r#type, .. }
+			| Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => type_is_indexable(r#type),
 			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
 			_ => false,
@@ -1056,8 +1049,7 @@ impl std::fmt::Debug for Node {
 			}
 			Nodes::Binding {
 				name,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
@@ -1065,8 +1057,8 @@ impl std::fmt::Debug for Node {
 			} => {
 				write!(
 					f,
-					"Binding {{ name: {}, set: {}, binding: {}, read: {}, write: {}, type: {:?}, count: {:?} }}",
-					name, set, binding, read, write, r#type, count
+					"Binding {{ name: {}, slot: {}, read: {}, write: {}, type: {:?}, count: {:?} }}",
+					name, slot, read, write, r#type, count
 				)
 			}
 			Nodes::PushConstant { members } => {
@@ -1119,6 +1111,23 @@ impl std::fmt::Debug for Node {
 					format.0.borrow().get_name().map(|e| e.to_string()),
 					location,
 					count
+				)
+			}
+			Nodes::TaskPayload { name, format, count } => {
+				write!(
+					f,
+					"TaskPayload {{ name: {}, format: {:?}, count: {} }}",
+					name,
+					format.0.borrow().get_name().map(|e| e.to_string()),
+					count
+				)
+			}
+			Nodes::Workgroup { name, format } => {
+				write!(
+					f,
+					"Workgroup {{ name: {}, format: {:?} }}",
+					name,
+					format.0.borrow().get_name().map(|e| e.to_string())
 				)
 			}
 			Nodes::Literal { name, value } => {
@@ -1222,7 +1231,7 @@ enum DescendantSearch {
 	NonIntrinsic,
 }
 
-/// Tries to resolve a reference to a node by visiting the chain of nodes which are the context of the element of the program being lexed.
+/// Resolves a node reference by searching the current lexical scope chain.
 fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
@@ -1248,7 +1257,6 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 		let element_type_name = parts.next().ok_or(LexError::Undefined {
 			message: Some("No type name".to_string()),
 		})?;
-		let element_type = resolve_type(chain, element_type_name)?;
 		let count = parts
 			.next()
 			.ok_or(LexError::Undefined {
@@ -1259,17 +1267,8 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 				message: Some("Invalid count".to_string()),
 			})?;
 
-		let array_type = Node::internal_new(Node {
-			node: Nodes::Struct {
-				name: type_name.to_string(),
-				template: Some(element_type.clone()),
-				fields: (0..count)
-					.map(|index| Node::member(&format!("value_{}", index), element_type.clone()).into())
-					.collect(),
-				types: Vec::new(),
-			},
-		});
-		return Ok(array_type);
+		let element_type = parser::TypeName::Named(element_type_name);
+		return resolve_array_type(chain, &element_type, count);
 	}
 
 	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
@@ -1277,7 +1276,117 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 	})
 }
 
+/// Resolves a source descriptor's resource type into the existing semantic binding representation.
+fn resolve_descriptor_type(
+	chain: &[NodeReference],
+	resource_type: &str,
+	format: Option<&str>,
+) -> Result<BindingTypes, LexError> {
+	if format.is_some() && resource_type != "StorageImage" {
+		return Err(LexError::Undefined {
+			message: Some(format!(
+				"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a non-StorageImage descriptor."
+			)),
+		});
+	}
+
+	match resource_type {
+		"Texture2D" => Ok(BindingTypes::CombinedImageSampler { format: String::new() }),
+		"Texture2DArray" => Ok(BindingTypes::CombinedImageSampler {
+			format: "ArrayTexture2D".to_string(),
+		}),
+		"Texture3D" => Ok(BindingTypes::CombinedImageSampler {
+			format: "Texture3D".to_string(),
+		}),
+		"StorageImage" => Ok(BindingTypes::Image {
+			format: format.unwrap_or("unknown").to_string(),
+		}),
+		struct_name => {
+			let r#struct = resolve_type(chain, struct_name)?;
+			let members = match r#struct.borrow().node() {
+				Nodes::Struct { fields, .. } => fields.clone(),
+				_ => {
+					return Err(LexError::ReferenceToUndefinedType {
+						type_name: struct_name.to_string(),
+					});
+				}
+			};
+			Ok(BindingTypes::Buffer { members })
+		}
+	}
+}
+
+/// Resolves a structural array type and creates its semantic indexed members.
+fn resolve_array_type(
+	chain: &[NodeReference],
+	element_type_name: &parser::TypeName,
+	count: usize,
+) -> Result<NodeReference, LexError> {
+	let mut array_name = String::new();
+	append_type_name(&mut array_name, element_type_name);
+	let _ = write!(array_name, "[{count}]");
+	if let Some(existing) = get_reference(chain, &array_name) {
+		return Ok(existing);
+	}
+
+	let element_type = resolve_type_name(chain, element_type_name)?;
+	let array_type = Node::internal_new(Node {
+		node: Nodes::Struct {
+			name: array_name,
+			template: Some(element_type.clone()),
+			fields: (0..count)
+				.map(|index| Node::member(&format!("value_{index}"), element_type.clone()).into())
+				.collect(),
+			types: Vec::new(),
+		},
+	});
+
+	Ok(array_type)
+}
+
+/// Appends a structural parser type's canonical spelling to an owned name.
+fn append_type_name(name: &mut String, type_name: &parser::TypeName) {
+	match type_name {
+		parser::TypeName::Named(type_name) => name.push_str(type_name),
+		parser::TypeName::Array { element, count } => {
+			append_type_name(name, element);
+			let _ = write!(name, "[{count}]");
+		}
+	}
+}
+
+/// Resolves a parser type without flattening its array structure into source text.
+fn resolve_type_name(chain: &[NodeReference], type_name: &parser::TypeName) -> Result<NodeReference, LexError> {
+	match type_name {
+		parser::TypeName::Named(type_name) => resolve_type(chain, type_name),
+		parser::TypeName::Array { element, count } => {
+			let count = usize::try_from(*count).map_err(|_| LexError::Undefined {
+				message: Some("Invalid count".to_string()),
+			})?;
+			resolve_array_type(chain, element, count)
+		}
+	}
+}
 fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
+	// After the left side of an accessor has resolved a buffer binding, the next identifier
+	// belongs to that buffer's member namespace even when the binding and member share a name.
+	if let Some(left) = chain.last() {
+		let source = match left.borrow().node() {
+			Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
+			_ => None,
+		};
+		if let Some(source) = source {
+			if let Nodes::Binding {
+				r#type: BindingTypes::Buffer { members },
+				..
+			} = source.borrow().node()
+			{
+				if let Some(member) = find_named_child(members, name) {
+					return Ok(member);
+				}
+			}
+		}
+	}
 	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
 }
 
@@ -1336,13 +1445,14 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 	let prefer_descendants_before_self = mode == DescendantSearch::NonIntrinsic
 		&& matches!(
 			node.borrow().node(),
-			Nodes::Binding { .. }
-				| Nodes::PushConstant { .. }
+			Nodes::PushConstant { .. }
 				| Nodes::Member { .. }
 				| Nodes::Parameter { .. }
 				| Nodes::Input { .. }
 				| Nodes::Output { .. }
-				| Nodes::Expression(Expressions::Member { .. } | Expressions::VariableDeclaration { .. })
+				| Nodes::TaskPayload { .. }
+				| Nodes::Workgroup { .. }
+				| Nodes::Expression(Expressions::Member { .. })
 		);
 
 	if !prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
@@ -1380,7 +1490,10 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 			r#type: BindingTypes::Buffer { members },
 			..
 		} => find_in_descendants(members, child_name, mode),
-		Nodes::Input { format, .. } | Nodes::Output { format, .. } => find_descendant(format, child_name, mode),
+		Nodes::Input { format, .. }
+		| Nodes::Output { format, .. }
+		| Nodes::TaskPayload { format, .. }
+		| Nodes::Workgroup { format, .. } => find_descendant(format, child_name, mode),
 		_ => None,
 	};
 
@@ -1466,6 +1579,8 @@ fn find_in_function_expression(
 
 fn find_in_expression(expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
 	match expression {
+		// Only assignment declarations on the left enter the surrounding lexical scope.
+		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => find_descendant(left, child_name, mode),
 		Expressions::Operator { left, right, .. } => {
 			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 		}
@@ -1640,6 +1755,23 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 
 			this.into()
 		}
+		parser::Nodes::TaskPayload { name, format, count } => {
+			let format = resolve_type(&chain, format)?;
+			Node::new(Nodes::TaskPayload {
+				name: name.to_string(),
+				format,
+				count: *count,
+			})
+			.into()
+		}
+		parser::Nodes::Workgroup { name, format } => {
+			let format = resolve_type(&chain, format)?;
+			Node::new(Nodes::Workgroup {
+				name: name.to_string(),
+				format,
+			})
+			.into()
+		}
 		parser::Nodes::Function {
 			name,
 			return_type,
@@ -1728,8 +1860,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 		parser::Nodes::Binding {
 			name,
 			r#type,
-			set,
-			descriptor,
+			slot,
 			read,
 			write,
 			count,
@@ -1755,13 +1886,30 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			};
 
 			let this = if let Some(count) = count {
-				Node::binding_array(name, r#type, *set, *descriptor, *read, *write, count.get())
+				Node::binding_array(name, r#type, *slot, *read, *write, count.get())
 			} else {
-				Node::binding(name, r#type, *set, *descriptor, *read, *write)
+				Node::binding(name, r#type, *slot, *read, *write)
 			};
 
 			this.into()
 		}
+		parser::Nodes::Descriptor {
+			name,
+			resource_type,
+			format,
+			slot,
+			read,
+			write,
+			count,
+		} => Node::binding_with_count(
+			name,
+			resolve_descriptor_type(&chain, resource_type, *format)?,
+			*slot,
+			*read,
+			*write,
+			*count,
+		)
+		.into(),
 		parser::Nodes::Type { name, members } => {
 			let mut this = Node::r#struct(name, Vec::new());
 
@@ -1779,7 +1927,6 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 					format: format.to_string(),
 				},
 				0,
-				0,
 				false,
 				false,
 			);
@@ -1792,7 +1939,6 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 				BindingTypes::CombinedImageSampler {
 					format: format.to_string(),
 				},
-				0,
 				0,
 				false,
 				false,
@@ -1910,7 +2056,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 				parser::Expressions::VariableDeclaration { name, r#type } => {
 					Node::expression(Expressions::VariableDeclaration {
 						name: name.to_string(),
-						r#type: resolve_type(&chain, r#type)?,
+						r#type: resolve_type_name(&chain, r#type)?,
 					})
 				}
 				parser::Expressions::RawCode {
@@ -1941,7 +2087,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			this
 		}
 		parser::Nodes::Const { name, r#type, value } => {
-			let t = resolve_type(&chain, r#type)?;
+			let t = resolve_type_name(&chain, r#type)?;
 
 			let v = lex_parsed_node(chain.clone(), value)?;
 
@@ -2005,6 +2151,7 @@ fn expression_matches_type(expression: &NodeReference, expected_type: &NodeRefer
 
 fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 	match expression.borrow().node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => infer_expression_type(&elements[0]),
 		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(value),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(source),
@@ -2029,7 +2176,9 @@ fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 
 fn infer_literal_type(value: &str) -> Option<NodeReference> {
 	let root = Node::root();
-	if value.contains('.') {
+	if matches!(value, "true" | "false") {
+		root.get_child("bool")
+	} else if value.contains(['.', 'e', 'E']) {
 		root.get_child("f32")
 	} else {
 		root.get_child("u32")
@@ -2042,6 +2191,8 @@ fn infer_member_type(source: &NodeReference) -> Option<NodeReference> {
 		| Nodes::Parameter { r#type, .. }
 		| Nodes::Input { format: r#type, .. }
 		| Nodes::Output { format: r#type, .. }
+		| Nodes::TaskPayload { format: r#type, .. }
+		| Nodes::Workgroup { format: r#type, .. }
 		| Nodes::Specialization { r#type, .. }
 		| Nodes::Const { r#type, .. } => Some(r#type.clone()),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
@@ -2073,7 +2224,15 @@ fn infer_callable_return_type(callable: &NodeReference) -> Option<NodeReference>
 	}
 }
 
-fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeReference]) -> Result<NodeReference, LexError> {
+fn resolve_call_target(
+	chain: &[NodeReference],
+	name: &parser::TypeName,
+	parameters: &[NodeReference],
+) -> Result<NodeReference, LexError> {
+	let parser::TypeName::Named(name) = name else {
+		return resolve_type_name(chain, name);
+	};
+
 	for node in chain.iter().rev() {
 		if let Some(candidate) = resolve_call_target_in_node(node, name, parameters) {
 			return Ok(candidate);
@@ -2083,7 +2242,6 @@ fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeRe
 	if let Ok(r#type) = resolve_type(chain, name) {
 		return Ok(r#type);
 	}
-
 	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 }
 
@@ -2183,6 +2341,207 @@ mod tests {
 	use super::*;
 	use crate::tokenizer;
 
+	#[cfg(target_pointer_width = "64")]
+	#[test]
+	#[should_panic(expected = "resource array exceeds u32::MAX elements")]
+	fn binding_array_rejects_count_larger_than_flat_metadata() {
+		Node::binding_array(
+			"textures",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			true,
+			false,
+			(u32::MAX as usize) + 1,
+		);
+	}
+
+	#[test]
+	fn source_descriptors_lower_to_existing_flat_binding_types() {
+		let source = r#"
+			Data: struct {
+				value: u32,
+				weight: f32,
+			}
+			data: descriptor<Data, 2, read_write>;
+			texture: descriptor<Texture2D, 5, read>;
+			texture_array: descriptor<Texture2DArray, 7, read, 16>;
+			volume: descriptor<Texture3D, 30, read>;
+			result: descriptor<StorageImage<rgba16f>, 31, write>;
+			unformatted_result: descriptor<StorageImage, 32, write>;
+			main: fn () -> void {
+				data.value = data.value;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("resource descriptors should lex");
+		let data = root.borrow().get_child("data").expect("data descriptor should exist");
+		assert!(matches!(
+			data.borrow().node(),
+			Nodes::Binding {
+				slot: 2,
+				read: true,
+				write: true,
+				r#type: BindingTypes::Buffer { members },
+				count: None,
+				..
+			} if members.iter().map(|member| member.borrow().get_name().map(str::to_owned)).collect::<Vec<_>>()
+				== vec![Some("value".to_string()), Some("weight".to_string())]
+		));
+
+		let texture = root.borrow().get_child("texture").expect("texture descriptor should exist");
+		assert!(matches!(
+			texture.borrow().node(),
+			Nodes::Binding {
+				slot: 5,
+				read: true,
+				write: false,
+				r#type: BindingTypes::CombinedImageSampler { format },
+				..
+			} if format.is_empty()
+		));
+
+		let texture_array = root
+			.borrow()
+			.get_child("texture_array")
+			.expect("texture array descriptor should exist");
+		assert!(matches!(
+			texture_array.borrow().node(),
+			Nodes::Binding {
+				slot: 7,
+				r#type: BindingTypes::CombinedImageSampler { format },
+				count: Some(count),
+				..
+			} if format == "ArrayTexture2D" && count.get() == 16
+		));
+
+		let volume = root.borrow().get_child("volume").expect("volume descriptor should exist");
+		assert!(matches!(
+			volume.borrow().node(),
+			Nodes::Binding {
+				r#type: BindingTypes::CombinedImageSampler { format },
+				..
+			} if format == "Texture3D"
+		));
+
+		let result = root
+			.borrow()
+			.get_child("result")
+			.expect("storage image descriptor should exist");
+		assert!(matches!(
+			result.borrow().node(),
+			Nodes::Binding {
+				slot: 31,
+				read: false,
+				write: true,
+				r#type: BindingTypes::Image { format },
+				..
+			} if format == "rgba16f"
+		));
+
+		let unformatted_result = root
+			.borrow()
+			.get_child("unformatted_result")
+			.expect("unformatted storage image descriptor should exist");
+		assert!(matches!(
+			unformatted_result.borrow().node(),
+			Nodes::Binding {
+				slot: 32,
+				read: false,
+				write: true,
+				r#type: BindingTypes::Image { format },
+				..
+			} if format == "unknown"
+		));
+	}
+
+	#[test]
+	fn source_atomic_buffers_and_push_constants_link_without_injected_rust_nodes() {
+		let source = r#"
+			Counters: struct {
+				values: atomicu32[8],
+			}
+			counters: descriptor<Counters, 3, read_write>;
+			push_constant: push_constant {
+				index: u32,
+			}
+			main: fn () -> void {
+				let old: u32 = atomic_add(counters.values[push_constant.index], 1);
+				atomic_store(counters.values[push_constant.index], atomic_load(counters.values[old]));
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("standalone atomic shader should link");
+		root.get_main().expect("standalone atomic shader should have main");
+		assert!(root.borrow().get_child("push_constant").is_some());
+	}
+
+	#[test]
+	fn source_task_storage_and_stage_interfaces_link_without_injected_rust_nodes() {
+		let source = r#"
+			instance_index: input<u32, 0>;
+			primitive_index: output<u32, 1>;
+			visible_meshlets: task_payload<u32, 32>;
+			visible_count: workgroup<atomicu32>;
+			main: fn () -> void {
+				let position: u32 = thread_position();
+				visible_meshlets[thread_idx()] = position;
+				atomic_store(visible_count, position);
+				workgroup_barrier();
+				set_task_mesh_output_count(atomic_load(visible_count));
+				primitive_index = instance_index;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("standalone task shader should link");
+		let payload = root
+			.borrow()
+			.get_child("visible_meshlets")
+			.expect("task payload declaration should be linked");
+		assert!(matches!(
+			payload.borrow().node(),
+			Nodes::TaskPayload { count, format, .. }
+				if count.get() == 32 && format.borrow().get_name() == Some("u32")
+		));
+		assert!(payload.borrow().node().is_indexable());
+
+		let workgroup = root
+			.borrow()
+			.get_child("visible_count")
+			.expect("workgroup declaration should be linked");
+		assert!(matches!(
+			workgroup.borrow().node(),
+			Nodes::Workgroup { format, .. } if format.borrow().get_name() == Some("atomicu32")
+		));
+		assert!(root.get_main().is_some());
+	}
+
+	#[test]
+	fn source_boolean_literals_link_as_bool_values() {
+		let source = r#"
+			main: fn () -> void {
+				let enabled: bool = true;
+				let disabled: bool = false;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("boolean literals should link");
+		root.get_main().expect("boolean literal shader should have main");
+		assert_eq!(infer_literal_type("true").unwrap().borrow().get_name(), Some("bool"));
+		assert_eq!(infer_literal_type("false").unwrap().borrow().get_name(), Some("bool"));
+	}
+
+	#[test]
+	fn source_buffer_descriptor_requires_a_declared_type() {
+		let tokens = tokenizer::tokenize("data: descriptor<Missing, 0, read>;").expect("descriptor should tokenize");
+		let parsed = parser::parse(&tokens).expect("descriptor should parse");
+		assert_eq!(
+			lex(parsed),
+			Err(LexError::ReferenceToUndefinedType {
+				type_name: "Missing".to_string(),
+			})
+		);
+	}
+
 	fn assert_type(node: &Node, type_name: &str) {
 		match &node.node {
 			Nodes::Struct { name, .. } => {
@@ -2191,6 +2550,35 @@ mod tests {
 			_ => {
 				panic!("Expected type");
 			}
+		}
+	}
+
+	#[test]
+	fn raw_code_constructors_select_only_the_requested_backend() {
+		const EXPECTED: [(Option<&str>, Option<&str>, Option<&str>); 3] =
+			[(Some("g"), None, None), (None, Some("h"), None), (None, None, Some("m"))];
+
+		let parser_nodes = [
+			parser::Node::glsl("g", &[], &[]),
+			parser::Node::hlsl("h", &[], &[]),
+			parser::Node::msl("m", &[], &[]),
+		];
+		let linked_nodes = [
+			Node::glsl("g".into(), Vec::new(), Vec::new()),
+			Node::hlsl("h".into(), Vec::new(), Vec::new()),
+			Node::msl("m".into(), Vec::new(), Vec::new()),
+		];
+
+		for ((parser_node, linked_node), expected) in parser_nodes.into_iter().zip(linked_nodes).zip(EXPECTED) {
+			let parser::Nodes::RawCode { glsl, hlsl, msl, .. } = parser_node.node() else {
+				panic!("Expected parser raw-code node. The constructor returned a different node variant.");
+			};
+			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
+
+			let Nodes::Raw { glsl, hlsl, msl, .. } = linked_node.node() else {
+				panic!("Expected linked raw-code node. The constructor returned a different node variant.");
+			};
+			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
 		}
 	}
 
@@ -2330,40 +2718,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	#[ignore]
-	fn lex_member() {
-		let source = "
-color: In<vec4f>;
-";
-
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		let node = lex(node).expect("Failed to lex");
-		let node = node.borrow();
-
-		match node.node() {
-			Nodes::Scope { name, children, .. } => {
-				assert_eq!(name, "root");
-
-				let color = children[0].borrow();
-
-				match color.node() {
-					Nodes::Member { name, r#type, .. } => {
-						assert_eq!(name, "color");
-						assert_type(&r#type.borrow(), "In<vec4f>");
-					}
-					_ => {
-						panic!("Expected feature");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
-	#[test]
 	fn parse_script() {
 		let script = r#"
 		used: fn () -> void {
@@ -2453,7 +2807,6 @@ color: In<vec4f>;
 					members: vec![Node::array("values", float_type, 3)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2508,7 +2861,6 @@ color: In<vec4f>;
 					members: vec![Node::array("meshes", mesh, 4)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2518,7 +2870,6 @@ color: In<vec4f>;
 				BindingTypes::Buffer {
 					members: vec![Node::array("pixel_mapping", u32_type, 4)],
 				},
-				0,
 				1,
 				true,
 				true,
@@ -2824,7 +3175,6 @@ main: fn () -> void {
 				"texture_sampler",
 				BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2834,7 +3184,6 @@ main: fn () -> void {
 			Node::binding(
 				"texture",
 				BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
 				1,
 				true,
 				false,
@@ -2906,7 +3255,6 @@ main: fn () -> void {
 				"texture_sampler",
 				BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2934,7 +3282,6 @@ main: fn () -> void {
 				BindingTypes::Image {
 					format: "rgba8".to_string(),
 				},
-				0,
 				0,
 				false,
 				true,
@@ -3470,6 +3817,22 @@ main: fn () -> void {
 				_ => panic!("Expected assignment"),
 			}
 		}
+	}
+
+	/// Verifies mesh index helpers can widen packed byte and word values through portable BESL.
+	#[test]
+	fn lex_u32_widening_intrinsic_overloads() {
+		let script = r#"
+		main: fn () -> void {
+			let byte: u8 = 7;
+			let word: u16 = 513;
+			let byte_wide: u32 = u32(byte);
+			let word_wide: u32 = u32(word);
+		}
+		"#;
+
+		crate::compile_to_besl(script, None)
+			.expect("Failed to resolve u32 widening calls. The most likely cause is a missing narrow-integer overload.");
 	}
 
 	#[test]

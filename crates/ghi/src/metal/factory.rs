@@ -42,25 +42,17 @@ impl Factory {
 
 	fn build_pipeline_layout(
 		&self,
-		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		shaders: &[crate::pipelines::ShaderParameter],
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	) -> PipelineLayout {
-		let descriptor_set_template_indices = descriptor_set_template_handles
+		let stage_resources = shaders
 			.iter()
-			.enumerate()
-			.map(|(index, handle)| (*handle, index as u32))
-			.collect();
-		let push_constant_size = push_constant_ranges
-			.iter()
-			.map(|range| range.offset as usize + range.size as usize)
-			.max()
-			.unwrap_or(0);
-
-		PipelineLayout {
-			descriptor_set_template_indices,
-			push_constant_ranges: push_constant_ranges.to_vec(),
-			push_constant_size,
-		}
+			.map(|shader_parameter| {
+				let shader = &self.shaders[shader_parameter.handle.0 as usize];
+				(shader.stage, shader.shader_resource_descriptors.clone())
+			})
+			.collect::<Vec<_>>();
+		build_pipeline_layout(self.device.as_ref(), &stage_resources, push_constant_ranges)
 	}
 
 	fn build_library(&self, data: &[u8]) -> Retained<ProtocolObject<dyn MTLLibrary>> {
@@ -105,7 +97,7 @@ impl crate::device::Device for Factory {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(_) => {
@@ -146,24 +138,12 @@ impl crate::device::Device for Factory {
 			}
 		};
 
-		let stages = match stage {
-			crate::ShaderTypes::Vertex => crate::Stages::VERTEX,
-			crate::ShaderTypes::Fragment => crate::Stages::FRAGMENT,
-			crate::ShaderTypes::Compute => crate::Stages::COMPUTE,
-			crate::ShaderTypes::RayGen => crate::Stages::RAYGEN,
-			crate::ShaderTypes::Intersection => crate::Stages::INTERSECTION,
-			crate::ShaderTypes::AnyHit => crate::Stages::ANY_HIT,
-			crate::ShaderTypes::ClosestHit => crate::Stages::CLOSEST_HIT,
-			crate::ShaderTypes::Miss => crate::Stages::MISS,
-			crate::ShaderTypes::Callable => crate::Stages::CALLABLE,
-			crate::ShaderTypes::Task => crate::Stages::TASK,
-			crate::ShaderTypes::Mesh => crate::Stages::MESH,
-		};
+		let stages = stage.into();
 
 		self.shaders.push(Shader {
 			name: crate::debug_name(name),
 			stage: stages,
-			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 			metal_library,
 			metal_entry_point,
 			threadgroup_size,
@@ -173,10 +153,7 @@ impl crate::device::Device for Factory {
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		let layout = self.build_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let layout = self.build_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let has_depth_attachment = builder
 			.render_targets
 			.iter()
@@ -190,42 +167,28 @@ impl crate::device::Device for Factory {
 		let mut fragment_function = None;
 		let mut object_threadgroup_size = None;
 		let mut mesh_threadgroup_size = None;
-		let resource_access = builder
-			.shaders
-			.iter()
-			.flat_map(|shader_parameter| {
-				let shader = &self.shaders[shader_parameter.handle.0 as usize];
-				shader_handles.insert(*shader_parameter.handle, [0; 32]);
-				match shader_parameter.stage {
-					crate::ShaderTypes::Task => {
-						object_function = self.create_metal_function(shader_parameter);
-						object_threadgroup_size = shader.threadgroup_size;
-					}
-					crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
-					crate::ShaderTypes::Mesh => {
-						mesh_function = self.create_metal_function(shader_parameter);
-						mesh_threadgroup_size = shader.threadgroup_size;
-					}
-					crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
-					_ => {}
+		for shader_parameter in builder.shaders.iter() {
+			let shader = &self.shaders[shader_parameter.handle.0 as usize];
+			shader_handles.insert(*shader_parameter.handle, [0; 32]);
+			match shader_parameter.stage {
+				crate::ShaderTypes::Task => {
+					object_function = self.create_metal_function(shader_parameter);
+					object_threadgroup_size = shader.threadgroup_size;
 				}
-				shader
-					.shader_binding_descriptors
-					.iter()
-					.map(|descriptor| {
-						(
-							(descriptor.set, descriptor.binding),
-							(shader_parameter.stage.into(), descriptor.access),
-						)
-					})
-					.collect::<Vec<_>>()
-			})
-			.collect::<Vec<_>>();
+				crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
+				crate::ShaderTypes::Mesh => {
+					mesh_function = self.create_metal_function(shader_parameter);
+					mesh_threadgroup_size = shader.threadgroup_size;
+				}
+				crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
+				_ => {}
+			}
+		}
 
 		let depth_stencil_state = if has_depth_attachment {
 			let descriptor = MTLDepthStencilDescriptor::new();
 			descriptor.setDepthCompareFunction(MTLCompareFunction::GreaterEqual);
-			descriptor.setDepthWriteEnabled(true);
+			descriptor.setDepthWriteEnabled(builder.depth_write);
 			self.device.newDepthStencilStateWithDescriptor(&descriptor)
 		} else {
 			None
@@ -234,7 +197,9 @@ impl crate::device::Device for Factory {
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
 				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
@@ -255,7 +220,9 @@ impl crate::device::Device for Factory {
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()));
@@ -296,7 +263,6 @@ impl crate::device::Device for Factory {
 			layout,
 			vertex_layout,
 			shader_handles,
-			resource_access,
 			compute_threadgroup_size: None,
 			object_threadgroup_size,
 			mesh_threadgroup_size,
@@ -306,7 +272,7 @@ impl crate::device::Device for Factory {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		let layout = self.build_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let layout = self.build_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
 		let shader_handle = *builder.shader.handle;
 		let compute_pipeline_state = {
 			let shader_parameter = &builder.shader;
@@ -328,16 +294,6 @@ impl crate::device::Device for Factory {
 
 		let mut shader_handles = HashMap::default();
 		shader_handles.insert(shader_handle, [0; 32]);
-		let resource_access = self.shaders[shader_handle.0 as usize]
-			.shader_binding_descriptors
-			.iter()
-			.map(|descriptor| {
-				(
-					(descriptor.set, descriptor.binding),
-					(crate::Stages::COMPUTE, descriptor.access),
-				)
-			})
-			.collect::<Vec<_>>();
 		let compute_threadgroup_size = self.shaders[shader_handle.0 as usize].threadgroup_size;
 
 		ComputePipeline {
@@ -345,7 +301,6 @@ impl crate::device::Device for Factory {
 			depth_stencil_state: None,
 			layout,
 			shader_handles,
-			resource_access,
 			compute_threadgroup_size,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
@@ -384,8 +339,10 @@ impl crate::device::Device for Factory {
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = builder.name {
-			texture.setLabel(Some(&NSString::from_str(name)));
+		if self.settings.debug_labels {
+			if let Some(name) = builder.name {
+				texture.setLabel(Some(&NSString::from_str(name)));
+			}
 		}
 
 		Image {

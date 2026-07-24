@@ -80,18 +80,18 @@ pub mod macros {
 
 use maths_rs::mat::{MatNew4, MatTranspose as _};
 
-/// The `ShaderMatrix4` struct preserves the CPU-to-GPU matrix layout expected by the active graphics backend.
+/// The `ShaderMatrix4` struct provides the 4-by-4 matrix layout that graphics backends expect from CPU data.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShaderMatrix4(pub [f32; 16]);
 
-/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+/// The `ShaderMatrix4x3` struct provides the compact affine matrix layout used to send model transforms to the GPU.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg(target_os = "macos")]
 pub struct ShaderMatrix4x3(pub [f32; 16]);
 
-/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+/// The `ShaderMatrix4x3` struct provides the compact affine matrix layout used to send model transforms to the GPU.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg(not(target_os = "macos"))]
@@ -133,19 +133,19 @@ impl From<Matrix4> for ShaderMatrix4x3 {
 	}
 }
 
-/// Calculates the direction to move in a plane from a direction(absolute) vector and a head/camera relative direction vector
+/// Converts a camera-relative movement command to a direction on the horizontal plane.
 pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
 	Vector3::new(direction.x, 0.0, direction.z) * command.z + Vector3::new(direction.z, 0.0, -direction.x) * command.x
 }
 
-/// Calculates a left handed perspective projection matrix for 0 to 1 depth range
+/// Returns a left-handed perspective projection matrix with a depth range from 0 to 1.
 ///
 /// # Arguments
 ///
-/// * `fov` - Full vertical field of view in degrees
-/// * `aspect_ratio` - Aspect ratio of the screen
-/// * `near_plane` - Distance to the near plane
-/// * `far_plane` - Distance to the far plane
+/// * `fov` - The full vertical field of view, in degrees.
+/// * `aspect_ratio` - The width-to-height ratio of the viewport.
+/// * `near_plane` - The distance to the near clipping plane.
+/// * `far_plane` - The distance to the far clipping plane.
 pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
 	let h = 1f32 / (fov / 2f32).to_radians().tan();
 	let w = h / aspect_ratio;
@@ -273,7 +273,7 @@ pub fn direction_from_orientation(orientation: Quaternion) -> Vector3 {
 	normalize(rotated_forward)
 }
 
-/// Left handed row major 4x4 matrix inverse
+/// Returns the inverse of a left-handed, row-major 4-by-4 matrix.
 pub fn inverse(m: maths_rs::Mat4f) -> maths_rs::Mat4f {
 	let mut inv = maths_rs::Mat4f::default();
 

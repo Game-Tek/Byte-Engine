@@ -1,0 +1,98 @@
+FBXHeaderExtension:  {
+    FBXHeaderVersion: 1003
+    FBXVersion: 7400
+}
+
+GlobalSettings:  {
+    Version: 1000
+    Properties70:  {
+        P: "UpAxis", "int", "Integer", "",1
+        P: "UpAxisSign", "int", "Integer", "",1
+        P: "FrontAxis", "int", "Integer", "",2
+        P: "FrontAxisSign", "int", "Integer", "",-1
+        P: "CoordAxis", "int", "Integer", "",0
+        P: "CoordAxisSign", "int", "Integer", "",1
+        P: "UnitScaleFactor", "double", "Number", "",1
+        P: "OriginalUnitScaleFactor", "double", "Number", "",1
+    }
+}
+
+Objects:  {
+    Geometry: 1001, "Geometry::MaterialTriangles", "Mesh" {
+        Vertices: *12 {
+            a: 0,0,0,1,0,0,0,1,0,1,1,0
+        }
+        PolygonVertexIndex: *6 {
+            a: 0,1,-3,1,3,-3
+        }
+        LayerElementMaterial: 0 {
+            Version: 101
+            Name: ""
+            MappingInformationType: "ByPolygon"
+            ReferenceInformationType: "IndexToDirect"
+            Materials: *2 {
+                a: 0,1
+            }
+        }
+        Layer: 0 {
+            Version: 100
+            LayerElement: {
+                Type: "LayerElementMaterial"
+                TypedIndex: 0
+            }
+        }
+    }
+
+    Model: 1002, "Model::MaterialTriangles", "Mesh" {
+        Version: 232
+        Properties70:  {
+            P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+            P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+            P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+        }
+        Shading: T
+        Culling: "CullingOff"
+    }
+
+    Material: 3001, "Material::FactoredPhong", "" {
+        Version: 102
+        ShadingModel: "phong"
+        MultiLayer: 0
+        Properties70:  {
+            P: "DiffuseColor", "Color", "", "A",0.8,0.4,0.2
+            P: "DiffuseFactor", "Number", "", "A",0.25
+            P: "EmissiveColor", "Color", "", "A",0.1,0.3,0.5
+            P: "EmissiveFactor", "Number", "", "A",2
+            P: "TransparentColor", "Color", "", "A",1,1,1
+            P: "TransparencyFactor", "Number", "", "A",0.2
+            P: "Shininess", "Number", "", "A",16
+        }
+    }
+
+    Material: 3002, "Material::FactoredMetalRough", "" {
+        Version: 102
+        ShadingModel: "PBR Metal/Rough"
+        MultiLayer: 0
+        Properties70:  {
+            P: "3dsMax|ClassIDa", "int", "Integer", "",3490651648
+            P: "3dsMax|ClassIDb", "int", "Integer", "",3195528448
+            P: "3dsMax|main|base_color", "Color", "", "A",0.25,0.5,0.75
+            P: "3dsMax|main|roughness", "Number", "", "A",0.35
+            P: "3dsMax|main|metalness", "Number", "", "A",0.65
+            P: "3dsMax|main|emit_color", "Color", "", "A",0.05,0.1,0.15
+            P: "3dsMax|main|opacity", "Number", "", "A",0.4
+            P: "DiffuseColor", "Color", "", "A",0.9,0.6,0.3
+            P: "DiffuseFactor", "Number", "", "A",0.5
+            P: "EmissiveColor", "Color", "", "A",0.2,0.1,0.05
+            P: "EmissiveFactor", "Number", "", "A",3
+            P: "TransparencyFactor", "Number", "", "A",0.4
+        }
+    }
+}
+
+Connections:  {
+    C: "OO",1001,1002
+    C: "OO",1002,0
+    C: "OO",3001,1002
+    C: "OO",3002,1002
+}

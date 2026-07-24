@@ -9,12 +9,13 @@ use crate::{
 };
 
 #[derive(Debug)]
-/// Represents a resource reference and can be use to embed to access related resources when loading.
+/// The `Reference` struct provides metadata, runtime state, and deferred binary data for a loaded resource.
 ///
-/// The `Reference` can be used to consult the memory requirements of the resource to, for example, pre-allocate/reserve memory destined for the resource.
-///
-/// The `Reference` can contain a `reader` that provides the backing store for the resource's binary data.
-/// This `reader` usually comes assigned from a call to [`crate::ResourceManager::request`].
+/// Use the size metadata to reserve destination memory before loading the binary
+/// data. Await [`ResourceManager::request`](crate::ResourceManager::request) to
+/// obtain a reader that supplies the resource data.
+/// Inspect typed metadata through [`Self::resource`], then await [`Self::load`]
+/// if the consuming system also needs the binary payload.
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,
@@ -86,22 +87,27 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		}
 	}
 
-	/// Loads the resource's binary data from the storage backend.
+	/// Loads the resource's binary data into the selected read target.
 	///
 	/// If `read_target` requests backing storage, the reader serves resource-owned bytes directly.
 	/// File-backed resources use mapped files when the storage backend supports them. If direct
 	/// backing storage is unavailable, the resource falls back to an owned buffer. Explicit buffer,
 	/// box, and stream targets are still filled by reading into the caller-selected target.
-	pub fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
+	///
+	/// Await this method, then pass the returned [`ReadTargets`] to the renderer,
+	/// audio system, or other consumer together with the metadata from
+	/// [`Self::resource`].
+	pub async fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
 		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 
 		if matches!(read_target, ReadTargetsMut::BackingStorage) {
-			return match reader.into_backing_storage() {
+			return match reader.into_backing_storage().await {
 				Ok(backing) => Ok(ReadTargets::Backing(backing)),
 				Err(mut reader) => {
 					let read_target = ReadTargetsMut::create_buffer(self);
 					reader
 						.read_into(self.streams.as_deref(), read_target)
+						.await
 						.map_err(|_| LoadResults::LoadFailed)
 				}
 			};
@@ -110,6 +116,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		let mut reader = reader;
 		reader
 			.read_into(self.streams.as_deref(), read_target)
+			.await
 			.map_err(|_| LoadResults::LoadFailed)
 	}
 }
@@ -123,9 +130,11 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 	}
 }
 
-#[derive(Clone, Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-/// `ReferenceModel` is a model for [`Reference`] that can be used to serialize/deserialize references.
-/// `ReferenceModel` has to be turned into a [`Reference`] using `solve()` which will allow loading the resource's binary data and fetching related resources.
+#[derive(Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+/// The `ReferenceModel` struct stores the serializable form of a [`Reference`].
+///
+/// Await [`Solver::solve`](crate::Solver::solve) before you load binary data or
+/// access dependent resources.
 pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,
@@ -138,17 +147,23 @@ pub struct ReferenceModel<T: Model> {
 	streams: Option<Vec<StreamDescription>>,
 }
 
+impl<T: Model> Clone for ReferenceModel<T> {
+	fn clone(&self) -> Self {
+		Self {
+			id: self.id.clone(),
+			hash: self.hash,
+			size: self.size,
+			class: self.class.clone(),
+			resource: self.resource.clone(),
+			phantom: std::marker::PhantomData,
+			streams: self.streams.clone(),
+		}
+	}
+}
+
 impl<T: Model> ReferenceModel<T> {
 	pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self {
-		ReferenceModel {
-			id: id.to_string(),
-			hash,
-			size,
-			class: T::get_class().to_string(),
-			resource: to_vec(resource).unwrap(),
-			phantom: std::marker::PhantomData,
-			streams,
-		}
+		Self::new_serialized(id, hash, size, to_vec(resource).unwrap(), streams)
 	}
 
 	pub fn new_serialized(
@@ -206,16 +221,21 @@ mod tests {
 		}
 	}
 
+	#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct NonCloneModel;
+
+	impl Model for NonCloneModel {
+		fn get_class() -> &'static str {
+			"NonClone"
+		}
+	}
+
 	#[derive(Debug)]
 	/// The `DefaultLoadResource` struct gives the reference test a concrete resource type.
 	struct DefaultLoadResource;
 
 	impl Resource for DefaultLoadResource {
 		type Model = DefaultLoadModel;
-
-		fn get_class(&self) -> &'static str {
-			DefaultLoadModel::get_class()
-		}
 	}
 
 	fn temporary_file_path() -> PathBuf {
@@ -227,7 +247,22 @@ mod tests {
 	}
 
 	#[test]
-	fn default_reference_load_uses_reader_backing_storage() {
+	fn reference_model_clone_does_not_require_model_clone() {
+		let original = ReferenceModel::<NonCloneModel>::new("non-clone", 42, 7, &NonCloneModel, None);
+
+		let cloned = original.clone();
+
+		assert_eq!(cloned.id, original.id);
+		assert_eq!(cloned.hash, original.hash);
+		assert_eq!(cloned.size, original.size);
+		assert_eq!(cloned.class, original.class);
+		assert_eq!(cloned.resource, original.resource);
+		assert!(cloned.streams.is_none());
+		assert!(original.streams.is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn default_reference_load_uses_reader_backing_storage() {
 		let path = temporary_file_path();
 		let expected = b"default-load-bytes";
 
@@ -238,10 +273,11 @@ mod tests {
 		}
 
 		let model = ReferenceModel::<DefaultLoadModel>::new("default-load", 0, expected.len(), &DefaultLoadModel, None);
-		let reader = Box::new(FileResourceReader::new(fs::File::open(&path).unwrap()));
+		let reader = Box::new(FileResourceReader::new(&fs::File::open(&path).unwrap(), expected.len() as u64).unwrap());
 		let mut reference = Reference::from_model(model, DefaultLoadResource, reader);
+		assert_eq!(reference.resource.get_class(), DefaultLoadModel::get_class());
 		let target = ReadTargetsMut::from(&reference);
-		let result = reference.load(target).unwrap();
+		let result = reference.load(target).await.unwrap();
 
 		assert_eq!(result.buffer().unwrap(), expected);
 		assert!(matches!(result, ReadTargets::Backing(ResourceReaderBacking::MappedFile(_))));

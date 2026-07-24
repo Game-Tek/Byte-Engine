@@ -1,14 +1,13 @@
 # P0 - Correctness and stability
 
 - Fix the Cube test hang and gate renderer/window integration tests so normal test and `cargo llvm-cov` runs complete.
-- Fix or update the failing `math::tests::test_from_normal` expectation in `crates/math/src/lib.rs`.
 - Fix visibility rendering to use scene instance indices instead of loaded mesh indices in `crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs`.
 - Fix texture/material upload ordering that causes black-object flashes, including correct synchronization before rendering starts.
-- Fix `Streams::frames` so typed audio buffers report frame counts correctly in `crates/ahi/src/audio_hardware_interface.rs`.
 - Support applications with no audio endpoint.
 - Make Linux audio pause tolerate devices without ALSA pause support, make Windows format negotiation return an error instead of panicking, and implement or document Windows pause behavior.
 - Rebuild Metal dynamic resources correctly when swapchain frame counts change in `crates/ghi/src/metal/context.rs`.
 - Support Vulkan frame-count reductions and replace unimplemented internal-handle translation with explicit handling or a recoverable error.
+- Migrate the Vulkan and DX12 GHI backends from legacy descriptor templates to retained flat `ResourceSlot` writes and pipeline-derived native layouts.
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
@@ -18,7 +17,7 @@
 ## Frame and rendering
 
 - Add allocation instrumentation and budgets for steady-state frames, GHI recording, audio callbacks, and BELD peak memory before large optimization work.
-- Pass a shared frame context through world, UI, renderer, physics, and GHI for frame-local scratch allocation.
+- Extend the existing shared frame allocator into GHI for frame-local scratch allocation.
 - Add borrowed GHI frame allocators with two lifetime classes: CPU scratch reset after submission and retained frame-slot storage reset only after its `FrameKey` completes.
 - Route backend recording scratch through those allocators: Vulkan semaphore/copy/barrier data, Metal resource/binding/attachment/push-constant data, and DX12 pipeline/binding/queue data.
 - Keep Metal finished-command-buffer updates, native object ownership, readback state, and completion data out of CPU scratch.
@@ -27,9 +26,10 @@
 - Replace Vulkan command recording's full device state-map clones with immutable base state plus recording-local changes, and clean up the transition implementation.
 - Replace render-target linear lookups with direct `(SinkId, ResourceId) -> ImageIndex` maps and per-sink image lists.
 - Precompute render-pass resource access and attachment templates instead of rebuilding hash maps and vectors each frame.
-- Intern or use compact typed render-resource and visibility-resource keys; remove material names from non-debug visibility builds.
-- Reuse caller-provided scratch for render batching and add reusable or allocator-aware listener draining.
+- Remove material names from non-debug visibility builds.
+- Add reusable or allocator-aware listener draining.
 - Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
+- Coalesce visibility instance render calls into one dispatch over a compact instance and meshlet work list.
 - Sort visibility and transparent work by camera distance where required.
 
 ## UI
@@ -39,7 +39,6 @@
 - Replace hit-test `Vec<Vec<usize>>` buckets with contiguous candidate storage plus per-cell ranges.
 - Return references or compact handles for UI primitive shapes instead of cloning them.
 - Drive multiple animations concurrently using a single animation driver.
-- Make sure only components awaiting input events are notified of input events.
 
 ## Physics
 
@@ -57,8 +56,6 @@
 
 - Batch pending Metal buffer and texture uploads into one transfer command buffer and blit encoder.
 - Avoid cloning Metal texture staging data and pipeline state during upload and descriptor binding.
-- Use actual descriptor access when making Metal argument-buffer resources resident.
-- Precompute Metal descriptor-set stage visibility and merge duplicate descriptor-encoding paths.
 - Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count.
 
 # P1 - Bake and asset performance
@@ -80,6 +77,7 @@
 
 ## GHI and windows
 
+- Honor raster pipeline depth-write configuration in the Vulkan and DX12 backends.
 - Complete DX12 command recording and device support for resources, pipelines, uploads, mesh shading, DXR, shader tables, fences, and submission.
 - Implement Vulkan standalone command-buffer execution.
 - Implement Metal ray tracing pipelines, acceleration structures, instance data, shader binding tables, and ray dispatch.
@@ -89,24 +87,21 @@
 
 ## Engine systems
 
+- Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
-- Implement `Positionable` state for gameplay sphere and cube colliders.
 - Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
+- Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
 ## Shader behavior
 
-- Add and conditionally emit `perprimitiveEXT` qualifiers.
-- Implement Metal interpolation, push-constant, and argument-buffer mapping without hardcoded backend conventions.
+- Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
 
 # P2 - BESL architecture
 
-- Convert visibility compute shaders to `ShaderSourceDefinition::Besl`, then remove generated current-platform visibility plumbing.
-- Add concise BESL compute descriptor helpers and decide how mesh/task shaders express platform-specific overrides.
-- Route UI and simple-pipeline shader creation through the shader store or a common platform-source helper.
-- Decide whether manually authored ACES, LUT, sky, visibility, material-count, and material-offset shaders should move to BESL.
 - Add explicit interpolation syntax and a generic texture/sampler resource model.
 - Complete MSL lowering for all declared intrinsics and reconcile `fetch_u32`, `image_atomic_or`, and `image_load_u32`.
-- Add 3D compute built-ins, threadgroup memory/barriers, mesh-stage abstractions, and address-space semantics.
+- Add 3D compute built-ins and address-space semantics.
+- Add task-payload, workgroup-storage, and task-dispatch lowering for GLSL and HLSL; the external visibility task shaders currently support Metal only.
 - Add missing control flow, boolean and numeric types, typed textures, matrix shapes, and structured array support.
 - Represent threadgroup size, matrix layout, function constants, and other MSL compile options in shader metadata.
 - Analyze each BESL graph once with visited-node tracking and keyed binding deduplication, sharing results across generation, reflection, and opacity evaluation.
@@ -123,10 +118,7 @@
 - Fix ignored asset-manager dependency-injection and BESL member-lexer tests.
 - Test asset path handling.
 - Add an in-process UDP client connection test and server lifecycle coverage.
-- Add AHI behavior tests beyond default parameters.
 - Add UI tests for sampled colors, remaining layout behavior, primitive styles, and non-box bounds.
-- Add gameplay collider `Positionable` tests.
-- Add unit tests for `crates/utils/src/stale_map.rs`.
 - Review and remove or use dead `TestTransport` and `TestSynthesizer` helpers.
 
 # P3 - Conditional optimizations
@@ -177,5 +169,3 @@
 - Keep tests in the new owning submodules instead of retaining large centralized test sections.
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
-
-- Check AGX tonemap pass conversion functions and render target color spaces.

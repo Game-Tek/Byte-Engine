@@ -1,6 +1,10 @@
-use std::{alloc::Allocator, ops::Deref, path::PathBuf};
+use std::{
+	alloc::Allocator,
+	ops::Deref,
+	path::{Path, PathBuf},
+};
 
-use super::{read_asset_from_source, BEADType, ResourceId};
+use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
 use crate::{
 	r#async::{future, BoxedFuture},
 	resource::reader::MappedFileBacking,
@@ -42,6 +46,11 @@ impl Deref for AssetStorageBytes<'_> {
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
 
 pub trait StorageBackend: Send + Sync {
+	/// Reports whether a source directory exists and can be read when the backend exposes paths.
+	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
+		None
+	}
+
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, None, &std::alloc::Global))
 	}
@@ -65,6 +74,11 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
+	fn directory_accessible(&self, path: &Path) -> Option<bool> {
+		let path = self.base_path.join(path);
+		Some(path.is_dir() && std::fs::read_dir(path).is_ok())
+	}
+
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
 	}
@@ -92,18 +106,14 @@ pub mod tests {
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
-	use utils::json;
-
-	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
+	use super::{parse_json, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{
 		asset::ResourceId,
 		r#async::{read, BoxedFuture},
 		tests::ASSETS_PATH,
 	};
 
-	/// A storage backend that can be used for tests.
-	/// It allows you to add files to the storage backend. This way you can test custom files without having to create them on the filesystem.
-	/// For any requested file that was not "mocked" it will try to read the file from the assets directory.
+	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
 	#[derive(Clone)]
 	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
 
@@ -120,8 +130,17 @@ pub mod tests {
 	impl StorageBackend for TestStorageBackend {
 		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
-				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
-					return Ok((AssetStorageBytes::Owned(data), None, url.get_extension().to_string()));
+				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
+				if let Some(data) = mocked_data {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec = if let Some(spec_data) = spec_data {
+						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
+						Some(parse_json(spec).or(Err(()))?)
+					} else {
+						None
+					};
+					return Ok((AssetStorageBytes::Owned(data), spec, url.get_extension().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -139,7 +158,7 @@ pub mod tests {
 
 				let spec = if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
+					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					let spec_bytes = match read(&spec_path).await {
@@ -150,14 +169,18 @@ pub mod tests {
 
 					if let Some(spec_bytes) = spec_bytes {
 						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec: json::Value = json::from_str(spec).or(Err(()))?;
+						let spec = parse_json(spec).or(Err(()))?;
 						Some(spec)
 					} else {
 						None
 					}
 				};
 
-				let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+				let format = path
+					.extension()
+					.and_then(|extension| extension.to_str())
+					.unwrap_or_default()
+					.to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
@@ -167,8 +190,17 @@ pub mod tests {
 
 		fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
-				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
-					return Ok((super::move_bytes_in(data, allocator), None, url.get_extension().to_string()));
+				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
+				if let Some(data) = mocked_data {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec = if let Some(spec_data) = spec_data {
+						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
+						Some(parse_json(spec).or(Err(()))?)
+					} else {
+						None
+					};
+					return Ok((super::move_bytes_in(data, allocator), spec, url.get_extension().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -186,7 +218,7 @@ pub mod tests {
 
 				let spec = if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
+					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					let spec_bytes = match read(&spec_path).await {
@@ -197,14 +229,18 @@ pub mod tests {
 
 					if let Some(spec_bytes) = spec_bytes {
 						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec: json::Value = json::from_str(spec).or(Err(()))?;
+						let spec = parse_json(spec).or(Err(()))?;
 						Some(spec)
 					} else {
 						None
 					}
 				};
 
-				let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+				let format = path
+					.extension()
+					.and_then(|extension| extension.to_str())
+					.unwrap_or_default()
+					.to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
@@ -239,6 +275,27 @@ pub mod tests {
 		assert_eq!(bytes.as_slice(), expected);
 		assert!(spec.is_none());
 		assert_eq!(format, "bin");
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn file_storage_backend_resolves_extensionless_dependency_bytes() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("skeleton");
+		let expected = b"buffer-bytes";
+		fs::write(&path, expected).unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let (bytes, spec, format) = storage_backend
+			.resolve(ResourceId::new("skeleton"))
+			.await
+			.expect("extensionless dependency should resolve");
+
+		assert_eq!(bytes.as_slice(), expected);
+		assert!(spec.is_none());
+		assert_eq!(format, "");
 
 		fs::remove_dir_all(directory).unwrap();
 	}

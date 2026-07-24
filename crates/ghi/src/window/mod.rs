@@ -1,4 +1,4 @@
-//! The window module provides functionality for creating and managing windows on multiple platforms.
+//! Creates platform windows and reports their input events.
 
 pub mod input;
 pub(crate) mod os;
@@ -18,28 +18,28 @@ impl Seat {
 	}
 }
 
-/// The events that can be received from a window.
+/// An event reported by a window.
 #[derive(Debug, Clone, Copy)]
 pub enum Events {
-	/// The window has been resized.
+	/// The window changed size.
 	Resize { width: u32, height: u32 },
-	/// The window has been minimized.
+	/// The window was minimized.
 	Minimize,
-	/// The window has been maximized.
+	/// The window was maximized.
 	Maximize,
-	/// The window has been closed.
+	/// The window was closed.
 	Close,
-	/// A key has been pressed or released.
+	/// A keyboard key changed state.
 	Key { seat: Seat, pressed: bool, key: input::Keys },
-	/// A text character has been entered.
+	/// The user entered a text character.
 	Character { seat: Seat, character: char },
-	/// A mouse button has been pressed or released.
+	/// A mouse button changed state.
 	Button {
 		seat: Seat,
 		pressed: bool,
 		button: input::MouseKeys,
 	},
-	/// The mouse has moved relative to its previous position.
+	/// The mouse moved relative to its previous position.
 	/// Coordinates are normalized by the current window size.
 	MouseMove {
 		seat: Seat,
@@ -48,7 +48,7 @@ pub enum Events {
 		/// The time at which the event occurred.
 		time: u64,
 	},
-	/// The mouse position has changed.
+	/// The mouse moved to an absolute position.
 	/// Coordinates are normalized to the window in the range `-1.0..=1.0`.
 	MousePosition {
 		seat: Seat,
@@ -57,7 +57,7 @@ pub enum Events {
 		/// The time at which the event occurred.
 		time: u64,
 	},
-	/// The mouse wheel or touch surface has scrolled.
+	/// A mouse wheel or touch surface scrolled.
 	Scroll {
 		seat: Seat,
 		dx: f32,
@@ -69,9 +69,9 @@ pub enum Events {
 
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-	/// Bit flags for the features of a window.
+	/// Optional features requested for a window.
 	pub struct Features : u32 {
-		/// The window has decorations (title bar, border, etc.).
+		/// A title bar and border decorate the window.
 		const DECORATIONS = 0b0001;
 	}
 }

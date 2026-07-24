@@ -7,12 +7,9 @@ pub struct Context {
 	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<sampler::Sampler>,
 	pub(crate) allocations: Vec<Allocation>,
-	pub(crate) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(crate) pipeline_layouts: Vec<PipelineLayout>,
-	pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
 	pub(crate) vertex_layouts: Vec<VertexLayout>,
 	vertex_layout_indices: HashMap<VertexLayoutKey, VertexLayoutHandle>,
-	pub(crate) bindings: Vec<binding::Binding>,
 	pub(crate) descriptor_sets: Vec<descriptor_set::DescriptorSet>,
 	pub(crate) meshes: Vec<Mesh>,
 	pub(crate) acceleration_structures: Vec<AccelerationStructure>,
@@ -27,16 +24,16 @@ pub struct Context {
 	internal_upload_synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 
-	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
-	pub(crate) descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32, u8), HashSet<PrivateHandles>>,
+	pub(crate) resource_to_descriptor:
+		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,
+	pub(crate) descriptor_set_to_resource:
+		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
-	pub(crate) texture_copies: Vec<Vec<u8>>,
-	pub(crate) next_texture_copy_handle: Cell<u64>,
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
@@ -57,8 +54,10 @@ impl Context {
 		let command_buffer = queue.commandBufferWithDescriptor(&descriptor).expect(error_message);
 
 		#[cfg(debug_assertions)]
-		if let Some(label) = label {
-			command_buffer.setLabel(Some(&NSString::from_str(label)));
+		if self.settings.debug_labels {
+			if let Some(label) = label {
+				command_buffer.setLabel(Some(&NSString::from_str(label)));
+			}
 		}
 
 		command_buffer
@@ -119,12 +118,9 @@ impl Context {
 			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),
 			allocations: Vec::new(),
-			descriptor_sets_layouts: Vec::new(),
 			pipeline_layouts: Vec::new(),
-			pipeline_layout_indices: HashMap::default(),
 			vertex_layouts: Vec::new(),
 			vertex_layout_indices: HashMap::default(),
-			bindings: Vec::new(),
 			descriptor_sets: Vec::new(),
 			meshes: Vec::new(),
 			acceleration_structures: Vec::new(),
@@ -141,8 +137,6 @@ impl Context {
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
-			texture_copies: Vec::new(),
-			next_texture_copy_handle: Cell::new(0),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),
@@ -181,10 +175,12 @@ impl Context {
 		};
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = name.as_deref() {
-			buffer.setLabel(Some(&NSString::from_str(name)));
-			if let Some(staging) = staging.as_ref() {
-				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
+		if self.settings.debug_labels {
+			if let Some(name) = name.as_deref() {
+				buffer.setLabel(Some(&NSString::from_str(name)));
+				if let Some(staging) = staging.as_ref() {
+					staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
+				}
 			}
 		}
 
@@ -265,8 +261,10 @@ impl Context {
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = name.as_deref() {
-			texture.setLabel(Some(&NSString::from_str(name)));
+		if self.settings.debug_labels {
+			if let Some(name) = name.as_deref() {
+				texture.setLabel(Some(&NSString::from_str(name)));
+			}
 		}
 
 		let staging = utils::texture_upload_layout(format, extent).map(|(_, _, bytes_per_image)| {
@@ -335,7 +333,7 @@ impl Context {
 		for slice in 0..array_layers as usize {
 			let source_offset = slice * bytes_per_image;
 			let destination_offset = slice * aligned_bytes_per_image;
-			utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, source_offset);
+
 			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
 				break;
 			};
@@ -376,22 +374,15 @@ impl Context {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
+		if self.settings.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
+		}
 
 		let mut source_size = utils::texture_copy_size(format, extent);
 		source_size.depth = 1;
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 		for slice in 0..array_layers as usize {
-			utils::debug_compressed_upload(
-				format,
-				0,
-				slice,
-				extent,
-				aligned_bytes_per_row,
-				aligned_bytes_per_image,
-				slice * aligned_bytes_per_image,
-			);
 			unsafe {
 				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 					upload_buffer.as_ref(),
@@ -411,54 +402,51 @@ impl Context {
 		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
-	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
-	pub(crate) fn update_descriptor_for_binding(
+	/// Stores one resolved retained descriptor and advances the set version used by immutable native snapshots.
+	pub(crate) fn update_descriptor_slot(
 		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
+		set_handle: DescriptorSetHandle,
+		slot: crate::shader::ResourceSlot,
 		descriptor: Descriptor,
 		frame_index: u8,
 		array_element: u32,
 	) {
-		let binding = self.bindings[binding_handle.0 as usize].clone();
-		let set_handle = binding.descriptor_set_handle;
-		let binding_index = binding.index;
-
-		self.clear_descriptor_tracking(set_handle, binding_handle, binding_index, array_element, frame_index);
-
-		{
-			let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
-			let bindings = descriptor_set.descriptors.entry(binding_index).or_default();
-			bindings.insert(array_element, descriptor);
+		let previous = self.descriptor_sets[set_handle.0 as usize]
+			.descriptors
+			.get(&slot)
+			.and_then(|descriptors| descriptors.get(&array_element))
+			.copied();
+		if previous == Some(descriptor) {
+			return;
 		}
 
-		self.encode_descriptor_binding(set_handle, binding_index, descriptor, frame_index, array_element);
-		self.register_descriptor_tracking(
-			set_handle,
-			binding_handle,
-			binding_index,
-			descriptor,
-			array_element,
-			frame_index,
-		);
+		self.clear_descriptor_tracking(set_handle, slot, array_element, frame_index);
+		let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+		descriptor_set
+			.descriptors
+			.entry(slot)
+			.or_default()
+			.insert(array_element, descriptor);
+		descriptor_set.version = descriptor_set.version.wrapping_add(1);
+		self.register_descriptor_tracking(set_handle, slot, descriptor, array_element, frame_index);
 	}
 
 	/// Removes reverse-tracking entries for the descriptor currently associated with one binding element in one frame.
 	fn clear_descriptor_tracking(
 		&mut self,
 		set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
+		slot: crate::shader::ResourceSlot,
 		array_element: u32,
 		frame_index: u8,
 	) {
-		let key = (set_handle, binding_index, array_element, frame_index);
+		let key = (set_handle, slot, array_element, frame_index);
 		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
 			return;
 		};
 
 		for resource in resources {
 			let should_remove = if let Some(descriptor_bindings) = self.resource_to_descriptor.get_mut(&resource) {
-				descriptor_bindings.remove(&(binding_handle, array_element, frame_index));
+				descriptor_bindings.remove(&(set_handle, slot, array_element, frame_index));
 				descriptor_bindings.is_empty()
 			} else {
 				false
@@ -474,8 +462,7 @@ impl Context {
 	fn register_descriptor_tracking(
 		&mut self,
 		set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
+		slot: crate::shader::ResourceSlot,
 		descriptor: Descriptor,
 		array_element: u32,
 		frame_index: u8,
@@ -485,193 +472,13 @@ impl Context {
 		};
 
 		self.descriptor_set_to_resource
-			.entry((set_handle, binding_index, array_element, frame_index))
+			.entry((set_handle, slot, array_element, frame_index))
 			.or_default()
 			.insert(resource);
 		self.resource_to_descriptor
 			.entry(resource)
 			.or_default()
-			.insert((binding_handle, array_element, frame_index));
-	}
-
-	/// Writes a resolved descriptor into the Metal argument buffer for one frame and array element.
-	/// Call this to write a descriptor binding into the argument buffer.
-	pub(crate) fn encode_descriptor_binding(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		binding_index: u32,
-		descriptor: Descriptor,
-		frame_index: u8,
-		array_element: u32,
-	) {
-		let descriptor_set_layout_handle = self.descriptor_sets[set_handle.0 as usize].descriptor_set_layout;
-		let (argument_encoder, layout_binding) = {
-			let layout = &self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize];
-			(
-				layout.argument_encoder.clone(),
-				layout.binding(binding_index).cloned().expect(
-					"Descriptor set binding not found in Metal layout. The most likely cause is that a descriptor write targeted a binding that was not declared in the descriptor set template.",
-				),
-			)
-		};
-
-		let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
-
-		unsafe {
-			argument_encoder.setArgumentBuffer_offset(Some(descriptor_set.argument_buffer.as_ref()), 0);
-		}
-
-		match (layout_binding.slot_for_array_element(array_element), descriptor) {
-			(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
-				let buffer = self.buffers.resource(buffer);
-				argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
-				let image = self.images.resource(image);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::CombinedImageSampler { image, .. }) => unsafe {
-				let image = self.images.resource(image);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
-				let sampler = &self.samplers[sampler.0 as usize];
-				argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
-			},
-			(
-				DescriptorBindingSlot::CombinedImageSampler { texture, sampler },
-				Descriptor::CombinedImageSampler {
-					image,
-					sampler: sampler_handle,
-					..
-				},
-			) => unsafe {
-				let image = self.images.resource(image);
-				let sampler_state = &self.samplers[sampler_handle.0 as usize];
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
-				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
-				let swapchain = &self.swapchains[handle.0 as usize];
-				let proxy_image_handle = swapchain.images[frame_index as usize].expect(
-					"Swapchain proxy image not found. The most likely cause is that the swapchain was not created with proxy images.",
-				);
-				let image = self.images.resource(proxy_image_handle);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			_ => panic!(
-				"Descriptor write does not match the Metal descriptor set layout. The most likely cause is that a descriptor type was written to a binding declared with a different descriptor type."
-			),
-		}
-	}
-
-	pub(crate) fn encode_binding(
-		&self,
-		binding_handle: DescriptorSetBindingHandle,
-		descriptor: Descriptor,
-		frame_index: u8,
-		array_element: u32,
-	) {
-		let binding = &self.bindings[binding_handle.0 as usize];
-		let descriptor_set_handle = binding.descriptor_set_handle;
-		let index = binding.index;
-
-		let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-		let descriptor_set_template_handle = descriptor_set.descriptor_set_layout;
-
-		let (argument_encoder, layout_binding) = {
-			let layout = &self.descriptor_sets_layouts[descriptor_set_template_handle.0 as usize];
-			(
-				layout.argument_encoder.clone(),
-				layout.binding(index).cloned().expect(
-					"Descriptor set binding not found in Metal layout. The most likely cause is that a descriptor write targeted a binding that was not declared in the descriptor set template.",
-				),
-			)
-		};
-
-		unsafe {
-			argument_encoder.setArgumentBuffer_offset(Some(descriptor_set.argument_buffer.as_ref()), 0);
-		}
-
-		match (layout_binding.slot_for_array_element(array_element), descriptor) {
-			(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
-				let buffer = self.buffers.resource(buffer);
-				argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
-				let image = self.images.resource(image);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::CombinedImageSampler { image, .. }) => unsafe {
-				let image = self.images.resource(image);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
-				let sampler = &self.samplers[sampler.0 as usize];
-				argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
-			},
-			(
-				DescriptorBindingSlot::CombinedImageSampler { texture, sampler },
-				Descriptor::CombinedImageSampler {
-					image,
-					sampler: sampler_handle,
-					..
-				},
-			) => unsafe {
-				let image = self.images.resource(image);
-				let sampler_state = &self.samplers[sampler_handle.0 as usize];
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
-				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
-			},
-			(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
-				let swapchain = &self.swapchains[handle.0 as usize];
-				let proxy_image_handle = swapchain.images[frame_index as usize].expect(
-					"Swapchain proxy image not found. The most likely cause is that the swapchain was not created with proxy images.",
-				);
-				let image = self.images.resource(proxy_image_handle);
-				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
-			},
-			_ => panic!(
-				"Descriptor write does not match the Metal descriptor set layout. The most likely cause is that a descriptor type was written to a binding declared with a different descriptor type."
-			),
-		}
-	}
-
-	/// Pre-encodes immutable samplers into a descriptor set.
-	fn encode_immutable_samplers(&mut self, set_handle: DescriptorSetHandle) {
-		let descriptor_set_layout_handle = self.descriptor_sets[set_handle.0 as usize].descriptor_set_layout;
-		let (argument_encoder, bindings) = {
-			let layout = &self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize];
-			(layout.argument_encoder.clone(), layout.bindings.clone())
-		};
-
-		unsafe {
-			argument_encoder
-				.setArgumentBuffer_offset(Some(self.descriptor_sets[set_handle.0 as usize].argument_buffer.as_ref()), 0);
-		}
-
-		for binding in &bindings {
-			let Some(immutable_samplers) = &binding.immutable_samplers else {
-				continue;
-			};
-
-			for (array_element, sampler_handle) in immutable_samplers.iter().enumerate() {
-				let slot = binding.slot_for_array_element(array_element as u32);
-				let sampler = &self.samplers[SamplerHandle(sampler_handle.0).0 as usize];
-
-				match slot {
-					DescriptorBindingSlot::Sampler(slot) => unsafe {
-						argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
-					},
-					DescriptorBindingSlot::CombinedImageSampler {
-						sampler: sampler_slot, ..
-					} => unsafe {
-						argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), sampler_slot as _);
-					},
-					_ => {}
-				}
-			}
-		}
+			.insert((set_handle, slot, array_element, frame_index));
 	}
 
 	/// Resolves a descriptor write into the concrete per-frame Metal resources referenced by the current sequence.
@@ -711,7 +518,9 @@ impl Context {
 			}),
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
-			crate::descriptors::WriteData::AccelerationStructure { .. } => None,
+			crate::descriptors::WriteData::AccelerationStructure { handle } => Some(Descriptor::AccelerationStructure {
+				handle: TopLevelAccelerationStructureHandle(handle.0),
+			}),
 			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
 				handle: crate::swapchain::SwapchainHandle(swapchain_handle.0),
 			}),
@@ -721,14 +530,15 @@ impl Context {
 	/// Resolves and applies a descriptor write for a single frame when the referenced resources are available.
 	fn apply_descriptor_write_for_frame(
 		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
+		set_handle: DescriptorSetHandle,
+		slot: crate::shader::ResourceSlot,
 		descriptor: crate::descriptors::WriteData,
 		array_element: u32,
 		frame_offset: i32,
 		sequence_index: u8,
 	) {
 		if let Some(descriptor) = self.resolve_descriptor_for_frame(descriptor, sequence_index, frame_offset) {
-			self.update_descriptor_for_binding(binding_handle, descriptor, sequence_index, array_element);
+			self.update_descriptor_slot(set_handle, slot, descriptor, sequence_index, array_element);
 		}
 	}
 
@@ -736,16 +546,18 @@ impl Context {
 	/// Call this to update a descriptor binding for all frames.
 	fn apply_descriptor_write_to_all_frames(
 		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
+		set_handle: DescriptorSetHandle,
+		slot: crate::shader::ResourceSlot,
 		descriptor: crate::descriptors::WriteData,
 		array_element: u32,
 		frame_offset: i32,
 	) {
-		let binding_handles = binding_handle.root(&self.bindings).get_all(&self.bindings);
+		let set_handles = set_handle.root(&self.descriptor_sets).get_all(&self.descriptor_sets);
 
-		for (sequence_index, &binding_handle) in binding_handles.iter().enumerate() {
+		for (sequence_index, &set_handle) in set_handles.iter().enumerate() {
 			self.apply_descriptor_write_for_frame(
-				binding_handle,
+				set_handle,
+				slot,
 				descriptor,
 				array_element,
 				frame_offset,
@@ -754,24 +566,15 @@ impl Context {
 		}
 	}
 
-	/// Re-encodes every tracked descriptor binding that references a resource after its Metal backing changes.
+	/// Invalidates every retained set that references a resource whose native backing changed.
 	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: PrivateHandles) {
 		let Some(descriptor_bindings) = self.resource_to_descriptor.get(&handle).cloned() else {
 			return;
 		};
 
-		for (binding_handle, array_element, frame_index) in descriptor_bindings {
-			let binding = self.bindings[binding_handle.0 as usize].clone();
-			let set_handle = binding.descriptor_set_handle;
-			let descriptor = self.descriptor_sets[set_handle.0 as usize]
-				.descriptors
-				.get(&binding.index)
-				.and_then(|descriptors| descriptors.get(&array_element))
-				.copied();
-
-			if let Some(descriptor) = descriptor {
-				self.encode_descriptor_binding(set_handle, binding.index, descriptor, frame_index, array_element);
-			}
+		for (set_handle, ..) in descriptor_bindings {
+			let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+			descriptor_set.version = descriptor_set.version.wrapping_add(1);
 		}
 	}
 
@@ -819,15 +622,13 @@ impl Context {
 			.filter(|candidate| *candidate != replacement)
 			.filter_map(|candidate| self.resource_to_descriptor.get(&candidate))
 			.flat_map(|bindings| bindings.iter().copied())
-			.filter(|(_, _, descriptor_frame_index)| *descriptor_frame_index == frame_index)
+			.filter(|(_, _, _, descriptor_frame_index)| *descriptor_frame_index == frame_index)
 			.collect::<HashSet<_>>();
 
-		for (binding_handle, array_element, _) in descriptor_bindings {
-			let binding = self.bindings[binding_handle.0 as usize].clone();
-			let set_handle = binding.descriptor_set_handle;
+		for (set_handle, slot, array_element, _) in descriptor_bindings {
 			let Some(descriptor) = self.descriptor_sets[set_handle.0 as usize]
 				.descriptors
-				.get(&binding.index)
+				.get(&slot)
 				.and_then(|descriptors| descriptors.get(&array_element))
 				.copied()
 			else {
@@ -843,7 +644,7 @@ impl Context {
 				_ => continue,
 			};
 
-			self.update_descriptor_for_binding(binding_handle, descriptor, frame_index, array_element);
+			self.update_descriptor_slot(set_handle, slot, descriptor, frame_index, array_element);
 		}
 	}
 
@@ -853,38 +654,37 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		extent: Extent,
 	) {
-		let image_handles = self.swapchains[swapchain_handle.0 as usize]
-			.images
-			.into_iter()
-			.flatten()
-			.collect::<Vec<_>>();
+		let image_handles = self.swapchains[swapchain_handle.0 as usize].images;
+		let mut resized = false;
 
-		for image_handle in image_handles {
-			let (name, current_extent, format, uses, access, array_layers) = {
+		for image_handle in image_handles.into_iter().flatten() {
+			let (current_extent, format, uses, access, array_layers) = {
 				let image = self.images.resource(image_handle);
-				(
-					image.name.clone(),
-					image.extent,
-					image.format,
-					image.uses,
-					image.access,
-					image.array_layers,
-				)
+				(image.extent, image.format, image.uses, image.access, image.array_layers)
 			};
 
 			if current_extent == extent {
 				continue;
 			}
 
+			let name = self.images.resource(image_handle).name.clone();
 			let replacement = self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers);
 			*self.images.resource_mut(image_handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
+			resized = true;
+		}
+
+		if resized {
+			// Swapchain descriptors resolve through the stable proxy handles, so only backing replacement invalidates them.
+			self.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(
+				swapchain_handle.0,
+			)));
 		}
 	}
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
-		let mut tasks = self.tasks.split_off(0);
-		let mut deferred_frame_tasks = Vec::new();
+		let mut tasks = std::mem::take(&mut self.tasks);
+		let mut deferred_frame_tasks = SmallVec::<[Task; 16]>::new(); // TODO: use frame allocator
 
 		tasks.retain(|task| {
 			if let Some(frame) = task.frame() {
@@ -900,69 +700,6 @@ impl Context {
 				Tasks::UpdateImageDescriptors { handle } => {
 					self.rewrite_descriptors_for_handle(PrivateHandles::Image(*handle));
 				}
-				Tasks::UpdateDescriptor { descriptor_write } => {
-					let binding_handles = DescriptorSetBindingHandle(descriptor_write.binding_handle.0)
-						.root(&self.bindings)
-						.get_all(&self.bindings);
-					let binding_index = (sequence_index as usize).rem_euclid(binding_handles.len());
-
-					let Some(&binding_handle) = binding_handles.get(binding_index) else {
-						return false;
-					};
-
-					self.apply_descriptor_write_for_frame(
-						binding_handle,
-						descriptor_write.descriptor,
-						descriptor_write.array_element,
-						descriptor_write.frame_offset.unwrap_or(0),
-						sequence_index,
-					);
-				}
-				Tasks::WriteDescriptor {
-					binding_handle,
-					descriptor,
-				} => match descriptor {
-					Descriptors::Buffer { handle, size } => self.update_descriptor_for_binding(
-						*binding_handle,
-						Descriptor::Buffer {
-							buffer: *handle,
-							size: *size,
-						},
-						sequence_index,
-						0,
-					),
-					Descriptors::Image { handle, layout } => self.update_descriptor_for_binding(
-						*binding_handle,
-						Descriptor::Image {
-							image: *handle,
-							layout: *layout,
-						},
-						sequence_index,
-						0,
-					),
-					Descriptors::CombinedImageSampler {
-						image_handle,
-						sampler_handle,
-						layout,
-						..
-					} => self.update_descriptor_for_binding(
-						*binding_handle,
-						Descriptor::CombinedImageSampler {
-							image: *image_handle,
-							sampler: *sampler_handle,
-							layout: *layout,
-						},
-						sequence_index,
-						0,
-					),
-					Descriptors::Sampler { handle } => self.update_descriptor_for_binding(
-						*binding_handle,
-						Descriptor::Sampler { sampler: *handle },
-						sequence_index,
-						0,
-					),
-					Descriptors::CombinedImageSamplerArray => {}
-				},
 				Tasks::BuildImage(builder) => {
 					let previous = self.images.resource(builder.previous);
 					let name = previous.name.clone();
@@ -1026,20 +763,6 @@ impl Context {
 		tasks.extend(deferred_frame_tasks);
 		self.tasks = tasks;
 	}
-
-	/// Interns texture readbacks produced by detached command-buffer recording.
-	pub(super) fn intern_texture_copies(
-		&mut self,
-		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
-	) {
-		for (handle, data) in texture_copies {
-			let index = handle.0 as usize;
-			if index >= self.texture_copies.len() {
-				self.texture_copies.resize_with(index + 1, Vec::new);
-			}
-			self.texture_copies[index] = data;
-		}
-	}
 }
 
 impl Context {
@@ -1087,7 +810,7 @@ impl Context {
 				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
 		}
 		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
-		let vertex_size = utils::vertex_layout_size(vertex_layout);
+		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum();
 		let max_binding = vertex_layout
 			.iter()
 			.map(|element| element.binding)
@@ -1098,7 +821,7 @@ impl Context {
 		let mut source_offset = 0usize;
 
 		for element in vertex_layout {
-			let element_size = utils::data_type_size(element.format);
+			let element_size = element.format.size();
 			let binding = element.binding as usize;
 			let destination_offset = binding_spans[binding]
 				.last()
@@ -1162,7 +885,7 @@ impl Context {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(_) => {
@@ -1206,24 +929,12 @@ impl Context {
 			}
 		};
 
-		let stages = match stage {
-			crate::ShaderTypes::Vertex => crate::Stages::VERTEX,
-			crate::ShaderTypes::Fragment => crate::Stages::FRAGMENT,
-			crate::ShaderTypes::Compute => crate::Stages::COMPUTE,
-			crate::ShaderTypes::RayGen => crate::Stages::RAYGEN,
-			crate::ShaderTypes::Intersection => crate::Stages::INTERSECTION,
-			crate::ShaderTypes::AnyHit => crate::Stages::ANY_HIT,
-			crate::ShaderTypes::ClosestHit => crate::Stages::CLOSEST_HIT,
-			crate::ShaderTypes::Miss => crate::Stages::MISS,
-			crate::ShaderTypes::Callable => crate::Stages::CALLABLE,
-			crate::ShaderTypes::Task => crate::Stages::TASK,
-			crate::ShaderTypes::Mesh => crate::Stages::MESH,
-		};
+		let stages = stage.into();
 
 		self.shaders.push(Shader {
 			name: crate::debug_name(name),
 			stage: stages,
-			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 			metal_library,
 			metal_entry_point,
 			threadgroup_size,
@@ -1255,128 +966,16 @@ impl Context {
 			.ok()
 	}
 
-	/// Builds the Metal argument-buffer layout that backs a descriptor set template.
-	pub fn create_descriptor_set_template(
-		&mut self,
-		_name: Option<&str>,
-		binding_templates: &[graphics_hardware_interface::DescriptorSetBindingTemplate],
-	) -> graphics_hardware_interface::DescriptorSetTemplateHandle {
-		let mut next_argument_index = 0u32;
-		let mut metal_argument_descriptors = Vec::new();
-		let bindings = binding_templates
-			.iter()
-			.map(|template| {
-				assert_ne!(
-					template.descriptor_count, 0,
-					"Metal descriptor set bindings must contain at least one descriptor. The most likely cause is that a descriptor set template declared a binding with descriptor_count = 0.",
-				);
-
-				let access = match template.descriptor_type {
-					crate::descriptors::DescriptorType::UniformBuffer
-					| crate::descriptors::DescriptorType::SampledImage
-					| crate::descriptors::DescriptorType::InputAttachment
-					| crate::descriptors::DescriptorType::Sampler
-					| crate::descriptors::DescriptorType::CombinedImageSampler => mtl::MTLBindingAccess::ReadOnly,
-					crate::descriptors::DescriptorType::StorageBuffer
-					| crate::descriptors::DescriptorType::StorageImage
-					| crate::descriptors::DescriptorType::AccelerationStructure => mtl::MTLBindingAccess::ReadWrite,
-				};
-
-				let mut build_slots = |data_type: mtl::MTLDataType| {
-					(0..template.descriptor_count)
-						.map(|_| {
-							let descriptor = mtl::MTLArgumentDescriptor::argumentDescriptor();
-							descriptor.setDataType(data_type);
-							descriptor.setIndex(next_argument_index as _);
-							descriptor.setAccess(access);
-							if data_type == mtl::MTLDataType::Texture {
-								let texture_type = match template.texture_view_type {
-									crate::TextureViewTypes::Texture2D => mtl::MTLTextureType::Type2D,
-									crate::TextureViewTypes::Texture2DArray => mtl::MTLTextureType::Type2DArray,
-									crate::TextureViewTypes::Texture3D => mtl::MTLTextureType::Type3D,
-								};
-								descriptor.setTextureType(texture_type);
-							}
-							metal_argument_descriptors.push(descriptor);
-							let slot = next_argument_index;
-							next_argument_index += 1;
-							slot
-						})
-						.collect::<Vec<_>>()
-				};
-
-				let argument_slots = match template.descriptor_type {
-					crate::descriptors::DescriptorType::UniformBuffer
-					| crate::descriptors::DescriptorType::StorageBuffer => {
-						ArgumentBindingSlots::Buffer(build_slots(mtl::MTLDataType::Pointer))
-					}
-					crate::descriptors::DescriptorType::SampledImage
-					| crate::descriptors::DescriptorType::StorageImage
-					| crate::descriptors::DescriptorType::InputAttachment => {
-						ArgumentBindingSlots::Texture(build_slots(mtl::MTLDataType::Texture))
-					}
-					crate::descriptors::DescriptorType::Sampler => {
-						ArgumentBindingSlots::Sampler(build_slots(mtl::MTLDataType::Sampler))
-					}
-					crate::descriptors::DescriptorType::CombinedImageSampler => ArgumentBindingSlots::CombinedImageSampler {
-						textures: build_slots(mtl::MTLDataType::Texture),
-						samplers: build_slots(mtl::MTLDataType::Sampler),
-					},
-					crate::descriptors::DescriptorType::AccelerationStructure => {
-						ArgumentBindingSlots::Buffer(build_slots(mtl::MTLDataType::Pointer))
-					}
-				};
-
-				DescriptorSetLayoutBinding {
-					binding: template.binding,
-					descriptor_type: template.descriptor_type,
-					descriptor_count: template.descriptor_count,
-					stages: template.stages,
-					immutable_samplers: template.immutable_samplers.clone(),
-					argument_slots,
-				}
-			})
-			.collect::<Vec<_>>();
-		let argument_descriptor_refs = metal_argument_descriptors
-			.iter()
-			.map(|descriptor| descriptor.as_ref())
-			.collect::<Vec<_>>();
-		let argument_descriptors = NSArray::from_slice(&argument_descriptor_refs);
-		let argument_encoder = self.device.newArgumentEncoderWithArguments(&argument_descriptors).expect(
-			"Metal argument encoder creation failed. The most likely cause is that the descriptor set template described an unsupported argument layout.",
-		);
-		self.descriptor_sets_layouts.push(DescriptorSetLayout {
-			bindings,
-			encoded_length: argument_encoder.encodedLength(),
-			argument_encoder,
-		});
-		graphics_hardware_interface::DescriptorSetTemplateHandle((self.descriptor_sets_layouts.len() - 1) as u64)
-	}
-
-	/// Allocates one Metal descriptor set per in-flight frame and seeds immutable samplers.
-	pub fn create_descriptor_set(
-		&mut self,
-		_name: Option<&str>,
-		descriptor_set_template_handle: &graphics_hardware_interface::DescriptorSetTemplateHandle,
-	) -> graphics_hardware_interface::DescriptorSetHandle {
-		let encoded_length = self.descriptor_sets_layouts[descriptor_set_template_handle.0 as usize]
-			.encoded_length
-			.max(1);
-
+	/// Creates one retained logical descriptor set per in-flight frame without allocating a native layout.
+	pub fn create_descriptor_set(&mut self, _name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
 		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
 		let mut previous_handle: Option<DescriptorSetHandle> = None;
 
 		for _ in 0..self.frames {
 			let descriptor_set_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
-			let argument_buffer = self
-				.device
-				.newBufferWithLength_options(encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
-				.expect("Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.");
-
 			self.descriptor_sets.push(descriptor_set::DescriptorSet {
 				next: None,
-				descriptor_set_layout: *descriptor_set_template_handle,
-				argument_buffer,
+				version: 0,
 				descriptors: HashMap::default(),
 			});
 
@@ -1384,98 +983,32 @@ impl Context {
 				self.descriptor_sets[previous_handle.0 as usize].next = Some(descriptor_set_handle);
 			}
 
-			self.encode_immutable_samplers(descriptor_set_handle);
 			previous_handle = Some(descriptor_set_handle);
 		}
 
 		handle
 	}
 
-	/// Creates one descriptor binding per frame-local descriptor set and applies the initial contents.
-	pub fn create_descriptor_binding(
+	fn create_pipeline_layout(
 		&mut self,
-		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
-		binding_constructor: graphics_hardware_interface::BindingConstructor,
-	) -> graphics_hardware_interface::DescriptorSetBindingHandle {
-		let descriptor_type = binding_constructor.descriptor_set_binding_template.descriptor_type;
-		let binding_index = binding_constructor.descriptor_set_binding_template.binding;
-		let count = binding_constructor.descriptor_set_binding_template.descriptor_count;
-		let descriptor_set_handles = DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
-		let mut next = None;
-
-		for descriptor_set_handle in descriptor_set_handles.iter().rev() {
-			let binding_handle = DescriptorSetBindingHandle(self.bindings.len() as u64);
-
-			self.bindings.push(binding::Binding {
-				next,
-				descriptor_set_handle: *descriptor_set_handle,
-				descriptor_type,
-				index: binding_index,
-				count,
-			});
-
-			next = Some(binding_handle);
-		}
-
-		let binding_handle = next.expect("Descriptor binding creation failed. The most likely cause is that no Metal descriptor sets were created for the requested template.");
-		let frame_offset = binding_constructor.frame_offset.map(i32::from).unwrap_or(0);
-
-		self.apply_descriptor_write_to_all_frames(
-			binding_handle,
-			binding_constructor.descriptor,
-			binding_constructor.array_element,
-			frame_offset,
-		);
-
-		graphics_hardware_interface::DescriptorSetBindingHandle(binding_handle.0)
-	}
-
-	fn get_or_create_pipeline_layout(
-		&mut self,
-		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		shaders: &[crate::pipelines::ShaderParameter],
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let key = PipelineLayoutKey {
-			descriptor_set_templates: descriptor_set_template_handles.to_vec(),
-			push_constant_ranges: push_constant_ranges.to_vec(),
-		};
-
-		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
-			return *handle;
-		}
-
-		let descriptor_set_template_indices = descriptor_set_template_handles
+		let stage_resources = shaders
 			.iter()
-			.enumerate()
-			.map(|(i, handle)| (*handle, i as u32))
-			.collect();
-		let push_constant_size = push_constant_ranges
-			.iter()
-			.map(|range| range.offset as usize + range.size as usize)
-			.max()
-			.unwrap_or(0);
-		self.pipeline_layouts.push(PipelineLayout {
-			descriptor_set_template_indices,
-			push_constant_ranges: push_constant_ranges.to_vec(),
-			push_constant_size,
-		});
-		let handle = graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
-		self.pipeline_layout_indices.insert(key, handle);
-		handle
+			.map(|shader_parameter| {
+				let shader = &self.shaders[shader_parameter.handle.0 as usize];
+				(shader.stage, shader.shader_resource_descriptors.clone())
+			})
+			.collect::<Vec<_>>();
+		let layout = build_pipeline_layout(self.device.as_ref(), &stage_resources, push_constant_ranges);
+		self.pipeline_layouts.push(layout);
+		graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64)
 	}
 
-	fn get_or_create_pipeline_layout_from_prebuilt(
-		&mut self,
-		layout: &PipelineLayout,
-	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let mut descriptor_set_templates =
-			vec![graphics_hardware_interface::DescriptorSetTemplateHandle(0); layout.descriptor_set_template_indices.len()];
-
-		for (handle, index) in &layout.descriptor_set_template_indices {
-			descriptor_set_templates[*index as usize] = *handle;
-		}
-
-		self.get_or_create_pipeline_layout(&descriptor_set_templates, &layout.push_constant_ranges)
+	fn intern_pipeline_layout(&mut self, layout: PipelineLayout) -> graphics_hardware_interface::PipelineLayoutHandle {
+		self.pipeline_layouts.push(layout);
+		graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64)
 	}
 
 	fn get_or_create_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayoutHandle {
@@ -1516,7 +1049,7 @@ impl Context {
 				attribute.setBufferIndex(element.binding as _);
 			}
 
-			binding_offsets[element.binding as usize] += utils::data_type_size(element.format);
+			binding_offsets[element.binding as usize] += element.format.size();
 		}
 
 		for (binding, stride) in strides.iter().copied().enumerate() {
@@ -1562,7 +1095,7 @@ impl Context {
 		&mut self,
 		pipeline: crate::metal::device::Pipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
+		let layout = self.intern_pipeline_layout(pipeline.layout);
 		let vertex_layout = pipeline
 			.vertex_layout
 			.map(|vertex_layout| self.get_or_create_vertex_layout_from_prebuilt(vertex_layout));
@@ -1573,7 +1106,7 @@ impl Context {
 			layout,
 			vertex_layout,
 			shader_handles: pipeline.shader_handles,
-			resource_access: pipeline.resource_access,
+			materializations: RefCell::new(HashMap::default()),
 			compute_threadgroup_size: pipeline.compute_threadgroup_size,
 			object_threadgroup_size: pipeline.object_threadgroup_size,
 			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
@@ -1586,7 +1119,7 @@ impl Context {
 		&mut self,
 		pipeline: crate::metal::device::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
+		let layout = self.intern_pipeline_layout(pipeline.layout);
 
 		self.intern_pipeline(Pipeline {
 			pipeline: pipeline.pipeline,
@@ -1594,7 +1127,7 @@ impl Context {
 			layout,
 			vertex_layout: None,
 			shader_handles: pipeline.shader_handles,
-			resource_access: pipeline.resource_access,
+			materializations: RefCell::new(HashMap::default()),
 			compute_threadgroup_size: pipeline.compute_threadgroup_size,
 			object_threadgroup_size: pipeline.object_threadgroup_size,
 			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
@@ -1626,10 +1159,7 @@ impl Context {
 	}
 
 	pub fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let layout = self.create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let has_depth_attachment = builder
 			.render_targets
 			.iter()
@@ -1642,42 +1172,28 @@ impl Context {
 		let mut fragment_function = None;
 		let mut object_threadgroup_size = None;
 		let mut mesh_threadgroup_size = None;
-		let resource_access = builder
-			.shaders
-			.iter()
-			.flat_map(|shader_parameter| {
-				let shader = &self.shaders[shader_parameter.handle.0 as usize];
-				shader_handles.insert(*shader_parameter.handle, [0; 32]);
-				match shader_parameter.stage {
-					crate::ShaderTypes::Task => {
-						object_function = self.create_metal_function(shader_parameter);
-						object_threadgroup_size = shader.threadgroup_size;
-					}
-					crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
-					crate::ShaderTypes::Mesh => {
-						mesh_function = self.create_metal_function(shader_parameter);
-						mesh_threadgroup_size = shader.threadgroup_size;
-					}
-					crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
-					_ => {}
+		for shader_parameter in builder.shaders.iter() {
+			let shader = &self.shaders[shader_parameter.handle.0 as usize];
+			shader_handles.insert(*shader_parameter.handle, [0; 32]);
+			match shader_parameter.stage {
+				crate::ShaderTypes::Task => {
+					object_function = self.create_metal_function(shader_parameter);
+					object_threadgroup_size = shader.threadgroup_size;
 				}
-				shader
-					.shader_binding_descriptors
-					.iter()
-					.map(|descriptor| {
-						(
-							(descriptor.set, descriptor.binding),
-							(shader_parameter.stage.into(), descriptor.access),
-						)
-					})
-					.collect::<Vec<_>>()
-			})
-			.collect::<Vec<_>>();
+				crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
+				crate::ShaderTypes::Mesh => {
+					mesh_function = self.create_metal_function(shader_parameter);
+					mesh_threadgroup_size = shader.threadgroup_size;
+				}
+				crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
+				_ => {}
+			}
+		}
 
 		let depth_stencil_state = if has_depth_attachment {
 			let descriptor = mtl::MTLDepthStencilDescriptor::new();
 			descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
-			descriptor.setDepthWriteEnabled(true);
+			descriptor.setDepthWriteEnabled(builder.depth_write);
 			self.device.newDepthStencilStateWithDescriptor(&descriptor)
 		} else {
 			None
@@ -1686,7 +1202,9 @@ impl Context {
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
 				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
@@ -1711,7 +1229,9 @@ impl Context {
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(Some(&self.vertex_layouts[vertex_layout.0 as usize].vertex_descriptor));
@@ -1752,7 +1272,7 @@ impl Context {
 			layout,
 			vertex_layout: Some(vertex_layout),
 			shader_handles,
-			resource_access,
+			materializations: RefCell::new(HashMap::default()),
 			compute_threadgroup_size: None,
 			object_threadgroup_size,
 			mesh_threadgroup_size,
@@ -1767,7 +1287,7 @@ impl Context {
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let layout = self.create_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
 		let shader_handle = *builder.shader.handle;
 		let compute_pipeline_state = {
 			let shader_parameter = &builder.shader;
@@ -1789,16 +1309,6 @@ impl Context {
 
 		let mut shader_handles = HashMap::default();
 		shader_handles.insert(shader_handle, [0; 32]);
-		let resource_access = self.shaders[shader_handle.0 as usize]
-			.shader_binding_descriptors
-			.iter()
-			.map(|descriptor| {
-				(
-					(descriptor.set, descriptor.binding),
-					(crate::Stages::COMPUTE, descriptor.access),
-				)
-			})
-			.collect::<Vec<_>>();
 		let compute_threadgroup_size = self.shaders[shader_handle.0 as usize].threadgroup_size;
 
 		self.pipelines.push(Pipeline {
@@ -1807,7 +1317,7 @@ impl Context {
 			layout,
 			vertex_layout: None,
 			shader_handles,
-			resource_access,
+			materializations: RefCell::new(HashMap::default()),
 			compute_threadgroup_size,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
@@ -1821,29 +1331,14 @@ impl Context {
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
-		let resource_access = builder
-			.shaders
-			.iter()
-			.flat_map(|shader_parameter| {
-				let shader = &self.shaders[shader_parameter.handle.0 as usize];
-				shader
-					.shader_binding_descriptors
-					.iter()
-					.map(|descriptor| ((descriptor.set, descriptor.binding), (shader.stage, descriptor.access)))
-					.collect::<Vec<_>>()
-			})
-			.collect::<Vec<_>>();
+		let layout = self.create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::RayTracing,
 			depth_stencil_state: None,
 			layout,
 			vertex_layout: None,
 			shader_handles: HashMap::default(),
-			resource_access,
+			materializations: RefCell::new(HashMap::default()),
 			compute_threadgroup_size: None,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
@@ -1882,7 +1377,8 @@ impl Context {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let (queue_handle, command_buffer_name) = {
 			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
-			(command_buffer.queue_handle, command_buffer.name.clone())
+			let name = self.settings.debug_labels.then(|| command_buffer.name.clone()).flatten();
+			(command_buffer.queue_handle, name)
 		};
 
 		// Uploads committed on the same Metal queue are ordered before this command buffer without a CPU wait.
@@ -1896,20 +1392,21 @@ impl Context {
 		);
 
 		let recording_device = super::command_buffer::RecordingDevice {
+			metal_device: self.device.as_ref(),
 			buffers: &self.buffers,
 			images: &self.images,
-			descriptor_sets_layouts: &self.descriptor_sets_layouts,
+			samplers: &self.samplers,
+			acceleration_structures: &self.acceleration_structures,
 			pipeline_layouts: &self.pipeline_layouts,
 			descriptor_sets: &self.descriptor_sets,
 			meshes: &self.meshes,
 			pipelines: &self.pipelines,
 			swapchains: &self.swapchains,
-			next_texture_copy_handle: &self.next_texture_copy_handle,
+			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::command_buffer::RecordingCommit {
 			states: &mut self.states,
 			synchronizers: &mut self.synchronizers,
-			texture_copies: &mut self.texture_copies,
 		};
 
 		super::CommandBufferRecording::new(
@@ -1918,7 +1415,7 @@ impl Context {
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
-			Vec::new(),
+			SmallVec::new(),
 			autorelease_pool,
 		)
 	}
@@ -2072,7 +1569,9 @@ impl Context {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
+		if self.settings.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
+		}
 
 		unsafe {
 			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -2230,11 +1729,12 @@ impl Context {
 		graphics_hardware_interface::BottomLevelAccelerationStructureHandle((self.acceleration_structures.len() - 1) as u64)
 	}
 
-	/// Applies descriptor writes to the Metal-backed bindings for every frame they target.
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	/// Applies retained descriptor writes to every frame-local logical set they target.
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for write in descriptor_set_writes {
 			self.apply_descriptor_write_to_all_frames(
-				DescriptorSetBindingHandle(write.binding_handle.0),
+				DescriptorSetHandle(write.descriptor_set.0),
+				write.slot,
 				write.descriptor,
 				write.array_element,
 				write.frame_offset.unwrap_or(0),
@@ -2328,11 +1828,32 @@ impl Context {
 		handle
 	}
 
-	pub fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
-		self.texture_copies
-			.get(texture_copy_handle.0 as usize)
-			.map(|data| data.as_slice())
-			.unwrap_or(&[])
+	pub fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+		let image = self.images.resource_mut(ImageHandle(texture_copy_handle.0));
+		let Some(staging) = image.staging.as_mut() else {
+			return &[];
+		};
+		let Some((bytes_per_row, ..)) = utils::texture_upload_layout(image.format, image.extent) else {
+			return &[];
+		};
+
+		let data_ptr = NonNull::new(staging.as_mut_ptr() as *mut std::ffi::c_void)
+			.expect("Texture readback buffer was null. The most likely cause is an empty image staging allocation.");
+		let mut region_size = utils::texture_copy_size(image.format, image.extent);
+		region_size.depth = 1;
+		let region = mtl::MTLRegion {
+			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+			size: region_size,
+		};
+
+		// `transfer_textures` synchronized the managed texture; now refresh its existing compact CPU staging allocation.
+		unsafe {
+			image
+				.texture
+				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
+		}
+
+		staging
 	}
 
 	pub fn create_synchronizer(
@@ -2477,7 +1998,7 @@ impl crate::context::Context for Context {
 		Context::write_texture(self, texture_handle, f);
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		Context::write(self, descriptor_set_writes);
 	}
 
@@ -2523,7 +2044,7 @@ impl crate::context::Context for Context {
 		Context::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
-	fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+	fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
 		Context::get_image_data(self, texture_copy_handle)
 	}
 
@@ -2574,33 +2095,13 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		Context::create_shader(self, name, shader_source_type, stage, shader_binding_descriptors)
+		Context::create_shader(self, name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[crate::DescriptorSetBindingTemplate],
-	) -> graphics_hardware_interface::DescriptorSetTemplateHandle {
-		Context::create_descriptor_set_template(self, name, binding_templates)
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &graphics_hardware_interface::DescriptorSetTemplateHandle,
-	) -> graphics_hardware_interface::DescriptorSetHandle {
-		Context::create_descriptor_set(self, name, descriptor_set_template_handle)
-	}
-
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
-		binding_constructor: crate::BindingConstructor,
-	) -> graphics_hardware_interface::DescriptorSetBindingHandle {
-		Context::create_descriptor_binding(self, descriptor_set, binding_constructor)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
+		Context::create_descriptor_set(self, name)
 	}
 
 	fn create_raster_pipeline(
@@ -2675,7 +2176,7 @@ impl crate::context::ContextCreate for Context {
 	}
 }
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ptr::NonNull;
 
@@ -2683,16 +2184,16 @@ use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
-use objc2_foundation::{NSArray, NSAutoreleasePool, NSString};
+use objc2_foundation::{NSAutoreleasePool, NSString};
 use objc2_metal::{
-	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
-	MTLLibrary, MTLResource,
+	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
+	MTLTexture,
 };
+use smallvec::SmallVec;
 
 use super::*;
 use crate::implementation::device::submit_metal_command_buffer;
 use crate::{
-	binding::DescriptorSetBindingHandle,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},

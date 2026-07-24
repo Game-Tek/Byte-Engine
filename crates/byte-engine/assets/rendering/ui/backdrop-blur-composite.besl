@@ -1,0 +1,79 @@
+full_blurred_texture: descriptor<Texture2D, 0, read>;
+half_blurred_texture: descriptor<Texture2D, 1, read>;
+
+in_pixel_position: input<vec2f, 1>;
+in_local_position: input<vec2f, 2>;
+in_rect_size: input<vec2f, 3>;
+in_corner_radius: input<f32, 4>;
+in_corner_exponent: input<f32, 5>;
+in_feather_mask_position: input<vec2f, 8>;
+in_feather_mask_size: input<vec2f, 9>;
+in_feather_mask_edges: input<vec4f, 10>;
+in_blur_resolution_mix: input<f32, 13>;
+out_color_attachment: output<vec4f, 0>;
+
+// Reconstructs the half-resolution lattice with Arm's positive eight-read
+// tent. Bilinear filtering turns the half-texel diagonal reads into the dense
+// center of the tent while the one-texel cardinal reads preserve its tails.
+reconstruct_half_resolution: fn(uv: vec2f, half_texel: vec2f) -> vec4f {
+	let color: vec4f = texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x * 2.0, 0.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x, half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0, half_texel.y * 2.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x, half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x * 2.0, 0.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x, 0.0 - half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0, 0.0 - half_texel.y * 2.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x, 0.0 - half_texel.y)) * 2.0;
+	return color / 12.0;
+}
+
+// Avoids touching an inactive path because its regional texture can retain
+// unrelated data. This also prevents a stale NaN from poisoning an endpoint
+// through the arithmetic form of mix even when its nominal weight is zero.
+sample_adaptive_blur: fn(full_uv: vec2f, half_uv: vec2f, half_texel: vec2f, resolution_mix: f32) -> vec4f {
+	if (resolution_mix <= 0.0) {
+		return texture_lod(full_blurred_texture, full_uv);
+	}
+	if (resolution_mix >= 1.0) {
+		return reconstruct_half_resolution(half_uv, half_texel);
+	}
+	let full_blurred: vec4f = texture_lod(full_blurred_texture, full_uv);
+	let half_blurred: vec4f = reconstruct_half_resolution(half_uv, half_texel);
+	return full_blurred * (1.0 - resolution_mix) + half_blurred * resolution_mix;
+}
+
+// Emits mask coverage as source alpha. Texture-size-derived coordinates keep
+// the full and half-resolution lattices phase-aligned for odd viewport sizes.
+main: fn() -> void {
+	let half_size: vec2f = in_rect_size * 0.5;
+	let corner_radius: f32 = min(in_corner_radius, min(half_size.x, half_size.y));
+	let centered_position: vec2f = in_local_position - half_size;
+	let rounded_extent: vec2f = half_size - vec2f(corner_radius, corner_radius);
+	let corner_delta: vec2f = abs(centered_position) - rounded_extent;
+	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
+	let corner_sum: f32 = pow(abs_corner.x, in_corner_exponent) + pow(abs_corner.y, in_corner_exponent);
+	let corner_distance: f32 = pow(corner_sum, 1.0 / in_corner_exponent);
+	let field_distance: f32 = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	let edge_width: f32 = max(fwidth(field_distance), 1.0);
+	let rounded_shape: f32 = step(0.0001, corner_radius);
+	let rounded_fill_coverage: f32 = 1.0 - smoothstep(0.0 - edge_width, edge_width, field_distance);
+	let coverage: f32 = mix(1.0, rounded_fill_coverage, rounded_shape);
+	let feather_top: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+	let feather_right: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+	let feather_bottom: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+	let feather_left: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+	let full_size_u: vec2u = texture_size(full_blurred_texture);
+	let half_size_u: vec2u = texture_size(half_blurred_texture);
+	let full_texture_size: vec2f = vec2f(f32(full_size_u.x), f32(full_size_u.y));
+	let half_texture_size: vec2f = vec2f(f32(half_size_u.x), f32(half_size_u.y));
+	let full_uv: vec2f = in_pixel_position / full_texture_size;
+	let half_uv: vec2f = in_pixel_position / (half_texture_size * 2.0);
+	let blurred: vec4f = sample_adaptive_blur(
+		full_uv,
+		half_uv,
+		vec2f(0.5, 0.5) / half_texture_size,
+		clamp(in_blur_resolution_mix, 0.0, 1.0)
+	);
+	let blur_coverage: f32 = clamp(coverage * feather_top * feather_right * feather_bottom * feather_left, 0.0, 1.0);
+	out_color_attachment = vec4f(blurred.x, blurred.y, blurred.z, blur_coverage);
+}

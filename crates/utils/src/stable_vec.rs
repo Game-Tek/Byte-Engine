@@ -1,4 +1,4 @@
-/// The `StableVecHandle` struct identifies a live `StableVec` slot across removals and slot reuse.
+/// The `StableVecHandle` struct provides generation-aware access to a live [`StableVec`] slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StableVecHandle {
 	index: u32,
@@ -30,7 +30,7 @@ struct Entry<T> {
 	next_free: Option<usize>,
 }
 
-/// The `StableVec` struct exists to provide vector-like storage for values whose handles must reject stale slot reuse.
+/// The `StableVec` struct provides vector-like storage whose handles reject stale slot reuse.
 #[derive(Debug, Clone)]
 pub struct StableVec<T> {
 	entries: Vec<Entry<T>>,
@@ -71,7 +71,7 @@ impl<T> StableVec<T> {
 		self.entries.len()
 	}
 
-	/// Inserts a value into the first available slot and returns its generation-aware handle.
+	/// Stores a value in the first available slot and returns its handle.
 	pub fn push(&mut self, value: T) -> StableVecHandle {
 		if let Some(index) = self.first_free {
 			let entry = &mut self.entries[index];
@@ -94,7 +94,7 @@ impl<T> StableVec<T> {
 		StableVecHandle::new(index, 0)
 	}
 
-	/// Replaces the value addressed by a live handle.
+	/// Replaces the value for a live handle and returns the previous value.
 	pub fn insert(&mut self, handle: StableVecHandle, value: T) -> Option<T> {
 		let entry = self.valid_entry_mut(handle)?;
 		entry.value.replace(value)
@@ -112,12 +112,12 @@ impl<T> StableVec<T> {
 		self.get(handle).is_some()
 	}
 
-	/// Returns a live value by raw slot for algorithms that use transient slot ids internally.
+	/// Returns a live value by raw slot for algorithms that use temporary slot IDs.
 	pub fn get_slot(&self, index: usize) -> Option<&T> {
 		self.entries.get(index).and_then(|entry| entry.value.as_ref())
 	}
 
-	/// Returns a live mutable value by raw slot for algorithms that use transient slot ids internally.
+	/// Returns a mutable live value by raw slot for algorithms that use temporary slot IDs.
 	pub fn get_slot_mut(&mut self, index: usize) -> Option<&mut T> {
 		self.entries.get_mut(index).and_then(|entry| entry.value.as_mut())
 	}

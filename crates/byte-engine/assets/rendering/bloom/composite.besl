@@ -1,0 +1,25 @@
+BloomParameters: struct {
+	prefilter: vec4f[1],
+	blur_data: vec4f[1],
+}
+
+scene_texture: descriptor<Texture2D, 0, read>;
+bloom_texture: descriptor<Texture2D, 1, read>;
+result_texture: descriptor<StorageImage<rgba16>, 2, write>;
+bloom_parameters: descriptor<BloomParameters, 3, read>;
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let result_size: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
+	let scene: vec4f = texture_lod(scene_texture, uv);
+	let intensity: f32 = bloom_parameters.prefilter[0].z;
+	if (intensity <= 0.0) {
+		write(result_texture, coord, scene);
+		return;
+	}
+	let bloom: vec4f = texture_lod(bloom_texture, uv);
+	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) + vec3f(bloom.x, bloom.y, bloom.z) * intensity;
+	write(result_texture, coord, vec4f(final_color.x, final_color.y, final_color.z, 1.0));
+}

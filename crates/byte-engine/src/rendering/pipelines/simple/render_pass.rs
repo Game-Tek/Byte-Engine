@@ -54,26 +54,15 @@ const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 impl RenderPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,
-		descriptor_set_layout: &ghi::DescriptorSetTemplateHandle,
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
 		index: usize,
 	) -> Self {
-		let camera_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-		let instance_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-
-		let descriptor_set = context.create_descriptor_set(None, descriptor_set_layout);
-
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer),
-		);
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer),
-		);
+		let descriptor_set = context.create_descriptor_set(None);
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(0), camera_data_buffer),
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
+		]);
 
 		Self { index, descriptor_set }
 	}
@@ -82,13 +71,13 @@ impl RenderPass {
 impl Entity for RenderPass {}
 
 impl RenderPass {
-	pub(super) fn prepare(
+	pub(super) fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		sm: &PipelineManager,
-		instance_batches: &[InstanceBatch],
-	) -> impl RenderPassFunction {
+		instance_batches: &'a [InstanceBatch],
+	) -> impl RenderPassFunction + 'a {
 		let camera_data_buffer = sm.camera_data_buffer;
 
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
@@ -103,7 +92,6 @@ impl RenderPass {
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
-		let instance_batches = instance_batches.to_vec();
 
 		move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
@@ -114,7 +102,7 @@ impl RenderPass {
 			let c = c.bind_raster_pipeline(pipeline);
 			c.bind_descriptor_sets(&[descriptor_set]);
 
-			for batch in &instance_batches {
+			for batch in instance_batches.iter() {
 				c.write_push_constant(0, batch.base_instance() as u32);
 				c.draw_indexed(
 					batch.index_count() as u32,

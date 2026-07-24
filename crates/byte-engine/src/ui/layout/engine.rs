@@ -2,6 +2,12 @@
 
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
 /// interaction across viewports.
+///
+/// Create an engine with [`Self::new`] or [`Self::with_context`], mount the root
+/// component with [`Self::mount`], then call [`Self::evaluate`] and
+/// [`Self::render`] for each frame.
+/// See the [UI guide](https://byte-engine.0x44491229.dev/docs/develop/design/ui)
+/// for component, event, focus, and render-pass integration.
 pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,
 	state: Rc<RefCell<EngineState>>,
@@ -15,6 +21,24 @@ pub struct Engine<C = ()> {
 	text_system: TextSystem,
 	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
+}
+
+impl<C> Drop for Engine<C> {
+	fn drop(&mut self) {
+		// Detach tasks before dropping them because mounted-future cleanup may
+		// re-enter the runtime to remove its retained scope.
+		let tasks = {
+			let mut runtime = self.runtime.borrow_mut();
+			runtime.ready.lock().clear();
+			runtime.frame_waiters.clear();
+			runtime.event_waiters.clear();
+			runtime.key_waiters.clear();
+			runtime.text_edit_waiters.clear();
+			std::mem::take(&mut runtime.tasks)
+		};
+
+		drop(tasks);
+	}
 }
 
 pub(super) struct EngineState {
@@ -235,7 +259,8 @@ fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &RetainedTree, 
 	}
 }
 
-/// Context owned by a mounted async UI task.
+/// The `EvaluationContext` struct keeps the context owned by a mounted asynchronous
+/// UI task.
 pub struct EvaluationContext<C = ()> {
 	id: Id,
 	parent: Option<Id>,
@@ -447,8 +472,12 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 			task_id,
 		};
 
-		let ctx = Box::leak(Box::new(ctx));
-		let future = component(ctx);
+		// The runtime owns the context through this outer future; the component's
+		// borrowed future never escapes the scope in which that context is alive.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			component(&mut ctx).await;
+		});
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
 
@@ -564,8 +593,11 @@ where
 			task_id: self.task_id,
 		};
 
-		let ctx = Box::leak(Box::new(ctx));
-		let future = component(ctx);
+		// Keep the context and its borrowing component future in one owned future.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			component(&mut ctx).await
+		});
 		self.scope = Some(scope);
 		self.future = Some(future);
 	}
@@ -801,12 +833,19 @@ impl Default for Engine<()> {
 }
 
 impl Engine<()> {
+	/// Creates a UI engine without application-specific shared context.
+	///
+	/// Next, call [`Self::mount`] with the root asynchronous component.
 	pub fn new() -> Self {
 		Self::with_context(())
 	}
 }
 
 impl<C: 'static> Engine<C> {
+	/// Creates a UI engine with shared application context available to components.
+	///
+	/// Next, call [`Self::mount`] with the root component, then begin the per-frame
+	/// [`Self::evaluate`] and [`Self::render`] sequence.
 	pub fn with_context(ctx: C) -> Self {
 		Self {
 			viewports: Vec::new(),
@@ -832,6 +871,10 @@ impl<C: 'static> Engine<C> {
 		self.viewports.push(viewport);
 	}
 
+	/// Mounts the root asynchronous component into the retained UI tree.
+	///
+	/// Next, call [`Self::evaluate`] once per frame after updating pointer, key,
+	/// and text input state.
 	pub fn mount<F>(&mut self, root: F)
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
@@ -840,12 +883,18 @@ impl<C: 'static> Engine<C> {
 		let tree = Rc::clone(&runtime.borrow().tree);
 		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
 		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
-		let ctx = Box::leak(Box::new(ctx));
-		let future = root(ctx);
+		// Store an owning future while preserving the borrowed component interface.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			root(&mut ctx).await;
+		});
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
+	///
+	/// Next, pass the mutable snapshot to [`Self::render`] and submit the returned
+	/// render data through [`crate::ui::UiRenderPass`].
 	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		self.sync_pointer_state();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
@@ -967,7 +1016,10 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Renders the given snapshot into a [`Render`] object.
+	/// Converts the specified snapshot into render data.
+	/// Builds render data from an evaluated UI snapshot.
+	///
+	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut curve_elements = Vec::new();
@@ -1592,6 +1644,26 @@ mod tests {
 		Depth,
 	};
 
+	/// The `DropCounter` struct verifies that engine-owned UI context is released with the engine.
+	struct DropCounter(Arc<AtomicUsize>);
+
+	impl Drop for DropCounter {
+		fn drop(&mut self) {
+			self.0.fetch_add(1, Ordering::Relaxed);
+		}
+	}
+
+	#[test]
+	fn dropping_engine_releases_mounted_context() {
+		let drops = Arc::new(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(DropCounter(Arc::clone(&drops)));
+
+		engine.mount(|_ctx| Box::pin(async {}));
+		drop(engine);
+
+		assert_eq!(drops.load(Ordering::Relaxed), 1);
+	}
+
 	#[test]
 	fn mounted_task_retains_markup_without_render_loop() {
 		let frame_allocator = bumpalo::Bump::new();
@@ -2020,7 +2092,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
 		assert_eq!(toast.size, Size::new(20, 20));
 	}
 
@@ -2047,7 +2119,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
 		assert_eq!(toast.size, Size::new(20, 20));
 		assert_eq!(toast.clip, None);
 	}
@@ -2710,7 +2782,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let modal = render.elements().find(|element| element.position.x() == 30).unwrap();
+		let modal = render.elements().find(|element| element.position.x() == 30.0).unwrap();
 		assert_eq!(modal.size, Size::new(80, 30));
 		assert_eq!(modal.clip, None);
 	}
@@ -3140,7 +3212,7 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 		let frame = render.elements().next().unwrap();
 
-		assert_eq!(frame.position, Location3::new(5, 9, 0));
+		assert_eq!(frame.position, Location3::new(5.0, 8.5, 0));
 		assert_eq!(frame.size, Size::new(10, 5));
 	}
 
@@ -3339,7 +3411,7 @@ mod tests {
 		let text = render.texts().next().unwrap();
 
 		assert_eq!(text.content, "Hello");
-		assert!(text.size.x() > 0);
+		assert!(text.size.x() > 0.0);
 		assert!(render.texts().nth(1).is_none());
 	}
 
@@ -3508,7 +3580,7 @@ mod tests {
 		std::thread::sleep(Duration::from_millis(20));
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(second.elements.len(), 1);
-		assert!(second.elements[0].size.x() > 10);
+		assert!(second.elements[0].size.x() > 10.0);
 	}
 
 	#[test]

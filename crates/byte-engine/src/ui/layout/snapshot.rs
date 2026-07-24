@@ -10,7 +10,7 @@ use super::{
 };
 use crate::ui::intersection::MouseClickAcceleration;
 
-/// Preserves a laid-out UI tree together with interaction state.
+/// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
 pub struct Snapshot<'a> {
 	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
 	pub(super) relations: Vec<(Id, Id), &'a bumpalo::Bump>,
@@ -81,12 +81,12 @@ impl Snapshot<'_> {
 		let size = self.size;
 
 		let mouse_pos = (mouse_pos + 1f32) * 0.5;
-		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
-		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
+		let mouse_pos = mouse_pos * Vector2::new(size.x(), size.y());
+		let mouse_pos = Vector2::new(mouse_pos.x, size.y() - mouse_pos.y);
 
 		let id = self
 			.acceleration
-			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32))
+			.query(Location::new(mouse_pos.x, mouse_pos.y))
 			.and_then(Id::new)?;
 
 		self.set_cursor(Some(id));
@@ -204,10 +204,10 @@ struct NavigationFrame {
 
 impl NavigationFrame {
 	fn from_element(element: &LayoutElement) -> Self {
-		let left = element.position.x() as f32;
-		let top = element.position.y() as f32;
-		let right = left + element.size.x() as f32;
-		let bottom = top + element.size.y() as f32;
+		let left = element.position.x();
+		let top = element.position.y();
+		let right = left + element.size.x();
+		let bottom = top + element.size.y();
 
 		Self {
 			left,

@@ -11,7 +11,7 @@ use betp::{
 	},
 };
 
-/// A BETP authoritative server implementation over UDP.
+/// The `Server` struct provides an authoritative BETP endpoint over UDP.
 pub struct Server {
 	settings: Settings,
 	clients: [Option<Session>; 64],
@@ -19,9 +19,10 @@ pub struct Server {
 }
 
 impl Server {
-	/// Creates a new server.
+	/// Creates a server bound to the specified address.
 	///
-	/// The server is created with the following settings:
+	/// The server uses these default settings:
+	///
 	/// - `max_clients`: 32
 	/// - `timeout`: 5 seconds
 	pub fn new<A: ToSocketAddrs>(address: A) -> Result<Self, ()> {

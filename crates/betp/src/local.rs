@@ -1,16 +1,14 @@
-use utils::bit_array::BitArray;
-
-use crate::PacketInfo;
-
-/// The packet history is the number of (last) packets that we keep track of.
+/// The number of recently sent packets retained for acknowledgment tracking.
 const PACKET_HISTORY: usize = 1024;
 
-/// Local is a state tracking structure to keep track of the state of the communication with a remote.
+/// The `Local` struct preserves the bounded send history used to interpret peer acknowledgements.
 #[derive(Debug, Clone, Copy)]
 pub struct Local {
 	// The sequence is a 16-bit number that is incremented for each packet sent.
 	sequence: u16,
 	packet_data: BitArray<PACKET_HISTORY>,
+	// Validity is tracked independently because every `u16`, including `u16::MAX`, is a valid sequence number.
+	packet_valid: BitArray<PACKET_HISTORY>,
 	sequence_buffer: [u16; PACKET_HISTORY],
 }
 
@@ -24,8 +22,9 @@ impl Local {
 	pub fn new() -> Self {
 		Self {
 			sequence: 0,
-			sequence_buffer: [u16::MAX; PACKET_HISTORY],
+			sequence_buffer: [0; PACKET_HISTORY],
 			packet_data: BitArray::new(),
+			packet_valid: BitArray::new(),
 		}
 	}
 
@@ -33,6 +32,7 @@ impl Local {
 		let index = (self.sequence % PACKET_HISTORY as u16) as usize;
 		self.sequence_buffer[index] = self.sequence;
 		self.packet_data.set(index, false);
+		self.packet_valid.set(index, true);
 		let sequence = self.sequence;
 		self.sequence = self.sequence.wrapping_add(1);
 		sequence
@@ -40,7 +40,7 @@ impl Local {
 
 	pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
-		if self.sequence_buffer[index] == sequence {
+		if self.packet_valid.get(index) && self.sequence_buffer[index] == sequence {
 			Some(PacketInfo {
 				acked: self.packet_data.get(index),
 			})
@@ -49,10 +49,10 @@ impl Local {
 		}
 	}
 
-	/// Acknowledges a packet with the given sequence number. This means that the remote has received the packet.
+	/// Records that the remote received the given sequence number.
 	pub fn acknowledge_packet(&mut self, sequence: u16) {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
-		if self.sequence_buffer[index] == sequence {
+		if self.packet_valid.get(index) && self.sequence_buffer[index] == sequence {
 			self.packet_data.set(index, true);
 		}
 	}
@@ -60,20 +60,19 @@ impl Local {
 	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
 		for i in 0..u32::BITS {
 			if (ack_bitfield >> i) & 1 == 1 {
-				let sequence = ack - i as u16;
+				let sequence = ack.wrapping_sub(i as u16);
 				self.acknowledge_packet(sequence);
 			}
 		}
 	}
 
-	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
-	pub fn unacknowledged_packets(&self) -> Vec<u16> {
+	/// Returns sent sequence numbers that the remote has not acknowledged.
+	pub fn unacknowledged_packets(&self) -> impl Iterator<Item = u16> + '_ {
 		self.sequence_buffer
 			.iter()
 			.enumerate()
-			.filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i))
+			.filter(|(i, _)| self.packet_valid.get(*i) && !self.packet_data.get(*i))
 			.map(|(_, &e)| e)
-			.collect()
 	}
 }
 
@@ -143,31 +142,31 @@ mod tests {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(0u16..32u16));
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+		assert!(local.unacknowledged_packets().next().is_none());
 
 		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(32u16..64u16));
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(32u16..64u16));
 
 		for i in 32..64 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+		assert!(local.unacknowledged_packets().next().is_none());
 	}
 
 	#[test]
@@ -180,32 +179,23 @@ mod tests {
 
 		local.acknowledge_packet(0);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(1u16..32u16));
 
 		local.acknowledge_packet(2);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2)));
 
 		local.acknowledge_packet(4);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2 && i != 4)));
 
 		local.acknowledge_packet(1);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((3u16..32u16).filter(|&i| i != 4)));
 
 		local.acknowledge_packet(3);
 
-		assert_eq!(local.unacknowledged_packets(), (5u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(5u16..32u16));
 	}
 
 	#[test]
@@ -218,18 +208,15 @@ mod tests {
 
 		local.acknowledge_packets(0, 0b0);
 
-		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(0u16..32u16));
 
 		local.acknowledge_packets(0, 0b1);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(1u16..32u16));
 
 		local.acknowledge_packets(2, 0b101);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2)));
 	}
 
 	#[test]
@@ -238,4 +225,75 @@ mod tests {
 
 		local.acknowledge_packet(0);
 	}
+
+	#[test]
+	fn acknowledgement_bitfield_wraps_before_sequence_zero() {
+		let mut local = Local::new();
+		local.get_sequence_number();
+
+		local.acknowledge_packets(0, 1 << 31);
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
+
+		local.acknowledge_packets(0, (1 << 31) | 1);
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: true }));
+	}
+
+	#[test]
+	fn same_slot_sequence_from_another_generation_cannot_acknowledge_a_send() {
+		let mut local = Local::new();
+		assert_eq!(local.get_sequence_number(), 0);
+
+		local.acknowledge_packet(PACKET_HISTORY as u16);
+
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
+	}
+
+	#[test]
+	fn full_sequence_cycle_retains_max_without_confusing_it_for_an_empty_slot() {
+		let mut local = Local::new();
+
+		for expected in 0..=u16::MAX {
+			assert_eq!(local.get_sequence_number(), expected);
+		}
+
+		assert_eq!(local.get_packet_data(u16::MAX), Some(PacketInfo { acked: false }));
+		assert_eq!(local.get_packet_data(0), None);
+		assert_eq!(local.unacknowledged_packets().count(), PACKET_HISTORY);
+		assert!(local.unacknowledged_packets().any(|sequence| sequence == u16::MAX));
+
+		assert_eq!(local.get_sequence_number(), 0);
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
+		assert_eq!(local.get_packet_data(64_512), None);
+	}
+
+	#[test]
+	fn acknowledgement_window_matches_reference_model_after_sequence_wrap() {
+		let mut local = Local::new();
+		for _ in 0..=u16::MAX {
+			local.get_sequence_number();
+		}
+		for _ in 0..8 {
+			local.get_sequence_number();
+		}
+
+		let ack = 3;
+		let ack_bitfield = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 31);
+		local.acknowledge_packets(ack, ack_bitfield);
+
+		for sequence in (64_520..=u16::MAX).chain(0..8) {
+			let distance = ack.wrapping_sub(sequence);
+			let expected_acknowledged = distance < u32::BITS as u16 && (ack_bitfield >> distance) & 1 == 1;
+			assert_eq!(
+				local.get_packet_data(sequence),
+				Some(PacketInfo {
+					acked: expected_acknowledged,
+				}),
+				"sequence={sequence}, distance={distance}",
+			);
+		}
+	}
 }
+
+use utils::bit_array::BitArray;
+
+use crate::PacketInfo;

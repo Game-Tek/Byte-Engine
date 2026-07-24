@@ -1,6 +1,9 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::ui::layout::{context::Context, engine::EvaluationContext};
+use crate::{
+	time::MediaTime,
+	ui::layout::{context::Context, engine::EvaluationContext},
+};
 
 const MAX_STEP: f32 = 1.0 / 30.0;
 const SETTLE_EPSILON: f32 = 0.001;
@@ -11,8 +14,8 @@ pub enum Curves {
 
 type EaseFunction = fn(f32) -> f32;
 
-fn capped_frame_duration(dt: Duration) -> Duration {
-	Duration::from_secs_f32(dt.as_secs_f32().min(MAX_STEP))
+fn capped_frame_duration(dt: MediaTime) -> MediaTime {
+	MediaTime::from_seconds_f32(dt.as_seconds_f32().min(MAX_STEP))
 }
 
 fn ease_in_curve(t: f32) -> f32 {
@@ -51,7 +54,7 @@ fn ease_in_out_curve(t: f32) -> f32 {
 
 pub trait AnimationDriver {
 	fn value(&self) -> f32;
-	fn advance(&mut self, dt: Duration) -> f32;
+	fn advance(&mut self, dt: MediaTime) -> f32;
 	fn is_complete(&self) -> bool;
 	fn finish(&mut self) -> f32;
 }
@@ -139,8 +142,8 @@ impl AnimationDriver for Easing {
 		(self.curve)(self.progress())
 	}
 
-	fn advance(&mut self, dt: Duration) -> f32 {
-		self.elapsed = (self.elapsed + dt.as_secs_f32()).min(self.duration);
+	fn advance(&mut self, dt: MediaTime) -> f32 {
+		self.elapsed = (self.elapsed + dt.as_seconds_f32()).min(self.duration);
 		self.value()
 	}
 
@@ -160,8 +163,8 @@ impl AnimationDriver for BackOut {
 		1.0 + t * t * ((self.overshoot + 1.0) * t + self.overshoot)
 	}
 
-	fn advance(&mut self, dt: Duration) -> f32 {
-		self.elapsed = (self.elapsed + dt.as_secs_f32()).min(self.duration);
+	fn advance(&mut self, dt: MediaTime) -> f32 {
+		self.elapsed = (self.elapsed + dt.as_seconds_f32()).min(self.duration);
 		self.value()
 	}
 
@@ -213,8 +216,8 @@ impl Spring {
 		self.velocity
 	}
 
-	pub fn step(&mut self, dt: Duration) -> f32 {
-		let dt = dt.as_secs_f32().min(MAX_STEP);
+	pub fn step(&mut self, dt: MediaTime) -> f32 {
+		let dt = dt.as_seconds_f32().min(MAX_STEP);
 		if dt <= 0.0 {
 			return self.value;
 		}
@@ -245,7 +248,7 @@ impl AnimationDriver for Spring {
 		Spring::value(self)
 	}
 
-	fn advance(&mut self, dt: Duration) -> f32 {
+	fn advance(&mut self, dt: MediaTime) -> f32 {
 		Spring::step(self, dt)
 	}
 
@@ -269,7 +272,7 @@ where
 	while !animation.is_complete() {
 		target.render().await;
 		let now = Instant::now();
-		animation.advance(capped_frame_duration(now.duration_since(last_frame)));
+		animation.advance(capped_frame_duration(MediaTime::from_std(now.duration_since(last_frame))));
 		last_frame = now;
 		apply(target, animation.value());
 	}
@@ -348,7 +351,7 @@ mod tests {
 	fn spring_moves_toward_target() {
 		let mut spring = spring(0.0, 1.0);
 
-		spring.step(Duration::from_millis(16));
+		spring.step(MediaTime::from_millis(16));
 
 		assert!(spring.value() > 0.0);
 		assert!(spring.value() < 1.0);
@@ -360,7 +363,7 @@ mod tests {
 		let mut peak = 0.0f32;
 
 		for _ in 0..60 {
-			spring.step(Duration::from_millis(16));
+			spring.step(MediaTime::from_millis(16));
 			peak = peak.max(spring.value());
 		}
 
@@ -372,7 +375,7 @@ mod tests {
 		let mut spring = spring(0.0, 1.0);
 
 		for _ in 0..240 {
-			spring.step(Duration::from_millis(16));
+			spring.step(MediaTime::from_millis(16));
 			if spring.is_settled() {
 				break;
 			}
@@ -388,16 +391,16 @@ mod tests {
 		let mut large_step = spring(0.0, 1.0);
 		let mut capped_step = spring(0.0, 1.0);
 
-		large_step.step(Duration::from_secs(1));
-		capped_step.step(Duration::from_secs_f32(MAX_STEP));
+		large_step.step(MediaTime::from_seconds(1));
+		capped_step.step(MediaTime::from_seconds_f32(MAX_STEP));
 
 		assert_eq!(large_step.value(), capped_step.value());
 	}
 
 	#[test]
 	fn animation_frame_duration_is_capped_for_all_drivers() {
-		assert!((capped_frame_duration(Duration::from_secs(1)).as_secs_f32() - MAX_STEP).abs() < f32::EPSILON);
-		assert!((capped_frame_duration(Duration::from_millis(16)).as_secs_f32() - 0.016).abs() < f32::EPSILON);
+		assert!((capped_frame_duration(MediaTime::from_seconds(1)).as_seconds_f32() - MAX_STEP).abs() < f32::EPSILON);
+		assert!((capped_frame_duration(MediaTime::from_millis(16)).as_seconds_f32() - 0.016).abs() < f32::EPSILON);
 	}
 
 	#[test]
@@ -429,9 +432,9 @@ mod tests {
 		let mut ease_out_driver = ease_out(1.0);
 		let mut ease_in_out_driver = ease_in_out(1.0);
 
-		ease_in_driver.advance(Duration::from_millis(500));
-		ease_out_driver.advance(Duration::from_millis(500));
-		ease_in_out_driver.advance(Duration::from_millis(500));
+		ease_in_driver.advance(MediaTime::from_millis(500));
+		ease_out_driver.advance(MediaTime::from_millis(500));
+		ease_in_out_driver.advance(MediaTime::from_millis(500));
 
 		assert!(ease_in_driver.value() < 0.5);
 		assert!(ease_out_driver.value() > 0.5);
@@ -439,8 +442,8 @@ mod tests {
 
 		let mut ease_in_out_first_half = ease_in_out(1.0);
 		let mut ease_in_out_second_half = ease_in_out(1.0);
-		ease_in_out_first_half.advance(Duration::from_millis(250));
-		ease_in_out_second_half.advance(Duration::from_millis(750));
+		ease_in_out_first_half.advance(MediaTime::from_millis(250));
+		ease_in_out_second_half.advance(MediaTime::from_millis(750));
 
 		assert!(ease_in_out_first_half.value() < 0.25);
 		assert!(ease_in_out_second_half.value() > 0.75);
@@ -453,10 +456,10 @@ mod tests {
 		let mut quart = ease_out_quart(1.0);
 		let mut emphasized = emphasized_out(1.0);
 
-		quadratic.advance(Duration::from_millis(250));
-		cubic.advance(Duration::from_millis(250));
-		quart.advance(Duration::from_millis(250));
-		emphasized.advance(Duration::from_millis(250));
+		quadratic.advance(MediaTime::from_millis(250));
+		cubic.advance(MediaTime::from_millis(250));
+		quart.advance(MediaTime::from_millis(250));
+		emphasized.advance(MediaTime::from_millis(250));
 
 		assert!(cubic.value() > quadratic.value());
 		assert!(quart.value() > cubic.value());
@@ -468,7 +471,7 @@ mod tests {
 	fn back_out_overshoots_before_settling() {
 		let mut driver = back_out(1.0, 1.70158);
 
-		driver.advance(Duration::from_millis(600));
+		driver.advance(MediaTime::from_millis(600));
 		assert!(driver.value() > 1.0);
 
 		assert_eq!(driver.finish(), 1.0);

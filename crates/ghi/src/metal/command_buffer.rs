@@ -1,18 +1,13 @@
-use std::{
-	cell::{Cell, RefCell},
-	ptr::NonNull,
-};
+use std::{cell::RefCell, ptr::NonNull};
 
-use ::utils::{
-	hash::{HashMap, HashSet},
-	Extent,
-};
+use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
-	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder,
-	MTLTexture,
+	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder,
+	MTLDevice, MTLRenderCommandEncoder, MTLTexture,
 };
+use smallvec::SmallVec;
 
 use super::*;
 use crate::metal::swapchain::Swapchain;
@@ -95,10 +90,11 @@ fn replace_texture_from_bytes(
 	for slice in 0..array_layers as usize {
 		let offset = slice * bytes_per_image;
 		let end = offset + bytes_per_image;
-		utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, offset);
+
 		let Some(slice_bytes) = bytes.get(offset..end) else {
 			break;
 		};
+
 		let staging_ptr = NonNull::new(slice_bytes.as_ptr() as *mut std::ffi::c_void)
 			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
 
@@ -136,6 +132,7 @@ fn encode_texture_clear(
 	format: crate::Formats,
 	array_layers: u32,
 	clear_value: graphics_hardware_interface::ClearValue,
+	debug_labels: bool,
 ) {
 	let rpd = mtl::MTLRenderPassDescriptor::new();
 	if array_layers > 1 {
@@ -160,7 +157,7 @@ fn encode_texture_clear(
 		"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 	);
 	#[cfg(debug_assertions)]
-	{
+	if debug_labels {
 		let label = NSString::from_str("Image Clear");
 		encoder.setLabel(Some(&label));
 	}
@@ -169,15 +166,17 @@ fn encode_texture_clear(
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
 pub(super) struct RecordingDevice<'a> {
+	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
 	pub(super) buffers: &'a ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) descriptor_sets_layouts: &'a [DescriptorSetLayout],
+	pub(super) samplers: &'a [sampler::Sampler],
+	pub(super) acceleration_structures: &'a [AccelerationStructure],
 	pub(super) pipeline_layouts: &'a [PipelineLayout],
 	pub(super) descriptor_sets: &'a [DescriptorSet],
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) swapchains: &'a [Swapchain],
-	pub(super) next_texture_copy_handle: &'a Cell<u64>,
+	pub(super) debug_labels: bool,
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
@@ -188,9 +187,9 @@ pub(super) struct RecordingCommit<'a> {
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
-	pub(super) texture_copies: &'a mut Vec<Vec<u8>>,
 }
 
+// TODO: use frame allocator for this
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
 	commit: Option<RecordingCommit<'a>>,
@@ -200,32 +199,32 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	#[cfg(debug_assertions)]
 	debug_regions: RefCell<Vec<String>>,
-	state_updates: HashMap<PrivateHandles, TransitionState>,
-	compute_written_resources: HashSet<PrivateHandles>,
+	state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
+	compute_written_resources: SmallVec<[PrivateHandles; 64]>,
 	pending_compute_barrier_scope: mtl::MTLBarrierScope,
-	texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
-	bound_vertex_buffers: Vec<(graphics_hardware_interface::BaseBufferHandle, usize)>,
+	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,
+	bound_vertex_buffers: SmallVec<[(graphics_hardware_interface::BaseBufferHandle, usize); 8]>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
-	push_constant_data: Vec<u8>,
+	push_constant_data: SmallVec<[u8; 128]>,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
-	drawables: Vec<(
-		graphics_hardware_interface::SwapchainHandle,
-		Retained<ProtocolObject<dyn CAMetalDrawable>>,
-	)>,
+	drawables: SmallVec<
+		[(
+			graphics_hardware_interface::SwapchainHandle,
+			Retained<ProtocolObject<dyn CAMetalDrawable>>,
+		); 4],
+	>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }
 
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-	pub(crate) state_updates: HashMap<PrivateHandles, TransitionState>,
-	pub(crate) texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
+	pub(crate) state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -243,41 +242,6 @@ impl super::CommandBuffer<'_> {
 	}
 }
 
-impl RecordingDevice<'_> {
-	fn allocate_texture_copy_handle(&self) -> graphics_hardware_interface::TextureCopyHandle {
-		let handle = self.next_texture_copy_handle.get();
-		self.next_texture_copy_handle.set(handle + 1);
-		graphics_hardware_interface::TextureCopyHandle(handle)
-	}
-
-	/// Reads one Metal texture into CPU memory for later interning on the device.
-	fn read_texture_to_cpu(&self, image_handle: ImageHandle) -> Vec<u8> {
-		let image = self.images.resource(image_handle);
-
-		let Some((bytes_per_row, _, size)) = utils::texture_upload_layout(image.format, image.extent) else {
-			return Vec::new();
-		};
-
-		let mut data = vec![0u8; size];
-		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)
-			.expect("Texture readback buffer was null. The most likely cause is an empty allocation.");
-		let mut region_size = utils::texture_copy_size(image.format, image.extent);
-		region_size.depth = 1;
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: region_size,
-		};
-
-		unsafe {
-			image
-				.texture
-				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
-		}
-
-		data
-	}
-}
-
 impl RecordingCommit<'_> {
 	fn synchronizer_for_sequence(
 		&self,
@@ -289,20 +253,6 @@ impl RecordingCommit<'_> {
 			.expect(
 				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
 			)
-	}
-
-	/// Interns locally recorded texture readbacks into their device-assigned handles.
-	fn intern_texture_copies(
-		&mut self,
-		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
-	) {
-		for (handle, data) in texture_copies {
-			let index = handle.0 as usize;
-			if index >= self.texture_copies.len() {
-				self.texture_copies.resize_with(index + 1, Vec::new);
-			}
-			self.texture_copies[index] = data;
-		}
 	}
 }
 
@@ -345,7 +295,7 @@ impl<'a> CommandBufferRecording<'a> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Upload");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -369,10 +319,12 @@ impl<'a> CommandBufferRecording<'a> {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
-		drawables: Vec<(
-			graphics_hardware_interface::SwapchainHandle,
-			Retained<ProtocolObject<dyn CAMetalDrawable>>,
-		)>,
+		drawables: SmallVec<
+			[(
+				graphics_hardware_interface::SwapchainHandle,
+				Retained<ProtocolObject<dyn CAMetalDrawable>>,
+			); 4],
+		>,
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
@@ -386,19 +338,18 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer,
 			#[cfg(debug_assertions)]
 			debug_regions: RefCell::new(Vec::new()),
-			state_updates: HashMap::default(),
-			compute_written_resources: HashSet::default(),
+			state_updates: SmallVec::new(),
+			compute_written_resources: SmallVec::new(),
 			pending_compute_barrier_scope: mtl::MTLBarrierScope(0),
-			texture_copies: Vec::new(),
 			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
-			bound_descriptor_set_handles: Vec::new(),
-			bound_vertex_buffers: Vec::new(),
+			bound_descriptor_set_handles: SmallVec::new(),
+			bound_vertex_buffers: SmallVec::new(),
 			bound_vertex_layout: None,
 			bound_index_buffer: None,
-			push_constant_data: Vec::new(),
+			push_constant_data: SmallVec::new(),
 			active_compute_encoder: None,
 			active_render_encoder: None,
 			_autorelease_pool: autorelease_pool,
@@ -423,7 +374,6 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
 			state_updates: self.state_updates,
-			texture_copies: self.texture_copies,
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -432,15 +382,18 @@ impl<'a> CommandBufferRecording<'a> {
 	fn refresh_active_encoder_labels(&self) {
 		if let Some(encoder) = self.active_compute_encoder.as_ref() {
 			#[cfg(debug_assertions)]
-			{
+			if self.device.debug_labels {
 				let label = self.current_encoder_label("Compute Pass");
 				encoder.setLabel(Some(&label));
 			}
 		}
 
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			let label = self.current_encoder_label("Render Pass");
-			encoder.setLabel(Some(&label));
+			#[cfg(debug_assertions)]
+			if self.device.debug_labels {
+				let label = self.current_encoder_label("Render Pass");
+				encoder.setLabel(Some(&label));
+			}
 		}
 	}
 
@@ -454,7 +407,7 @@ impl<'a> CommandBufferRecording<'a> {
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
 			);
 			#[cfg(debug_assertions)]
-			{
+			if self.device.debug_labels {
 				let label = self.current_encoder_label("Compute Pass");
 				encoder.setLabel(Some(&label));
 			}
@@ -475,12 +428,12 @@ impl<'a> CommandBufferRecording<'a> {
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
 		for consumption in consumptions {
 			self.schedule_compute_barrier_for_consumption(&consumption);
-			self.state_updates.insert(
+			self.state_updates.push((
 				consumption.handle,
 				TransitionState {
 					layout: consumption.layout,
 				},
-			);
+			));
 		}
 	}
 
@@ -522,29 +475,116 @@ impl<'a> CommandBufferRecording<'a> {
 		self.compute_written_resources.clear();
 	}
 
-	fn bound_descriptor_resource_consumptions(&self) -> Vec<Consumption> {
+	fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
+		self.bound_descriptor_set_handles
+			.iter()
+			.find_map(|set_handle| self.device.descriptor_sets[set_handle.0 as usize].descriptors.get(&slot))
+	}
+
+	fn descriptor_matches_kind(descriptor: Descriptor, kind: crate::shader::ResourceKind) -> bool {
+		match descriptor {
+			Descriptor::Buffer { .. } => matches!(
+				kind,
+				crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer
+			),
+			Descriptor::Image { .. } | Descriptor::Swapchain { .. } => matches!(
+				kind,
+				crate::shader::ResourceKind::SampledImage
+					| crate::shader::ResourceKind::StorageImage
+					| crate::shader::ResourceKind::InputAttachment
+			),
+			Descriptor::CombinedImageSampler { .. } => kind == crate::shader::ResourceKind::CombinedImageSampler,
+			Descriptor::Sampler { .. } => kind == crate::shader::ResourceKind::Sampler,
+			Descriptor::AccelerationStructure { .. } => kind == crate::shader::ResourceKind::AccelerationStructure,
+		}
+	}
+
+	/// Validates the retained set union against the active pipeline without requiring fixed arrays to be fully populated.
+	fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout) {
+		for (left_index, left_handle) in self.bound_descriptor_set_handles.iter().enumerate() {
+			let left = &self.device.descriptor_sets[left_handle.0 as usize];
+			for right_handle in self.bound_descriptor_set_handles.iter().skip(left_index + 1) {
+				let right = &self.device.descriptor_sets[right_handle.0 as usize];
+				assert!(
+					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
+					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
+				);
+			}
+		}
+
+		for resource in &layout.resources {
+			let descriptor = resource.descriptor;
+			let range_start = descriptor.slot().index();
+			let range_end = resource_range_end(descriptor);
+			for set_handle in &self.bound_descriptor_set_handles {
+				let descriptor_set = &self.device.descriptor_sets[set_handle.0 as usize];
+				assert!(
+					descriptor_set
+						.descriptors
+						.keys()
+						.all(|slot| resource_accepts_retained_slot_key(descriptor, *slot)),
+					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
+				);
+			}
+			let owner_count = self
+				.bound_descriptor_set_handles
+				.iter()
+				.filter(|set_handle| {
+					self.device.descriptor_sets[set_handle.0 as usize]
+						.descriptors
+						.keys()
+						.any(|slot| (range_start..range_end).contains(&slot.index()))
+				})
+				.count();
+			assert!(
+				owner_count <= 1,
+				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own slots within the same active shader resource range.",
+			);
+
+			let descriptors = self.descriptors_at_slot(descriptor.slot());
+			if descriptor.count() == 1 {
+				assert!(
+					descriptors.is_some_and(|descriptors| descriptors.contains_key(&0)),
+					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
+					descriptor.slot().index(),
+				);
+			}
+
+			if let Some(descriptors) = descriptors {
+				for (&array_element, &value) in descriptors {
+					assert!(
+						array_element < descriptor.count(),
+						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
+					);
+					assert!(
+						Self::descriptor_matches_kind(value, descriptor.kind()),
+						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
+					);
+				}
+			}
+		}
+	}
+
+	fn bound_descriptor_resource_consumptions(&self) -> SmallVec<[Consumption; 128]> {
 		let Some(bound_pipeline_handle) = self.bound_pipeline else {
-			return Vec::new();
+			return SmallVec::new();
 		};
 
 		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
-		let mut consumptions = Vec::with_capacity(pipeline.resource_access.len());
+		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
+		let mut consumptions = SmallVec::new();
 
-		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
-			let Some(&(_, descriptor_set_handle)) = self.bound_descriptor_set_handles.get(set_index as usize) else {
-				continue;
-			};
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let Some(descriptors) = descriptor_set.descriptors.get(&binding_index) else {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
 				continue;
 			};
 
 			for descriptor in descriptors.values().copied() {
-				let (handle, layout) = match descriptor {
+				let (handle, image_layout) = match descriptor {
 					Descriptor::Buffer { buffer, .. } => (PrivateHandles::Buffer(buffer), crate::Layouts::General),
 					Descriptor::Image { image, layout, .. } => (PrivateHandles::Image(image), layout),
 					Descriptor::CombinedImageSampler { image, layout, .. } => (PrivateHandles::Image(image), layout),
-					Descriptor::Sampler { .. } => continue,
+					Descriptor::Sampler { .. } | Descriptor::AccelerationStructure { .. } => continue,
 					Descriptor::Swapchain { handle } => {
 						let swapchain = &self.device.swapchains[handle.0 as usize];
 						if let Some(proxy_image_handle) = swapchain.images[self.sequence_index as usize] {
@@ -557,9 +597,9 @@ impl<'a> CommandBufferRecording<'a> {
 
 				consumptions.push(Consumption {
 					handle,
-					stages,
-					access,
-					layout,
+					stages: resource.stages,
+					access: resource.descriptor.access(),
+					layout: image_layout,
 				});
 			}
 		}
@@ -577,7 +617,9 @@ impl<'a> CommandBufferRecording<'a> {
 			if consumption.stages.intersects(crate::Stages::COMPUTE)
 				&& consumption.access.intersects(crate::AccessPolicies::WRITE)
 			{
-				self.compute_written_resources.insert(consumption.handle);
+				if !self.compute_written_resources.contains(&consumption.handle) {
+					self.compute_written_resources.push(consumption.handle);
+				}
 			}
 		}
 	}
@@ -661,35 +703,29 @@ impl<'a> CommandBufferRecording<'a> {
 
 		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 
-		if let Some(mut commit) = self.commit {
+		if let Some(commit) = self.commit {
 			commit.states.extend(self.state_updates);
-			commit.intern_texture_copies(self.texture_copies);
 		}
 	}
 }
 
 impl CommandBufferRecording<'_> {
-	/// Converts descriptor visibility to the Metal render stages that can access the argument buffer.
-	fn render_stages_for_descriptor_set_layout(descriptor_set_layout: &DescriptorSetLayout) -> mtl::MTLRenderStages {
-		let descriptor_visibility = descriptor_set_layout
-			.bindings
-			.iter()
-			.fold(crate::Stages::NONE, |visibility, binding| visibility | binding.stages);
+	fn render_stages(stages: crate::Stages) -> mtl::MTLRenderStages {
 		let mut render_stages = mtl::MTLRenderStages(0);
 
-		if descriptor_visibility.intersects(crate::Stages::VERTEX) {
+		if stages.intersects(crate::Stages::VERTEX) {
 			render_stages |= mtl::MTLRenderStages::Vertex;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::FRAGMENT) {
+		if stages.intersects(crate::Stages::FRAGMENT) {
 			render_stages |= mtl::MTLRenderStages::Fragment;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::TASK) {
+		if stages.intersects(crate::Stages::TASK) {
 			render_stages |= mtl::MTLRenderStages::Object;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::MESH) {
+		if stages.intersects(crate::Stages::MESH) {
 			render_stages |= mtl::MTLRenderStages::Mesh;
 		}
 
@@ -705,18 +741,30 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	/// Makes resources referenced through a render argument buffer resident for the active render encoder.
-	fn make_render_descriptor_set_resources_resident(
+	fn metal_resource_usage(access: crate::AccessPolicies) -> mtl::MTLResourceUsage {
+		let mut usage = mtl::MTLResourceUsage(0);
+		if access.intersects(crate::AccessPolicies::READ) {
+			usage |= mtl::MTLResourceUsage::Read;
+		}
+		if access.intersects(crate::AccessPolicies::WRITE) {
+			usage |= mtl::MTLResourceUsage::Write;
+		}
+		usage
+	}
+
+	/// Makes the resources referenced by the flat pipeline interface resident for a render encoder.
+	fn make_render_descriptor_resources_resident(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>,
-		descriptor_set: &DescriptorSet,
-		descriptor_set_layout: &DescriptorSetLayout,
+		layout: &PipelineLayout,
 	) {
-		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-		let stages = Self::render_stages_for_descriptor_set_layout(descriptor_set_layout);
-
-		for descriptors_at_binding in descriptor_set.descriptors.values() {
-			for descriptor in descriptors_at_binding.values() {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
+				continue;
+			};
+			let usage = Self::metal_resource_usage(resource.descriptor.access());
+			let stages = Self::render_stages(resource.stages);
+			for descriptor in descriptors.values() {
 				match *descriptor {
 					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
 						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
@@ -734,22 +782,30 @@ impl CommandBufferRecording<'_> {
 							encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
 						}
 					}
+					Descriptor::AccelerationStructure { handle } => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
+							encoder.useResource_usage_stages(ProtocolObject::from_ref(structure), usage, stages);
+						}
+					}
 					Descriptor::Sampler { .. } => {}
 				}
 			}
 		}
 	}
 
-	/// Makes resources referenced through a compute argument buffer resident for the active compute encoder.
-	fn make_compute_descriptor_set_resources_resident(
+	/// Makes the resources referenced by the flat pipeline interface resident for a compute encoder.
+	fn make_compute_descriptor_resources_resident(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>,
-		descriptor_set: &DescriptorSet,
+		layout: &PipelineLayout,
 	) {
-		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-
-		for descriptors_at_binding in descriptor_set.descriptors.values() {
-			for descriptor in descriptors_at_binding.values() {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
+				continue;
+			};
+			let usage = Self::metal_resource_usage(resource.descriptor.access());
+			for descriptor in descriptors.values() {
 				match *descriptor {
 					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
 						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
@@ -767,10 +823,135 @@ impl CommandBufferRecording<'_> {
 							encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
 						}
 					}
+					Descriptor::AccelerationStructure { handle } => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
+							encoder.useResource_usage(ProtocolObject::from_ref(structure), usage);
+						}
+					}
 					Descriptor::Sampler { .. } => {}
 				}
 			}
 		}
+	}
+
+	/// Encodes one immutable stage-specific argument buffer from the currently bound retained set union.
+	fn encode_stage_argument_buffer(&self, layout: &StageArgumentLayout) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+		let argument_buffer = self
+			.device
+			.metal_device
+			.newBufferWithLength_options(layout.encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
+			.expect("Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.");
+		unsafe {
+			// Metal does not guarantee fresh buffer contents are zeroed. Null all unwritten array elements deterministically.
+			std::ptr::write_bytes(argument_buffer.contents().as_ptr() as *mut u8, 0, layout.encoded_length);
+			layout
+				.argument_encoder
+				.setArgumentBuffer_offset(Some(argument_buffer.as_ref()), 0);
+		}
+
+		for binding in &layout.bindings {
+			let Some(descriptors) = self.descriptors_at_slot(binding.descriptor.slot()) else {
+				continue;
+			};
+
+			for (&array_element, &descriptor) in descriptors {
+				let argument_slot = binding.slot_for_array_element(array_element);
+				match (argument_slot, descriptor) {
+					(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
+						let buffer = self.device.buffers.resource(buffer);
+						layout.argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
+					},
+					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
+						let image = self.device.images.resource(image);
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+					},
+					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
+						let proxy = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize].expect(
+							"Missing Metal swapchain proxy. The most likely cause is that a swapchain descriptor was materialized before acquiring its frame image.",
+						);
+						let image = self.device.images.resource(proxy);
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+					},
+					(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
+						let sampler = &self.device.samplers[sampler.0 as usize];
+						layout
+							.argument_encoder
+							.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
+					},
+					(
+						DescriptorBindingSlot::CombinedImageSampler { texture, sampler },
+						Descriptor::CombinedImageSampler {
+							image,
+							sampler: sampler_handle,
+							..
+						},
+					) => unsafe {
+						let image = self.device.images.resource(image);
+						let sampler_state = &self.device.samplers[sampler_handle.0 as usize];
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
+						layout
+							.argument_encoder
+							.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
+					},
+					(
+						DescriptorBindingSlot::AccelerationStructure(slot),
+						Descriptor::AccelerationStructure { handle },
+					) => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							unsafe {
+								layout
+									.argument_encoder
+									.setAccelerationStructure_atIndex(Some(structure.as_ref()), slot as _);
+							}
+						}
+					}
+					_ => unreachable!(
+						"Validated Metal descriptor kind changed during materialization. The most likely cause is internal descriptor state corruption."
+					),
+				}
+			}
+		}
+
+		argument_buffer
+	}
+
+	/// Returns immutable native argument-buffer snapshots, reusing them while every retained set version is unchanged.
+	fn materialize_argument_buffers(
+		&self,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+	) -> SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]> {
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let key = MaterializationKey {
+			descriptor_sets: self.bound_descriptor_set_handles.clone(),
+			sequence_index: self.sequence_index,
+		};
+		let versions = self
+			.bound_descriptor_set_handles
+			.iter()
+			.map(|handle| self.device.descriptor_sets[handle.0 as usize].version)
+			.collect::<SmallVec<[u64; 4]>>();
+
+		if let Some(materialization) = pipeline.materializations.borrow().get(&key) {
+			if materialization.versions == versions {
+				return materialization.argument_buffers.clone();
+			}
+		}
+
+		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
+		let argument_buffers = layout
+			.stage_argument_layouts
+			.iter()
+			.map(|stage_layout| (stage_layout.stage, self.encode_stage_argument_buffer(stage_layout)))
+			.collect::<SmallVec<[_; 5]>>();
+		pipeline.materializations.borrow_mut().insert(
+			key,
+			Materialization {
+				versions,
+				argument_buffers: argument_buffers.clone(),
+			},
+		);
+		argument_buffers
 	}
 }
 
@@ -822,7 +1003,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
 				}
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 
 		// let consumptions = attachments
 		// 	.filter_map(|(attachment, _, _)| Some(Consumption {
@@ -878,7 +1059,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Render Pass");
 			rce.setLabel(Some(&label));
 		}
@@ -920,7 +1101,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -941,6 +1122,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				image.format,
 				image.array_layers,
 				*clear_value,
+				self.device.debug_labels,
 			);
 		}
 	}
@@ -954,7 +1136,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -969,7 +1151,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Clear");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1001,7 +1183,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1016,7 +1198,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1064,7 +1246,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1079,7 +1261,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Image Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1140,22 +1322,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				destination.format,
 				destination.extent
 			);
+
 			flush_managed_buffer_range(source, copy.source_offset, required_source_bytes - copy.source_offset);
+
 			let mut source_size = utils::texture_copy_size(destination.format, destination.extent);
 			source_size.depth = 1;
 			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 			for slice in 0..destination.array_layers as usize {
 				let source_offset = copy.source_offset + slice * copy.source_bytes_per_image;
-				utils::debug_compressed_upload(
-					destination.format,
-					0,
-					slice,
-					destination.extent,
-					copy.source_bytes_per_row,
-					copy.source_bytes_per_image,
-					source_offset,
-				);
+
 				unsafe {
 					blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 						source.buffer.as_ref(),
@@ -1182,7 +1358,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Read,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 	}
 
@@ -1213,7 +1389,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1228,7 +1404,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Image Buffer Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1329,7 +1505,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 	}
 
@@ -1345,18 +1521,44 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
-		texture_handles
-			.iter()
-			.map(|handle| {
-				let copy_handle = self.device.allocate_texture_copy_handle();
-				let data = self.device.read_texture_to_cpu(self.get_internal_image_handle(*handle));
-				self.texture_copies.push((copy_handle, data));
-				copy_handle
-			})
-			.collect()
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let mut copies = Vec::with_capacity(texture_handles.len());
+
+		for handle in texture_handles {
+			let image_handle = self.get_internal_image_handle(*handle);
+			let image = self.device.images.resource(image_handle);
+			if !image.access.contains(crate::DeviceAccesses::CpuRead) {
+				continue;
+			}
+
+			// Managed Metal textures must be synchronized by the GPU before their compact CPU staging memory is refreshed.
+			if utils::storage_mode_from_access(image.access) == mtl::MTLStorageMode::Managed {
+				for slice in 0..image.array_layers as usize {
+					unsafe {
+						blit_encoder.synchronizeTexture_slice_level(image.texture.as_ref(), slice, 0);
+					}
+				}
+			}
+
+			// Match Vulkan: the copy handle is the internal image whose CPU staging storage receives the readback.
+			copies.push(graphics_hardware_interface::TextureCopyHandle(image_handle.0));
+		}
+
+		blit_encoder.endEncoding();
+		copies
 	}
 
 	fn write_image_data(
@@ -1438,7 +1640,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
+		if self.device.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
+		}
 
 		unsafe {
 			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
@@ -1493,7 +1697,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		#[cfg(debug_assertions)]
 		let write_label = _write_label;
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let mut label = crate::command_buffer::DebugLabelWriter::new();
 			write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
 			let name = label.as_str();
@@ -1515,7 +1719,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 	fn end_region(&self) {
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			if let Some(encoder) = self.active_compute_encoder.as_ref() {
 				encoder.popDebugGroup();
 			}
@@ -1604,7 +1808,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::General,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		self.apply_bound_vertex_buffers();
@@ -1634,135 +1838,82 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
-		if sets.is_empty() {
-			return self;
-		}
-
 		let pipeline_layout_handle = self.active_pipeline_layout.expect(
 			"No pipeline layout is active. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
+		// Binding replaces the complete flat set union; no implicit set index or prior binding survives.
+		self.bound_descriptor_set_handles.clear();
 		for descriptor_set_handle in sets {
 			let descriptor_set_handles = DescriptorSetHandle(descriptor_set_handle.0)
 				.root(self.device.descriptor_sets)
 				.get_all(self.device.descriptor_sets);
 			let descriptor_set_handle =
 				descriptor_set_handles[(self.sequence_index as usize).rem_euclid(descriptor_set_handles.len())];
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let set_index = *pipeline_layout
-				.descriptor_set_template_indices
-				.get(&descriptor_set.descriptor_set_layout)
-				.expect(
-					"Descriptor set layout not found in the active Metal pipeline layout. The most likely cause is that a descriptor set incompatible with the currently bound pipeline was bound.",
-				);
-
-			if (set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[set_index as usize] = (set_index, descriptor_set_handle);
-				self.bound_descriptor_set_handles.truncate(set_index as usize + 1);
-			} else {
-				assert_eq!(set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles.push((set_index, descriptor_set_handle));
-			}
+			self.bound_descriptor_set_handles.push(descriptor_set_handle);
 		}
+		self.validate_bound_descriptor_sets(pipeline_layout);
 
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		let pipeline = self.device.pipelines[bound_pipeline.0 as usize].clone();
-
-		for &(set_index, descriptor_set_handle) in &self.bound_descriptor_set_handles {
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let descriptor_set_layout = &self.device.descriptor_sets_layouts[descriptor_set.descriptor_set_layout.0 as usize];
-			let binding_index = ARGUMENT_BUFFER_BINDING_BASE + set_index;
-
-			match &pipeline.pipeline {
-				PipelineState::Raster(_) => {
-					if let Some(encoder) = self.active_render_encoder.as_ref() {
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::TASK))
-						{
-							unsafe {
+		let argument_buffers = self.materialize_argument_buffers(bound_pipeline);
+		match &self.device.pipelines[bound_pipeline.0 as usize].pipeline {
+			PipelineState::Raster(_) => {
+				if let Some(encoder) = self.active_render_encoder.as_ref() {
+					for (stage, argument_buffer) in &argument_buffers {
+						unsafe {
+							if stage.intersects(crate::Stages::TASK) {
 								encoder.setObjectBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::MESH))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::MESH) {
 								encoder.setMeshBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::VERTEX))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::VERTEX) {
 								encoder.setVertexBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::FRAGMENT))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::FRAGMENT) {
 								encoder.setFragmentBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
 						}
-
-						self.make_render_descriptor_set_resources_resident(
-							encoder.as_ref(),
-							descriptor_set,
-							descriptor_set_layout,
-						);
 					}
+					self.make_render_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
 				}
-				PipelineState::Compute(_) => {
-					if let Some(encoder) = self.active_compute_encoder.as_ref() {
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::COMPUTE))
-						{
+			}
+			PipelineState::Compute(_) => {
+				if let Some(encoder) = self.active_compute_encoder.as_ref() {
+					for (stage, argument_buffer) in &argument_buffers {
+						if stage.intersects(crate::Stages::COMPUTE) {
 							unsafe {
 								encoder.setBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
 						}
-
-						self.make_compute_descriptor_set_resources_resident(encoder.as_ref(), descriptor_set);
 					}
+					self.make_compute_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
 				}
-				PipelineState::RayTracing => {}
 			}
+			PipelineState::RayTracing => {}
 		}
 
 		self.consume_bound_descriptor_resources();

@@ -156,13 +156,13 @@ impl Primitive for Primitives {
 				exponent: 2.0,
 			},
 			Primitives::Text(_) | Primitives::TextField(_) => Shapes::Box {
-				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
+				half: (Sizing::pixels(0.0), Sizing::pixels(0.0)),
 				radius: 0.0,
 				exponent: 2.0,
 			},
 			Primitives::Shape(shape) => shape.shape.clone(),
 			Primitives::Curve(_) => Shapes::Box {
-				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
+				half: (Sizing::pixels(0.0), Sizing::pixels(0.0)),
 				radius: 0.0,
 				exponent: 2.0,
 			},

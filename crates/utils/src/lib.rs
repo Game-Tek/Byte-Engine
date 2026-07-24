@@ -138,23 +138,14 @@ impl Extent {
 	}
 
 	pub fn dimensions(&self) -> u32 {
-		match self {
-			Extent {
-				width: 1..,
-				height: 1,
-				depth: 1,
-			} => 1,
-			Extent {
-				width: 1..,
-				height: 1..,
-				depth: 1,
-			} => 2,
-			Extent {
-				width: 1..,
-				height: 1..,
-				depth: 1..,
-			} => 3,
-			_ => 0,
+		if self.width == 0 {
+			0
+		} else if self.depth > 1 {
+			3
+		} else if self.height > 1 {
+			2
+		} else {
+			1
 		}
 	}
 }
@@ -285,6 +276,10 @@ pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
 
 #[cfg(test)]
 mod tests {
+	use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+
+	use super::{as_byte_slice, as_byte_slice_mut, BufferAllocator, Extent, RGBA};
+
 	#[test]
 	fn test_partition() {
 		let input = [];
@@ -306,5 +301,64 @@ mod tests {
 		let input = [1, 2, 3, 5, 6, 7, 9, 10, 11];
 		let expected: Vec<(usize, &[usize])> = vec![(1, &[1, 2, 3]), (5, &[5, 6, 7]), (9, &[9, 10, 11])];
 		assert_eq!(super::partition(&input, |x| *x,), expected);
+	}
+
+	#[test]
+	fn buffer_allocator_returns_disjoint_ranges_and_tracks_padding() {
+		let mut storage = [0u8; 16];
+		{
+			let mut allocator = BufferAllocator::new(&mut storage);
+
+			let (first_offset, first) = allocator.take_with_offset(3);
+			first.copy_from_slice(&[1, 2, 3]);
+			let (second_offset, second) = allocator.take_with_offset_aligned(4, 4);
+			second.copy_from_slice(&[4, 5, 6, 7]);
+
+			assert_eq!(first_offset, 0);
+			assert_eq!(second_offset, 4);
+			assert_eq!(allocator.remaining(), 8);
+			assert_eq!(allocator.remaining_aligned(8), 8);
+		}
+		assert_eq!(&storage[..8], &[1, 2, 3, 0, 4, 5, 6, 7]);
+	}
+
+	#[test]
+	fn extent_dimensions_and_division_preserve_active_axes() {
+		assert_eq!(Extent::line(8).dimensions(), 1);
+		assert_eq!(Extent::square(8).dimensions(), 2);
+		assert_eq!(Extent::cube(8, 4, 2).dimensions(), 3);
+		assert_eq!(Extent::new(8, 1, 1).dimensions(), 1);
+		assert_eq!(Extent::new(8, 8, 1).dimensions(), 2);
+		assert_eq!(Extent::new(0, 0, 0).dimensions(), 0);
+		assert_eq!((Extent::new(8, 1, 1) / 2).as_tuple(), (4, 1, 1));
+		assert_eq!((Extent::new(8, 4, 2) / 2).as_array(), [4, 2, 1]);
+		assert_eq!(Extent::rectangle(16, 9).aspect_ratio(), 16.0 / 9.0);
+	}
+
+	#[test]
+	fn rgba_multiplication_is_component_wise_and_hashes_all_channels() {
+		let tint = RGBA::new(0.5, 0.25, 1.0, 0.5);
+		assert_eq!(tint * RGBA::white(), tint);
+		assert_eq!(tint * 2.0, RGBA::new(1.0, 0.5, 2.0, 1.0));
+		assert_eq!(<[f32; 4]>::from(RGBA::transparent()), [0.0, 0.0, 0.0, 0.0]);
+		assert_eq!(RGBA::default(), RGBA::black());
+
+		let hash = |color: RGBA| {
+			let mut hasher = DefaultHasher::new();
+			color.hash(&mut hasher);
+			hasher.finish()
+		};
+		assert_ne!(hash(tint), hash(RGBA::new(0.5, 0.25, 1.0, 0.25)));
+	}
+
+	#[test]
+	fn byte_slice_views_preserve_native_object_representation() {
+		let values = [0x1122u16, 0x3344u16];
+		let bytes = as_byte_slice(&values);
+		assert_eq!(bytes.len(), std::mem::size_of_val(&values));
+
+		let mut mutable = [0u16; 2];
+		as_byte_slice_mut(&mut mutable).copy_from_slice(bytes);
+		assert_eq!(mutable, values);
 	}
 }

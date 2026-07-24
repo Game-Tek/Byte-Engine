@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.1.0 - Initial crates.io preparation
+## 0.1.1 - 2026-07-23
 
-- Added publication metadata for `byte-engine` and its internal workspace crates.
+- Configured docs.rs builds to enable the AES and SSE2 target features required by `gxhash`.
+
+## 0.1.0 - 2026-07-23
+
+- Published `byte-engine`, `beld`, and the engine's internal support crates.
 - Scoped internal package names under `byte-engine-*` while preserving existing Rust crate import names.
 - Tightened the documented `byte-engine` API surface by hiding renderer and layout implementation modules.
 - Fixed public rustdoc links and added a crate-level usage example.

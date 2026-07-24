@@ -3,7 +3,7 @@ pub struct Factory {
 	pub(crate) shaders: Vec<Shader>,
 }
 
-/// The `Shader` struct stores detached DX12 shader metadata for later interning.
+/// The `Shader` struct carries detached DX12 metadata until a context interns it.
 #[derive(Clone)]
 pub(crate) struct Shader {
 	pub(crate) name: Option<String>,
@@ -20,7 +20,7 @@ pub(crate) enum ShaderSource {
 	Hlsl { source: String, entry_point: String },
 }
 
-/// The `RasterPipeline` struct stores detached DX12 raster pipeline state until a frame interns it.
+/// The `RasterPipeline` struct carries detached DX12 raster state until a frame interns it.
 pub struct RasterPipeline {
 	pub(crate) descriptor_set_templates: Vec<crate::DescriptorSetTemplateHandle>,
 	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
@@ -32,7 +32,7 @@ pub struct RasterPipeline {
 	pub(crate) factory_shaders: Vec<Shader>,
 }
 
-/// The `ComputePipeline` struct stores detached DX12 compute pipeline state until a frame interns it.
+/// The `ComputePipeline` struct carries detached DX12 compute state until a frame interns it.
 pub struct ComputePipeline {
 	pub(crate) descriptor_set_templates: Vec<crate::DescriptorSetTemplateHandle>,
 	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
@@ -40,14 +40,14 @@ pub struct ComputePipeline {
 	pub(crate) factory_shaders: Vec<Shader>,
 }
 
-/// The `VertexElement` struct stores owned vertex element metadata for detached DX12 raster pipelines.
+/// The `VertexElement` struct provides owned vertex metadata to detached DX12 raster pipelines.
 pub(crate) struct VertexElement {
 	pub(crate) name: String,
 	pub(crate) format: crate::DataTypes,
 	pub(crate) binding: u32,
 }
 
-/// The `ShaderParameter` struct stores owned shader binding metadata for detached DX12 pipelines.
+/// The `ShaderParameter` struct provides owned binding metadata to detached DX12 pipelines.
 #[derive(Clone)]
 pub(crate) struct ShaderParameter {
 	pub(crate) handle: ShaderHandle,
@@ -55,7 +55,7 @@ pub(crate) struct ShaderParameter {
 	pub(crate) specialization_map: Vec<pipelines::SpecializationMapEntry>,
 }
 
-/// The `FactoryImage` struct stores detached DX12 image creation parameters.
+/// The `FactoryImage` struct carries DX12 image parameters until a context interns them.
 pub struct FactoryImage {
 	pub(crate) name: Option<String>,
 	pub(crate) extent: Extent,
@@ -67,7 +67,7 @@ pub struct FactoryImage {
 	pub(crate) array_layers: Option<std::num::NonZeroU32>,
 }
 
-/// The `FactorySampler` struct stores detached DX12 sampler creation parameters.
+/// The `FactorySampler` struct carries DX12 sampler parameters until a context interns them.
 pub struct FactorySampler {
 	pub(crate) filtering_mode: FilteringModes,
 	pub(crate) reduction_mode: SamplingReductionModes,

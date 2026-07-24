@@ -113,9 +113,10 @@ impl Default for ConcreteStyle {
 }
 
 impl ConcreteStyle {
-	/// Creates a new [`ConcreteStyle`] with no layers.
+	/// Creates a [`ConcreteStyle`] with no layers.
 	///
-	/// Keep in mind that [`ConcreteStyle::default`] will create a [`ConcreteStyle`] with a single default layer, while this will create an empty [`ConcreteStyle`] with no layers, which produces invisible elements.
+	/// This style produces invisible elements. Use [`ConcreteStyle::default`] to
+	/// create a style with one visible default layer.
 	pub fn new() -> Self {
 		Self { layers: Vec::new() }
 	}
@@ -178,11 +179,27 @@ impl ConcreteLayer {
 		self.feather(EdgeFeather::edges(top, right, bottom, left))
 	}
 
+	/// Blurs the pixels rendered behind this layer with an adaptive Gaussian filter.
+	///
+	/// `radius` preserves the UI renderer's legacy Gaussian-variance scale. It
+	/// controls blur variance, not the Gaussian standard deviation or a literal
+	/// pixel radius. The renderer derives standard deviation from `sqrt(radius)`,
+	/// so use `max_radius * strength * strength` for approximately linear animated
+	/// blur strength, where `strength` ranges from `0.0` to `1.0`.
+	///
+	/// Finite values are clamped to `0.0..=64.0`. Negative and non-finite values
+	/// disable the blur. After configuring the layer, add it with
+	/// [`ConcreteStyle::layer`].
 	pub fn backdrop_blur(mut self, radius: f32) -> Self {
 		self.backdrop_blur_radius = sanitize_backdrop_blur_radius(radius);
 		self
 	}
 
+	/// Blurs the pixels rendered behind this layer using the legacy method name.
+	///
+	/// This method is an alias for [`ConcreteLayer::backdrop_blur`], including its
+	/// Gaussian-variance radius scale and input sanitization. Use
+	/// [`ConcreteLayer::backdrop_blur`] in new code to make the effect explicit.
 	pub fn blur(self, radius: f32) -> Self {
 		self.backdrop_blur(radius)
 	}

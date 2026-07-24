@@ -6,7 +6,7 @@ use crate::{
 	space::Positionable,
 };
 
-/// The `Emitter` struct represents an audio source in a three-dimensional space.
+/// The `Emitter` struct connects an audio [`Source`] to a position in the game world.
 pub struct Emitter {
 	position: Vector3,
 	source: EntityHandle<dyn Source>,
@@ -31,5 +31,34 @@ impl Positionable for Emitter {
 
 	fn set_position(&mut self, position: Vector3) {
 		self.position = position;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use math::Vector3;
+
+	use super::Emitter;
+	use crate::{
+		audio::{RoundRobin, Source},
+		core::EntityHandle,
+		space::Positionable,
+	};
+
+	#[test]
+	fn emitter_preserves_source_identity_while_moving() {
+		let concrete = EntityHandle::from(RoundRobin::new(vec!["step.wav".into()]));
+		let source: EntityHandle<dyn Source> = concrete.clone();
+		let mut emitter = Emitter::new(Vector3::new(1.0, 2.0, 3.0), source);
+
+		assert_eq!(emitter.position(), Vector3::new(1.0, 2.0, 3.0));
+		let emitter_source = emitter.source().get_lock();
+		let concrete_source = concrete.get_lock();
+		assert_eq!(
+			std::sync::Arc::as_ptr(&emitter_source) as *const (),
+			std::sync::Arc::as_ptr(&concrete_source) as *const ()
+		);
+		emitter.set_position(Vector3::new(-4.0, 5.0, -6.0));
+		assert_eq!(emitter.position(), Vector3::new(-4.0, 5.0, -6.0));
 	}
 }

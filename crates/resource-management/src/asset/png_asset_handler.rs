@@ -3,17 +3,12 @@ use std::alloc::Allocator;
 use utils::Extent;
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
 use crate::{
-	asset,
 	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
-	r#async::BoxedFuture,
-	resource,
 	types::{Formats, Gamma},
-	ProcessedAsset,
 };
 
 struct DecodedImage<'a> {
@@ -50,80 +45,69 @@ impl AssetHandler for PNGAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if !self.can_handle(dt) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
+			if !self.can_handle(dt) {
+				return Err(LoadErrors::UnsupportedType);
+			}
+		}
+
+		let (data, _, dt) = context.resolve(url).await?;
+		let allocator = context.allocator();
+
+		let semantic = guess_semantic_from_name(url.get_base());
+		let transformations = self.transformations;
+
+		// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
+		let decoded = {
+			let mut buffer;
+			let extent;
+			let gamma: Gamma;
+			let format;
+
+			match dt.as_str() {
+				"png" | "image/png" => {
+					let cursor = std::io::Cursor::new(data);
+					let mut decoder = png::Decoder::new(cursor);
+					decoder.set_transformations(transformations);
+					let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+
+					let Some(size) = reader.output_buffer_size() else {
+						return Err(LoadErrors::FailedToProcess);
+					};
+
+					buffer = zeroed_vec_in(size, allocator);
+
+					let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+					buffer.truncate(info.buffer_size());
+
+					extent = Extent::rectangle(info.width, info.height);
+					gamma = png_gamma(reader.info(), semantic);
+					(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
+				}
+				_ => {
 					return Err(LoadErrors::UnsupportedType);
 				}
 			}
 
-			let (data, _, dt) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+			let description = ImageDescription {
+				format,
+				extent,
+				semantic,
+				gamma,
+				generate_mipmaps: false,
+			};
 
-			let semantic = guess_semantic_from_name(url.get_base());
-			let transformations = self.transformations;
+			Ok(DecodedImage {
+				data: buffer.into(),
+				description,
+			})
+		}?;
 
-			// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
-			let decoded = {
-				let mut buffer;
-				let extent;
-				let gamma: Gamma;
-				let format;
+		let DecodedImage { data, description } = decoded;
 
-				match dt.as_str() {
-					"png" | "image/png" => {
-						let cursor = std::io::Cursor::new(data);
-						let mut decoder = png::Decoder::new(cursor);
-						decoder.set_transformations(transformations);
-						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-
-						let Some(size) = reader.output_buffer_size() else {
-							return Err(LoadErrors::FailedToProcess);
-						};
-
-						buffer = zeroed_vec_in(size, allocator);
-
-						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
-						buffer.truncate(info.buffer_size());
-
-						extent = Extent::rectangle(info.width, info.height);
-						gamma = png_gamma(reader.info(), semantic);
-						(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
-					}
-					_ => {
-						return Err(LoadErrors::UnsupportedType);
-					}
-				}
-
-				let description = ImageDescription {
-					format,
-					extent,
-					semantic,
-					gamma,
-					generate_mipmaps: false,
-				};
-
-				Ok(DecodedImage {
-					data: buffer.into(),
-					description,
-				})
-			}?;
-
-			let DecodedImage { data, description } = decoded;
-
-			let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
-			Ok((asset, data.to_vec().into_boxed_slice()))
-		})
+		let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		context.store_primary(asset, &data)
 	}
 }
 
@@ -235,32 +219,22 @@ mod tests {
 			self, asset_handler::AssetHandler, asset_manager::AssetManager, png_asset_handler::PNGAssetHandler, ResourceId,
 		},
 		r#async, resource,
+		resources::image::Image,
+		types::Formats,
 	};
 
 	#[r#async::test]
 	#[ignore = "Test uses data not pushed to the repository"]
 	async fn load_image() {
-		let asset_handler = PNGAssetHandler::new();
-
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
-		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
-
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("patterned_brick_floor_02_diff_2k.png", &resource_storage_backend)
 			.await
 			.expect("Image asset handler did not handle asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Image asset did not store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -272,25 +246,48 @@ mod tests {
 		assert_eq!(resource.class, "Image");
 	}
 
-	// #[test]
-	// #[ignore]
-	// fn load_16_bit_normal_image() {
-	// 	let asset_manager = AssetManager::new("../assets".into(),);
-	// 	let asset_handler = ImageAssetHandler::new();
+	/// Encodes a small RGB16 normal map so the PNG decoder sees real 16-bit file data.
+	fn generated_rgb16_normal_png() -> Vec<u8> {
+		let mut png = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+			encoder.set_color(png::ColorType::Rgb);
+			encoder.set_depth(png::BitDepth::Sixteen);
+			let mut writer = encoder.write_header().expect("generated PNG header should encode");
+			let normal = [0x80, 0x00, 0x80, 0x00, 0xff, 0xff];
+			let pixels = normal.repeat(16);
+			writer.write_image_data(&pixels).expect("generated PNG pixels should encode");
+		}
+		png
+	}
 
-	// 	let url = "Revolver_Normal.png";
+	#[r#async::test]
+	async fn asset_manager_bakes_generated_16_bit_normal_png() {
+		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		asset_storage_backend.add_file("generated_normal.png", &generated_rgb16_normal_png());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
-	// 	let storage_backend = asset_manager.get_test_storage_backend();
+		asset_manager
+			.bake("generated_normal.png", &resource_storage_backend)
+			.await
+			.expect("generated 16-bit PNG should bake");
 
-	// 	let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("generated_normal.png"))
+			.expect("baked PNG resource should be stored");
+		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
 
-	// 	let generated_resources = storage_backend.get_resources();
-
-	// 	assert_eq!(generated_resources.len(), 1);
-
-	// 	let resource = &generated_resources[0];
-
-	// 	assert_eq!(resource.id, url);
-	// 	assert_eq!(resource.class, "Image");
-	// }
+		assert_eq!(resource.class, "Image");
+		assert_eq!(image.extent, [4, 4, 0]);
+		assert_eq!(image.format, Formats::BC5);
+		assert_eq!(
+			resource_storage_backend
+				.get_resource_data_by_name(ResourceId::new("generated_normal.png"))
+				.expect("baked PNG data should be stored")
+				.len(),
+			16
+		);
+	}
 }

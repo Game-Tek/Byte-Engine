@@ -10,6 +10,9 @@
 //! listener and an action event channel, then register classes before creating
 //! devices.
 
+/// The synthetic device reserved for actions triggered without physical input.
+const MANUAL_ACTION_DEVICE: DeviceHandle = DeviceHandle(u32::MAX);
+
 /// The [`InputManager`] struct owns input topology, current values, and action
 /// evaluation state.
 ///
@@ -17,22 +20,29 @@
 /// standard headed integration, use
 /// `process_default_window_input` rather than duplicating the mouse and keyboard
 /// trigger-name mapping.
+///
+/// After registration, subscribe through [`Self::event_channel`], queue physical
+/// values with [`Self::record_trigger_value_for_device`], and call
+/// [`Self::update`] once per application tick.
+/// See the [input handling guide](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling)
+/// for the complete registration and evaluation flow.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
 	triggers: Vec<Trigger>,
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
-	/// Stores the last value of a trigger relative to the seat and device it belongs to.
+	/// Stores the latest trigger value for each seat and device.
 	trigger_values: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
-	/// Stores the last value of an action relative to the seat and device it belongs to.
+	/// Stores the latest action value for each seat and device.
 	action_values: HashMap<(SeatHandle, DeviceHandle, ActionHandle), Value>,
+	pending_manual_actions: Vec<(SeatHandle, ActionHandle, Value)>,
 	action_listener: DefaultListener<CreateMessage<Action>>,
 	event_channel: DefaultChannel<ActionEvent>,
 }
 
 impl InputManager {
-	/// Creates a new input manager.
+	/// Creates an input manager connected to action creation and event channels.
 	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: DefaultChannel<ActionEvent>) -> Self {
 		InputManager {
 			device_classes: Vec::new(),
@@ -42,36 +52,25 @@ impl InputManager {
 			actions: Vec::new(),
 			trigger_values: HashMap::with_capacity(512),
 			action_values: HashMap::with_capacity(64),
+			pending_manual_actions: Vec::new(),
 			action_listener,
 			event_channel,
 		}
 	}
 
-	/// Registers a device class/type.
+	/// Registers a named device class, such as `Keyboard`.
 	///
-	/// One example is a keyboard.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the device type. **Should be pascalcase.**
+	/// Use PascalCase for `name` so trigger paths remain consistent.
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
 		let device_class = DeviceClass { name: name.to_string() };
 
 		DeviceClassHandle(insert_return_length(&mut self.device_classes, device_class) as u32)
 	}
 
-	/// Registers an input source on a device class.
+	/// Registers a named trigger on a device class.
 	///
-	/// One example is the UP key on a keyboard.
-	///
-	/// The input source is associated with a device class/type.
-	/// The input source has a default value assigned from the `value_type` param.
-	///
-	/// # Arguments
-	///
-	/// * `device_handle` - The handle of the device.
-	/// * `name` - The name of the input source.
-	/// * `value_type` - The type of the value of the input source.
+	/// `value_type` defines the trigger's initial value and valid Rust type. Use
+	/// the returned [`TriggerHandle`] to bind actions or submit input records.
 	pub fn register_trigger<T>(
 		&mut self,
 		device_handle: &DeviceClassHandle,
@@ -102,16 +101,9 @@ impl InputManager {
 		TriggerHandle(insert_return_length(&mut self.triggers, input_source) as u32)
 	}
 
-	/// Registers an input destination on a device.
+	/// Reserves an output destination on a device class.
 	///
-	/// One example is the rumble motors on a gamepad.
-	///
-	/// The input destination is associated with a device.
-	///
-	/// # Arguments
-	/// * `device_handle` - The handle of the device.
-	/// * `name` - The name of the input destination.
-	/// * `value_type` - The type of the value of the input destination.
+	/// Input destinations represent device feedback, such as gamepad rumble.
 	pub fn register_input_destination<T: InputValue>(
 		&mut self,
 		_device_class_handle: &DeviceClassHandle,
@@ -121,12 +113,10 @@ impl InputManager {
 		TriggerHandle(0)
 	}
 
-	/// Creates an instance of a device class.
-	/// This represents a particular device of a device class. Such as a single controller or a keyboard.
+	/// Creates one concrete device from a registered class.
 	///
-	/// # Arguments
-	///
-	/// * `device_class_handle` - The handle of the device class.
+	/// Call this once for each physical or virtual device, such as each connected
+	/// gamepad.
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
 		let other_device = self
 			.devices
@@ -138,6 +128,10 @@ impl InputManager {
 			Some(device) => device.index + 1,
 			None => 0,
 		};
+		assert_ne!(
+			index, MANUAL_ACTION_DEVICE.0,
+			"Physical device index exhausted reserved manual action handle"
+		);
 
 		let device = Device {
 			device_class_handle: *device_class_handle,
@@ -147,71 +141,10 @@ impl InputManager {
 		DeviceHandle(insert_return_length(&mut self.devices, device) as u32)
 	}
 
-	/// Registers an input event.
+	/// Queues a trigger value for a device and seat.
 	///
-	/// One example is a "move forward" being pressed.
-	///
-	/// - Action:
-	/// 	- Action: Returns the action value.
-	/// 	- Character: Returns a character when the action is pressed.
-	/// 	- Linear: Returns a float value when the action is pressed.
-	/// 	- 2D: Returns a 2D point when the action is pressed.
-	/// 	- 3D: Returns a 3D point when the action is pressed.
-	/// 	- Quaternion: Returns a quaternion when the action is pressed.
-	/// 	- RGBA: Returns a RGBA color when the action is pressed.
-	/// - Character:
-	/// 	- Action: Returns an action value when the character is pressed.
-	/// 	- Character: Returns the character value.
-	/// 	- Linear: Returns a float value when the character is pressed.
-	/// 	- 2D: Returns a 2D point when the character is pressed.
-	/// 	- 3D: Returns a 3D point when the character is pressed.
-	/// 	- Quaternion: Returns a quaternion when the character is pressed.
-	/// 	- RGBA: Returns a RGBA color when the character is pressed.
-	/// - Linear:
-	/// 	- Action: Returns an action value when the float value is reached.
-	/// 	- Character: Returns a character when the float value is reached.
-	/// 	- Linear: Returns the float value.
-	/// 	- 2D: Interpolates between two 2D points based on the range of the float value.
-	/// 	- 3D: Interpolates between two 3D points based on the range of the float value.
-	/// 	- Quaternion: Interpolates between two quaternions based on the range of the float value.
-	/// 	- RGBA: Interpolates between two RGBA colors based on the range of the float value.
-	/// - 2D:
-	/// 	- Action: Returns an action value when the 2D point is reached.
-	/// 	- Character: Returns a character when the 2D point is reached.
-	/// 	- Linear: Returns a float value when the 2D point is reached.
-	/// 	- 2D: Returns the 2D point.
-	/// 	- 3D: Returns a 3D point when the 2D point is reached.
-	/// 	- Quaternion: Returns a quaternion when the 2D point is reached.
-	/// 	- RGBA: Returns a RGBA color when the 2D point is reached.
-	/// - 3D:
-	/// 	- Action: Returns an action value when the 3D point is reached.
-	/// 	- Character: Returns a character when the 3D point is reached.
-	/// 	- Linear: Returns a float value when the 3D point is reached.
-	/// 	- 2D: Returns a 2D point when the 3D point is reached.
-	/// 	- 3D: Returns the 3D point.
-	/// 	- Quaternion: Returns a quaternion when the 3D point is reached.
-	/// 	- RGBA: Returns a RGBA color when the 3D point is reached.
-	/// - Quaternion:
-	/// 	- Action: Returns an action value when the quaternion is reached.
-	/// 	- Character: Returns a character when the quaternion is reached.
-	/// 	- Linear: Returns a float value when the quaternion is reached.
-	/// 	- 2D: Returns a 2D point when the quaternion is reached.
-	/// 	- 3D: Returns a 3D point when the quaternion is reached.
-	/// 	- Quaternion: Returns the quaternion.
-	/// 	- RGBA: Returns a RGBA color when the quaternion is reached.
-	/// - RGBA:
-	/// 	- Action: Returns an action value when the RGBA color is reached.
-	/// 	- Character: Returns a character when the RGBA color is reached.
-	/// 	- Linear: Returns a float value when the RGBA color is reached.
-	/// 	- 2D: Returns a 2D point when the RGBA color is reached.
-	/// 	- 3D: Returns a 3D point when the RGBA color is reached.
-	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
-	/// 	- RGBA: Returns the RGBA color.
-
-	/// Records an input trigger value for a device into a queue.
-	/// The new value for the input trigger is not reflected until the next call to `update()`.
-	///
-	/// One example is the UP key on a keyboard being pressed.
+	/// The value becomes visible when [`Self::update`] processes the queue. The
+	/// manager ignores unknown triggers and values with the wrong [`Types`].
 	pub fn record_trigger_value_for_device(
 		&mut self,
 		seat_handle: SeatHandle,
@@ -251,6 +184,11 @@ impl InputManager {
 		self.records.push(record);
 	}
 
+	/// Resolves queued trigger and manual-action values, then emits action events.
+	///
+	/// Call this once per application tick after recording platform input. Next,
+	/// drain a listener created from [`Self::event_channel`] to handle the resolved
+	/// [`ActionEvent`] values.
 	pub fn update(&mut self, frame_allocator: &bumpalo::Bump) {
 		while let Some(message) = self.action_listener.read() {
 			let handle = *message.handle();
@@ -270,7 +208,7 @@ impl InputManager {
 							function: Some(input_event.mapping.function),
 						})
 					})
-					.collect::<Vec<_>>(),
+					.collect(),
 				handle: Some(handle),
 				tick_policy,
 			};
@@ -331,6 +269,19 @@ impl InputManager {
 			}
 		}
 
+		// Manual actions enter the same state table as physical actions, using the
+		// reserved device because they do not originate from a concrete device.
+		for (seat_handle, action_handle, value) in self.pending_manual_actions.drain(..) {
+			self.action_values
+				.insert((seat_handle, MANUAL_ACTION_DEVICE, action_handle), value);
+
+			if let Some(action) = self.actions.get(action_handle.0 as usize) {
+				if let Some(handle) = action.handle {
+					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
+				}
+			}
+		}
+
 		// Phase B: Tick-based emission for WhileActive and Always actions.
 		// Iterates all actions and emits events based on their tick policy using the
 		// most recently resolved value. Only emits for devices that have previously
@@ -378,6 +329,41 @@ impl InputManager {
 		}
 	}
 
+	/// Queues an action value for emission during the next [`Self::update`] call.
+	///
+	/// After this call succeeds, run [`Self::update`] and read the action from a
+	/// listener created through [`Self::event_channel`].
+	pub fn trigger_action(
+		&mut self,
+		seat_handle: SeatHandle,
+		action_handle: ActionHandle,
+		value: Value,
+	) -> Result<(), InputActionError> {
+		let action = self
+			.actions
+			.get(action_handle.0 as usize)
+			.ok_or(InputActionError::UnknownAction(action_handle))?;
+		let actual_type = value.into();
+		if action.r#type != actual_type {
+			return Err(InputActionError::TypeMismatch {
+				expected: action.r#type,
+				actual: actual_type,
+			});
+		}
+
+		self.pending_manual_actions.push((seat_handle, action_handle, value));
+		Ok(())
+	}
+
+	/// Returns the synthetic device used by [`Self::trigger_action`].
+	pub fn manual_action_device_handle() -> DeviceHandle {
+		MANUAL_ACTION_DEVICE
+	}
+
+	/// Creates an action that emits when its resolved value changes.
+	///
+	/// Next, record values for one of the action's trigger mappings and call
+	/// [`Self::update`]. Use [`Self::event_channel`] to receive the result.
 	pub fn create_action(
 		&mut self,
 		name: &str,
@@ -388,6 +374,9 @@ impl InputManager {
 	}
 
 	/// Creates an action with a specific tick policy controlling how frequently events are emitted.
+	///
+	/// Next, create a listener from [`Self::event_channel`], record trigger values,
+	/// and call [`Self::update`] once per tick.
 	pub fn create_action_with_tick_policy(
 		&mut self,
 		name: &str,
@@ -407,7 +396,7 @@ impl InputManager {
 						function: Some(input_event.mapping.function),
 					})
 				})
-				.collect::<Vec<_>>(),
+				.collect(),
 			handle: None,
 			tick_policy,
 		};
@@ -418,7 +407,7 @@ impl InputManager {
 		handle
 	}
 
-	/// Retrieves all device handles of a given device class identified by name.
+	/// Returns all devices that belong to the named class.
 	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<Vec<DeviceHandle>> {
 		let device_class_handle = self
 			.device_classes
@@ -434,7 +423,9 @@ impl InputManager {
 		)
 	}
 
-	/// Get the latest processed value for an trigger for a device.
+	/// Returns the latest processed trigger value for a seat and device.
+	///
+	/// Returns the trigger's default value when no matching record exists.
 	pub fn get_trigger_value_for_device(
 		&self,
 		seat_handle: SeatHandle,
@@ -452,7 +443,7 @@ impl InputManager {
 			.unwrap_or(trigger.default))
 	}
 
-	/// Gets the latest processed value of an action for a device.
+	/// Returns the latest resolved action state for a seat and device.
 	pub fn get_action_state(
 		&self,
 		seat_handle: SeatHandle,
@@ -527,19 +518,30 @@ impl InputManager {
 		}
 	}
 
+	/// Returns the channel that publishes resolved action events.
+	///
+	/// Next, call [`DefaultChannel::listener`] and keep that listener with the
+	/// application system that handles the action.
 	pub fn event_channel(&self) -> &DefaultChannel<ActionEvent> {
 		&self.event_channel
 	}
 }
 
+/// The `InputActionError` enum describes why a manual action could not be queued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputActionError {
+	/// The requested action handle is not registered with the manager.
+	UnknownAction(ActionHandle),
+	/// The supplied value type does not match the action declaration.
+	TypeMismatch { expected: Types, actual: Types },
+}
+
 #[derive(Copy, Clone, Debug)]
-/// A trigger reference is a way to reference an input trigger.
-/// It can be referenced by it's name or by it's handle.
-/// It's provided as a convenience to the developer.
+/// The `TriggerReference` enum lets callers select a trigger by handle or name.
 pub enum TriggerReference {
-	/// Refer to the input trigger by it's handle.
+	/// Selects a trigger by its registered handle.
 	Handle(TriggerHandle),
-	/// Refer to the input trigger by it's name.
+	/// Selects a trigger by its `DeviceClass.Trigger` name.
 	Name(&'static str),
 }
 
@@ -1231,6 +1233,70 @@ mod tests {
 		// No new input -> no events.
 		update_input_manager(&mut input_manager);
 		assert_eq!(count_events(&mut event_listener), 0);
+	}
+
+	#[test]
+	fn manual_action_is_queued_and_updates_synthetic_state() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let seat = SeatHandle(7);
+		let action = Action::new("Manual", &[], Types::Float);
+		let event_handle = factory.create(action);
+		update_input_manager(&mut input_manager);
+		let action_handle = ActionHandle(0);
+
+		input_manager.trigger_action(seat, action_handle, Value::Float(3.5)).unwrap();
+		assert!(Listener::read(&mut event_listener).is_none());
+		update_input_manager(&mut input_manager);
+
+		let event = Listener::read(&mut event_listener).expect("expected manual action event");
+		assert_eq!(event.seat_handle(), seat);
+		assert_eq!(event.handle(), event_handle);
+		assert_eq!(event.value(), Value::Float(3.5));
+		assert_eq!(
+			input_manager
+				.get_action_state(seat, action_handle, InputManager::manual_action_device_handle())
+				.value,
+			Value::Float(3.5)
+		);
+	}
+
+	#[test]
+	fn manual_action_rejects_unknown_handles_and_wrong_values() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		factory.create(Action::new("Manual", &[], Types::Float));
+		update_input_manager(&mut input_manager);
+
+		assert!(matches!(
+			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(99), Value::Float(1.0)),
+			Err(InputActionError::UnknownAction(ActionHandle(99)))
+		));
+		assert!(matches!(
+			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Bool(true)),
+			Err(InputActionError::TypeMismatch {
+				expected: Types::Float,
+				actual: Types::Boolean
+			})
+		));
+		update_input_manager(&mut input_manager);
+		assert!(Listener::read(&mut event_listener).is_none());
+	}
+
+	#[test]
+	fn manual_actions_preserve_queue_order() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		factory.create(Action::new("Manual", &[], Types::Int));
+		update_input_manager(&mut input_manager);
+
+		input_manager
+			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(1))
+			.unwrap();
+		input_manager
+			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(2))
+			.unwrap();
+		update_input_manager(&mut input_manager);
+
+		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(1));
+		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(2));
 	}
 
 	#[test]

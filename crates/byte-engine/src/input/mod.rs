@@ -9,6 +9,9 @@
 //! [`InputManager`] owns device and action state. [`Value`] is the erased value
 //! passed through that runtime; typed action declarations use
 //! [`action::InputValue`] to constrain supported value types.
+//!
+//! See the [input handling guide](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling)
+//! for the device, trigger, action, and event workflow.
 
 use super::utils::RGBA;
 use crate::core::factory::Handle;
@@ -35,6 +38,7 @@ pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
 pub use device::DeviceHandle;
+pub use input_manager::InputActionError;
 pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
 use math::Quaternion;
@@ -50,7 +54,7 @@ use self::action::InputValue;
 pub enum Types {
 	/// A boolean value.
 	Boolean,
-	/// A unicode character.
+	/// A Unicode character.
 	Unicode,
 	/// A floating point value.
 	Float,
@@ -72,7 +76,7 @@ pub enum Types {
 pub enum Value {
 	/// A boolean value.
 	Bool(bool),
-	/// A unicode character.
+	/// A Unicode character.
 	Unicode(char),
 	/// A floating point value.
 	Float(f32),
@@ -201,21 +205,21 @@ pub enum Function {
 
 /// The `TickPolicy` enum controls how frequently an action emits events through the event channel.
 ///
-/// This allows applications to choose between event-driven and poll-driven input handling
-/// on a per-action basis.
+/// Applications use this policy to choose event-driven or poll-driven handling
+/// for each action.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum TickPolicy {
-	/// Emit events only when a trigger value actually changes. This is the default behavior.
+	/// Emits events only when a trigger value changes. This is the default.
 	#[default]
 	OnChange,
-	/// Emit events every frame while the action's resolved value is non-default
+	/// Emits events every frame while the action's resolved value is non-default
 	/// (e.g. while a key is held, while a stick is displaced from center).
 	WhileActive,
-	/// Emit events every frame unconditionally, regardless of the action's current value.
+	/// Emits events every frame, regardless of the action's current value.
 	Always,
 }
 
-/// The `Extract` trait exists to recover typed values from the input runtime's
+/// The `Extract` trait recovers typed values from the input runtime's
 /// erased [`Value`] representation.
 pub trait Extract<T: InputValue> {
 	/// Returns the stored value as the requested input type.
@@ -249,7 +253,7 @@ impl Extract<Vector3> for Value {
 	}
 }
 
-/// The `ValueMapping` struct exists to bind a trigger value to the transform
+/// The `ValueMapping` struct binds a trigger value to the transform
 /// used before action evaluation.
 ///
 /// `From` implementations for values use [`Function::Linear`] as the default

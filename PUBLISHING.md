@@ -1,10 +1,9 @@
-# Publishing
+# Publish Byte-Engine crates
 
-Byte-Engine publishes the public engine crate plus several internal support crates.
-Publish internal crates first so crates.io can resolve `byte-engine` dependencies
-during `cargo publish`.
+Publish the internal support crates before you publish the public `byte-engine`
+crate. This order lets crates.io resolve each dependency during `cargo publish`.
 
-## Publish Order
+## Follow the publish order
 
 1. `byte-engine-utils`
 2. `byte-engine-math`
@@ -16,9 +15,9 @@ during `cargo publish`.
 8. `byte-engine-betp`
 9. `byte-engine`
 
-`beld` is a workspace tool and is marked `publish = false`.
+Don't publish `beld`. It is a workspace tool and has `publish = false`.
 
-## Verification
+## Verify the workspace
 
 Run these checks before publishing:
 
@@ -33,7 +32,7 @@ cargo rustdoc -q -p byte-engine -- -D missing_docs
 cargo rustc -q -p byte-engine -- -W missing_debug_implementations
 ```
 
-Leaf packages can be verified before any internal crate is published:
+You can verify the leaf packages before you publish any internal crate:
 
 ```sh
 cargo package -p byte-engine-utils
@@ -42,7 +41,6 @@ cargo package -p byte-engine-ahi
 cargo package -p byte-engine-besl-derive
 ```
 
-The remaining packages require their earlier internal dependencies to exist on
-crates.io before `cargo package` or `cargo publish --dry-run` can complete.
-After publishing each earlier crate, verify the next package in the order above
-before publishing it.
+The remaining packages require their earlier internal dependencies on crates.io.
+After you publish each crate, verify the next package in the list before you
+publish it. Otherwise, `cargo package` and `cargo publish --dry-run` can't finish.

@@ -7,6 +7,12 @@
 //! Rendering setup remains in this module because it coordinates the world,
 //! renderer, and application factories. General startup defaults and external
 //! adapters are kept behind the setup functions re-exported from this module.
+//!
+//! Follow the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+//! for the complete application setup sequence.
+
+// Bound ready work while the temporary Compio runtime still shares the application thread.
+const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
@@ -14,23 +20,31 @@
 /// Use [`default_setup`] for the conventional engine stack. Use
 /// [`setup_default_window`], [`setup_default_input`], and the render-pass setup
 /// functions independently when an application needs explicit composition.
+/// After setup, call [`Self::do_loop`] to run the application, or
+/// [`Self::tick_with`] when application code must run during each tick.
 ///
 /// # Configuration
-/// - `kill-after`: The number of ticks after which the application should be killed. Defaults to None.
-/// - `resources.path`: The path to the resources directory. Defaults to "./resources".
-/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
-/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
-/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+/// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
+/// - `resources.path`: Selects the resource directory. The default is `./resources`.
+/// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
+/// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
+/// - `render.debug.extended`: Enables extended validation. The default is `false`.
+/// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
+///
+/// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+/// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
 	application: BaseApplication,
 
 	tick_count: u64,
 	start_time: std::time::Instant,
-	last_tick_time: std::time::Instant,
+	last_tick_time: MediaTime,
 
 	close: bool,
 
 	application_events: (Sender<Events>, Receiver<Events>),
+	http_inspector: HttpInspectorServer,
+	configuration: Configuration,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
@@ -39,21 +53,26 @@ pub struct GraphicsApplication {
 
 	world_factory: Factory<DefaultWorld>,
 	world: DefaultWorld,
+	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
+	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 
 	input_system: input::InputManager,
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
 	gamepad_device_class_handle: Option<input::device_class::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
+	tasks: SmallVec<[compio::runtime::JoinHandle<()>; 64]>,
 	renderer: Renderer,
 
 	threads: SmallVec<[Thread; 64]>,
 
+	runtime: compio::runtime::Runtime,
+
 	#[cfg(debug_assertions)]
-	ttff: std::time::Duration,
+	ttff: MediaTime,
 	#[cfg(debug_assertions)]
-	min_frame_time: std::time::Duration,
+	min_frame_time: MediaTime,
 	#[cfg(debug_assertions)]
-	max_frame_time: std::time::Duration,
+	max_frame_time: MediaTime,
 
 	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
@@ -71,7 +90,15 @@ impl Application for GraphicsApplication {
 			.unwrap_or_else(|| "resources".into())
 			.into();
 
-		let resource_manager = ResourceManager::new(RedbStorageBackend::new(resources_path));
+		// Debug applications bake generated materials into their local resource database. Include the engine-side producer
+		// hash so changing its reflected resource interface cannot reuse an incompatible retained shader from an earlier run.
+		#[cfg(debug_assertions)]
+		let resource_storage =
+			RedbStorageBackend::new_with_producer_signature(resources_path, env!("BYTE_ENGINE_RESOURCE_PRODUCER_HASH"));
+		// Release resource directories are prepared by BELD and keep the resource-management signature it writes today.
+		#[cfg(not(debug_assertions))]
+		let resource_storage = RedbStorageBackend::new(resources_path);
+		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		let action_factory = Factory::new();
 
@@ -85,7 +112,10 @@ impl Application for GraphicsApplication {
 		// the first frame has reached the screen.
 		let gamepad_system = None;
 
-		let renderer = rendering::renderer::Renderer::new(&application);
+		let configuration = Configuration::new();
+		let mut renderer = rendering::renderer::Renderer::new(&application, &configuration);
+		renderer.set_resource_manager(&resource_manager);
+		queue_render_pass_startup_parameters(application.parameters(), &configuration);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
@@ -102,8 +132,8 @@ impl Application for GraphicsApplication {
 		})
 		.unwrap();
 
-		// let inspector = Inspector::new(tx.clone());
-		// HttpInspectorServer::new(inspector);
+		let inspector = EntityHandle::from(Inspector::new(tx.clone(), configuration.clone()));
+		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let rx = tx.spawn_rx();
 		let application_events = (tx, rx);
@@ -112,11 +142,15 @@ impl Application for GraphicsApplication {
 		let window_factory_listener = window_factory.listener();
 
 		let world = DefaultWorld::new();
+		let cameras_listener = world.camera_factory().listener();
+		let renderer_transforms_listener = world.transforms_channel().listener();
 
 		GraphicsApplication {
 			application,
 
 			application_events,
+			http_inspector,
+			configuration,
 
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
@@ -125,27 +159,36 @@ impl Application for GraphicsApplication {
 
 			world_factory: Factory::new(),
 			world,
+			cameras_listener,
+			renderer_transforms_listener,
 
 			input_system,
 			gamepad_system,
 			gamepad_device_class_handle: None,
+			resource_manager,
+			tasks: SmallVec::new(),
 			renderer,
-			resource_manager: EntityHandle::from(resource_manager),
 
 			threads: SmallVec::new(),
+			runtime: compio::runtime::Runtime::builder()
+				.event_interval(ASYNC_TASK_POLL_BUDGET_PER_TICK)
+				.build()
+				.expect(
+					"Application async runtime could not start. The most likely cause is unavailable platform I/O support.",
+				),
 
 			close: false,
 
 			tick_count: 0,
 			start_time,
-			last_tick_time: std::time::Instant::now(),
+			last_tick_time: MediaTime::from_std(start_time.elapsed()),
 
 			#[cfg(debug_assertions)]
-			ttff: std::time::Duration::ZERO,
+			ttff: MediaTime::ZERO,
 			#[cfg(debug_assertions)]
-			min_frame_time: std::time::Duration::MAX,
+			min_frame_time: MediaTime::MAX,
 			#[cfg(debug_assertions)]
-			max_frame_time: std::time::Duration::ZERO,
+			max_frame_time: MediaTime::ZERO,
 
 			#[cfg(debug_assertions)]
 			kill_after,
@@ -167,16 +210,22 @@ impl GraphicsApplication {
 		&self.application.frame_allocator
 	}
 
+	/// Returns the configuration exchange used to inspect startup update results.
+	pub fn configuration(&self) -> &Configuration {
+		&self.configuration
+	}
+
 	/// Runs one graphics tick and lets application code update state before rendering.
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
 		let now = std::time::Instant::now();
-		let dt = now - self.last_tick_time;
-		self.last_tick_time = now;
-
-		let elapsed = self.start_time.elapsed();
+		// Sample the monotonic clock once, then keep application time entirely in
+		// media ticks so elapsed time is exactly the sum of observed frame deltas.
+		let elapsed = MediaTime::from_std(now.duration_since(self.start_time));
+		let dt = elapsed - self.last_tick_time;
+		self.last_tick_time = elapsed;
 		let tick_count = self.tick_count;
 
 		let mut close = false;
@@ -241,7 +290,8 @@ impl GraphicsApplication {
 						}
 					} else if !new_devices.is_empty() {
 						log::warn!(
-							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
+							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
+							crate::online_docs_url("develop/design/input-handling")
 						);
 					}
 
@@ -277,10 +327,7 @@ impl GraphicsApplication {
 			self.input_system.update(&self.application.frame_allocator);
 		}
 
-		let mut cameras_listener = self.world.camera_factory().listener();
-		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
 		let mut physics_transforms_listener = self.world.transforms_channel().listener();
-		let light_listener = self.world.light_factory().listener();
 
 		let result = {
 			let span = debug_span!("GraphicsApplication::user_tick");
@@ -291,14 +338,14 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_world");
 			let _enter = span.enter();
-			self.world.update(time, &mut physics_transforms_listener);
+			self.world
+				.update(time, &mut physics_transforms_listener, &mut self.application.frame_allocator);
 		}
 
 		{
 			let span = debug_span!("GraphicsApplication::prepare_renderer_state");
 			let _enter = span.enter();
-			let mut camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
-			camera_messages.extend(cameras_listener.to_vec());
+			let camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
 
 			let window_listener = &mut self.window_factory.1;
 
@@ -309,13 +356,23 @@ impl GraphicsApplication {
 			for message in camera_messages {
 				self.renderer.create_camera(*message.handle(), message.into_data());
 			}
+
+			while let Some(message) = self.cameras_listener.read() {
+				self.renderer.create_camera(*message.handle(), message.into_data());
+			}
+		}
+
+		{
+			let span = debug_span!("GraphicsApplication::drive_async_runtime");
+			let _enter = span.enter();
+			self.drive_async_runtime();
 		}
 
 		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
 			let frame_allocator = &self.application.frame_allocator;
-			self.renderer.prepare(&mut renderer_transforms_listener, frame_allocator);
+			self.renderer.prepare(&mut self.renderer_transforms_listener, frame_allocator);
 		}
 
 		{
@@ -329,7 +386,7 @@ impl GraphicsApplication {
 		#[cfg(debug_assertions)]
 		{
 			if self.tick_count == 1 {
-				self.ttff = self.start_time.elapsed();
+				self.ttff = MediaTime::from_std(self.start_time.elapsed());
 			}
 
 			if let Some(kill_after) = self.kill_after {
@@ -352,13 +409,47 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Stops worker threads before recording final debug run stats.
+	/// Advances ready application tasks and polls completed I/O without waiting for new events.
+	fn drive_async_runtime(&self) {
+		self.runtime.enter(|| {
+			self.runtime.poll_with(Some(std::time::Duration::ZERO));
+			self.runtime.run();
+		});
+	}
+
+	/// Cancels application tasks and drives their destructors before renderer resources are released.
+	fn stop_async_tasks(&mut self) {
+		if self.tasks.is_empty() {
+			return;
+		}
+
+		let tasks = std::mem::take(&mut self.tasks);
+		self.runtime.block_on(async move {
+			for task in tasks {
+				let _ = task.cancel().await;
+			}
+		});
+	}
+
+	/// Stops asynchronous tasks and worker threads before recording final debug run stats.
 	fn close_workers_and_record_stats(&mut self) {
-		let _ = self.application_events.0.send(Events::Close);
+		self.stop_async_tasks();
+		self.stop_worker_threads();
+		self.close();
+	}
+
+	/// Drains application-side lifecycle events, then signals and joins every
+	/// application worker.
+	fn stop_worker_threads(&mut self) {
+		if self.threads.is_empty() {
+			return;
+		}
+
+		while self.application_events.1.try_recv().is_ok() {}
+		let _ = self.application_events.0.blocking_send(Events::Close);
 		self.threads.drain(..).for_each(|thread| {
 			let _ = thread.join();
 		});
-		self.close();
 	}
 
 	/// Flags the application for closing.
@@ -368,8 +459,8 @@ impl GraphicsApplication {
 		#[cfg(debug_assertions)]
 		log::debug!(
 			"Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}",
-			self.start_time.elapsed(),
-			self.start_time.elapsed().div_f32(self.tick_count as f32),
+			MediaTime::from_std(self.start_time.elapsed()),
+			MediaTime::from_std(self.start_time.elapsed()) / self.tick_count as i64,
 			self.min_frame_time,
 			self.max_frame_time,
 			self.ttff
@@ -456,11 +547,31 @@ impl GraphicsApplication {
 	}
 }
 
+impl Drop for GraphicsApplication {
+	fn drop(&mut self) {
+		// `tick_with` normally stops tasks explicitly. This fallback also covers
+		// setup errors and callers that drop the application without closing it.
+		self.stop_async_tasks();
+		self.stop_worker_threads();
+	}
+}
+
 impl Parameters for GraphicsApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.application.get_parameter(name)
 	}
 }
+
+/// Converts resolved render-pass startup parameters into asynchronous configuration events.
+fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration: &Configuration) {
+	for parameter in parameters {
+		if parameter.name().starts_with(RENDER_PASS_PARAMETER_PREFIX) {
+			configuration.update(parameter.name(), parameter.value());
+		}
+	}
+}
+
+const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
 /// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
@@ -483,7 +594,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
+		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = *message.handle();
 
@@ -522,81 +633,40 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 }
 
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
-pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+///
+/// `environment_resource_id` selects the optional HDR image used for ambient and specular reflections.
+pub fn setup_pbr_visibility_shading_render_pipeline(
+	application: &mut GraphicsApplication,
+	environment_resource_id: Option<&str>,
+) {
+	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
+	let visibility_shader_resources = application.resource_manager.clone();
+	let runtime = &application.runtime;
+	let tasks = &mut application.tasks;
 	let renderer = &mut application.renderer;
 	let transfer_queue_handle = renderer.transfer_queue_handle;
 	let context = renderer.context_mut();
 	let mut transfer_queue = context.queue(transfer_queue_handle);
-	let transfer_finished_synchronizer = context.create_synchronizer(Some("Transfer Thread Synchronizer"), true);
-	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Transfer Command Buffer"));
+	let transfer_finished_synchronizer = context.create_synchronizer(Some("Async Resource Transfer Synchronizer"), true);
+	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Async Resource Transfer Command Buffer"));
 
-	const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 32;
-	const NO_WORK_SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1);
-
-	let upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]> = context.build_buffer(
+	let upload_buffer: ghi::BufferHandle<
+		[u8; rendering::pipelines::visibility::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT],
+	> = context.build_buffer(
 		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 			.name("Renderer Async Upload Buffer")
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
 
-	let (resource_manager_client, mut resource_manager) =
+	let (resource_manager_client, resource_manager) =
 		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
-
-	application
-		.threads
-		.push(Thread::new(application.application_events.1.clone(), {
-			move |mut application_events| {
-				let mut started_frame_count = 0;
-
-				loop {
-					if let Ok(Events::Close) = application_events.try_recv() {
-						break;
-					}
-
-					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
-
-					if let Some(completed_frame) = started_frame.completed_frame {
-						resource_manager.signal_completed_frame(completed_frame);
-					}
-
-					if !resource_manager.drain_pending_upload_work() {
-						std::thread::sleep(NO_WORK_SLEEP_DURATION);
-						started_frame_count += 1;
-						continue;
-					}
-
-					let mut frame = started_frame.frame;
-					let frame_key = frame.key();
-
-					let mut transfer_recording =
-						frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
-					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
-					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
-
-					let prepared_uploads =
-						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
-
-					if prepared_uploads.recorded_work {
-						// The transfer worker writes into GHI CPU shadow memory while recording.
-						// Flush the upload buffer before the submitted copy commands read it.
-						transfer_recording.sync_buffer(upload_buffer);
-						transfer_recording.execute(transfer_finished_synchronizer);
-					} else {
-						drop(transfer_recording);
-					}
-
-					resource_manager.track_submitted_uploads(frame_key, prepared_uploads.completions);
-
-					if !prepared_uploads.recorded_work {
-						// TODO: maybe get GHI to track work submissions
-						std::thread::sleep(NO_WORK_SLEEP_DURATION);
-					}
-
-					started_frame_count += 1;
-				}
-			}
-		}));
+	tasks.push(runtime.spawn(resource_manager.run(
+		transfer_queue,
+		transfer_finished_synchronizer,
+		transfer_command_buffer,
+		upload_buffer,
+	)));
 
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
@@ -605,6 +675,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		pose_receiver: DefaultListener<UpdatePose>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
@@ -643,6 +714,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				self.visibility_pipeline_manager.remove_mesh(message.into_handle());
 			}
 		}
+
+		/// Applies application-authored skeleton poses to the visibility scene.
+		fn process_pose_updates(&mut self) {
+			while let Some(message) = self.pose_receiver.read() {
+				self.visibility_pipeline_manager
+					.update_pose(message.handle(), message.global_matrices());
+			}
+		}
 	}
 
 	impl PipelineManager for CustomPipelineManager {
@@ -651,9 +730,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
+		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
+			self.process_pose_updates();
 
 			self.process_deletions();
 
@@ -682,17 +762,24 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
 		let mesh_delete_receiver = application.world().delete_channel().listener();
+		let pose_receiver = application.world().poses_channel().listener();
 
 		let renderer = &mut application.renderer;
 
 		let sm = CustomPipelineManager {
-			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager_client),
+			visibility_pipeline_manager: VisibilityPipelineManager::new(
+				renderer.context_mut(),
+				resource_manager_client,
+				visibility_shader_resources,
+				environment_resource_id,
+			),
 			light_receiver,
 			light_delete_receiver,
 			pending_lights,
 			mesh_receiver,
 			mesh_delete_receiver,
 			pending_meshes,
+			pose_receiver,
 		};
 
 		renderer.add_pipeline_manager(sm);
@@ -711,17 +798,30 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 		}
 
 		impl rendering::RenderPass for CustomRenderPass {
+			fn name(&self) -> &'static str {
+				self.render_pass.name()
+			}
+
 			fn prepare<'a>(
 				&mut self,
 				frame: &mut ghi::implementation::Frame,
 				sink: &rendering::Sink,
 				frame_allocator: &'a bumpalo::Bump,
 			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				while let Some(render) = self.listener.read() {
-					self.render_pass.update(render.into_data());
-				}
+				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
 
 				self.render_pass.prepare(frame, sink, frame_allocator)
+			}
+
+			fn bypass<'a>(
+				&mut self,
+				frame: &mut ghi::implementation::Frame,
+				sink: &rendering::Sink,
+				frame_allocator: &'a bumpalo::Bump,
+			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
+				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
+
+				self.render_pass.bypass(frame, sink, frame_allocator)
 			}
 		}
 
@@ -731,6 +831,13 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 			render_pass: UiRenderPass::new(render_pass_builder),
 		})
 	});
+}
+
+/// Drains all pending pass inputs so active and bypassed paths adopt the same application state.
+fn drain_render_pass_messages<M: Clone>(listener: &mut DefaultListener<M>, mut adopt: impl FnMut(M)) {
+	while let Some(message) = listener.read() {
+		adopt(message);
+	}
 }
 
 /// Installs the AGX tonemapping pass for post-scene color mapping.
@@ -774,6 +881,38 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn bypass_message_drain_adopts_every_pending_value() {
+		let channel = DefaultChannel::new();
+		let mut listener = channel.listener();
+		channel.send(1);
+		channel.send(2);
+		let mut adopted = Vec::new();
+
+		drain_render_pass_messages(&mut listener, |value| adopted.push(value));
+
+		assert_eq!(adopted, vec![1, 2]);
+		assert!(listener.read().is_none());
+	}
+
+	#[test]
+	fn startup_parameters_queue_only_render_pass_configuration() {
+		let configuration = Configuration::new();
+		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
+		let parameters = [
+			Parameter::new("render.pass.bloom", "bypassed"),
+			Parameter::new("audio.master.gain", "0.5"),
+		];
+
+		queue_render_pass_startup_parameters(&parameters, &configuration);
+
+		let update = port.read().expect("render-pass startup configuration");
+		assert_eq!(update.parameter(), "render.pass.bloom");
+		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::from("bypassed"));
+		assert!(port.read().is_none());
+		assert_eq!(configuration.events().len(), 1);
+	}
+
+	#[test]
 	#[ignore] // Renderer broken.
 	fn create_graphics_application() {
 		let mut app = GraphicsApplication::new("Test", &[]);
@@ -811,6 +950,7 @@ use super::{
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
+	configuration::Configuration,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Factory},
@@ -838,14 +978,15 @@ use crate::{
 			bloom::{BloomPass, BloomPassSettings},
 			sky::AtmosphereSkyRenderPass,
 		},
-		renderable, renderer, RenderableMesh,
+		renderable, renderer, RenderableMesh, UpdatePose,
 	},
+	time::MediaTime,
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
 use crate::{
 	gameplay::anchor::AnchorSystem,
 	input, physics,
-	rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window},
+	rendering::{self, renderer::Renderer, window::Window, Camera},
 };
 mod defaults;
 mod integrations;

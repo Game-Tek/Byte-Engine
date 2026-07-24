@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine-betp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Byte-Engine transport protocol primitives for local and remote sessions."
@@ -15,6 +15,10 @@ rust-version.workspace = true
 
 [lib]
 name = "betp"
+
+[package.metadata.docs.rs]
+rustc-args = ["-C", "target-feature=+aes,+sse2"]
+rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [dependencies]
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }

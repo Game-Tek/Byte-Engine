@@ -5,7 +5,7 @@ use crate::{
 	resources::image::Image,
 	solver::SolveErrors,
 	types::{AlphaMode, ShaderTypes},
-	Model, Reference, ReferenceModel, Resource, Solver,
+	Reference, ReferenceModel, Solver,
 };
 
 #[derive(Debug, Serialize)]
@@ -15,7 +15,7 @@ pub struct Material {
 
 	pub shaders: Vec<Reference<Shader>>,
 
-	/// The render model this material is for.
+	/// The render model that evaluates this material.
 	pub model: RenderModel,
 
 	pub parameters: Vec<Parameter>,
@@ -28,7 +28,7 @@ pub struct MaterialModel {
 
 	pub(crate) shaders: Vec<ReferenceModel<Shader>>,
 
-	/// The render model this material is for.
+	/// The render model that evaluates this material.
 	pub model: RenderModel,
 
 	pub parameters: Vec<ParameterModel>,
@@ -52,48 +52,44 @@ impl Material {
 	}
 }
 
-impl Resource for Material {
-	fn get_class(&self) -> &'static str {
-		"Material"
-	}
-
-	type Model = MaterialModel;
-}
-
-impl Model for MaterialModel {
-	fn get_class() -> &'static str {
-		"Material"
-	}
-}
+super::impl_resource_model!(Material, MaterialModel, "Material");
 
 impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let MaterialModel {
-			double_sided,
-			alpha_mode,
-			shaders,
-			model,
-			parameters,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Material {
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let MaterialModel {
 				double_sided,
 				alpha_mode,
-				shaders: shaders
-					.into_iter()
-					.map(|s| s.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
+				shaders,
 				model,
-				parameters: parameters
-					.into_iter()
-					.map(|p| p.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
-			},
-			reader,
-		))
+				parameters,
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+			let mut resolved_shaders = Vec::with_capacity(shaders.len());
+			for shader in shaders {
+				resolved_shaders.push(shader.solve(storage_backend).await?);
+			}
+			let mut resolved_parameters = Vec::with_capacity(parameters.len());
+			for parameter in parameters {
+				resolved_parameters.push(parameter.solve(storage_backend).await?);
+			}
+
+			Ok(Reference::from_model(
+				self,
+				Material {
+					double_sided,
+					alpha_mode,
+					shaders: resolved_shaders,
+					model,
+					parameters: resolved_parameters,
+				},
+				reader,
+			))
+		})
 	}
 }
 
@@ -127,16 +123,21 @@ pub struct VariantVariableModel {
 }
 
 impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
-		Ok(VariantVariable {
-			name: self.name,
-			r#type: self.r#type,
-			value: match self.value {
-				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
-				ValueModel::Vector3(vector) => Value::Vector3(vector),
-				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
-			},
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<VariantVariable, SolveErrors>> {
+		crate::r#async::future(async move {
+			Ok(VariantVariable {
+				name: self.name,
+				r#type: self.r#type,
+				value: match self.value {
+					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector3(vector) => Value::Vector3(vector),
+					ValueModel::Vector4(vector) => Value::Vector4(vector),
+					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				},
+			})
 		})
 	}
 }
@@ -148,66 +149,84 @@ pub struct Variant {
 	pub alpha_mode: AlphaMode,
 }
 
-impl Resource for Variant {
-	fn get_class(&self) -> &'static str {
-		"Variant"
-	}
-
-	type Model = VariantModel;
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
 	pub alpha_mode: AlphaMode,
 }
-
-impl Model for VariantModel {
-	fn get_class() -> &'static str {
-		"Variant"
-	}
-}
+super::impl_resource_model!(Variant, VariantModel, "Variant");
 
 impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let VariantModel {
-			material,
-			variables,
-			alpha_mode,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Variant {
-				material: material.solve(storage_backend)?,
-				variables: variables
-					.into_iter()
-					.map(|v| v.solve(storage_backend))
-					.collect::<Result<Vec<_>, _>>()?,
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveErrors>> {
+		crate::r#async::future(async move {
+			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let VariantModel {
+				material,
+				variables,
 				alpha_mode,
-			},
-			reader,
-		))
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+			let material = material.solve(storage_backend).await?;
+			let mut resolved_variables = Vec::with_capacity(variables.len());
+			for variable in variables {
+				resolved_variables.push(variable.solve(storage_backend).await?);
+			}
+
+			Ok(Reference::from_model(
+				self,
+				Variant {
+					material,
+					variables: resolved_variables,
+					alpha_mode,
+				},
+				reader,
+			))
+		})
 	}
 }
 
+pub use crate::shader::besl::evaluation::{BindingKind, TextureView};
+
+/// The `Binding` struct preserves one flat shader resource requirement in persisted material artifacts.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Binding {
-	pub set: u32,
-	pub binding: u32,
+	pub name: String,
+	pub slot: u32,
+	pub kind: BindingKind,
+	pub count: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl Binding {
-	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		assert!(
+			count > 0,
+			"Invalid resource count. The most likely cause is that a shader interface resource was declared with an empty array."
+		);
+		assert!(
+			slot.checked_add(count).is_some(),
+			"Invalid resource slot range. The most likely cause is that a persisted shader resource array extends beyond the flat slot space."
+		);
 		Self {
-			set,
-			binding,
+			name: String::new(),
+			slot,
+			kind,
+			count,
 			read,
 			write,
+		}
+	}
+
+	/// Associates the authored BESL descriptor name with a validated persisted binding.
+	pub fn named(name: impl Into<String>, slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		Self {
+			name: name.into(),
+			..Self::new(slot, kind, count, read, write)
 		}
 	}
 }
@@ -224,6 +243,7 @@ pub enum ShaderArtifact {
 	Hlsl { entry_point: String },
 	Msl { entry_point: String },
 	Mtlb { entry_point: String },
+	Dxil,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -241,44 +261,7 @@ impl Shader {
 	}
 }
 
-impl Resource for Shader {
-	fn get_class(&self) -> &'static str {
-		"Shader"
-	}
-
-	type Model = Shader;
-}
-
-impl Model for Shader {
-	fn get_class() -> &'static str {
-		"Shader"
-	}
-}
-
-impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let Shader {
-			id,
-			stage,
-			interface,
-			artifact,
-			source_hash,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Shader {
-				id,
-				stage,
-				interface,
-				artifact,
-				source_hash,
-			},
-			reader,
-		))
-	}
-}
+super::impl_direct_resource!(Shader, "Shader");
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RenderModel {
@@ -319,16 +302,21 @@ pub struct ParameterModel {
 }
 
 impl<'de> Solver<'de, Parameter> for ParameterModel {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
-		Ok(Parameter {
-			r#type: self.r#type.clone(),
-			name: self.name.clone(),
-			value: match self.value {
-				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
-				ValueModel::Vector3(vector) => Value::Vector3(vector),
-				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
-			},
+	fn solve(
+		self,
+		storage_backend: &'de dyn resource::ReadStorageBackend,
+	) -> crate::r#async::BoxedFuture<'de, Result<Parameter, SolveErrors>> {
+		crate::r#async::future(async move {
+			Ok(Parameter {
+				r#type: self.r#type,
+				name: self.name,
+				value: match self.value {
+					ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+					ValueModel::Vector3(vector) => Value::Vector3(vector),
+					ValueModel::Vector4(vector) => Value::Vector4(vector),
+					ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				},
+			})
 		})
 	}
 }
@@ -337,4 +325,32 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 pub enum Property {
 	Factor(Value),
 	Texture(String),
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Binding, BindingKind, ShaderArtifact};
+
+	#[test]
+	fn persisted_bindings_keep_named_and_unnamed_construction_distinct() {
+		let unnamed = Binding::new(0, BindingKind::StorageBuffer, 1, true, false);
+		let named = Binding::named("scene", 1, BindingKind::StorageBuffer, 1, true, false);
+
+		assert!(unnamed.name.is_empty());
+		assert_eq!(named.name, "scene");
+	}
+
+	#[test]
+	#[should_panic(expected = "Invalid resource slot range")]
+	fn persisted_binding_rejects_flat_slot_overflow() {
+		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
+
+	#[test]
+	fn dxil_shader_artifact_round_trips_through_resource_archiving() {
+		let bytes = crate::to_vec(&ShaderArtifact::Dxil).expect("DXIL artifact should serialize");
+		let artifact: ShaderArtifact = crate::from_slice(&bytes).expect("DXIL artifact should deserialize");
+
+		assert!(matches!(artifact, ShaderArtifact::Dxil));
+	}
 }

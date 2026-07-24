@@ -1,6 +1,6 @@
-//! The `parser` module turns BESL tokens into syntax nodes that preserve source structure before semantic resolution.
+//! Parses BESL tokens into syntax nodes that preserve the source structure.
 //!
-//! # Example beShader
+//! # Example shader
 //!
 //! ```glsl
 //! Light: struct {
@@ -13,25 +13,44 @@
 //! }
 //! ```
 //!
-//! The `parse` function is the entry point.
-//! The parser consumes an stream of tokens and creates nodes with Nodes.
-//! All nodes which have cross references only do so by name.
-//! Those relations are resolved later by the lexer which performs a grammar analysis.
+//! Use [`crate::parse`] as the entry point. The parser records cross-references by name.
+//! The [`crate::lexer`] module resolves those names later.
 
 use crate::tokenizer;
 
-/// Generates a syntax tree from BESL source code tokens.
-/// The syntax tree is just another representation of the source code.
-/// It is missing the final transformation step, which is the lexing step.
+/// A shared syntax node in a parsed BESL tree.
 pub type NodeReference<'a> = &'a Node<'a>;
 
-/// Generates a syntax tree from BESL source code tokens.
-/// The syntax tree is just another representation of the source code.
-/// It is missing the final transformation step, which is the lexing step.
+/// The `TypeName` enum preserves type structure while the parser still borrows source text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeName<'a> {
+	Named(&'a str),
+	Array { element: Box<TypeName<'a>>, count: u32 },
+}
+
+impl std::fmt::Display for TypeName<'_> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Named(name) => f.write_str(name),
+			Self::Array { element, count } => write!(f, "{element}[{count}]"),
+		}
+	}
+}
+
+/// A weak syntax-node reference used to avoid ownership cycles.
 pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
 	let mut iterator = tokens.tokens.iter();
 
-	let parsers = [parse_struct, parse_function, parse_macro, parse_const, parse_member];
+	let parsers = [
+		parse_push_constant,
+		parse_struct,
+		parse_function,
+		parse_macro,
+		parse_const,
+		parse_descriptor,
+		parse_shader_interface_declaration,
+		parse_member,
+	];
 
 	let mut children: Vec<Node<'a>> = Vec::with_capacity(64);
 
@@ -51,7 +70,7 @@ pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 }
 
 use std::borrow::Cow;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 #[derive(Clone, Debug)]
 pub struct Node<'a> {
@@ -113,15 +132,14 @@ impl<'a> Node<'a> {
 		make_function("main", Vec::new(), "void", statements)
 	}
 
-	pub fn binding(name: &'a str, r#type: Node<'a>, set: u32, descriptor: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_with_count(name, r#type, set, descriptor, read, write, None)
+	pub fn binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+		Self::binding_with_count(name, r#type, slot, read, write, None)
 	}
 
 	fn binding_with_count(
 		name: &'a str,
 		r#type: Node<'a>,
-		set: u32,
-		descriptor: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		count: Option<NonZeroUsize>,
@@ -130,8 +148,7 @@ impl<'a> Node<'a> {
 			node: Nodes::Binding {
 				name,
 				r#type: Box::new(r#type),
-				set,
-				descriptor,
+				slot,
 				read,
 				write,
 				count,
@@ -139,16 +156,11 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn binding_array(
-		name: &'a str,
-		r#type: Node<'a>,
-		set: u32,
-		descriptor: u32,
-		read: bool,
-		write: bool,
-		count: u32,
-	) -> Node<'a> {
-		Self::binding_with_count(name, r#type, set, descriptor, read, write, NonZeroUsize::new(count as usize))
+	pub fn binding_array(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool, count: u32) -> Node<'a> {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
+		);
+		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
 	}
 
 	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
@@ -219,7 +231,10 @@ impl<'a> Node<'a> {
 
 	pub fn call(name: &'a str, parameters: Vec<Node<'a>>) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::Call { name, parameters }),
+			node: Nodes::Expression(Expressions::Call {
+				name: TypeName::Named(name),
+				parameters,
+			}),
 		}
 	}
 
@@ -239,7 +254,10 @@ impl<'a> Node<'a> {
 
 	pub fn variable_declaration(name: &'a str, r#type: &'a str) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
+			node: Nodes::Expression(Expressions::VariableDeclaration {
+				name,
+				r#type: TypeName::Named(r#type),
+			}),
 		}
 	}
 
@@ -272,17 +290,18 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(Some(code.into()), None, None, input, output)
+		Self::raw_code(Some(code.into()), None, None, input, output)
 	}
 
 	pub fn hlsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, Some(code.into()), None, input, output)
+		Self::raw_code(None, Some(code.into()), None, input, output)
 	}
 
 	pub fn msl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, None, Some(code.into()), input, output)
+		Self::raw_code(None, None, Some(code.into()), input, output)
 	}
 
+	/// Builds parser raw code with explicit backend sources and interface names.
 	pub fn raw_code(
 		glsl: Option<Cow<'a, str>>,
 		hlsl: Option<Cow<'a, str>>,
@@ -290,7 +309,15 @@ impl<'a> Node<'a> {
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	) -> Node<'a> {
-		make_raw_code(glsl, hlsl, msl, input, output)
+		Node {
+			node: Nodes::RawCode {
+				glsl,
+				hlsl,
+				msl,
+				input,
+				output,
+			},
+		}
 	}
 
 	pub fn literal(name: &'a str, body: Node<'a>) -> Node<'a> {
@@ -327,6 +354,21 @@ impl<'a> Node<'a> {
 		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
 	}
 
+	pub fn task_payload(name: &'a str, format: &'a str, count: u32) -> Node<'a> {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
+		);
+		Node {
+			node: Nodes::TaskPayload { name, format, count },
+		}
+	}
+
+	pub fn workgroup(name: &'a str, format: &'a str) -> Node<'a> {
+		Node {
+			node: Nodes::Workgroup { name, format },
+		}
+	}
+
 	pub fn intrinsic(name: &'a str, parameters: Node<'a>, body: Node<'a>, r#return: &'a str) -> Node<'a> {
 		Node {
 			node: Nodes::Intrinsic {
@@ -348,6 +390,11 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn constant(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
+		Self::constant_with_type(name, TypeName::Named(r#type), value)
+	}
+
+	/// Builds a constant node while preserving the parsed type structure.
+	fn constant_with_type(name: &'a str, r#type: TypeName<'a>, value: Node<'a>) -> Node<'a> {
 		Node {
 			node: Nodes::Const {
 				name,
@@ -365,6 +412,7 @@ impl<'a> Node<'a> {
 			Nodes::Function { name, .. } => Some(name),
 			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
+			Nodes::Descriptor { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Type { name, .. } => Some(name),
 			Nodes::Image { .. } => None,
@@ -375,7 +423,10 @@ impl<'a> Node<'a> {
 			Nodes::Literal { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => None,
-			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
+			Nodes::Input { name, .. }
+			| Nodes::Output { name, .. }
+			| Nodes::TaskPayload { name, .. }
+			| Nodes::Workgroup { name, .. } => Some(name),
 			Nodes::Const { name, .. } => Some(name),
 			Nodes::Null => None,
 		}
@@ -431,25 +482,25 @@ impl<'a> Node<'a> {
 
 #[derive(Clone, Debug)]
 pub enum Nodes<'a> {
-	/// A special kind of node. Mostly used for partially implemented features.
+	/// A placeholder for syntax that does not yet have a specialized node.
 	Null,
-	/// Like a Rust module. A logical division/grouping of code.
+	/// A named group of BESL declarations, similar to a Rust module.
 	Scope {
-		/// The scope's name. Used in code when importing or declaring namespaces.
+		/// The name used for imports and namespaces.
 		name: &'a str,
 		children: Vec<Node<'a>>,
 	},
-	/// A struct declaration. A struct is a collection of fields.
+	/// A struct declaration and its fields.
 	Struct {
 		name: &'a str,
 		fields: Vec<Node<'a>>,
 	},
-	/// A member field. Usually used inside a struct.
+	/// A field declared in a struct.
 	Member {
 		name: &'a str,
 		r#type: String,
 	},
-	/// A funcion declaration and definition node.
+	/// A function declaration and body.
 	Function {
 		name: &'a str,
 		params: Vec<Node<'a>>,
@@ -466,26 +517,35 @@ pub enum Nodes<'a> {
 		update: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 	},
-	/// A binding declaration. A binding is a resource that can be used in the shader.
+	/// A shader resource binding declaration.
 	Binding {
 		name: &'a str,
 		r#type: Box<Node<'a>>,
-		set: u32,
-		descriptor: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		count: Option<NonZeroUsize>,
 	},
-	/// A specialization constant. A specialization constant is a constant that can be set when creating a pipeline at runtime.
+	/// A flat resource descriptor declared directly in BESL source.
+	Descriptor {
+		name: &'a str,
+		resource_type: &'a str,
+		format: Option<&'a str>,
+		slot: u32,
+		read: bool,
+		write: bool,
+		count: Option<NonZeroU32>,
+	},
+	/// A constant selected when the application creates a pipeline.
 	Specialization {
 		name: &'a str,
 		r#type: &'a str,
 	},
-	/// A push constant block. A push constant is a small buffer that can have values pushed during rendering.
+	/// A small constant buffer updated during rendering.
 	PushConstant {
 		members: Vec<Node<'a>>,
 	},
-	/// An abstract type. Usually used to define primitive types such as `f32`.
+	/// An abstract type declaration, such as the declaration for `f32`.
 	Type {
 		name: &'a str,
 		members: Vec<Node<'a>>,
@@ -520,6 +580,17 @@ pub enum Nodes<'a> {
 		location: u8,
 		count: Option<NonZeroUsize>,
 	},
+	/// An array carried from a task shader invocation group to the mesh work it emits.
+	TaskPayload {
+		name: &'a str,
+		format: &'a str,
+		count: NonZeroUsize,
+	},
+	/// Storage shared by all invocations in one task or compute workgroup.
+	Workgroup {
+		name: &'a str,
+		format: &'a str,
+	},
 	Literal {
 		name: &'a str,
 		body: Box<Node<'a>>,
@@ -528,10 +599,10 @@ pub enum Nodes<'a> {
 		name: &'a str,
 		r#type: &'a str,
 	},
-	/// A module-level constant variable declaration. Used to define compile-time constant values.
+	/// A named module-level value known at compile time.
 	Const {
 		name: &'a str,
-		r#type: &'a str,
+		r#type: TypeName<'a>,
 		value: Box<Node<'a>>,
 	},
 }
@@ -550,7 +621,7 @@ pub enum Expressions<'a> {
 		value: Cow<'a, str>,
 	},
 	Call {
-		name: &'a str,
+		name: TypeName<'a>,
 		parameters: Vec<Node<'a>>,
 	},
 	Operator {
@@ -560,7 +631,7 @@ pub enum Expressions<'a> {
 	},
 	VariableDeclaration {
 		name: &'a str,
-		r#type: &'a str,
+		r#type: TypeName<'a>,
 	},
 	RawCode {
 		glsl: Option<&'a str>,
@@ -585,11 +656,23 @@ pub(super) enum Atoms<'a> {
 	Continue,
 	Accessor,
 	GroupedExpression(Vec<Atoms<'a>>),
-	Member { name: &'a str },
-	Literal { value: &'a str },
-	FunctionCall { name: &'a str, parameters: Vec<Vec<Atoms<'a>>> },
-	Operator { name: &'a str },
-	VariableDeclaration { name: &'a str, r#type: &'a str },
+	Member {
+		name: &'a str,
+	},
+	Literal {
+		value: &'a str,
+	},
+	FunctionCall {
+		name: TypeName<'a>,
+		parameters: Vec<Vec<Atoms<'a>>>,
+	},
+	Operator {
+		name: &'a str,
+	},
+	VariableDeclaration {
+		name: &'a str,
+		r#type: TypeName<'a>,
+	},
 }
 
 #[derive(Debug)]
@@ -647,24 +730,6 @@ fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str,
 	}
 }
 
-fn make_raw_code<'a>(
-	glsl: Option<Cow<'a, str>>,
-	hlsl: Option<Cow<'a, str>>,
-	msl: Option<Cow<'a, str>>,
-	input: &'a [&'a str],
-	output: &'a [&'a str],
-) -> Node<'a> {
-	Node {
-		node: Nodes::RawCode {
-			glsl,
-			hlsl,
-			msl,
-			input,
-			output,
-		},
-	}
-}
-
 trait Precedence {
 	fn precedence(&self) -> u8;
 }
@@ -705,16 +770,16 @@ impl Precedence for Atoms<'_> {
 	}
 }
 
-/// Type of the result of a parser.
+/// The result type returned by a syntax parser.
 type FeatureParserResult<'i, 'a> = Result<(Node<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
 
-/// A parser is a function that tries to parse a sequence of tokens.
+/// A function that tries to parse a token sequence.
 type FeatureParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a>;
 
 type ExpressionParserResult<'i, 'a> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
 type ExpressionParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
 
-/// Execute a list of parsers on a stream of tokens.
+/// Runs parsers in order until one accepts the token stream.
 fn execute_parsers<'i, 'a: 'i>(
 	parsers: &[FeatureParser<'i, 'a>],
 	mut iterator: std::slice::Iter<'i, &'a str>,
@@ -745,7 +810,7 @@ fn execute_parsers<'i, 'a: 'i>(
 	}) // No parser could handle this syntax.
 }
 
-/// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
+/// Runs parsers in order and permits every parser to decline the syntax.
 fn try_execute_parsers<'i, 'a: 'i>(
 	parsers: &[FeatureParser<'i, 'a>],
 	iterator: std::slice::Iter<'i, &'a str>,
@@ -759,7 +824,7 @@ fn try_execute_parsers<'i, 'a: 'i>(
 	None
 }
 
-/// Execute a list of parsers on a stream of tokens.
+/// Runs parsers in order until one accepts the token stream.
 fn execute_expression_parsers<'i, 'a: 'i>(
 	parsers: &[ExpressionParser<'i, 'a>],
 	mut iterator: std::slice::Iter<'i, &'a str>,
@@ -791,7 +856,7 @@ fn execute_expression_parsers<'i, 'a: 'i>(
 	}) // No parser could handle this syntax.
 }
 
-/// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
+/// Runs parsers in order and permits every parser to decline the syntax.
 fn try_execute_expression_parsers<'i, 'a: 'i>(
 	parsers: &[ExpressionParser<'i, 'a>],
 	iterator: std::slice::Iter<'i, &'a str>,
@@ -830,7 +895,7 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 		},
 		_ => e,
 	})?;
-	let (r#type, mut iterator) = parse_array_type_suffix(iterator, r#type)?;
+	let (r#type, mut iterator) = parse_type_name(iterator, r#type)?;
 
 	iterator.next_str("=").map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
@@ -869,7 +934,10 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 				Atoms::FunctionCall { name, parameters } => {
 					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
 					Node {
-						node: Nodes::Expression(Expressions::Call { name, parameters }),
+						node: Nodes::Expression(Expressions::Call {
+							name: name.clone(),
+							parameters,
+						}),
 					}
 				}
 				Atoms::Literal { value } => Node {
@@ -887,7 +955,302 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 
 	let value = atoms_to_node(&expressions);
 
-	Ok((Node::constant(name, r#type, value), iterator))
+	Ok((Node::constant_with_type(name, r#type, value), iterator))
+}
+
+/// Parses a flat resource descriptor and preserves its source type name for semantic resolution.
+fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("descriptor")?;
+
+	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
+	iterator.next_str("<").map_err(|_| {
+		syntax_error(format!(
+			"Expected < after descriptor in resource {}. The most likely cause is that the descriptor arguments are missing.",
+			name
+		))
+	})?;
+	let resource_type = iterator.next_identifier().map_err(|_| {
+		syntax_error(format!(
+			"Expected a resource type in descriptor {}. The most likely cause is that the first descriptor argument is missing.",
+			name
+		))
+	})?;
+	let format = if iterator.clone().next().copied() == Some("<") {
+		iterator.next();
+		let format = iterator.next_identifier().map_err(|_| {
+			syntax_error(format!(
+				"Expected a storage image format in descriptor {}. The most likely cause is that the StorageImage format argument is missing.",
+				name
+			))
+		})?;
+		iterator.next_str(">").map_err(|_| {
+			syntax_error(format!(
+				"Expected > after storage image format in descriptor {}. The most likely cause is that the resource type arguments are malformed.",
+				name
+			))
+		})?;
+		if resource_type != "StorageImage" {
+			return Err(syntax_error(format!(
+				"Resource type {} cannot declare format `{}` in descriptor {}. The most likely cause is that a storage image format was attached to a non-StorageImage resource.",
+				resource_type, format, name
+			)));
+		}
+		Some(format)
+	} else {
+		None
+	};
+	iterator.next_str(",").map_err(|_| {
+		syntax_error(format!(
+			"Expected , after resource type in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
+			name
+		))
+	})?;
+
+	let slot = iterator
+		.next()
+		.ok_or_else(|| {
+			syntax_error(format!(
+				"Expected a slot in descriptor {}. The most likely cause is that the second descriptor argument is missing.",
+				name
+			))
+		})?
+		.parse::<u32>()
+		.map_err(|_| {
+			syntax_error(format!(
+				"Invalid slot in descriptor {}. The most likely cause is that the slot is not a u32 literal.",
+				name
+			))
+		})?;
+	iterator.next_str(",").map_err(|_| {
+		syntax_error(format!(
+			"Expected , after slot in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
+			name
+		))
+	})?;
+
+	let access = iterator.next().ok_or_else(|| {
+		syntax_error(format!(
+			"Expected an access mode in descriptor {}. The most likely cause is that the third descriptor argument is missing.",
+			name
+		))
+	})?;
+	let (read, write) = match *access {
+		"read" => (true, false),
+		"write" => (false, true),
+		"read_write" => (true, true),
+		_ => {
+			return Err(syntax_error(format!(
+				"Invalid access mode `{}` in descriptor {}. The most likely cause is that the access is not read, write, or read_write.",
+				access, name
+			)));
+		}
+	};
+
+	let count = if iterator.clone().next().copied() == Some(",") {
+		iterator.next();
+		let count = iterator
+			.next()
+			.ok_or_else(|| {
+				syntax_error(format!(
+					"Expected a resource count in descriptor {}. The most likely cause is that the fourth descriptor argument is missing.",
+					name
+				))
+			})?
+			.parse::<u32>()
+			.map_err(|_| {
+				syntax_error(format!(
+					"Invalid resource count in descriptor {}. The most likely cause is that the count is not a u32 literal.",
+					name
+				))
+			})?;
+		Some(NonZeroU32::new(count).ok_or_else(|| {
+			syntax_error(format!(
+				"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
+				name
+			))
+		})?)
+	} else {
+		None
+	};
+
+	iterator.next_str(">").map_err(|_| {
+		syntax_error(format!(
+			"Expected > after descriptor {} arguments. The most likely cause is that the descriptor declaration is incomplete.",
+			name
+		))
+	})?;
+	iterator.next_str(";").map_err(|_| {
+		syntax_error(format!(
+			"Expected ; after descriptor {}. The most likely cause is that the declaration terminator is missing.",
+			name
+		))
+	})?;
+
+	Ok((
+		Node {
+			node: Nodes::Descriptor {
+				name,
+				resource_type,
+				format,
+				slot,
+				read,
+				write,
+				count,
+			},
+		},
+		iterator,
+	))
+}
+
+/// Parses stage-interface storage declared directly in BESL source.
+fn parse_shader_interface_declaration<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	let declaration = iterator.next().copied().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	if !matches!(declaration, "input" | "output" | "task_payload" | "workgroup") {
+		return Err(ParsingFailReasons::NotMine);
+	}
+
+	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
+	iterator.next_str("<").map_err(|_| {
+		syntax_error(format!(
+			"Expected < after {declaration} in {name}. The most likely cause is that the declaration arguments are missing."
+		))
+	})?;
+	let format = iterator.next_identifier().map_err(|_| {
+		syntax_error(format!(
+			"Expected a type in {declaration} {name}. The most likely cause is that the first declaration argument is missing."
+		))
+	})?;
+
+	let node = match declaration {
+		"input" | "output" => {
+			iterator.next_str(",").map_err(|_| {
+				syntax_error(format!(
+					"Expected , after the type in {declaration} {name}. The most likely cause is that the location is missing."
+				))
+			})?;
+			let location = iterator
+				.next()
+				.ok_or_else(|| {
+					syntax_error(format!(
+						"Expected a location in {declaration} {name}. The most likely cause is that the second declaration argument is missing."
+					))
+				})?
+				.parse::<u8>()
+				.map_err(|_| {
+					syntax_error(format!(
+						"Invalid location in {declaration} {name}. The most likely cause is that the location is not a u8 literal."
+					))
+				})?;
+
+			if declaration == "input" {
+				Node::input(name, format, location)
+			} else if iterator.clone().next().copied() == Some(",") {
+				iterator.next();
+				let count = iterator
+					.next()
+					.ok_or_else(|| {
+						syntax_error(format!(
+							"Expected an element count in output {name}. The most likely cause is that the third declaration argument is missing."
+						))
+					})?
+					.parse::<u32>()
+					.map_err(|_| {
+						syntax_error(format!(
+							"Invalid element count in output {name}. The most likely cause is that the count is not a u32 literal."
+						))
+					})?;
+				if count == 0 {
+					return Err(syntax_error(format!(
+						"Invalid element count in output {name}. The most likely cause is that an output array was declared with zero elements."
+					)));
+				}
+				Node::output_array(name, format, location, count)
+			} else {
+				Node::output(name, format, location)
+			}
+		}
+		"task_payload" => {
+			iterator.next_str(",").map_err(|_| {
+				syntax_error(format!(
+					"Expected , after the type in task_payload {name}. The most likely cause is that the element count is missing."
+				))
+			})?;
+			let count = iterator
+				.next()
+				.ok_or_else(|| {
+					syntax_error(format!(
+						"Expected an element count in task_payload {name}. The most likely cause is that the second declaration argument is missing."
+					))
+				})?
+				.parse::<u32>()
+				.map_err(|_| {
+					syntax_error(format!(
+						"Invalid element count in task_payload {name}. The most likely cause is that the count is not a u32 literal."
+					))
+				})?;
+			if count == 0 {
+				return Err(syntax_error(format!(
+					"Invalid element count in task_payload {name}. The most likely cause is that a task-payload array was declared with zero elements."
+				)));
+			}
+			Node::task_payload(name, format, count)
+		}
+		"workgroup" => Node::workgroup(name, format),
+		_ => unreachable!("Shader interface declaration was validated above."),
+	};
+
+	iterator.next_str(">").map_err(|_| {
+		syntax_error(format!(
+			"Expected > after {declaration} {name} arguments. The most likely cause is that the declaration is incomplete."
+		))
+	})?;
+	iterator.next_str(";").map_err(|_| {
+		syntax_error(format!(
+			"Expected ; after {declaration} {name}. The most likely cause is that the declaration terminator is missing."
+		))
+	})?;
+
+	Ok((node, iterator))
+}
+
+/// Parses the single push-constant block exposed to shader source as `push_constant`.
+fn parse_push_constant<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("push_constant")?;
+	iterator.next_str(":")?;
+	iterator.next_str("push_constant")?;
+	iterator.next_str("{").map_err(|_| ParsingFailReasons::BadSyntax {
+		message: "Expected { after push_constant declaration.".to_string(),
+	})?;
+
+	let mut members = Vec::new();
+	loop {
+		let Some(token) = iterator.next().copied() else {
+			return Err(ParsingFailReasons::BadSyntax {
+				message: "Push-constant declaration is missing a closing }.".to_string(),
+			});
+		};
+		if token == "}" {
+			break;
+		}
+		if token == "," {
+			continue;
+		}
+
+		let member_name = token;
+		iterator.next_str(":").map_err(|_| ParsingFailReasons::BadSyntax {
+			message: format!("Expected : after push-constant member {member_name}."),
+		})?;
+		let member_type = iterator.next_identifier().map_err(|_| ParsingFailReasons::BadSyntax {
+			message: format!("Expected a type after push-constant member {member_name}."),
+		})?;
+		members.push(make_member(member_name, member_type));
+	}
+
+	Ok((Node::push_constant(members), iterator))
 }
 
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -905,6 +1268,13 @@ fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Feat
 
 	if let Some(&&n) = iterator.clone().peekable().peek() {
 		if n == "<" {
+			if r#type == "descriptor" {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Invalid descriptor declaration for {name}. The most likely cause is that required slot or access arguments are missing."
+					),
+				});
+			}
 			iterator.next();
 			r#type.push('<');
 			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
@@ -1016,7 +1386,7 @@ fn parse_var_decl<'i, 'a: 'i>(
 		},
 		_ => e,
 	})?;
-	let (variable_type, iterator) = parse_array_type_suffix(iterator, variable_type)?;
+	let (variable_type, iterator) = parse_type_name(iterator, variable_type)?;
 
 	expressions.push(Atoms::VariableDeclaration {
 		name: variable_name,
@@ -1030,20 +1400,30 @@ fn parse_var_decl<'i, 'a: 'i>(
 	Ok(expressions)
 }
 
-fn parse_array_type_suffix<'i, 'a: 'i>(
+/// Parses a source-backed type name and all of its array suffixes.
+fn parse_type_name<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	base_type: &'a str,
-) -> Result<(&'a str, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
-	if iterator.clone().peekable().peek().map(|token| token.as_ref()) != Some("[") {
-		return Ok((base_type, iterator));
+) -> Result<(TypeName<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	let mut type_name = TypeName::Named(base_type);
+
+	while iterator.clone().peekable().peek().map(|token| token.as_ref()) == Some("[") {
+		iterator.next_str("[")?;
+		let count = iterator
+			.next_is(|token| token.chars().all(|c| c.is_ascii_digit()))?
+			.parse::<u32>()
+			.map_err(|_| ParsingFailReasons::BadSyntax {
+				message: format!("Invalid array count for type {}", type_name),
+			})?;
+		iterator.next_str("]")?;
+
+		type_name = TypeName::Array {
+			element: Box::new(type_name),
+			count,
+		};
 	}
 
-	iterator.next_str("[")?;
-	let count = iterator.next_is(|token| token.chars().all(|c| c.is_ascii_digit()))?;
-	iterator.next_str("]")?;
-
-	let leaked = format!("{}[{}]", base_type, count).leak();
-	Ok((leaked, iterator))
+	Ok((type_name, iterator))
 }
 
 fn parse_keywords<'i, 'a: 'i>(
@@ -1117,15 +1497,15 @@ fn parse_index_accessor<'i, 'a: 'i>(
 	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
-fn is_number_literal(s: &str) -> bool {
-	s.chars().all(|c| c.is_ascii_digit() || c == '.')
+fn is_literal(s: &str) -> bool {
+	matches!(s, "true" | "false") || s.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 fn parse_literal<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let value = iterator.next_is(is_number_literal)?;
+	let value = iterator.next_is(is_literal)?;
 
 	expressions.push(Atoms::Literal { value });
 
@@ -1249,7 +1629,10 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
 
 				Node {
-					node: Nodes::Expression(Expressions::Call { name, parameters }),
+					node: Nodes::Expression(Expressions::Call {
+						name: name.clone(),
+						parameters,
+					}),
 				}
 			}
 			Atoms::Literal { value } => Node {
@@ -1259,7 +1642,10 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
 			},
 			Atoms::VariableDeclaration { name, r#type } => Node {
-				node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
+				node: Nodes::Expression(Expressions::VariableDeclaration {
+					name,
+					r#type: r#type.clone(),
+				}),
 			},
 		}
 	} else {
@@ -1351,7 +1737,7 @@ fn parse_function_call<'i, 'a: 'i>(
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
-	let (function_name, mut iterator) = parse_array_type_suffix(iterator, function_name)?;
+	let (function_name, mut iterator) = parse_type_name(iterator, function_name)?;
 	iterator.next_str("(")?;
 
 	let mut parameters = vec![];
@@ -1501,11 +1887,20 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 
 			statements.push(expression);
 		} else {
-			if **iterator.clone().peekable().peek().unwrap() == "}" {
+			// A failed statement parser at EOF means the function body was truncated.
+			let Some(token) = iterator.clone().next().copied() else {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Function `{}` is missing a closing `}}`. The source most likely ended before the function body was complete.",
+						name
+					),
+				});
+			};
+
+			if token == "}" {
 				iterator.next();
 				break;
 			} else {
-				let token = iterator.clone().peekable().peek().copied().copied().unwrap_or("<eof>");
 				return Err(ParsingFailReasons::BadSyntax {
 					message: format!("Expected a }} after function {} declaration, found `{}`.", name, token),
 				});
@@ -1533,61 +1928,29 @@ impl<'a> Index<&str> for Node<'a> {
 	type Output = Node<'a>;
 
 	fn index(&self, index: &str) -> &Self::Output {
-		match &self.node {
-			Nodes::Scope { children, .. } => {
-				for child in children {
-					match child.node {
-						Nodes::Scope {
-							name: child_name,
-							children: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Struct {
-							name: child_name,
-							fields: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Member {
-							name: child_name,
-							r#type: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Function { name: child_name, .. } => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Const { name: child_name, .. } if child_name == index => {
-							return child;
-						}
-						_ => {}
-					}
-				}
-			}
-			Nodes::Struct { fields, .. } => {
-				for field in fields {
-					if let Nodes::Member { name: child_name, .. } = field.node {
-						if child_name == index {
-							return field;
-						}
-					}
-				}
-			}
-			_ => {
-				panic!("Cannot search  in these");
-			}
-		}
+		let child = match &self.node {
+			Nodes::Scope { children, .. } => children.iter().find(|child| {
+				matches!(
+					child.node(),
+					Nodes::Scope { .. }
+						| Nodes::Struct { .. }
+						| Nodes::Member { .. }
+						| Nodes::Function { .. }
+						| Nodes::Descriptor { .. }
+						| Nodes::Input { .. }
+						| Nodes::Output { .. }
+						| Nodes::TaskPayload { .. }
+						| Nodes::Workgroup { .. }
+						| Nodes::Const { .. }
+				) && child.name() == Some(index)
+			}),
+			Nodes::Struct { fields, .. } => fields
+				.iter()
+				.find(|field| matches!(field.node(), Nodes::Member { .. }) && field.name() == Some(index)),
+			_ => panic!("Cannot search  in these"),
+		};
 
-		panic!("Not found");
+		child.unwrap_or_else(|| panic!("Not found"))
 	}
 }
 
@@ -1625,6 +1988,201 @@ pub struct ProgramState {
 mod tests {
 	use super::*;
 	use crate::tokenizer::tokenize;
+
+	#[test]
+	#[should_panic(expected = "Invalid binding array count")]
+	fn binding_array_rejects_zero_elements() {
+		Node::binding_array("textures", Node::combined_image_sampler(), 0, true, false, 0);
+	}
+
+	#[test]
+	fn parse_stage_interface_and_task_storage_declarations() {
+		let tokens = tokenize(
+			r#"
+				instance_index: input<u32, 0>;
+				primitive_index: output<u32, 1>;
+				meshlet_indices: output<u32, 2, 126>;
+				visible_meshlets: task_payload<u32, 32>;
+				visible_count: workgroup<atomicu32>;
+			"#,
+		)
+		.expect("stage-interface source should tokenize");
+		let root = parse(&tokens).expect("stage-interface source should parse");
+
+		assert!(matches!(
+			root["instance_index"].node(),
+			Nodes::Input {
+				format: "u32",
+				location: 0,
+				..
+			}
+		));
+		assert!(matches!(
+			root["primitive_index"].node(),
+			Nodes::Output {
+				format: "u32",
+				location: 1,
+				count: None,
+				..
+			}
+		));
+		assert!(matches!(
+			root["meshlet_indices"].node(),
+			Nodes::Output {
+				format: "u32",
+				location: 2,
+				count: Some(count),
+				..
+			} if count.get() == 126
+		));
+		assert!(matches!(
+			root["visible_meshlets"].node(),
+			Nodes::TaskPayload {
+				format: "u32",
+				count,
+				..
+			} if count.get() == 32
+		));
+		assert!(matches!(
+			root["visible_count"].node(),
+			Nodes::Workgroup { format: "atomicu32", .. }
+		));
+	}
+
+	#[test]
+	fn stage_interface_declarations_reject_invalid_locations_and_counts() {
+		for source in [
+			"value: input<u32, 256>;",
+			"value: output<u32, 0, 0>;",
+			"value: task_payload<u32, 0>;",
+			"value: workgroup<u32>",
+		] {
+			let tokens = tokenize(source).expect("invalid declaration should still tokenize");
+			assert!(parse(&tokens).is_err(), "expected `{source}` to be rejected");
+		}
+	}
+
+	#[test]
+	fn parse_resource_descriptors_with_flat_slots_access_and_count() {
+		let tokens = tokenize(
+			r#"
+				source: descriptor<Texture2D, 3, read>;
+				result: descriptor<StorageImage<rgba16f>, 7, write, 4>;
+				unformatted_result: descriptor<StorageImage, 8, write>;
+				data: descriptor<Data, 11, read_write>;
+				textures: descriptor<Texture2DArray, 20, read, 16>;
+			"#,
+		)
+		.expect("descriptor source should tokenize");
+		let root = parse(&tokens).expect("descriptor source should parse");
+
+		let Nodes::Descriptor {
+			resource_type,
+			slot,
+			read,
+			write,
+			count,
+			..
+		} = root["source"].node()
+		else {
+			panic!("expected source descriptor");
+		};
+		assert_eq!(*resource_type, "Texture2D");
+		assert_eq!(*slot, 3);
+		assert!(*read);
+		assert!(!*write);
+		assert_eq!(*count, None);
+
+		assert!(matches!(
+			root["result"].node(),
+			Nodes::Descriptor {
+				format: Some("rgba16f"),
+				slot: 7,
+				read: false,
+				write: true,
+				count: Some(count),
+				..
+			} if count.get() == 4
+		));
+		assert!(matches!(
+			root["unformatted_result"].node(),
+			Nodes::Descriptor {
+				format: None,
+				slot: 8,
+				..
+			}
+		));
+		assert!(matches!(
+			root["data"].node(),
+			Nodes::Descriptor {
+				resource_type: "Data",
+				slot: 11,
+				read: true,
+				write: true,
+				..
+			}
+		));
+		assert!(matches!(
+			root["textures"].node(),
+			Nodes::Descriptor { resource_type: "Texture2DArray", slot: 20, count: Some(count), .. }
+				if count.get() == 16
+		));
+	}
+
+	#[test]
+	fn parse_source_push_constant_block() {
+		let tokens = tokenize(
+			r#"
+				push_constant: push_constant {
+					source_vertex_base: u32,
+					destination_vertex_base: u32,
+					vertex_count: u32,
+				}
+			"#,
+		)
+		.expect("push-constant source should tokenize");
+		let root = parse(&tokens).expect("push-constant source should parse");
+		let Nodes::Scope { children, .. } = root.node() else {
+			panic!("expected root scope");
+		};
+		assert!(matches!(
+			children.as_slice(),
+			[Node {
+				node: Nodes::PushConstant { members },
+				..
+			}] if members.len() == 3
+		));
+	}
+
+	#[test]
+	fn descriptor_rejects_invalid_access_count_and_arguments() {
+		for source in [
+			"texture: descriptor<Texture2D, 0, execute>;",
+			"textures: descriptor<Texture2D, 0, read, 0>;",
+			"texture: descriptor<Texture2D>;",
+		] {
+			let tokens = tokenize(source).expect("descriptor source should tokenize");
+			assert!(parse(&tokens).is_err(), "malformed descriptor should be rejected: {source}");
+		}
+	}
+
+	#[test]
+	fn descriptor_rejects_formats_on_non_storage_image_resources() {
+		for source in [
+			"texture: descriptor<Texture2D<rgba16f>, 0, read>;",
+			"data: descriptor<Data<rgba16f>, 0, read>;",
+		] {
+			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
+			assert!(
+				parse(&tokens).is_err(),
+				"non-storage image descriptor format should be rejected: {source}"
+			);
+		}
+	}
+
+	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
+		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
+	}
 
 	fn print_tree(node: &Node) {
 		match &node.node {
@@ -1715,15 +2273,15 @@ Light: struct {
 			{
 				assert_eq!(*name, "=");
 
-				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = var_decl.node {
-					assert_eq!(name, "position");
-					assert_eq!(r#type, "vec4f");
+				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &var_decl.node {
+					assert_eq!(*name, "position");
+					assert_named_type(r#type, "vec4f");
 				} else {
 					panic!("Not an variable declaration");
 				}
 
-				if let Nodes::Expression(Expressions::Call { name, parameters }) = &function_call.node {
-					assert_eq!(*name, "vec4");
+				if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &function_call.node {
+					assert_named_type(name, "vec4");
 					assert_eq!(parameters.len(), 4);
 
 					let x_param = &parameters[0];
@@ -1860,8 +2418,8 @@ main: fn () -> void {
 				{
 					assert_eq!(*name, "*");
 
-					if let Nodes::Expression(Expressions::Call { name, .. }) = vec4.node {
-						assert_eq!(name, "vec4");
+					if let Nodes::Expression(Expressions::Call { name, .. }) = &vec4.node {
+						assert_named_type(name, "vec4");
 					} else {
 						panic!("Not a function call");
 					}
@@ -1907,11 +2465,11 @@ main: fn () -> void {
 			],
 		);
 
-		let Nodes::Expression(Expressions::Call { name, parameters }) = node.node else {
+		let Nodes::Expression(Expressions::Call { name, parameters, .. }) = node.node else {
 			panic!("Expected call expression");
 		};
 
-		assert_eq!(name, "vec4f");
+		assert_named_type(&name, "vec4f");
 		assert_eq!(parameters.len(), 4);
 	}
 
@@ -1924,9 +2482,11 @@ main: fn () -> void {
 		};
 
 		assert_eq!(name, "=");
-		assert!(
-			matches!(left.node, Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) if name == "roughness" && r#type == "f32")
-		);
+		assert!(matches!(
+			left.node,
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. })
+				if name == "roughness" && matches!(r#type, TypeName::Named("f32")),
+		));
 		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "0.5"));
 	}
 
@@ -2120,16 +2680,16 @@ main: fn () -> void {
 				if let Nodes::Expression(Expressions::Operator { name, left, right }) = &statement.node {
 					assert_eq!(*name, "=");
 
-					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = left.node {
-						assert_eq!(name, "n");
-						assert_eq!(r#type, "f32");
+					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &left.node {
+						assert_eq!(*name, "n");
+						assert_named_type(r#type, "f32");
 					} else {
 						panic!("Not a variable declaration");
 					}
 
 					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
-						if let Nodes::Expression(Expressions::Call { name, parameters }) = &left.node {
-							assert_eq!(*name, "intrinsic");
+						if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &left.node {
+							assert_named_type(name, "intrinsic");
 							assert_eq!(parameters.len(), 1);
 
 							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
@@ -2250,9 +2810,9 @@ PI: const f32 = 3.14;
 
 			let const_node = &node["PI"];
 
-			if let Nodes::Const { name, r#type, value } = &const_node.node {
+			if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
 				assert_eq!(*name, "PI");
-				assert_eq!(*r#type, "f32");
+				assert_named_type(r#type, "f32");
 
 				if let Nodes::Expression(Expressions::Literal { value }) = &value.node {
 					assert_eq!(*value, "3.14");
@@ -2278,9 +2838,9 @@ TAU: const f32 = 3.14 * 2.0;
 
 		let const_node = &node["TAU"];
 
-		if let Nodes::Const { name, r#type, value } = &const_node.node {
+		if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
 			assert_eq!(*name, "TAU");
-			assert_eq!(*r#type, "f32");
+			assert_named_type(r#type, "f32");
 
 			if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
 				assert_eq!(*name, "*");
@@ -2295,7 +2855,7 @@ TAU: const f32 = 3.14 * 2.0;
 	#[test]
 	fn test_parse_const_array() {
 		let source = "
-WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+		WEIGHTS: const f32 [ 3 ] = f32 [ 3 ](0.5, 0.25, 0.125);
 ";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
@@ -2305,10 +2865,22 @@ WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
 
 		if let Nodes::Const { name, r#type, value } = &const_node.node {
 			assert_eq!(*name, "WEIGHTS");
-			assert_eq!(*r#type, "f32[3]");
+			assert_eq!(
+				r#type,
+				&TypeName::Array {
+					element: Box::new(TypeName::Named("f32")),
+					count: 3,
+				}
+			);
 
 			if let Nodes::Expression(Expressions::Call { name, parameters }) = &value.node {
-				assert_eq!(*name, "f32[3]");
+				assert_eq!(
+					name,
+					&TypeName::Array {
+						element: Box::new(TypeName::Named("f32")),
+						count: 3,
+					}
+				);
 				assert_eq!(parameters.len(), 3);
 			} else {
 				panic!("Expected an array constructor call, got: {:?}", value.node);
@@ -2316,6 +2888,26 @@ WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
 		} else {
 			panic!("Expected a const node");
 		}
+	}
+
+	#[test]
+	fn parse_nested_array_type_without_flattening() {
+		let tokens = tokenize("f32 [ 3 ] [ 4 ]").expect("Failed to tokenize");
+		let mut tokens = tokens.tokens.iter();
+		let base_type = tokens.next().expect("Expected a base type");
+		let (type_name, mut iterator) = parse_type_name(tokens, base_type).expect("Failed to parse type");
+
+		assert_eq!(
+			type_name,
+			TypeName::Array {
+				element: Box::new(TypeName::Array {
+					element: Box::new(TypeName::Named("f32")),
+					count: 3,
+				}),
+				count: 4,
+			}
+		);
+		assert!(iterator.next().is_none());
 	}
 
 	#[test]
@@ -2490,6 +3082,40 @@ main: fn () -> void {
 	}
 
 	#[test]
+	fn parse_conditional_comparing_a_push_constant_member() {
+		let source = r#"
+main: fn () -> void {
+	let local_vertex_index: u32 = thread_id().x;
+	if (local_vertex_index >= push_constant.vertex_count) {
+		return;
+	}
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse push-constant comparison");
+		let func = &node["main"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn parse_grouped_arithmetic_inside_a_conditional() {
+		let source = r#"
+main: fn () -> void {
+	if (total_weight > 0.00000001) {
+		let column0: vec4f = (
+			matrix0.column0 * weights.x
+			+ matrix1.column0 * weights.y
+		) * inverse_total_weight;
+	}
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse grouped conditional arithmetic");
+		let func = &node["main"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
 	fn parse_process_meshlet() {
 		let source = r#"
 process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
@@ -2518,5 +3144,12 @@ process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["process_meshlet"];
 		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn truncated_function_returns_an_error() {
+		let tokens = tokenize("main: fn () -> void {").expect("Failed to tokenize");
+
+		assert!(matches!(parse(&tokens), Err(ParsingFailReasons::BadSyntax { .. })));
 	}
 }

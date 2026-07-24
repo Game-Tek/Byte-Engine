@@ -26,8 +26,8 @@ impl Affine2 {
 	}
 
 	pub(super) fn from_transform(transform: Transform, element: &LayoutElement) -> Self {
-		let center_x = element.position.x() as f32 + element.size.x() as f32 * 0.5;
-		let center_y = element.position.y() as f32 + element.size.y() as f32 * 0.5;
+		let center_x = element.position.x() + element.size.x() * 0.5;
+		let center_y = element.position.y() + element.size.y() * 0.5;
 		let scale_x = sanitize_scale(transform.scale_x);
 		let scale_y = sanitize_scale(transform.scale_y);
 
@@ -57,10 +57,10 @@ impl Affine2 {
 	}
 
 	pub(super) fn transform_rect(self, element: &LayoutElement) -> (Location3, Size) {
-		let left = element.position.x() as f32;
-		let top = element.position.y() as f32;
-		let right = left + element.size.x() as f32;
-		let bottom = top + element.size.y() as f32;
+		let left = element.position.x();
+		let top = element.position.y();
+		let right = left + element.size.x();
+		let bottom = top + element.size.y();
 
 		let corners = [
 			self.transform_point(left, top),
@@ -81,10 +81,11 @@ impl Affine2 {
 			max_y = max_y.max(y);
 		}
 
-		let x = clamp_to_u32(min_x.round());
-		let y = clamp_to_u32(min_y.round());
-		let width = clamp_to_u32((max_x - min_x).round());
-		let height = clamp_to_u32((max_y - min_y).round());
+		// Preserve fractional visual bounds so display scaling cannot magnify logical-pixel snapping.
+		let x = clamp_coordinate(min_x);
+		let y = clamp_coordinate(min_y);
+		let width = clamp_coordinate(max_x - min_x);
+		let height = clamp_coordinate(max_y - min_y);
 
 		(Location3::new(x, y, element.position.z()), Size::new(width, height))
 	}
@@ -106,12 +107,41 @@ fn sanitize_scale(value: f32) -> f32 {
 	}
 }
 
-fn clamp_to_u32(value: f32) -> u32 {
+fn clamp_coordinate(value: f32) -> f32 {
 	if !value.is_finite() || value <= 0.0 {
-		0
-	} else if value >= u32::MAX as f32 {
-		u32::MAX
+		0.0
 	} else {
-		value as u32
+		value
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::num::NonZeroU32;
+
+	use super::*;
+
+	#[test]
+	fn transformed_rect_preserves_subpixel_motion_at_retina_scale() {
+		let element = LayoutElement {
+			id: NonZeroU32::new(1).unwrap(),
+			position: Location3::new(10, 10, 0),
+			size: Size::new(100, 40),
+			hit_testable: false,
+		};
+		let physical_positions = (0..=10)
+			.map(|step| {
+				let transform = Transform::identity().translate_x(step as f32 * 0.1);
+				let (position, _) = Affine2::from_transform(transform, &element).transform_rect(&element);
+				position.x() * 2.0
+			})
+			.collect::<Vec<_>>();
+
+		assert!(
+			physical_positions
+				.windows(2)
+				.all(|positions| (positions[1] - positions[0] - 0.2).abs() < 0.0001),
+			"smooth motion was quantized into physical positions: {physical_positions:?}"
+		);
 	}
 }

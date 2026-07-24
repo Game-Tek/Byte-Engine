@@ -6,6 +6,8 @@
 //! Long-lived shared objects should be exposed through [`EntityHandle`].
 
 #[doc(hidden)]
+pub(crate) mod async_runtime;
+#[doc(hidden)]
 pub mod channel;
 #[doc(hidden)]
 pub mod entity;

@@ -1,0 +1,172 @@
+View: struct {
+	view: mat4f,
+	projection: mat4f,
+	view_projection: mat4f,
+	inverse_view: mat4f,
+	inverse_projection: mat4f,
+	inverse_view_projection: mat4f,
+	fov: vec2f,
+	near: f32,
+	far: f32,
+}
+
+Mesh: struct {
+	model: mat4x3f,
+	material_index: u32,
+	base_vertex_index: u32,
+	base_primitive_index: u32,
+	base_triangle_index: u32,
+	base_meshlet_index: u32,
+	meshlet_count: u32,
+	skinned_base_vertex_index: u32,
+	padding0: u32,
+}
+
+Meshlet: struct {
+	primitive_offset: u32,
+	triangle_offset: u32,
+	primitive_count: u32,
+	triangle_count: u32,
+	center_radius: vec4f,
+	cone_apex_cutoff: vec4f,
+	cone_axis: vec4f,
+}
+
+Views: struct {
+	views: View[8],
+}
+
+Meshes: struct {
+	meshes: Mesh[1024],
+}
+
+Meshlets: struct {
+	meshlets: Meshlet[4096],
+}
+
+views: descriptor<Views, 0, read>;
+meshes: descriptor<Meshes, 1, read>;
+meshlets: descriptor<Meshlets, 8, read>;
+
+meshlet_indices: task_payload<u32, 32>;
+visible_count: workgroup<atomicu32>;
+
+push_constant: push_constant {
+	instance_index: u32,
+	view_index: u32,
+}
+
+extend_vec3f: fn(value: vec3f, w: f32) -> vec4f {
+	return vec4f(value.x, value.y, value.z, w);
+}
+
+model_matrix: fn(model: mat4x3f) -> mat4f {
+	return mat4f(
+		extend_vec3f(model[0], 0.0),
+		extend_vec3f(model[1], 0.0),
+		extend_vec3f(model[2], 0.0),
+		extend_vec3f(model[3], 1.0)
+	);
+}
+
+normalize_plane: fn(plane: vec4f) -> vec4f {
+	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
+	return plane * inversesqrt(max(dot(normal, normal), 0.000000000001));
+}
+
+sphere_intersects_plane: fn(plane: vec4f, center: vec3f, radius: f32) -> bool {
+	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
+	return dot(center, normal) + plane.w >= 0.0 - radius;
+}
+
+sphere_intersects_frustum: fn(matrix: mat4f, center: vec3f, radius: f32) -> bool {
+	let row0: vec4f = vec4f(matrix[0].x, matrix[1].x, matrix[2].x, matrix[3].x);
+	let row1: vec4f = vec4f(matrix[0].y, matrix[1].y, matrix[2].y, matrix[3].y);
+	let row2: vec4f = vec4f(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
+	let row3: vec4f = vec4f(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
+
+	return sphere_intersects_plane(normalize_plane(row3 + row0), center, radius)
+		&& sphere_intersects_plane(normalize_plane(row3 - row0), center, radius)
+		&& sphere_intersects_plane(normalize_plane(row3 - row1), center, radius)
+		&& sphere_intersects_plane(normalize_plane(row3 + row1), center, radius)
+		&& sphere_intersects_plane(normalize_plane(row2), center, radius)
+		&& sphere_intersects_plane(normalize_plane(row3 - row2), center, radius);
+}
+
+transform_world_to_object: fn(model: mat4x3f, world_position: vec3f, determinant: f32) -> vec3f {
+	let object_x: vec3f = model[0];
+	let object_y: vec3f = model[1];
+	let object_z: vec3f = model[2];
+	let world_delta: vec3f = world_position - model[3];
+	let inverse_determinant: f32 = 1.0 / determinant;
+
+	return vec3f(
+		dot(cross(object_y, object_z) * inverse_determinant, world_delta),
+		dot(cross(object_z, object_x) * inverse_determinant, world_delta),
+		dot(cross(object_x, object_y) * inverse_determinant, world_delta)
+	);
+}
+
+cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
+	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
+	if (determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
+		return determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0;
+	}
+
+	let camera_position_world: vec3f = vec3f(
+		view.inverse_view[3].x,
+		view.inverse_view[3].y,
+		view.inverse_view[3].z
+	);
+	let camera_position_object: vec3f = transform_world_to_object(mesh.model, camera_position_world, determinant);
+	let cone_apex: vec3f = vec3f(
+		meshlet.cone_apex_cutoff.x,
+		meshlet.cone_apex_cutoff.y,
+		meshlet.cone_apex_cutoff.z
+	);
+	let cone_axis: vec3f = vec3f(meshlet.cone_axis.x, meshlet.cone_axis.y, meshlet.cone_axis.z);
+	let cone_view: vec3f = cone_apex - camera_position_object;
+	let cone_view_length_squared: f32 = dot(cone_view, cone_view);
+	let cone_axis_length_squared: f32 = dot(cone_axis, cone_axis);
+
+	if (cone_view_length_squared <= 0.000000000001 || cone_axis_length_squared <= 0.000000000001) {
+		return cone_view_length_squared <= 0.000000000001 || cone_axis_length_squared <= 0.000000000001;
+	}
+
+	return dot(
+		cone_view * inversesqrt(cone_view_length_squared),
+		cone_axis * inversesqrt(cone_axis_length_squared)
+	) < meshlet.cone_apex_cutoff.w;
+}
+
+meshlet_is_visible: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
+	let center: vec3f = vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z);
+	return sphere_intersects_frustum(view.view_projection * model_matrix(mesh.model), center, meshlet.center_radius.w)
+		&& cone_allows_rendering(mesh, meshlet, view);
+}
+
+main: fn() -> void {
+	let mesh: Mesh = meshes.meshes[push_constant.instance_index];
+	let view: View = views.views[push_constant.view_index];
+	let meshlet_thread_index: u32 = thread_position();
+	let lane: u32 = thread_idx();
+
+	if (lane == 0) {
+		atomic_store(visible_count, 0);
+	}
+	workgroup_barrier();
+
+	if (meshlet_thread_index < mesh.meshlet_count) {
+		let meshlet_index: u32 = mesh.base_meshlet_index + meshlet_thread_index;
+		let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+		if (mesh.skinned_base_vertex_index != 4294967295 || meshlet_is_visible(mesh, meshlet, view)) {
+			let payload_index: u32 = atomic_add(visible_count, 1);
+			meshlet_indices[payload_index] = meshlet_index;
+		}
+	}
+
+	workgroup_barrier();
+	if (lane == 0) {
+		set_task_mesh_output_count(atomic_load(visible_count));
+	}
+}

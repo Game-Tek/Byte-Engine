@@ -1,0 +1,34 @@
+---
+title: Install BELD
+description: Install the Byte Engine asset-baking command-line tool.
+icon: Download
+---
+
+Install BELD from crates.io. Cargo builds an optimized binary and places it in
+the Cargo binary directory, usually `~/.cargo/bin`.
+
+Run:
+
+```bash
+cargo install beld
+```
+
+Add Cargo's binary directory to your `PATH`, then confirm the installation:
+
+```bash
+beld --help
+```
+
+Run the install command again when you want to update BELD.
+
+## Install from a checkout
+
+To use the BELD source from a Byte Engine checkout, run this command from the
+workspace root:
+
+```bash
+cargo install --path crates/beld --locked
+```
+
+`--locked` uses the dependency versions recorded in the checkout's `Cargo.lock`.
+This is useful in CI and when you need BELD to match a specific engine revision.

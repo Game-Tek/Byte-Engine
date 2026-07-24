@@ -63,13 +63,15 @@ pub trait Queue {
 	type Frame<'a>: crate::frame::Frame<'a>;
 	type Execution<'a>: QueueExecution<'a, Frame = Self::Frame<'a>>;
 
-	/// Creates a command buffer which will execute commands on the provided queue.
+	/// Creates a command buffer for this queue.
 	///
-	/// Commands can be recorded onto it by starting a recording from a `Frame` or by calling `Device::create_command_buffer_recording` if the command buffer is not for performing per frame workloads.
+	/// Record per-frame work through [`crate::Frame`]. Use the device recording API
+	/// for work that does not belong to a frame.
 	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
 
-	/// Starts a new frame by waiting for these sequence frame's synchronizers.
-	/// The returned frame allows safe access to the frame's resources and it's operations.
+	/// Starts a frame after waiting for its sequence synchronizers.
+	///
+	/// The returned frame provides safe access to its resources and operations.
 	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> StartedFrame<Self::Frame<'a>>;
 
 	/// Opens the requested frame, lets the closure record submission work, and submits it on this queue.

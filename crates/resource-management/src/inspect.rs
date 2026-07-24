@@ -11,18 +11,19 @@ use crate::{
 		lut::Lut,
 		material::{MaterialModel, Shader, VariantModel},
 		mesh::{MeshModel, PrimitiveModel},
+		skeleton::SkeletonModel,
 	},
 	QueryableValue, SerializableResource,
 };
 
-/// The `ResourceInspection` struct carries a JSON view of a resource and whether the resource section was supported.
+/// The `ResourceInspection` struct provides a JSON view for command-line and editor resource inspection.
 #[derive(Debug)]
 pub struct ResourceInspection {
 	pub json: Value,
 	pub unsupported_resource_section: bool,
 }
 
-/// The `ResourceInspectError` enum represents failures while creating a resource inspection view.
+/// The `ResourceInspectError` enum identifies failures while creating a resource inspection view.
 #[derive(Debug)]
 pub enum ResourceInspectError {
 	DeserializeResource { class: String, error: String },
@@ -79,6 +80,7 @@ fn inspect_resource_section(resource: &SerializableResource) -> Result<(Value, b
 		"Mesh" => deserialize_resource::<MeshModel>(resource)?,
 		"Primitive" => deserialize_resource::<PrimitiveModel>(resource)?,
 		"Shader" => deserialize_resource::<Shader>(resource)?,
+		"Skeleton" => deserialize_resource::<SkeletonModel>(resource)?,
 		"Variant" => deserialize_resource::<VariantModel>(resource)?,
 		class => {
 			return Ok((

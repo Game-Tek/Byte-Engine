@@ -15,7 +15,7 @@ where
 	type Image;
 	type Sampler;
 
-	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
+	/// Returns whether the backend API reported an error.
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
 
@@ -28,7 +28,7 @@ where
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
 	/// Creates a graphics/rasterization pipeline from a builder.
@@ -44,25 +44,18 @@ where
 	fn build_sampler(&mut self, builder: sampler::Builder) -> Self::Sampler;
 }
 
-/// Configuration for which features to request from the underlying API when creating a device/instance.
-/// This uses a builder pattern to allow for easy configuration of the features.
+/// The `Features` struct selects optional GPU features during device creation.
 ///
-/// # Features
-/// - `validation`: Whether to enable validation layers for API use. This can provide insight into potential issues with the API usage at the expense of performance. Default is `false`.
-/// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
-/// - `api_dump`: Whether to enable API dump. This will print all API calls to the console. Default is `false`.
-/// - `ray_tracing`: Whether to enable ray tracing. This will enable ray tracing features in the API. Default is `false`.
-/// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
-/// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
-/// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
-/// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
-/// - `mesh_shading`: Whether to enable mesh shaders. This can provide more advanced rendering techniques. Default is `true`.
+/// Validation, API tracing, ray tracing, sparse resources, and geometry shaders
+/// are disabled by default. Mesh shading is enabled by default. When `gpu` is
+/// `None`, the backend selects an appropriate GPU.
 #[derive(Debug, Clone, Copy)]
 pub struct Features {
 	pub(crate) validation: bool,
 	pub(crate) gpu_validation: bool,
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
+	pub(crate) debug_labels: bool,
 	pub(crate) debug_log_function: Option<fn(&str)>,
 	pub(crate) gpu: Option<&'static str>,
 	pub(crate) sparse: bool,
@@ -83,6 +76,7 @@ impl Features {
 			gpu_validation: false,
 			api_dump: false,
 			ray_tracing: false,
+			debug_labels: false,
 			debug_log_function: None,
 			gpu: None,
 			sparse: false,
@@ -108,6 +102,11 @@ impl Features {
 
 	pub fn ray_tracing(mut self, ray_tracing: bool) -> Self {
 		self.ray_tracing = ray_tracing;
+		self
+	}
+
+	pub fn debug_labels(mut self, debug_labels: bool) -> Self {
+		self.debug_labels = debug_labels;
 		self
 	}
 

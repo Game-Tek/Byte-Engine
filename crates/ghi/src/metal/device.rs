@@ -56,7 +56,7 @@ impl crate::device::Device for Device {
 		_name: Option<&str>,
 		_shader_source_type: crate::shader::Sources,
 		_stage: crate::ShaderTypes,
-		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		_shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		panic!(
 			"Metal device shader creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
@@ -252,18 +252,6 @@ pub(super) fn submit_metal_command_buffer(command_buffer: &ProtocolObject<dyn mt
 	command_buffer.commit();
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SwapchainDescriptorBinding {
-	pub(crate) binding_handle: DescriptorSetBindingHandle,
-	pub(crate) array_element: u32,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct SwapchainDescriptorSource {
-	pub(crate) swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	pub(crate) frame_offset: i32,
-}
-
 #[derive(Clone)]
 pub struct Pipeline {
 	pub(crate) pipeline: PipelineState,
@@ -271,7 +259,6 @@ pub struct Pipeline {
 	pub(crate) layout: PipelineLayout,
 	pub(crate) vertex_layout: Option<VertexLayout>,
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
 	pub(crate) compute_threadgroup_size: Option<Extent>,
 	pub(crate) object_threadgroup_size: Option<Extent>,
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
@@ -287,7 +274,6 @@ pub struct ComputePipeline {
 	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
 	pub(crate) layout: PipelineLayout,
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
 	pub(crate) compute_threadgroup_size: Option<Extent>,
 	pub(crate) object_threadgroup_size: Option<Extent>,
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
@@ -319,4 +305,3 @@ use objc2_foundation::{NSArray, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDepthStencilState, MTLDevice};
 
 use super::*;
-use crate::binding::DescriptorSetBindingHandle;

@@ -5,14 +5,6 @@
 //! submit it through the headed graphics application's action factory. The
 //! standard trigger names are defined by [`crate::input::utils`].
 
-use math::{Quaternion, Vector2, Vector3};
-use utils::RGBA;
-
-use super::TriggerHandle;
-use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
-use crate::core::{Entity, EntityHandle};
-use crate::input::ValueMapping;
-
 trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
 	fn get_inputs(&self) -> &[TriggerMapping];
@@ -23,8 +15,8 @@ trait ActionLike {
 /// physical trigger bindings that can produce it.
 pub struct Action {
 	pub(crate) name: &'static str,
-	pub(crate) bindings: Vec<ActionBindingDescription>,
-	pub(crate) inputs: Vec<TriggerMapping>,
+	pub(crate) bindings: SmallVec<[ActionBindingDescription; 8]>,
+	pub(crate) inputs: SmallVec<[TriggerMapping; 8]>,
 	pub(crate) r#type: Types,
 	pub(crate) tick_policy: TickPolicy,
 }
@@ -99,8 +91,8 @@ impl Action {
 	pub fn new(name: &'static str, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
 			name,
-			bindings: bindings.to_vec(),
-			inputs: Vec::new(),
+			bindings: bindings.into(),
+			inputs: SmallVec::new(),
 			r#type,
 			tick_policy: TickPolicy::default(),
 		}
@@ -147,7 +139,16 @@ pub struct TriggerMapping {
 	pub(crate) function: Option<Function>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 /// The [`ActionHandle`] struct identifies an action registered with an
 /// [`crate::input::InputManager`].
 pub struct ActionHandle(pub(super) u32);
+
+use math::{Quaternion, Vector2, Vector3};
+use smallvec::SmallVec;
+use utils::RGBA;
+
+use super::TriggerHandle;
+use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
+use crate::core::{Entity, EntityHandle};
+use crate::input::ValueMapping;

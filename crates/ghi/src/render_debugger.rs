@@ -1,21 +1,20 @@
 //! # Render Debugger
 //!
-//! The render debugger module provides facilities to connect to a render debugger and capture frames for analysis and debugging.
+//! Connects the engine to a render debugger for frame capture and analysis.
 
 #[cfg(target_os = "linux")]
 use renderdoc::{RenderDoc, V141};
 
-/// The render debugger allow the application to connect to a render debugger and capture frames for analysis and debugging.
-/// It provides an abstraction over different render debugging tools.
-/// It supports RenderDoc.
+/// The `RenderDebugger` struct provides a backend-independent frame-capture boundary.
+///
+/// The current implementation supports RenderDoc.
 pub struct RenderDebugger {
 	#[cfg(target_os = "linux")]
 	renderdoc: Option<RenderDoc<V141>>,
 }
 
 impl RenderDebugger {
-	/// Creates a new render debugger instance.
-	/// It will automatically detect any available render debugger and connect to it.
+	/// Detects an available render debugger and connects to it.
 	pub fn new() -> RenderDebugger {
 		#[cfg(target_os = "linux")]
 		{

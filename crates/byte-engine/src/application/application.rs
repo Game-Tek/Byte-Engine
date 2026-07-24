@@ -17,13 +17,13 @@
 /// Parameters passed to [`Application::new`] may be overridden by `BE_*`
 /// environment variables and then by `--name=value` command-line arguments.
 pub trait Application {
-	/// Creates a new application with the given name.
+	/// Creates an application with the specified name and configuration parameters.
 	fn new(name: &str, parameters: &[Parameter]) -> Self;
 
 	/// Returns the name of the application.
 	fn get_name(&self) -> &str;
 
-	/// Performs a tick of the application.
+	/// Advances the application by one tick.
 	fn tick(&mut self) -> bool;
 }
 
@@ -111,6 +111,13 @@ impl Application for BaseApplication {
 impl Parameters for BaseApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.parameters.iter().find(|p| p.name == name)
+	}
+}
+
+impl BaseApplication {
+	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
+	pub(crate) fn parameters(&self) -> &[Parameter] {
+		&self.parameters
 	}
 }
 

@@ -14,9 +14,12 @@
 //! let mut application = GraphicsApplication::new("example", &[] as &[Parameter]);
 //! default_setup(&mut application);
 //! ```
+//!
+//! Start with the [getting started guide](https://byte-engine.0x44491229.dev/docs/get-started)
+//! for installation, project setup, and the first application workflow.
 
-#![feature(const_trait_impl, coerce_unsized, unsize, iter_collect_into)]
-#![cfg_attr(feature = "headed", feature(allocator_api, future_join, slice_pattern, trait_alias))]
+#![feature(allocator_api, const_trait_impl, coerce_unsized, unsize)]
+#![cfg_attr(feature = "headed", feature(future_join, slice_pattern, trait_alias))]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(incomplete_features)]
@@ -66,15 +69,63 @@ extern crate resource_management;
 extern crate utils as engine_utils;
 
 pub use math;
+pub use time::MediaTime;
+
+const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+	Some(url) => url,
+	None => "https://byte-engine.0x44491229.dev/docs",
+};
+
+/// Builds a link to one online documentation page.
+fn online_docs_url(path: &str) -> String {
+	format!(
+		"{}/{}",
+		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
+		path.trim_start_matches('/')
+	)
+}
 
 /// The `utils` module provides engine utility types through the main `byte_engine` crate API.
 pub mod utils {
+	use std::{
+		alloc::{GlobalAlloc, Layout, System},
+		sync::atomic::{AtomicUsize, Ordering},
+	};
+
 	pub use crate::engine_utils::*;
+
+	static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+	/// Use this allocator to track memory allocations made.
+	pub struct CountingAllocator;
+
+	#[allow(unsafe_code)]
+	unsafe impl GlobalAlloc for CountingAllocator {
+		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+			unsafe { System.alloc(layout) }
+		}
+
+		unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+			unsafe { System.dealloc(ptr, layout) };
+		}
+
+		unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+			unsafe { System.realloc(ptr, layout, new_size) }
+		}
+	}
+
+	/// Call this function to get the current allocation count of the global counting allocator.
+	pub fn allocation_count() -> usize {
+		ALLOCATION_COUNT.load(Ordering::Relaxed)
+	}
 }
 
 pub mod application;
 #[cfg(feature = "headed")]
 pub mod audio;
+pub mod configuration;
 pub mod core;
 pub mod input;
 #[cfg(feature = "headed")]
@@ -89,6 +140,7 @@ pub mod physics;
 #[cfg(feature = "headed")]
 pub mod rendering;
 pub mod space;
+pub mod time;
 
 pub mod inspector;
 

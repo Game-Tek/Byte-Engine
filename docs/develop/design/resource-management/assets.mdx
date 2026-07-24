@@ -3,46 +3,140 @@ title: Assets
 icon: Boxes
 ---
 
-Assets are source files.
-They are authored by users, tools, or DCC applications and are not assumed to be in the best shape for runtime use.
+Use assets as the source files for your project. You or your content tools author
+these files; Byte Engine processes them before runtime use.
 
-Examples:
+Common assets include:
 
 - PNG textures
 - glTF or GLB models
+- FBX models
 - WAV and OGG audio
 - LUT files
 - `.bema` material and variant declarations
-- BESL shader source files referenced by materials
+- standalone BESL shader source files and BESL files referenced by materials
 
 Asset IDs are written as resource-style paths.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
-For example, a glTF asset can produce a mesh resource, material resources, image resources, and generated shader resources.
+For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
 
 ## Asset handlers
 
-An `AssetHandler` knows how to bake one family of source files.
-The asset manager keeps a list of handlers and selects one based on the asset type or extension.
+An `AssetHandler` bakes one family of source files. The asset manager selects a
+handler from the asset type or extension.
 
 The standard graphics setup installs handlers for common engine formats:
 
 - PNG images
-- glTF and GLB meshes and embedded images
+- glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
+- FBX meshes, skeletons, and skeletal animation clips
 - `.bema` materials and variants
 - LUT assets
 - WAV and OGG audio
+- standalone `.besl` shaders with `.besl.bead` stage metadata
 
-Handlers return a `ProcessedAsset` plus binary payload bytes.
-The processed asset is the typed metadata.
-The payload is the byte buffer that consumers will later upload, stream, decode, or play.
+Handlers store the requested resource through their `BakeContext` after all generated dependencies are ready.
+The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
+Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
+
+## JSON5 asset files
+
+Byte Engine expects JSON5 wherever an asset format or sidecar uses JSON. Write
+comments and trailing commas in `.bead`, `.bema`, and JSON glTF asset files.
+JSON5 also supports unquoted object keys, single-quoted strings, and other
+authoring conveniences.
+
+Use ordinary JSON when you need compatibility with a tool that does not support
+JSON5. Otherwise, use comments to explain non-obvious asset settings and keep
+trailing commas so later edits produce smaller diffs. Read the
+[JSON5 specification](https://spec.json5.org/) for the complete syntax.
+
+## Trace asset baking
+
+Use `BakeContext::info`, `BakeContext::warn`, or `BakeContext::error` when a handler needs to explain a bake decision or problem.
+Pass `format_args!(...)` when the message includes values so release builds do not allocate a temporary string for the terminal log.
+
+Debug builds keep these ordered items in a resource trace under the requested resource ID.
+The latest bake replaces older items for that ID.
+An error remains in the trace when the handler fails before it can store the resource, so an editor can explain the failure without treating the asset as successfully baked.
+For example, the FBX handler records one information item with the number of degenerate triangles, quads, and other polygons it culled.
+
+Read the trace through `AssetManager::resource_trace` or, after installing the asset manager, `ResourceManager::resource_trace`.
+Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
+The trace is an in-memory development tool: release builds do not expose it, and trace items are never stored as production resources.
 
 ## Processing
 
-Asset processing is where source data becomes engine data.
+Asset processing turns source data into engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
-Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, and associates primitives with material variants.
-Material processing compiles shader source and stores reflection metadata such as bindings and workgroup size.
+Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
+Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
 
-The result is intentionally more explicit than the source asset.
-A renderer should not have to reopen a PNG to discover its dimensions, or parse a glTF again to find vertex streams.
+## Skeletal model resources
+
+glTF, GLB, and FBX use one import-neutral skeletal representation.
+A `Skeleton` stores transform nodes in parent-before-child order and preserves each node's rest-local translation, rotation, and scale.
+An `Animation` stores sparse translation, rotation, and scale curves against those dense node indices and references the skeleton it was authored for.
+Missing curves deliberately fall back to the skeleton's rest pose, which gives a future CPU animation graph a stable pose to sample and blend.
+
+A mesh with skins or node animation references the same skeleton, and each primitive retains its dense transform-node index.
+This lets a future graph apply rigid node motion without reconstructing source-file node ownership.
+Skinned meshes additionally store one skin binding per imported mesh instance.
+Each binding maps the palette-local indices in the `Vertex.Joints` stream to skeleton nodes and pairs them with adjusted inverse-bind matrices.
+The adjusted matrices account for the bind-pose transform already flattened into imported vertices, so a CPU-generated global pose can write a GPU palette as `global_joint * adjusted_inverse_bind` without reopening the source file.
+Rigid primitives have no skin binding, and mixed rigid/skinned source files retain primitive-local joint and weight stream offsets.
+FBX vertices without authored cluster weights use a mesh-node fallback palette entry, so they continue following animated mesh ancestors instead of freezing in bind space.
+
+Container fragments address the generated subresources consistently:
+
+- `character.glb#skeleton` or `character.fbx#skeleton` selects the transform hierarchy.
+- `character.glb#animation` or `character.fbx#animation` selects the first clip.
+- `character.glb#animations/0` selects a clip by zero-based index.
+- `character.glb#animations/Walk` selects a clip by exact name.
+
+Without a fragment, FBX and glTF containers use a content-only default that is identical in debug baking and BELD:
+
+- A container with any mesh bakes as `Mesh`.
+- A container without meshes and with exactly one animation bakes as `Animation` and stores its dependency as `#skeleton`.
+- Containers with neither an uncontested mesh nor a single animation require an explicit fragment.
+
+A sibling BEAD manifest can override the first two choices with `"default_resource": "mesh"` or
+`"default_resource": "animation"`. An animation override still requires exactly one clip. Skeleton resources never
+become the unfragmented default and must always be requested through `#skeleton`.
+
+The importers normalize weights to a fixed four-influence vertex format.
+FBX matrix-linear and rigid skins are supported; files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
+glTF morph-weight channels are not part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
+Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
+The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
+
+A general-purpose CPU animation graph does not exist yet. The visibility renderer
+accepts complete global poses and uploads their derived skin palettes. Applications
+must currently provide clip sampling.
+
+## FBX resources
+
+An FBX asset ID that defaults to a mesh bakes every polygon-mesh instance into one `Mesh` resource.
+The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
+Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
+
+FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
+Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
+FBX material texture maps are not imported yet.
+
+FBX animation stacks are baked through the format's pivot, layer, and rotation-order rules before becoming engine curves:
+
+- `character.fbx#animation` selects the first animation stack.
+- `character.fbx#animations/0` selects a stack by zero-based index.
+- `character.fbx#animations/Walk` selects a stack by exact name.
+
+The processed result is more explicit than the source asset. A renderer does not
+need to reopen a PNG to find its dimensions or parse glTF again to find vertex
+streams.
+
+## Rust API
+
+- [`AssetManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_manager/struct.AssetManager.html)
+- [`AssetHandler`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_handler/trait.AssetHandler.html)
+- [`BakeContext`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/asset_handler/struct.BakeContext.html)

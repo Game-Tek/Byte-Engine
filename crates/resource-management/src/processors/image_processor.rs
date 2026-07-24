@@ -44,14 +44,7 @@ pub fn process_image<'a>(
 	description: ImageDescription,
 	buffer: Box<[u8]>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image_in(&description, buffer, Global)?;
-	let asset = ProcessedAsset::new(id, resource);
-	let asset = if let Some(streams) = streams {
-		asset.with_streams(streams)
-	} else {
-		asset
-	};
-	Ok((asset, buffer))
+	process_image_in(id, description, buffer, Global)
 }
 
 /// Processes image pixels using the provided allocator for transient and output buffers.
@@ -195,6 +188,7 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 				Formats::RGBA16
 			}
 		}
+		Formats::RGBA16F => Formats::RGBA16F,
 		_ => {
 			panic!("Unsupported format: {:#?}", source_format);
 		}
@@ -283,6 +277,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 		(Formats::RGBA16, Formats::RGBA16) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
+		(Formats::RGBA16F, Formats::RGBA16F) => copy_slice_in(&buffer, allocator.clone()),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
 		}
@@ -330,6 +325,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 			extent: image_resource_extent(output_format, *extent),
 			gamma: *gamma,
 			mip_count,
+			ibl: None,
 		},
 		data,
 		streams,
@@ -408,7 +404,7 @@ fn compress_bc_level_in<A: Allocator + Clone>(
 			);
 			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
 		}
-		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 => {
+		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 | Formats::RGBA16F => {
 			let mut output = Vec::with_capacity_in(data.len(), allocator);
 			output.extend_from_slice(data);
 			output.into_boxed_slice()

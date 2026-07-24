@@ -154,3 +154,105 @@ pub trait Applicator {
 	type Type;
 	fn apply(&mut self, value: Self::Type);
 }
+
+#[cfg(test)]
+mod tests {
+	use math::{Quaternion, Vector3, Vector4};
+
+	use super::{Transform, TransformationUpdate};
+	use crate::{
+		core::{
+			channel::{Channel, DefaultChannel},
+			factory::Factory,
+			listener::Listener,
+		},
+		space::{Orientable, Positionable, Scalable, Transformable},
+	};
+
+	struct SpatialEntity {
+		transform: Transform,
+	}
+
+	impl Transformable for SpatialEntity {
+		fn transform(&self) -> &Transform {
+			&self.transform
+		}
+
+		fn transform_mut(&mut self) -> &mut Transform {
+			&mut self.transform
+		}
+	}
+
+	#[test]
+	fn identity_and_default_have_the_same_spatial_effect() {
+		let point = Vector4::new(2.0, -3.0, 4.0, 1.0);
+		assert_eq!(Transform::default().get_matrix() * point, point);
+		assert_eq!(Transform::identity().get_matrix() * point, point);
+	}
+
+	#[test]
+	fn matrix_applies_scale_before_translation() {
+		let transform = Transform::new(
+			Vector3::new(10.0, 20.0, 30.0),
+			Vector3::new(2.0, 3.0, 4.0),
+			Quaternion::identity(),
+		);
+
+		let transformed = transform.get_matrix() * Vector4::new(1.0, 1.0, 1.0, 1.0);
+		assert_eq!(transformed, Vector4::new(12.0, 23.0, 34.0, 1.0));
+		assert_eq!(
+			transform.get_matrix() * Vector4::new(1.0, 1.0, 1.0, 0.0),
+			Vector4::new(2.0, 3.0, 4.0, 0.0)
+		);
+	}
+
+	#[test]
+	fn constructors_and_builders_preserve_unmodified_components() {
+		let rotation = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 0.5);
+		let transform = Transform::from_position(Vector3::new(1.0, 2.0, 3.0)).rotation(rotation);
+		assert_eq!(transform.get_position(), Vector3::new(1.0, 2.0, 3.0));
+		assert_eq!(transform.scale(), Vector3::new(1.0, 1.0, 1.0));
+		assert_eq!(transform.get_orientation(), rotation);
+
+		assert_eq!(
+			Transform::from_translation(Vector3::new(4.0, 5.0, 6.0)).get_position(),
+			Vector3::new(4.0, 5.0, 6.0)
+		);
+		assert_eq!(
+			Transform::from_scale(Vector3::new(2.0, 3.0, 4.0)).scale(),
+			Vector3::new(2.0, 3.0, 4.0)
+		);
+		assert_eq!(Transform::from_rotation(rotation).get_orientation(), rotation);
+	}
+
+	#[test]
+	fn transformable_blanket_traits_mutate_one_shared_transform() {
+		let orientation = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), 0.25);
+		let mut entity = SpatialEntity {
+			transform: Transform::default(),
+		};
+
+		entity.set_position(Vector3::new(3.0, 4.0, 5.0));
+		entity.set_scale(Vector3::new(2.0, 2.0, 2.0));
+		entity.set_orientation(orientation);
+
+		assert_eq!(entity.position(), Vector3::new(3.0, 4.0, 5.0));
+		assert_eq!(entity.scale(), Vector3::new(2.0, 2.0, 2.0));
+		assert_eq!(entity.orientation(), orientation);
+		assert_eq!(entity.transform.get_position(), entity.position());
+	}
+
+	#[test]
+	fn transformation_update_preserves_handle_and_payload_through_channel() {
+		let mut factory = Factory::new();
+		let handle = factory.create("entity");
+		let transform = Transform::from_position(Vector3::new(7.0, 8.0, 9.0));
+		let mut channel = DefaultChannel::new();
+		let mut listener = channel.listener();
+
+		TransformationUpdate::apply(&mut channel, handle, transform);
+		let update = listener.read().expect("transformation update");
+		assert_eq!(update.handle(), &handle);
+		assert_eq!(update.transform().get_position(), Vector3::new(7.0, 8.0, 9.0));
+	}
+}

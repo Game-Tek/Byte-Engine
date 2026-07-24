@@ -1,13 +1,31 @@
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	audio_utils::{bytes_per_sample, push_pcm_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
-use crate::{
-	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio,
-	types::BitDepths, ProcessedAsset,
-};
+use crate::{processors::audio_processor::process_audio_in, resources::audio::Audio, types::BitDepths};
+
+/// Appends a planar decoder block in the interleaved frame order expected by
+/// the runtime audio resource contract.
+fn append_interleaved_pcm<A: std::alloc::Allocator>(
+	data: &mut Vec<u8, A>,
+	channels: &[&[f32]],
+	bit_depth: BitDepths,
+) -> Result<(), String> {
+	let Some(frame_count) = channels.first().map(|channel| channel.len()) else {
+		return Ok(());
+	};
+	if channels.iter().any(|channel| channel.len() != frame_count) {
+		return Err("Invalid OGG channel block. The decoder returned channels with different frame counts.".to_string());
+	}
+
+	for frame in 0..frame_count {
+		for channel in channels {
+			push_pcm_sample(data, channel[frame], bit_depth);
+		}
+	}
+	Ok(())
+}
 
 impl Default for OGGAssetHandler {
 	fn default() -> Self {
@@ -38,11 +56,7 @@ impl OGGAssetHandler {
 			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
 		{
 			let samples = block.samples();
-			for &channel in samples {
-				for sample in channel {
-					push_pcm_sample(&mut data, *sample, bit_depth);
-				}
-			}
+			append_interleaved_pcm(&mut data, samples, bit_depth)?;
 		}
 
 		let sample_count = sample_count_from_pcm_len(data.len(), channel_count as u16, bit_depth);
@@ -80,42 +94,34 @@ impl AssetHandler for OGGAssetHandler {
 		r#type == "ogg"
 	}
 
-	fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if !self.can_handle(dt) {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let (data, _, dt) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			if !self.can_handle(&dt) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
+			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
 
-			// The source bytes borrow the bake allocator, so decoding stays in this task.
-			let (audio_resource, data) =
-				Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		let (data, _, dt) = context.resolve(url).await?;
+		let allocator = context.allocator();
 
-			let (asset, data) = process_audio_in(url, audio_resource, data)?;
-			Ok((asset, data.to_vec().into_boxed_slice()))
-		})
+		if !self.can_handle(&dt) {
+			return Err(LoadErrors::UnsupportedType);
+		}
+
+		// The source bytes borrow the bake allocator, so decoding stays in this task.
+		let (audio_resource, data) =
+			Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+
+		let (asset, data) = process_audio_in(url, audio_resource, data)?;
+		context.store_primary(asset, &data)
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::alloc::Global;
+
+	use super::append_interleaved_pcm;
 	use crate::{
 		asset::{self, asset_manager::AssetManager, ogg_asset_handler::OGGAssetHandler, ResourceId},
 		r#async, resource,
@@ -126,28 +132,16 @@ mod tests {
 
 	#[r#async::test]
 	async fn test_audio_asset_handler() {
-		let audio_asset_handler = OGGAssetHandler::new();
-
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
-
-		let url = ResourceId::new("test-tone.ogg");
 		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(OGGAssetHandler::new());
 
-		let (resource, data) = audio_asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("test-tone.ogg", &resource_storage_backend)
 			.await
 			.expect("Audio asset handler failed to load asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Audio asset failed to store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -162,6 +156,9 @@ mod tests {
 		assert_eq!(resource.channel_count, 1);
 		assert_eq!(resource.sample_rate, 48_000);
 		assert_eq!(resource.sample_count, 1024);
+		let data = resource_storage_backend
+			.get_resource_data_by_name(ResourceId::new("test-tone.ogg"))
+			.expect("Audio resource data should exist");
 		assert_eq!(data.len(), 1024 * 2);
 	}
 
@@ -184,6 +181,21 @@ mod tests {
 			assert_eq!(audio.sample_count, 1024);
 			assert_eq!(data.len(), 1024 * bytes_per_sample);
 		}
+	}
+
+	#[test]
+	fn planar_decoder_channels_are_written_as_interleaved_pcm_frames() {
+		let left = [-1.0, 0.0, 1.0];
+		let right = [0.5, 0.0, -0.5];
+		let mut bytes = Vec::new_in(Global);
+
+		append_interleaved_pcm(&mut bytes, &[&left, &right], BitDepths::Sixteen).unwrap();
+
+		let samples: Vec<i16> = bytes
+			.chunks_exact(2)
+			.map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+			.collect();
+		assert_eq!(samples, [-32_767, 16_384, 0, 0, 32_767, -16_384]);
 	}
 
 	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.

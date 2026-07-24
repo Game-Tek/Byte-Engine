@@ -51,17 +51,14 @@ pub struct Window {
 	state: WindowState,
 }
 
-/// The `Requests` enum contains requests that need to be queued for processing.
+/// A window operation queued until Wayland can process it.
 #[derive(Clone, Debug)]
 enum Requests {
-	/// Request to constrain the pointer to the window's bounds.
-	/// This operation is queued because it requires pointer and keyboard focus or else it will fail.
+	/// Constrain the pointer after the window receives pointer and keyboard focus.
 	ConstrainPointer,
-	/// Request to lock the pointer to it's current position.
-	/// This operation is queued because it requires pointer and keyboard focus or else it will fail.
+	/// Lock the pointer after the window receives pointer and keyboard focus.
 	LockPointer,
-	/// Request to make the pointer invisible.
-	/// This operation is queued because it requires the pointer to be created.
+	/// Hide the pointer after Wayland creates it.
 	HidePointer,
 }
 
@@ -230,8 +227,7 @@ impl Window {
 	}
 }
 
-/// The `WindowIterator` struct is used to iterate over `Events` produced by the `poll` method.
-/// Wayland events are first processed in the `poll` method which then copies it's own event list to the iterator.
+/// The `WindowIterator` struct yields [`Events`] collected by the window's poll operation.
 pub struct WindowIterator<'a> {
 	events: VecDeque<Events>,
 	_phantom: PhantomData<&'a ()>,
@@ -266,8 +262,7 @@ pub struct Handles {
 	pub surface: *mut c_void,
 }
 
-/// The `Configuration` struct holds the necessary Wayland objects and data for creating a window.
-/// This struct is handed to the `WlRegistry` binding to initialize the Wayland connection.
+/// The `Configuration` struct provides Wayland registry state while a window connection starts.
 #[derive(Debug)]
 struct Configuration {
 	compositor: Option<WlCompositor>,
@@ -282,7 +277,7 @@ struct Configuration {
 	app_data_queue: wayland_client::QueueHandle<AppData>,
 }
 
-/// The `AppData` struct holds the necessary Wayland objects and state to process events and requests for an already created window.
+/// The `AppData` struct provides Wayland callback state for an active window.
 #[derive(Debug)]
 struct AppData {
 	wl_surface: wl_surface::WlSurface,
@@ -295,8 +290,7 @@ struct AppData {
 	requests: VecDeque<Requests>,
 }
 
-/// The `WindowState` struct holds the most recent tracked state of the Wayland window.
-/// The properties reported by the event queue are used to update the window state.
+/// The `WindowState` struct preserves the latest state reported by the Wayland event queue.
 #[derive(Debug, Clone)]
 struct WindowState {
 	/// The scale factor of the window.
@@ -353,7 +347,7 @@ impl Default for WindowState {
 	}
 }
 
-/// The `KeyboardState` struct manages the XKB context, keymap, and state.
+/// The `KeyboardState` struct provides XKB keycode translation for a Wayland window.
 struct KeyboardState {
 	context: xkb::Context,
 	keymap: xkb::Keymap,

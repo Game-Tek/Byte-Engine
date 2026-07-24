@@ -1,23 +1,114 @@
-//! This module contains the asset management system.
-//! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
-//! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
+//! Load source assets and use format-specific handlers to bake engine resources.
 
 use std::{alloc::Allocator, io::ErrorKind};
 
-use utils::json;
+use serde_json::{Map, Value};
 
 pub mod asset_handler;
 pub mod asset_manager;
 mod audio_utils;
 
 pub mod bema_asset_handler;
+pub mod besl_shader_asset_handler;
+pub mod exr_asset_handler;
+pub mod fbx_asset_handler;
 pub mod gltf_asset_handler;
 pub mod lut_asset_handler;
 pub mod ogg_asset_handler;
 pub mod png_asset_handler;
 pub mod wav_asset_handler;
 
-pub type BEADType = json::Value;
+#[cfg(debug_assertions)]
+pub mod resource_trace;
+
+#[cfg(debug_assertions)]
+pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
+
+pub type BEADType = Value;
+pub type JsonObject = Map<String, Value>;
+
+/// Parses authored JSON5 text into a Serde JSON value.
+pub(crate) fn parse_json(source: &str) -> Result<BEADType, json5::Error> {
+	json5::from_str(source)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The `ContainerDefaultResource` enum identifies the BEAD-selected resource for an unfragmented container asset.
+pub(crate) enum ContainerDefaultResource {
+	Mesh,
+	Animation,
+}
+
+/// Reads the optional unfragmented resource choice shared by FBX and glTF BEAD manifests.
+pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Option<ContainerDefaultResource>, String> {
+	let Some(value) = spec.and_then(|spec| spec.get("default_resource")) else {
+		return Ok(None);
+	};
+	let Some(value) = value.as_str() else {
+		return Err("`default_resource` must be the string `mesh` or `animation`".to_string());
+	};
+
+	if value.eq_ignore_ascii_case("mesh") {
+		Ok(Some(ContainerDefaultResource::Mesh))
+	} else if value.eq_ignore_ascii_case("animation") {
+		Ok(Some(ContainerDefaultResource::Animation))
+	} else {
+		Err(format!(
+			"`default_resource` is '{value}', but only `mesh` and `animation` are supported; skeletons require an explicit fragment"
+		))
+	}
+}
+
+/// Stores one generated model and returns the serialized reference used by its parent resource.
+pub(crate) fn store_model<M: crate::Model>(
+	context: asset_handler::BakeContext<'_>,
+	id: &str,
+	model: M,
+	data: &[u8],
+) -> Result<crate::ReferenceModel<M>, asset_handler::LoadErrors> {
+	context
+		.store_generated(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+		.map(Into::into)
+}
+
+/// Converts authored material names into stable resource-ID path components.
+pub(crate) fn sanitize_material_name(name: &str) -> String {
+	let sanitized = name
+		.chars()
+		.map(|character| {
+			if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+				character
+			} else {
+				'_'
+			}
+		})
+		.collect::<String>();
+
+	if sanitized.is_empty() {
+		"material".to_string()
+	} else {
+		sanitized
+	}
+}
+
+#[cfg(test)]
+mod container_default_resource_tests {
+	use super::{container_default_resource, ContainerDefaultResource};
+
+	#[test]
+	fn bead_default_resource_accepts_mesh_and_animation_but_never_skeleton() {
+		for (value, expected) in [
+			("mesh", ContainerDefaultResource::Mesh),
+			("Animation", ContainerDefaultResource::Animation),
+		] {
+			let spec = super::parse_json(&format!(r#"{{ "default_resource": "{value}" }}"#)).unwrap();
+			assert_eq!(container_default_resource(Some(&spec)), Ok(Some(expected)));
+		}
+
+		let skeleton = super::parse_json(r#"{ "default_resource": "skeleton" }"#).unwrap();
+		assert!(container_default_resource(Some(&skeleton)).is_err());
+	}
+}
 
 pub mod resource_id;
 pub mod storage_backend;
@@ -29,9 +120,10 @@ pub use storage_backend::{AssetStorageBytes, StorageBackend};
 use crate::r#async::read;
 use crate::resource::reader::MappedFileBacking;
 
-/// Loads an asset from source asynchronously.\
-/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
-/// If the asset is not found it will return None.
+/// Loads a source asset and its optional BEAD description.
+///
+/// Pass a path relative to the assets directory or a network URL. The function
+/// returns `Err(())` when it cannot find or read the asset.
 pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
@@ -62,7 +154,11 @@ pub async fn read_asset_from_source<'a>(
 
 			let path = path.join(base.as_ref());
 			let spec_path = path.with_added_extension("bead");
-			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+			let format = path
+				.extension()
+				.and_then(|extension| extension.to_str())
+				.unwrap_or_default()
+				.to_string();
 
 			let spec = read_asset_spec(&spec_path);
 			let source_bytes = read_asset_bytes(&path, allocator);
@@ -88,7 +184,7 @@ async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>
 
 	if let Some(spec_bytes) = spec_bytes {
 		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-		let spec: json::Value = json::from_str(spec).or(Err(()))?;
+		let spec = parse_json(spec).or(Err(()))?;
 		Ok(Some(spec))
 	} else {
 		Ok(None)

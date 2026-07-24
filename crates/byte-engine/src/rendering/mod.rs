@@ -8,6 +8,9 @@
 //!
 //! Use [`pipelines::simple`] for debugging or prototypes. The
 //! [`pipelines::visibility`] pipeline is the primary material and lighting path.
+//!
+//! See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
+//! for the relationships between render orchestrators, systems, domains, and models.
 
 use ::utils::Extent;
 use ghi::context::ContextCreate as _;
@@ -35,6 +38,7 @@ pub mod cct;
 
 #[doc(hidden)]
 pub mod pipeline_manager;
+mod pose;
 #[doc(hidden)]
 pub mod world_render_domain;
 
@@ -47,8 +51,12 @@ pub mod framebuffer;
 pub mod render_pass;
 #[doc(hidden)]
 pub mod render_passes;
+mod resource_loading;
 #[doc(hidden)]
 pub mod shader_store;
+
+#[cfg(test)]
+pub(crate) mod shader_vm_test;
 
 #[doc(hidden)]
 pub mod pipelines;
@@ -65,10 +73,14 @@ pub mod csm;
 pub mod utils;
 
 pub use camera::Camera;
-pub use lights::{DirectionalLight, Light, LightClasses, Lights, PointLight};
+pub use lights::{ConeLight, DirectionalLight, Light, LightClasses, Lights, PointLight};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
-pub use render_pass::{FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderToResult};
+pub use pose::UpdatePose;
+pub use render_pass::{
+	FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassReturn, RenderPassState,
+	RenderToResult,
+};
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer, Settings};
 pub use sink::Sink;
@@ -78,10 +90,18 @@ pub use window::{Features, Window};
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
 	b: &resource_management::shader::generator::CompiledShaderBinding,
-) -> ghi::shader::BindingDescriptor {
-	ghi::shader::BindingDescriptor::new(
-		b.set,
-		b.binding,
+) -> ghi::ShaderResourceDescriptor {
+	use resource_management::shader::besl::evaluation::{BindingKind, TextureView};
+
+	let kind = match b.kind {
+		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
+		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
+		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
+	};
+	let descriptor = ghi::ShaderResourceDescriptor::new(
+		ghi::ResourceSlot::new(b.slot),
+		kind,
+		b.count,
 		if b.read {
 			ghi::AccessPolicies::READ
 		} else {
@@ -91,7 +111,16 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 		} else {
 			ghi::AccessPolicies::empty()
 		},
-	)
+	);
+
+	match b.kind {
+		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
+			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
+			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
+		}),
+		_ => descriptor,
+	}
 }
 
 /// Compiles shader source and creates a GHI shader handle for render pipeline setup.
@@ -104,11 +133,11 @@ pub fn create_shader_from_source(
 	name: Option<&str>,
 	source: ghi::shader::ShaderSource,
 	stage: ghi::ShaderTypes,
-	binding_descriptors: impl IntoIterator<Item = ghi::shader::BindingDescriptor>,
+	resource_descriptors: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 ) -> Result<ghi::ShaderHandle, String> {
 	let compiled = ghi::shader::compile(name.unwrap_or(""), source)?;
 	context
-		.create_shader(name, compiled.as_source(), stage, binding_descriptors)
+		.create_shader(name, compiled.as_source(), stage, resource_descriptors)
 		.map_err(|_| "Failed to create shader. The most likely cause is an incompatible shader interface.".to_string())
 }
 

@@ -6,32 +6,45 @@ use std::{
 
 use utils::Extent;
 
-use crate::shader::besl::graph::{build_graph_in, topological_sort_in};
+use crate::shader::besl::{
+	evaluation::BindingKind,
+	graph::{build_graph_in, topological_sort_in},
+};
 
-/// Generates a graphics API consumable shader from a BESL shader program definition.
+/// The `Generator` trait provides graphics-API shader generation from a BESL program definition.
 pub trait Generator {}
 
-/// The `CompiledShaderBinding` struct describes a descriptor binding used by a compiled shader artifact.
-#[derive(Clone, Debug)]
+/// The `CompiledShaderBinding` struct preserves the flat resource interface required to create a backend shader.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledShaderBinding {
-	pub binding: u32,
-	pub set: u32,
+	pub slot: u32,
+	pub kind: BindingKind,
+	pub count: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl CompiledShaderBinding {
-	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		assert!(
+			count > 0,
+			"Invalid resource count. The most likely cause is that a compiled shader resource was declared with an empty array."
+		);
+		assert!(
+			slot.checked_add(count).is_some(),
+			"Invalid resource slot range. The most likely cause is that a compiled shader resource array extends beyond the flat slot space."
+		);
 		Self {
-			binding,
-			set,
+			slot,
+			kind,
+			count,
 			read,
 			write,
 		}
 	}
 }
 
-/// The `CompiledShader` struct stores compiled shader bytes and reflection metadata shared by compiler backends.
+/// The `CompiledShader` struct provides compiled bytes and reflection metadata across compiler backends.
 pub struct CompiledShader {
 	binary: Box<[u8]>,
 	bindings: Vec<CompiledShaderBinding>,
@@ -73,7 +86,10 @@ pub enum Stages {
 	Compute {
 		local_size: Extent,
 	},
-	Task,
+	Task {
+		local_size: Extent,
+		maximum_mesh_threadgroups: u32,
+	},
 	Mesh {
 		maximum_vertices: u32,
 		maximum_primitives: u32,
@@ -106,7 +122,7 @@ pub struct Settings {
 	pub(crate) name: String,
 }
 
-/// The `ShaderFormatting` struct stores shared string formatting rules for shader generators.
+/// The `ShaderFormatting` struct provides shared text formatting rules for shader generators.
 #[derive(Clone, Copy)]
 pub(crate) struct ShaderFormatting {
 	minified: bool,
@@ -260,7 +276,9 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 		name,
 		"void"
 			| "bool" | "vec2u16"
-			| "vec2u" | "vec2i"
+			| "vec4u16"
+			| "vec2u" | "vec3u"
+			| "vec4u" | "vec2i"
 			| "vec2f" | "vec3f"
 			| "vec4f" | "mat2f"
 			| "mat3f" | "mat4f"
@@ -268,6 +286,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "f32" | "u8"
 			| "u16" | "u32"
 			| "i32" | "Texture2D"
+			| "Texture3D"
 			| "ArrayTexture2D"
 			| "VertexOutput"
 			| "PrimitiveOutput"
@@ -285,8 +304,15 @@ impl Settings {
 		})
 	}
 
-	pub fn task() -> Settings {
-		Self::from_stage(Stages::Task)
+	pub fn task(local_size: Extent, maximum_mesh_threadgroups: u32) -> Settings {
+		assert!(
+			maximum_mesh_threadgroups > 0,
+			"Invalid task mesh-threadgroup limit. The most likely cause is that a task shader was configured to emit zero mesh threadgroups."
+		);
+		Self::from_stage(Stages::Task {
+			local_size: Self::normalize_local_size(local_size),
+			maximum_mesh_threadgroups,
+		})
 	}
 
 	pub fn mesh(maximum_vertices: u32, maximum_primitives: u32, local_size: Extent) -> Settings {
@@ -410,6 +436,16 @@ pub(crate) trait NodeEmitter {
 	) {
 	}
 
+	/// Gives a backend the opportunity to replace call syntax for callable types such as aggregate structs.
+	fn emit_function_call(
+		&mut self,
+		_string: &mut String,
+		_function: &besl::NodeReference,
+		_parameters: &[besl::NodeReference],
+	) -> bool {
+		false
+	}
+
 	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeReference) -> bool {
 		false
 	}
@@ -477,7 +513,16 @@ pub(crate) trait NodeEmitter {
 		));
 	}
 
+	/// Gives a backend the opportunity to replace expression syntax before portable lowering.
+	fn emit_expression_override(&mut self, _string: &mut String, _expression: &besl::Expressions) -> bool {
+		false
+	}
+
 	fn emit_expression_node(&mut self, string: &mut String, expression: &besl::Expressions) {
+		if self.emit_expression_override(string, expression) {
+			return;
+		}
+
 		let formatting = ShaderFormatting::new(self.minified());
 		match expression {
 			besl::Expressions::Operator { operator, left, right } => {
@@ -496,6 +541,9 @@ pub(crate) trait NodeEmitter {
 				parameters, function, ..
 			} => {
 				let function_ref = function.clone();
+				if self.emit_function_call(string, &function_ref, parameters) {
+					return;
+				}
 				let function = RefCell::borrow(&function_ref);
 				let name = function.get_name().unwrap();
 				Self::emit_type_name(string, name);
@@ -619,6 +667,28 @@ pub(crate) trait NodeEmitter {
 pub mod tests {
 	use std::cell::RefCell;
 
+	use utils::Extent;
+
+	use crate::shader::besl::evaluation::BindingKind;
+
+	#[test]
+	#[should_panic(expected = "Invalid resource slot range")]
+	fn compiled_shader_binding_rejects_flat_slot_overflow() {
+		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
+
+	#[test]
+	fn task_settings_preserve_workgroup_and_mesh_threadgroup_limit() {
+		let settings = super::ShaderGenerationSettings::task(Extent::new(32, 0, 0), 32);
+		assert!(matches!(
+			settings.stage,
+			super::Stages::Task {
+				local_size,
+				maximum_mesh_threadgroups: 32,
+			} if local_size == Extent::new(32, 1, 1)
+		));
+	}
+
 	pub fn bindings() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
@@ -639,7 +709,6 @@ pub mod tests {
 					members: vec![besl::Node::member("member", float_type).into()],
 				},
 				0,
-				0,
 				true,
 				true,
 			)
@@ -649,7 +718,6 @@ pub mod tests {
 				besl::BindingTypes::Image {
 					format: "r8".to_string(),
 				},
-				0,
 				1,
 				false,
 				true,
@@ -658,8 +726,7 @@ pub mod tests {
 			besl::Node::binding(
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
-				1,
-				0,
+				2,
 				true,
 				false,
 			)
@@ -670,6 +737,95 @@ pub mod tests {
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
+		main
+	}
+
+	/// Builds a buffer access that verifies packed four-component u16 vectors remain intrinsic backend types.
+	pub fn vec4u16_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.value; }";
+		let mut root_node = besl::Node::root();
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("value", vec4u16_type).into()],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
+	pub fn vec2u16_array_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.values[1]; }";
+		let mut root_node = besl::Node::root();
+		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", vec2u16_type, 2)],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2u16 array shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
+	pub fn mixed_vec4u16_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.value; buff.tail; }";
+		let mut root_node = besl::Node::root();
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		let u16_type = root_node.get_child("u16").expect("Expected u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![
+						besl::Node::member("value", vec4u16_type).into(),
+						besl::Node::member("tail", u16_type).into(),
+					],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected mixed vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
+	pub fn packed_u16_stage_io() -> besl::NodeReference {
+		let script = "main: fn () -> void { packed_input; packed_output; }";
+		let mut root_node = besl::Node::root();
+		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		root_node.add_children(vec![
+			besl::Node::input("packed_input", vec2u16_type, 0).into(),
+			besl::Node::output("packed_output", vec4u16_type, 1).into(),
+		]);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed stage I/O shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 		main
 	}
 
@@ -690,7 +846,6 @@ pub mod tests {
 					members: vec![besl::Node::array("meshes", u32_type.clone(), 2)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -700,7 +855,6 @@ pub mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("pixel_mapping", u32_type, 2)],
 				},
-				0,
 				1,
 				false,
 				true,

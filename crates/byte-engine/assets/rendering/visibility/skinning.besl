@@ -1,0 +1,155 @@
+SkinningMatrix: struct {
+	column0: vec4f,
+	column1: vec4f,
+	column2: vec4f,
+	column3: vec4f,
+}
+
+SkinnedVertex: struct {
+	position: vec4f,
+	normal: vec4f,
+}
+
+SourcePositions: struct {
+	values: vec3f[262144],
+}
+
+SourceNormals: struct {
+	values: vec3f[262144],
+}
+
+SourceJoints: struct {
+	values: vec4u16[262144],
+}
+
+SourceWeights: struct {
+	values: vec4f[262144],
+}
+
+MatrixPalette: struct {
+	values: SkinningMatrix[65536],
+}
+
+SkinnedVertices: struct {
+	values: SkinnedVertex[262144],
+}
+
+source_positions: descriptor<SourcePositions, 0, read>;
+source_normals: descriptor<SourceNormals, 1, read>;
+source_joints: descriptor<SourceJoints, 2, read>;
+source_weights: descriptor<SourceWeights, 3, read>;
+matrix_palette: descriptor<MatrixPalette, 4, read>;
+skinned_vertices: descriptor<SkinnedVertices, 5, write>;
+
+push_constant: push_constant {
+	source_vertex_base: u32,
+	destination_vertex_base: u32,
+	palette_base: u32,
+	vertex_count: u32,
+}
+
+transform_columns: fn(
+	column0: vec4f,
+	column1: vec4f,
+	column2: vec4f,
+	column3: vec4f,
+	value: vec4f
+) -> vec4f {
+	return column0 * value.x
+		+ column1 * value.y
+		+ column2 * value.z
+		+ column3 * value.w;
+}
+
+transform_normal: fn(column0: vec3f, column1: vec3f, column2: vec3f, normal: vec3f) -> vec3f {
+	let cofactor0: vec3f = cross(column1, column2);
+	let cofactor1: vec3f = cross(column2, column0);
+	let cofactor2: vec3f = cross(column0, column1);
+	let determinant: f32 = dot(column0, cofactor0);
+	if (abs(determinant) > 0.00000001) {
+		return (cofactor0 * normal.x + cofactor1 * normal.y + cofactor2 * normal.z) / determinant;
+	}
+
+	// Singular joint transforms retain their usable linear directions instead of producing NaNs.
+	return column0 * normal.x + column1 * normal.y + column2 * normal.z;
+}
+
+safe_normalize: fn(value: vec3f, fallback: vec3f) -> vec3f {
+	let length_squared: f32 = dot(value, value);
+	if (length_squared > 0.00000001) {
+		return value * inversesqrt(length_squared);
+	}
+	return fallback;
+}
+
+main: fn () -> void {
+	let local_vertex_index: u32 = thread_id().x;
+	if (local_vertex_index >= push_constant.vertex_count) {
+		return;
+	}
+
+	let source_vertex_index: u32 = push_constant.source_vertex_base + local_vertex_index;
+	let source_position: vec3f = source_positions.values[source_vertex_index];
+	let source_normal: vec3f = source_normals.values[source_vertex_index];
+	let joints: vec4u16 = source_joints.values[source_vertex_index];
+	let weights: vec4f = source_weights.values[source_vertex_index];
+	let matrix0: SkinningMatrix = matrix_palette.values[push_constant.palette_base + u32(joints.x)];
+	let matrix1: SkinningMatrix = matrix_palette.values[push_constant.palette_base + u32(joints.y)];
+	let matrix2: SkinningMatrix = matrix_palette.values[push_constant.palette_base + u32(joints.z)];
+	let matrix3: SkinningMatrix = matrix_palette.values[push_constant.palette_base + u32(joints.w)];
+	let total_weight: f32 = weights.x + weights.y + weights.z + weights.w;
+
+	let fallback_normal: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
+	let position: vec4f = vec4f(source_position.x, source_position.y, source_position.z, 1.0);
+	let normal: vec3f = fallback_normal;
+	if (total_weight > 0.00000001) {
+		let inverse_total_weight: f32 = 1.0 / total_weight;
+		let column0: vec4f = (
+			matrix0.column0 * weights.x
+			+ matrix1.column0 * weights.y
+			+ matrix2.column0 * weights.z
+			+ matrix3.column0 * weights.w
+		) * inverse_total_weight;
+		let column1: vec4f = (
+			matrix0.column1 * weights.x
+			+ matrix1.column1 * weights.y
+			+ matrix2.column1 * weights.z
+			+ matrix3.column1 * weights.w
+		) * inverse_total_weight;
+		let column2: vec4f = (
+			matrix0.column2 * weights.x
+			+ matrix1.column2 * weights.y
+			+ matrix2.column2 * weights.z
+			+ matrix3.column2 * weights.w
+		) * inverse_total_weight;
+		let column3: vec4f = (
+			matrix0.column3 * weights.x
+			+ matrix1.column3 * weights.y
+			+ matrix2.column3 * weights.z
+			+ matrix3.column3 * weights.w
+		) * inverse_total_weight;
+
+		position = transform_columns(
+			column0,
+			column1,
+			column2,
+			column3,
+			vec4f(source_position.x, source_position.y, source_position.z, 1.0)
+		);
+		normal = safe_normalize(
+			transform_normal(
+				vec3f(column0.x, column0.y, column0.z),
+				vec3f(column1.x, column1.y, column1.z),
+				vec3f(column2.x, column2.y, column2.z),
+				source_normal
+			),
+			fallback_normal
+		);
+	}
+
+	let destination_vertex_index: u32 = push_constant.destination_vertex_base + local_vertex_index;
+	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(
+		vec4f(position.x, position.y, position.z, 1.0),
+		vec4f(normal.x, normal.y, normal.z, 0.0)
+	);
+}

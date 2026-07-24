@@ -1,6 +1,7 @@
-//! This is a smoke test that creates a sandbox environment for physics.
-//! It's purpose is to check if an entire application can be created and run.
-//! It does not check if the application is working correctly.
+//! Creates a physics sandbox as an application startup smoke test.
+//!
+//! This example verifies that the complete application can start and run. It
+//! does not verify simulation results.
 
 use byte_engine::application::{Application, Parameter};
 

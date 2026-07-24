@@ -1,0 +1,21 @@
+BloomParameters: struct {
+	prefilter: vec4f[1],
+	blur_data: vec4f[1],
+}
+
+low_resolution_texture: descriptor<Texture2D, 0, read>;
+high_resolution_texture: descriptor<Texture2D, 1, read>;
+result_texture: descriptor<StorageImage<rgba16>, 2, write>;
+bloom_parameters: descriptor<BloomParameters, 3, read>;
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let result_size: vec2u = image_size(result_texture);
+	let low_size: vec2u = texture_size(low_resolution_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
+	let low_res: vec4f = texture_lod(low_resolution_texture, uv);
+	let high_res: vec4f = texture_lod(high_resolution_texture, uv);
+	let combined: vec3f = vec3f(high_res.x, high_res.y, high_res.z) + vec3f(low_res.x, low_res.y, low_res.z);
+	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
+}

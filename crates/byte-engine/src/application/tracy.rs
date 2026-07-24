@@ -3,8 +3,8 @@ use std::fmt::{Display, Formatter};
 
 /// Initializes Tracy profiling for applications built on Byte-Engine.
 ///
-/// This should be called by client applications before creating the application, because both
-/// `log` and `tracing` allow only one global collector per process.
+/// Call this function before creating the application. The `log` and `tracing`
+/// crates allow only one global collector per process.
 #[cfg(feature = "tracy")]
 pub fn setup_tracy() -> Result<(), TracySetupError> {
 	use tracing_subscriber::layer::SubscriberExt;

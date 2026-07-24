@@ -9,8 +9,11 @@
 pub trait Replicable {
 	fn payload(&self) -> &u8;
 
-	/// Returns the improtance of a message. By default all messages will be retried until succesfully acknowledged unless a lower importance is specified.
-	/// Using lower importacnes for non-critical messages such as cosmetic events can free up bandwidth for essentail messages such as input events.
+	/// Returns the delivery importance of the message.
+	///
+	/// The default is [`Importance::Essential`], which retries delivery until the
+	/// peer acknowledges it. Use [`Importance::Optional`] for replaceable data so
+	/// essential messages retain bandwidth.
 	fn importance(&self) -> Importance {
 		Importance::Essential
 	}

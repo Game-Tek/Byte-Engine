@@ -551,28 +551,6 @@ impl Into<vk::Format> for crate::DataTypes {
 	}
 }
 
-impl Size for crate::DataTypes {
-	fn size(&self) -> usize {
-		match self {
-			crate::DataTypes::Float => std::mem::size_of::<f32>(),
-			crate::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
-			crate::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
-			crate::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
-			crate::DataTypes::U8 => std::mem::size_of::<u8>(),
-			crate::DataTypes::U16 => std::mem::size_of::<u16>(),
-			crate::DataTypes::U32 => std::mem::size_of::<u32>(),
-			crate::DataTypes::Int => std::mem::size_of::<i32>(),
-			crate::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
-			crate::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
-			crate::DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
-			crate::DataTypes::UInt => std::mem::size_of::<u32>(),
-			crate::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
-			crate::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
-			crate::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
-		}
-	}
-}
-
 impl Size for &[crate::pipelines::VertexElement<'_>] {
 	fn size(&self) -> usize {
 		let mut size = 0;
@@ -1161,42 +1139,6 @@ mod tests {
 
 		let value: vk::Format = crate::DataTypes::Float4.into();
 		assert_eq!(value, vk::Format::R32G32B32A32_SFLOAT);
-	}
-
-	#[test]
-	fn datatype_size() {
-		let value = crate::DataTypes::U8.size();
-		assert_eq!(value, 1);
-
-		let value = crate::DataTypes::U16.size();
-		assert_eq!(value, 2);
-
-		let value = crate::DataTypes::U32.size();
-		assert_eq!(value, 4);
-
-		let value = crate::DataTypes::Int.size();
-		assert_eq!(value, 4);
-
-		let value = crate::DataTypes::Int2.size();
-		assert_eq!(value, 8);
-
-		let value = crate::DataTypes::Int3.size();
-		assert_eq!(value, 12);
-
-		let value = crate::DataTypes::Int4.size();
-		assert_eq!(value, 16);
-
-		let value = crate::DataTypes::Float.size();
-		assert_eq!(value, 4);
-
-		let value = crate::DataTypes::Float2.size();
-		assert_eq!(value, 8);
-
-		let value = crate::DataTypes::Float3.size();
-		assert_eq!(value, 12);
-
-		let value = crate::DataTypes::Float4.size();
-		assert_eq!(value, 16);
 	}
 
 	#[test]

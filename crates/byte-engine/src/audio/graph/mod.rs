@@ -5,7 +5,7 @@
 //! default audio worker validates and compiles each graph before its sample
 //! resources cross to the audio thread.
 
-use smallbox::{space::S4, SmallBox};
+use smallbox::{smallbox, space::S4, SmallBox};
 use smallvec::SmallVec;
 
 use crate::core::{
@@ -15,10 +15,12 @@ use crate::core::{
 };
 
 pub mod fns;
+mod pitch_shift;
 
 const INLINE_AUDIO_NODE_CAPACITY: usize = 8;
 pub(crate) const MAX_AUDIO_GRAPH_NODES: usize = INLINE_AUDIO_NODE_CAPACITY;
 pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CAPACITY]>;
+pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
 
 /// The `AudioNodeId` struct identifies one node inside an [`AudioGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +30,8 @@ struct AudioNodeId(usize);
 /// route it to the default audio output.
 ///
 /// The current graph format accepts one sample source and up to seven unary
-/// processing nodes. Build it with [`fns::sample`], `loop`, and [`fns::gain`].
+/// processing nodes. Build it with [`fns::sample`], `loop`, [`fns::gain`], and
+/// [`fns::pitch_shift`].
 /// Next,
 /// publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
@@ -70,6 +73,21 @@ impl AudioGraph {
 		self
 	}
 
+	/// Appends a duration-preserving pitch-shift node.
+	fn with_pitch_shift(mut self, ratio: f32) -> Self {
+		assert!(
+			ratio.is_finite() && (0.5..=2.0).contains(&ratio),
+			"Invalid audio graph pitch ratio. The ratio must be finite and between 0.5 and 2.0."
+		);
+		assert!(
+			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::PitchShift { .. })),
+			"Invalid audio graph pitch shift. A graph can contain at most one pitch-shift node."
+		);
+		let input = self.output;
+		self.push(AudioNode::PitchShift { input, ratio });
+		self
+	}
+
 	fn push(&mut self, node: AudioNode) {
 		assert!(
 			self.nodes.len() < MAX_AUDIO_GRAPH_NODES,
@@ -93,6 +111,7 @@ impl AudioGraph {
 		let mut resource_id = None;
 		let mut playback_mode = SamplePlaybackMode::Once;
 		let mut processors = SmallVec::new();
+		let mut has_pitch_shift = false;
 
 		for (index, node) in self.nodes.into_iter().enumerate() {
 			let node_id = AudioNodeId(index);
@@ -121,6 +140,21 @@ impl AudioGraph {
 						return Err("Invalid audio gain node. The gain must be finite and non-negative.".to_string());
 					}
 					processors.push(AudioProcessor::Gain(gain));
+				}
+				AudioNode::PitchShift { input, ratio } => {
+					validate_input(current, input)?;
+					if !ratio.is_finite() || !(0.5..=2.0).contains(&ratio) {
+						return Err(
+							"Invalid audio pitch-shift node. The ratio must be finite and between 0.5 and 2.0.".to_string(),
+						);
+					}
+					if has_pitch_shift {
+						return Err("Invalid audio graph. A graph can contain at most one pitch-shift node.".to_string());
+					}
+					has_pitch_shift = true;
+					if ratio != 1.0 {
+						processors.push(AudioProcessor::PitchShift(ratio));
+					}
 				}
 			}
 			current = Some(node_id);
@@ -219,6 +253,7 @@ enum AudioNode {
 	Sample { resource_id: String },
 	Loop { input: AudioNodeId },
 	Gain { input: AudioNodeId, gain: f32 },
+	PitchShift { input: AudioNodeId, ratio: f32 },
 }
 
 /// The `CompiledAudioGraph` struct carries validated sample and processing
@@ -246,6 +281,7 @@ impl CompiledAudioGraph {
 
 /// The `AudioGraphRenderPlan` struct preserves validated playback and
 /// processing state while the graph's sample resource loads.
+#[derive(Debug)]
 pub(crate) struct AudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
 	pub(crate) processors: AudioProcessors,
@@ -262,22 +298,71 @@ pub(crate) enum SamplePlaybackMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AudioProcessor {
 	Gain(f32),
+	PitchShift(f32),
 }
 
 impl AudioProcessor {
-	/// Applies this node to one scalar sample without allocating intermediate
-	/// buffers.
-	pub(crate) fn process(self, sample: f32) -> f32 {
+	/// Prepares this processor before it crosses to the audio worker.
+	pub(crate) fn prepare(self) -> SmallBox<dyn RuntimeAudioProcessor + Send, S4> {
 		match self {
-			Self::Gain(gain) => sample * gain,
+			Self::Gain(gain) => smallbox!(GainProcessor(gain)),
+			Self::PitchShift(ratio) => smallbox!(pitch_shift::PitchShiftProcessor::new(ratio)),
 		}
 	}
+}
+
+/// The `RuntimeAudioProcessor` trait provides allocation-free sample
+/// processing after a graph has been prepared.
+pub(crate) trait RuntimeAudioProcessor {
+	fn process(&mut self, sample: f32) -> f32;
+	fn latency(&self) -> usize;
+
+	#[cfg(test)]
+	fn gain_for_test(&self) -> Option<f32> {
+		None
+	}
+}
+
+/// The `GainProcessor` struct keeps one scalar multiplier inline in its
+/// runtime node box.
+struct GainProcessor(f32);
+
+impl RuntimeAudioProcessor for GainProcessor {
+	fn process(&mut self, sample: f32) -> f32 {
+		sample * self.0
+	}
+
+	fn latency(&self) -> usize {
+		0
+	}
+
+	#[cfg(test)]
+	fn gain_for_test(&self) -> Option<f32> {
+		Some(self.0)
+	}
+}
+
+impl AudioGraphRenderPlan {
+	/// Allocates stateful processors on the loader task before playback.
+	pub(crate) fn prepare(self) -> PreparedAudioGraphRenderPlan {
+		PreparedAudioGraphRenderPlan {
+			playback_mode: self.playback_mode,
+			processors: self.processors.into_iter().map(AudioProcessor::prepare).collect(),
+		}
+	}
+}
+
+/// The `PreparedAudioGraphRenderPlan` struct owns initialized processing state
+/// ready to move to the audio worker.
+pub(crate) struct PreparedAudioGraphRenderPlan {
+	pub(crate) playback_mode: SamplePlaybackMode,
+	pub(crate) processors: RuntimeAudioProcessors,
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		fns::{gain, r#loop, sample},
+		fns::{gain, pitch_shift, r#loop, sample},
 		AudioProcessor, SamplePlaybackMode,
 	};
 
@@ -292,6 +377,45 @@ mod tests {
 		assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
 		assert!(!compiled.processors.spilled());
 		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
+	}
+
+	#[test]
+	fn pitch_shift_compiles_in_processor_order_and_unity_is_bypassed() {
+		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.5)
+			.compile()
+			.expect("valid graph");
+		assert_eq!(
+			&compiled.processors[..],
+			&[AudioProcessor::PitchShift(2.0), AudioProcessor::Gain(0.5)]
+		);
+
+		let unity = pitch_shift(sample("audio/music.ogg"), 1.0).compile().expect("valid graph");
+		assert!(unity.processors.is_empty());
+	}
+
+	#[test]
+	fn prepared_processors_keep_small_nodes_inline_and_large_state_node_local() {
+		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.5)
+			.compile()
+			.expect("valid graph");
+		let (_, render_plan) = compiled.into_parts();
+		let prepared = render_plan.prepare();
+
+		assert!(prepared.processors[0].is_heap());
+		assert!(!prepared.processors[1].is_heap());
+		assert!(!prepared.processors.spilled());
+	}
+
+	#[test]
+	#[should_panic(expected = "Invalid audio graph pitch ratio")]
+	fn pitch_shift_rejects_out_of_range_ratios_when_authored() {
+		let _ = pitch_shift(sample("audio/music.ogg"), 2.1);
+	}
+
+	#[test]
+	#[should_panic(expected = "at most one pitch-shift node")]
+	fn graph_rejects_a_second_pitch_shift_when_authored() {
+		let _ = pitch_shift(pitch_shift(sample("audio/music.ogg"), 0.5), 2.0);
 	}
 
 	#[test]

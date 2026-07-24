@@ -8,7 +8,7 @@ use ahi::{
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
-	graph::{AudioGraphRenderPlan, AudioProcessors, SamplePlaybackMode},
+	graph::{PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
 	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
 };
 use crate::core::{factory::Handle, Entity};
@@ -105,7 +105,7 @@ impl DefaultAudioSystem {
 		&mut self,
 		handle: Handle,
 		sample: Arc<LoadedAudioSample>,
-		render_plan: AudioGraphRenderPlan,
+		render_plan: PreparedAudioGraphRenderPlan,
 	) {
 		self.remove_audio_graph(handle);
 		if self.audio_graphs.len() >= AUDIO_GRAPH_CAPACITY {
@@ -327,15 +327,17 @@ impl SampleNode {
 struct AudioGraphPlayer {
 	handle: Handle,
 	sample: SampleNode,
-	processors: AudioProcessors,
+	processors: RuntimeAudioProcessors,
+	drain_remaining: Option<usize>,
 }
 
 impl AudioGraphPlayer {
-	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: AudioGraphRenderPlan) -> Self {
+	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: PreparedAudioGraphRenderPlan) -> Self {
 		Self {
 			handle,
 			sample: SampleNode::new(sample, render_plan.playback_mode),
 			processors: render_plan.processors,
+			drain_remaining: None,
 		}
 	}
 
@@ -343,10 +345,20 @@ impl AudioGraphPlayer {
 	/// precompiled scalar node chain before mixing it into the destination.
 	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
 		for destination in buffer {
-			let Some(mut sample) = self.sample.next(output_sample_rate) else {
-				break;
+			let mut sample = match self.sample.next(output_sample_rate) {
+				Some(sample) => sample,
+				None => {
+					let remaining = self
+						.drain_remaining
+						.get_or_insert_with(|| self.processors.iter().map(|processor| processor.latency()).sum());
+					if *remaining == 0 {
+						break;
+					}
+					*remaining -= 1;
+					0.0
+				}
 			};
-			for processor in &self.processors {
+			for processor in &mut self.processors {
 				sample = processor.process(sample);
 			}
 			*destination += sample;
@@ -355,6 +367,7 @@ impl AudioGraphPlayer {
 
 	fn finished(&self) -> bool {
 		self.sample.finished
+			&& (self.drain_remaining == Some(0) || self.processors.iter().all(|processor| processor.latency() == 0))
 	}
 }
 
@@ -484,7 +497,8 @@ mod tests {
 			AudioGraphRenderPlan {
 				playback_mode,
 				processors: processors.into_iter().collect(),
-			},
+			}
+			.prepare(),
 		)
 	}
 

@@ -34,3 +34,19 @@ pub fn r#loop(input: AudioGraph) -> AudioGraph {
 pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 	input.with_gain(gain)
 }
+
+/// Shifts the input pitch by a frequency ratio without changing its duration.
+///
+/// A ratio of `1.0` leaves the pitch unchanged. The real-time processor uses a
+/// 1024-sample window, which adds about 21 milliseconds of latency at 48 kHz.
+/// Next, publish the graph through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+///
+/// # Panics
+///
+/// Panics if `ratio` is outside `0.5..=2.0`, infinite, or not a number, if the
+/// input already contains a pitch-shift node, or if the graph already contains
+/// eight nodes.
+pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
+	input.with_pitch_shift(ratio)
+}

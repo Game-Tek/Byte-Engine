@@ -7,7 +7,7 @@ use resource_management::{
 	Reference,
 };
 
-use super::graph::{AudioGraphRenderPlan, CompiledAudioGraph};
+use super::graph::{AudioGraphRenderPlan, CompiledAudioGraph, PreparedAudioGraphRenderPlan};
 use crate::{
 	core::async_runtime,
 	core::{factory::Handle, EntityHandle},
@@ -168,6 +168,7 @@ struct AudioLoadRequest {
 	handle: Handle,
 	generation: u64,
 	resource_id: String,
+	render_plan: AudioGraphRenderPlan,
 }
 
 /// Carries load and coalesced cache-maintenance work to the application
@@ -184,6 +185,7 @@ enum AudioLoadCompletion {
 		handle: Handle,
 		generation: u64,
 		sample: Arc<LoadedAudioSample>,
+		render_plan: PreparedAudioGraphRenderPlan,
 	},
 	Failed {
 		handle: Handle,
@@ -196,7 +198,6 @@ enum AudioLoadCompletion {
 struct PendingAudioGraph {
 	handle: Handle,
 	generation: u64,
-	render_plan: AudioGraphRenderPlan,
 	request: Option<AudioLoaderCommand>,
 }
 
@@ -246,11 +247,11 @@ impl AudioSampleLoaderClient {
 		self.pending.push(PendingAudioGraph {
 			handle,
 			generation,
-			render_plan,
 			request: Some(AudioLoaderCommand::Load(AudioLoadRequest {
 				handle,
 				generation,
 				resource_id,
+				render_plan,
 			})),
 		});
 		true
@@ -272,7 +273,10 @@ impl AudioSampleLoaderClient {
 
 	/// Submits waiting requests and adopts ready samples at a hardware-period
 	/// boundary. The callback runs only for a still-live request generation.
-	pub(crate) fn update(&mut self, mut create_graph: impl FnMut(Handle, Arc<LoadedAudioSample>, AudioGraphRenderPlan)) {
+	pub(crate) fn update(
+		&mut self,
+		mut create_graph: impl FnMut(Handle, Arc<LoadedAudioSample>, PreparedAudioGraphRenderPlan),
+	) {
 		self.submit_requests();
 
 		if self.completions_closed {
@@ -326,7 +330,7 @@ impl AudioSampleLoaderClient {
 	fn process_completion(
 		&mut self,
 		completion: AudioLoadCompletion,
-		create_graph: &mut impl FnMut(Handle, Arc<LoadedAudioSample>, AudioGraphRenderPlan),
+		create_graph: &mut impl FnMut(Handle, Arc<LoadedAudioSample>, PreparedAudioGraphRenderPlan),
 	) {
 		let (handle, generation) = match &completion {
 			AudioLoadCompletion::Ready { handle, generation, .. } | AudioLoadCompletion::Failed { handle, generation } => {
@@ -345,8 +349,8 @@ impl AudioSampleLoaderClient {
 		};
 		let pending = self.pending.swap_remove(index);
 
-		if let AudioLoadCompletion::Ready { sample, .. } = completion {
-			create_graph(handle, sample, pending.render_plan);
+		if let AudioLoadCompletion::Ready { sample, render_plan, .. } = completion {
+			create_graph(handle, sample, render_plan);
 		}
 	}
 }
@@ -389,12 +393,14 @@ impl AudioSampleLoader {
 				handle,
 				generation,
 				resource_id,
+				render_plan,
 			} = request;
 			let completion = match self.load(&resource_id).await {
 				Ok(sample) => AudioLoadCompletion::Ready {
 					handle,
 					generation,
 					sample,
+					render_plan: render_plan.prepare(),
 				},
 				Err(error) => {
 					log::error!(
@@ -464,10 +470,21 @@ mod tests {
 	use crate::{
 		audio::graph::{
 			fns::{gain, r#loop, sample},
-			AudioProcessor, SamplePlaybackMode,
+			AudioGraphRenderPlan, AudioProcessor, PreparedAudioGraphRenderPlan, SamplePlaybackMode,
 		},
 		core::{factory::Factory, listener::Listener},
 	};
+
+	fn prepared_plan(
+		playback_mode: SamplePlaybackMode,
+		processors: impl IntoIterator<Item = AudioProcessor>,
+	) -> PreparedAudioGraphRenderPlan {
+		AudioGraphRenderPlan {
+			playback_mode,
+			processors: processors.into_iter().collect(),
+		}
+		.prepare()
+	}
 
 	fn metadata(bit_depth: BitDepths, channel_count: u16, sample_count: u32) -> Audio {
 		Audio {
@@ -570,11 +587,19 @@ mod tests {
 				handle,
 				generation: first_generation,
 				sample: sample.clone(),
+				render_plan: prepared_plan(SamplePlaybackMode::Loop, []),
 			})
 			.unwrap();
 
 		let mut created = Vec::new();
-		client.update(|handle, _, plan| created.push((handle, plan.playback_mode, plan.processors.to_vec())));
+		client.update(|handle, _, plan| {
+			let gains = plan
+				.processors
+				.iter()
+				.filter_map(|processor| processor.gain_for_test())
+				.collect::<Vec<_>>();
+			created.push((handle, plan.playback_mode, gains));
+		});
 		assert!(created.is_empty());
 		assert_eq!(client.pending.len(), 1);
 		assert!(client.cache_prune_requested);
@@ -584,13 +609,18 @@ mod tests {
 				handle,
 				generation: second_generation,
 				sample,
+				render_plan: prepared_plan(SamplePlaybackMode::Once, [AudioProcessor::Gain(0.25)]),
 			})
 			.unwrap();
-		client.update(|handle, _, plan| created.push((handle, plan.playback_mode, plan.processors.to_vec())));
-		assert_eq!(
-			created,
-			[(handle, SamplePlaybackMode::Once, vec![AudioProcessor::Gain(0.25)])]
-		);
+		client.update(|handle, _, plan| {
+			let gains = plan
+				.processors
+				.iter()
+				.filter_map(|processor| processor.gain_for_test())
+				.collect::<Vec<_>>();
+			created.push((handle, plan.playback_mode, gains));
+		});
+		assert_eq!(created, [(handle, SamplePlaybackMode::Once, vec![0.25])]);
 		assert!(client.pending.is_empty());
 	}
 
@@ -611,6 +641,7 @@ mod tests {
 				handle,
 				generation,
 				sample: Arc::new(LoadedAudioSample::from_normalized_samples(48_000, 1, Box::from([0.0]))),
+				render_plan: prepared_plan(SamplePlaybackMode::Once, []),
 			})
 			.unwrap();
 

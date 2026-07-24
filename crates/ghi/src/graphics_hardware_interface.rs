@@ -2225,11 +2225,16 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
+			let image_data = device.get_image_data(texture_copy_handles[0]);
+			let pixel_count = (extent.width() * extent.height()) as usize;
+			assert_eq!(
+				image_data.len(),
+				pixel_count * std::mem::size_of::<RGBAu8>(),
+				"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
+			);
 			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
-					(extent.width() * extent.height()) as usize,
-				)
+				// RGBA8 readback stores one tightly packed RGBAu8 value per pixel.
+				std::slice::from_raw_parts(image_data.as_ptr() as *const RGBAu8, pixel_count)
 			};
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);

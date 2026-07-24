@@ -754,7 +754,14 @@ impl Context {
 						));
 					}
 				}
-				Tasks::DeleteMetalTexture { .. } | Tasks::DeleteMetalBuffer { .. } | Tasks::ResizeImage { .. } => {}
+				Tasks::ResizeImage { handle, extent } => {
+					let handle = self
+						.images
+						.nth_handle(*handle, sequence_index as usize)
+						.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
+					self.resize_image_internal(handle, *extent);
+				}
+				Tasks::DeleteMetalTexture { .. } | Tasks::DeleteMetalBuffer { .. } => {}
 			}
 
 			false
@@ -762,6 +769,42 @@ impl Context {
 
 		tasks.extend(deferred_frame_tasks);
 		self.tasks = tasks;
+	}
+
+	/// Replaces one frame-local image while preserving its private handle and descriptor references.
+	///
+	/// Returns `true` when the backing image changed.
+	pub(crate) fn resize_image_internal(&mut self, handle: ImageHandle, extent: Extent) -> bool {
+		let image = self.images.resource(handle);
+
+		if image.extent == extent {
+			return false;
+		}
+
+		let replacement = self.create_image_resource(
+			image.name.as_deref(),
+			extent,
+			image.format,
+			image.uses,
+			image.access,
+			image.array_layers,
+		);
+		*self.images.resource_mut(handle) = replacement;
+		self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
+		true
+	}
+
+	/// Defers resize work until each other frame-local image can be replaced safely.
+	pub(crate) fn resize_image_on_other_frames(
+		&mut self,
+		handle: graphics_hardware_interface::BaseImageHandle,
+		extent: Extent,
+		current_frame: u8,
+	) {
+		for offset in 1..self.frames {
+			let frame = (current_frame + offset).rem_euclid(self.frames);
+			self.tasks.push(Task::new(Tasks::ResizeImage { handle, extent }, Some(frame)));
+		}
 	}
 }
 

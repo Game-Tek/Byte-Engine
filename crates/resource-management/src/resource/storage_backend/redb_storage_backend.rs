@@ -19,6 +19,7 @@ use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource,
 };
 
+/// The `RedbStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
 pub struct RedbStorageBackend {
 	db: RedbDatabase,
 	base_path: std::path::PathBuf,
@@ -215,13 +216,39 @@ fn insert_indexes(
 }
 
 impl RedbStorageBackend {
+	/// Opens the resource database with the access required by the current engine build.
+	///
+	/// Debug builds can update their resource cache. Release builds only read resources that have a matching
+	/// resource-management signature. Use [`Self::new_writable`] for an explicit resource-producing workflow.
 	pub fn new(base_path: std::path::PathBuf) -> Self {
-		Self::new_with_optional_producer_signature(base_path, None, cfg!(not(debug_assertions)))
+		if cfg!(debug_assertions) {
+			Self::new_with_optional_producer_signature(base_path, None)
+		} else {
+			Self::open_read_only(base_path).unwrap_or_else(|error| {
+				panic!(
+					"Failed to open resources database in read-only mode. The baked resources are incompatible or incomplete; rerun BELD with the matching engine revision. Error: {error}"
+				)
+			})
+		}
+	}
+
+	/// Opens a compatible resource database without modifying its directory.
+	///
+	/// Read-only tools use this constructor so a signature mismatch remains available for the user to inspect or replace.
+	/// After handling an incompatibility, use [`Self::new_writable`] only when the user has requested a resource update.
+	pub fn open_read_only(base_path: std::path::PathBuf) -> Result<Self, String> {
+		validate_resource_management_signature(&base_path)?;
+		let database_path = base_path.join("resources.db");
+		let db = redb::ReadOnlyDatabase::open(&database_path)
+			.map(RedbDatabase::ReadOnly)
+			.map_err(|error| format!("resource database '{}' could not be opened: {error}", database_path.display()))?;
+
+		Ok(Self { db, base_path })
 	}
 
 	/// Opens a resource database with write access for tools that produce baked resources.
 	pub fn new_writable(base_path: std::path::PathBuf) -> Self {
-		Self::new_with_optional_producer_signature(base_path, None, false)
+		Self::new_with_optional_producer_signature(base_path, None)
 	}
 
 	/// Opens a resource database whose persisted values also depend on an external resource producer.
@@ -229,15 +256,11 @@ impl RedbStorageBackend {
 	/// Runtime asset pipelines use this constructor so changing their generated resource ABI invalidates values baked by
 	/// the previous producer implementation.
 	pub fn new_with_producer_signature(base_path: std::path::PathBuf, producer_signature: &str) -> Self {
-		Self::new_with_optional_producer_signature(base_path, Some(producer_signature), false)
+		Self::new_with_optional_producer_signature(base_path, Some(producer_signature))
 	}
 
 	/// Opens the database after synchronizing its shared and optional producer-specific cache owners.
-	fn new_with_optional_producer_signature(
-		base_path: std::path::PathBuf,
-		producer_signature: Option<&str>,
-		read_only: bool,
-	) -> Self {
+	fn new_with_optional_producer_signature(base_path: std::path::PathBuf, producer_signature: Option<&str>) -> Self {
 		let mut memory_only = false;
 
 		if cfg!(test) {
@@ -253,18 +276,6 @@ impl RedbStorageBackend {
 					.create_with_backend(redb::backends::InMemoryBackend::new())
 					.unwrap_or_else(|_| panic!("Could not create in-memory database")),
 			)
-		} else if read_only {
-			validate_resource_management_signature(&base_path).unwrap_or_else(|error| {
-				panic!(
-					"Failed to open resources database in read-only mode. The baked resources are incompatible or incomplete; rerun BELD with the matching engine revision. Error: {error}"
-				)
-			});
-			RedbDatabase::ReadOnly(redb::ReadOnlyDatabase::open(base_path.join("resources.db")).unwrap_or_else(|error| {
-				panic!(
-					"Failed to open resources database in read-only mode. The most likely cause is that BELD has not baked the resources or the database is invalid. Error: {}",
-					error
-				)
-			}))
 		} else {
 			sync_resource_management_signature(&base_path);
 			if let Some(producer_signature) = producer_signature {

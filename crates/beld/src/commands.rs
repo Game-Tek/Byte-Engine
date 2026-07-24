@@ -32,7 +32,7 @@ pub fn wipe(destination_path: String) -> Result<(), i32> {
 }
 
 pub async fn list(destination_path: String) -> Result<(), i32> {
-	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let storage_backend = open_read_only_storage(destination_path, "list")?;
 
 	match storage_backend.list().await {
 		Ok(resources) => {
@@ -62,7 +62,7 @@ pub async fn query(
 	cursor: Option<String>,
 	format: QueryFormat,
 ) -> Result<(), i32> {
-	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let storage_backend = open_read_only_storage(destination_path, "query")?;
 	let mut query = Query::new(&class);
 
 	if let Some(limit) = limit {
@@ -331,7 +331,7 @@ fn decode_hex_digit(value: u8) -> Option<u8> {
 }
 
 pub async fn inspect(destination_path: String, id: String, format: InspectFormat) -> Result<(), i32> {
-	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let storage_backend = open_read_only_storage(destination_path, "inspect")?;
 	let resource = read_resource(&storage_backend, &id).await;
 	let Some(resource) = resource else {
 		#[cfg(debug_assertions)]
@@ -496,6 +496,18 @@ fn print_indent(indent: usize) {
 	for _ in 0..indent {
 		print!(" ");
 	}
+}
+
+/// Opens a BELD read command without allowing signature synchronization to replace persisted resources.
+fn open_read_only_storage(destination_path: String, operation: &str) -> Result<RedbStorageBackend, i32> {
+	RedbStorageBackend::open_read_only(destination_path.into()).map_err(|error| {
+		log::error!(
+			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
+			operation,
+			error
+		);
+		1
+	})
 }
 
 pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> Result<(), i32> {
@@ -743,6 +755,8 @@ mod tests {
 	use serde_json::json;
 
 	#[cfg(debug_assertions)]
+	use super::list;
+	#[cfg(debug_assertions)]
 	use super::{bake, inspect, query, resource_trace_json};
 	use super::{
 		decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
@@ -803,6 +817,28 @@ mod tests {
 	fn query_errors_keep_distinct_actionable_causes() {
 		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
 		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn list_refuses_a_stale_store_without_modifying_it() {
+		let root = std::env::temp_dir().join(format!(
+			"beld-stale-list-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		let signature_path = root.join(".resource-management-version");
+		let sentinel_path = root.join("sentinel");
+		std::fs::create_dir_all(&root).unwrap();
+		std::fs::write(&signature_path, b"stale-signature").unwrap();
+		std::fs::write(&sentinel_path, b"retain-me").unwrap();
+
+		let executor = resource_management::r#async::Executor::new().unwrap();
+		assert_eq!(executor.block_on(list(root.to_string_lossy().into_owned())), Err(1));
+		assert_eq!(std::fs::read(&signature_path).unwrap(), b"stale-signature");
+		assert_eq!(std::fs::read(&sentinel_path).unwrap(), b"retain-me");
+
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[cfg(debug_assertions)]

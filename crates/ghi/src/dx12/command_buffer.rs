@@ -209,7 +209,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.device
 			.copy_image_for_sequences(source_image, destination_image, self.sequence_index(), self.sequence_index());
 		self.device
-			.record_image_copy(self.command_buffer, source_image, destination_image);
+			.record_image_copy(self.command_buffer, source_image, destination_image, self.sequence_index());
 	}
 
 	fn execute(self, synchronizer: SynchronizerHandle) {

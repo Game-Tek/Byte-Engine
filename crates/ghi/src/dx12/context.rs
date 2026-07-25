@@ -558,7 +558,9 @@ impl Device {
 			(ShaderTypes::Vertex, true) => Some("vs_6_2"),
 			(ShaderTypes::Fragment, true) => Some("ps_6_2"),
 			(ShaderTypes::Compute, true) => Some("cs_6_2"),
-			// BESL HLSL uses SM6-oriented syntax and intrinsics, so compute must go through DXC.
+			// HLSL sources can use SM6 resource-object syntax, so DX12 compiles native source through DXC.
+			(ShaderTypes::Vertex, false) => Some("vs_6_0"),
+			(ShaderTypes::Fragment, false) => Some("ps_6_0"),
 			(ShaderTypes::Compute, false) => Some("cs_6_0"),
 			(ShaderTypes::Mesh, _) => Some("ms_6_5"),
 			(
@@ -2721,7 +2723,7 @@ impl Device {
 		let mut hit_group_names = Vec::with_capacity(shaders.len());
 		let mut hit_groups = Vec::with_capacity(shaders.len());
 		let mut identifier_exports = Vec::with_capacity(shaders.len());
-		let mut subobjects = Vec::with_capacity(shaders.len() * 2 + 3);
+		let mut subobjects = Vec::with_capacity(shaders.len() * 2 + 4);
 
 		for shader_parameter in shaders {
 			let Some(shader) = self.shaders.get(shader_parameter.handle.0 as usize) else {
@@ -2816,9 +2818,20 @@ impl Device {
 			MaxPayloadSizeInBytes: 32,
 			MaxAttributeSizeInBytes: 32,
 		};
+		let shader_config_subobject_index = subobjects.len();
 		subobjects.push(D3D12_STATE_SUBOBJECT {
 			Type: D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG,
 			pDesc: (&shader_config as *const D3D12_RAYTRACING_SHADER_CONFIG).cast(),
+		});
+		let shader_config_exports = identifier_exports.iter().map(|(_, export)| *export).collect::<Vec<_>>();
+		let shader_config_association = D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION {
+			pSubobjectToAssociate: (&subobjects[shader_config_subobject_index] as *const D3D12_STATE_SUBOBJECT).cast(),
+			NumExports: shader_config_exports.len() as u32,
+			pExports: shader_config_exports.as_ptr(),
+		};
+		subobjects.push(D3D12_STATE_SUBOBJECT {
+			Type: D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
+			pDesc: (&shader_config_association as *const D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION).cast(),
 		});
 		let pipeline_config = D3D12_RAYTRACING_PIPELINE_CONFIG {
 			MaxTraceRecursionDepth: 1,
@@ -2832,8 +2845,15 @@ impl Device {
 			NumSubobjects: subobjects.len() as u32,
 			pSubobjects: subobjects.as_ptr(),
 		};
-		let Ok(state_object) = (unsafe { device.CreateStateObject::<ID3D12StateObject>(&desc) }) else {
-			return (None, HashMap::default());
+		let state_object = match unsafe { device.CreateStateObject::<ID3D12StateObject>(&desc) } {
+			Ok(state_object) => state_object,
+			Err(error) => {
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create DX12 ray tracing state object: {error:?}. The most likely cause is an invalid DXIL library, hit group export, or ray tracing root signature. Device removed reason: {removed_reason:?}"
+				));
+				return (None, HashMap::default());
+			}
 		};
 		let identifiers = Self::ray_tracing_shader_identifiers(&state_object, &identifier_exports);
 		(Some(state_object), identifiers)
@@ -3660,7 +3680,7 @@ impl Device {
 		_name: Option<&str>,
 		max_instance_count: u32,
 	) -> TopLevelAccelerationStructureHandle {
-		let size = Self::align_up(max_instance_count as usize * 128, 256).max(256);
+		let size = self.top_level_acceleration_structure_size(max_instance_count);
 		let (resource, native_resource) = self.create_acceleration_structure_resource(size);
 		if resource.is_some() {
 			self.acceleration_structure_resource_count += 1;
@@ -3680,7 +3700,7 @@ impl Device {
 		&mut self,
 		description: &BottomLevelAccelerationStructure,
 	) -> BottomLevelAccelerationStructureHandle {
-		let size = Self::bottom_level_acceleration_structure_estimated_size(description);
+		let size = self.bottom_level_acceleration_structure_allocation_size(description);
 		let (resource, native_resource) = self.create_acceleration_structure_resource(size);
 		if resource.is_some() {
 			self.acceleration_structure_resource_count += 1;
@@ -3718,7 +3738,8 @@ impl Device {
 			Format: DXGI_FORMAT_UNKNOWN,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-			Flags: D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
+			// DX12 acceleration structures are built through UAV writes, so the backing buffer must allow UAV access.
+			Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 		};
 
 		let mut resource: Option<ID3D12Resource> = None;
@@ -3738,6 +3759,106 @@ impl Device {
 
 		let (resource, ..) = self.create_buffer_resource(size, DeviceAccesses::DeviceOnly);
 		(resource, false)
+	}
+
+	fn top_level_acceleration_structure_size(&self, max_instance_count: u32) -> usize {
+		let fallback = Self::align_up(max_instance_count as usize * 128, 256).max(256);
+		self.ray_tracing_prebuild_result_size(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+			Type: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+			Flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+			NumDescs: max_instance_count,
+			DescsLayout: D3D12_ELEMENTS_LAYOUT_ARRAY,
+			// Prebuild checks whether GPUVA fields are null, so use a dummy non-null address before real buffers exist.
+			Anonymous: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 { InstanceDescs: 1 },
+		})
+		.unwrap_or(fallback)
+	}
+
+	fn bottom_level_acceleration_structure_allocation_size(&self, description: &BottomLevelAccelerationStructure) -> usize {
+		let fallback = Self::bottom_level_acceleration_structure_estimated_size(description);
+		let Some(geometry) = Self::bottom_level_geometry_desc_for_prebuild(description) else {
+			return fallback;
+		};
+		self.ray_tracing_prebuild_result_size(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+			Type: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
+			Flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+			NumDescs: 1,
+			DescsLayout: D3D12_ELEMENTS_LAYOUT_ARRAY,
+			Anonymous: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
+				pGeometryDescs: &geometry,
+			},
+		})
+		.unwrap_or(fallback)
+	}
+
+	fn ray_tracing_prebuild_result_size(&self, inputs: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS) -> Option<usize> {
+		let Ok(device) = self.device.cast::<ID3D12Device5>() else {
+			return None;
+		};
+		let mut info = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
+		unsafe {
+			device.GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &mut info);
+		}
+		(info.ResultDataMaxSizeInBytes > 0).then(|| Self::align_up(info.ResultDataMaxSizeInBytes as usize, 256).max(256))
+	}
+
+	fn bottom_level_geometry_desc_for_prebuild(
+		description: &BottomLevelAccelerationStructure,
+	) -> Option<D3D12_RAYTRACING_GEOMETRY_DESC> {
+		match description.description {
+			crate::BottomLevelAccelerationStructureDescriptions::Mesh {
+				vertex_count,
+				vertex_position_encoding,
+				triangle_count,
+				index_format,
+			} => {
+				let vertex_format = match vertex_position_encoding {
+					crate::Encodings::FloatingPoint => DXGI_FORMAT_R32G32B32_FLOAT,
+					_ => return None,
+				};
+				let index_format = match index_format {
+					DataTypes::U16 => DXGI_FORMAT_R16_UINT,
+					DataTypes::U32 => DXGI_FORMAT_R32_UINT,
+					_ => return None,
+				};
+				Some(D3D12_RAYTRACING_GEOMETRY_DESC {
+					Type: D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
+					Flags: D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
+					Anonymous: D3D12_RAYTRACING_GEOMETRY_DESC_0 {
+						Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
+							Transform3x4: 0,
+							IndexFormat: index_format,
+							VertexFormat: vertex_format,
+							IndexCount: triangle_count.saturating_mul(3),
+							VertexCount: vertex_count,
+							// Prebuild does not read GPU memory but may check whether addresses are null.
+							IndexBuffer: 1,
+							VertexBuffer: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
+								StartAddress: 1,
+								StrideInBytes: std::mem::size_of::<[f32; 3]>() as u64,
+							},
+						},
+					},
+				})
+			}
+			crate::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => {
+				Some(D3D12_RAYTRACING_GEOMETRY_DESC {
+					Type: D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS,
+					Flags: D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
+					Anonymous: D3D12_RAYTRACING_GEOMETRY_DESC_0 {
+						AABBs: D3D12_RAYTRACING_GEOMETRY_AABBS_DESC {
+							AABBCount: transform_count as u64,
+							AABBs: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
+								// Prebuild does not read GPU memory but may check whether addresses are null.
+								StartAddress: 1,
+								StrideInBytes: std::mem::size_of::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_AABB>(
+								) as u64,
+							},
+						},
+					},
+				})
+			}
+		}
 	}
 
 	fn bottom_level_acceleration_structure_estimated_size(description: &BottomLevelAccelerationStructure) -> usize {
@@ -3849,11 +3970,17 @@ impl Device {
 		let Some(buffer) = self.buffer(sbt_buffer_handle) else {
 			return;
 		};
-		let identifier = pipeline
-			.ray_tracing_shader_identifiers
-			.get(&shader_handle)
-			.copied()
-			.unwrap_or_else(|| Self::placeholder_shader_identifier(pipeline_handle, shader_handle));
+		let identifier = if let Some(identifier) = pipeline.ray_tracing_shader_identifiers.get(&shader_handle) {
+			*identifier
+		} else {
+			if pipeline.ray_tracing_state_object.is_some() {
+				self.log_dx12_error(format!(
+					"Missing DX12 ray tracing shader identifier. The most likely cause is that the shader handle {} was not exported by the ray tracing state object.",
+					shader_handle.0
+				));
+			}
+			Self::placeholder_shader_identifier(pipeline_handle, shader_handle)
+		};
 		let end = sbt_record_offset.saturating_add(identifier.len());
 		if end > buffer.size {
 			return;
@@ -3957,7 +4084,7 @@ impl Device {
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
+		let Some(command_list4) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
 			return;
 		};
 		let Some(acceleration_structure) = self
@@ -3969,13 +4096,10 @@ impl Device {
 		if !acceleration_structure.native_resource {
 			return;
 		}
-		let Some(destination) = acceleration_structure
-			.resource
-			.as_ref()
-			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
-		else {
+		let Some(destination_resource) = acceleration_structure.resource.clone() else {
 			return;
 		};
+		let destination = unsafe { destination_resource.GetGPUVirtualAddress() };
 		let scratch =
 			self.buffer_address_for_sequence(build.scratch_buffer.buffer, sequence_index) + build.scratch_buffer.offset as u64;
 		if destination == 0 || scratch == 0 {
@@ -3985,7 +4109,15 @@ impl Device {
 			instances_buffer,
 			instance_count,
 		} = build.description;
-		let instances = self.buffer_address_for_sequence(instances_buffer, sequence_index);
+		let Some(instances_resource) = self.acceleration_structure_build_input_resource(
+			command_buffer_handle,
+			command_list,
+			instances_buffer,
+			sequence_index,
+		) else {
+			return;
+		};
+		let instances = unsafe { instances_resource.GetGPUVirtualAddress() };
 		if instances == 0 {
 			return;
 		}
@@ -4004,9 +4136,12 @@ impl Device {
 			ScratchAccelerationStructureData: scratch,
 		};
 		unsafe {
-			command_list.BuildRaytracingAccelerationStructure(&desc, None);
+			command_list4.BuildRaytracingAccelerationStructure(&desc, None);
+			// DXR builds write through UAVs. The barrier makes the built TLAS visible to DispatchRays.
+			Self::unordered_access_barrier_all(command_list);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
+		self.uav_barrier_count += 1;
 		self.native_top_level_acceleration_structure_build_encode_count += 1;
 	}
 
@@ -4020,8 +4155,10 @@ impl Device {
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
 			.and_then(|command_buffer| command_buffer.command_list.clone())
-			.and_then(|command_list| command_list.cast::<ID3D12GraphicsCommandList4>().ok())
 		else {
+			return;
+		};
+		let Some(command_list4) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
 			return;
 		};
 		let Some(acceleration_structure) = self
@@ -4033,16 +4170,15 @@ impl Device {
 		if !acceleration_structure.native_resource {
 			return;
 		}
-		let Some(destination) = acceleration_structure
-			.resource
-			.as_ref()
-			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
-		else {
+		let Some(destination_resource) = acceleration_structure.resource.clone() else {
 			return;
 		};
+		let destination = unsafe { destination_resource.GetGPUVirtualAddress() };
 		let scratch =
 			self.buffer_address_for_sequence(build.scratch_buffer.buffer, sequence_index) + build.scratch_buffer.offset as u64;
-		let Some(geometry) = self.bottom_level_geometry_desc(&build.description, sequence_index) else {
+		let Some(geometry) =
+			self.bottom_level_geometry_desc(command_buffer_handle, &command_list, &build.description, sequence_index)
+		else {
 			return;
 		};
 		if destination == 0 || scratch == 0 {
@@ -4063,14 +4199,19 @@ impl Device {
 			ScratchAccelerationStructureData: scratch,
 		};
 		unsafe {
-			command_list.BuildRaytracingAccelerationStructure(&desc, None);
+			command_list4.BuildRaytracingAccelerationStructure(&desc, None);
+			// DXR builds write through UAVs. The barrier makes the built BLAS visible to later TLAS builds.
+			Self::unordered_access_barrier_all(&command_list);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
+		self.uav_barrier_count += 1;
 		self.native_bottom_level_acceleration_structure_build_encode_count += 1;
 	}
 
 	fn bottom_level_geometry_desc(
 		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		command_list: &ID3D12GraphicsCommandList,
 		description: &crate::rt::BottomLevelAccelerationStructureBuildDescriptions,
 		sequence_index: u8,
 	) -> Option<D3D12_RAYTRACING_GEOMETRY_DESC> {
@@ -4092,10 +4233,21 @@ impl Device {
 					DataTypes::U32 => DXGI_FORMAT_R32_UINT,
 					_ => return None,
 				};
-				let vertex_address = self.buffer_address_for_sequence(vertex_buffer.buffer_offset.buffer, sequence_index)
-					+ vertex_buffer.buffer_offset.offset as u64;
-				let index_address = self.buffer_address_for_sequence(index_buffer.buffer_offset.buffer, sequence_index)
-					+ index_buffer.buffer_offset.offset as u64;
+				let vertex_resource = self.acceleration_structure_build_input_resource(
+					command_buffer_handle,
+					command_list,
+					vertex_buffer.buffer_offset.buffer,
+					sequence_index,
+				)?;
+				let index_resource = self.acceleration_structure_build_input_resource(
+					command_buffer_handle,
+					command_list,
+					index_buffer.buffer_offset.buffer,
+					sequence_index,
+				)?;
+				let vertex_address =
+					unsafe { vertex_resource.GetGPUVirtualAddress() } + vertex_buffer.buffer_offset.offset as u64;
+				let index_address = unsafe { index_resource.GetGPUVirtualAddress() } + index_buffer.buffer_offset.offset as u64;
 				if vertex_address == 0 || index_address == 0 {
 					return None;
 				}
@@ -4123,7 +4275,13 @@ impl Device {
 				transform_count,
 				..
 			} => {
-				let address = self.buffer_address_for_sequence(*aabb_buffer, sequence_index);
+				let resource = self.acceleration_structure_build_input_resource(
+					command_buffer_handle,
+					command_list,
+					*aabb_buffer,
+					sequence_index,
+				)?;
+				let address = unsafe { resource.GetGPUVirtualAddress() };
 				if address == 0 {
 					return None;
 				}
@@ -4143,6 +4301,48 @@ impl Device {
 				})
 			}
 		}
+	}
+
+	fn acceleration_structure_build_input_resource(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		command_list: &ID3D12GraphicsCommandList,
+		buffer_handle: BaseBufferHandle,
+		sequence_index: u8,
+	) -> Option<ID3D12Resource> {
+		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
+		let source = self.buffer_resource_for_sequence(buffer_handle, sequence_index)?;
+		let heap_kind = self.buffer_heap_kind_for_sequence(buffer_handle, sequence_index)?;
+		if heap_kind == BufferHeapKind::Default {
+			unsafe {
+				self.transition_tracked_buffer(
+					command_list,
+					buffer_handle,
+					&source,
+					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+				);
+			}
+			return Some(source);
+		}
+
+		let size = self.buffer(buffer_handle)?.size;
+		let (Some(staged), ..) = self.create_buffer_resource(size, DeviceAccesses::DeviceOnly) else {
+			return Some(source);
+		};
+		unsafe {
+			self.transition_tracked_buffer(command_list, buffer_handle, &staged, D3D12_RESOURCE_STATE_COPY_DEST);
+			command_list.CopyBufferRegion(&staged, 0, &source, 0, size as u64);
+			self.transition_tracked_buffer(
+				command_list,
+				buffer_handle,
+				&staged,
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			);
+		}
+		self.mark_command_buffer_work(command_buffer_handle);
+		self.buffer_copy_count += 1;
+		self.upload_resources.push(staged.clone());
+		Some(staged)
 	}
 
 	fn prepare_bottom_level_build_inputs(
@@ -4327,6 +4527,28 @@ impl Device {
 			.get(texture_copy_handle.0 as usize)
 			.map(|v| v.as_slice())
 			.unwrap_or(&[])
+	}
+
+	fn wait_for_texture_copy_readback(&mut self, texture_copy_handle: TextureCopyHandle) {
+		let Some(sequence_index) = self
+			.texture_readbacks
+			.iter()
+			.find(|readback| readback.texture_copy == Some(texture_copy_handle) && !readback.resolved)
+			.map(|readback| readback.sequence_index)
+		else {
+			return;
+		};
+		let synchronizers = self
+			.command_buffers
+			.iter()
+			.filter_map(|command_buffer| match command_buffer.last_submission {
+				Some((synchronizer, submitted_sequence)) if submitted_sequence == sequence_index => Some(synchronizer),
+				_ => None,
+			})
+			.collect::<SmallVec<[_; 4]>>();
+		for synchronizer in synchronizers {
+			self.wait_for_synchronizer_sequence(synchronizer, sequence_index);
+		}
 	}
 
 	fn create_synchronizer_internal(&mut self, signaled: bool) -> crate::synchronizer::SynchronizerHandle {
@@ -6562,9 +6784,55 @@ impl Device {
 		command_list.ResourceBarrier(&[barrier]);
 	}
 
+	unsafe fn unordered_access_barrier_all(command_list: &ID3D12GraphicsCommandList) {
+		let barrier = D3D12_RESOURCE_BARRIER {
+			Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+			Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+			Anonymous: D3D12_RESOURCE_BARRIER_0 {
+				UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+					pResource: std::mem::ManuallyDrop::new(None),
+				}),
+			},
+		};
+		command_list.ResourceBarrier(&[barrier]);
+	}
+
 	/// Uses native resource identity so dynamic frame allocations keep independent state histories.
 	fn native_resource_key(resource: &ID3D12Resource) -> usize {
 		resource.as_raw() as usize
+	}
+
+	fn initial_buffer_resource_state(heap_kind: BufferHeapKind) -> D3D12_RESOURCE_STATES {
+		match heap_kind {
+			BufferHeapKind::Upload => D3D12_RESOURCE_STATE_GENERIC_READ,
+			BufferHeapKind::Readback => D3D12_RESOURCE_STATE_COPY_DEST,
+			BufferHeapKind::Default => D3D12_RESOURCE_STATE_COMMON,
+		}
+	}
+
+	fn buffer_heap_kind_for_resource(
+		&self,
+		buffer_handle: BaseBufferHandle,
+		resource: &ID3D12Resource,
+	) -> Option<BufferHeapKind> {
+		let key = Self::native_resource_key(resource);
+		let buffer = self.buffer(buffer_handle)?;
+		if buffer
+			.resource
+			.as_ref()
+			.is_some_and(|resource| Self::native_resource_key(resource) == key)
+		{
+			return Some(buffer.heap_kind);
+		}
+		buffer.frame_resources.as_ref().and_then(|frame_resources| {
+			frame_resources.iter().flatten().find_map(|frame_resource| {
+				frame_resource
+					.resource
+					.as_ref()
+					.is_some_and(|resource| Self::native_resource_key(resource) == key)
+					.then_some(frame_resource.heap_kind)
+			})
+		})
 	}
 
 	unsafe fn transition_tracked_buffer(
@@ -6575,7 +6843,20 @@ impl Device {
 		after: D3D12_RESOURCE_STATES,
 	) {
 		let key = Self::native_resource_key(resource);
-		let before = self.buffer_states.get(&key).copied().unwrap_or(D3D12_RESOURCE_STATE_COMMON);
+		let heap_kind = self
+			.buffer_heap_kind_for_resource(_buffer, resource)
+			.unwrap_or(BufferHeapKind::Default);
+		if heap_kind != BufferHeapKind::Default {
+			self.buffer_states
+				.entry(key)
+				.or_insert_with(|| Self::initial_buffer_resource_state(heap_kind));
+			return;
+		}
+		let before = self
+			.buffer_states
+			.get(&key)
+			.copied()
+			.unwrap_or_else(|| Self::initial_buffer_resource_state(heap_kind));
 		if before == after {
 			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
 				Self::unordered_access_barrier(command_list, resource);
@@ -6674,12 +6955,9 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
-		mut texture_copy: Option<TextureCopyHandle>,
+		texture_copy: Option<TextureCopyHandle>,
 		sequence_index: u8,
 	) {
-		if !self.gpu_uploaded_images.contains(&image_handle.0) {
-			texture_copy = None;
-		}
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -7174,6 +7452,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		source_image: crate::BaseImageHandle,
 		destination_image: crate::BaseImageHandle,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -7191,8 +7470,11 @@ impl Device {
 		if source.extent != destination.extent || source.format != destination.format {
 			return;
 		}
-		let (Some(source_resource), Some(destination_resource)) = (source.resource.clone(), destination.resource.clone())
-		else {
+		// Dynamic images keep separate native resources per frame, so copies must use the active frame resource.
+		let Some(source_resource) = self.ensure_image_resource_for_sequence(source_image, sequence_index) else {
+			return;
+		};
+		let Some(destination_resource) = self.ensure_image_resource_for_sequence(destination_image, sequence_index) else {
 			return;
 		};
 
@@ -7676,6 +7958,8 @@ impl Device {
 		heap: &ID3D12DescriptorHeap,
 		slot: u32,
 	) {
+		// Descriptor reads should include CPU writes made through the host shadow before the bind.
+		self.sync_buffer_for_sequence(handle, sequence_index);
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
@@ -8244,9 +8528,6 @@ impl Device {
 			Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
 			Flags: flags,
 		};
-		let optimized_clear_value =
-			optimized_clear_value.or_else(|| Self::optimized_image_clear_value(format, flags, ClearValue::None));
-
 		let mut resource = None;
 		let result = unsafe {
 			self.device.CreateCommittedResource(
@@ -8382,7 +8663,8 @@ impl Device {
 			Formats::RGBA16UNORM | Formats::RGBA16sRGB => Some(DXGI_FORMAT_R16G16B16A16_UNORM),
 			Formats::RGBA16SNORM => Some(DXGI_FORMAT_R16G16B16A16_SNORM),
 			Formats::BGRAu8 => Some(DXGI_FORMAT_B8G8R8A8_UNORM),
-			Formats::BGRAsRGB => Some(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),
+			// DX12 swapchains expose BGRA backbuffers as UNORM, so the pipeline format must match that native RTV.
+			Formats::BGRAsRGB => Some(DXGI_FORMAT_B8G8R8A8_UNORM),
 			Formats::Depth32 => Some(DXGI_FORMAT_D32_FLOAT),
 			Formats::BC5 => Some(DXGI_FORMAT_BC5_UNORM),
 			Formats::BC5SNORM => Some(DXGI_FORMAT_BC5_SNORM),
@@ -8547,9 +8829,11 @@ pub(crate) enum BufferHeapKind {
 
 impl Drop for Buffer {
 	fn drop(&mut self) {
-		if let Some(resource) = self.resource.as_ref() {
-			unsafe {
-				resource.Unmap(0, None);
+		if self.heap_kind != BufferHeapKind::Default && !self.mapped.is_null() {
+			if let Some(resource) = self.resource.as_ref() {
+				unsafe {
+					resource.Unmap(0, None);
+				}
 			}
 		}
 		if self.layout.size() == 0 {
@@ -8565,9 +8849,11 @@ impl Drop for Buffer {
 
 impl Drop for BufferFrameStorage {
 	fn drop(&mut self) {
-		if let Some(resource) = self.resource.as_ref() {
-			unsafe {
-				resource.Unmap(0, None);
+		if self.heap_kind != BufferHeapKind::Default && !self.mapped.is_null() {
+			if let Some(resource) = self.resource.as_ref() {
+				unsafe {
+					resource.Unmap(0, None);
+				}
 			}
 		}
 		if self.layout.size() == 0 {
@@ -9054,6 +9340,8 @@ impl crate::context::Context for Device {
 	}
 
 	fn get_image_data<'a>(&'a mut self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
+		self.wait_for_texture_copy_readback(texture_copy_handle);
+		self.refresh_readback_texture_copies(None);
 		Device::get_image_data(self, texture_copy_handle)
 	}
 
@@ -9135,7 +9423,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE, D3D12_RASTERIZER_DESC,
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
 	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
 	D3D12_RAYTRACING_GEOMETRY_AABBS_DESC, D3D12_RAYTRACING_GEOMETRY_DESC, D3D12_RAYTRACING_GEOMETRY_DESC_0,
 	D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE, D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC,
@@ -9146,8 +9435,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_TYPE_UAV,
 	D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
 	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE,
-	D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
+	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
 	D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
 	D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
 	D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PRESENT,
@@ -9162,27 +9450,26 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC, D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT,
 	D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE,
 	D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG,
-	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, D3D12_STENCIL_OP_KEEP, D3D12_SUBRESOURCE_FOOTPRINT,
-	D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV,
-	D3D12_TEX3D_SRV, D3D12_TEX3D_UAV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER,
-	D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-	D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-	D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN,
-	D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D, D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-	D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0,
-	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D_ROOT_SIGNATURE_VERSION_1_0,
+	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
+	D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEX2D_ARRAY_DSV,
+	D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEX3D_SRV,
+	D3D12_TEX3D_UAV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+	D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_COPY_LOCATION,
+	D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+	D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
+	D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC,
+	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D_ROOT_SIGNATURE_VERSION_1_0,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_BC5_SNORM,
-	DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT,
-	DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16_FLOAT,
-	DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16_SNORM, DXGI_FORMAT_R16_UINT,
-	DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_SINT, DXGI_FORMAT_R32G32B32A32_UINT,
-	DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32_SINT, DXGI_FORMAT_R32G32B32_UINT, DXGI_FORMAT_R32G32_FLOAT,
-	DXGI_FORMAT_R32G32_SINT, DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32_TYPELESS,
-	DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-	DXGI_FORMAT_R8G8_SNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8_SNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN,
-	DXGI_SAMPLE_DESC,
+	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC5_UNORM,
+	DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+	DXGI_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16_SNORM,
+	DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16_SNORM, DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16_UNORM,
+	DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_SINT, DXGI_FORMAT_R32G32B32A32_UINT, DXGI_FORMAT_R32G32B32_FLOAT,
+	DXGI_FORMAT_R32G32B32_SINT, DXGI_FORMAT_R32G32B32_UINT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32_SINT,
+	DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_UINT,
+	DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8_SNORM,
+	DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8_SNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
 	CreateDXGIFactory2, IDXGIFactory4, IDXGISwapChain3, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH,

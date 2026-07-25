@@ -3081,8 +3081,14 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		assert_eq!(device.acceleration_structure_resource_count(), 2);
 		assert!(device.native_acceleration_structure_resource_count() <= 2);
-		assert_eq!(device.acceleration_structure_size(top_level), Some(512));
-		assert_eq!(device.bottom_level_acceleration_structure_size(bottom_level), Some(256));
+		let top_level_size = device.acceleration_structure_size(top_level).unwrap();
+		let bottom_level_size = device.bottom_level_acceleration_structure_size(bottom_level).unwrap();
+		// DXR prebuild sizes depend on the active adapter and driver, but allocations must stay aligned and
+		// large enough for the backend fallback layout.
+		assert_eq!(top_level_size % 256, 0);
+		assert!(top_level_size >= 512);
+		assert_eq!(bottom_level_size % 256, 0);
+		assert!(bottom_level_size >= 256);
 		assert_ne!(device.acceleration_structure_gpu_address(top_level), Some(0));
 		assert_ne!(device.bottom_level_acceleration_structure_gpu_address(bottom_level), Some(0));
 	}

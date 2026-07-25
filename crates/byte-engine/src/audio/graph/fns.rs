@@ -4,8 +4,8 @@ use super::AudioGraph;
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
-/// Next, pass the graph to [`round_robin`], [`random`], `loop`, [`gain`], or
-/// [`varispeed`], or publish it through
+/// Next, pass the graph to [`round_robin`], [`random`], `loop`, [`gain`],
+/// [`varispeed`], or [`custom`], or publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 	AudioGraph::sample(resource_id)
@@ -103,4 +103,29 @@ pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 /// node or if the graph already contains 64 nodes.
 pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 	input.with_pitch_shift(ratio)
+}
+
+/// Processes each rendered audio block with a user-provided closure.
+///
+/// The closure receives the graph's mutable mono sample block in place. Each
+/// playback gets an independent clone of the closure, so captured mutable state
+/// is not shared between simultaneous plays.
+///
+/// Custom functions are treated as zero-latency processors and cannot extend a
+/// graph's playback tail. Produce every output sample within the supplied
+/// block.
+///
+/// This closure runs on the audio worker. It must return quickly and must not
+/// allocate, block, lock, perform resource I/O, or panic. Next, publish the
+/// graph through
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+///
+/// # Panics
+///
+/// Panics if the input graph already contains 64 nodes.
+pub fn custom<F>(input: AudioGraph, function: F) -> AudioGraph
+where
+	F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+{
+	input.with_custom(function)
 }

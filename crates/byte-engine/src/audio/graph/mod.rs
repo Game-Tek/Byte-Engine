@@ -6,7 +6,9 @@
 //! resources cross to the audio thread.
 
 use std::{
+	fmt,
 	sync::atomic::{AtomicU64, Ordering},
+	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -32,6 +34,8 @@ pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CA
 pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
 type SelectorInputs = SmallVec<[AudioNodeId; INLINE_SELECTOR_INPUT_CAPACITY]>;
 type SelectorCommits = SmallVec<[SelectorCommit; MAX_AUDIO_GRAPH_NODES]>;
+type RuntimeCustomFunction = Box<dyn FnMut(&mut [f32]) + Send>;
+type CustomFunctionFactory = Arc<dyn Fn() -> RuntimeCustomFunction + Send + Sync>;
 
 /// The `AudioNodeId` struct identifies one node inside an [`AudioGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,8 +45,8 @@ struct AudioNodeId(usize);
 /// select and process one source for the default audio output.
 ///
 /// Build it with [`fns::sample`], [`fns::round_robin`], [`fns::random`], `loop`,
-/// [`fns::gain`], [`fns::varispeed`], and [`fns::pitch_shift`]. Next, submit the
-/// same mutable graph again through
+/// [`fns::gain`], [`fns::varispeed`], [`fns::pitch_shift`], and
+/// [`fns::custom`]. Next, submit the same mutable graph again through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`] to advance
 /// its selector nodes. Stop its current play through
 /// [`crate::gameplay::world::DefaultWorld::delete_channel_mut`].
@@ -209,6 +213,16 @@ impl AudioGraph {
 		self
 	}
 
+	/// Appends a user-provided block processor with per-playback closure state.
+	fn with_custom<F>(mut self, function: F) -> Self
+	where
+		F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+	{
+		let input = self.output;
+		self.push(AudioNode::Custom(input, CustomAudioFunction::new(function)));
+		self
+	}
+
 	fn push(&mut self, node: AudioNode) {
 		assert!(
 			self.nodes.len() < MAX_AUDIO_GRAPH_NODES,
@@ -361,6 +375,7 @@ impl AudioGraph {
 				inherited.has_pitch_shift = true;
 				inherited
 			}
+			AudioNode::Custom(input, _) => self.validate_node(*input, cached, visiting)?,
 		};
 
 		visiting[node_id.0] = false;
@@ -447,6 +462,13 @@ impl AudioGraph {
 					} else {
 						compiled.processors.push(processor);
 					}
+				}
+				Ok(compiled)
+			}
+			AudioNode::Custom(input, function) => {
+				let mut compiled = self.compile_selected(*input, selector_commits)?;
+				if !compiled.muted {
+					compiled.processors.push(AudioProcessor::Custom(function.clone()));
 				}
 				Ok(compiled)
 			}
@@ -538,6 +560,7 @@ enum AudioNode {
 	Gain { input: AudioNodeId, gain: f32 },
 	Varispeed { input: AudioNodeId, rate: f32 },
 	PitchShift { input: AudioNodeId, ratio: f32 },
+	Custom(AudioNodeId, CustomAudioFunction),
 }
 
 impl AudioNode {
@@ -560,7 +583,38 @@ impl AudioNode {
 			| Self::Gain { input, .. }
 			| Self::Varispeed { input, .. }
 			| Self::PitchShift { input, .. } => input.0 += offset,
+			Self::Custom(input, _) => input.0 += offset,
 		}
+	}
+}
+
+/// The `CustomAudioFunction` struct retains a closure prototype that can
+/// create independent mutable state for each playback.
+#[derive(Clone)]
+struct CustomAudioFunction(CustomFunctionFactory);
+
+impl CustomAudioFunction {
+	fn new<F>(function: F) -> Self
+	where
+		F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+	{
+		Self(Arc::new(move || Box::new(function.clone())))
+	}
+
+	fn create(&self) -> RuntimeCustomFunction {
+		(self.0)()
+	}
+}
+
+impl fmt::Debug for CustomAudioFunction {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter.write_str("CustomAudioFunction")
+	}
+}
+
+impl PartialEq for CustomAudioFunction {
+	fn eq(&self, other: &Self) -> bool {
+		Arc::ptr_eq(&self.0, &other.0)
 	}
 }
 
@@ -753,10 +807,11 @@ impl PlaybackRate {
 }
 
 /// Describes one allocation-free processor in a compiled graph.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AudioProcessor {
 	Gain(f32),
 	PitchShift(f32),
+	Custom(CustomAudioFunction),
 }
 
 impl AudioProcessor {
@@ -765,6 +820,7 @@ impl AudioProcessor {
 		match self {
 			Self::Gain(_) => 0,
 			Self::PitchShift(_) => pitch_shift::PITCH_SHIFT_LATENCY,
+			Self::Custom(_) => 0,
 		}
 	}
 
@@ -773,6 +829,7 @@ impl AudioProcessor {
 		match self {
 			Self::Gain(gain) => smallbox!(GainProcessor(gain)),
 			Self::PitchShift(ratio) => smallbox!(pitch_shift::PitchShiftProcessor::new(ratio)),
+			Self::Custom(function) => smallbox!(CustomFunctionProcessor(function.create())),
 		}
 	}
 }
@@ -795,6 +852,16 @@ impl RuntimeAudioProcessor for GainProcessor {
 	}
 }
 
+/// The `CustomFunctionProcessor` struct owns one playback's mutable custom
+/// closure state.
+struct CustomFunctionProcessor(RuntimeCustomFunction);
+
+impl RuntimeAudioProcessor for CustomFunctionProcessor {
+	fn process(&mut self, samples: &mut [f32]) {
+		(self.0)(samples);
+	}
+}
+
 impl AudioGraphRenderPlan {
 	/// Allocates stateful processors on the loader task before playback.
 	pub(crate) fn prepare(mut self) -> PreparedAudioGraphRenderPlan {
@@ -809,7 +876,7 @@ impl AudioGraphRenderPlan {
 				self.processors.pop();
 				gain
 			}
-			Some(AudioProcessor::PitchShift(_)) | None => 1.0,
+			Some(AudioProcessor::PitchShift(_) | AudioProcessor::Custom(_)) | None => 1.0,
 		};
 		PreparedAudioGraphRenderPlan {
 			playback_mode: self.playback_mode,
@@ -836,7 +903,7 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 #[cfg(test)]
 mod tests {
 	use super::{
-		fns::{gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
+		fns::{custom, gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
 		pitch_shift::PITCH_SHIFT_LATENCY,
 		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate, RandomNode,
 		RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
@@ -1399,6 +1466,53 @@ mod tests {
 				AudioProcessor::Gain(0.25),
 			]
 		);
+	}
+
+	#[test]
+	fn custom_function_processes_blocks_in_compiled_order() {
+		let graph = gain(
+			custom(sample("audio/music.ogg"), |samples: &mut [f32]| {
+				for sample in samples {
+					*sample += 1.0;
+				}
+			}),
+			0.5,
+		);
+		let (_, render_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut prepared = render_plan.prepare();
+		let mut samples = [1.0, 2.0, 3.0];
+
+		assert_eq!(prepared.processors.len(), 1);
+		assert_eq!(prepared.output_gain, 0.5);
+		prepared.processors[0].process(&mut samples);
+
+		assert_eq!(samples, [2.0, 3.0, 4.0]);
+	}
+
+	#[test]
+	fn each_custom_function_playback_gets_independent_closure_state() {
+		let graph = custom(sample("audio/music.ogg"), {
+			let mut invocation = 0.0;
+			move |samples: &mut [f32]| {
+				invocation += 1.0;
+				samples.fill(invocation);
+			}
+		});
+		assert_eq!(graph, graph.clone());
+
+		let (_, first_plan) = graph.compile().expect("valid graph").into_parts();
+		let (_, second_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut first = first_plan.prepare();
+		let mut second = second_plan.prepare();
+		let mut first_samples = [0.0; 2];
+		let mut second_samples = [0.0; 2];
+
+		first.processors[0].process(&mut first_samples);
+		first.processors[0].process(&mut first_samples);
+		second.processors[0].process(&mut second_samples);
+
+		assert_eq!(first_samples, [2.0; 2]);
+		assert_eq!(second_samples, [1.0; 2]);
 	}
 
 	#[test]

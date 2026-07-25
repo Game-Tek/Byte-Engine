@@ -67,6 +67,7 @@ impl AudioNode {
 			| Self::Gain { input, .. }
 			| Self::Varispeed { input, .. }
 			| Self::PitchShift { input, .. } => reconnect_id_after_removal(input, removed, replacement),
+			Self::Custom(input, _) => reconnect_id_after_removal(input, removed, replacement),
 		}
 	}
 }

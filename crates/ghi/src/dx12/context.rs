@@ -16,6 +16,7 @@ pub struct Device {
 	images: Vec<Image>,
 	samplers: Vec<Sampler>,
 	descriptor_sets: Vec<DescriptorSet>,
+	descriptor_materializations: HashMap<DescriptorMaterializationKey, DescriptorMaterialization>,
 	pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_root_signatures: Vec<Option<ID3D12RootSignature>>,
 	pipeline_root_tables: Vec<Vec<RootDescriptorTable>>,
@@ -172,6 +173,7 @@ impl Device {
 			images: Vec::new(),
 			samplers: Vec::new(),
 			descriptor_sets: Vec::new(),
+			descriptor_materializations: HashMap::default(),
 			pipeline_layouts: Vec::new(),
 			pipeline_root_signatures: Vec::new(),
 			pipeline_root_tables: Vec::new(),
@@ -392,6 +394,7 @@ impl Device {
 		for key in retired_buffer_state_keys {
 			self.buffer_states.remove(&key);
 		}
+		self.invalidate_descriptor_materializations();
 	}
 
 	pub fn create_allocation(
@@ -1017,6 +1020,7 @@ impl Device {
 			let frame_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 			self.descriptor_sets.push(DescriptorSet {
 				next: None,
+				version: 0,
 				descriptors: HashMap::default(),
 			});
 
@@ -1655,7 +1659,8 @@ impl Device {
 		handle
 	}
 
-	fn create_staged_descriptor_heap(
+	/// Creates a shader-visible heap for retained tables or transient GPU descriptor operations.
+	fn create_shader_visible_descriptor_heap(
 		&self,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
@@ -1671,7 +1676,7 @@ impl Device {
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				self.log_dx12_error(format!(
-					"Failed to create staged DX12 descriptor heap. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+					"Failed to create a shader-visible DX12 descriptor heap. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
 					heap_type
 				));
 				None
@@ -1737,7 +1742,7 @@ impl Device {
 
 		if required > current_capacity {
 			let capacity = required.max(current_capacity.saturating_mul(2)).max(256);
-			let heap = self.create_staged_descriptor_heap(heap_type, capacity)?;
+			let heap = self.create_shader_visible_descriptor_heap(heap_type, capacity)?;
 			let command_buffer = self.command_buffers.get_mut(command_buffer_index)?;
 			let target_arena = if sampler_heap {
 				&mut command_buffer.sampler_staging_heap
@@ -1799,31 +1804,75 @@ impl Device {
 		self.descriptor_heap_bind_count += 1;
 	}
 
-	/// Materializes the active pipeline's flat retained resources into one shader-visible table.
-	fn stage_descriptor_heap_for_sets(
+	/// Returns the immutable shader-visible heaps for one frame-resolved retained set union.
+	///
+	/// The flat binding model derives native offsets from the pipeline layout, so the first bind creates the heaps.
+	/// Later binds reuse them until a retained write changes one of the participating sets.
+	fn materialize_descriptor_heaps(
 		&mut self,
-		command_buffer_handle: CommandBufferHandle,
 		layout_handle: PipelineLayoutHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
-		sampler_heap: bool,
-	) -> Option<StagedDescriptorHeap> {
-		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.clone();
-		let descriptor_count = if sampler_heap {
-			layout.sampler_descriptor_count
-		} else {
-			layout.cbv_srv_uav_descriptor_count
+	) -> Option<DescriptorMaterialization> {
+		let descriptor_sets = sets
+			.iter()
+			.map(|&root_set_handle| {
+				self.descriptor_set_for_sequence(root_set_handle, sequence_index)
+					.unwrap_or(root_set_handle)
+			})
+			.collect::<SmallVec<[_; 8]>>();
+		let versions = descriptor_sets
+			.iter()
+			.map(|set_handle| {
+				self.descriptor_sets
+					.get(set_handle.0 as usize)
+					.map(|set| set.version)
+					.unwrap_or(0)
+			})
+			.collect::<SmallVec<[_; 8]>>();
+		let key = DescriptorMaterializationKey {
+			layout: layout_handle,
+			descriptor_sets,
+			sequence_index,
 		};
-		let (heap, base_offset) =
-			self.reserve_staged_descriptor_range(command_buffer_handle, sampler_heap, descriptor_count)?;
-		self.initialize_descriptor_heap_defaults(&layout, sampler_heap, &heap, base_offset);
+
+		if let Some(materialization) = self.descriptor_materializations.get(&key) {
+			if materialization.versions == versions {
+				return Some(materialization.clone());
+			}
+		}
+
+		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.clone();
+		let cbv_srv_uav_heap = (layout.cbv_srv_uav_descriptor_count != 0)
+			.then(|| {
+				self.create_shader_visible_descriptor_heap(
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+					layout.cbv_srv_uav_descriptor_count,
+				)
+			})
+			.flatten();
+		let sampler_heap = (layout.sampler_descriptor_count != 0)
+			.then(|| {
+				self.create_shader_visible_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, layout.sampler_descriptor_count)
+			})
+			.flatten();
+
+		if layout.cbv_srv_uav_descriptor_count != 0 && cbv_srv_uav_heap.is_none() {
+			return None;
+		}
+		if layout.sampler_descriptor_count != 0 && sampler_heap.is_none() {
+			return None;
+		}
+		if let Some(heap) = cbv_srv_uav_heap.as_ref() {
+			self.initialize_descriptor_heap_defaults(&layout, false, heap, 0);
+		}
+		if let Some(heap) = sampler_heap.as_ref() {
+			self.initialize_descriptor_heap_defaults(&layout, true, heap, 0);
+		}
 
 		let mut writes = SmallVec::<[(PipelineResource, u32, RetainedDescriptor); 32]>::new();
 		for resource in &layout.resources {
-			for &root_set_handle in sets {
-				let set_handle = self
-					.descriptor_set_for_sequence(root_set_handle, sequence_index)
-					.unwrap_or(root_set_handle);
+			for set_handle in &key.descriptor_sets {
 				let Some(descriptors) = self
 					.descriptor_sets
 					.get(set_handle.0 as usize)
@@ -1838,18 +1887,54 @@ impl Device {
 		}
 
 		for (resource, array_element, descriptor) in writes {
-			self.write_native_descriptor_for_heap(
-				resource,
-				descriptor,
-				array_element,
-				sequence_index,
-				sampler_heap,
-				&heap,
-				base_offset,
-			);
+			if let Some(heap) = cbv_srv_uav_heap.as_ref() {
+				self.write_native_descriptor_for_heap(resource, descriptor, array_element, sequence_index, false, heap, 0);
+			}
+			if let Some(heap) = sampler_heap.as_ref() {
+				self.write_native_descriptor_for_heap(resource, descriptor, array_element, sequence_index, true, heap, 0);
+			}
 		}
 
-		Some(StagedDescriptorHeap { heap, base_offset })
+		let materialization = DescriptorMaterialization {
+			versions,
+			cbv_srv_uav_heap,
+			sampler_heap,
+		};
+		self.descriptor_materializations.insert(key, materialization.clone());
+		Some(materialization)
+	}
+
+	/// Retains each bound heap until this command buffer's submitted work has completed.
+	fn retain_descriptor_materialization(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		materialization: &DescriptorMaterialization,
+	) {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+			return;
+		};
+		for heap in [
+			materialization.cbv_srv_uav_heap.as_ref(),
+			materialization.sampler_heap.as_ref(),
+		]
+		.into_iter()
+		.flatten()
+		{
+			let identity = heap.as_raw();
+			if command_buffer
+				.staged_descriptor_heaps
+				.iter()
+				.any(|retained| retained.as_raw() == identity)
+			{
+				continue;
+			}
+			command_buffer.staged_descriptor_heaps.push(heap.clone());
+		}
+	}
+
+	/// Drops cached native snapshots after a resource replacement changes descriptor-visible addresses.
+	fn invalidate_descriptor_materializations(&mut self) {
+		self.descriptor_materializations.clear();
 	}
 
 	fn descriptor_range_type(descriptor: ShaderResourceDescriptor, sampler_heap: bool) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
@@ -3344,8 +3429,26 @@ impl Device {
 			})
 	}
 
+	/// Returns whether any retained native materialization contains this logical set.
 	pub(crate) fn descriptor_set_has_native_heaps(&self, descriptor_set: DescriptorSetHandle) -> Option<(bool, bool)> {
-		self.descriptor_sets.get(descriptor_set.0 as usize).map(|_| (false, false))
+		self.descriptor_sets.get(descriptor_set.0 as usize)?;
+		let frame_sets = self.collect_descriptor_set_handles(descriptor_set);
+		let mut cbv_srv_uav = false;
+		let mut sampler = false;
+		for (key, materialization) in &self.descriptor_materializations {
+			if !key.descriptor_sets.iter().any(|set| frame_sets.contains(set)) {
+				continue;
+			}
+			cbv_srv_uav |= materialization.cbv_srv_uav_heap.is_some();
+			sampler |= materialization.sampler_heap.is_some();
+		}
+		Some((cbv_srv_uav, sampler))
+	}
+
+	/// Returns the number of cached frame-resolved native descriptor snapshots.
+	#[cfg(test)]
+	pub(crate) fn descriptor_materialization_count(&self) -> usize {
+		self.descriptor_materializations.len()
 	}
 
 	#[cfg(test)]
@@ -3897,17 +4000,19 @@ impl Device {
 		for write in descriptor_set_writes {
 			let set_handles = self.collect_descriptor_set_handles(DescriptorSetHandle(write.descriptor_set.0));
 			for set_handle in set_handles {
-				self.descriptor_sets[set_handle.0 as usize]
+				let retained = RetainedDescriptor {
+					descriptor: write.descriptor,
+					frame_offset: write.frame_offset.unwrap_or(0),
+				};
+				let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+				let previous = descriptor_set
 					.descriptors
 					.entry(write.slot)
 					.or_default()
-					.insert(
-						write.array_element,
-						RetainedDescriptor {
-							descriptor: write.descriptor,
-							frame_offset: write.frame_offset.unwrap_or(0),
-						},
-					);
+					.insert(write.array_element, retained);
+				if previous != Some(retained) {
+					descriptor_set.version = descriptor_set.version.wrapping_add(1);
+				}
 				self.materialize_descriptor_base_image_resource(set_handle, write.descriptor);
 			}
 		}
@@ -4515,6 +4620,9 @@ impl Device {
 			swapchain.images = images;
 			swapchain.proxy_uses = [uses; 8];
 		}
+		if needs_new_proxy {
+			self.invalidate_descriptor_materializations();
+		}
 
 		(
 			self.swapchains[swapchain_handle.0 as usize].images[0].expect(
@@ -4672,6 +4780,7 @@ impl Device {
 			frame_resources.clear();
 			frame_resources.resize_with(frame_count, || None);
 		}
+		self.invalidate_descriptor_materializations();
 	}
 
 	pub fn start_frame_capture(&mut self) {
@@ -5597,6 +5706,8 @@ impl Device {
 			) as u8;
 			match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
+					// Buffer contents can change without changing the retained descriptor or its native heap.
+					self.sync_buffer_for_sequence(handle, resource_sequence);
 					let Some(resource) = self.buffer_resource_for_sequence(handle, resource_sequence) else {
 						continue;
 					};
@@ -5835,18 +5946,18 @@ impl Device {
 		let layout_handle = pipeline.layout;
 		let pipeline_kind = pipeline.kind;
 
-		let cbv_srv_uav_heap =
-			self.stage_descriptor_heap_for_sets(command_buffer_handle, layout_handle, sets, sequence_index, false);
-		let sampler_heap =
-			self.stage_descriptor_heap_for_sets(command_buffer_handle, layout_handle, sets, sequence_index, true);
+		let Some(materialization) = self.materialize_descriptor_heaps(layout_handle, sets, sequence_index) else {
+			return;
+		};
+		self.retain_descriptor_materialization(command_buffer_handle, &materialization);
 		let mut heaps = [None, None];
 		let mut heap_count = 0usize;
-		if let Some(staged) = cbv_srv_uav_heap.as_ref() {
-			heaps[heap_count] = Some(staged.heap.clone());
+		if let Some(heap) = materialization.cbv_srv_uav_heap.as_ref() {
+			heaps[heap_count] = Some(heap.clone());
 			heap_count += 1;
 		}
-		if let Some(staged) = sampler_heap.as_ref() {
-			heaps[heap_count] = Some(staged.heap.clone());
+		if let Some(heap) = materialization.sampler_heap.as_ref() {
+			heaps[heap_count] = Some(heap.clone());
 			heap_count += 1;
 		}
 		if heap_count == 0 {
@@ -5867,12 +5978,12 @@ impl Device {
 		};
 		let mut table_binds = 0;
 		for table in root_tables {
-			let staged_heap = if table.sampler_heap {
-				sampler_heap.as_ref()
+			let heap = if table.sampler_heap {
+				materialization.sampler_heap.as_ref()
 			} else {
-				cbv_srv_uav_heap.as_ref()
+				materialization.cbv_srv_uav_heap.as_ref()
 			};
-			let Some(staged_heap) = staged_heap else {
+			let Some(heap) = heap else {
 				continue;
 			};
 			let heap_type = if table.sampler_heap {
@@ -5880,7 +5991,7 @@ impl Device {
 			} else {
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 			};
-			let handle = self.descriptor_gpu_handle(&staged_heap.heap, heap_type, staged_heap.base_offset);
+			let handle = self.descriptor_gpu_handle(heap, heap_type, 0);
 			unsafe {
 				match pipeline_kind {
 					PipelineKind::Compute | PipelineKind::RayTracing => {
@@ -5895,7 +6006,7 @@ impl Device {
 				set_index: 0,
 				binding_index: 0,
 				sampler_heap: table.sampler_heap,
-				heap_slot: staged_heap.base_offset,
+				heap_slot: 0,
 			});
 		}
 		self.descriptor_table_bind_count += table_binds;
@@ -7702,6 +7813,7 @@ impl Device {
 				frame_resources[0] = Some(first_resource);
 			}
 		}
+		self.invalidate_descriptor_materializations();
 	}
 
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle) -> Extent {
@@ -8906,9 +9018,27 @@ struct Sampler {
 	max_lod: f32,
 }
 
+/// The `DescriptorSet` struct retains one frame's logical resource writes and native snapshot version.
 pub(crate) struct DescriptorSet {
 	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
+	version: u64,
 	descriptors: HashMap<ResourceSlot, HashMap<u32, RetainedDescriptor>>,
+}
+
+/// The `DescriptorMaterializationKey` struct identifies one frame-resolved set union for a pipeline layout.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct DescriptorMaterializationKey {
+	layout: PipelineLayoutHandle,
+	descriptor_sets: SmallVec<[DescriptorSetHandle; 8]>,
+	sequence_index: u8,
+}
+
+/// The `DescriptorMaterialization` struct retains immutable shader-visible heaps until its logical sets change.
+#[derive(Clone)]
+struct DescriptorMaterialization {
+	versions: SmallVec<[u64; 8]>,
+	cbv_srv_uav_heap: Option<ID3D12DescriptorHeap>,
+	sampler_heap: Option<ID3D12DescriptorHeap>,
 }
 
 /// The `Binding` struct preserves the private handle item required by shared legacy exports.
@@ -8941,11 +9071,6 @@ struct PipelineLayout {
 struct RootDescriptorTable {
 	root_parameter_index: u32,
 	sampler_heap: bool,
-}
-
-struct StagedDescriptorHeap {
-	heap: ID3D12DescriptorHeap,
-	base_offset: u32,
 }
 
 #[derive(Clone, Copy)]

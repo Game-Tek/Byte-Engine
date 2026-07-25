@@ -826,6 +826,117 @@ mod tests {
 		assert_eq!(device.descriptor_write_count(), 3);
 		assert_eq!(device.image_srv_descriptor_write_count(), 1);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((true, true)));
+		assert_eq!(device.descriptor_materialization_count(), 1);
+
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+
+		assert_eq!(device.descriptor_write_count(), 3);
+		assert_eq!(device.descriptor_materialization_count(), 1);
+	}
+
+	/// Verifies that frame rotation reuses stable native descriptor heaps instead of consuming transient arena slots.
+	#[test]
+	fn descriptor_materializations_are_reused_across_frame_sequences() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::UniformBuffer, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
+		let camera = device.build_dynamic_buffer::<[f32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, camera.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		for frame_index in 0..512 {
+			let sequence_index = (frame_index % device.frames as usize) as u8;
+			device.begin_command_buffer(command_buffer, sequence_index);
+			device.bind_pipeline_native_state(command_buffer, pipeline);
+			device.validate_descriptor_sets(pipeline, &[set], sequence_index);
+			device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], sequence_index);
+		}
+
+		assert_eq!(device.descriptor_write_count(), device.frames as usize);
+		assert_eq!(device.descriptor_materialization_count(), device.frames as usize);
+		assert!(
+			device
+				.descriptor_table_bind_records()
+				.iter()
+				.all(|record| record.heap_slot == 0),
+			"Retained DX12 descriptor tables moved within a transient heap. The most likely cause is that bind-time materialization still consumes an accumulating arena offset.",
+		);
+	}
+
+	/// Verifies that retained heaps refresh once after logical writes or descriptor-visible resource replacement.
+	#[test]
+	fn descriptor_materializations_refresh_after_retained_changes() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::UniformBuffer, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
+		let first_buffer = device.build_dynamic_buffer::<[f32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let bind = |device: &mut crate::dx12::Device| {
+			device.begin_command_buffer(command_buffer, 0);
+			device.bind_pipeline_native_state(command_buffer, pipeline);
+			device.validate_descriptor_sets(pipeline, &[set], 0);
+			device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+		};
+
+		bind(&mut device);
+		assert_eq!(device.descriptor_write_count(), 1);
+		assert_eq!(device.descriptor_materialization_count(), 1);
+
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
+		bind(&mut device);
+		assert_eq!(device.descriptor_write_count(), 1);
+
+		let replacement = device.build_dynamic_buffer::<[f32; 16]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, replacement.into())]);
+		bind(&mut device);
+		assert_eq!(device.descriptor_write_count(), 2);
+		bind(&mut device);
+		assert_eq!(device.descriptor_write_count(), 2);
+
+		device.resize_buffer(replacement, std::mem::size_of::<[f32; 32]>());
+		assert_eq!(device.descriptor_materialization_count(), 0);
+		bind(&mut device);
+		assert_eq!(device.descriptor_write_count(), 3);
 	}
 
 	#[test]

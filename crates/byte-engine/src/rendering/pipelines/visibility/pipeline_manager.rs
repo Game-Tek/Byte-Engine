@@ -1283,8 +1283,8 @@ mod tests {
 	use resource_management::types::AlphaMode;
 
 	use super::{
-		cached_skin_palette_base, reserve_deformed_vertex_range, Instance, RenderInfo, ShaderMesh, SkinningPaletteCacheEntry,
-		ENVIRONMENT_BINDING, LIT_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, reserve_deformed_vertex_range, Instance, LightData, LightingData, RenderInfo, ShaderMesh,
+		SkinningPaletteCacheEntry, ENVIRONMENT_BINDING, LIT_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
@@ -1417,6 +1417,33 @@ mod tests {
 			cached_skin_palette_base(&palette_cache, second_handle, Arc::as_ptr(&first_binding)),
 			Some(17)
 		);
+	}
+
+	#[test]
+	fn lighting_data_matches_gpu_buffer_layout() {
+		assert_eq!(
+			std::mem::size_of::<LightData>(),
+			80,
+			"Unexpected visibility LightData size. The most likely cause is that the CPU light buffer layout drifted from the generated shader struct."
+		);
+		assert_eq!(
+			std::mem::align_of::<LightData>(),
+			16,
+			"Unexpected visibility LightData alignment. The most likely cause is that ShaderVec3 padding changed."
+		);
+		assert_eq!(std::mem::offset_of!(LightData, position), 0);
+		assert_eq!(std::mem::offset_of!(LightData, color), 16);
+		assert_eq!(std::mem::offset_of!(LightData, light_type), 32);
+		assert_eq!(std::mem::offset_of!(LightData, cascades), 36);
+
+		assert_eq!(
+			std::mem::size_of::<LightingData>(),
+			1296,
+			"Unexpected visibility LightingData size. The most likely cause is that the CPU lighting buffer no longer matches the shader struct array stride."
+		);
+		assert_eq!(std::mem::align_of::<LightingData>(), 16);
+		assert_eq!(std::mem::offset_of!(LightingData, count), 0);
+		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
 	}
 }
 

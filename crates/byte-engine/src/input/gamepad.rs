@@ -1,3 +1,21 @@
+use std::{
+	collections::{HashMap, HashSet},
+	ffi::CString,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		mpsc::{self, Receiver},
+		Arc,
+	},
+	thread::{self, JoinHandle},
+	time::{Duration, Instant},
+};
+
+use hidapi::{HidApi, HidDevice};
+use log::{debug, warn};
+use math::Vector2;
+
+use super::{input_manager::TriggerReference, DeviceHandle, Value};
+
 const STICK_EPSILON: f32 = 0.001;
 const TRIGGER_EPSILON: f32 = 0.001;
 
@@ -67,7 +85,9 @@ pub(crate) enum GamepadKind {
 pub(crate) struct GamepadSystem {
 	api: HidApi,
 	devices: HashMap<String, GamepadDevice>,
-	last_refresh: Instant,
+	refresh_receiver: Receiver<Result<Vec<GamepadCandidate>, String>>,
+	refresh_stop: Arc<AtomicBool>,
+	refresh_thread: Option<JoinHandle<()>>,
 }
 
 impl GamepadSystem {
@@ -78,16 +98,19 @@ impl GamepadSystem {
 				e
 			)
 		})?;
+		let (refresh_receiver, refresh_stop, refresh_thread) = spawn_refresh_thread();
 
 		Ok(Self {
 			api,
 			devices: HashMap::new(),
-			last_refresh: Instant::now() - Duration::from_secs(2),
+			refresh_receiver,
+			refresh_stop,
+			refresh_thread: Some(refresh_thread),
 		})
 	}
 
 	pub(crate) fn poll(&mut self) -> (Vec<(String, GamepadKind, HidDevice)>, Vec<GamepadEvent>) {
-		let new_devices = self.refresh_devices();
+		let new_devices = self.drain_device_refreshes();
 		let mut events = Vec::new();
 
 		for device in self.devices.values_mut() {
@@ -101,44 +124,31 @@ impl GamepadSystem {
 		self.devices.insert(path, GamepadDevice::new(kind, device, device_handle));
 	}
 
-	fn refresh_devices(&mut self) -> Vec<(String, GamepadKind, HidDevice)> {
-		if self.last_refresh.elapsed() < Duration::from_secs(1) {
-			return Vec::new();
+	fn drain_device_refreshes(&mut self) -> Vec<(String, GamepadKind, HidDevice)> {
+		let mut latest_snapshot = None;
+		for refresh in self.refresh_receiver.try_iter() {
+			match refresh {
+				Ok(snapshot) => latest_snapshot = Some(snapshot),
+				Err(error) => warn!("{}", error),
+			}
 		}
 
-		self.last_refresh = Instant::now();
-
-		if let Err(error) = self.api.refresh_devices() {
-			warn!(
-				"Failed to refresh HID devices. The most likely cause is that the HID backend could not enumerate devices: {}",
-				error
-			);
+		let Some(snapshot) = latest_snapshot else {
 			return Vec::new();
-		}
+		};
 
-		let mut present_paths = HashSet::new();
+		let present_paths = snapshot
+			.iter()
+			.map(|candidate| candidate.path_key.clone())
+			.collect::<HashSet<_>>();
 		let mut new_devices = Vec::new();
 
-		for device_info in self.api.device_list() {
-			let kind = match classify_gamepad(
-				device_info.vendor_id(),
-				device_info.product_id(),
-				device_info.product_string(),
-				device_info.usage_page(),
-				device_info.usage(),
-			) {
-				Some(kind) => kind,
-				None => continue,
-			};
-
-			let path = device_info.path().to_string_lossy().to_string();
-			present_paths.insert(path.clone());
-
-			if self.devices.contains_key(&path) {
+		for candidate in snapshot {
+			if self.devices.contains_key(&candidate.path_key) {
 				continue;
 			}
 
-			let device = match self.api.open_path(device_info.path()) {
+			let device = match self.api.open_path(candidate.path.as_c_str()) {
 				Ok(device) => device,
 				Err(error) => {
 					warn!(
@@ -159,19 +169,108 @@ impl GamepadSystem {
 			debug!(
 				target: "byte_engine::input::events",
 				"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
-				path,
-				kind,
-				device_info.vendor_id(),
-				device_info.product_id(),
-				device_info.product_string().unwrap_or("<unknown>")
+				candidate.path_key,
+				candidate.kind,
+				candidate.vendor_id,
+				candidate.product_id,
+				candidate.product_name.as_deref().unwrap_or("<unknown>")
 			);
 
-			new_devices.push((path, kind, device));
+			new_devices.push((candidate.path_key, candidate.kind, device));
 		}
 
 		self.devices.retain(|path, _| present_paths.contains(path));
 		new_devices
 	}
+}
+
+impl Drop for GamepadSystem {
+	fn drop(&mut self) {
+		self.refresh_stop.store(true, Ordering::Relaxed);
+		if let Some(thread) = self.refresh_thread.take() {
+			let _ = thread.join();
+		}
+	}
+}
+
+#[derive(Clone)]
+struct GamepadCandidate {
+	path: CString,
+	path_key: String,
+	kind: GamepadKind,
+	vendor_id: u16,
+	product_id: u16,
+	product_name: Option<String>,
+}
+
+fn spawn_refresh_thread() -> (
+	Receiver<Result<Vec<GamepadCandidate>, String>>,
+	Arc<AtomicBool>,
+	JoinHandle<()>,
+) {
+	let (sender, receiver) = mpsc::channel();
+	let stop = Arc::new(AtomicBool::new(false));
+	let thread_stop = Arc::clone(&stop);
+	let thread = thread::spawn(move || {
+		let mut api = match HidApi::new() {
+			Ok(api) => api,
+			Err(error) => {
+				let _ = sender.send(Err(format!(
+					"Failed to initialize HID API refresher. The most likely cause is that the system HID backend is unavailable: {}",
+					error
+				)));
+				return;
+			}
+		};
+
+		while !thread_stop.load(Ordering::Relaxed) {
+			let result = refresh_gamepad_candidates(&mut api);
+			if sender.send(result).is_err() {
+				return;
+			}
+
+			let sleep_until = Instant::now() + Duration::from_secs(1);
+			while Instant::now() < sleep_until {
+				if thread_stop.load(Ordering::Relaxed) {
+					return;
+				}
+				thread::sleep(Duration::from_millis(10));
+			}
+		}
+	});
+	(receiver, stop, thread)
+}
+
+fn refresh_gamepad_candidates(api: &mut HidApi) -> Result<Vec<GamepadCandidate>, String> {
+	api.refresh_devices().map_err(|error| {
+		format!(
+			"Failed to refresh HID devices. The most likely cause is that the HID backend could not enumerate devices: {}",
+			error
+		)
+	})?;
+
+	let mut candidates = Vec::new();
+	for device_info in api.device_list() {
+		let Some(kind) = classify_gamepad(
+			device_info.vendor_id(),
+			device_info.product_id(),
+			device_info.product_string(),
+			device_info.usage_page(),
+			device_info.usage(),
+		) else {
+			continue;
+		};
+
+		candidates.push(GamepadCandidate {
+			path: device_info.path().to_owned(),
+			path_key: device_info.path().to_string_lossy().to_string(),
+			kind,
+			vendor_id: device_info.vendor_id(),
+			product_id: device_info.product_id(),
+			product_name: device_info.product_string().map(str::to_string),
+		});
+	}
+	Ok(candidates)
 }
 
 struct GamepadDevice {
@@ -721,17 +820,6 @@ fn normalize_axis_i16(value: i16) -> f32 {
 fn normalize_trigger_u8(value: u8) -> f32 {
 	(value as f32) / 255.0
 }
-
-use std::{
-	collections::{HashMap, HashSet},
-	time::{Duration, Instant},
-};
-
-use hidapi::{HidApi, HidDevice};
-use log::{debug, warn};
-use math::Vector2;
-
-use super::{input_manager::TriggerReference, DeviceHandle, Value};
 
 #[cfg(test)]
 mod tests {

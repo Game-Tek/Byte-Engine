@@ -40,6 +40,10 @@ mod tests {
 
 	fn create_default_device_setup() -> Option<(Instance, Device, crate::QueueHandle)> {
 		let features = crate::device::Features::new().validation(false);
+		create_device_setup_with_features(features)
+	}
+
+	fn create_device_setup_with_features(features: crate::device::Features) -> Option<(Instance, Device, crate::QueueHandle)> {
 		let mut instance = Instance::new(features).ok()?;
 		let mut queue_handle = None;
 		let device = instance
@@ -317,23 +321,42 @@ mod tests {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource = crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::CombinedImageSampler,
+			crate::AccessPolicies::READ,
+		);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		device.create_descriptor_binding(
+		device.write(&[crate::DescriptorWrite::combined_image_sampler(
 			set,
-			crate::BindingConstructor::combined_image_sampler(&binding, image, sampler, crate::Layouts::Read),
-		);
+			slot,
+			image,
+			sampler,
+			crate::Layouts::Read,
+		)]);
 		device.get_texture_slice_mut(image).copy_from_slice(&[17, 18, 19, 20]);
 		crate::context::Context::sync_texture(&mut device, image);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::BoundPipelineLayoutMode::bind_descriptor_sets(&mut recording, &[set]);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		drop(recording);
 
 		assert_eq!(device.upload_resource_count(), 1);
@@ -344,28 +367,23 @@ mod tests {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		let binding_handle = device.create_descriptor_binding(
+		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
 			set,
-			crate::BindingConstructor::combined_image_sampler(&binding, image, sampler, crate::Layouts::Read),
-		);
-
-		device.write(&[crate::descriptors::Write::combined_image_sampler_with_frame(
-			binding_handle,
+			slot,
 			image,
 			sampler,
 			crate::Layouts::Read,
 			-1,
 		)]);
 
-		assert_eq!(device.descriptor_sequence_index(set, 0, 0), Some(1));
-		assert_eq!(device.descriptor_sequence_index(set, 1, 0), Some(0));
+		assert_eq!(device.descriptor_sequence_index(set, 0, slot), Some(1));
+		assert_eq!(device.descriptor_sequence_index(set, 1, slot), Some(0));
 	}
 
 	#[test]
@@ -373,21 +391,24 @@ mod tests {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler_array(0, crate::Stages::FRAGMENT, 2);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource = crate::ShaderResourceDescriptor::new(
+			slot,
+			crate::ResourceKind::CombinedImageSampler,
+			2,
+			crate::AccessPolicies::READ,
+		);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
-		let binding_handle =
-			device.create_descriptor_binding(set, crate::BindingConstructor::combined_image_sampler_array(&binding));
 		let descriptor_write_count = device.descriptor_write_count();
 		let image_srv_descriptor_write_count = device.image_srv_descriptor_write_count();
 		let sampler_descriptor_write_count = device.sampler_descriptor_write_records().len();
-
-		device.write(&[crate::descriptors::Write::combined_image_sampler_array_with_frame(
-			binding_handle,
+		device.write(&[crate::DescriptorWrite::combined_image_sampler_array_with_frame(
+			set,
+			slot,
 			image,
 			sampler,
 			crate::Layouts::Read,
@@ -395,17 +416,23 @@ mod tests {
 			-1,
 		)]);
 
-		assert_eq!(device.descriptor_sequence_index(set, 0, 0), Some(1));
-		assert_eq!(device.descriptor_sequence_index(set, 1, 0), Some(0));
+		assert_eq!(device.descriptor_sequence_index(set, 0, slot), Some(1));
 		assert_eq!(device.descriptor_write_count(), descriptor_write_count);
-		assert_eq!(device.image_srv_descriptor_write_count(), image_srv_descriptor_write_count);
-		assert_eq!(
-			device.sampler_descriptor_write_records().len(),
-			sampler_descriptor_write_count
-		);
-
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps(command_buffer, &[set]);
+		device.validate_descriptor_sets(pipeline, &[set], 0);
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
 
 		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 2);
 		assert_eq!(
@@ -414,8 +441,40 @@ mod tests {
 		);
 		assert_eq!(
 			device.sampler_descriptor_write_records().len(),
-			sampler_descriptor_write_count + 1
+			sampler_descriptor_write_count + 1,
 		);
+	}
+
+	#[test]
+	fn descriptor_arrays_keep_declared_dx12_slot_count() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource = crate::ShaderResourceDescriptor::new(
+			slot,
+			crate::ResourceKind::CombinedImageSampler,
+			1024,
+			crate::AccessPolicies::READ,
+		);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		assert_eq!(device.pipeline_descriptor_counts(pipeline), Some((1024, 1024)));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1023, false), Some(1023));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1024, false), None);
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1023, true), Some(1023));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, slot, 1024, true), None);
 	}
 
 	#[test]
@@ -423,14 +482,14 @@ mod tests {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::sampled_image(0, crate::Stages::FRAGMENT);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::SampledImage, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
-
-		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
 
 		assert_eq!(
 			device.image_frame_resource_state(crate::ImageHandle(image.into()), 0),
@@ -440,9 +499,20 @@ mod tests {
 			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
 			Some(false)
 		);
-
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 1);
 
 		assert_eq!(
 			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
@@ -452,12 +522,177 @@ mod tests {
 	}
 
 	#[test]
+	fn descriptor_texture_syncs_and_states_are_sequence_local() {
+		use windows::Win32::Graphics::Direct3D12::{
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		};
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::SampledImage, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
+		device.queue_texture_sync_for_sequence(image.into(), 0);
+		device.queue_texture_sync_for_sequence(image.into(), 1);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let expected_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 0);
+
+		assert_eq!(device.upload_resource_count(), 1);
+		assert_eq!(device.pending_texture_sync_count(), 1);
+		assert_eq!(
+			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 0),
+			Some(expected_state)
+		);
+		assert_eq!(
+			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 1),
+			None
+		);
+
+		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 1);
+
+		assert_eq!(device.upload_resource_count(), 2);
+		assert_eq!(device.pending_texture_sync_count(), 0);
+		assert_eq!(
+			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 1),
+			Some(expected_state)
+		);
+	}
+
+	#[test]
+	fn dynamic_storage_image_frames_keep_independent_native_states() {
+		use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 0);
+		assert_eq!(device.uav_barrier_count(), 0);
+		assert_eq!(
+			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 0),
+			Some(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+		);
+
+		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 1);
+		assert_eq!(device.uav_barrier_count(), 0);
+		assert_eq!(
+			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 1),
+			Some(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+		);
+	}
+
+	#[test]
 	#[cfg(target_os = "linux")]
 	fn descriptor_sets() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
 		crate::graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
+	}
+
+	#[test]
+	fn pipeline_switches_revalidate_retained_descriptor_sets() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let first_slot = crate::ResourceSlot::new(0);
+		let second_slot = crate::ResourceSlot::new(1);
+		let first_resource = crate::ShaderResourceDescriptor::single(
+			first_slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let second_resource = crate::ShaderResourceDescriptor::single(
+			second_slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[crate::DescriptorWrite::image(set, first_slot, image, crate::Layouts::General)]);
+		let first_shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[first_resource],
+			)
+			.expect("Failed to create first DX12 shader metadata.");
+		let second_shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[second_resource],
+			)
+			.expect("Failed to create second DX12 shader metadata.");
+		let first_pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&first_shader, crate::ShaderTypes::Compute),
+		));
+		let second_pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&second_shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(first_pipeline).bind_descriptor_sets(&[set]);
+			recording
+				.bind_compute_pipeline(second_pipeline)
+				.dispatch(crate::DispatchExtent::new(
+					::utils::Extent::rectangle(1, 1),
+					::utils::Extent::rectangle(1, 1),
+				));
+		}));
+
+		assert!(result.is_err());
 	}
 
 	#[test]
@@ -478,16 +713,25 @@ mod tests {
 	}
 
 	#[test]
-	fn descriptor_sets_create_native_heaps() {
+	fn descriptor_sets_materialize_pipeline_defined_heaps() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let bindings = [
-			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::combined_image_sampler(1, crate::Stages::FRAGMENT),
+		let buffer_slot = crate::ResourceSlot::new(0);
+		let image_slot = crate::ResourceSlot::new(1);
+		let resources = [
+			crate::ShaderResourceDescriptor::single(
+				buffer_slot,
+				crate::ResourceKind::StorageBuffer,
+				crate::AccessPolicies::READ,
+			),
+			crate::ShaderResourceDescriptor::single(
+				image_slot,
+				crate::ResourceKind::CombinedImageSampler,
+				crate::AccessPolicies::READ,
+			),
 		];
-		let template = device.create_descriptor_set_template(None, &bindings);
-		let set = device.create_descriptor_set(None, &template);
+		let set = device.create_descriptor_set(None);
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -495,20 +739,28 @@ mod tests {
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		let sampler = device.build_sampler(crate::sampler::Builder::new());
+		device.write(&[
+			crate::DescriptorWrite::buffer(set, buffer_slot, buffer.into()),
+			crate::DescriptorWrite::combined_image_sampler(set, image_slot, image, sampler, crate::Layouts::Read),
+		]);
 
-		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&bindings[0], buffer.into()));
-		device.create_descriptor_binding(
-			set,
-			crate::BindingConstructor::combined_image_sampler(&bindings[1], image, sampler, crate::Layouts::Read),
-		);
-
-		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((true, true)));
+		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((false, false)));
 		assert_eq!(device.descriptor_write_count(), 0);
-		assert_eq!(device.image_srv_descriptor_write_count(), 0);
-		assert_eq!(device.image_uav_descriptor_write_count(), 0);
-
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				resources,
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps(command_buffer, &[set]);
+		device.validate_descriptor_sets(pipeline, &[set], 0);
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
 
 		assert_eq!(device.descriptor_write_count(), 3);
 		assert_eq!(device.image_srv_descriptor_write_count(), 1);
@@ -563,20 +815,13 @@ StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 	}
 
 	#[test]
-	fn hlsl_pipeline_creation_updates_existing_descriptor_binding_buffer_stride() {
+	fn hlsl_shader_creation_infers_structured_buffer_stride() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE).buffer_read_only(true);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
-		let buffer = device.build_buffer::<[u32; 100]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
-
-		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(4));
-
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ);
 		let shader_source = r#"
 struct View {
 	float4x4 view;
@@ -603,35 +848,32 @@ void main() {
 				entry_point: "main",
 			},
 			crate::ShaderTypes::Compute,
-			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+			[resource],
 		) else {
 			return;
 		};
-
-		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+		assert_eq!(
+			device
+				.pipeline_resource_descriptor(pipeline, slot)
+				.map(crate::ShaderResourceDescriptor::buffer_element_stride),
+			Some(400),
+		);
 	}
 
 	#[test]
-	fn hlsl_pipeline_creation_preserves_explicit_descriptor_binding_buffer_stride() {
+	fn hlsl_shader_creation_preserves_explicit_buffer_stride() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE)
-			.buffer_stride(400)
-			.buffer_read_only(true);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
-		let buffer = device.build_buffer::<[u32; 100]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
-
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ)
+				.buffer_stride(400);
 		let shader_source = r#"
 StructuredBuffer<uint> views : register(t0, space0);
 [numthreads(1, 1, 1)]
@@ -644,32 +886,45 @@ void main() {}
 				entry_point: "main",
 			},
 			crate::ShaderTypes::Compute,
-			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+			[resource],
 		) else {
 			return;
 		};
-
-		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+		assert_eq!(
+			device
+				.pipeline_resource_descriptor(pipeline, slot)
+				.map(crate::ShaderResourceDescriptor::buffer_element_stride),
+			Some(400),
+		);
 	}
 
 	#[test]
-	fn hlsl_pipeline_creation_updates_later_descriptor_binding_buffer_stride() {
+	fn hlsl_shader_creation_infers_later_flat_buffer_stride() {
 		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let bindings = [
-			crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::storage_buffer(2, crate::Stages::COMPUTE).buffer_read_only(true),
+		let resources = [
+			crate::ShaderResourceDescriptor::single(
+				crate::ResourceSlot::new(0),
+				crate::ResourceKind::CombinedImageSampler,
+				crate::AccessPolicies::READ,
+			),
+			crate::ShaderResourceDescriptor::single(
+				crate::ResourceSlot::new(1),
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
+			crate::ShaderResourceDescriptor::single(
+				crate::ResourceSlot::new(2),
+				crate::ResourceKind::StorageBuffer,
+				crate::AccessPolicies::READ,
+			),
 		];
-		let template = device.create_descriptor_set_template(None, &bindings);
-
 		let shader_source = r#"
 struct _parameters {
 	float4x4 inverse_view_projection;
@@ -695,45 +950,46 @@ void main() {
 				entry_point: "main",
 			},
 			crate::ShaderTypes::Compute,
-			[
-				bindings[0].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
-				bindings[1].into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE),
-				bindings[2].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
-			],
+			resources,
 		) else {
 			return;
 		};
-
-		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		let set = device.create_descriptor_set(None, &template);
-		let buffer = device.build_buffer::<[u32; 36]>(
-			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		assert_eq!(
+			device
+				.pipeline_resource_descriptor(pipeline, crate::ResourceSlot::new(2))
+				.map(crate::ShaderResourceDescriptor::buffer_element_stride),
+			Some(144),
 		);
-		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&bindings[2], buffer.into()));
-
-		assert_eq!(device.descriptor_binding_buffer_stride(set, 2), Some(144));
 	}
 
 	#[test]
 	fn pipelines_create_native_root_signatures() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let template = device.create_descriptor_set_template(
-			None,
-			&[crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE)],
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
 		);
-		let set = device.create_descriptor_set(None, &template);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
 		let shader = device
-			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
 			.expect("Failed to create DX12 shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
 			&[crate::pipelines::PushConstantRange::new(0, 16)],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
@@ -742,10 +998,10 @@ void main() {
 			device.pipeline_layout_has_root_signature(device.pipelines[pipeline.0 as usize].layout),
 			Some(true)
 		);
-
-		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
+		recording
+			.bind_compute_pipeline(pipeline)
 			.bind_descriptor_sets(&[set])
 			.write_push_constant(4, 7u32);
 		drop(recording);
@@ -808,15 +1064,11 @@ void main() {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let detached_raster = factory.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
-			&[],
-			&vertex_elements,
-			&raster_shaders,
-			&render_targets,
-		));
+		let detached_raster = factory.create_raster_pipeline(
+			crate::pipelines::raster::Builder::new(&[], &vertex_elements, &raster_shaders, &render_targets).depth_write(false),
+		);
+		assert!(!detached_raster.depth_write);
 		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&compute, crate::ShaderTypes::Compute),
 		));
@@ -859,7 +1111,6 @@ void main() {
 			.expect("Failed to create DX12 DXIL shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
-			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
@@ -884,7 +1135,6 @@ void main() {
 			)
 			.expect("Failed to compile DX12 HLSL compute shader.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
@@ -913,7 +1163,7 @@ void main() {
 			.create_shader(None, compiled.as_source(), crate::ShaderTypes::Compute, [])
 			.expect("Failed to compile DX12 platform-native HLSL compute shader.");
 		let shader_parameter = crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute);
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], &[], shader_parameter));
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], shader_parameter));
 
 		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 1);
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
@@ -946,7 +1196,7 @@ void main() {
 		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 4.0f32)];
 		let shader_parameter = crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
 			.with_specialization_map(&specialization);
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], &[], shader_parameter));
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], shader_parameter));
 
 		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 1);
 		assert_eq!(device.hlsl_specialization_compile_count(), 1);
@@ -992,7 +1242,7 @@ void main() {
 		];
 		let shader_parameter = crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
 			.with_specialization_map(&specialization);
-		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], &[], shader_parameter));
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(&[], shader_parameter));
 
 		assert_eq!(device.compute_pipeline_state_create_attempt_count(), 1);
 		assert_eq!(device.hlsl_specialization_compile_count(), 1);
@@ -1028,7 +1278,6 @@ void main() {
 			.expect("Failed to create detached DX12 HLSL shader.");
 		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 8.0f32)];
 		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
 				.with_specialization_map(&specialization),
@@ -1077,7 +1326,6 @@ void main() {
 			crate::Formats::RGBA8UNORM,
 		)];
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_elements,
 			&shaders,
@@ -1136,7 +1384,6 @@ void main() {
 			crate::Formats::RGBA8UNORM,
 		)];
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
 			&[crate::pipelines::PushConstantRange::new(0, 4)],
 			&[],
 			&shaders,
@@ -1233,7 +1480,6 @@ void main() {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(crate::Formats::BGRAu8)];
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
 			&[],
-			&[],
 			&vertex_layout,
 			&shaders,
 			&render_targets,
@@ -1289,10 +1535,11 @@ void main() {
 		let window =
 			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
-		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
-		device.create_descriptor_binding(set, crate::BindingConstructor::swapchain(&binding, swapchain));
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
+		device.write(&[crate::DescriptorWrite::swapchain(set, slot, swapchain)]);
 		let shader = device
 			.create_shader(
 				Some("storage swapchain present"),
@@ -1307,11 +1554,10 @@ void main() {
 					entry_point: "main",
 				},
 				crate::ShaderTypes::Compute,
-				[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE)],
+				[resource],
 			)
 			.expect("Failed to compile DX12 storage swapchain present shader.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
 			&[],
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
@@ -1399,13 +1645,8 @@ void main() {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let detached_raster = factory.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
-			&[],
-			&[],
-			&shaders,
-			&render_targets,
-		));
+		let detached_raster =
+			factory.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 		let synchronizer = device.create_synchronizer(None, false);
 
 		let mut frame = device.start_frame(0, synchronizer);
@@ -1450,13 +1691,8 @@ void main() {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
-			&[],
-			&[],
-			&shaders,
-			&render_targets,
-		));
+		let pipeline =
+			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
@@ -1515,13 +1751,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
-			&[],
-			&[],
-			&shaders,
-			&render_targets,
-		));
+		let pipeline =
+			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		if device.supports_native_mesh_shaders() {
@@ -1589,13 +1820,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
-			&[],
-			&[],
-			&shaders,
-			&render_targets,
-		));
+		let pipeline =
+			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -1623,7 +1849,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.expect("Failed to create DX12 shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
-			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
@@ -1646,7 +1871,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
 			.expect("Failed to create DX12 shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
@@ -1677,7 +1901,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Fragment, [])
 			.expect("Failed to create DX12 fragment shader metadata.");
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&[],
 			&[
@@ -1727,7 +1950,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
 			&[],
 			&[],
-			&[],
 			&[
 				crate::pipelines::ShaderParameter::new(&vertex_shader, crate::ShaderTypes::Vertex),
 				crate::pipelines::ShaderParameter::new(&fragment_shader, crate::ShaderTypes::Fragment),
@@ -1773,7 +1995,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Fragment, [])
 			.expect("Failed to create DX12 fragment shader metadata.");
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&[],
 			&[
@@ -1847,56 +2068,96 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
-	fn descriptor_tables_bind_native_heap_offsets() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+	fn descriptor_tables_bind_pipeline_defined_heap_offsets() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let bindings = [
-			crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::combined_image_sampler(2, crate::Stages::COMPUTE),
+		let uniform_slot = crate::ResourceSlot::new(0);
+		let storage_slot = crate::ResourceSlot::new(1);
+		let sampled_slot = crate::ResourceSlot::new(2);
+		let resources = [
+			crate::ShaderResourceDescriptor::single(
+				uniform_slot,
+				crate::ResourceKind::UniformBuffer,
+				crate::AccessPolicies::READ,
+			),
+			crate::ShaderResourceDescriptor::single(
+				storage_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
+			crate::ShaderResourceDescriptor::single(
+				sampled_slot,
+				crate::ResourceKind::CombinedImageSampler,
+				crate::AccessPolicies::READ,
+			),
 		];
-		let template = device.create_descriptor_set_template(None, &bindings);
-		let set = device.create_descriptor_set(None, &template);
+		let set = device.create_descriptor_set(None);
+		let uniform = device.build_buffer::<[u32; 4]>(crate::buffer::Builder::new(crate::Uses::Uniform));
+		let storage = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let sampled = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let sampler = device.build_sampler(crate::sampler::Builder::new());
+		device.write(&[
+			crate::DescriptorWrite::buffer(set, uniform_slot, uniform.into()),
+			crate::DescriptorWrite::image(set, storage_slot, storage, crate::Layouts::General),
+			crate::DescriptorWrite::combined_image_sampler(set, sampled_slot, sampled, sampler, crate::Layouts::Read),
+		]);
 		let shader = device
-			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				resources,
+			)
 			.expect("Failed to create DX12 shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[template],
 			&[],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
-			.bind_descriptor_sets(&[set]);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		drop(recording);
 
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, uniform_slot, 0, false), Some(0));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, storage_slot, 0, false), Some(1));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, sampled_slot, 0, false), Some(2));
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, sampled_slot, 0, true), Some(0));
 		let records = device.descriptor_table_bind_records();
-		assert_eq!(records.len(), 4);
-		assert_eq!(records[0].heap_slot, 0);
-		assert_eq!(records[1].heap_slot, 1);
-		assert_eq!(records[2].heap_slot, 2);
-		assert_eq!(records[3].heap_slot, 0);
-		assert!(!records[2].sampler_heap);
-		assert!(records[3].sampler_heap);
+		assert_eq!(records.len(), 2);
+		assert!(!records[0].sampler_heap);
+		assert!(records[1].sampler_heap);
 	}
 
 	#[test]
 	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(1, crate::Stages::COMPUTE)];
-		let visibility_bindings = [
-			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
-			crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE),
+		let base_slot = crate::ResourceSlot::new(1);
+		let visibility_buffer_slot = crate::ResourceSlot::new(0);
+		let visibility_image_slot = crate::ResourceSlot::new(7);
+		let resources = [
+			crate::ShaderResourceDescriptor::single(base_slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::READ),
+			crate::ShaderResourceDescriptor::single(
+				visibility_buffer_slot,
+				crate::ResourceKind::StorageBuffer,
+				crate::AccessPolicies::READ,
+			),
+			crate::ShaderResourceDescriptor::single(
+				visibility_image_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
 		];
-		let base_template = device.create_descriptor_set_template(None, &base_bindings);
-		let visibility_template = device.create_descriptor_set_template(None, &visibility_bindings);
-		let base_set = device.create_descriptor_set(None, &base_template);
-		let visibility_set = device.create_descriptor_set(None, &visibility_template);
+		let base_set = device.create_descriptor_set(None);
+		let visibility_set = device.create_descriptor_set(None);
 		let base_buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -1906,61 +2167,55 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let visibility_image = device.build_image(
 			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
 		);
-		device.create_descriptor_binding(
-			base_set,
-			crate::BindingConstructor::buffer(&base_bindings[0], base_buffer.into()),
-		);
-		device.create_descriptor_binding(
-			visibility_set,
-			crate::BindingConstructor::buffer(&visibility_bindings[0], visibility_buffer.into()),
-		);
-		device.create_descriptor_binding(
-			visibility_set,
-			crate::BindingConstructor::image(&visibility_bindings[1], visibility_image),
-		);
+		device.write(&[
+			crate::DescriptorWrite::buffer(base_set, base_slot, base_buffer.into()),
+			crate::DescriptorWrite::buffer(visibility_set, visibility_buffer_slot, visibility_buffer.into()),
+			crate::DescriptorWrite::image(
+				visibility_set,
+				visibility_image_slot,
+				visibility_image,
+				crate::Layouts::General,
+			),
+		]);
 
 		let shader = device
-			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				resources,
+			)
 			.expect("Failed to create DX12 shader metadata.");
 		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[base_template, visibility_template],
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
-		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
+		recording
+			.bind_compute_pipeline(pipeline)
 			.bind_descriptor_sets(&[base_set, visibility_set]);
 		drop(recording);
 
-		let records = device.descriptor_table_bind_records();
-		assert_eq!(device.descriptor_heap_bind_count(), 1);
-		assert_eq!(records.len(), 3);
 		assert_eq!(
-			records,
-			&[
-				crate::dx12::context::DescriptorTableBindRecord {
-					root_parameter_index: 0,
-					set_index: 0,
-					binding_index: 1,
-					sampler_heap: false,
-					heap_slot: 0,
-				},
-				crate::dx12::context::DescriptorTableBindRecord {
-					root_parameter_index: 1,
-					set_index: 1,
-					binding_index: 0,
-					sampler_heap: false,
-					heap_slot: 1,
-				},
-				crate::dx12::context::DescriptorTableBindRecord {
-					root_parameter_index: 2,
-					set_index: 1,
-					binding_index: 7,
-					sampler_heap: false,
-					heap_slot: 2,
-				},
-			]
+			device.pipeline_descriptor_slot(pipeline, visibility_buffer_slot, 0, false),
+			Some(0)
+		);
+		assert_eq!(device.pipeline_descriptor_slot(pipeline, base_slot, 0, false), Some(1));
+		assert_eq!(
+			device.pipeline_descriptor_slot(pipeline, visibility_image_slot, 0, false),
+			Some(2)
+		);
+		assert_eq!(device.descriptor_heap_bind_count(), 1);
+		assert_eq!(
+			device.descriptor_table_bind_records(),
+			&[crate::dx12::context::DescriptorTableBindRecord {
+				root_parameter_index: 0,
+				set_index: 0,
+				binding_index: 0,
+				sampler_heap: false,
+				heap_slot: 0,
+			}]
 		);
 	}
 
@@ -1969,22 +2224,36 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
-
-		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		assert_eq!(device.descriptor_write_count(), 0);
 		assert_eq!(device.image_srv_descriptor_write_count(), 0);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps(command_buffer, &[set]);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		drop(recording);
 
 		assert_eq!(device.descriptor_write_count(), 1);
 		assert_eq!(device.image_srv_descriptor_write_count(), 0);
@@ -1995,19 +2264,32 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
 		use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
 
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(7);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageImage, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::U32, crate::Uses::RenderTarget | crate::Uses::Storage)
 				.extent(::utils::Extent::rectangle(1, 1)),
 		);
-		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::General)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
-		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		let attachment = crate::AttachmentInformation::new(
 			image,
@@ -2029,7 +2311,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		recording.bind_descriptor_sets(&[set]);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
 		drop(recording);
 
 		assert_eq!(
@@ -2039,13 +2321,87 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn uav_buffer_rebind_without_state_change_emits_uav_barrier() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::StorageBuffer, crate::AccessPolicies::WRITE);
+		let set = device.create_descriptor_set(None);
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		recording.bind_descriptor_sets(&[set]);
+		drop(recording);
+
+		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
+	#[test]
+	fn render_pass_clears_u32_render_targets_with_integer_values() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(
+				crate::Formats::U32,
+				crate::Uses::RenderTarget | crate::Uses::Storage | crate::Uses::TransferSource,
+			)
+			.extent(::utils::Extent::rectangle(1, 1))
+			.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let attachment = crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
+			false,
+			true,
+		);
+		crate::command_buffer::CommandBufferRecording::start_render_pass(
+			&mut recording,
+			::utils::Extent::rectangle(1, 1),
+			&[attachment],
+		)
+		.end_render_pass();
+		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.get_image_data(copies[0]), &[0xff, 0xff, 0xff, 0xff]);
+		assert_eq!(device.render_target_clear_count(), 1);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
 	fn samplers_create_native_descriptors_from_builder_state() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::sampler(0, crate::Stages::FRAGMENT);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource = crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::Sampler, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
 		let sampler = device.build_sampler(
 			crate::sampler::Builder::new()
 				.filtering_mode(crate::FilteringModes::Closest)
@@ -2056,14 +2412,26 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 				.min_lod(2.0)
 				.max_lod(8.0),
 		);
+		device.write(&[crate::DescriptorWrite::sampler(set, slot, sampler)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
-		device.create_descriptor_binding(set, crate::BindingConstructor::sampler(&binding, sampler));
-
-		let records = device.sampler_descriptor_write_records();
-		assert_eq!(records.len(), 0);
+		assert!(device.sampler_descriptor_write_records().is_empty());
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps(command_buffer, &[set]);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		drop(recording);
 
 		let records = device.sampler_descriptor_write_records();
 		assert_eq!(records.len(), 1);
@@ -2498,7 +2866,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn clear_device_only_buffer_records_native_uav_clear() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
 			return;
 		};
 		let buffer = device.build_buffer::<[u32; 4]>(
@@ -2507,16 +2876,45 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 		let upload_resource_count = device.upload_resource_count();
 		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
+		let synchronizer = device.create_synchronizer(None, false);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(*device.get_buffer_slice(buffer), [1, 2, 3, 4]);
 		assert_eq!(device.buffer_clear_count(), 1);
 		assert_eq!(device.upload_resource_count(), upload_resource_count);
 		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn reusing_command_buffer_waits_for_previous_submission_before_allocator_reset() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		for _ in 0..2 {
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+			drop(recording);
+			device.submit_command_buffer(command_buffer, synchronizer);
+		}
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.buffer_clear_count(), 2);
+		assert!(!device.has_errors());
 	}
 
 	#[test]
@@ -2574,21 +2972,33 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::VERTEX);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource =
+			crate::ShaderResourceDescriptor::single(slot, crate::ResourceKind::UniformBuffer, crate::AccessPolicies::READ);
+		let set = device.create_descriptor_set(None);
 		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
-
-		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 0), Some(true));
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(false));
 		assert_eq!(device.descriptor_write_count(), 0);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 1);
 
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
 		assert_eq!(device.descriptor_write_count(), 1);
@@ -2645,18 +3055,35 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
-		let binding = crate::DescriptorSetBindingTemplate::acceleration_structure(0, crate::Stages::RAYGEN);
-		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
-		let set = device.create_descriptor_set(None, &template);
+		let slot = crate::ResourceSlot::new(0);
+		let resource = crate::ShaderResourceDescriptor::single(
+			slot,
+			crate::ResourceKind::AccelerationStructure,
+			crate::AccessPolicies::READ,
+		);
+		let set = device.create_descriptor_set(None);
 		let top_level = device.create_top_level_acceleration_structure(Some("top"), 1);
-
-		device.create_descriptor_binding(set, crate::BindingConstructor::acceleration_structure(&binding, top_level));
+		device.write(&[crate::DescriptorWrite::acceleration_structure(set, slot, top_level)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
 
 		assert_eq!(device.descriptor_write_count(), 0);
 		assert_eq!(device.acceleration_structure_descriptor_write_count(), 0);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps(command_buffer, &[set]);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		drop(recording);
 
 		assert_eq!(device.descriptor_write_count(), 1);
 		assert_eq!(device.acceleration_structure_descriptor_write_count(), 1);
@@ -2707,7 +3134,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.expect("Failed to create DX12 miss shader metadata.");
 		let pipeline = device.create_ray_tracing_pipeline(crate::pipelines::ray_tracing::Builder::new(
 			&[],
-			&[],
 			&[
 				crate::pipelines::ShaderParameter::new(&raygen, crate::ShaderTypes::RayGen),
 				crate::pipelines::ShaderParameter::new(&miss, crate::ShaderTypes::Miss),
@@ -2748,7 +3174,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			.expect("Failed to create DX12 closest-hit shader metadata.");
 
 		let pipeline = device.create_ray_tracing_pipeline(crate::pipelines::ray_tracing::Builder::new(
-			&[],
 			&[],
 			&[
 				crate::pipelines::ShaderParameter::new(&raygen, crate::ShaderTypes::RayGen),
@@ -2822,7 +3247,6 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 		let pipeline = device.create_ray_tracing_pipeline(crate::pipelines::ray_tracing::Builder::new(
 			&[],
-			&[],
 			&[
 				crate::pipelines::ShaderParameter::new(&raygen, crate::ShaderTypes::RayGen),
 				crate::pipelines::ShaderParameter::new(&miss, crate::ShaderTypes::Miss),
@@ -2855,7 +3279,6 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::ClosestHit, [])
 			.expect("Failed to create DX12 closest-hit shader metadata.");
 		let pipeline = device.create_ray_tracing_pipeline(crate::pipelines::ray_tracing::Builder::new(
-			&[],
 			&[],
 			&[
 				crate::pipelines::ShaderParameter::new(&raygen, crate::ShaderTypes::RayGen),

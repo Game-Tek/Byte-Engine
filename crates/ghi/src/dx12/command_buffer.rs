@@ -58,8 +58,14 @@ impl<'a> CommandBufferRecording<'a> {
 		if !self.descriptor_tables_dirty || self.bound_descriptor_sets.is_empty() {
 			return;
 		}
+		let pipeline = self.bound_pipeline.expect(
+			"No pipeline is bound. The most likely cause is that descriptor tables were marked dirty without an active pipeline.",
+		);
+		self.device
+			.validate_descriptor_sets(pipeline, &self.bound_descriptor_sets, self.sequence_index());
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
+			Some(pipeline),
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
@@ -164,7 +170,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		texture_handles
 			.iter()
 			.map(|handle| {
-				self.device.flush_pending_texture_syncs(self.command_buffer, Some(*handle));
+				self.device
+					.flush_pending_texture_syncs(self.command_buffer, Some(*handle), Some(self.sequence_index()));
 				let copy = self
 					.device
 					.copy_image_to_cpu_for_sequence(crate::ImageHandle(*handle), self.sequence_index());
@@ -198,7 +205,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		_destination_layout: Layouts,
 	) {
 		self.device
-			.flush_pending_texture_syncs(self.command_buffer, Some(source_image));
+			.flush_pending_texture_syncs(self.command_buffer, Some(source_image), Some(self.sequence_index()));
 		self.device
 			.copy_image_for_sequences(source_image, destination_image, self.sequence_index(), self.sequence_index());
 		self.device
@@ -215,6 +222,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
+		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
 		self
 	}
 
@@ -222,6 +230,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
+		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
 		self
 	}
 
@@ -257,6 +266,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
+		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
 		self
 	}
 
@@ -281,10 +291,18 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self {
+		let pipeline = self.bound_pipeline.expect(
+			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
+		);
+		self.device.validate_descriptor_sets(pipeline, sets, self.sequence_index());
 		self.bound_descriptor_sets.clear();
 		self.bound_descriptor_sets.extend_from_slice(sets);
-		self.device
-			.flush_pending_descriptor_texture_syncs(self.command_buffer, sets, self.sequence_index());
+		self.device.flush_pending_descriptor_texture_syncs(
+			self.command_buffer,
+			self.bound_pipeline,
+			sets,
+			self.sequence_index(),
+		);
 		self.device
 			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets, self.sequence_index());
 		self.descriptor_tables_dirty = false;
@@ -297,7 +315,13 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	{
 		let offset = offset as usize;
 		let size = std::mem::size_of::<T>();
-		let end = offset + size;
+		assert!(
+			offset % 4 == 0 && size % 4 == 0,
+			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
+		);
+		let end = offset.checked_add(size).expect(
+			"Invalid DX12 push-constant write range. The most likely cause is that the offset and data size overflow addressable memory.",
+		);
 		if self.push_constants.len() < end {
 			self.push_constants.resize(end, 0);
 		}

@@ -2,7 +2,7 @@ use std::{f32::consts::TAU, sync::Arc};
 
 use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 
-use super::RuntimeAudioProcessor;
+use super::{AudioGraphTime, RuntimeAudioProcessor};
 
 const WINDOW_SIZE: usize = 1024;
 pub(super) const PITCH_SHIFT_LATENCY: usize = WINDOW_SIZE;
@@ -137,7 +137,7 @@ impl PitchShiftProcessor {
 }
 
 impl RuntimeAudioProcessor for PitchShiftProcessor {
-	fn process(&mut self, samples: &mut [f32]) {
+	fn process(&mut self, _time: AudioGraphTime, samples: &mut [f32]) {
 		PitchShiftProcessor::process(self, samples);
 	}
 }

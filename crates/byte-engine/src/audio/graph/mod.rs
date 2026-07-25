@@ -34,8 +34,49 @@ pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CA
 pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
 type SelectorInputs = SmallVec<[AudioNodeId; INLINE_SELECTOR_INPUT_CAPACITY]>;
 type SelectorCommits = SmallVec<[SelectorCommit; MAX_AUDIO_GRAPH_NODES]>;
-type RuntimeCustomFunction = Box<dyn FnMut(&mut [f32]) + Send>;
+type RuntimeCustomFunction = Box<dyn FnMut(AudioGraphTime, &mut [f32]) + Send>;
 type CustomFunctionFactory = Arc<dyn Fn() -> RuntimeCustomFunction + Send + Sync>;
+
+/// The `AudioGraphTime` struct identifies when a processed block starts in one
+/// graph playback.
+///
+/// Use [`Self::seconds_at`] to calculate the time of each sample when generating
+/// a waveform inside [`fns::custom`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioGraphTime {
+	sample_index: u64,
+	sample_rate: u32,
+}
+
+impl AudioGraphTime {
+	/// Creates a block time at the audio-system boundary.
+	pub(crate) const fn new(sample_index: u64, sample_rate: u32) -> Self {
+		Self {
+			sample_index,
+			sample_rate,
+		}
+	}
+
+	/// Returns the output sample index at the start of the block.
+	pub const fn sample_index(self) -> u64 {
+		self.sample_index
+	}
+
+	/// Returns the output sample rate in samples per second.
+	pub const fn sample_rate(self) -> u32 {
+		self.sample_rate
+	}
+
+	/// Returns the time at the start of the block in seconds.
+	pub fn seconds(self) -> f64 {
+		self.sample_index as f64 / f64::from(self.sample_rate)
+	}
+
+	/// Returns the time of one sample in the block in seconds.
+	pub fn seconds_at(self, sample_offset: usize) -> f64 {
+		(self.sample_index as f64 + sample_offset as f64) / f64::from(self.sample_rate)
+	}
+}
 
 /// The `AudioNodeId` struct identifies one node inside an [`AudioGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +257,7 @@ impl AudioGraph {
 	/// Appends a user-provided block processor with per-playback closure state.
 	fn with_custom<F>(mut self, function: F) -> Self
 	where
-		F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+		F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
 	{
 		let input = self.output;
 		self.push(AudioNode::Custom(input, CustomAudioFunction::new(function)));
@@ -596,7 +637,7 @@ struct CustomAudioFunction(CustomFunctionFactory);
 impl CustomAudioFunction {
 	fn new<F>(function: F) -> Self
 	where
-		F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+		F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
 	{
 		Self(Arc::new(move || Box::new(function.clone())))
 	}
@@ -837,7 +878,7 @@ impl AudioProcessor {
 /// The `RuntimeAudioProcessor` trait provides allocation-free block processing
 /// after a graph has been prepared.
 pub(crate) trait RuntimeAudioProcessor {
-	fn process(&mut self, samples: &mut [f32]);
+	fn process(&mut self, time: AudioGraphTime, samples: &mut [f32]);
 }
 
 /// The `GainProcessor` struct keeps one multiplier inline in its runtime node
@@ -845,7 +886,7 @@ pub(crate) trait RuntimeAudioProcessor {
 struct GainProcessor(f32);
 
 impl RuntimeAudioProcessor for GainProcessor {
-	fn process(&mut self, samples: &mut [f32]) {
+	fn process(&mut self, _time: AudioGraphTime, samples: &mut [f32]) {
 		for sample in samples {
 			*sample *= self.0;
 		}
@@ -857,8 +898,8 @@ impl RuntimeAudioProcessor for GainProcessor {
 struct CustomFunctionProcessor(RuntimeCustomFunction);
 
 impl RuntimeAudioProcessor for CustomFunctionProcessor {
-	fn process(&mut self, samples: &mut [f32]) {
-		(self.0)(samples);
+	fn process(&mut self, time: AudioGraphTime, samples: &mut [f32]) {
+		(self.0)(time, samples);
 	}
 }
 
@@ -905,8 +946,8 @@ mod tests {
 	use super::{
 		fns::{custom, gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
 		pitch_shift::PITCH_SHIFT_LATENCY,
-		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate, RandomNode,
-		RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
+		AudioGraph, AudioGraphFactory, AudioGraphTime, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph,
+		PlaybackRate, RandomNode, RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
 	};
 	use crate::core::listener::Listener;
 
@@ -1471,7 +1512,7 @@ mod tests {
 	#[test]
 	fn custom_function_processes_blocks_in_compiled_order() {
 		let graph = gain(
-			custom(sample("audio/music.ogg"), |samples: &mut [f32]| {
+			custom(sample("audio/music.ogg"), |_time, samples: &mut [f32]| {
 				for sample in samples {
 					*sample += 1.0;
 				}
@@ -1484,7 +1525,7 @@ mod tests {
 
 		assert_eq!(prepared.processors.len(), 1);
 		assert_eq!(prepared.output_gain, 0.5);
-		prepared.processors[0].process(&mut samples);
+		prepared.processors[0].process(AudioGraphTime::new(0, 48_000), &mut samples);
 
 		assert_eq!(samples, [2.0, 3.0, 4.0]);
 	}
@@ -1493,7 +1534,7 @@ mod tests {
 	fn each_custom_function_playback_gets_independent_closure_state() {
 		let graph = custom(sample("audio/music.ogg"), {
 			let mut invocation = 0.0;
-			move |samples: &mut [f32]| {
+			move |_time, samples: &mut [f32]| {
 				invocation += 1.0;
 				samples.fill(invocation);
 			}
@@ -1507,12 +1548,28 @@ mod tests {
 		let mut first_samples = [0.0; 2];
 		let mut second_samples = [0.0; 2];
 
-		first.processors[0].process(&mut first_samples);
-		first.processors[0].process(&mut first_samples);
-		second.processors[0].process(&mut second_samples);
+		first.processors[0].process(AudioGraphTime::new(0, 48_000), &mut first_samples);
+		first.processors[0].process(AudioGraphTime::new(2, 48_000), &mut first_samples);
+		second.processors[0].process(AudioGraphTime::new(0, 48_000), &mut second_samples);
 
 		assert_eq!(first_samples, [2.0; 2]);
 		assert_eq!(second_samples, [1.0; 2]);
+	}
+
+	#[test]
+	fn custom_function_receives_sample_accurate_block_time() {
+		let graph = custom(sample("audio/music.ogg"), |time, samples: &mut [f32]| {
+			for (offset, sample) in samples.iter_mut().enumerate() {
+				*sample = time.seconds_at(offset) as f32;
+			}
+		});
+		let (_, render_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut prepared = render_plan.prepare();
+		let mut samples = [0.0; 3];
+
+		prepared.processors[0].process(AudioGraphTime::new(2, 4), &mut samples);
+
+		assert_eq!(samples, [0.5, 0.75, 1.0]);
 	}
 
 	#[test]

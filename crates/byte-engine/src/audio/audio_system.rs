@@ -8,7 +8,7 @@ use ahi::{
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
-	graph::{PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
+	graph::{AudioGraphTime, PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
 	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
 };
 use crate::core::{factory::Handle, Entity};
@@ -402,6 +402,7 @@ struct AudioGraphPlayer {
 	muted: bool,
 	drain_latency: usize,
 	drain_remaining: Option<usize>,
+	rendered_sample_count: u64,
 }
 
 impl AudioGraphPlayer {
@@ -414,6 +415,7 @@ impl AudioGraphPlayer {
 			muted: render_plan.muted,
 			drain_latency: render_plan.drain_latency,
 			drain_remaining: None,
+			rendered_sample_count: 0,
 		}
 	}
 
@@ -451,9 +453,13 @@ impl AudioGraphPlayer {
 		}
 
 		let rendered = &mut graph_buffer[..rendered_sample_count];
+		let time = AudioGraphTime::new(self.rendered_sample_count, output_sample_rate);
 		for processor in &mut self.processors {
-			processor.process(rendered);
+			processor.process(time, rendered);
 		}
+		self.rendered_sample_count = self
+			.rendered_sample_count
+			.saturating_add(u64::try_from(rendered_sample_count).unwrap());
 		if self.output_gain == 1.0 {
 			for (destination, sample) in buffer.iter_mut().zip(rendered) {
 				*destination += *sample;

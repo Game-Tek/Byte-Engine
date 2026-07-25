@@ -1,6 +1,6 @@
 //! Concise functions for authoring an [`super::AudioGraph`].
 
-use super::AudioGraph;
+use super::{AudioGraph, AudioGraphTime};
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
@@ -107,9 +107,10 @@ pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 
 /// Processes each rendered audio block with a user-provided closure.
 ///
-/// The closure receives the graph's mutable mono sample block in place. Each
-/// playback gets an independent clone of the closure, so captured mutable state
-/// is not shared between simultaneous plays.
+/// The closure receives the block's [`AudioGraphTime`] and the graph's mutable
+/// mono sample block in place. Use [`AudioGraphTime::seconds_at`] to generate
+/// sample-accurate waveforms. Each playback gets an independent clone of the
+/// closure, so captured mutable state is not shared between simultaneous plays.
 ///
 /// Custom functions are treated as zero-latency processors and cannot extend a
 /// graph's playback tail. Produce every output sample within the supplied
@@ -125,7 +126,7 @@ pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 /// Panics if the input graph already contains 64 nodes.
 pub fn custom<F>(input: AudioGraph, function: F) -> AudioGraph
 where
-	F: FnMut(&mut [f32]) + Clone + Send + Sync + 'static,
+	F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
 {
 	input.with_custom(function)
 }

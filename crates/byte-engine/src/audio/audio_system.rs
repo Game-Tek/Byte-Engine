@@ -323,6 +323,32 @@ impl SampleNode {
 
 		Some(output)
 	}
+
+	/// Advances one output frame without reading sample data. Muted graphs use
+	/// this path to preserve playback timing without doing unnecessary mixing.
+	fn advance(&mut self, output_sample_rate: u32) -> bool {
+		if self.finished {
+			return false;
+		}
+
+		let frame_count = self.sample.frame_count() as u64;
+		if self.source_frame >= frame_count {
+			self.finished = true;
+			return false;
+		}
+
+		let phase_denominator = u64::from(output_sample_rate) * self.playback_rate.denominator;
+		self.rate_phase += u64::from(self.sample.sample_rate()) * self.playback_rate.numerator;
+		self.source_frame += self.rate_phase / phase_denominator;
+		self.rate_phase %= phase_denominator;
+
+		if self.playback_mode == SamplePlaybackMode::Loop {
+			self.source_frame %= frame_count;
+		} else if self.source_frame >= frame_count {
+			self.finished = true;
+		}
+		true
+	}
 }
 
 /// The `AudioGraphPlayer` struct retains one loaded source and its compiled
@@ -331,6 +357,8 @@ struct AudioGraphPlayer {
 	handle: Handle,
 	sample: SampleNode,
 	processors: RuntimeAudioProcessors,
+	muted: bool,
+	muted_drain_latency: usize,
 	drain_remaining: Option<usize>,
 }
 
@@ -340,6 +368,8 @@ impl AudioGraphPlayer {
 			handle,
 			sample: SampleNode::new(sample, render_plan.playback_mode, render_plan.playback_rate),
 			processors: render_plan.processors,
+			muted: render_plan.muted,
+			muted_drain_latency: render_plan.muted_drain_latency,
 			drain_remaining: None,
 		}
 	}
@@ -347,6 +377,20 @@ impl AudioGraphPlayer {
 	/// Renders one graph period by processing each source sample through the
 	/// precompiled scalar node chain before mixing it into the destination.
 	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
+		if self.muted {
+			for _ in buffer {
+				if self.sample.advance(output_sample_rate) {
+					continue;
+				}
+				let remaining = self.drain_remaining.get_or_insert(self.muted_drain_latency);
+				if *remaining == 0 {
+					break;
+				}
+				*remaining -= 1;
+			}
+			return;
+		}
+
 		for destination in buffer {
 			let mut sample = match self.sample.next(output_sample_rate) {
 				Some(sample) => sample,
@@ -369,6 +413,9 @@ impl AudioGraphPlayer {
 	}
 
 	fn finished(&self) -> bool {
+		if self.muted {
+			return self.sample.finished && (self.muted_drain_latency == 0 || self.drain_remaining == Some(0));
+		}
 		self.sample.finished
 			&& (self.drain_remaining == Some(0) || self.processors.iter().all(|processor| processor.latency() == 0))
 	}
@@ -503,9 +550,24 @@ mod tests {
 				playback_mode,
 				playback_rate,
 				processors: processors.into_iter().collect(),
+				muted: false,
+				muted_drain_latency: 0,
 			}
 			.prepare(),
 		)
+	}
+
+	fn muted_graph_player(
+		samples: &[f32],
+		source_rate: u32,
+		playback_mode: SamplePlaybackMode,
+		playback_rate: PlaybackRate,
+		drain_latency: usize,
+	) -> AudioGraphPlayer {
+		let mut player = graph_player(samples, source_rate, playback_mode, playback_rate, []);
+		player.muted = true;
+		player.muted_drain_latency = drain_latency;
+		player
 	}
 
 	fn assert_samples_close(actual: &[f32], expected: &[f32]) {
@@ -619,6 +681,28 @@ mod tests {
 		slower.render(4, &mut slower_output);
 		assert_eq!(slower_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
 		assert!(slower.finished());
+	}
+
+	#[test]
+	fn muted_graph_advances_timing_without_touching_the_mix_buffer() {
+		let mut player = muted_graph_player(
+			&[1.0, 2.0, 3.0],
+			4,
+			SamplePlaybackMode::Once,
+			PlaybackRate {
+				numerator: 1,
+				denominator: 2,
+			},
+			2,
+		);
+		let mut buffer = [0.25; 8];
+
+		player.render(4, &mut buffer);
+
+		assert_eq!(buffer, [0.25; 8]);
+		assert!(player.sample.finished);
+		assert_eq!(player.drain_remaining, Some(0));
+		assert!(player.finished());
 	}
 
 	#[test]

@@ -45,25 +45,30 @@ pub fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 
 /// Repeats the input graph until its lifecycle handle is deleted.
 ///
+/// If the input already ends in a loop node, this returns it directly without
+/// adding another node.
+///
 /// Next, pass the graph to [`gain`] or publish it through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 ///
 /// # Panics
 ///
-/// Panics if the input graph already contains 64 nodes.
+/// Panics if a non-looping input graph already contains 64 nodes.
 pub fn r#loop(input: AudioGraph) -> AudioGraph {
 	input.looping()
 }
 
 /// Applies a linear gain to every sample produced by the input graph.
 ///
+/// A gain of `1.0` returns the input directly without a gain node.
+///
 /// Next, publish the graph through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 ///
 /// # Panics
 ///
-/// Panics if `gain` is negative, infinite, or not a number, or if the input
-/// graph already contains 64 nodes.
+/// Panics if `gain` is negative, infinite, or not a number. For a non-unity
+/// gain, also panics if the input graph already contains 64 nodes.
 pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 	input.with_gain(gain)
 }

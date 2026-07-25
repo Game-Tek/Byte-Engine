@@ -13,6 +13,15 @@ fn eliminate_identity_nodes(graph: &mut AudioGraph) {
 		let replacement = match &**node {
 			AudioNode::RoundRobin(node) if node.inputs.len() == 1 => node.inputs[0],
 			AudioNode::Random(node) if node.inputs.len() == 1 => node.inputs[0],
+			AudioNode::Loop { input }
+				if graph
+					.nodes
+					.get(input.0)
+					.is_some_and(|node| matches!(&**node, AudioNode::Loop { .. })) =>
+			{
+				*input
+			}
+			AudioNode::Gain { input, gain } if *gain == 1.0 => *input,
 			AudioNode::Varispeed { input, rate } if *rate == 1.0 => *input,
 			AudioNode::PitchShift { input, ratio } if *ratio == 1.0 => *input,
 			_ => return None,

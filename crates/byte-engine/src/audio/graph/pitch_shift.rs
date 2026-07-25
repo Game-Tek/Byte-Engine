@@ -5,6 +5,7 @@ use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 use super::RuntimeAudioProcessor;
 
 const WINDOW_SIZE: usize = 1024;
+pub(super) const PITCH_SHIFT_LATENCY: usize = WINDOW_SIZE;
 const HOP_SIZE: usize = WINDOW_SIZE / 8;
 const BIN_COUNT: usize = WINDOW_SIZE / 2 + 1;
 
@@ -57,7 +58,7 @@ impl PitchShiftProcessor {
 	}
 
 	pub(super) fn latency(&self) -> usize {
-		WINDOW_SIZE
+		PITCH_SHIFT_LATENCY
 	}
 
 	/// Buffers one sample and periodically transforms a complete overlapping

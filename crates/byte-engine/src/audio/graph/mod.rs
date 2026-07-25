@@ -151,6 +151,9 @@ impl AudioGraph {
 
 	/// Appends a loop node and makes it the graph output.
 	fn looping(mut self) -> Self {
+		if matches!(&*self.nodes[self.output.0], AudioNode::Loop { .. }) {
+			return self;
+		}
 		let input = self.output;
 		self.push(AudioNode::Loop { input });
 		self
@@ -162,6 +165,9 @@ impl AudioGraph {
 			gain.is_finite() && gain >= 0.0,
 			"Invalid audio graph gain. The gain must be finite and non-negative."
 		);
+		if gain == 1.0 {
+			return self;
+		}
 		let input = self.output;
 		self.push(AudioNode::Gain { input, gain });
 		self
@@ -380,6 +386,8 @@ impl AudioGraph {
 				playback_mode: SamplePlaybackMode::Once,
 				playback_rate: PlaybackRate::UNITY,
 				processors: SmallVec::new(),
+				muted: false,
+				muted_drain_latency: 0,
 			}),
 			AudioNode::RoundRobin(node) => {
 				let selected = node.inputs[node.next_index % node.inputs.len()];
@@ -398,7 +406,16 @@ impl AudioGraph {
 			}
 			AudioNode::Gain { input, gain } => {
 				let mut compiled = self.compile_selected(*input, selector_commits)?;
-				compiled.processors.push(AudioProcessor::Gain(*gain));
+				if *gain == 0.0 {
+					// A mute still needs its source timeline and selector state,
+					// but no processor below or above it can affect the output.
+					compiled.muted = true;
+					compiled.muted_drain_latency +=
+						compiled.processors.iter().map(|processor| processor.latency()).sum::<usize>();
+					compiled.processors.clear();
+				} else if !compiled.muted {
+					compiled.processors.push(AudioProcessor::Gain(*gain));
+				}
 				Ok(compiled)
 			}
 			AudioNode::Varispeed { input, rate } => {
@@ -409,7 +426,12 @@ impl AudioGraph {
 			AudioNode::PitchShift { input, ratio } => {
 				let mut compiled = self.compile_selected(*input, selector_commits)?;
 				if *ratio != 1.0 {
-					compiled.processors.push(AudioProcessor::PitchShift(*ratio));
+					let processor = AudioProcessor::PitchShift(*ratio);
+					if compiled.muted {
+						compiled.muted_drain_latency += processor.latency();
+					} else {
+						compiled.processors.push(processor);
+					}
 				}
 				Ok(compiled)
 			}
@@ -643,6 +665,8 @@ pub(crate) struct CompiledAudioGraph {
 	pub(crate) playback_mode: SamplePlaybackMode,
 	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: AudioProcessors,
+	pub(crate) muted: bool,
+	pub(crate) muted_drain_latency: usize,
 }
 
 impl CompiledAudioGraph {
@@ -655,6 +679,8 @@ impl CompiledAudioGraph {
 				playback_mode: self.playback_mode,
 				playback_rate: self.playback_rate,
 				processors: self.processors,
+				muted: self.muted,
+				muted_drain_latency: self.muted_drain_latency,
 			},
 		)
 	}
@@ -667,6 +693,8 @@ pub(crate) struct AudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
 	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: AudioProcessors,
+	pub(crate) muted: bool,
+	pub(crate) muted_drain_latency: usize,
 }
 
 /// Selects what happens when the graph's sample reaches its final frame.
@@ -717,6 +745,14 @@ pub(crate) enum AudioProcessor {
 }
 
 impl AudioProcessor {
+	/// Returns the output tail that must elapse after the source ends.
+	fn latency(&self) -> usize {
+		match self {
+			Self::Gain(_) => 0,
+			Self::PitchShift(_) => pitch_shift::PITCH_SHIFT_LATENCY,
+		}
+	}
+
 	/// Prepares this processor before it crosses to the audio worker.
 	pub(crate) fn prepare(self) -> SmallBox<dyn RuntimeAudioProcessor + Send, S4> {
 		match self {
@@ -764,6 +800,8 @@ impl AudioGraphRenderPlan {
 			playback_mode: self.playback_mode,
 			playback_rate: self.playback_rate,
 			processors: self.processors.into_iter().map(AudioProcessor::prepare).collect(),
+			muted: self.muted,
+			muted_drain_latency: self.muted_drain_latency,
 		}
 	}
 }
@@ -774,12 +812,15 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
 	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: RuntimeAudioProcessors,
+	pub(crate) muted: bool,
+	pub(crate) muted_drain_latency: usize,
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
 		fns::{gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
+		pitch_shift::PITCH_SHIFT_LATENCY,
 		AudioGraph, AudioGraphFactory, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph, PlaybackRate, RandomNode,
 		RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
 	};
@@ -828,6 +869,7 @@ mod tests {
 		assert!(!graph.nodes.iter().any(|node| {
 			matches!(&**node, AudioNode::RoundRobin(node) if node.inputs.len() == 1)
 				|| matches!(&**node, AudioNode::Random(node) if node.inputs.len() == 1)
+				|| matches!(&**node, AudioNode::Gain { gain: 1.0, .. })
 				|| matches!(&**node, AudioNode::Varispeed { rate: 1.0, .. })
 				|| matches!(&**node, AudioNode::PitchShift { ratio: 1.0, .. })
 		}));
@@ -837,9 +879,18 @@ mod tests {
 	fn maximum_node_chain() -> AudioGraph {
 		let mut input = sample("audio/a.wav");
 		for _ in 1..MAX_AUDIO_GRAPH_NODES {
-			input = gain(input, 1.0);
+			input = gain(input, 0.5);
 		}
 		input
+	}
+
+	/// Builds the largest graph whose output is already looping.
+	fn maximum_looping_chain() -> AudioGraph {
+		let mut input = sample("audio/a.wav");
+		for _ in 1..MAX_AUDIO_GRAPH_NODES - 1 {
+			input = gain(input, 0.5);
+		}
+		r#loop(input)
 	}
 
 	#[test]
@@ -853,6 +904,35 @@ mod tests {
 		assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
 		assert!(!compiled.processors.spilled());
 		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
+	}
+
+	#[test]
+	fn unity_gain_and_duplicate_loop_are_eliminated() {
+		let gain_graph = gain(gain(sample("audio/music.ogg"), 0.5), 1.0);
+		assert_eq!(gain_graph.nodes.len(), 2);
+		assert_eq!(
+			gain_graph
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::Gain { .. }))
+				.count(),
+			1
+		);
+
+		let loop_graph = r#loop(r#loop(sample("audio/music.ogg")));
+		assert_eq!(loop_graph.nodes.len(), 2);
+		assert_eq!(
+			loop_graph
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::Loop { .. }))
+				.count(),
+			1
+		);
+		assert_eq!(
+			loop_graph.compile().expect("valid graph").playback_mode,
+			SamplePlaybackMode::Loop
+		);
 	}
 
 	#[test]
@@ -1095,6 +1175,10 @@ mod tests {
 			inputs: round_robin_inputs,
 			next_index: 0,
 		})));
+		assert_factory_eliminates_identity_node(AudioNode::Gain {
+			input: AudioNodeId(0),
+			gain: 1.0,
+		});
 		assert_factory_eliminates_identity_node(AudioNode::Varispeed {
 			input: AudioNodeId(0),
 			rate: 1.0,
@@ -1103,6 +1187,36 @@ mod tests {
 			input: AudioNodeId(0),
 			ratio: 1.0,
 		});
+	}
+
+	#[test]
+	fn factory_optimization_reconnects_consumers_of_duplicate_loops() {
+		let mut graph = sample("audio/a.wav");
+		graph.push(AudioNode::Loop { input: AudioNodeId(0) });
+		graph.push(AudioNode::Loop { input: AudioNodeId(1) });
+		graph.push(AudioNode::Gain {
+			input: AudioNodeId(2),
+			gain: 0.5,
+		});
+		assert_eq!(graph.nodes.len(), 4);
+		let mut factory = AudioGraphFactory::new();
+
+		factory.create(&mut graph);
+
+		assert_eq!(graph.nodes.len(), 3);
+		assert_eq!(graph.output, AudioNodeId(2));
+		let AudioNode::Gain { input, .. } = &*graph.nodes[graph.output.0] else {
+			panic!("optimized output must remain a gain node");
+		};
+		assert_eq!(*input, AudioNodeId(1));
+		assert_eq!(
+			graph
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::Loop { .. }))
+				.count(),
+			1
+		);
 	}
 
 	#[test]
@@ -1134,6 +1248,24 @@ mod tests {
 			.nodes
 			.iter()
 			.any(|node| matches!(&**node, AudioNode::PitchShift { .. })));
+
+		let optimized_gain = gain(maximum_node_chain(), 1.0);
+		assert_eq!(optimized_gain.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert!(!optimized_gain
+			.nodes
+			.iter()
+			.any(|node| matches!(&**node, AudioNode::Gain { gain: 1.0, .. })));
+
+		let optimized_loop = r#loop(maximum_looping_chain());
+		assert_eq!(optimized_loop.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert_eq!(
+			optimized_loop
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::Loop { .. }))
+				.count(),
+			1
+		);
 	}
 
 	#[test]
@@ -1237,6 +1369,25 @@ mod tests {
 		);
 		let unity = unity_graph.compile().expect("valid graph");
 		assert_eq!(&unity.processors[..], &[AudioProcessor::PitchShift(2.0)]);
+	}
+
+	#[test]
+	fn zero_gain_compiles_to_a_muted_timeline_without_processors() {
+		let compiled = pitch_shift(gain(varispeed(sample("audio/music.ogg"), 1.5), 0.0), 2.0)
+			.compile()
+			.expect("valid graph");
+
+		assert!(compiled.muted);
+		assert!(compiled.processors.is_empty());
+		assert_eq!(compiled.playback_rate, PlaybackRate::from_rate(1.5));
+		assert_eq!(compiled.muted_drain_latency, PITCH_SHIFT_LATENCY);
+
+		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.0)
+			.compile()
+			.expect("valid graph");
+		assert!(compiled.muted);
+		assert!(compiled.processors.is_empty());
+		assert_eq!(compiled.muted_drain_latency, PITCH_SHIFT_LATENCY);
 	}
 
 	#[test]

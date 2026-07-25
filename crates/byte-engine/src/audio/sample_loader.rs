@@ -483,6 +483,8 @@ mod tests {
 			playback_mode,
 			playback_rate: PlaybackRate::UNITY,
 			processors: processors.into_iter().collect(),
+			muted: false,
+			muted_drain_latency: 0,
 		}
 		.prepare()
 	}

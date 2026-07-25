@@ -358,7 +358,7 @@ struct AudioGraphPlayer {
 	sample: SampleNode,
 	processors: RuntimeAudioProcessors,
 	muted: bool,
-	muted_drain_latency: usize,
+	drain_latency: usize,
 	drain_remaining: Option<usize>,
 }
 
@@ -369,7 +369,7 @@ impl AudioGraphPlayer {
 			sample: SampleNode::new(sample, render_plan.playback_mode, render_plan.playback_rate),
 			processors: render_plan.processors,
 			muted: render_plan.muted,
-			muted_drain_latency: render_plan.muted_drain_latency,
+			drain_latency: render_plan.drain_latency,
 			drain_remaining: None,
 		}
 	}
@@ -382,7 +382,7 @@ impl AudioGraphPlayer {
 				if self.sample.advance(output_sample_rate) {
 					continue;
 				}
-				let remaining = self.drain_remaining.get_or_insert(self.muted_drain_latency);
+				let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
 				if *remaining == 0 {
 					break;
 				}
@@ -395,9 +395,7 @@ impl AudioGraphPlayer {
 			let mut sample = match self.sample.next(output_sample_rate) {
 				Some(sample) => sample,
 				None => {
-					let remaining = self
-						.drain_remaining
-						.get_or_insert_with(|| self.processors.iter().map(|processor| processor.latency()).sum());
+					let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
 					if *remaining == 0 {
 						break;
 					}
@@ -413,11 +411,7 @@ impl AudioGraphPlayer {
 	}
 
 	fn finished(&self) -> bool {
-		if self.muted {
-			return self.sample.finished && (self.muted_drain_latency == 0 || self.drain_remaining == Some(0));
-		}
-		self.sample.finished
-			&& (self.drain_remaining == Some(0) || self.processors.iter().all(|processor| processor.latency() == 0))
+		self.sample.finished && (self.drain_latency == 0 || self.drain_remaining == Some(0))
 	}
 }
 
@@ -566,7 +560,7 @@ mod tests {
 	) -> AudioGraphPlayer {
 		let mut player = graph_player(samples, source_rate, playback_mode, playback_rate, []);
 		player.muted = true;
-		player.muted_drain_latency = drain_latency;
+		player.drain_latency = drain_latency;
 		player
 	}
 

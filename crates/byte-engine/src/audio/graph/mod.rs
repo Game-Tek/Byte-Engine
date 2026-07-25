@@ -766,7 +766,6 @@ impl AudioProcessor {
 /// processing after a graph has been prepared.
 pub(crate) trait RuntimeAudioProcessor {
 	fn process(&mut self, sample: f32) -> f32;
-	fn latency(&self) -> usize;
 
 	#[cfg(test)]
 	fn gain_for_test(&self) -> Option<f32> {
@@ -783,10 +782,6 @@ impl RuntimeAudioProcessor for GainProcessor {
 		sample * self.0
 	}
 
-	fn latency(&self) -> usize {
-		0
-	}
-
 	#[cfg(test)]
 	fn gain_for_test(&self) -> Option<f32> {
 		Some(self.0)
@@ -796,12 +791,15 @@ impl RuntimeAudioProcessor for GainProcessor {
 impl AudioGraphRenderPlan {
 	/// Allocates stateful processors on the loader task before playback.
 	pub(crate) fn prepare(self) -> PreparedAudioGraphRenderPlan {
+		// Keep latency accounting off the audio worker. Muted plans already
+		// carry the latency of processors removed during compilation.
+		let drain_latency = self.muted_drain_latency + self.processors.iter().map(AudioProcessor::latency).sum::<usize>();
 		PreparedAudioGraphRenderPlan {
 			playback_mode: self.playback_mode,
 			playback_rate: self.playback_rate,
 			processors: self.processors.into_iter().map(AudioProcessor::prepare).collect(),
 			muted: self.muted,
-			muted_drain_latency: self.muted_drain_latency,
+			drain_latency,
 		}
 	}
 }
@@ -813,7 +811,7 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: RuntimeAudioProcessors,
 	pub(crate) muted: bool,
-	pub(crate) muted_drain_latency: usize,
+	pub(crate) drain_latency: usize,
 }
 
 #[cfg(test)]
@@ -1433,6 +1431,7 @@ mod tests {
 		assert!(prepared.processors[0].is_heap());
 		assert!(!prepared.processors[1].is_heap());
 		assert!(!prepared.processors.spilled());
+		assert_eq!(prepared.drain_latency, PITCH_SHIFT_LATENCY);
 	}
 
 	#[test]

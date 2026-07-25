@@ -57,10 +57,6 @@ impl PitchShiftProcessor {
 		}
 	}
 
-	pub(super) fn latency(&self) -> usize {
-		PITCH_SHIFT_LATENCY
-	}
-
 	/// Buffers one sample and periodically transforms a complete overlapping
 	/// frame. Every buffer is allocated during construction.
 	pub(super) fn process(&mut self, sample: f32) -> f32 {
@@ -135,10 +131,6 @@ impl PitchShiftProcessor {
 impl RuntimeAudioProcessor for PitchShiftProcessor {
 	fn process(&mut self, sample: f32) -> f32 {
 		PitchShiftProcessor::process(self, sample)
-	}
-
-	fn latency(&self) -> usize {
-		PitchShiftProcessor::latency(self)
 	}
 }
 

@@ -712,6 +712,51 @@ mod tests {
 	}
 
 	#[test]
+	fn shared_descriptor_sets_ignore_resources_outside_the_active_pipeline() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let active_slot = crate::ResourceSlot::new(0);
+		let inactive_slot = crate::ResourceSlot::new(5);
+		let active_resource = crate::ShaderResourceDescriptor::single(
+			active_slot,
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let set = device.create_descriptor_set(None);
+		let active_image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let inactive_image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[
+			crate::DescriptorWrite::image(set, active_slot, active_image, crate::Layouts::General),
+			crate::DescriptorWrite::image(set, inactive_slot, inactive_image, crate::Layouts::General),
+		]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[active_resource],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		device.validate_descriptor_sets(pipeline, &[set], 0);
+		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+
+		assert_eq!(device.image_uav_descriptor_write_count(), 1);
+	}
+
+	#[test]
 	fn debug_regions_encode_native_command_list_events() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;

@@ -5756,11 +5756,11 @@ impl Device {
 		for &set_handle in &sequence_sets {
 			let set = &self.descriptor_sets[set_handle.0 as usize];
 			for &slot in set.descriptors.keys() {
-				assert!(
-					occupied_slots.insert(slot),
-					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
-				);
 				if layout.resources.iter().any(|resource| resource.descriptor.slot() == slot) {
+					assert!(
+						occupied_slots.insert(slot),
+						"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
+					);
 					continue;
 				}
 				let is_array_interior = layout.resources.iter().any(|resource| {
@@ -5772,10 +5772,7 @@ impl Device {
 					!is_array_interior,
 					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
 				);
-				panic!(
-					"Unknown retained descriptor slot {}. The most likely cause is that the bound set was written for a different pipeline interface.",
-					slot.index(),
-				);
+				// Retained sets can be shared by several passes, so descriptors outside this pipeline interface remain dormant.
 			}
 		}
 

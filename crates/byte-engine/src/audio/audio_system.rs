@@ -286,11 +286,29 @@ impl SampleNode {
 		}
 	}
 
-	/// Produces one output sample with exact rational phase accumulation. Linear
-	/// interpolation wraps at a loop boundary and clamps at a one-shot boundary.
+	/// Produces one output sample with exact rational phase accumulation.
+	#[cfg(test)]
 	fn next(&mut self, output_sample_rate: u32) -> Option<f32> {
+		let mut output = 0.0;
+		(self.process_block(output_sample_rate, 1, |_, sample| output = sample) == 1).then_some(output)
+	}
+
+	/// Writes a block of resampled source data and returns its valid length.
+	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) -> usize {
+		self.process_block(output_sample_rate, buffer.len(), |index, sample| buffer[index] = sample)
+	}
+
+	/// Mixes a block directly into its destination and returns the number of
+	/// source samples produced.
+	fn mix(&mut self, output_sample_rate: u32, buffer: &mut [f32]) -> usize {
+		self.process_block(output_sample_rate, buffer.len(), |index, sample| buffer[index] += sample)
+	}
+
+	/// Resamples one block while reusing rate constants for every output sample.
+	/// Linear interpolation wraps loops and clamps one-shot boundaries.
+	fn process_block(&mut self, output_sample_rate: u32, sample_count: usize, mut consume: impl FnMut(usize, f32)) -> usize {
 		if self.finished {
-			return None;
+			return 0;
 		}
 
 		let frame_count = self.sample.frame_count() as u64;
@@ -298,60 +316,72 @@ impl SampleNode {
 		let source_sample_rate = u64::from(self.sample.sample_rate());
 		if self.source_frame >= frame_count {
 			self.finished = true;
-			return None;
+			return 0;
 		}
-
-		let current_frame = self.source_frame as usize;
-		let next_frame = if self.source_frame + 1 < frame_count {
-			current_frame + 1
-		} else if self.playback_mode == SamplePlaybackMode::Loop {
-			0
-		} else {
-			current_frame
-		};
-		let current = self.sample.mono_frame(current_frame);
-		let next = self.sample.mono_frame(next_frame);
 		let phase_denominator = output_sample_rate * self.playback_rate.denominator;
-		let fraction = self.rate_phase as f32 / phase_denominator as f32;
-		let output = current + (next - current) * fraction;
+		let phase_increment = source_sample_rate * self.playback_rate.numerator;
+		let mut rendered = 0;
 
-		self.rate_phase += source_sample_rate * self.playback_rate.numerator;
-		self.source_frame += self.rate_phase / phase_denominator;
-		self.rate_phase %= phase_denominator;
+		for index in 0..sample_count {
+			let current_frame = self.source_frame as usize;
+			let next_frame = if self.source_frame + 1 < frame_count {
+				current_frame + 1
+			} else if self.playback_mode == SamplePlaybackMode::Loop {
+				0
+			} else {
+				current_frame
+			};
+			let current = self.sample.mono_frame(current_frame);
+			let next = self.sample.mono_frame(next_frame);
+			let fraction = self.rate_phase as f32 / phase_denominator as f32;
+			consume(index, current + (next - current) * fraction);
+			rendered += 1;
 
-		if self.playback_mode == SamplePlaybackMode::Loop {
-			self.source_frame %= frame_count;
-		} else if self.source_frame >= frame_count {
-			self.finished = true;
+			self.rate_phase += phase_increment;
+			self.source_frame += self.rate_phase / phase_denominator;
+			self.rate_phase %= phase_denominator;
+
+			if self.playback_mode == SamplePlaybackMode::Loop {
+				self.source_frame %= frame_count;
+			} else if self.source_frame >= frame_count {
+				self.finished = true;
+				break;
+			}
 		}
 
-		Some(output)
+		rendered
 	}
 
-	/// Advances one output frame without reading sample data. Muted graphs use
-	/// this path to preserve playback timing without doing unnecessary mixing.
-	fn advance(&mut self, output_sample_rate: u32) -> bool {
-		if self.finished {
-			return false;
+	/// Advances a muted timeline for a complete output block without reading
+	/// sample data or iterating over individual frames.
+	fn advance_muted(&mut self, output_sample_rate: u32, sample_count: usize) -> usize {
+		if self.finished || sample_count == 0 {
+			return 0;
 		}
 
 		let frame_count = self.sample.frame_count() as u64;
 		if self.source_frame >= frame_count {
 			self.finished = true;
-			return false;
+			return 0;
+		}
+		if self.playback_mode == SamplePlaybackMode::Loop {
+			// A permanently muted loop has no observable source position and
+			// remains alive until its lifecycle handle is deleted.
+			return sample_count;
 		}
 
-		let phase_denominator = u64::from(output_sample_rate) * self.playback_rate.denominator;
-		self.rate_phase += u64::from(self.sample.sample_rate()) * self.playback_rate.numerator;
-		self.source_frame += self.rate_phase / phase_denominator;
-		self.rate_phase %= phase_denominator;
-
-		if self.playback_mode == SamplePlaybackMode::Loop {
-			self.source_frame %= frame_count;
-		} else if self.source_frame >= frame_count {
+		let phase_denominator = u128::from(output_sample_rate) * u128::from(self.playback_rate.denominator);
+		let phase_increment = u128::from(self.sample.sample_rate()) * u128::from(self.playback_rate.numerator);
+		let phase_to_end = u128::from(frame_count - self.source_frame) * phase_denominator - u128::from(self.rate_phase);
+		let samples_to_end = phase_to_end.div_ceil(phase_increment);
+		let advanced = u128::try_from(sample_count).unwrap().min(samples_to_end);
+		let accumulated_phase = u128::from(self.rate_phase) + advanced * phase_increment;
+		self.source_frame += u64::try_from(accumulated_phase / phase_denominator).unwrap();
+		self.rate_phase = u64::try_from(accumulated_phase % phase_denominator).unwrap();
+		if self.source_frame >= frame_count {
 			self.finished = true;
 		}
-		true
+		usize::try_from(advanced).unwrap()
 	}
 }
 
@@ -383,43 +413,28 @@ impl AudioGraphPlayer {
 	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
 		debug_assert_eq!(buffer.len(), graph_buffer.len());
 		if self.muted {
-			for _ in buffer {
-				if self.sample.advance(output_sample_rate) {
-					continue;
-				}
+			let advanced = self.sample.advance_muted(output_sample_rate, buffer.len());
+			if advanced < buffer.len() {
 				let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
-				if *remaining == 0 {
-					break;
-				}
-				*remaining -= 1;
+				let drained = (*remaining).min(buffer.len() - advanced);
+				*remaining -= drained;
 			}
 			return;
 		}
 
 		if self.processors.is_empty() {
-			for destination in buffer {
-				let Some(sample) = self.sample.next(output_sample_rate) else {
-					break;
-				};
-				*destination += sample;
-			}
+			self.sample.mix(output_sample_rate, buffer);
 			return;
 		}
 
-		let mut rendered_sample_count = 0;
-		for graph_sample in &mut *graph_buffer {
-			*graph_sample = match self.sample.next(output_sample_rate) {
-				Some(sample) => sample,
-				None => {
-					let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
-					if *remaining == 0 {
-						break;
-					}
-					*remaining -= 1;
-					0.0
-				}
-			};
-			rendered_sample_count += 1;
+		let source_sample_count = self.sample.render(output_sample_rate, graph_buffer);
+		let mut rendered_sample_count = source_sample_count;
+		if source_sample_count < graph_buffer.len() {
+			let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
+			let drained = (*remaining).min(graph_buffer.len() - source_sample_count);
+			graph_buffer[source_sample_count..source_sample_count + drained].fill(0.0);
+			*remaining -= drained;
+			rendered_sample_count += drained;
 		}
 
 		let rendered = &mut graph_buffer[..rendered_sample_count];
@@ -723,6 +738,45 @@ mod tests {
 		assert!(player.sample.finished);
 		assert_eq!(player.drain_remaining, Some(0));
 		assert!(player.finished());
+	}
+
+	#[test]
+	fn muted_one_shot_bulk_advance_matches_sample_by_sample_timing() {
+		let rate = PlaybackRate {
+			numerator: 3,
+			denominator: 2,
+		};
+		let mut expected = SampleNode::new(
+			Arc::new(LoadedAudioSample::from_normalized_samples(
+				5,
+				1,
+				vec![0.0; 7].into_boxed_slice(),
+			)),
+			SamplePlaybackMode::Once,
+			rate,
+		);
+		let mut actual = SampleNode::new(expected.sample.clone(), SamplePlaybackMode::Once, rate);
+
+		let expected_count = (0..16).take_while(|_| expected.next(8).is_some()).count();
+		let actual_count = actual.advance_muted(8, 16);
+
+		assert_eq!(actual_count, expected_count);
+		assert_eq!(actual.source_frame, expected.source_frame);
+		assert_eq!(actual.rate_phase, expected.rate_phase);
+		assert_eq!(actual.finished, expected.finished);
+	}
+
+	#[test]
+	fn muted_loop_skips_source_timeline_work() {
+		let mut player = muted_graph_player(&[1.0, 2.0, 3.0], 48_000, SamplePlaybackMode::Loop, PlaybackRate::UNITY, 0);
+		let mut buffer = [0.25; 64];
+
+		render_graph(&mut player, 48_000, &mut buffer);
+
+		assert_eq!(buffer, [0.25; 64]);
+		assert_eq!(player.sample.source_frame, 0);
+		assert_eq!(player.sample.rate_phase, 0);
+		assert!(!player.finished());
 	}
 
 	#[test]

@@ -414,7 +414,22 @@ impl AudioGraph {
 						compiled.processors.iter().map(|processor| processor.latency()).sum::<usize>();
 					compiled.processors.clear();
 				} else if !compiled.muted {
-					compiled.processors.push(AudioProcessor::Gain(*gain));
+					// Adjacent gains are one linear operation. Keep separate
+					// processors if their product cannot remain a finite gain.
+					let fused = if let Some(AudioProcessor::Gain(input_gain)) = compiled.processors.last_mut() {
+						let combined_gain = *input_gain * *gain;
+						if combined_gain.is_finite() {
+							*input_gain = combined_gain;
+							true
+						} else {
+							false
+						}
+					} else {
+						false
+					};
+					if !fused {
+						compiled.processors.push(AudioProcessor::Gain(*gain));
+					}
 				}
 				Ok(compiled)
 			}
@@ -963,11 +978,7 @@ mod tests {
 		assert_eq!(first.data().playback_mode, SamplePlaybackMode::Loop);
 		assert_eq!(
 			&first.data().processors[..],
-			&[
-				AudioProcessor::PitchShift(0.5),
-				AudioProcessor::Gain(0.5),
-				AudioProcessor::Gain(0.25)
-			]
+			&[AudioProcessor::PitchShift(0.5), AudioProcessor::Gain(0.125)]
 		);
 		assert_eq!(second.data().resource_id, "audio/b.wav");
 		assert_eq!(second.data().playback_rate.numerator, 3);
@@ -1087,10 +1098,7 @@ mod tests {
 			match compiled.resource_id.as_str() {
 				"audio/a.wav" => {
 					assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
-					assert_eq!(
-						&compiled.processors[..],
-						&[AudioProcessor::Gain(0.5), AudioProcessor::Gain(0.25)]
-					);
+					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.125)]);
 				}
 				"audio/b.wav" => {
 					assert_eq!(compiled.playback_rate, PlaybackRate::from_rate(1.5));
@@ -1369,6 +1377,26 @@ mod tests {
 		);
 		let unity = unity_graph.compile().expect("valid graph");
 		assert_eq!(&unity.processors[..], &[AudioProcessor::PitchShift(2.0)]);
+	}
+
+	#[test]
+	fn consecutive_gains_compile_to_one_processor() {
+		let compiled = gain(gain(sample("audio/music.ogg"), 0.5), 0.25)
+			.compile()
+			.expect("valid graph");
+		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.125)]);
+
+		let separated = gain(pitch_shift(gain(sample("audio/music.ogg"), 0.5), 2.0), 0.25)
+			.compile()
+			.expect("valid graph");
+		assert_eq!(
+			&separated.processors[..],
+			&[
+				AudioProcessor::Gain(0.5),
+				AudioProcessor::PitchShift(2.0),
+				AudioProcessor::Gain(0.25),
+			]
+		);
 	}
 
 	#[test]

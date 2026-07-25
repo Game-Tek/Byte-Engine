@@ -304,6 +304,13 @@ impl SampleNode {
 		self.process_block(output_sample_rate, buffer.len(), |index, sample| buffer[index] += sample)
 	}
 
+	/// Scales and mixes a source block in one traversal.
+	fn mix_scaled(&mut self, output_sample_rate: u32, buffer: &mut [f32], gain: f32) -> usize {
+		self.process_block(output_sample_rate, buffer.len(), |index, sample| {
+			buffer[index] += sample * gain
+		})
+	}
+
 	/// Resamples one block while reusing rate constants for every output sample.
 	/// Linear interpolation wraps loops and clamps one-shot boundaries.
 	fn process_block(&mut self, output_sample_rate: u32, sample_count: usize, mut consume: impl FnMut(usize, f32)) -> usize {
@@ -391,6 +398,7 @@ struct AudioGraphPlayer {
 	handle: Handle,
 	sample: SampleNode,
 	processors: RuntimeAudioProcessors,
+	output_gain: f32,
 	muted: bool,
 	drain_latency: usize,
 	drain_remaining: Option<usize>,
@@ -402,6 +410,7 @@ impl AudioGraphPlayer {
 			handle,
 			sample: SampleNode::new(sample, render_plan.playback_mode, render_plan.playback_rate),
 			processors: render_plan.processors,
+			output_gain: render_plan.output_gain,
 			muted: render_plan.muted,
 			drain_latency: render_plan.drain_latency,
 			drain_remaining: None,
@@ -423,7 +432,11 @@ impl AudioGraphPlayer {
 		}
 
 		if self.processors.is_empty() {
-			self.sample.mix(output_sample_rate, buffer);
+			if self.output_gain == 1.0 {
+				self.sample.mix(output_sample_rate, buffer);
+			} else {
+				self.sample.mix_scaled(output_sample_rate, buffer, self.output_gain);
+			}
 			return;
 		}
 
@@ -441,8 +454,14 @@ impl AudioGraphPlayer {
 		for processor in &mut self.processors {
 			processor.process(rendered);
 		}
-		for (destination, sample) in buffer.iter_mut().zip(rendered) {
-			*destination += *sample;
+		if self.output_gain == 1.0 {
+			for (destination, sample) in buffer.iter_mut().zip(rendered) {
+				*destination += *sample;
+			}
+		} else {
+			for (destination, sample) in buffer.iter_mut().zip(rendered) {
+				*destination += *sample * self.output_gain;
+			}
 		}
 	}
 

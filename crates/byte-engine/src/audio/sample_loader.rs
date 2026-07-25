@@ -596,12 +596,7 @@ mod tests {
 
 		let mut created = Vec::new();
 		client.update(|handle, _, plan| {
-			let gains = plan
-				.processors
-				.iter()
-				.filter_map(|processor| processor.gain_for_test())
-				.collect::<Vec<_>>();
-			created.push((handle, plan.playback_mode, gains));
+			created.push((handle, plan.playback_mode, plan.output_gain));
 		});
 		assert!(created.is_empty());
 		assert_eq!(client.pending.len(), 1);
@@ -616,14 +611,9 @@ mod tests {
 			})
 			.unwrap();
 		client.update(|handle, _, plan| {
-			let gains = plan
-				.processors
-				.iter()
-				.filter_map(|processor| processor.gain_for_test())
-				.collect::<Vec<_>>();
-			created.push((handle, plan.playback_mode, gains));
+			created.push((handle, plan.playback_mode, plan.output_gain));
 		});
-		assert_eq!(created, [(handle, SamplePlaybackMode::Once, vec![0.25])]);
+		assert_eq!(created, [(handle, SamplePlaybackMode::Once, 0.25)]);
 		assert!(client.pending.is_empty());
 	}
 

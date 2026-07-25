@@ -781,11 +781,6 @@ impl AudioProcessor {
 /// after a graph has been prepared.
 pub(crate) trait RuntimeAudioProcessor {
 	fn process(&mut self, samples: &mut [f32]);
-
-	#[cfg(test)]
-	fn gain_for_test(&self) -> Option<f32> {
-		None
-	}
 }
 
 /// The `GainProcessor` struct keeps one multiplier inline in its runtime node
@@ -798,23 +793,29 @@ impl RuntimeAudioProcessor for GainProcessor {
 			*sample *= self.0;
 		}
 	}
-
-	#[cfg(test)]
-	fn gain_for_test(&self) -> Option<f32> {
-		Some(self.0)
-	}
 }
 
 impl AudioGraphRenderPlan {
 	/// Allocates stateful processors on the loader task before playback.
-	pub(crate) fn prepare(self) -> PreparedAudioGraphRenderPlan {
+	pub(crate) fn prepare(mut self) -> PreparedAudioGraphRenderPlan {
 		// Keep latency accounting off the audio worker. Muted plans already
 		// carry the latency of processors removed during compilation.
 		let drain_latency = self.muted_drain_latency + self.processors.iter().map(AudioProcessor::latency).sum::<usize>();
+		// The mixer can apply a terminal gain while adding the graph block to
+		// the destination, avoiding a separate traversal of that block.
+		let output_gain = match self.processors.last() {
+			Some(AudioProcessor::Gain(gain)) => {
+				let gain = *gain;
+				self.processors.pop();
+				gain
+			}
+			Some(AudioProcessor::PitchShift(_)) | None => 1.0,
+		};
 		PreparedAudioGraphRenderPlan {
 			playback_mode: self.playback_mode,
 			playback_rate: self.playback_rate,
 			processors: self.processors.into_iter().map(AudioProcessor::prepare).collect(),
+			output_gain,
 			muted: self.muted,
 			drain_latency,
 		}
@@ -827,6 +828,7 @@ pub(crate) struct PreparedAudioGraphRenderPlan {
 	pub(crate) playback_mode: SamplePlaybackMode,
 	pub(crate) playback_rate: PlaybackRate,
 	pub(crate) processors: RuntimeAudioProcessors,
+	pub(crate) output_gain: f32,
 	pub(crate) muted: bool,
 	pub(crate) drain_latency: usize,
 }
@@ -1452,16 +1454,17 @@ mod tests {
 
 	#[test]
 	fn prepared_processors_keep_small_nodes_inline_and_large_state_node_local() {
-		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.5)
+		let compiled = gain(pitch_shift(gain(sample("audio/music.ogg"), 0.5), 2.0), 0.25)
 			.compile()
 			.expect("valid graph");
 		let (_, render_plan) = compiled.into_parts();
 		let prepared = render_plan.prepare();
 
-		assert!(prepared.processors[0].is_heap());
-		assert!(!prepared.processors[1].is_heap());
+		assert!(!prepared.processors[0].is_heap());
+		assert!(prepared.processors[1].is_heap());
 		assert!(!prepared.processors.spilled());
 		assert_eq!(prepared.drain_latency, PITCH_SHIFT_LATENCY);
+		assert_eq!(prepared.output_gain, 0.25);
 	}
 
 	#[test]

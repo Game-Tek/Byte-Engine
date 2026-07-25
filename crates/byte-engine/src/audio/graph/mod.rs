@@ -737,7 +737,7 @@ impl PlaybackRate {
 	}
 }
 
-/// Describes one allocation-free scalar processor in a compiled graph.
+/// Describes one allocation-free processor in a compiled graph.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AudioProcessor {
 	Gain(f32),
@@ -762,10 +762,10 @@ impl AudioProcessor {
 	}
 }
 
-/// The `RuntimeAudioProcessor` trait provides allocation-free sample
-/// processing after a graph has been prepared.
+/// The `RuntimeAudioProcessor` trait provides allocation-free block processing
+/// after a graph has been prepared.
 pub(crate) trait RuntimeAudioProcessor {
-	fn process(&mut self, sample: f32) -> f32;
+	fn process(&mut self, samples: &mut [f32]);
 
 	#[cfg(test)]
 	fn gain_for_test(&self) -> Option<f32> {
@@ -773,13 +773,15 @@ pub(crate) trait RuntimeAudioProcessor {
 	}
 }
 
-/// The `GainProcessor` struct keeps one scalar multiplier inline in its
-/// runtime node box.
+/// The `GainProcessor` struct keeps one multiplier inline in its runtime node
+/// box for block processing.
 struct GainProcessor(f32);
 
 impl RuntimeAudioProcessor for GainProcessor {
-	fn process(&mut self, sample: f32) -> f32 {
-		sample * self.0
+	fn process(&mut self, samples: &mut [f32]) {
+		for sample in samples {
+			*sample *= self.0;
+		}
 	}
 
 	#[cfg(test)]

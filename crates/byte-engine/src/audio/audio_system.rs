@@ -46,6 +46,7 @@ pub struct DefaultAudioSystem {
 	audio_graphs: Vec<AudioGraphPlayer>,
 	params: HardwareParameters,
 	mix_buffer: Vec<f32>,
+	graph_buffer: Vec<f32>,
 	last_reported_underrun_count: usize,
 	sample_cache_prune_requested: bool,
 }
@@ -71,6 +72,7 @@ impl DefaultAudioSystem {
 			audio_graphs: Vec::with_capacity(AUDIO_GRAPH_CAPACITY),
 			params,
 			mix_buffer: vec![0.0; period_size],
+			graph_buffer: vec![0.0; period_size],
 			last_reported_underrun_count: 0,
 			sample_cache_prune_requested: false,
 		})
@@ -150,9 +152,10 @@ fn render_sources(sources: &[Source], sample_rate: u32, buffer: &mut [f32]) {
 
 /// Mixes resource graphs after procedural generators so both source types use
 /// the same output buffer and clipping boundary.
-fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32]) {
+fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
+	debug_assert!(graph_buffer.len() >= buffer.len());
 	for graph in audio_graphs {
-		graph.render(sample_rate, buffer);
+		graph.render(sample_rate, buffer, &mut graph_buffer[..buffer.len()]);
 	}
 }
 
@@ -166,6 +169,7 @@ impl AudioSystem for DefaultAudioSystem {
 			audio_graphs,
 			params,
 			mix_buffer,
+			graph_buffer,
 			..
 		} = self;
 		let sample_rate = params.get_sample_rate();
@@ -174,13 +178,13 @@ impl AudioSystem for DefaultAudioSystem {
 			Streams::MonoFloat32(buffer) => {
 				buffer.fill(0.0);
 				render_sources(sources, sample_rate, buffer);
-				render_audio_graphs(audio_graphs, sample_rate, buffer);
+				render_audio_graphs(audio_graphs, sample_rate, buffer, graph_buffer);
 			}
 			Streams::Mono16Bit(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
 
 				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*destination = f32_to_i16(*sample);
@@ -190,7 +194,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					let sample = f32_to_i16(*sample);
@@ -202,7 +206,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer);
+				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*left = *sample;
@@ -374,9 +378,10 @@ impl AudioGraphPlayer {
 		}
 	}
 
-	/// Renders one graph period by processing each source sample through the
-	/// precompiled scalar node chain before mixing it into the destination.
-	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32]) {
+	/// Renders one graph period into reusable scratch storage, processes the
+	/// block through each compiled node, then mixes it into the destination.
+	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
+		debug_assert_eq!(buffer.len(), graph_buffer.len());
 		if self.muted {
 			for _ in buffer {
 				if self.sample.advance(output_sample_rate) {
@@ -391,8 +396,19 @@ impl AudioGraphPlayer {
 			return;
 		}
 
-		for destination in buffer {
-			let mut sample = match self.sample.next(output_sample_rate) {
+		if self.processors.is_empty() {
+			for destination in buffer {
+				let Some(sample) = self.sample.next(output_sample_rate) else {
+					break;
+				};
+				*destination += sample;
+			}
+			return;
+		}
+
+		let mut rendered_sample_count = 0;
+		for graph_sample in &mut *graph_buffer {
+			*graph_sample = match self.sample.next(output_sample_rate) {
 				Some(sample) => sample,
 				None => {
 					let remaining = self.drain_remaining.get_or_insert(self.drain_latency);
@@ -403,10 +419,15 @@ impl AudioGraphPlayer {
 					0.0
 				}
 			};
-			for processor in &mut self.processors {
-				sample = processor.process(sample);
-			}
-			*destination += sample;
+			rendered_sample_count += 1;
+		}
+
+		let rendered = &mut graph_buffer[..rendered_sample_count];
+		for processor in &mut self.processors {
+			processor.process(rendered);
+		}
+		for (destination, sample) in buffer.iter_mut().zip(rendered) {
+			*destination += *sample;
 		}
 	}
 
@@ -564,6 +585,11 @@ mod tests {
 		player
 	}
 
+	fn render_graph(player: &mut AudioGraphPlayer, output_sample_rate: u32, buffer: &mut [f32]) {
+		let mut graph_buffer = vec![0.0; buffer.len()];
+		player.render(output_sample_rate, buffer, &mut graph_buffer);
+	}
+
 	fn assert_samples_close(actual: &[f32], expected: &[f32]) {
 		assert_eq!(actual.len(), expected.len());
 		for (actual, expected) in actual.iter().zip(expected) {
@@ -657,7 +683,7 @@ mod tests {
 			[],
 		);
 		let mut faster_output = [0.0; 5];
-		faster.render(4, &mut faster_output);
+		render_graph(&mut faster, 4, &mut faster_output);
 		assert_eq!(faster_output, [0.0, 2.0, 4.0, 0.0, 0.0]);
 		assert!(faster.finished());
 
@@ -672,7 +698,7 @@ mod tests {
 			[],
 		);
 		let mut slower_output = [0.0; 6];
-		slower.render(4, &mut slower_output);
+		render_graph(&mut slower, 4, &mut slower_output);
 		assert_eq!(slower_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
 		assert!(slower.finished());
 	}
@@ -691,7 +717,7 @@ mod tests {
 		);
 		let mut buffer = [0.25; 8];
 
-		player.render(4, &mut buffer);
+		render_graph(&mut player, 4, &mut buffer);
 
 		assert_eq!(buffer, [0.25; 8]);
 		assert!(player.sample.finished);
@@ -708,12 +734,12 @@ mod tests {
 		let mut split = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
 		let mut first = [0.0; 3];
 		let mut second = [0.0; 5];
-		split.render(3, &mut first);
-		split.render(3, &mut second);
+		render_graph(&mut split, 3, &mut first);
+		render_graph(&mut split, 3, &mut second);
 
 		let mut contiguous = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
 		let mut whole = [0.0; 8];
-		contiguous.render(3, &mut whole);
+		render_graph(&mut contiguous, 3, &mut whole);
 
 		assert_samples_close(&first, &whole[..3]);
 		assert_samples_close(&second, &whole[3..]);
@@ -733,12 +759,50 @@ mod tests {
 		let mut first = [0.0; 2];
 		let mut second = [0.0; 5];
 
-		graph.render(48_000, &mut first);
-		graph.render(48_000, &mut second);
+		render_graph(&mut graph, 48_000, &mut first);
+		render_graph(&mut graph, 48_000, &mut second);
 
 		assert_eq!(first, [0.0, 0.5]);
 		assert_eq!(second, [1.0, 0.0, 0.5, 1.0, 0.0]);
 		assert!(!graph.finished());
+	}
+
+	#[test]
+	fn block_processing_stops_at_the_end_of_a_one_shot_source() {
+		let mut graph = graph_player(
+			&[1.0, 2.0],
+			48_000,
+			SamplePlaybackMode::Once,
+			PlaybackRate::UNITY,
+			[AudioProcessor::Gain(0.5)],
+		);
+		let mut output = [1.0; 4];
+
+		render_graph(&mut graph, 48_000, &mut output);
+
+		assert_eq!(output, [1.5, 2.0, 1.0, 1.0]);
+		assert!(graph.finished());
+	}
+
+	#[test]
+	fn block_processing_preserves_a_stateful_processor_tail() {
+		let mut graph = graph_player(
+			&[1.0, 2.0],
+			48_000,
+			SamplePlaybackMode::Once,
+			PlaybackRate::UNITY,
+			[AudioProcessor::PitchShift(2.0)],
+		);
+		let drain_latency = graph.drain_latency;
+		let mut first = [0.0; 4];
+		render_graph(&mut graph, 48_000, &mut first);
+		assert_eq!(graph.drain_remaining, Some(drain_latency - 2));
+		assert!(!graph.finished());
+
+		let mut tail = vec![0.0; drain_latency - 2];
+		render_graph(&mut graph, 48_000, &mut tail);
+		assert_eq!(graph.drain_remaining, Some(0));
+		assert!(graph.finished());
 	}
 
 	#[test]
@@ -752,7 +816,7 @@ mod tests {
 		);
 		let mut output = [0.0; 2];
 
-		graph.render(48_000, &mut output);
+		render_graph(&mut graph, 48_000, &mut output);
 
 		assert_eq!(output, [0.25, -0.5]);
 		assert!(graph.finished());

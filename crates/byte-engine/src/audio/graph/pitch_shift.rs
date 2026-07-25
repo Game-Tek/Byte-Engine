@@ -57,9 +57,17 @@ impl PitchShiftProcessor {
 		}
 	}
 
+	/// Processes one block through the persistent phase-vocoder state. Every
+	/// working buffer is allocated during construction.
+	pub(super) fn process(&mut self, samples: &mut [f32]) {
+		for sample in samples {
+			*sample = self.process_sample(*sample);
+		}
+	}
+
 	/// Buffers one sample and periodically transforms a complete overlapping
-	/// frame. Every buffer is allocated during construction.
-	pub(super) fn process(&mut self, sample: f32) -> f32 {
+	/// frame.
+	fn process_sample(&mut self, sample: f32) -> f32 {
 		let divisor = self.normalization[self.cursor];
 		let output = if divisor > f32::EPSILON {
 			self.output[self.cursor] / divisor
@@ -129,8 +137,8 @@ impl PitchShiftProcessor {
 }
 
 impl RuntimeAudioProcessor for PitchShiftProcessor {
-	fn process(&mut self, sample: f32) -> f32 {
-		PitchShiftProcessor::process(self, sample)
+	fn process(&mut self, samples: &mut [f32]) {
+		PitchShiftProcessor::process(self, samples);
 	}
 }
 
@@ -175,18 +183,21 @@ mod tests {
 		let mut output = Vec::with_capacity(input.len() + WINDOW_SIZE);
 		let mut cursor = 0;
 		for &chunk_size in chunks {
-			for &sample in &input[cursor..(cursor + chunk_size).min(input.len())] {
-				output.push(processor.process(sample));
-			}
-			cursor = (cursor + chunk_size).min(input.len());
+			let end = (cursor + chunk_size).min(input.len());
+			let mut block = input[cursor..end].to_vec();
+			processor.process(&mut block);
+			output.extend(block);
+			cursor = end;
 			if cursor == input.len() {
 				break;
 			}
 		}
-		for &sample in &input[cursor..] {
-			output.push(processor.process(sample));
-		}
-		output.extend((0..WINDOW_SIZE).map(|_| processor.process(0.0)));
+		let mut remainder = input[cursor..].to_vec();
+		processor.process(&mut remainder);
+		output.extend(remainder);
+		let mut tail = vec![0.0; WINDOW_SIZE];
+		processor.process(&mut tail);
+		output.extend(tail);
 		output
 	}
 

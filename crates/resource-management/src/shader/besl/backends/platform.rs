@@ -178,7 +178,9 @@ impl Generator {
 						})
 						.collect(),
 					extent: match shader_generation_settings.stage {
-						crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
+						crate::shader::generator::Stages::Compute { local_size }
+						| crate::shader::generator::Stages::Task { local_size, .. }
+						| crate::shader::generator::Stages::Mesh { local_size, .. } => Some(local_size),
 						_ => None,
 					},
 					entry_point: Some(PlatformShaderLanguage::Hlsl.entry_point()),

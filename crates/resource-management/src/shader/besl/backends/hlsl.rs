@@ -12,10 +12,26 @@ use crate::shader::generator::{
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator {
 	minified: bool,
-	current_stage_is_compute: bool,
+	current_stage: HlslStage,
 	current_stage_interpolates_inputs: bool,
 	current_stage_interpolates_outputs: bool,
-	current_compute_local_size: Option<utils::Extent>,
+	current_local_size: Option<utils::Extent>,
+	current_mesh_maximum_vertices: u32,
+	current_mesh_maximum_primitives: u32,
+	task_payloads: Vec<besl::NodeReference>,
+	mesh_outputs: Vec<besl::NodeReference>,
+	raster_inputs: Vec<besl::NodeReference>,
+	raster_outputs: Vec<besl::NodeReference>,
+	user_struct_constructors: Vec<besl::NodeReference>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HlslStage {
+	Vertex,
+	Fragment,
+	Compute,
+	Task,
+	Mesh,
 }
 
 /// The `HlslBufferBindingSource` struct preserves the binding metadata needed while flattening BESL buffers for HLSL.
@@ -33,10 +49,17 @@ impl Generator {
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
-			current_stage_is_compute: false,
+			current_stage: HlslStage::Vertex,
 			current_stage_interpolates_inputs: false,
 			current_stage_interpolates_outputs: false,
-			current_compute_local_size: None,
+			current_local_size: None,
+			current_mesh_maximum_vertices: 0,
+			current_mesh_maximum_primitives: 0,
+			task_payloads: Vec::new(),
+			mesh_outputs: Vec::new(),
+			raster_inputs: Vec::new(),
+			raster_outputs: Vec::new(),
+			user_struct_constructors: Vec::new(),
 		}
 	}
 
@@ -198,7 +221,12 @@ impl Generator {
 	}
 
 	fn hlsl_name_likely_matrix_operand(name: &str) -> bool {
-		name.contains("projection") || name.contains("matrix") || name == "model" || name == "view"
+		name.contains("projection")
+			|| name.contains("matrix")
+			|| name == "model"
+			|| name.ends_with(".model")
+			|| name == "view"
+			|| name.ends_with(".view")
 	}
 
 	fn hlsl_array_type(source: &str) -> Option<(&str, &str)> {
@@ -341,6 +369,165 @@ impl Generator {
 		string.push(';');
 		if !self.minified {
 			string.push('\n');
+		}
+	}
+
+	/// Emits the amplification-to-mesh payload shared by both Shader Model 6.5 stages.
+	fn emit_object_payload_struct(&self, string: &mut String) {
+		if self.task_payloads.is_empty() {
+			return;
+		}
+
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_named_struct_start(string, "ObjectPayload");
+		for payload in &self.task_payloads {
+			let payload = payload.borrow();
+			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
+				continue;
+			};
+
+			formatting.push_indentation(string, 1);
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			string.push('[');
+			string.push_str(&count.get().to_string());
+			string.push(']');
+			formatting.push_statement_end(string);
+		}
+		self.emit_struct_declaration_end(string);
+	}
+
+	/// Emits the fixed vertex output and the authored per-primitive mesh outputs.
+	fn emit_mesh_output_structs(&self, string: &mut String) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_named_struct_start(string, "VertexOutput");
+		formatting.push_indentation(string, 1);
+		string.push_str("float4 position : SV_Position");
+		formatting.push_statement_end(string);
+		self.emit_struct_declaration_end(string);
+
+		self.emit_named_struct_start(string, "PrimitiveOutput");
+		for output in &self.mesh_outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count: Some(_),
+			} = output.node()
+			else {
+				continue;
+			};
+
+			formatting.push_indentation(string, 1);
+			let format = format.borrow();
+			let type_name = Self::translate_type(format.get_name().unwrap());
+			if Self::is_integer_type(type_name) {
+				string.push_str("nointerpolation ");
+			}
+			string.push_str(type_name);
+			string.push(' ');
+			string.push_str(name);
+			string.push_str(" : TEXCOORD");
+			string.push_str(&location.to_string());
+			formatting.push_statement_end(string);
+		}
+		self.emit_struct_declaration_end(string);
+	}
+
+	/// Recovers an indexed mesh-output declaration so HLSL can address its primitive structure field.
+	fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<String> {
+		let left = left.borrow();
+		let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = left.node() else {
+			return None;
+		};
+		let source = source.borrow();
+		let besl::Nodes::Output {
+			name, count: Some(_), ..
+		} = source.node()
+		else {
+			return None;
+		};
+		Some(name.clone())
+	}
+
+	/// Finds a lane-guarded BESL mesh-count statement that HLSL must execute uniformly.
+	fn mesh_output_count_arguments(statements: &[besl::NodeReference]) -> Option<(besl::NodeReference, besl::NodeReference)> {
+		let [statement] = statements else {
+			return None;
+		};
+		let statement = statement.borrow();
+		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic, arguments, ..
+		}) = statement.node()
+		else {
+			return None;
+		};
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic { name, .. } = intrinsic.node() else {
+			return None;
+		};
+		let [vertices, primitives] = arguments.as_slice() else {
+			return None;
+		};
+		(name == "set_mesh_output_counts").then(|| (vertices.clone(), primitives.clone()))
+	}
+
+	/// Emits raster stage I/O as mutable entry-point parameters because HLSL semantic globals are immutable.
+	fn emit_raster_entry_parameters(&self, string: &mut String, has_previous_parameter: bool) {
+		let mut has_previous_parameter = has_previous_parameter;
+		for input in &self.raster_inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, location, format } = input.node() else {
+				continue;
+			};
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			let format = format.borrow();
+			let type_name = Self::translate_type(format.get_name().unwrap());
+			if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+				string.push_str("nointerpolation ");
+			}
+			string.push_str(type_name);
+			string.push(' ');
+			string.push_str(name);
+			string.push_str(" : TEXCOORD");
+			string.push_str(&location.to_string());
+			has_previous_parameter = true;
+		}
+
+		for output in &self.raster_outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count: None,
+			} = output.node()
+			else {
+				continue;
+			};
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			let format = format.borrow();
+			let type_name = Self::translate_type(format.get_name().unwrap());
+			if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+				string.push_str("nointerpolation ");
+			}
+			string.push_str("out ");
+			string.push_str(type_name);
+			string.push(' ');
+			string.push_str(name);
+			string.push_str(if self.current_stage == HlslStage::Fragment {
+				" : SV_Target"
+			} else {
+				" : TEXCOORD"
+			});
+			string.push_str(&location.to_string());
+			has_previous_parameter = true;
 		}
 	}
 
@@ -497,11 +684,38 @@ impl Generator {
 			"thread_id" => {
 				string.push_str("dispatch_thread_id.xy");
 			}
+			"thread_position" => {
+				string.push_str("dispatch_thread_id.x");
+			}
 			"thread_idx" => {
 				string.push_str("group_thread_index");
 			}
 			"threadgroup_position" => {
-				string.push_str("group_id");
+				string.push_str("group_id.x");
+			}
+			"workgroup_barrier" => {
+				string.push_str("GroupMemoryBarrierWithGroupSync()");
+			}
+			"set_task_mesh_output_count" => {
+				string.push_str("besl_mesh_output_count = ");
+				self.emit_node_string(string, &arguments[0]);
+			}
+			"set_mesh_output_counts" => {
+				string.push_str("SetMeshOutputCounts(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"set_mesh_vertex_position" => {
+				string.push_str("besl_vertices[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].position = ");
+				self.emit_node_string(string, &arguments[1]);
+			}
+			"set_mesh_triangle" => {
+				string.push_str("besl_triangles[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("] = ");
+				self.emit_node_string(string, &arguments[1]);
 			}
 			_ => {
 				for element in elements {
@@ -530,25 +744,195 @@ impl Generator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		self.current_stage_is_compute = matches!(shader_compilation_settings.stage, Stages::Compute { .. });
+		self.current_stage = match shader_compilation_settings.stage {
+			Stages::Vertex => HlslStage::Vertex,
+			Stages::Fragment => HlslStage::Fragment,
+			Stages::Compute { .. } => HlslStage::Compute,
+			Stages::Task { .. } => HlslStage::Task,
+			Stages::Mesh { .. } => HlslStage::Mesh,
+		};
 		// Only fragment inputs and raster-producing outputs participate in interpolation.
 		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
 		self.current_stage_interpolates_outputs =
 			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
-		self.current_compute_local_size = match shader_compilation_settings.stage {
-			Stages::Compute { local_size } => Some(local_size),
+		self.current_local_size = match shader_compilation_settings.stage {
+			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
+				Some(local_size)
+			}
 			_ => None,
+		};
+		(self.current_mesh_maximum_vertices, self.current_mesh_maximum_primitives) = match shader_compilation_settings.stage {
+			Stages::Mesh {
+				maximum_vertices,
+				maximum_primitives,
+				..
+			} => (maximum_vertices, maximum_primitives),
+			_ => (0, 0),
 		};
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
+		self.task_payloads.clear();
+		self.mesh_outputs.clear();
+		self.raster_inputs.clear();
+		self.raster_outputs.clear();
+		for node in &order {
+			match node.borrow().node() {
+				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(node.clone()),
+				besl::Nodes::Output { count: Some(_), .. } => self.mesh_outputs.push(node.clone()),
+				besl::Nodes::Input { .. } => self.raster_inputs.push(node.clone()),
+				besl::Nodes::Output { count: None, .. } => self.raster_outputs.push(node.clone()),
+				_ => {}
+			}
+		}
+		self.user_struct_constructors.clear();
+		// Discover constructor calls before declarations are emitted so their HLSL factories can stay next to each struct.
+		for node in &order {
+			self.emit_node_string(&mut string, node);
+		}
+		string.clear();
 
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings);
+		if self.current_stage == HlslStage::Task {
+			string.push_str("groupshared uint32_t besl_mesh_output_count;");
+			if !self.minified {
+				string.push('\n');
+			}
+		}
+		if self.current_stage == HlslStage::Mesh {
+			self.emit_mesh_output_structs(&mut string);
+		}
 
 		for node in order {
 			self.emit_node_string(&mut string, &node);
 		}
 
 		Ok(string)
+	}
+
+	/// Emits one user struct and its factory when the program constructs that type.
+	fn emit_hlsl_struct_node(
+		&mut self,
+		string: &mut String,
+		node: &besl::NodeReference,
+		name: &str,
+		fields: &[besl::NodeReference],
+		template: &Option<besl::NodeReference>,
+	) {
+		self.emit_struct_node(string, name, fields, template);
+		if template.is_none()
+			&& !crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32())
+			&& self.user_struct_constructors.contains(node)
+		{
+			self.emit_hlsl_struct_factory(string, name, fields);
+		}
+	}
+
+	/// Emits an amplification entry point with the local payload object required by `DispatchMesh`.
+	fn emit_hlsl_task_entry(
+		&mut self,
+		string: &mut String,
+		node: &besl::NodeReference,
+		statements: &[besl::NodeReference],
+		return_type: &besl::NodeReference,
+		params: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_function_attributes(string, node, "besl_main");
+		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
+		string.push_str(" besl_main(");
+		emit_comma_separated_nodes(string, formatting, params, |string, parameter| {
+			self.emit_node_string(string, parameter)
+		});
+		self.emit_function_extra_parameters(string, node, "besl_main", !params.is_empty());
+		formatting.push_block_start(string);
+		if !self.task_payloads.is_empty() {
+			formatting.push_indentation(string, 1);
+			string.push_str("ObjectPayload payload");
+			formatting.push_statement_end(string);
+		}
+		self.emit_function_statement_block(string, statements, 1);
+		if !self.task_payloads.is_empty() {
+			// DXIL requires DispatchMesh to dominate the entry point, so every lane converges after BESL selects the count.
+			formatting.push_indentation(string, 1);
+			string.push_str("GroupMemoryBarrierWithGroupSync()");
+			formatting.push_statement_end(string);
+			formatting.push_indentation(string, 1);
+			string.push_str("DispatchMesh(besl_mesh_output_count, 1, 1, payload)");
+			formatting.push_statement_end(string);
+		}
+		self.emit_block_end(string);
+	}
+
+	/// Emits a field-by-field factory because DXC does not support user-defined struct constructor expressions.
+	fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		string.push_str(name);
+		string.push_str(" besl_construct_");
+		string.push_str(name);
+		string.push('(');
+		for (index, field) in fields.iter().enumerate() {
+			let field = field.borrow();
+			let besl::Nodes::Member {
+				name: field_name,
+				r#type,
+				count,
+			} = field.node()
+			else {
+				continue;
+			};
+			if index > 0 {
+				string.push_str(formatting.comma_str());
+			}
+			Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+			string.push_str(" besl_argument_");
+			string.push_str(field_name);
+			if let Some(count) = count {
+				string.push('[');
+				string.push_str(&count.to_string());
+				string.push(']');
+			}
+		}
+		formatting.push_block_start(string);
+
+		formatting.push_indentation(string, 1);
+		string.push_str(name);
+		string.push_str(" besl_value");
+		formatting.push_statement_end(string);
+		for field in fields {
+			let field = field.borrow();
+			let besl::Nodes::Member {
+				name: field_name, count, ..
+			} = field.node()
+			else {
+				continue;
+			};
+
+			if let Some(count) = count {
+				formatting.push_indentation(string, 1);
+				string.push_str("[unroll] for(uint besl_index=0;besl_index<");
+				string.push_str(&count.to_string());
+				string.push_str(";++besl_index){");
+				string.push_str("besl_value.");
+				string.push_str(field_name);
+				string.push_str("[besl_index]=besl_argument_");
+				string.push_str(field_name);
+				string.push_str("[besl_index];}");
+				if !self.minified {
+					string.push('\n');
+				}
+			} else {
+				formatting.push_indentation(string, 1);
+				string.push_str("besl_value.");
+				string.push_str(field_name);
+				string.push_str("=besl_argument_");
+				string.push_str(field_name);
+				formatting.push_statement_end(string);
+			}
+		}
+		formatting.push_indentation(string, 1);
+		string.push_str("return besl_value");
+		formatting.push_statement_end(string);
+		self.emit_block_end(string);
 	}
 
 	/// Translates BESL intrinsic type names to HLSL type names, such as `vec2f` to `float2`.
@@ -618,11 +1002,15 @@ impl Generator {
 				..
 			} => {
 				let hlsl_name = if name == "main" { "besl_main" } else { name };
-				self.emit_function_node(string, this_node, hlsl_name, statements, return_type, params);
+				if hlsl_name == "besl_main" && self.current_stage == HlslStage::Task {
+					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
+				} else {
+					self.emit_function_node(string, this_node, hlsl_name, statements, return_type, params);
+				}
 			}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => self.emit_struct_node(string, name, fields, template),
+			} => self.emit_hlsl_struct_node(string, this_node, name, fields, template),
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_atomic_add_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
@@ -716,6 +1104,9 @@ impl Generator {
 			}
 			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
+				if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+					return;
+				}
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 
@@ -741,6 +1132,9 @@ impl Generator {
 				if count.is_some() {
 					return;
 				}
+				if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+					return;
+				}
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 
@@ -757,12 +1151,33 @@ impl Generator {
 					location
 				));
 			}
-			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {
-				panic!(
-					"HLSL task storage lowering is unsupported. The most likely cause is that a task or mesh BESL shader was sent to the deferred HLSL backend."
-				)
+			besl::Nodes::TaskPayload { .. } => {
+				if self.task_payloads.first() == Some(this_node) {
+					self.emit_object_payload_struct(string);
+				}
+			}
+			besl::Nodes::Workgroup { name, format } => {
+				string.push_str("groupshared ");
+				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				string.push(' ');
+				string.push_str(name);
+				string.push(';');
+				if !self.minified {
+					string.push('\n');
+				}
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
+			besl::Nodes::Conditional { statements, .. }
+				if self.current_stage == HlslStage::Mesh && Self::mesh_output_count_arguments(statements).is_some() =>
+			{
+				let (vertices, primitives) = Self::mesh_output_count_arguments(statements).unwrap();
+				// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
+				string.push_str("SetMeshOutputCounts(");
+				self.emit_node_string(string, &vertices);
+				self.emit_separator(string);
+				self.emit_node_string(string, &primitives);
+				string.push(')');
+			}
 			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
 			besl::Nodes::ForLoop {
 				initializer,
@@ -917,9 +1332,7 @@ impl Generator {
 			Stages::Vertex => hlsl_block.push_str("// #pragma shader_stage(vertex)\n"),
 			Stages::Fragment => hlsl_block.push_str("// #pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => hlsl_block.push_str("// #pragma shader_stage(compute)\n"),
-			Stages::Task { .. } => panic!(
-				"HLSL task shader lowering is unsupported. The most likely cause is that a task BESL shader was sent to the deferred HLSL backend."
-			),
+			Stages::Task { .. } => hlsl_block.push_str("// #pragma shader_stage(amplification)\n"),
 			Stages::Mesh { .. } => hlsl_block.push_str("// #pragma shader_stage(mesh)\n"),
 		}
 
@@ -933,16 +1346,9 @@ impl Generator {
 			}
 			Stages::Mesh { .. } => {
 				hlsl_block.push_str("// Requires: Mesh shader support\n");
-				hlsl_block.push_str("[outputtopology(\"triangle\")]\n");
-				hlsl_block.push_str("[numthreads(1, 1, 1)]\n");
-				hlsl_block.push_str("// Note: Mesh shader configuration needs manual setup\n");
 			}
+			Stages::Task { .. } => hlsl_block.push_str("// Requires: Amplification shader support\n"),
 			_ => {}
-		}
-
-		// Local size for mesh shaders. Compute local size is a function attribute in HLSL.
-		if let Stages::Mesh { .. } = compilation_settings.stage {
-			// Already added above in mesh-specific section
 		}
 
 		// Matrix layout
@@ -971,14 +1377,21 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		true
 	}
 	fn emit_function_attributes(&mut self, string: &mut String, _node: &besl::NodeReference, name: &str) {
-		let Some(local_size) = self.current_compute_local_size else {
-			return;
-		};
 		if name != "besl_main" {
 			return;
 		}
 
-		// HLSL requires compute thread-group size attributes to be attached to the entry function.
+		if self.current_stage == HlslStage::Mesh {
+			string.push_str("[outputtopology(\"triangle\")]");
+			if !self.minified {
+				string.push('\n');
+			}
+		}
+
+		let Some(local_size) = self.current_local_size else {
+			return;
+		};
+		// HLSL attaches compute-like stage thread-group sizes directly to their entry functions.
 		string.push_str(&format!(
 			"[numthreads({}, {}, {})]",
 			local_size.width().max(1),
@@ -996,7 +1409,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		name: &str,
 		has_previous_parameter: bool,
 	) {
-		if !self.current_stage_is_compute || name != "besl_main" {
+		if name != "besl_main" {
+			return;
+		}
+		if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+			self.emit_raster_entry_parameters(string, has_previous_parameter);
+			return;
+		}
+		if !matches!(self.current_stage, HlslStage::Compute | HlslStage::Task | HlslStage::Mesh) {
 			return;
 		}
 
@@ -1010,8 +1430,68 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		string.push_str("uint3 group_id : SV_GroupID");
 		self.emit_separator(string);
 		string.push_str("uint group_thread_index : SV_GroupIndex");
+
+		if self.current_stage == HlslStage::Mesh {
+			if !self.task_payloads.is_empty() {
+				self.emit_separator(string);
+				string.push_str("in payload ObjectPayload payload");
+			}
+			self.emit_separator(string);
+			string.push_str("out vertices VertexOutput besl_vertices[");
+			string.push_str(&self.current_mesh_maximum_vertices.to_string());
+			string.push(']');
+			self.emit_separator(string);
+			string.push_str("out primitives PrimitiveOutput besl_primitives[");
+			string.push_str(&self.current_mesh_maximum_primitives.to_string());
+			string.push(']');
+			self.emit_separator(string);
+			string.push_str("out indices uint3 besl_triangles[");
+			string.push_str(&self.current_mesh_maximum_primitives.to_string());
+			string.push(']');
+		}
+	}
+	fn emit_function_call(
+		&mut self,
+		string: &mut String,
+		function: &besl::NodeReference,
+		parameters: &[besl::NodeReference],
+	) -> bool {
+		let function_node = function.borrow();
+		let besl::Nodes::Struct {
+			name, template: None, ..
+		} = function_node.node()
+		else {
+			return false;
+		};
+		if crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32()) {
+			return false;
+		}
+		if !self.user_struct_constructors.contains(function) {
+			self.user_struct_constructors.push(function.clone());
+		}
+
+		// Route portable BESL construction through the field-by-field factory emitted with the struct.
+		string.push_str("besl_construct_");
+		string.push_str(name);
+		string.push('(');
+		self.emit_call_arguments(string, parameters);
+		string.push(')');
+		true
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
+		match source.borrow().node() {
+			besl::Nodes::TaskPayload { .. } => {
+				string.push_str("payload.");
+				string.push_str(name);
+				return true;
+			}
+			besl::Nodes::Workgroup { .. } => {
+				string.push_str(name);
+				return true;
+			}
+			_ => {}
+		}
+
 		let Some(binding) = Self::hlsl_buffer_binding_source(source) else {
 			return false;
 		};
@@ -1067,6 +1547,34 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		false
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		if matches!(
+			right.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::Member { .. })
+		) {
+			if let Some((binding_name, field_name, _, _, flattened)) = Self::hlsl_buffer_member_target(left) {
+				if field_name != binding_name {
+					// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
+					string.push_str(&binding_name);
+					if !flattened {
+						string.push_str("[0].");
+						string.push_str(&field_name);
+					}
+					string.push('.');
+					self.emit_node_string(string, right);
+					return;
+				}
+			}
+		}
+
+		if let Some(field_name) = Self::hlsl_mesh_output_target(left) {
+			// Mesh primitive attributes live in the native per-primitive output array rather than module globals.
+			string.push_str("besl_primitives[");
+			self.emit_node_string(string, right);
+			string.push_str("].");
+			string.push_str(&field_name);
+			return;
+		}
+
 		if let (Some(binding), Some(field_name)) = (Self::hlsl_buffer_binding_source(left), Self::hlsl_member_name(right)) {
 			if binding.flattened_member.as_deref() == Some(&field_name) {
 				string.push_str(&binding.name);
@@ -1115,7 +1623,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		self.emit_node_string(string, left);
-		if left.borrow().node().is_indexable() {
+		// BESL represents authored component access as a member expression. Preserve HLSL swizzles while keeping numeric access as a subscript.
+		if !matches!(
+			right.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::Member { .. })
+		) && left.borrow().node().is_indexable()
+		{
 			string.push('[');
 			self.emit_node_string(string, right);
 			string.push(']');
@@ -1216,6 +1729,202 @@ mod tests {
 	}
 
 	#[test]
+	fn vector_components_use_hlsl_members_and_numeric_indices_use_subscripts() {
+		let root = besl::parse(
+			r#"
+			main: fn() -> void {
+				let vector: vec4f = vec4f(1.0, 2.0, 3.0, 4.0);
+				let component: f32 = vector.x;
+				let indexed_component: f32 = vector[1];
+				let joints: vec4u16 = vec4u16(0, 1, 2, 3);
+				let joint_component: u16 = joints.x;
+				let indexed_joint: u16 = joints[1];
+				if (component > indexed_component) {
+					return;
+				}
+				if (joint_component > indexed_joint) {
+					return;
+				}
+			}
+			"#,
+		)
+		.expect("Expected vector access shader source to parse");
+		let root = besl::lex(root).expect("Expected vector access shader source to lex");
+		let main = root
+			.borrow()
+			.get_child("main")
+			.expect("Expected vector access shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected vector access shader source to generate HLSL");
+
+		assert_string_contains!(shader, "float component=vector.x;");
+		assert_string_contains!(shader, "float indexed_component=vector[1];");
+		assert_string_contains!(shader, "uint joint_component=joints.x;");
+		assert_string_contains!(shader, "uint indexed_joint=joints[1];");
+		assert_string_does_not_contain!(shader, "vector[x]");
+		assert_string_does_not_contain!(shader, "joints[x]");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"vector-access-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected vector access HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn user_struct_constructors_lower_to_hlsl_factories() {
+		let root = besl::compile_to_besl(
+			r#"
+			Pair: struct {
+				left: vec4f,
+				right: vec4f,
+			}
+
+			main: fn () -> void {
+				let pair: Pair = Pair(
+					vec4f(1.0, 1.0, 1.0, 1.0),
+					vec4f(2.0, 2.0, 2.0, 2.0)
+				);
+				pair;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected user struct constructor shader source to compile");
+		let main = root
+			.get_main()
+			.expect("Expected user struct constructor shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected user struct constructor shader source to generate HLSL");
+
+		assert_string_contains!(
+			shader,
+			"Pair pair=besl_construct_Pair(float4(1.0,1.0,1.0,1.0),float4(2.0,2.0,2.0,2.0));"
+		);
+		assert_string_does_not_contain!(shader, "Pair pair=Pair(");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"user-struct-constructor-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected user struct constructor HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn task_payload_and_workgroup_storage_compile_as_dxil_amplification_shader() {
+		let root = besl::compile_to_besl(
+			r#"
+			meshlet_indices: task_payload<u32, 32>;
+			visible_count: workgroup<atomicu32>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				if (lane == 0) {
+					atomic_store(visible_count, 0);
+				}
+				workgroup_barrier();
+				if (thread_position() < 32) {
+					let payload_index: u32 = atomic_add(visible_count, 1);
+					meshlet_indices[payload_index] = thread_position();
+				}
+				workgroup_barrier();
+				if (lane == 0) {
+					set_task_mesh_output_count(atomic_load(visible_count));
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected task shader source to compile");
+		let main = root.get_main().expect("Expected task shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::task(utils::Extent::line(32), 32), &main)
+			.expect("Expected task shader source to generate HLSL");
+
+		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
+		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
+		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
+		assert_string_contains!(shader, "ObjectPayload payload;");
+		assert_string_contains!(shader, "besl_mesh_output_count = visible_count;");
+		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"task-payload-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Task,
+		)
+		.expect("Expected task HLSL to compile to amplification DXIL");
+	}
+
+	#[test]
+	fn mesh_payload_and_primitive_outputs_compile_as_dxil_mesh_shader() {
+		let root = besl::compile_to_besl(
+			r#"
+			meshlet_indices: task_payload<u32, 32>;
+			out_instance_index: output<u32, 0, 1>;
+			out_primitive_index: output<u32, 1, 1>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				let meshlet_index: u32 = meshlet_indices[threadgroup_position()];
+				if (lane == 0) {
+					set_mesh_output_counts(3, 1);
+				}
+				if (lane < 3) {
+					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+				}
+				if (lane < 1) {
+					set_mesh_triangle(0, vec3u(0, 1, 2));
+					out_instance_index[0] = meshlet_index;
+					out_primitive_index[0] = meshlet_index;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected mesh shader source to compile");
+		let main = root.get_main().expect("Expected mesh shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
+			.expect("Expected mesh shader source to generate HLSL");
+
+		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
+		assert_string_contains!(shader, "struct VertexOutput{float4 position : SV_Position;};");
+		assert_string_contains!(shader, "struct PrimitiveOutput{");
+		assert_string_contains!(shader, "nointerpolation uint32_t out_instance_index : TEXCOORD0;");
+		assert_string_contains!(shader, "nointerpolation uint32_t out_primitive_index : TEXCOORD1;");
+		assert_string_contains!(shader, "[outputtopology(\"triangle\")][numthreads(32, 1, 1)]");
+		assert_string_contains!(shader, "in payload ObjectPayload payload");
+		assert_string_contains!(shader, "SetMeshOutputCounts(3,1);");
+		assert_string_contains!(shader, "besl_vertices[lane].position = float4(float(lane),0.0,0.0,1.0)");
+		assert_string_contains!(shader, "besl_triangles[0] = uint3(0,1,2)");
+		assert_string_contains!(shader, "besl_primitives[0].out_instance_index=meshlet_index");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"mesh-output-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Mesh,
+		)
+		.expect("Expected mesh HLSL to compile to mesh DXIL");
+	}
+
+	#[test]
 	fn array_texture_binding_declares_single_hlsl_template_argument() {
 		let mut root =
 			besl::parse("main: fn () -> void { shadow_map; }").expect("Expected array texture binding shader source to parse");
@@ -1266,8 +1975,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "float3 color : TEXCOORD0;");
-		assert_string_contains!(shader, "void besl_main(){color;}");
+		assert_string_contains!(shader, "void besl_main(float3 color : TEXCOORD0){color;}");
 	}
 
 	#[test]
@@ -1279,8 +1987,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "float3 color : SV_Target0;");
-		assert_string_contains!(shader, "void besl_main(){color;}");
+		assert_string_contains!(shader, "void besl_main(out float3 color : TEXCOORD0){color;}");
 	}
 
 	#[test]
@@ -1295,10 +2002,10 @@ mod tests {
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Expected packed integer fragment HLSL generation");
 
-		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0;");
-		assert_string_contains!(vertex_shader, "nointerpolation uint16_t4 packed_output : SV_Target1;");
-		assert_string_contains!(fragment_shader, "nointerpolation uint16_t2 packed_input : TEXCOORD0;");
-		assert_string_contains!(fragment_shader, "uint16_t4 packed_output : SV_Target1;");
+		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0");
+		assert_string_contains!(vertex_shader, "nointerpolation out uint16_t4 packed_output : TEXCOORD1");
+		assert_string_contains!(fragment_shader, "nointerpolation uint16_t2 packed_input : TEXCOORD0");
+		assert_string_contains!(fragment_shader, "out uint16_t4 packed_output : SV_Target1");
 		assert_string_does_not_contain!(vertex_shader, "nointerpolation uint16_t2 packed_input");
 		assert_string_does_not_contain!(fragment_shader, "nointerpolation uint16_t4 packed_output");
 	}

@@ -1803,6 +1803,103 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn mesh_raster_pipeline_includes_sm65_amplification_shader() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let task = match device.create_shader(
+			None,
+			crate::shader::Sources::HLSL {
+				source: r#"
+struct Payload {
+	uint meshlet;
+};
+
+[numthreads(1, 1, 1)]
+void main() {
+	Payload payload;
+	payload.meshlet = 0;
+	DispatchMesh(1, 1, 1, payload);
+}
+"#,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Task,
+			[],
+		) {
+			Ok(shader) => shader,
+			Err(()) => return,
+		};
+		let mesh = match device.create_shader(
+			None,
+			crate::shader::Sources::HLSL {
+				source: r#"
+struct Payload {
+	uint meshlet;
+};
+
+struct MeshVertex {
+	float4 position : SV_Position;
+};
+
+[numthreads(1, 1, 1)]
+[outputtopology("triangle")]
+void main(
+	in payload Payload payload,
+	out vertices MeshVertex vertices[3],
+	out indices uint3 triangles[1]
+) {
+	SetMeshOutputCounts(3, 1);
+	vertices[0].position = float4(-0.5, -0.5, float(payload.meshlet), 1.0);
+	vertices[1].position = float4(0.0, 0.5, 0.0, 1.0);
+	vertices[2].position = float4(0.5, -0.5, 0.0, 1.0);
+	triangles[0] = uint3(0, 1, 2);
+}
+"#,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Mesh,
+			[],
+		) {
+			Ok(shader) => shader,
+			Err(()) => return,
+		};
+		let fragment = device
+			.create_shader(
+				None,
+				crate::shader::Sources::HLSL {
+					source: "float4 main() : SV_Target { return float4(1.0, 1.0, 1.0, 1.0); }",
+					entry_point: "main",
+				},
+				crate::ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to compile DX12 fragment HLSL.");
+		let shaders = [
+			crate::pipelines::ShaderParameter::new(&task, crate::ShaderTypes::Task),
+			crate::pipelines::ShaderParameter::new(&mesh, crate::ShaderTypes::Mesh),
+			crate::pipelines::ShaderParameter::new(&fragment, crate::ShaderTypes::Fragment),
+		];
+		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
+			crate::Formats::RGBA8UNORM,
+		)];
+		let pipeline =
+			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
+
+		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
+		if device.supports_native_mesh_shaders() {
+			assert_eq!(
+				device.pipeline_has_native_state(pipeline),
+				Some(true),
+				"last graphics PSO error: {:?}",
+				device.graphics_pipeline_state_last_error()
+			);
+		} else {
+			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
+		}
+	}
+
+	#[test]
 	fn dispatch_meshes_encodes_native_command_with_mesh_pipeline_state() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;

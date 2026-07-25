@@ -562,6 +562,7 @@ impl Device {
 			(ShaderTypes::Vertex, false) => Some("vs_6_0"),
 			(ShaderTypes::Fragment, false) => Some("ps_6_0"),
 			(ShaderTypes::Compute, false) => Some("cs_6_0"),
+			(ShaderTypes::Task, _) => Some("as_6_5"),
 			(ShaderTypes::Mesh, _) => Some("ms_6_5"),
 			(
 				ShaderTypes::RayGen
@@ -2329,10 +2330,16 @@ impl Device {
 			.pipeline_root_signatures
 			.get(layout.0 as usize)
 			.and_then(|root_signature| root_signature.clone())?;
+		let has_task_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Task));
+		let task_shader = if has_task_shader {
+			self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Task)?
+		} else {
+			Vec::new()
+		};
 		let mesh_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Mesh)?;
 		let fragment_shader =
 			self.shader_dxil_for_stage_with_dxc_target(builder.shaders.as_ref(), ShaderTypes::Fragment, "ps_6_0")?;
-		if mesh_shader.is_empty() || fragment_shader.is_empty() {
+		if (has_task_shader && task_shader.is_empty()) || mesh_shader.is_empty() || fragment_shader.is_empty() {
 			return None;
 		}
 
@@ -2359,6 +2366,17 @@ impl Device {
 			root_signature: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
 				value: Some(root_signature),
+			},
+			amplification_shader: PipelineStateStreamSubobject {
+				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS,
+				value: D3D12_SHADER_BYTECODE {
+					pShaderBytecode: if task_shader.is_empty() {
+						std::ptr::null()
+					} else {
+						task_shader.as_ptr().cast()
+					},
+					BytecodeLength: task_shader.len(),
+				},
 			},
 			mesh_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
@@ -2496,6 +2514,7 @@ impl Device {
 				(parameter.stage, stage),
 				(ShaderTypes::Vertex, ShaderTypes::Vertex)
 					| (ShaderTypes::Fragment, ShaderTypes::Fragment)
+					| (ShaderTypes::Task, ShaderTypes::Task)
 					| (ShaderTypes::Mesh, ShaderTypes::Mesh)
 			)
 		})?;
@@ -8984,6 +9003,7 @@ struct PipelineStateStreamSubobject<T> {
 #[repr(C)]
 struct MeshPipelineStateStream {
 	root_signature: PipelineStateStreamSubobject<Option<ID3D12RootSignature>>,
+	amplification_shader: PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE>,
 	mesh_shader: PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE>,
 	pixel_shader: PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE>,
 	blend: PipelineStateStreamSubobject<D3D12_BLEND_DESC>,
@@ -9415,7 +9435,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN,
 	D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR,
 	D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,

@@ -35,14 +35,14 @@ impl Frame<'_> {
 			})
 			.collect::<Vec<_>>();
 		let builder = crate::pipelines::raster::Builder::new(
-			&pipeline.descriptor_set_templates,
 			&pipeline.push_constant_ranges,
 			&vertex_elements,
 			&shaders,
 			&pipeline.render_targets,
 		)
 		.face_winding(pipeline.face_winding)
-		.cull_mode(pipeline.cull_mode);
+		.cull_mode(pipeline.cull_mode)
+		.depth_write(pipeline.depth_write);
 
 		self.device.create_raster_pipeline(builder)
 	}
@@ -56,7 +56,6 @@ impl Frame<'_> {
 			.with_specialization_map(&pipeline.shader.specialization_map);
 
 		self.device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&pipeline.descriptor_set_templates,
 			&pipeline.push_constant_ranges,
 			shader,
 		))
@@ -102,7 +101,7 @@ impl Frame<'_> {
 					},
 				};
 				self.device
-					.create_shader(shader.name.as_deref(), source, shader.stage, shader.bindings.iter().copied())
+					.create_shader(shader.name.as_deref(), source, shader.stage, shader.resources.iter().copied())
 					.expect("Failed to intern DX12 factory shader. The most likely cause is that the factory stored an unsupported shader source.")
 			})
 			.collect()
@@ -127,7 +126,7 @@ impl Frame<'_> {
 			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
 	}
 
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -204,7 +203,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::sync_texture(self, image_handle);
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		Frame::write(self, descriptor_set_writes);
 	}
 
@@ -262,34 +261,14 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		self.device
-			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[crate::DescriptorSetBindingTemplate],
-	) -> crate::DescriptorSetTemplateHandle {
-		self.device.create_descriptor_set_template(name, binding_templates)
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
-	) -> crate::DescriptorSetHandle {
-		self.device.create_descriptor_set(name, descriptor_set_template_handle)
-	}
-
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: crate::DescriptorSetHandle,
-		binding_constructor: crate::BindingConstructor,
-	) -> crate::DescriptorSetBindingHandle {
-		self.device.create_descriptor_binding(descriptor_set, binding_constructor)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> crate::DescriptorSetHandle {
+		self.device.create_descriptor_set(name)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {

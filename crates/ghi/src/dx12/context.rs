@@ -15,13 +15,7 @@ pub struct Device {
 	dynamic_buffers: Vec<Buffer>,
 	images: Vec<Image>,
 	samplers: Vec<Sampler>,
-	descriptor_set_templates: Vec<DescriptorSetTemplate>,
 	descriptor_sets: Vec<DescriptorSet>,
-	descriptor_bindings: Vec<DescriptorSetBinding>,
-	descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, WriteData>>>,
-	resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32)>>,
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32), HashSet<PrivateHandles>>,
-	dirty_descriptor_sets: HashSet<DescriptorSetHandle>,
 	pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_root_signatures: Vec<Option<ID3D12RootSignature>>,
 	pipeline_root_tables: Vec<Vec<RootDescriptorTable>>,
@@ -45,8 +39,8 @@ pub struct Device {
 	present_transitions: HashMap<CommandBufferHandle, Vec<ID3D12Resource>>,
 	rtv_heaps: Vec<ID3D12DescriptorHeap>,
 	dsv_heaps: Vec<ID3D12DescriptorHeap>,
-	buffer_states: HashMap<u64, D3D12_RESOURCE_STATES>,
-	image_states: HashMap<u64, D3D12_RESOURCE_STATES>,
+	buffer_states: HashMap<usize, D3D12_RESOURCE_STATES>,
+	image_states: HashMap<usize, D3D12_RESOURCE_STATES>,
 	texture_copy_count: usize,
 	buffer_copy_count: usize,
 	buffer_clear_count: usize,
@@ -177,13 +171,7 @@ impl Device {
 			dynamic_buffers: Vec::new(),
 			images: Vec::new(),
 			samplers: Vec::new(),
-			descriptor_set_templates: Vec::new(),
 			descriptor_sets: Vec::new(),
-			descriptor_bindings: Vec::new(),
-			descriptors: HashMap::default(),
-			resource_to_descriptor: HashMap::default(),
-			descriptor_set_to_resource: HashMap::default(),
-			dirty_descriptor_sets: HashSet::default(),
 			pipeline_layouts: Vec::new(),
 			pipeline_root_signatures: Vec::new(),
 			pipeline_root_tables: Vec::new(),
@@ -363,6 +351,7 @@ impl Device {
 			swapchain.next_image_index %= image_count;
 		}
 
+		let mut retired_image_state_keys = SmallVec::<[usize; 8]>::new();
 		for image in &mut self.images {
 			let Some(frame_data) = image.frame_data.as_mut() else {
 				continue;
@@ -370,13 +359,36 @@ impl Device {
 			let data = image.data.clone().unwrap_or_default();
 			frame_data.resize(self.frames as usize, data);
 			if let Some(frame_resources) = image.frame_resources.as_mut() {
+				retired_image_state_keys.extend(
+					frame_resources
+						.iter()
+						.skip(self.frames as usize)
+						.flatten()
+						.map(Self::native_resource_key),
+				);
 				frame_resources.resize(self.frames as usize, None);
 			}
 		}
+		for key in retired_image_state_keys {
+			self.image_states.remove(&key);
+		}
+
+		let mut retired_buffer_state_keys = SmallVec::<[usize; 8]>::new();
 		for buffer in &mut self.dynamic_buffers {
 			if let Some(frame_resources) = buffer.frame_resources.as_mut() {
+				retired_buffer_state_keys.extend(
+					frame_resources
+						.iter()
+						.skip(self.frames as usize)
+						.flatten()
+						.filter_map(|frame| frame.resource.as_ref())
+						.map(Self::native_resource_key),
+				);
 				frame_resources.resize_with(self.frames as usize, || None);
 			}
+		}
+		for key in retired_buffer_state_keys {
+			self.buffer_states.remove(&key);
 		}
 	}
 
@@ -431,7 +443,7 @@ impl Device {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		let (spirv, dxil, hlsl) = match shader_source_type {
 			Sources::SPIRV(bytes) => (Some(bytes.to_vec()), None, None),
@@ -448,12 +460,17 @@ impl Device {
 			Sources::MTL { .. } | Sources::MTLB { .. } => return Err(()),
 		};
 
+		let mut resources = shader_resource_descriptors.into_iter().collect::<Vec<_>>();
+		if let Some(hlsl) = hlsl.as_ref() {
+			Self::apply_hlsl_structured_buffer_strides(&mut resources, &hlsl.source);
+		}
+
 		self.shaders.push(Shader {
 			stage,
 			spirv,
 			dxil,
 			hlsl,
-			bindings: shader_binding_descriptors.into_iter().collect(),
+			resources,
 		});
 
 		// DX12 consumes native bytecode for PSO creation, while SPIR-V is retained as portable metadata.
@@ -986,247 +1003,105 @@ impl Device {
 		Ok(())
 	}
 
-	pub fn create_descriptor_set_template(
-		&mut self,
-		_name: Option<&str>,
-		binding_templates: &[DescriptorSetBindingTemplate],
-	) -> DescriptorSetTemplateHandle {
-		self.descriptor_set_templates.push(DescriptorSetTemplate {
-			bindings: binding_templates.to_vec(),
-		});
-		DescriptorSetTemplateHandle((self.descriptor_set_templates.len() - 1) as u64)
-	}
-
-	pub fn create_descriptor_set(
-		&mut self,
-		_name: Option<&str>,
-		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
-	) -> DescriptorSetHandle {
-		// Creates per-frame descriptor set records for the template.
+	/// Creates one retained logical descriptor set per in-flight frame.
+	pub fn create_descriptor_set(&mut self, _name: Option<&str>) -> DescriptorSetHandle {
 		let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 		let mut previous: Option<DescriptorSetHandle> = None;
 
 		for _ in 0..self.frames {
-			let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+			let frame_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 			self.descriptor_sets.push(DescriptorSet {
 				next: None,
-				template: *descriptor_set_template_handle,
-				bindings: Vec::new(),
-				cbv_srv_uav_heap: self.create_descriptor_heap(*descriptor_set_template_handle, false),
-				sampler_heap: self.create_descriptor_heap(*descriptor_set_template_handle, true),
+				descriptors: HashMap::default(),
 			});
 
 			if let Some(previous) = previous {
-				self.descriptor_sets[previous.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(handle.0));
+				self.descriptor_sets[previous.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(frame_handle.0));
 			}
-
-			previous = Some(handle);
+			previous = Some(frame_handle);
 		}
 
 		handle
 	}
 
-	pub fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: DescriptorSetHandle,
-		binding_constructor: BindingConstructor,
-	) -> DescriptorSetBindingHandle {
-		// Records a descriptor binding while deferring DX12 descriptor heap setup.
-		let constructor_template = binding_constructor.descriptor_set_binding_template;
-		let template = self
-			.descriptor_binding_template_for_set(descriptor_set, constructor_template.binding)
-			.unwrap_or_else(|| constructor_template.clone());
-		let descriptor_type = template.descriptor_type;
-		let binding_index = template.binding;
-		let count = template.descriptor_count;
-		let buffer_stride = template.buffer_stride;
-		let buffer_read_only = template.buffer_read_only;
-
-		let descriptor_set_handles = self.collect_descriptor_set_handles(descriptor_set);
-		let mut next = None;
-
-		for (frame_index, descriptor_set_handle) in descriptor_set_handles.iter().enumerate().rev() {
-			let binding_handle = DescriptorSetBindingHandle(self.descriptor_bindings.len() as u64);
-
-			self.descriptor_bindings.push(DescriptorSetBinding {
-				next,
-				descriptor_set: *descriptor_set_handle,
-				descriptor_type,
-				binding_index,
-				count,
-				buffer_stride,
-				buffer_read_only,
-				frame_offset: binding_constructor.frame_offset.map(|offset| offset as i32),
-			});
-
-			if let Some(set) = self.descriptor_sets.get_mut(descriptor_set_handle.0 as usize) {
-				set.bindings.push(binding_handle);
-			}
-
-			let descriptor = self.resolve_descriptor_for_frame(
-				binding_constructor.descriptor,
-				frame_index,
-				binding_constructor.frame_offset.map(|offset| offset as i32),
-			);
-			self.update_descriptor_for_binding(binding_handle, descriptor, binding_constructor.array_element);
-
-			next = Some(crate::binding::DescriptorSetBindingHandle(binding_handle.0));
-		}
-
-		// DX12 uses descriptor heaps and root signatures, so descriptor set bindings are stored but not bound yet.
-		DescriptorSetBindingHandle(next.expect("No next binding").0)
-	}
-
-	fn descriptor_binding_template_for_set(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		binding_index: u32,
-	) -> Option<DescriptorSetBindingTemplate> {
-		let set = self.descriptor_sets.get(descriptor_set.0 as usize)?;
-		self.descriptor_set_templates
-			.get(set.template.0 as usize)?
-			.bindings
-			.iter()
-			.find(|binding| binding.binding == binding_index)
-			.cloned()
-	}
-
-	fn descriptor_heap_descriptor_count(&self, template_handle: DescriptorSetTemplateHandle, sampler_heap: bool) -> u32 {
-		self.descriptor_set_templates
-			.get(template_handle.0 as usize)
-			.map(|template| {
-				template
-					.bindings
-					.iter()
-					.filter(|binding| Self::descriptor_range_type(binding, sampler_heap).is_some())
-					.map(|binding| Self::descriptor_count_for_heap(binding, sampler_heap))
-					.sum()
-			})
-			.unwrap_or(0)
-	}
-
-	fn descriptor_count_for_heap(binding: &DescriptorSetBindingTemplate, sampler_heap: bool) -> u32 {
-		if sampler_heap && matches!(binding.descriptor_type, DescriptorType::CombinedImageSampler) {
-			return 1;
-		}
-		binding.descriptor_count.max(1)
-	}
-
-	fn create_descriptor_heap(
-		&self,
-		template_handle: DescriptorSetTemplateHandle,
-		sampler_heap: bool,
-	) -> Option<ID3D12DescriptorHeap> {
-		let count = self.descriptor_heap_descriptor_count(template_handle, sampler_heap);
-		if count == 0 {
-			return None;
-		}
-
-		let desc = D3D12_DESCRIPTOR_HEAP_DESC {
-			Type: if sampler_heap {
-				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
-			} else {
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-			},
-			NumDescriptors: count,
-			Flags: Default::default(),
-			NodeMask: 0,
-		};
-
-		let heap = unsafe { self.device.CreateDescriptorHeap(&desc) };
-		if let Err(error) = &heap {
-			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-			self.log_dx12_error(format!(
-				"Failed to create DX12 descriptor heap. Sampler heap: {sampler_heap}. Descriptor count: {count}. Error: {error:?}. Device removed reason: {removed_reason:?}"
-			));
-		}
-		let heap = heap.ok()?;
-		self.initialize_descriptor_heap_defaults(template_handle, sampler_heap, &heap);
-		Some(heap)
-	}
-
-	/// Writes null/default descriptors into every native heap slot for a descriptor set template.
+	/// Initializes a pipeline-defined descriptor table so sparse arrays have valid native entries.
 	fn initialize_descriptor_heap_defaults(
 		&self,
-		template_handle: DescriptorSetTemplateHandle,
+		layout: &PipelineLayout,
 		sampler_heap: bool,
 		heap: &ID3D12DescriptorHeap,
+		base_offset: u32,
 	) {
-		let Some(template) = self.descriptor_set_templates.get(template_handle.0 as usize) else {
-			return;
-		};
 		let heap_type = if sampler_heap {
 			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
 		} else {
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 		};
-		let mut slot = 0;
-		for binding in &template.bindings {
-			if Self::descriptor_range_type(binding, sampler_heap).is_none() {
+		for resource in &layout.resources {
+			let offset = if sampler_heap {
+				resource.sampler_offset
+			} else {
+				resource.cbv_srv_uav_offset
+			};
+			let Some(offset) = offset else {
 				continue;
-			}
-
-			let count = Self::descriptor_count_for_heap(binding, sampler_heap);
-			for element in 0..count {
-				let cpu_handle = self.descriptor_cpu_handle(heap, heap_type, slot + element);
+			};
+			for array_element in 0..resource.descriptor.count() {
+				let cpu_handle = self.descriptor_cpu_handle(heap, heap_type, base_offset + offset + array_element);
 				if sampler_heap {
 					self.write_default_sampler_descriptor(cpu_handle);
 				} else {
-					self.write_null_cbv_srv_uav_descriptor(binding, cpu_handle);
+					self.write_null_cbv_srv_uav_descriptor(resource.descriptor, cpu_handle);
 				}
 			}
-			slot += count;
 		}
 	}
 
-	/// Writes a harmless CBV/SRV/UAV descriptor so sparse or late-written slots are never uninitialized.
-	fn write_null_cbv_srv_uav_descriptor(
-		&self,
-		binding: &DescriptorSetBindingTemplate,
-		cpu_handle: D3D12_CPU_DESCRIPTOR_HANDLE,
-	) {
-		match binding.descriptor_type {
-			DescriptorType::UniformBuffer => unsafe {
+	/// Writes a null CBV, SRV, or UAV that matches one pipeline resource representation.
+	fn write_null_cbv_srv_uav_descriptor(&self, descriptor: ShaderResourceDescriptor, cpu_handle: D3D12_CPU_DESCRIPTOR_HANDLE) {
+		match descriptor.kind() {
+			ResourceKind::UniformBuffer => unsafe {
 				self.device.CreateConstantBufferView(None, cpu_handle);
 			},
-			DescriptorType::StorageBuffer => unsafe {
-				if binding.buffer_read_only {
-					self.device.CreateShaderResourceView(
-						None::<&ID3D12Resource>,
-						Some(&Self::null_buffer_srv_desc(binding.buffer_stride)),
-						cpu_handle,
-					);
-				} else {
+			ResourceKind::StorageBuffer => unsafe {
+				if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
 					self.device.CreateUnorderedAccessView(
 						None::<&ID3D12Resource>,
 						None::<&ID3D12Resource>,
-						Some(&Self::null_buffer_uav_desc(binding.buffer_stride)),
+						Some(&Self::null_buffer_uav_desc(descriptor.buffer_element_stride())),
+						cpu_handle,
+					);
+				} else {
+					self.device.CreateShaderResourceView(
+						None::<&ID3D12Resource>,
+						Some(&Self::null_buffer_srv_desc(descriptor.buffer_element_stride())),
 						cpu_handle,
 					);
 				}
 			},
-			DescriptorType::StorageImage => unsafe {
+			ResourceKind::StorageImage => unsafe {
 				self.device.CreateUnorderedAccessView(
 					None::<&ID3D12Resource>,
 					None::<&ID3D12Resource>,
-					Some(&Self::null_texture_uav_desc(binding.texture_view_type)),
+					Some(&Self::null_texture_uav_desc(descriptor.texture_view())),
 					cpu_handle,
 				);
 			},
-			DescriptorType::AccelerationStructure => unsafe {
+			ResourceKind::AccelerationStructure => unsafe {
 				self.device.CreateShaderResourceView(
 					None::<&ID3D12Resource>,
 					Some(&Self::null_acceleration_structure_srv_desc()),
 					cpu_handle,
 				);
 			},
-			_ => unsafe {
+			ResourceKind::SampledImage | ResourceKind::CombinedImageSampler | ResourceKind::InputAttachment => unsafe {
 				self.device.CreateShaderResourceView(
 					None::<&ID3D12Resource>,
-					Some(&Self::null_texture_srv_desc(binding.texture_view_type)),
+					Some(&Self::null_texture_srv_desc(descriptor.texture_view())),
 					cpu_handle,
 				);
 			},
+			ResourceKind::Sampler => {}
 		}
 	}
 
@@ -1297,92 +1172,21 @@ impl Device {
 		}
 	}
 
-	fn structured_buffer_stride(binding: &DescriptorSetBinding) -> u32 {
-		binding.buffer_stride.max(1)
-	}
-
-	/// Applies HLSL structured-buffer strides to descriptor metadata used by deferred DX12 descriptor writes.
-	fn apply_hlsl_structured_buffer_strides(
-		&mut self,
-		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		hlsl_sources: impl IntoIterator<Item = String>,
-	) {
-		for hlsl in hlsl_sources {
-			for ((set_index, binding_index), stride) in Self::hlsl_structured_buffer_strides(&hlsl) {
-				let Some(template_handle) = descriptor_set_template_handles.get(set_index as usize).copied() else {
-					continue;
-				};
-				self.update_descriptor_buffer_stride(template_handle, binding_index, stride);
+	/// Applies inferred HLSL structured-buffer strides without overriding explicit metadata.
+	fn apply_hlsl_structured_buffer_strides(resources: &mut [ShaderResourceDescriptor], hlsl: &str) {
+		let strides = Self::hlsl_structured_buffer_strides(hlsl);
+		for resource in resources {
+			if !matches!(resource.kind(), ResourceKind::UniformBuffer | ResourceKind::StorageBuffer)
+				|| resource.buffer_element_stride() != 4
+			{
+				continue;
 			}
-		}
-	}
-
-	/// Updates template and per-frame binding records after shader metadata reveals a structured-buffer stride.
-	fn update_descriptor_buffer_stride(
-		&mut self,
-		template_handle: DescriptorSetTemplateHandle,
-		binding_index: u32,
-		stride: u32,
-	) {
-		if stride == 0 {
-			return;
-		}
-
-		let mut changed = false;
-		if let Some(template) = self.descriptor_set_templates.get_mut(template_handle.0 as usize) {
-			for binding in &mut template.bindings {
-				if binding.binding == binding_index
-					&& matches!(
-						binding.descriptor_type,
-						DescriptorType::UniformBuffer | DescriptorType::StorageBuffer
-					) && binding.buffer_stride != stride
-				{
-					// Public stride metadata is authoritative once it has been set away from the default scalar layout.
-					// Inference only fills in typed HLSL buffers that still carry the default 4-byte element stride.
-					if binding.buffer_stride != 4 || stride == 4 {
-						continue;
-					}
-					binding.buffer_stride = stride;
-					changed = true;
-				}
-			}
-		}
-
-		if !changed {
-			return;
-		}
-
-		let descriptor_sets = self
-			.descriptor_sets
-			.iter()
-			.enumerate()
-			.filter_map(|(index, set)| (set.template == template_handle).then_some(DescriptorSetHandle(index as u64)))
-			.collect::<SmallVec<[DescriptorSetHandle; 8]>>();
-
-		for descriptor_set in descriptor_sets {
-			let heap = if let Some(set) = self.descriptor_sets.get(descriptor_set.0 as usize) {
-				for binding_handle in &set.bindings {
-					if let Some(binding) = self.descriptor_bindings.get_mut(binding_handle.0 as usize) {
-						if binding.binding_index == binding_index
-							&& matches!(
-								binding.descriptor_type,
-								DescriptorType::UniformBuffer | DescriptorType::StorageBuffer
-							) {
-							binding.buffer_stride = stride;
-						}
-					}
-				}
-
-				set.cbv_srv_uav_heap.clone()
-			} else {
-				None
+			let Some(stride) = strides.get(&(0, resource.slot().index())).copied() else {
+				continue;
 			};
-
-			if let Some(heap) = heap {
-				self.initialize_descriptor_heap_defaults(template_handle, false, &heap);
+			if stride != 0 {
+				*resource = resource.buffer_stride(stride);
 			}
-
-			self.dirty_descriptor_sets.insert(descriptor_set);
 		}
 	}
 
@@ -1648,6 +1452,69 @@ impl Device {
 		}
 	}
 
+	/// Resolves the native array slice range for a shader image view.
+	fn descriptor_array_range(array_layers: u32, layer: Option<u32>) -> (u32, u32) {
+		let array_layers = array_layers.max(1);
+		if let Some(layer) = layer {
+			assert!(
+				layer < array_layers,
+				"Invalid DX12 image descriptor layer. The most likely cause is that the selected layer exceeds the image array size."
+			);
+			(layer, 1)
+		} else {
+			(0, array_layers)
+		}
+	}
+
+	/// Creates a UAV whose native dimension matches the shader resource declaration.
+	fn descriptor_texture_uav_desc(
+		format: DXGI_FORMAT,
+		texture_view_type: TextureViewTypes,
+		array_layers: u32,
+		layer: Option<u32>,
+	) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+		assert!(
+			layer.is_none() || texture_view_type == TextureViewTypes::Texture2DArray,
+			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
+		);
+		if texture_view_type == TextureViewTypes::Texture3D {
+			panic!(
+				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+			);
+		}
+		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
+			assert!(
+				array_layers <= 1,
+				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata or a selected layer."
+			);
+			return D3D12_UNORDERED_ACCESS_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
+				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+					Texture2D: D3D12_TEX2D_UAV {
+						MipSlice: 0,
+						PlaneSlice: 0,
+					},
+				},
+			};
+		}
+
+		// DX12 represents a selected array layer as a one-slice Texture2DArray view.
+		let (first_array_slice, array_size) = Self::descriptor_array_range(array_layers, layer);
+		D3D12_UNORDERED_ACCESS_VIEW_DESC {
+			Format: format,
+			ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
+			Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+				Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
+					MipSlice: 0,
+					FirstArraySlice: first_array_slice,
+					ArraySize: array_size,
+					PlaneSlice: 0,
+				},
+			},
+		}
+	}
+
 	fn null_texture_srv_desc(texture_view_type: TextureViewTypes) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 		match texture_view_type {
 			TextureViewTypes::Texture2DArray => D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -1693,6 +1560,61 @@ impl Device {
 		}
 	}
 
+	/// Creates an SRV whose native dimension matches the shader resource declaration.
+	fn descriptor_texture_srv_desc(
+		format: DXGI_FORMAT,
+		texture_view_type: TextureViewTypes,
+		array_layers: u32,
+		layer: Option<u32>,
+	) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+		assert!(
+			layer.is_none() || texture_view_type == TextureViewTypes::Texture2DArray,
+			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
+		);
+		if texture_view_type == TextureViewTypes::Texture3D {
+			panic!(
+				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+			);
+		}
+		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
+			assert!(
+				array_layers <= 1,
+				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata or a selected layer."
+			);
+			return D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					Texture2D: D3D12_TEX2D_SRV {
+						MostDetailedMip: 0,
+						MipLevels: 1,
+						PlaneSlice: 0,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			};
+		}
+
+		// DX12 represents a selected array layer as a one-slice Texture2DArray view.
+		let (first_array_slice, array_size) = Self::descriptor_array_range(array_layers, layer);
+		D3D12_SHADER_RESOURCE_VIEW_DESC {
+			Format: format,
+			ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+			Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+			Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+				Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
+					MostDetailedMip: 0,
+					MipLevels: 1,
+					FirstArraySlice: first_array_slice,
+					ArraySize: array_size,
+					PlaneSlice: 0,
+					ResourceMinLODClamp: 0.0,
+				},
+			},
+		}
+	}
+
 	fn null_acceleration_structure_srv_desc() -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 		D3D12_SHADER_RESOURCE_VIEW_DESC {
 			Format: DXGI_FORMAT_UNKNOWN,
@@ -1702,52 +1624,6 @@ impl Device {
 				RaytracingAccelerationStructure: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV { Location: 0 },
 			},
 		}
-	}
-
-	fn descriptor_heap_slot(
-		&self,
-		template_handle: DescriptorSetTemplateHandle,
-		descriptor_type: DescriptorType,
-		binding_index: u32,
-		array_element: u32,
-		sampler_heap: bool,
-	) -> Option<u32> {
-		let template = self.descriptor_set_templates.get(template_handle.0 as usize)?;
-		let mut slot = 0;
-		for binding in &template.bindings {
-			if Self::descriptor_range_type(binding, sampler_heap).is_none() {
-				continue;
-			}
-			if binding.binding == binding_index
-				&& std::mem::discriminant(&binding.descriptor_type) == std::mem::discriminant(&descriptor_type)
-			{
-				let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
-				return (array_element < descriptor_count).then_some(slot + array_element);
-			}
-			slot += Self::descriptor_count_for_heap(binding, sampler_heap);
-		}
-		None
-	}
-
-	#[cfg(test)]
-	pub(crate) fn descriptor_heap_descriptor_count_for_template(
-		&self,
-		template_handle: DescriptorSetTemplateHandle,
-		sampler_heap: bool,
-	) -> u32 {
-		self.descriptor_heap_descriptor_count(template_handle, sampler_heap)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn descriptor_heap_slot_for_test(
-		&self,
-		template_handle: DescriptorSetTemplateHandle,
-		descriptor_type: DescriptorType,
-		binding_index: u32,
-		array_element: u32,
-		sampler_heap: bool,
-	) -> Option<u32> {
-		self.descriptor_heap_slot(template_handle, descriptor_type, binding_index, array_element, sampler_heap)
 	}
 
 	fn descriptor_cpu_handle(
@@ -1772,13 +1648,6 @@ impl Device {
 		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as u64;
 		handle.ptr = handle.ptr.saturating_add(slot as u64 * stride);
 		handle
-	}
-
-	fn descriptor_heap_descriptor_count_for_set(&self, set_handle: DescriptorSetHandle, sampler_heap: bool) -> u32 {
-		self.descriptor_sets
-			.get(set_handle.0 as usize)
-			.map(|set| self.descriptor_heap_descriptor_count(set.template, sampler_heap))
-			.unwrap_or(0)
 	}
 
 	fn create_staged_descriptor_heap(
@@ -1925,187 +1794,270 @@ impl Device {
 		self.descriptor_heap_bind_count += 1;
 	}
 
+	/// Materializes the active pipeline's flat retained resources into one shader-visible table.
 	fn stage_descriptor_heap_for_sets(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
+		layout_handle: PipelineLayoutHandle,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 		sampler_heap: bool,
 	) -> Option<StagedDescriptorHeap> {
-		let heap_type = if sampler_heap {
-			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.clone();
+		let descriptor_count = if sampler_heap {
+			layout.sampler_descriptor_count
 		} else {
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+			layout.cbv_srv_uav_descriptor_count
 		};
-		let mut set_offsets = SmallVec::<[Option<u32>; 8]>::new();
-		let mut descriptor_count = 0u32;
-
-		for &root_set_handle in sets {
-			let set_handle = self
-				.descriptor_set_for_sequence(root_set_handle, sequence_index)
-				.unwrap_or(root_set_handle);
-			let count = self.descriptor_heap_descriptor_count_for_set(set_handle, sampler_heap);
-			if count == 0 {
-				set_offsets.push(None);
-			} else {
-				set_offsets.push(Some(descriptor_count));
-				descriptor_count = descriptor_count.saturating_add(count);
-			}
-		}
-
-		if descriptor_count == 0 {
-			return None;
-		}
-
 		let (heap, base_offset) =
 			self.reserve_staged_descriptor_range(command_buffer_handle, sampler_heap, descriptor_count)?;
-		for offset in &mut set_offsets {
-			if let Some(offset) = offset {
-				*offset = offset.saturating_add(base_offset);
+		self.initialize_descriptor_heap_defaults(&layout, sampler_heap, &heap, base_offset);
+
+		let mut writes = SmallVec::<[(PipelineResource, u32, RetainedDescriptor); 32]>::new();
+		for resource in &layout.resources {
+			for &root_set_handle in sets {
+				let set_handle = self
+					.descriptor_set_for_sequence(root_set_handle, sequence_index)
+					.unwrap_or(root_set_handle);
+				let Some(descriptors) = self
+					.descriptor_sets
+					.get(set_handle.0 as usize)
+					.and_then(|set| set.descriptors.get(&resource.descriptor.slot()))
+				else {
+					continue;
+				};
+				for (&array_element, &descriptor) in descriptors {
+					writes.push((*resource, array_element, descriptor));
+				}
 			}
 		}
 
-		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
-		let destination_start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
-
-		for (set_index, &root_set_handle) in sets.iter().enumerate() {
-			let set_handle = self
-				.descriptor_set_for_sequence(root_set_handle, sequence_index)
-				.unwrap_or(root_set_handle);
-			let Some(destination_offset) = set_offsets.get(set_index).and_then(|offset| *offset) else {
-				continue;
-			};
-			self.materialize_descriptor_set(set_handle);
-			let Some(set) = self.descriptor_sets.get(set_handle.0 as usize) else {
-				continue;
-			};
-			let source_heap = if sampler_heap {
-				set.sampler_heap.as_ref()
-			} else {
-				set.cbv_srv_uav_heap.as_ref()
-			};
-			let Some(source_heap) = source_heap else {
-				continue;
-			};
-			let count = self.descriptor_heap_descriptor_count_for_set(set_handle, sampler_heap);
-			if count == 0 {
-				continue;
-			}
-
-			let source = unsafe { source_heap.GetCPUDescriptorHandleForHeapStart() };
-			let mut destination = destination_start;
-			destination.ptr = destination.ptr.saturating_add(destination_offset as usize * stride);
-			unsafe {
-				self.device.CopyDescriptorsSimple(count, destination, source, heap_type);
-			}
+		for (resource, array_element, descriptor) in writes {
+			self.write_native_descriptor_for_heap(
+				resource,
+				descriptor,
+				array_element,
+				sequence_index,
+				sampler_heap,
+				&heap,
+				base_offset,
+			);
 		}
 
-		Some(StagedDescriptorHeap { heap, set_offsets })
+		Some(StagedDescriptorHeap { heap, base_offset })
 	}
 
-	fn descriptor_range_type(
-		binding: &DescriptorSetBindingTemplate,
-		sampler_heap: bool,
-	) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
-		match binding.descriptor_type {
-			DescriptorType::UniformBuffer if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_CBV),
-			DescriptorType::StorageBuffer if !sampler_heap && binding.buffer_read_only => Some(D3D12_DESCRIPTOR_RANGE_TYPE_SRV),
-			DescriptorType::StorageBuffer | DescriptorType::StorageImage if !sampler_heap => {
+	fn descriptor_range_type(descriptor: ShaderResourceDescriptor, sampler_heap: bool) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
+		match descriptor.kind() {
+			ResourceKind::UniformBuffer if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_CBV),
+			ResourceKind::StorageBuffer if !sampler_heap && descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
 				Some(D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
 			}
-			DescriptorType::SampledImage
-			| DescriptorType::InputAttachment
-			| DescriptorType::AccelerationStructure
-			| DescriptorType::CombinedImageSampler
+			ResourceKind::StorageBuffer if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_SRV),
+			ResourceKind::StorageImage if !sampler_heap => Some(D3D12_DESCRIPTOR_RANGE_TYPE_UAV),
+			ResourceKind::SampledImage
+			| ResourceKind::InputAttachment
+			| ResourceKind::AccelerationStructure
+			| ResourceKind::CombinedImageSampler
 				if !sampler_heap =>
 			{
 				Some(D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
 			}
-			DescriptorType::Sampler | DescriptorType::CombinedImageSampler if sampler_heap => {
+			ResourceKind::Sampler | ResourceKind::CombinedImageSampler if sampler_heap => {
 				Some(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
 			}
 			_ => None,
 		}
 	}
 
+	fn resource_range_end(descriptor: ShaderResourceDescriptor) -> u32 {
+		descriptor
+			.slot()
+			.index()
+			.checked_add(descriptor.count())
+			.expect("DX12 shader resource range overflowed. The most likely cause is an invalid flat slot or resource count.")
+	}
+
+	fn resource_representations_match(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
+		left.slot() == right.slot()
+			&& left.kind() == right.kind()
+			&& left.count() == right.count()
+			&& left.texture_view() == right.texture_view()
+			&& left.buffer_element_stride() == right.buffer_element_stride()
+	}
+
+	fn resource_ranges_overlap(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
+		left.slot().index() < Self::resource_range_end(right) && right.slot().index() < Self::resource_range_end(left)
+	}
+
+	/// Merges shader resource declarations and assigns dense native heap offsets.
+	fn build_pipeline_resources(&self, shaders: &[pipelines::ShaderParameter]) -> Vec<PipelineResource> {
+		let mut descriptors = shaders
+			.iter()
+			.flat_map(|parameter| self.shaders[parameter.handle.0 as usize].resources.iter().copied())
+			.collect::<Vec<_>>();
+		descriptors.sort_by_key(|descriptor| descriptor.slot());
+
+		let mut merged = Vec::<ShaderResourceDescriptor>::with_capacity(descriptors.len());
+		for descriptor in descriptors {
+			if let Some(previous) = merged.last_mut() {
+				if previous.slot() == descriptor.slot() {
+					assert!(
+						Self::resource_representations_match(*previous, descriptor),
+						"Conflicting DX12 shader resources. The most likely cause is that shader stages declared the same flat slot with incompatible representations.",
+					);
+					assert!(
+						Self::descriptor_range_type(*previous, false) == Self::descriptor_range_type(descriptor, false),
+						"Conflicting DX12 storage access. The most likely cause is that shader stages map the same flat slot to different SRV and UAV register classes.",
+					);
+					*previous = ShaderResourceDescriptor::new(
+						previous.slot(),
+						previous.kind(),
+						previous.count(),
+						previous.access() | descriptor.access(),
+					)
+					.texture_view_type(previous.texture_view())
+					.buffer_stride(previous.buffer_element_stride());
+					continue;
+				}
+				assert!(
+					!Self::resource_ranges_overlap(*previous, descriptor),
+					"Overlapping DX12 shader resources. The most likely cause is that shader resource arrays reserve intersecting flat slot ranges.",
+				);
+			}
+			merged.push(descriptor);
+		}
+
+		let mut cbv_srv_uav_offset = 0u32;
+		let mut sampler_offset = 0u32;
+		merged
+			.into_iter()
+			.map(|descriptor| {
+				let cbv_offset = Self::descriptor_range_type(descriptor, false).map(|_| {
+					let offset = cbv_srv_uav_offset;
+					cbv_srv_uav_offset = cbv_srv_uav_offset.checked_add(descriptor.count()).expect(
+						"DX12 CBV/SRV/UAV descriptor count overflowed. The most likely cause is an invalid shader resource count.",
+					);
+					offset
+				});
+				let native_sampler_offset = Self::descriptor_range_type(descriptor, true).map(|_| {
+					let offset = sampler_offset;
+					sampler_offset = sampler_offset.checked_add(descriptor.count()).expect(
+						"DX12 sampler descriptor count overflowed. The most likely cause is an invalid shader resource count.",
+					);
+					offset
+				});
+				PipelineResource {
+					descriptor,
+					cbv_srv_uav_offset: cbv_offset,
+					sampler_offset: native_sampler_offset,
+				}
+			})
+			.collect()
+	}
+
+	/// Creates a compact root signature with one resource table, one sampler table, and one push-constant block.
 	fn create_root_signature(
 		&self,
-		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		push_constant_ranges: &[PushConstantRange],
+		layout: &PipelineLayout,
 	) -> (Option<ID3D12RootSignature>, Vec<RootDescriptorTable>, Vec<RootConstantRange>) {
-		let mut ranges = Vec::new();
-		let mut tables = Vec::new();
-		for (space, template_handle) in descriptor_set_template_handles.iter().enumerate() {
-			let Some(template) = self.descriptor_set_templates.get(template_handle.0 as usize) else {
-				continue;
-			};
-			let mut cbv_srv_uav_slot = 0;
-			let mut sampler_slot = 0;
-			for binding in &template.bindings {
-				for sampler_heap in [false, true] {
-					let Some(range_type) = Self::descriptor_range_type(binding, sampler_heap) else {
-						continue;
-					};
-					let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
-					let heap_slot = if sampler_heap {
-						let slot = sampler_slot;
-						sampler_slot += descriptor_count;
-						slot
-					} else {
-						let slot = cbv_srv_uav_slot;
-						cbv_srv_uav_slot += descriptor_count;
-						slot
-					};
-					ranges.push(D3D12_DESCRIPTOR_RANGE {
-						RangeType: range_type,
-						NumDescriptors: descriptor_count,
-						BaseShaderRegister: binding.binding,
-						RegisterSpace: space as u32,
-						OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
-					});
-					tables.push(RootDescriptorTable {
-						set_index: space,
-						binding_index: binding.binding,
-						sampler_heap,
-						heap_slot,
-					});
-				}
+		let mut resource_ranges = Vec::new();
+		let mut sampler_ranges = Vec::new();
+		for resource in &layout.resources {
+			if let (Some(range_type), Some(offset)) = (
+				Self::descriptor_range_type(resource.descriptor, false),
+				resource.cbv_srv_uav_offset,
+			) {
+				resource_ranges.push(D3D12_DESCRIPTOR_RANGE {
+					RangeType: range_type,
+					NumDescriptors: resource.descriptor.count(),
+					BaseShaderRegister: resource.descriptor.slot().index(),
+					RegisterSpace: 0,
+					OffsetInDescriptorsFromTableStart: offset,
+				});
+			}
+			if let (Some(range_type), Some(offset)) = (
+				Self::descriptor_range_type(resource.descriptor, true),
+				resource.sampler_offset,
+			) {
+				sampler_ranges.push(D3D12_DESCRIPTOR_RANGE {
+					RangeType: range_type,
+					NumDescriptors: resource.descriptor.count(),
+					BaseShaderRegister: resource.descriptor.slot().index(),
+					RegisterSpace: 0,
+					OffsetInDescriptorsFromTableStart: offset,
+				});
 			}
 		}
 
-		let mut parameters = ranges
-			.iter()
-			.map(|range| D3D12_ROOT_PARAMETER {
+		let mut parameters = Vec::with_capacity(3);
+		let mut tables = Vec::with_capacity(2);
+		if !resource_ranges.is_empty() {
+			let root_parameter_index = parameters.len() as u32;
+			parameters.push(D3D12_ROOT_PARAMETER {
 				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
 				Anonymous: D3D12_ROOT_PARAMETER_0 {
 					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-						NumDescriptorRanges: 1,
-						pDescriptorRanges: range as *const D3D12_DESCRIPTOR_RANGE,
+						NumDescriptorRanges: resource_ranges.len() as u32,
+						pDescriptorRanges: resource_ranges.as_ptr(),
 					},
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-			})
-			.collect::<Vec<_>>();
+			});
+			tables.push(RootDescriptorTable {
+				root_parameter_index,
+				sampler_heap: false,
+			});
+		}
+		if !sampler_ranges.is_empty() {
+			let root_parameter_index = parameters.len() as u32;
+			parameters.push(D3D12_ROOT_PARAMETER {
+				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+				Anonymous: D3D12_ROOT_PARAMETER_0 {
+					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+						NumDescriptorRanges: sampler_ranges.len() as u32,
+						pDescriptorRanges: sampler_ranges.as_ptr(),
+					},
+				},
+				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+			});
+			tables.push(RootDescriptorTable {
+				root_parameter_index,
+				sampler_heap: true,
+			});
+		}
 
 		let mut constants = Vec::new();
-		for push_constant_range in push_constant_ranges {
+		let push_constant_size = layout
+			.push_constant_ranges
+			.iter()
+			.map(|range| range.offset.saturating_add(range.size))
+			.max()
+			.unwrap_or(0);
+		if push_constant_size != 0 {
+			assert!(
+				layout.resources.iter().all(|resource| {
+					resource.descriptor.kind() != ResourceKind::UniformBuffer || resource.descriptor.slot().index() != 0
+				}),
+				"Conflicting DX12 root register. The most likely cause is that push constants and a uniform buffer both use b0, space0.",
+			);
 			let root_parameter_index = parameters.len() as u32;
 			parameters.push(D3D12_ROOT_PARAMETER {
 				ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
 				Anonymous: D3D12_ROOT_PARAMETER_0 {
 					Constants: D3D12_ROOT_CONSTANTS {
-						ShaderRegister: push_constant_range.offset / 4,
-						RegisterSpace: descriptor_set_template_handles.len() as u32,
-						Num32BitValues: push_constant_range.size.div_ceil(4),
+						ShaderRegister: 0,
+						RegisterSpace: 0,
+						Num32BitValues: push_constant_size.div_ceil(4),
 					},
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
 			});
-			constants.push(RootConstantRange {
+			constants.extend(layout.push_constant_ranges.iter().map(|range| RootConstantRange {
 				root_parameter_index,
-				offset: push_constant_range.offset,
-				size: push_constant_range.size,
-			});
+				offset: range.offset,
+				size: range.size,
+			}));
 		}
 
 		let desc = D3D12_ROOT_SIGNATURE_DESC {
@@ -2117,9 +2069,8 @@ impl Device {
 			},
 			NumStaticSamplers: 0,
 			pStaticSamplers: std::ptr::null(),
-			Flags: D3D12_ROOT_SIGNATURE_FLAGS(0),
+			Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 		};
-
 		let mut blob = None;
 		let mut error_blob = None;
 		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, Some(&mut error_blob)) }
@@ -2139,29 +2090,37 @@ impl Device {
 		let Some(blob) = blob else {
 			return (None, tables, constants);
 		};
-		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) };
-
+		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) };
 		let root_signature = unsafe { self.device.CreateRootSignature(0, bytes) };
 		if let Err(error) = &root_signature {
 			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 			self.log_dx12_error(format!(
-				"Failed to create DX12 root signature with {} parameters, {} descriptor tables, and {} constants: {error:?}; device removed reason: {removed_reason:?}",
+				"Failed to create DX12 root signature with {} parameters and {} descriptor tables: {error:?}; device removed reason: {removed_reason:?}",
 				parameters.len(),
 				tables.len(),
-				constants.len()
 			));
 		}
-
 		(root_signature.ok(), tables, constants)
 	}
 
 	fn get_or_create_pipeline_layout(
 		&mut self,
-		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
+		shaders: &[pipelines::ShaderParameter],
 		push_constant_ranges: &[PushConstantRange],
 	) -> PipelineLayoutHandle {
+		let resources = self.build_pipeline_resources(shaders);
 		let layout = PipelineLayout {
-			descriptor_set_templates: descriptor_set_template_handles.to_vec(),
+			cbv_srv_uav_descriptor_count: resources
+				.iter()
+				.filter_map(|resource| resource.cbv_srv_uav_offset.map(|offset| offset + resource.descriptor.count()))
+				.max()
+				.unwrap_or(0),
+			sampler_descriptor_count: resources
+				.iter()
+				.filter_map(|resource| resource.sampler_offset.map(|offset| offset + resource.descriptor.count()))
+				.max()
+				.unwrap_or(0),
+			resources,
 			push_constant_ranges: push_constant_ranges.to_vec(),
 		};
 
@@ -2171,8 +2130,7 @@ impl Device {
 
 		self.pipeline_layouts.push(layout.clone());
 		let handle = PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
-		let (root_signature, root_tables, root_constants) =
-			self.create_root_signature(descriptor_set_template_handles, push_constant_ranges);
+		let (root_signature, root_tables, root_constants) = self.create_root_signature(&layout);
 		self.pipeline_root_signatures.push(root_signature);
 		self.pipeline_root_tables.push(root_tables);
 		self.pipeline_root_constants.push(root_constants);
@@ -2181,21 +2139,7 @@ impl Device {
 	}
 
 	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
-		let hlsl_sources = builder
-			.shaders
-			.iter()
-			.filter_map(|shader| {
-				self.shaders
-					.get(shader.handle.0 as usize)
-					.and_then(|shader| shader.hlsl.as_ref())
-					.map(|hlsl| hlsl.source.clone())
-			})
-			.collect::<SmallVec<[String; 4]>>();
-		self.apply_hlsl_structured_buffer_strides(builder.descriptor_set_templates.as_ref(), hlsl_sources);
-		let layout = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let layout = self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let pipeline_state = self.create_graphics_pipeline_state(layout, &builder);
 		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
 		let has_mesh_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh));
@@ -2309,7 +2253,7 @@ impl Device {
 			},
 			DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
 				DepthEnable: BOOL(has_depth_attachment as i32),
-				DepthWriteMask: if has_depth_attachment {
+				DepthWriteMask: if has_depth_attachment && builder.depth_write {
 					D3D12_DEPTH_WRITE_MASK_ALL
 				} else {
 					D3D12_DEPTH_WRITE_MASK_ZERO
@@ -2456,7 +2400,7 @@ impl Device {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL,
 				value: D3D12_DEPTH_STENCIL_DESC {
 					DepthEnable: BOOL(has_depth_attachment as i32),
-					DepthWriteMask: if has_depth_attachment {
+					DepthWriteMask: if has_depth_attachment && builder.depth_write {
 						D3D12_DEPTH_WRITE_MASK_ALL
 					} else {
 						D3D12_DEPTH_WRITE_MASK_ZERO
@@ -2647,14 +2591,7 @@ impl Device {
 	}
 
 	pub fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
-		let hlsl_sources = self
-			.shaders
-			.get(builder.shader.handle.0 as usize)
-			.and_then(|shader| shader.hlsl.as_ref())
-			.map(|hlsl| hlsl.source.clone())
-			.into_iter();
-		self.apply_hlsl_structured_buffer_strides(builder.descriptor_set_templates, hlsl_sources);
-		let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let layout = self.get_or_create_pipeline_layout(std::slice::from_ref(&builder.shader), builder.push_constant_ranges);
 		let shader_parameter = builder.shader;
 		let pipeline_state = self.create_compute_pipeline_state(layout, shader_parameter);
 		self.pipelines.push(Pipeline {
@@ -2726,23 +2663,9 @@ impl Device {
 	}
 
 	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
-		let hlsl_sources = builder
-			.shaders
-			.iter()
-			.filter_map(|shader| {
-				self.shaders
-					.get(shader.handle.0 as usize)
-					.and_then(|shader| shader.hlsl.as_ref())
-					.map(|hlsl| hlsl.source.clone())
-			})
-			.collect::<SmallVec<[String; 8]>>();
-		self.apply_hlsl_structured_buffer_strides(builder.descriptor_set_templates.as_ref(), hlsl_sources);
-		let layout = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let layout = self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let shaders = builder.shaders;
-		let (ray_tracing_state_object, ray_tracing_shader_identifiers) = self.create_ray_tracing_state_object(&shaders);
+		let (ray_tracing_state_object, ray_tracing_shader_identifiers) = self.create_ray_tracing_state_object(layout, &shaders);
 		self.pipelines.push(Pipeline {
 			layout,
 			shaders: shaders.iter().map(|s| *s.handle).collect(),
@@ -2758,6 +2681,7 @@ impl Device {
 
 	fn create_ray_tracing_state_object(
 		&mut self,
+		layout: PipelineLayoutHandle,
 		shaders: &[pipelines::ShaderParameter],
 	) -> (
 		Option<ID3D12StateObject>,
@@ -2774,16 +2698,23 @@ impl Device {
 		let Ok(device) = self.device.cast::<ID3D12Device5>() else {
 			return (None, HashMap::default());
 		};
+		let Some(root_signature) = self
+			.pipeline_root_signatures
+			.get(layout.0 as usize)
+			.and_then(|root_signature| root_signature.clone())
+		else {
+			return (None, HashMap::default());
+		};
 		self.ray_tracing_state_object_create_attempt_count += 1;
 
 		let mut export_names = Vec::with_capacity(shaders.len());
 		let mut source_export_names = Vec::with_capacity(shaders.len());
 		let mut exports = Vec::with_capacity(shaders.len());
 		let mut libraries = Vec::with_capacity(shaders.len());
-		let mut hit_group_names = Vec::new();
-		let mut hit_groups = Vec::new();
-		let mut identifier_exports = Vec::new();
-		let mut subobjects = Vec::new();
+		let mut hit_group_names = Vec::with_capacity(shaders.len());
+		let mut hit_groups = Vec::with_capacity(shaders.len());
+		let mut identifier_exports = Vec::with_capacity(shaders.len());
+		let mut subobjects = Vec::with_capacity(shaders.len() * 2 + 3);
 
 		for shader_parameter in shaders {
 			let Some(shader) = self.shaders.get(shader_parameter.handle.0 as usize) else {
@@ -2867,6 +2798,13 @@ impl Device {
 		if subobjects.is_empty() {
 			return (None, HashMap::default());
 		}
+		let global_root_signature = D3D12_GLOBAL_ROOT_SIGNATURE {
+			pGlobalRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
+		};
+		subobjects.push(D3D12_STATE_SUBOBJECT {
+			Type: D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE,
+			pDesc: (&global_root_signature as *const D3D12_GLOBAL_ROOT_SIGNATURE).cast(),
+		});
 		let shader_config = D3D12_RAYTRACING_SHADER_CONFIG {
 			MaxPayloadSizeInBytes: 32,
 			MaxAttributeSizeInBytes: 32,
@@ -3116,7 +3054,26 @@ impl Device {
 	}
 
 	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<D3D12_RESOURCE_STATES> {
-		self.image_states.get(&image.0 .0).copied()
+		self.tracked_image_resource_state_for_sequence(image, 0)
+	}
+
+	pub(crate) fn tracked_image_resource_state_for_sequence(
+		&self,
+		image: ImageHandle,
+		sequence_index: u8,
+	) -> Option<D3D12_RESOURCE_STATES> {
+		let image = self.images.get(image.0 .0 as usize)?;
+		let resource = if let Some(resources) = image.frame_resources.as_ref() {
+			resources.get(sequence_index as usize)?.as_ref()?
+		} else {
+			image.resource.as_ref()?
+		};
+		self.image_states.get(&Self::native_resource_key(resource)).copied()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn pending_texture_sync_count(&self) -> usize {
+		self.pending_texture_syncs.len()
 	}
 
 	/// Returns the native texture for a frame, creating deferred dynamic image resources on first use.
@@ -3262,9 +3219,9 @@ impl Device {
 	pub(crate) fn buffer_is_in_common_state(&self, buffer: BaseBufferHandle) -> Option<bool> {
 		self.buffer(buffer)
 			.and_then(|buffer_data| buffer_data.resource.as_ref())
-			.map(|_| {
+			.map(|resource| {
 				self.buffer_states
-					.get(&buffer.0)
+					.get(&Self::native_resource_key(resource))
 					.copied()
 					.unwrap_or(D3D12_RESOURCE_STATE_COMMON)
 					== D3D12_RESOURCE_STATE_COMMON
@@ -3326,9 +3283,9 @@ impl Device {
 		self.images
 			.get(image.0 .0 as usize)
 			.and_then(|image_data| image_data.resource.as_ref())
-			.map(|_| {
+			.map(|resource| {
 				self.image_states
-					.get(&image.0 .0)
+					.get(&Self::native_resource_key(resource))
 					.copied()
 					.unwrap_or(D3D12_RESOURCE_STATE_COMMON)
 					== D3D12_RESOURCE_STATE_COMMON
@@ -3336,9 +3293,50 @@ impl Device {
 	}
 
 	pub(crate) fn descriptor_set_has_native_heaps(&self, descriptor_set: DescriptorSetHandle) -> Option<(bool, bool)> {
-		self.descriptor_sets
-			.get(descriptor_set.0 as usize)
-			.map(|set| (set.cbv_srv_uav_heap.is_some(), set.sampler_heap.is_some()))
+		self.descriptor_sets.get(descriptor_set.0 as usize).map(|_| (false, false))
+	}
+
+	#[cfg(test)]
+	pub(crate) fn pipeline_descriptor_counts(&self, pipeline: PipelineHandle) -> Option<(u32, u32)> {
+		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
+		let layout = self.pipeline_layouts.get(pipeline.layout.0 as usize)?;
+		Some((layout.cbv_srv_uav_descriptor_count, layout.sampler_descriptor_count))
+	}
+
+	#[cfg(test)]
+	pub(crate) fn pipeline_descriptor_slot(
+		&self,
+		pipeline: PipelineHandle,
+		slot: ResourceSlot,
+		array_element: u32,
+		sampler_heap: bool,
+	) -> Option<u32> {
+		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
+		let layout = self.pipeline_layouts.get(pipeline.layout.0 as usize)?;
+		let resource = layout.resources.iter().find(|resource| resource.descriptor.slot() == slot)?;
+		if array_element >= resource.descriptor.count() {
+			return None;
+		}
+		let offset = if sampler_heap {
+			resource.sampler_offset
+		} else {
+			resource.cbv_srv_uav_offset
+		}?;
+		Some(offset + array_element)
+	}
+
+	#[cfg(test)]
+	pub(crate) fn pipeline_resource_descriptor(
+		&self,
+		pipeline: PipelineHandle,
+		slot: ResourceSlot,
+	) -> Option<ShaderResourceDescriptor> {
+		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
+		self.pipeline_layouts[pipeline.layout.0 as usize]
+			.resources
+			.iter()
+			.find(|resource| resource.descriptor.slot() == slot)
+			.map(|resource| resource.descriptor)
 	}
 
 	pub(crate) fn pipeline_layout_has_root_signature(&self, pipeline_layout: PipelineLayoutHandle) -> Option<bool> {
@@ -3741,20 +3739,25 @@ impl Device {
 		Self::align_up(size, 256).max(256)
 	}
 
+	/// Applies retained flat-slot descriptor writes to every frame-local set.
 	pub fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
-		// Updates descriptor binding records without touching DX12 descriptor heaps.
 		for write in descriptor_set_writes {
-			let binding_handles = self.collect_descriptor_binding_handles(write.binding_handle);
-			for (frame_index, binding_handle) in binding_handles.iter().enumerate() {
-				if let Some(binding) = self.descriptor_bindings.get_mut(binding_handle.0 as usize) {
-					binding.frame_offset = write.frame_offset;
-				}
-				let descriptor = self.resolve_descriptor_for_frame(write.descriptor, frame_index, write.frame_offset);
-				self.update_descriptor_for_binding(*binding_handle, descriptor, write.array_element);
+			let set_handles = self.collect_descriptor_set_handles(DescriptorSetHandle(write.descriptor_set.0));
+			for set_handle in set_handles {
+				self.descriptor_sets[set_handle.0 as usize]
+					.descriptors
+					.entry(write.slot)
+					.or_default()
+					.insert(
+						write.array_element,
+						RetainedDescriptor {
+							descriptor: write.descriptor,
+							frame_offset: write.frame_offset.unwrap_or(0),
+						},
+					);
+				self.materialize_descriptor_base_image_resource(set_handle, write.descriptor);
 			}
 		}
-
-		// Native descriptor heap writes happen in update_descriptor_for_binding.
 	}
 
 	pub fn write_instance(
@@ -4351,11 +4354,22 @@ impl Device {
 	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		// Resizes CPU-side buffer storage while discarding previous per-frame contents.
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let (current_size, current_layout, current_data, current_access) = {
+		let (current_size, current_layout, current_data, current_access, retired_state_keys) = {
 			let buffer = self.buffer(buffer_handle).expect(
 				"Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.",
 			);
-			(buffer.size, buffer.layout, buffer.data, buffer.access)
+			let mut retired_state_keys = SmallVec::<[usize; 4]>::new();
+			retired_state_keys.extend(buffer.resource.as_ref().map(Self::native_resource_key));
+			if let Some(frame_resources) = buffer.frame_resources.as_ref() {
+				retired_state_keys.extend(
+					frame_resources
+						.iter()
+						.flatten()
+						.filter_map(|frame| frame.resource.as_ref())
+						.map(Self::native_resource_key),
+				);
+			}
+			(buffer.size, buffer.layout, buffer.data, buffer.access, retired_state_keys)
 		};
 
 		if current_size >= size {
@@ -4380,6 +4394,9 @@ impl Device {
 
 		let frame_count = self.frames as usize;
 		let (resource, mapped, heap_kind) = self.create_buffer_resource(size, current_access);
+		for key in retired_state_keys {
+			self.buffer_states.remove(&key);
+		}
 		let buffer = self
 			.buffer_mut(buffer_handle)
 			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
@@ -4393,7 +4410,6 @@ impl Device {
 			frame_resources.clear();
 			frame_resources.resize_with(frame_count, || None);
 		}
-		self.mark_descriptors_for_resource_dirty(PrivateHandles::Buffer(crate::buffer::BufferHandle(buffer_handle.0)));
 	}
 
 	pub fn start_frame_capture(&mut self) {
@@ -5263,12 +5279,17 @@ impl Device {
 		self.bind_descriptor_heaps_and_tables(command_buffer_handle, None, sets, 0);
 	}
 
+	/// Transitions the concrete resources referenced by the active pipeline's retained set union.
 	pub(crate) fn flush_pending_descriptor_texture_syncs(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
+		pipeline_handle: Option<PipelineHandle>,
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) {
+		let Some(pipeline_handle) = pipeline_handle else {
+			return;
+		};
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -5276,61 +5297,259 @@ impl Device {
 		else {
 			return;
 		};
-		let mut images = HashMap::default();
-		let mut buffers = HashMap::default();
-		for set in sets {
-			let Some(sequence_set) = self.descriptor_set_for_sequence(*set, sequence_index) else {
-				continue;
-			};
-			let Some(bindings) = self.descriptors.get(&sequence_set) else {
-				continue;
-			};
-			for (binding_index, array_elements) in bindings {
-				let Some(binding) = self.descriptor_binding_for_binding(sequence_set, *binding_index) else {
+		let Some(layout) = self
+			.pipelines
+			.get(pipeline_handle.0 as usize)
+			.and_then(|pipeline| self.pipeline_layouts.get(pipeline.layout.0 as usize))
+			.cloned()
+		else {
+			return;
+		};
+
+		let mut retained = SmallVec::<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>::new();
+		for resource in &layout.resources {
+			for &set_handle in sets {
+				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
 					continue;
 				};
-				for descriptor in array_elements.values() {
-					match descriptor {
-						WriteData::Buffer { handle, .. } => {
-							buffers.insert(*handle, Self::descriptor_buffer_state(binding));
-						}
-						WriteData::Image { handle, .. } => {
-							images.insert(*handle, Self::descriptor_image_state(binding.descriptor_type));
-						}
-						WriteData::CombinedImageSampler { image_handle, .. } => {
-							images.insert(*image_handle, Self::descriptor_image_state(binding.descriptor_type));
-						}
-						_ => {}
+				let Some(descriptors) = self.descriptor_sets[set_handle.0 as usize]
+					.descriptors
+					.get(&resource.descriptor.slot())
+				else {
+					continue;
+				};
+				retained.extend(
+					descriptors
+						.values()
+						.copied()
+						.map(|descriptor| (resource.descriptor, descriptor)),
+				);
+			}
+		}
+
+		for (resource_descriptor, retained_descriptor) in retained {
+			let resource_sequence = self.frame_index_with_offset(
+				sequence_index as usize,
+				Some(retained_descriptor.frame_offset),
+				self.frames as usize,
+			) as u8;
+			match retained_descriptor.descriptor {
+				WriteData::Buffer { handle, .. } => {
+					let Some(resource) = self.buffer_resource_for_sequence(handle, resource_sequence) else {
+						continue;
+					};
+					if self.buffer_heap_kind_for_sequence(handle, resource_sequence) != Some(BufferHeapKind::Default) {
+						continue;
 					}
+					unsafe {
+						self.transition_tracked_buffer(
+							&command_list,
+							handle,
+							&resource,
+							Self::descriptor_buffer_state(resource_descriptor),
+						);
+					}
+					self.mark_command_buffer_work(command_buffer_handle);
+				}
+				WriteData::Image { handle, .. }
+				| WriteData::CombinedImageSampler {
+					image_handle: handle, ..
+				} => {
+					self.flush_pending_texture_syncs(command_buffer_handle, Some(handle), Some(resource_sequence));
+					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
+						continue;
+					};
+					unsafe {
+						self.transition_tracked_image(
+							&command_list,
+							handle,
+							&resource,
+							Self::descriptor_image_state(resource_descriptor),
+						);
+					}
+					self.mark_command_buffer_work(command_buffer_handle);
+				}
+				WriteData::Swapchain(handle) => {
+					let image = self
+						.get_swapchain_image_for_sequence(handle, Uses::Storage, resource_sequence)
+						.0;
+					let Some(resource) = self.ensure_image_resource_for_sequence(image.into(), resource_sequence) else {
+						continue;
+					};
+					unsafe {
+						self.transition_tracked_image(
+							&command_list,
+							image.into(),
+							&resource,
+							Self::descriptor_image_state(resource_descriptor),
+						);
+					}
+					self.mark_command_buffer_work(command_buffer_handle);
+				}
+				_ => {}
+			}
+		}
+	}
+
+	fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
+		match descriptor {
+			WriteData::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
+			WriteData::Image { .. } | WriteData::Swapchain(_) => {
+				matches!(
+					kind,
+					ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
+				)
+			}
+			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
+			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
+			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
+			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
+		}
+	}
+
+	/// Validates native allocation requirements that are stricter than retained descriptor kinds.
+	fn validate_descriptor_resource(
+		&self,
+		shader_resource: ShaderResourceDescriptor,
+		retained: RetainedDescriptor,
+		sequence_index: u8,
+	) {
+		match retained.descriptor {
+			WriteData::Buffer { handle, .. } if shader_resource.kind() == ResourceKind::StorageBuffer => {
+				let buffer = self.buffer(handle).expect(
+					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
+				);
+				assert!(
+					buffer.uses.intersects(Uses::Storage),
+					"Invalid DX12 storage-buffer descriptor. The most likely cause is that the buffer was not created with storage usage."
+				);
+				if shader_resource.access().intersects(crate::AccessPolicies::WRITE) {
+					assert!(
+						self.buffer_heap_kind_for_sequence(handle, sequence_index) == Some(BufferHeapKind::Default),
+						"Invalid writable DX12 storage-buffer descriptor. The most likely cause is that the buffer uses a host-visible heap that cannot provide a UAV."
+					);
 				}
 			}
+			WriteData::Image { handle, .. } => self.validate_image_descriptor_resource(shader_resource, handle, None),
+			WriteData::CombinedImageSampler { image_handle, layer, .. } => {
+				self.validate_image_descriptor_resource(shader_resource, image_handle, layer)
+			}
+			_ => {}
+		}
+	}
+
+	/// Validates image usage, dimension metadata, and an optional selected array layer.
+	fn validate_image_descriptor_resource(
+		&self,
+		shader_resource: ShaderResourceDescriptor,
+		image_handle: crate::BaseImageHandle,
+		layer: Option<u32>,
+	) {
+		let image = self
+			.images
+			.get(image_handle.0 as usize)
+			.expect("Invalid DX12 image descriptor. The most likely cause is that the retained image handle is stale.");
+		assert!(
+			shader_resource.texture_view() != TextureViewTypes::Texture3D,
+			"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+		);
+		if shader_resource.kind() == ResourceKind::StorageImage {
+			assert!(
+				image.uses.intersects(Uses::Storage),
+				"Invalid DX12 storage-image descriptor. The most likely cause is that the image was not created with storage usage."
+			);
+		}
+		if let Some(layer) = layer {
+			assert!(
+				shader_resource.texture_view() == TextureViewTypes::Texture2DArray,
+				"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
+			);
+			assert!(
+				layer < image.array_layers.max(1),
+				"Invalid DX12 image descriptor layer. The most likely cause is that the selected layer exceeds the image array size."
+			);
+		} else if shader_resource.texture_view() == TextureViewTypes::Texture2D {
+			assert!(
+				image.array_layers <= 1,
+				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata."
+			);
+		}
+	}
+
+	/// Validates that bound retained sets form one complete, non-overlapping flat resource union.
+	pub(crate) fn validate_descriptor_sets(
+		&self,
+		pipeline_handle: PipelineHandle,
+		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
+	) {
+		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize];
+		let sequence_sets = sets
+			.iter()
+			.map(|&set| self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set))
+			.collect::<SmallVec<[DescriptorSetHandle; 8]>>();
+
+		let mut occupied_slots = HashSet::default();
+		for &set_handle in &sequence_sets {
+			let set = &self.descriptor_sets[set_handle.0 as usize];
+			for &slot in set.descriptors.keys() {
+				assert!(
+					occupied_slots.insert(slot),
+					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
+				);
+				if layout.resources.iter().any(|resource| resource.descriptor.slot() == slot) {
+					continue;
+				}
+				let is_array_interior = layout.resources.iter().any(|resource| {
+					let start = resource.descriptor.slot().index();
+					let slot = slot.index();
+					start < slot && slot < Self::resource_range_end(resource.descriptor)
+				});
+				assert!(
+					!is_array_interior,
+					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
+				);
+				panic!(
+					"Unknown retained descriptor slot {}. The most likely cause is that the bound set was written for a different pipeline interface.",
+					slot.index(),
+				);
+			}
 		}
 
-		for (buffer, state) in buffers {
-			let Some(resource) = self.buffer_resource_for_sequence(buffer, sequence_index) else {
-				continue;
-			};
-			let Some(heap_kind) = self.buffer_heap_kind_for_sequence(buffer, sequence_index) else {
-				continue;
-			};
-			if heap_kind != BufferHeapKind::Default {
-				continue;
+		for resource in &layout.resources {
+			let owners = sequence_sets
+				.iter()
+				.filter_map(|set_handle| {
+					self.descriptor_sets[set_handle.0 as usize]
+						.descriptors
+						.get(&resource.descriptor.slot())
+				})
+				.collect::<SmallVec<[&HashMap<u32, RetainedDescriptor>; 4]>>();
+			assert!(
+				owners.len() <= 1,
+				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own the same active shader resource.",
+			);
+			if resource.descriptor.count() == 1 {
+				assert!(
+					owners.first().is_some_and(|descriptors| descriptors.contains_key(&0)),
+					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
+					resource.descriptor.slot().index(),
+				);
 			}
-			unsafe {
-				self.transition_tracked_buffer(&command_list, buffer, &resource, state);
+			if let Some(descriptors) = owners.first() {
+				for (&array_element, retained) in descriptors.iter() {
+					assert!(
+						array_element < resource.descriptor.count(),
+						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
+					);
+					assert!(
+						Self::descriptor_matches_kind(retained.descriptor, resource.descriptor.kind()),
+						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
+					);
+					self.validate_descriptor_resource(resource.descriptor, *retained, sequence_index);
+				}
 			}
-			self.mark_command_buffer_work(command_buffer_handle);
-		}
-
-		for (image, state) in images {
-			self.flush_pending_texture_syncs(command_buffer_handle, Some(image));
-			let Some(resource) = self.ensure_image_resource_for_sequence(image, sequence_index) else {
-				continue;
-			};
-			unsafe {
-				self.transition_tracked_image(&command_list, image, &resource, state);
-			}
-			self.mark_command_buffer_work(command_buffer_handle);
 		}
 	}
 
@@ -5341,6 +5560,9 @@ impl Device {
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) {
+		let Some(pipeline_handle) = pipeline_handle else {
+			return;
+		};
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -5348,10 +5570,16 @@ impl Device {
 		else {
 			return;
 		};
+		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+			return;
+		};
+		let layout_handle = pipeline.layout;
+		let pipeline_kind = pipeline.kind;
 
-		let cbv_srv_uav_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, sequence_index, false);
-		let sampler_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, sequence_index, true);
-
+		let cbv_srv_uav_heap =
+			self.stage_descriptor_heap_for_sets(command_buffer_handle, layout_handle, sets, sequence_index, false);
+		let sampler_heap =
+			self.stage_descriptor_heap_for_sets(command_buffer_handle, layout_handle, sets, sequence_index, true);
 		let mut heaps = [None, None];
 		let mut heap_count = 0usize;
 		if let Some(staged) = cbv_srv_uav_heap.as_ref() {
@@ -5370,58 +5598,46 @@ impl Device {
 			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
 		}
 		self.descriptor_heap_bind_count += 1;
-
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
+		let Some(Some(_root_signature)) = self.pipeline_root_signatures.get(layout_handle.0 as usize) else {
+			panic!(
+				"Failed to bind DX12 descriptor tables because the pipeline layout has no native root signature. The most likely cause is that root signature creation failed while the pipeline kept descriptor table metadata."
+			);
 		};
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(root_tables) = self.pipeline_root_tables.get(layout_handle.0 as usize).cloned() else {
 			return;
 		};
 		let mut table_binds = 0;
-		let Some(Some(_root_signature)) = self.pipeline_root_signatures.get(pipeline.layout.0 as usize) else {
-			panic!(
-				"Failed to bind DX12 descriptor tables because the pipeline layout has no native root signature. The most likely cause is that root signature creation failed while the pipeline still kept descriptor table metadata."
-			);
-		};
-		let Some(root_tables) = self.pipeline_root_tables.get(pipeline.layout.0 as usize).cloned() else {
-			return;
-		};
-		for (root_parameter_index, table) in root_tables.iter().enumerate() {
+		for table in root_tables {
 			let staged_heap = if table.sampler_heap {
 				sampler_heap.as_ref()
 			} else {
 				cbv_srv_uav_heap.as_ref()
 			};
-			if let Some(staged_heap) = staged_heap {
-				let Some(set_offset) = staged_heap.set_offsets.get(table.set_index).and_then(|offset| *offset) else {
-					continue;
-				};
-				let heap_slot = set_offset.saturating_add(table.heap_slot);
-				let heap_type = if table.sampler_heap {
-					D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
-				} else {
-					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-				};
-				let handle = self.descriptor_gpu_handle(&staged_heap.heap, heap_type, heap_slot);
-				unsafe {
-					match pipeline.kind {
-						PipelineKind::Compute | PipelineKind::RayTracing => {
-							command_list.SetComputeRootDescriptorTable(root_parameter_index as u32, handle)
-						}
-						PipelineKind::Raster => {
-							command_list.SetGraphicsRootDescriptorTable(root_parameter_index as u32, handle)
-						}
+			let Some(staged_heap) = staged_heap else {
+				continue;
+			};
+			let heap_type = if table.sampler_heap {
+				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+			} else {
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+			};
+			let handle = self.descriptor_gpu_handle(&staged_heap.heap, heap_type, staged_heap.base_offset);
+			unsafe {
+				match pipeline_kind {
+					PipelineKind::Compute | PipelineKind::RayTracing => {
+						command_list.SetComputeRootDescriptorTable(table.root_parameter_index, handle)
 					}
+					PipelineKind::Raster => command_list.SetGraphicsRootDescriptorTable(table.root_parameter_index, handle),
 				}
-				table_binds += 1;
-				self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
-					root_parameter_index: root_parameter_index as u32,
-					set_index: table.set_index,
-					binding_index: table.binding_index,
-					sampler_heap: table.sampler_heap,
-					heap_slot,
-				});
 			}
+			table_binds += 1;
+			self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
+				root_parameter_index: table.root_parameter_index,
+				set_index: 0,
+				binding_index: 0,
+				sampler_heap: table.sampler_heap,
+				heap_slot: staged_heap.base_offset,
+			});
 		}
 		self.descriptor_table_bind_count += table_binds;
 	}
@@ -5449,42 +5665,43 @@ impl Device {
 		let Some(constants) = self.pipeline_root_constants.get(pipeline.layout.0 as usize) else {
 			return;
 		};
-		let end = offset.saturating_add(bytes.len() as u32);
-		let Some(range) = constants
+		assert!(
+			offset % 4 == 0 && bytes.len() % 4 == 0,
+			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
+		);
+		if bytes.is_empty() {
+			return;
+		}
+		let byte_count = u32::try_from(bytes.len()).expect(
+			"Invalid DX12 push-constant write size. The most likely cause is that the data exceeds the addressable root-constant range.",
+		);
+		let end = offset.checked_add(byte_count).expect(
+			"Invalid DX12 push-constant write range. The most likely cause is that the offset and data size overflow the root-constant range.",
+		);
+		let range = constants
 			.iter()
 			.find(|range| offset >= range.offset && end <= range.offset.saturating_add(range.size))
 			.copied()
-		else {
-			return;
-		};
+			.expect(
+				"Invalid DX12 push-constant write range. The most likely cause is that no active pipeline range contains the requested bytes.",
+			);
 
-		let mut words = bytes
-			.chunks(4)
-			.map(|chunk| {
-				let mut word = [0u8; 4];
-				word[..chunk.len()].copy_from_slice(chunk);
-				u32::from_ne_bytes(word)
-			})
-			.collect::<Vec<_>>();
-		if words.is_empty() {
-			return;
-		}
-
-		let destination_offset = (offset - range.offset) / 4;
+		let destination_offset = offset / 4;
+		let word_count = byte_count / 4;
 		let compute_root = matches!(pipeline.kind, PipelineKind::Compute | PipelineKind::RayTracing);
 		unsafe {
 			if compute_root {
 				command_list.SetComputeRoot32BitConstants(
 					range.root_parameter_index,
-					words.len() as u32,
-					words.as_mut_ptr().cast(),
+					word_count,
+					bytes.as_ptr().cast(),
 					destination_offset,
 				);
 			} else {
 				command_list.SetGraphicsRoot32BitConstants(
 					range.root_parameter_index,
-					words.len() as u32,
-					words.as_mut_ptr().cast(),
+					word_count,
+					bytes.as_ptr().cast(),
 					destination_offset,
 				);
 			}
@@ -6114,14 +6331,18 @@ impl Device {
 		}
 	}
 
+	/// Uploads only pending image data selected for the current command buffer and frame.
 	pub(crate) fn flush_pending_texture_syncs(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		image_filter: Option<crate::BaseImageHandle>,
+		sequence_filter: Option<u8>,
 	) {
 		let pending = std::mem::take(&mut self.pending_texture_syncs);
 		for (image_handle, sequence_index) in pending {
-			if image_filter.is_some_and(|filter| filter != image_handle) {
+			let image_mismatch = image_filter.is_some_and(|filter| filter != image_handle);
+			let sequence_mismatch = sequence_filter.is_some_and(|filter| filter != sequence_index);
+			if image_mismatch || sequence_mismatch {
 				self.pending_texture_syncs.push((image_handle, sequence_index));
 				continue;
 			}
@@ -6134,14 +6355,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		sequence_filter: u8,
 	) {
-		let pending = std::mem::take(&mut self.pending_texture_syncs);
-		for (image_handle, sequence_index) in pending {
-			if sequence_index != sequence_filter {
-				self.pending_texture_syncs.push((image_handle, sequence_index));
-				continue;
-			}
-			self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index);
-		}
+		self.flush_pending_texture_syncs(command_buffer_handle, None, Some(sequence_filter));
 	}
 
 	fn record_image_storage_upload(
@@ -6327,18 +6541,20 @@ impl Device {
 		command_list.ResourceBarrier(&[barrier]);
 	}
 
+	/// Uses native resource identity so dynamic frame allocations keep independent state histories.
+	fn native_resource_key(resource: &ID3D12Resource) -> usize {
+		resource.as_raw() as usize
+	}
+
 	unsafe fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList,
-		buffer: BaseBufferHandle,
+		_buffer: BaseBufferHandle,
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let before = self
-			.buffer_states
-			.get(&buffer.0)
-			.copied()
-			.unwrap_or(D3D12_RESOURCE_STATE_COMMON);
+		let key = Self::native_resource_key(resource);
+		let before = self.buffer_states.get(&key).copied().unwrap_or(D3D12_RESOURCE_STATE_COMMON);
 		if before == after {
 			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
 				Self::unordered_access_barrier(command_list, resource);
@@ -6347,21 +6563,18 @@ impl Device {
 			return;
 		}
 		Self::transition_resource(command_list, resource, before, after);
-		self.buffer_states.insert(buffer.0, after);
+		self.buffer_states.insert(key, after);
 	}
 
 	unsafe fn transition_tracked_image(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList,
-		image: crate::BaseImageHandle,
+		_image: crate::BaseImageHandle,
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let before = self
-			.image_states
-			.get(&image.0)
-			.copied()
-			.unwrap_or(D3D12_RESOURCE_STATE_COMMON);
+		let key = Self::native_resource_key(resource);
+		let before = self.image_states.get(&key).copied().unwrap_or(D3D12_RESOURCE_STATE_COMMON);
 		if before == after {
 			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
 				Self::unordered_access_barrier(command_list, resource);
@@ -6370,7 +6583,7 @@ impl Device {
 			return;
 		}
 		Self::transition_resource(command_list, resource, before, after);
-		self.image_states.insert(image.0, after);
+		self.image_states.insert(key, after);
 	}
 
 	fn align_up(value: usize, alignment: usize) -> usize {
@@ -7146,17 +7359,30 @@ impl Device {
 		let uses = current.uses;
 		let array_layers = current.array_layers;
 		let optimized_clear_value = current.optimized_clear_value;
+		let mut retired_state_keys = SmallVec::<[usize; 4]>::new();
+		retired_state_keys.extend(current.resource.as_ref().map(Self::native_resource_key));
+		if let Some(frame_resources) = current.frame_resources.as_ref() {
+			retired_state_keys.extend(frame_resources.iter().flatten().map(Self::native_resource_key));
+		}
 		let resource = self.create_image_resource(extent, format, uses, array_layers, optimized_clear_value);
+		for key in retired_state_keys {
+			self.image_states.remove(&key);
+		}
 
 		let image = &mut self.images[image_handle.0 .0 as usize];
 		image.extent = extent;
-		image.resource = resource;
+		image.resource = resource.clone();
 		image.data = utils::texture_copy_size(image.format, extent).map(|size| vec![0u8; size]);
 		if let Some(frame_data) = image.frame_data.as_mut() {
 			let data = image.data.clone().unwrap_or_default();
 			*frame_data = vec![data; self.frames as usize];
 		}
-		self.mark_descriptors_for_resource_dirty(PrivateHandles::Image(crate::image::ImageHandle(image_handle.0 .0)));
+		if let Some(frame_resources) = image.frame_resources.as_mut() {
+			*frame_resources = vec![None; self.frames as usize];
+			if let Some(first_resource) = resource {
+				frame_resources[0] = Some(first_resource);
+			}
+		}
 	}
 
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle) -> Extent {
@@ -7255,63 +7481,11 @@ impl Device {
 		}
 	}
 
-	/// Collects the per-frame descriptor binding handles chained from the root handle.
-	fn collect_descriptor_binding_handles(&self, handle: DescriptorSetBindingHandle) -> Vec<DescriptorSetBindingHandle> {
-		let mut handles = Vec::new();
-		let mut current = Some(handle);
-
-		while let Some(handle) = current {
-			let Some(binding) = self.descriptor_bindings.get(handle.0 as usize) else {
-				break;
-			};
-			handles.push(handle);
-			current = binding.next.map(|handle| DescriptorSetBindingHandle(handle.0));
-		}
-
-		handles
-	}
-
 	/// Resolves a frame-aware index using the optional frame offset.
 	fn frame_index_with_offset(&self, frame_index: usize, frame_offset: Option<i32>, total_frames: usize) -> usize {
 		let total = (total_frames.max(1)) as i32;
 		let offset = frame_offset.unwrap_or(0);
 		(frame_index as i32 + offset).rem_euclid(total) as usize
-	}
-
-	/// Resolves per-frame descriptor resources, falling back to single-resource handles for DX12.
-	fn resolve_descriptor_for_frame(
-		&mut self,
-		descriptor: WriteData,
-		frame_index: usize,
-		frame_offset: Option<i32>,
-	) -> WriteData {
-		let sequence_index = self.frame_index_with_offset(frame_index, frame_offset, self.frames as usize);
-
-		match descriptor {
-			WriteData::Buffer { handle, size } => WriteData::Buffer { handle, size },
-			WriteData::Image { handle, layout } => WriteData::Image { handle, layout },
-			WriteData::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				layout,
-				layer,
-			} => WriteData::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				layout,
-				layer,
-			},
-			WriteData::Swapchain(handle) => {
-				let image = self
-					.get_swapchain_image_for_sequence(handle, Uses::Storage, sequence_index as u8)
-					.0;
-				WriteData::Image {
-					handle: image.into(),
-					layout: crate::Layouts::General,
-				}
-			}
-			_ => descriptor,
-		}
 	}
 
 	fn descriptor_set_for_sequence(
@@ -7346,63 +7520,33 @@ impl Device {
 		0
 	}
 
-	fn descriptor_binding_for_binding(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		binding_index: u32,
-	) -> Option<&DescriptorSetBinding> {
-		let handle = self.descriptor_binding_handle_for_binding(descriptor_set, binding_index)?;
-		self.descriptor_bindings.get(handle.0 as usize)
-	}
-
-	/// Returns the structured-buffer stride currently stored for a descriptor binding.
-	pub(crate) fn descriptor_binding_buffer_stride(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		binding_index: u32,
-	) -> Option<u32> {
-		self.descriptor_binding_for_binding(descriptor_set, binding_index)
-			.map(|binding| binding.buffer_stride)
-	}
-
 	#[cfg(test)]
 	pub(crate) fn descriptor_sequence_index(
 		&self,
 		descriptor_set: DescriptorSetHandle,
 		sequence_index: u8,
-		binding_index: u32,
+		slot: ResourceSlot,
 	) -> Option<usize> {
 		let descriptor_set = self.descriptor_set_for_sequence(descriptor_set, sequence_index)?;
-		let binding = self.descriptor_binding_for_binding(descriptor_set, binding_index)?;
-		Some(self.frame_index_with_offset(sequence_index as usize, binding.frame_offset, self.frames as usize))
+		let descriptors = self.descriptor_sets[descriptor_set.0 as usize].descriptors.get(&slot)?;
+		let retained = descriptors.get(&0).or_else(|| descriptors.values().next())?;
+		Some(self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize))
 	}
 
-	fn descriptor_binding_handle_for_binding(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		binding_index: u32,
-	) -> Option<DescriptorSetBindingHandle> {
-		let set = self.descriptor_sets.get(descriptor_set.0 as usize)?;
-		set.bindings.iter().find_map(|handle| {
-			let binding = self.descriptor_bindings.get(handle.0 as usize)?;
-			(binding.binding_index == binding_index).then_some(*handle)
-		})
-	}
-
-	fn descriptor_image_state(descriptor_type: DescriptorType) -> D3D12_RESOURCE_STATES {
-		match descriptor_type {
-			DescriptorType::StorageImage => D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			_ => D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+	fn descriptor_image_state(descriptor: ShaderResourceDescriptor) -> D3D12_RESOURCE_STATES {
+		if descriptor.kind() == ResourceKind::StorageImage {
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+		} else {
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
 		}
 	}
 
-	fn descriptor_buffer_state(binding: &DescriptorSetBinding) -> D3D12_RESOURCE_STATES {
-		match binding.descriptor_type {
-			DescriptorType::StorageBuffer if binding.buffer_read_only => {
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+	fn descriptor_buffer_state(descriptor: ShaderResourceDescriptor) -> D3D12_RESOURCE_STATES {
+		match descriptor.kind() {
+			ResourceKind::UniformBuffer => D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+			ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 			}
-			DescriptorType::StorageBuffer => D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			DescriptorType::UniformBuffer => D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 			_ => D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 		}
 	}
@@ -7415,53 +7559,6 @@ impl Device {
 		} else {
 			image.data.as_deref_mut()
 		}
-	}
-
-	/// Updates descriptor tracking and reverse lookup maps for a binding write.
-	fn update_descriptor_for_binding(
-		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
-		descriptor: WriteData,
-		array_element: u32,
-	) {
-		let Some(binding) = self.descriptor_bindings.get(binding_handle.0 as usize) else {
-			return;
-		};
-
-		let descriptor_set_handle = binding.descriptor_set;
-		let binding_index = binding.binding_index;
-
-		self.clear_descriptor_tracking(descriptor_set_handle, binding_handle, binding_index, array_element);
-
-		let bindings = self.descriptors.entry(descriptor_set_handle).or_default();
-		let arrays = bindings.entry(binding_index).or_default();
-		arrays.insert(array_element, descriptor);
-
-		let mut record_resource = |resource: PrivateHandles| {
-			self.descriptor_set_to_resource
-				.entry((descriptor_set_handle, binding_index, array_element))
-				.or_default()
-				.insert(resource);
-			self.resource_to_descriptor
-				.entry(resource)
-				.or_default()
-				.insert((binding_handle, array_element));
-		};
-
-		match descriptor {
-			WriteData::Buffer { handle, .. } => {
-				record_resource(PrivateHandles::Buffer(crate::buffer::BufferHandle(handle.0)));
-			}
-			WriteData::Image { handle, .. } => {
-				record_resource(PrivateHandles::Image(crate::image::ImageHandle(handle.0)));
-			}
-			WriteData::CombinedImageSampler { image_handle, .. } => {
-				record_resource(PrivateHandles::Image(crate::image::ImageHandle(image_handle.0)));
-			}
-			_ => {}
-		}
-		self.dirty_descriptor_sets.insert(descriptor_set_handle);
-		self.materialize_descriptor_base_image_resource(descriptor_set_handle, descriptor);
 	}
 
 	/// Creates the base dynamic image resource when frame zero first records an image descriptor.
@@ -7488,289 +7585,155 @@ impl Device {
 		let _ = self.ensure_image_resource_for_sequence(image_handle, 0);
 	}
 
-	/// Clears stale reverse mappings before a descriptor binding element is replaced.
-	fn clear_descriptor_tracking(
+	fn write_native_descriptor_for_heap(
 		&mut self,
-		descriptor_set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
+		resource: PipelineResource,
+		retained: RetainedDescriptor,
 		array_element: u32,
+		sequence_index: u8,
+		sampler_heap: bool,
+		heap: &ID3D12DescriptorHeap,
+		base_offset: u32,
 	) {
-		let key = (descriptor_set_handle, binding_index, array_element);
-		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
-			return;
-		};
-
-		for resource in resources {
-			let remove_resource = if let Some(bindings) = self.resource_to_descriptor.get_mut(&resource) {
-				bindings.remove(&(binding_handle, array_element));
-				bindings.is_empty()
-			} else {
-				false
-			};
-			if remove_resource {
-				self.resource_to_descriptor.remove(&resource);
-			}
-		}
-	}
-
-	fn mark_descriptors_for_resource_dirty(&mut self, resource: PrivateHandles) {
-		let Some(bindings) = self.resource_to_descriptor.get(&resource).cloned() else {
-			return;
-		};
-		for (binding_handle, array_element) in bindings {
-			let Some(binding) = self.descriptor_bindings.get(binding_handle.0 as usize) else {
-				continue;
-			};
-			if self
-				.descriptors
-				.get(&binding.descriptor_set)
-				.and_then(|bindings| bindings.get(&binding.binding_index))
-				.and_then(|array_elements| array_elements.get(&array_element))
-				.is_some()
-			{
-				self.dirty_descriptor_sets.insert(binding.descriptor_set);
-			}
-		}
-	}
-
-	/// Rewrites native DX12 descriptors for a dirty per-frame descriptor set before it is bound.
-	fn materialize_descriptor_set(&mut self, descriptor_set_handle: DescriptorSetHandle) {
-		if !self.dirty_descriptor_sets.remove(&descriptor_set_handle) {
+		if array_element >= resource.descriptor.count() {
 			return;
 		}
-		let writes = self
-			.descriptors
-			.get(&descriptor_set_handle)
-			.into_iter()
-			.flat_map(|bindings| bindings.iter())
-			.flat_map(|(binding_index, array_elements)| {
-				array_elements
-					.iter()
-					.map(move |(array_element, descriptor)| (*binding_index, *array_element, *descriptor))
-			})
-			.collect::<SmallVec<[(u32, u32, WriteData); 16]>>();
-
-		for (binding_index, array_element, descriptor) in writes {
-			let Some(binding_handle) = self.descriptor_binding_handle_for_binding(descriptor_set_handle, binding_index) else {
-				continue;
-			};
-			self.write_native_descriptor(binding_handle, descriptor, array_element);
-		}
-	}
-
-	fn write_native_descriptor(
-		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
-		descriptor: WriteData,
-		array_element: u32,
-	) {
-		let Some(binding) = self.descriptor_bindings.get(binding_handle.0 as usize) else {
+		let offset = if sampler_heap {
+			resource.sampler_offset
+		} else {
+			resource.cbv_srv_uav_offset
+		};
+		let Some(offset) = offset else {
 			return;
 		};
-		let descriptor_set_handle = binding.descriptor_set;
-		let descriptor_type = binding.descriptor_type;
-		let binding_index = binding.binding_index;
-		let buffer_read_only = binding.buffer_read_only;
-		let structured_buffer_stride = Self::structured_buffer_stride(binding);
-		let sequence_index = self.descriptor_set_sequence_index(descriptor_set_handle);
-		let Some(set) = self.descriptor_sets.get(descriptor_set_handle.0 as usize) else {
-			return;
-		};
-		let template = set.template;
-		let cbv_srv_uav_heap = set.cbv_srv_uav_heap.clone();
-		let sampler_heap = set.sampler_heap.clone();
+		let slot = base_offset + offset + array_element;
+		let resource_sequence =
+			self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize) as u8;
 
-		match descriptor {
-			WriteData::Buffer { handle, .. } => {
-				let Some(heap) = cbv_srv_uav_heap else {
-					return;
-				};
-				let Some(slot) = self.descriptor_heap_slot(template, descriptor_type, binding_index, array_element, false)
-				else {
-					return;
-				};
-				let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
-				let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index as u8) else {
-					return;
-				};
-				let Some(buffer) = self.buffer(handle) else {
-					return;
-				};
-				let buffer_size = buffer.size;
-				let heap_kind = self
-					.buffer_heap_kind_for_sequence(handle, sequence_index as u8)
-					.unwrap_or(buffer.heap_kind);
-				match descriptor_type {
-					DescriptorType::UniformBuffer => {
-						let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
-							BufferLocation: unsafe { resource.GetGPUVirtualAddress() },
-							SizeInBytes: Self::align_up(buffer_size.max(1), 256) as u32,
-						};
-						unsafe {
-							self.device.CreateConstantBufferView(Some(&desc), cpu_handle);
-						}
-					}
-					DescriptorType::StorageBuffer => {
-						let stride = structured_buffer_stride;
-						if buffer_read_only {
-							let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-								Format: DXGI_FORMAT_UNKNOWN,
-								ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-								Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-								Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-									Buffer: D3D12_BUFFER_SRV {
-										FirstElement: 0,
-										NumElements: (buffer_size / stride as usize).max(1) as u32,
-										StructureByteStride: stride,
-										Flags: D3D12_BUFFER_SRV_FLAG_NONE,
-									},
-								},
-							};
-							unsafe {
-								self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
-							}
-						} else {
-							let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-								Format: DXGI_FORMAT_UNKNOWN,
-								ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-								Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-									Buffer: D3D12_BUFFER_UAV {
-										FirstElement: 0,
-										NumElements: (buffer_size / stride as usize).max(1) as u32,
-										StructureByteStride: stride,
-										CounterOffsetInBytes: 0,
-										Flags: D3D12_BUFFER_UAV_FLAG_NONE,
-									},
-								},
-							};
-							unsafe {
-								if heap_kind == BufferHeapKind::Default {
-									self.device.CreateUnorderedAccessView(
-										&resource,
-										None::<&ID3D12Resource>,
-										Some(&desc),
-										cpu_handle,
-									);
-								} else {
-									self.device.CreateUnorderedAccessView(
-										None::<&ID3D12Resource>,
-										None::<&ID3D12Resource>,
-										Some(&desc),
-										cpu_handle,
-									);
-								}
-							}
-						}
-					}
-					_ => {
-						let stride = structured_buffer_stride;
-						let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-							Format: DXGI_FORMAT_UNKNOWN,
-							ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-							Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-							Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-								Buffer: D3D12_BUFFER_SRV {
-									FirstElement: 0,
-									NumElements: (buffer_size / stride as usize).max(1) as u32,
-									StructureByteStride: stride,
-									Flags: D3D12_BUFFER_SRV_FLAG_NONE,
-								},
-							},
-						};
-						unsafe {
-							self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
-						}
-					}
+		if sampler_heap {
+			let sampler = match retained.descriptor {
+				WriteData::CombinedImageSampler { sampler_handle, .. } | WriteData::Sampler(sampler_handle) => {
+					Some(sampler_handle)
 				}
-				self.descriptor_write_count += 1;
+				_ => None,
+			};
+			if sampler.is_some() {
+				self.write_native_sampler_descriptor(sampler, heap, slot);
+			}
+			return;
+		}
+
+		match retained.descriptor {
+			WriteData::Buffer { handle, size } => {
+				self.write_native_buffer_descriptor(resource.descriptor, handle, size, resource_sequence, heap, slot)
 			}
 			WriteData::Image { handle, .. } => {
-				self.write_native_image_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					handle,
-					sequence_index as u8,
-					cbv_srv_uav_heap.as_ref(),
-				);
+				self.write_native_image_descriptor(resource.descriptor, handle, resource_sequence, None, heap, slot)
 			}
-			WriteData::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				..
-			} => {
-				self.write_native_image_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					image_handle,
-					sequence_index as u8,
-					cbv_srv_uav_heap.as_ref(),
-				);
-				self.write_native_sampler_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					Some(sampler_handle),
-					sampler_heap.as_ref(),
-				);
+			WriteData::CombinedImageSampler { image_handle, layer, .. } => {
+				self.write_native_image_descriptor(resource.descriptor, image_handle, resource_sequence, layer, heap, slot)
 			}
-			WriteData::Sampler(sampler_handle) => {
-				self.write_native_sampler_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					Some(sampler_handle),
-					sampler_heap.as_ref(),
-				);
-			}
-			WriteData::StaticSamplers => {
-				self.write_native_sampler_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					None,
-					sampler_heap.as_ref(),
-				);
+			WriteData::Swapchain(handle) => {
+				let image = self
+					.get_swapchain_image_for_sequence(handle, Uses::Storage, resource_sequence)
+					.0;
+				self.write_native_image_descriptor(resource.descriptor, image.into(), resource_sequence, None, heap, slot);
 			}
 			WriteData::AccelerationStructure { handle } => {
-				self.write_native_acceleration_structure_descriptor(
-					template,
-					descriptor_type,
-					binding_index,
-					array_element,
-					handle,
-					cbv_srv_uav_heap.as_ref(),
-				);
+				self.write_native_acceleration_structure_descriptor(handle, heap, slot)
 			}
 			_ => {}
 		}
 	}
 
+	fn write_native_buffer_descriptor(
+		&mut self,
+		descriptor: ShaderResourceDescriptor,
+		handle: BaseBufferHandle,
+		size: crate::Ranges,
+		sequence_index: u8,
+		heap: &ID3D12DescriptorHeap,
+		slot: u32,
+	) {
+		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
+			return;
+		};
+		let Some(buffer) = self.buffer(handle) else {
+			return;
+		};
+		let buffer_size = match size {
+			crate::Ranges::Size(size) => size.min(buffer.size),
+			crate::Ranges::Whole => buffer.size,
+		};
+		let heap_kind = self
+			.buffer_heap_kind_for_sequence(handle, sequence_index)
+			.unwrap_or(buffer.heap_kind);
+		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
+		match descriptor.kind() {
+			ResourceKind::UniformBuffer => {
+				let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
+					BufferLocation: unsafe { resource.GetGPUVirtualAddress() },
+					SizeInBytes: Self::align_up(buffer_size.max(1), 256) as u32,
+				};
+				unsafe { self.device.CreateConstantBufferView(Some(&desc), cpu_handle) };
+			}
+			ResourceKind::StorageBuffer => {
+				let stride = descriptor.buffer_element_stride().max(1);
+				if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
+					let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+						Format: DXGI_FORMAT_UNKNOWN,
+						ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+						Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+							Buffer: D3D12_BUFFER_UAV {
+								FirstElement: 0,
+								NumElements: (buffer_size / stride as usize).max(1) as u32,
+								StructureByteStride: stride,
+								CounterOffsetInBytes: 0,
+								Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+							},
+						},
+					};
+					unsafe {
+						if heap_kind == BufferHeapKind::Default {
+							self.device
+								.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+						} else {
+							self.device.CreateUnorderedAccessView(
+								None::<&ID3D12Resource>,
+								None::<&ID3D12Resource>,
+								Some(&desc),
+								cpu_handle,
+							);
+						}
+					}
+				} else {
+					let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+						Format: DXGI_FORMAT_UNKNOWN,
+						ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+						Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+						Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+							Buffer: D3D12_BUFFER_SRV {
+								FirstElement: 0,
+								NumElements: (buffer_size / stride as usize).max(1) as u32,
+								StructureByteStride: stride,
+								Flags: D3D12_BUFFER_SRV_FLAG_NONE,
+							},
+						},
+					};
+					unsafe { self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle) };
+				}
+			}
+			_ => return,
+		}
+		self.descriptor_write_count += 1;
+	}
+
 	fn write_native_acceleration_structure_descriptor(
 		&mut self,
-		template: DescriptorSetTemplateHandle,
-		descriptor_type: DescriptorType,
-		binding_index: u32,
-		array_element: u32,
 		handle: TopLevelAccelerationStructureHandle,
-		heap: Option<&ID3D12DescriptorHeap>,
+		heap: &ID3D12DescriptorHeap,
+		slot: u32,
 	) {
-		if !matches!(descriptor_type, DescriptorType::AccelerationStructure) {
-			return;
-		}
-		let Some(heap) = heap else {
-			return;
-		};
-		let Some(slot) = self.descriptor_heap_slot(template, descriptor_type, binding_index, array_element, false) else {
-			return;
-		};
 		let Some(acceleration_structure) = self.top_level_acceleration_structures.get(handle.0 as usize) else {
 			return;
 		};
@@ -7796,22 +7759,16 @@ impl Device {
 		self.acceleration_structure_descriptor_write_count += 1;
 	}
 
+	/// Writes one native image descriptor using the active shader resource representation.
 	fn write_native_image_descriptor(
 		&mut self,
-		template: DescriptorSetTemplateHandle,
-		descriptor_type: DescriptorType,
-		binding_index: u32,
-		array_element: u32,
+		descriptor: ShaderResourceDescriptor,
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
-		heap: Option<&ID3D12DescriptorHeap>,
+		layer: Option<u32>,
+		heap: &ID3D12DescriptorHeap,
+		slot: u32,
 	) {
-		let Some(heap) = heap else {
-			return;
-		};
-		let Some(slot) = self.descriptor_heap_slot(template, descriptor_type, binding_index, array_element, false) else {
-			return;
-		};
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
 		let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 			return;
@@ -7822,35 +7779,12 @@ impl Device {
 		let Some(format) = Self::dxgi_shader_resource_format(image.format) else {
 			return;
 		};
+		let uses = image.uses;
 		let array_layers = image.array_layers.max(1);
 		unsafe {
-			if matches!(descriptor_type, DescriptorType::StorageImage) {
-				let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-					Format: format,
-					ViewDimension: if array_layers > 1 {
-						D3D12_UAV_DIMENSION_TEXTURE2DARRAY
-					} else {
-						D3D12_UAV_DIMENSION_TEXTURE2D
-					},
-					Anonymous: if array_layers > 1 {
-						D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-							Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-								MipSlice: 0,
-								FirstArraySlice: 0,
-								ArraySize: array_layers,
-								PlaneSlice: 0,
-							},
-						}
-					} else {
-						D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-							Texture2D: D3D12_TEX2D_UAV {
-								MipSlice: 0,
-								PlaneSlice: 0,
-							},
-						}
-					},
-				};
-				if image.uses.intersects(Uses::Storage) {
+			if descriptor.kind() == ResourceKind::StorageImage {
+				let desc = Self::descriptor_texture_uav_desc(format, descriptor.texture_view(), array_layers, layer);
+				if uses.intersects(Uses::Storage) {
 					self.device
 						.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 				} else {
@@ -7863,36 +7797,7 @@ impl Device {
 				}
 				self.image_uav_descriptor_write_count += 1;
 			} else {
-				let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-					Format: format,
-					ViewDimension: if array_layers > 1 {
-						D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-					} else {
-						D3D12_SRV_DIMENSION_TEXTURE2D
-					},
-					Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-					Anonymous: if array_layers > 1 {
-						D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-							Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
-								MostDetailedMip: 0,
-								MipLevels: 1,
-								FirstArraySlice: 0,
-								ArraySize: array_layers,
-								PlaneSlice: 0,
-								ResourceMinLODClamp: 0.0,
-							},
-						}
-					} else {
-						D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-							Texture2D: D3D12_TEX2D_SRV {
-								MostDetailedMip: 0,
-								MipLevels: 1,
-								PlaneSlice: 0,
-								ResourceMinLODClamp: 0.0,
-							},
-						}
-					},
-				};
+				let desc = Self::descriptor_texture_srv_desc(format, descriptor.texture_view(), array_layers, layer);
 				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 				self.image_srv_descriptor_write_count += 1;
 			}
@@ -7902,19 +7807,10 @@ impl Device {
 
 	fn write_native_sampler_descriptor(
 		&mut self,
-		template: DescriptorSetTemplateHandle,
-		descriptor_type: DescriptorType,
-		binding_index: u32,
-		array_element: u32,
 		sampler_handle: Option<SamplerHandle>,
-		heap: Option<&ID3D12DescriptorHeap>,
+		heap: &ID3D12DescriptorHeap,
+		slot: u32,
 	) {
-		let Some(heap) = heap else {
-			return;
-		};
-		let Some(slot) = self.descriptor_heap_slot(template, descriptor_type, binding_index, array_element, true) else {
-			return;
-		};
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, slot);
 		let fallback_sampler = Sampler {
 			filtering_mode: FilteringModes::Linear,
@@ -8507,7 +8403,6 @@ impl Device {
 	}
 }
 
-pub(crate) type Binding = DescriptorSetBinding;
 const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 
 #[derive(Clone)]
@@ -8674,46 +8569,46 @@ struct Sampler {
 	max_lod: f32,
 }
 
-struct DescriptorSetTemplate {
-	bindings: Vec<DescriptorSetBindingTemplate>,
-}
-
 pub(crate) struct DescriptorSet {
 	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
-	template: DescriptorSetTemplateHandle,
-	bindings: Vec<DescriptorSetBindingHandle>,
-	cbv_srv_uav_heap: Option<ID3D12DescriptorHeap>,
-	sampler_heap: Option<ID3D12DescriptorHeap>,
+	descriptors: HashMap<ResourceSlot, HashMap<u32, RetainedDescriptor>>,
 }
 
-pub(crate) struct DescriptorSetBinding {
+/// The `Binding` struct preserves the private handle item required by shared legacy exports.
+pub(crate) struct Binding {
 	pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
-	descriptor_set: DescriptorSetHandle,
-	descriptor_type: DescriptorType,
-	binding_index: u32,
-	count: u32,
-	buffer_stride: u32,
-	buffer_read_only: bool,
-	frame_offset: Option<i32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct RetainedDescriptor {
+	descriptor: WriteData,
+	frame_offset: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PipelineResource {
+	descriptor: ShaderResourceDescriptor,
+	cbv_srv_uav_offset: Option<u32>,
+	sampler_offset: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PipelineLayout {
-	descriptor_set_templates: Vec<DescriptorSetTemplateHandle>,
+	resources: Vec<PipelineResource>,
+	cbv_srv_uav_descriptor_count: u32,
+	sampler_descriptor_count: u32,
 	push_constant_ranges: Vec<PushConstantRange>,
 }
 
 #[derive(Clone)]
 struct RootDescriptorTable {
-	set_index: usize,
-	binding_index: u32,
+	root_parameter_index: u32,
 	sampler_heap: bool,
-	heap_slot: u32,
 }
 
 struct StagedDescriptorHeap {
 	heap: ID3D12DescriptorHeap,
-	set_offsets: SmallVec<[Option<u32>; 8]>,
+	base_offset: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -8781,6 +8676,7 @@ struct MeshPipelineStateStream {
 	flags: PipelineStateStreamSubobject<D3D12_PIPELINE_STATE_FLAGS>,
 }
 
+#[derive(Clone, Copy)]
 enum PipelineKind {
 	Raster,
 	Compute,
@@ -8792,7 +8688,7 @@ struct Shader {
 	spirv: Option<Vec<u8>>,
 	dxil: Option<Vec<u8>>,
 	hlsl: Option<HlslSource>,
-	bindings: Vec<BindingDescriptor>,
+	resources: Vec<ShaderResourceDescriptor>,
 }
 
 #[derive(Clone)]
@@ -8897,7 +8793,7 @@ impl crate::device::Device for Device {
 		_name: Option<&str>,
 		_shader_source_type: Sources,
 		_stage: ShaderTypes,
-		_shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+		_shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		panic!(
 			"DX12 detached shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
@@ -8953,30 +8849,12 @@ impl crate::context::ContextCreate for Device {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
-		Device::create_shader(self, name, shader_source_type, stage, shader_binding_descriptors)
+		Device::create_shader(self, name, shader_source_type, stage, shader_resource_descriptors)
 	}
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[DescriptorSetBindingTemplate],
-	) -> DescriptorSetTemplateHandle {
-		Device::create_descriptor_set_template(self, name, binding_templates)
-	}
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
-	) -> DescriptorSetHandle {
-		Device::create_descriptor_set(self, name, descriptor_set_template_handle)
-	}
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: DescriptorSetHandle,
-		binding_constructor: BindingConstructor,
-	) -> DescriptorSetBindingHandle {
-		Device::create_descriptor_binding(self, descriptor_set, binding_constructor)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> DescriptorSetHandle {
+		Device::create_descriptor_set(self, name)
 	}
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle {
 		Device::create_raster_pipeline(self, builder)
@@ -9197,23 +9075,23 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCIL_VALUE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0,
 	D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC,
 	D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-	D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
-	D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-	D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
-	D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY, D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE,
-	D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5, D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS,
-	D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MAXIMUM_ANISOTROPIC,
-	D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
-	D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
-	D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_HIT_GROUP_DESC, D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE,
-	D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
-	D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
-	D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
-	D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION,
-	D3D12_MESSAGE_SEVERITY_ERROR, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC,
+	D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE,
+	D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+	D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D,
+	D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE, D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY,
+	D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE, D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS5,
+	D3D12_FEATURE_D3D12_OPTIONS7, D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS, D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC,
+	D3D12_FILTER_MAXIMUM_ANISOTROPIC, D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+	D3D12_GLOBAL_ROOT_SIGNATURE, D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE,
+	D3D12_GPU_VIRTUAL_ADDRESS_RANGE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+	D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
+	D3D12_HIT_GROUP_DESC, D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE, D3D12_HIT_GROUP_TYPE_TRIANGLES,
+	D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW, D3D12_INDIRECT_ARGUMENT_DESC,
+	D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+	D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN,
+	D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR,
+	D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
@@ -9242,11 +9120,12 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_TRANSITION_BARRIER,
 	D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
 	D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-	D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAGS, D3D12_RT_FORMAT_ARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
-	D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
-	D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
-	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC,
-	D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT, D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY,
+	D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY,
+	D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC,
+	D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER,
+	D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+	D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC, D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT,
+	D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE,
 	D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, D3D12_STENCIL_OP_KEEP, D3D12_SUBRESOURCE_FOOTPRINT,
 	D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV,
@@ -9287,19 +9166,18 @@ use super::utils;
 use crate::WorkloadTypes;
 use crate::{
 	buffer,
-	descriptors::{DescriptorType, Write as DescriptorWrite, WriteData},
+	descriptors::{DescriptorWrite, WriteData},
 	device::Features,
 	image,
 	pipelines::{self, PushConstantRange, VertexElement},
 	render_debugger::RenderDebugger,
 	sampler,
-	shader::{BindingDescriptor, Sources},
-	window, AllocationHandle, AttachmentInformation, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor, Sources},
+	window, AllocationHandle, AttachmentInformation, BaseBufferHandle, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferDescriptor, BufferHandle, BufferStridedRange, ClearValue,
-	CommandBufferHandle, DataTypes, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DeviceAccesses, DispatchExtent, DynamicBufferHandle, FilteringModes, Formats, HandleLike as _,
-	ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes,
-	PrivateHandles, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
+	CommandBufferHandle, DataTypes, DescriptorSetHandle, DeviceAccesses, DispatchExtent, DynamicBufferHandle, FilteringModes,
+	Formats, HandleLike as _, ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
+	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
 	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes,
 	TopLevelAccelerationStructureHandle, UseCases, Uses,
 };

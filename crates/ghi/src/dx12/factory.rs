@@ -9,7 +9,7 @@ pub(crate) struct Shader {
 	pub(crate) name: Option<String>,
 	pub(crate) source: ShaderSource,
 	pub(crate) stage: ShaderTypes,
-	pub(crate) bindings: Vec<BindingDescriptor>,
+	pub(crate) resources: Vec<ShaderResourceDescriptor>,
 }
 
 /// The `ShaderSource` enum stores owned shader bytecode for detached DX12 shader creation.
@@ -22,19 +22,18 @@ pub(crate) enum ShaderSource {
 
 /// The `RasterPipeline` struct carries detached DX12 raster state until a frame interns it.
 pub struct RasterPipeline {
-	pub(crate) descriptor_set_templates: Vec<crate::DescriptorSetTemplateHandle>,
 	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
 	pub(crate) vertex_elements: Vec<VertexElement>,
 	pub(crate) shaders: Vec<ShaderParameter>,
 	pub(crate) render_targets: Vec<pipelines::raster::AttachmentDescriptor>,
 	pub(crate) face_winding: pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: pipelines::raster::CullMode,
+	pub(crate) depth_write: bool,
 	pub(crate) factory_shaders: Vec<Shader>,
 }
 
 /// The `ComputePipeline` struct carries detached DX12 compute state until a frame interns it.
 pub struct ComputePipeline {
-	pub(crate) descriptor_set_templates: Vec<crate::DescriptorSetTemplateHandle>,
 	pub(crate) push_constant_ranges: Vec<pipelines::PushConstantRange>,
 	pub(crate) shader: ShaderParameter,
 	pub(crate) factory_shaders: Vec<Shader>,
@@ -111,7 +110,7 @@ impl crate::device::Device for Factory {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		let source = match shader_source_type {
 			Sources::SPIRV(bytes) => ShaderSource::Spirv(bytes.to_vec()),
@@ -127,7 +126,7 @@ impl crate::device::Device for Factory {
 			name: crate::debug_name(name),
 			source,
 			stage,
-			bindings: shader_binding_descriptors.into_iter().collect(),
+			resources: shader_resource_descriptors.into_iter().collect(),
 		});
 
 		Ok(ShaderHandle((self.shaders.len() - 1) as u64))
@@ -135,7 +134,6 @@ impl crate::device::Device for Factory {
 
 	fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> Self::RasterPipeline {
 		RasterPipeline {
-			descriptor_set_templates: builder.descriptor_set_templates.to_vec(),
 			push_constant_ranges: builder.push_constant_ranges.to_vec(),
 			vertex_elements: builder
 				.vertex_elements
@@ -158,13 +156,13 @@ impl crate::device::Device for Factory {
 			render_targets: builder.render_targets.to_vec(),
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
+			depth_write: builder.depth_write,
 			factory_shaders: self.shaders.clone(),
 		}
 	}
 
 	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline {
 		ComputePipeline {
-			descriptor_set_templates: builder.descriptor_set_templates.to_vec(),
 			push_constant_ranges: builder.push_constant_ranges.to_vec(),
 			shader: ShaderParameter {
 				handle: *builder.shader.handle,
@@ -205,7 +203,7 @@ use utils::Extent;
 
 use crate::{
 	image, pipelines, sampler,
-	shader::{BindingDescriptor, Sources},
+	shader::{ShaderResourceDescriptor, Sources},
 	DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, ShaderHandle, ShaderTypes,
 	UseCases, Uses,
 };

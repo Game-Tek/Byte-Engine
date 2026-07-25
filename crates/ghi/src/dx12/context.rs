@@ -325,6 +325,8 @@ impl Device {
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
+		self.pending_texture_syncs
+			.retain(|(_, sequence_index)| *sequence_index < self.frames);
 		let image_count = self.frames.max(2);
 
 		for swapchain in &mut self.swapchains {
@@ -2034,6 +2036,11 @@ impl Device {
 			.map(|range| range.offset.saturating_add(range.size))
 			.max()
 			.unwrap_or(0);
+		let push_constant_dword_count = push_constant_size.div_ceil(4);
+		assert!(
+			push_constant_dword_count.saturating_add(tables.len() as u32) <= 64,
+			"DX12 root signature exceeds 64 DWORDs. The most likely cause is that push constants leave insufficient space for the descriptor tables."
+		);
 		if push_constant_size != 0 {
 			assert!(
 				layout.resources.iter().all(|resource| {
@@ -2048,7 +2055,7 @@ impl Device {
 					Constants: D3D12_ROOT_CONSTANTS {
 						ShaderRegister: 0,
 						RegisterSpace: 0,
-						Num32BitValues: push_constant_size.div_ceil(4),
+						Num32BitValues: push_constant_dword_count,
 					},
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
@@ -3174,6 +3181,12 @@ impl Device {
 				.and_then(|resource| resource.resource.as_ref())
 				.is_some()
 		})
+	}
+
+	#[cfg(test)]
+	pub(crate) fn buffer_native_size_for_sequence(&mut self, buffer: BaseBufferHandle, sequence_index: u8) -> Option<u64> {
+		let resource = self.buffer_resource_for_sequence(buffer, sequence_index)?;
+		Some(unsafe { resource.GetDesc() }.Width)
 	}
 
 	pub(crate) fn upload_resource_count(&self) -> usize {
@@ -4354,7 +4367,7 @@ impl Device {
 	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		// Resizes CPU-side buffer storage while discarding previous per-frame contents.
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let (current_size, current_layout, current_data, current_access, retired_state_keys) = {
+		let (current_size, current_layout, current_data, current_access, current_uses, retired_state_keys) = {
 			let buffer = self.buffer(buffer_handle).expect(
 				"Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.",
 			);
@@ -4369,7 +4382,14 @@ impl Device {
 						.map(Self::native_resource_key),
 				);
 			}
-			(buffer.size, buffer.layout, buffer.data, buffer.access, retired_state_keys)
+			(
+				buffer.size,
+				buffer.layout,
+				buffer.data,
+				buffer.access,
+				buffer.uses,
+				retired_state_keys,
+			)
 		};
 
 		if current_size >= size {
@@ -4393,7 +4413,8 @@ impl Device {
 		}
 
 		let frame_count = self.frames as usize;
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(size, current_access);
+		let resource_size = Self::buffer_resource_size(size, current_uses);
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, current_access);
 		for key in retired_state_keys {
 			self.buffer_states.remove(&key);
 		}
@@ -7905,7 +7926,8 @@ impl Device {
 			panic!("Failed to allocate buffer storage. The most likely cause is that the system is out of memory.");
 		}
 
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(layout.size(), device_accesses);
+		let resource_size = Self::buffer_resource_size(layout.size(), resource_uses);
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, device_accesses);
 		let frame_resources = match storage_kind {
 			BufferStorage::Static => None,
 			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
@@ -7966,8 +7988,8 @@ impl Device {
 			return;
 		}
 
-		let (layout, access) = match self.buffer(buffer_handle) {
-			Some(buffer) if buffer.frame_resources.is_some() => (buffer.layout, buffer.access),
+		let (layout, access, uses) = match self.buffer(buffer_handle) {
+			Some(buffer) if buffer.frame_resources.is_some() => (buffer.layout, buffer.access, buffer.uses),
 			_ => return,
 		};
 		let frame_index = sequence_index as usize;
@@ -7981,7 +8003,7 @@ impl Device {
 			return;
 		}
 
-		let frame_storage = self.create_buffer_frame_storage(layout, access);
+		let frame_storage = self.create_buffer_frame_storage(layout, access, uses);
 		let Some(buffer) = self.buffer_mut(buffer_handle) else {
 			return;
 		};
@@ -8061,7 +8083,7 @@ impl Device {
 			.or(Some((buffer.data, size)))
 	}
 
-	fn create_buffer_frame_storage(&self, layout: Layout, access: DeviceAccesses) -> BufferFrameStorage {
+	fn create_buffer_frame_storage(&self, layout: Layout, access: DeviceAccesses, uses: Uses) -> BufferFrameStorage {
 		let data = if layout.size() == 0 {
 			std::ptr::NonNull::<u8>::dangling().as_ptr()
 		} else {
@@ -8071,13 +8093,23 @@ impl Device {
 			panic!("Failed to allocate buffer storage. The most likely cause is that the system is out of memory.");
 		}
 
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(layout.size(), access);
+		let resource_size = Self::buffer_resource_size(layout.size(), uses);
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, access);
 		BufferFrameStorage {
 			data,
 			layout,
 			resource,
 			mapped,
 			heap_kind,
+		}
+	}
+
+	/// Rounds uniform allocations to the full range exposed by their aligned CBVs.
+	fn buffer_resource_size(size: usize, uses: Uses) -> usize {
+		if uses.intersects(Uses::Uniform) {
+			Self::align_up(size.max(1), 256)
+		} else {
+			size
 		}
 	}
 
@@ -8190,6 +8222,9 @@ impl Device {
 		}
 
 		let flags = Self::image_resource_flags(format, uses);
+		let depth_or_array_size = u16::try_from(array_layers.max(1)).expect(
+			"Invalid DX12 image array size. The most likely cause is that the layer count exceeds the native 16-bit limit.",
+		);
 		let heap_properties = D3D12_HEAP_PROPERTIES {
 			Type: D3D12_HEAP_TYPE_DEFAULT,
 			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -8202,7 +8237,7 @@ impl Device {
 			Alignment: 0,
 			Width: extent.width().max(1) as u64,
 			Height: extent.height().max(1),
-			DepthOrArraySize: array_layers.max(1) as u16,
+			DepthOrArraySize: depth_or_array_size,
 			MipLevels: 1,
 			Format: dxgi_format,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },

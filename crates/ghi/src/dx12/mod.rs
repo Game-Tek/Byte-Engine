@@ -8,7 +8,6 @@ pub mod queue;
 
 pub use self::command_buffer::*;
 pub use self::context::*;
-pub use self::device::*;
 pub use self::factory::*;
 pub use self::frame::*;
 pub use self::instance::*;
@@ -314,6 +313,23 @@ mod tests {
 		}
 
 		assert_eq!(device.upload_resource_count(), 1);
+	}
+
+	#[test]
+	fn shrinking_frames_drops_retired_pending_texture_syncs() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		device.set_frames_in_flight(3);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.queue_texture_sync_for_sequence(image.into(), 2);
+		assert_eq!(device.pending_texture_sync_count(), 1);
+
+		device.set_frames_in_flight(2);
+
+		assert_eq!(device.pending_texture_sync_count(), 0);
 	}
 
 	#[test]
@@ -1022,6 +1038,25 @@ void main() {
 				compute_root: true,
 			}]
 		);
+	}
+
+	#[test]
+	fn root_signatures_reject_more_than_sixty_four_dwords() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let shader = device
+			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.expect("Failed to create DX12 shader metadata.");
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+				&[crate::pipelines::PushConstantRange::new(0, 260)],
+				crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+			));
+		}));
+
+		assert!(result.is_err());
 	}
 
 	#[test]
@@ -2994,6 +3029,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		));
 
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 0), Some(true));
+		assert_eq!(device.buffer_native_size_for_sequence(buffer.into(), 0), Some(256));
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(false));
 		assert_eq!(device.descriptor_write_count(), 0);
 
@@ -3001,6 +3037,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 1);
 
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
+		assert_eq!(device.buffer_native_size_for_sequence(buffer.into(), 1), Some(256));
 		assert_eq!(device.descriptor_write_count(), 1);
 	}
 

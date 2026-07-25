@@ -4,18 +4,20 @@ use super::{AudioGraph, AudioNode, AudioNodeId};
 
 /// Applies each audio graph optimization pass in pipeline order.
 pub(super) fn optimize(graph: &mut AudioGraph) {
-	eliminate_single_input_selector_nodes(graph);
+	eliminate_identity_nodes(graph);
 }
 
-/// Removes selectors whose only possible choice is their sole input.
-fn eliminate_single_input_selector_nodes(graph: &mut AudioGraph) {
+/// Removes nodes whose output is identical to their input.
+fn eliminate_identity_nodes(graph: &mut AudioGraph) {
 	while let Some((removed, replacement)) = graph.nodes.iter().enumerate().find_map(|(index, node)| {
-		let inputs = match &**node {
-			AudioNode::RoundRobin(node) => &node.inputs,
-			AudioNode::Random(node) => &node.inputs,
+		let replacement = match &**node {
+			AudioNode::RoundRobin(node) if node.inputs.len() == 1 => node.inputs[0],
+			AudioNode::Random(node) if node.inputs.len() == 1 => node.inputs[0],
+			AudioNode::Varispeed { input, rate } if *rate == 1.0 => *input,
+			AudioNode::PitchShift { input, ratio } if *ratio == 1.0 => *input,
 			_ => return None,
 		};
-		(inputs.len() == 1).then_some((AudioNodeId(index), inputs[0]))
+		Some((AudioNodeId(index), replacement))
 	}) {
 		debug_assert_ne!(removed, replacement);
 		graph.nodes.remove(removed.0);

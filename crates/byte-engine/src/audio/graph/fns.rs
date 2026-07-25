@@ -70,32 +70,32 @@ pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 
 /// Changes the input playback speed and pitch by the same rate.
 ///
-/// A rate of `1.0` leaves the input unchanged. A rate of `2.0` plays it twice
-/// as fast and one octave higher, while `0.5` plays it at half speed and one
-/// octave lower. Next, publish the graph through
+/// A rate of `1.0` returns the input directly without a varispeed node. A rate
+/// of `2.0` plays it twice as fast and one octave higher, while `0.5` plays it
+/// at half speed and one octave lower. Next, publish the graph through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 ///
 /// # Panics
 ///
-/// Panics if `rate` is outside `0.25..=4.0`, infinite, or not a number, if the
-/// input already contains a varispeed node, or if the graph already contains
-/// 64 nodes.
+/// Panics if `rate` is outside `0.25..=4.0`, infinite, or not a number. For a
+/// non-unity rate, also panics if the input already contains a varispeed node
+/// or if the graph already contains 64 nodes.
 pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 	input.with_varispeed(rate)
 }
 
 /// Shifts the input pitch by a frequency ratio without changing its duration.
 ///
-/// A ratio of `1.0` leaves the pitch unchanged. The real-time processor uses a
-/// 1024-sample window, which adds about 21 milliseconds of latency at 48 kHz.
-/// Next, publish the graph through
+/// A ratio of `1.0` returns the input directly without a pitch-shift node. The
+/// real-time processor uses a 1024-sample window, which adds about 21
+/// milliseconds of latency at 48 kHz. Next, publish the graph through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
 ///
 /// # Panics
 ///
-/// Panics if `ratio` is outside `0.5..=2.0`, infinite, or not a number, if the
-/// input already contains a pitch-shift node, or if the graph already contains
-/// 64 nodes.
+/// Panics if `ratio` is outside `0.5..=2.0`, infinite, or not a number. For a
+/// non-unity ratio, also panics if the input already contains a pitch-shift
+/// node or if the graph already contains 64 nodes.
 pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 	input.with_pitch_shift(ratio)
 }

@@ -173,6 +173,9 @@ impl AudioGraph {
 			rate.is_finite() && (0.25..=4.0).contains(&rate),
 			"Invalid audio graph varispeed rate. The provided rate is not finite or is outside 0.25..=4.0."
 		);
+		if rate == 1.0 {
+			return self;
+		}
 		assert!(
 			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::Varispeed { .. })),
 			"Invalid audio graph varispeed. A second varispeed node was added to the graph."
@@ -188,6 +191,9 @@ impl AudioGraph {
 			ratio.is_finite() && (0.5..=2.0).contains(&ratio),
 			"Invalid audio graph pitch ratio. The ratio must be finite and between 0.5 and 2.0."
 		);
+		if ratio == 1.0 {
+			return self;
+		}
 		assert!(
 			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::PitchShift { .. })),
 			"Invalid audio graph pitch shift. A graph can contain at most one pitch-shift node."
@@ -799,13 +805,13 @@ mod tests {
 		node.last_index = last_index;
 	}
 
-	/// Verifies that factory optimization reconnects a selector's consumer.
-	fn assert_factory_eliminates_single_input_selector(selector: AudioNode) {
+	/// Verifies that factory optimization reconnects an identity node's consumer.
+	fn assert_factory_eliminates_identity_node(identity: AudioNode) {
 		let mut graph = sample("audio/a.wav");
-		graph.push(selector);
-		let selector = graph.output;
+		graph.push(identity);
+		let identity = graph.output;
 		graph.push(AudioNode::Gain {
-			input: selector,
+			input: identity,
 			gain: 0.5,
 		});
 		assert_eq!(graph.nodes.len(), 3);
@@ -822,10 +828,12 @@ mod tests {
 		assert!(!graph.nodes.iter().any(|node| {
 			matches!(&**node, AudioNode::RoundRobin(node) if node.inputs.len() == 1)
 				|| matches!(&**node, AudioNode::Random(node) if node.inputs.len() == 1)
+				|| matches!(&**node, AudioNode::Varispeed { rate: 1.0, .. })
+				|| matches!(&**node, AudioNode::PitchShift { ratio: 1.0, .. })
 		}));
 	}
 
-	/// Builds the largest graph that can be authored before adding a selector.
+	/// Builds the largest graph accepted by the authoring API.
 	fn maximum_node_chain() -> AudioGraph {
 		let mut input = sample("audio/a.wav");
 		for _ in 1..MAX_AUDIO_GRAPH_NODES {
@@ -1072,10 +1080,10 @@ mod tests {
 	}
 
 	#[test]
-	fn factory_optimization_reconnects_consumers_of_one_input_selector_nodes() {
+	fn factory_optimization_reconnects_consumers_of_identity_nodes() {
 		let mut random_inputs = SelectorInputs::new();
 		random_inputs.push(AudioNodeId(0));
-		assert_factory_eliminates_single_input_selector(AudioNode::Random(Box::new(RandomNode {
+		assert_factory_eliminates_identity_node(AudioNode::Random(Box::new(RandomNode {
 			inputs: random_inputs,
 			state: 0,
 			last_index: None,
@@ -1083,14 +1091,22 @@ mod tests {
 
 		let mut round_robin_inputs = SelectorInputs::new();
 		round_robin_inputs.push(AudioNodeId(0));
-		assert_factory_eliminates_single_input_selector(AudioNode::RoundRobin(Box::new(RoundRobinNode {
+		assert_factory_eliminates_identity_node(AudioNode::RoundRobin(Box::new(RoundRobinNode {
 			inputs: round_robin_inputs,
 			next_index: 0,
 		})));
+		assert_factory_eliminates_identity_node(AudioNode::Varispeed {
+			input: AudioNodeId(0),
+			rate: 1.0,
+		});
+		assert_factory_eliminates_identity_node(AudioNode::PitchShift {
+			input: AudioNodeId(0),
+			ratio: 1.0,
+		});
 	}
 
 	#[test]
-	fn eliminated_selectors_do_not_consume_the_node_limit() {
+	fn eliminated_identity_nodes_do_not_consume_the_node_limit() {
 		let optimized_random = random([maximum_node_chain()]);
 		assert_eq!(optimized_random.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_random
@@ -1104,6 +1120,20 @@ mod tests {
 			.nodes
 			.iter()
 			.any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
+
+		let optimized_varispeed = varispeed(maximum_node_chain(), 1.0);
+		assert_eq!(optimized_varispeed.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert!(!optimized_varispeed
+			.nodes
+			.iter()
+			.any(|node| matches!(&**node, AudioNode::Varispeed { .. })));
+
+		let optimized_pitch_shift = pitch_shift(maximum_node_chain(), 1.0);
+		assert_eq!(optimized_pitch_shift.nodes.len(), MAX_AUDIO_GRAPH_NODES);
+		assert!(!optimized_pitch_shift
+			.nodes
+			.iter()
+			.any(|node| matches!(&**node, AudioNode::PitchShift { .. })));
 	}
 
 	#[test]
@@ -1195,8 +1225,18 @@ mod tests {
 			&[AudioProcessor::PitchShift(2.0), AudioProcessor::Gain(0.5)]
 		);
 
-		let unity = pitch_shift(sample("audio/music.ogg"), 1.0).compile().expect("valid graph");
-		assert!(unity.processors.is_empty());
+		let unity_graph = pitch_shift(pitch_shift(sample("audio/music.ogg"), 2.0), 1.0);
+		assert_eq!(unity_graph.nodes.len(), 2);
+		assert_eq!(
+			unity_graph
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::PitchShift { .. }))
+				.count(),
+			1
+		);
+		let unity = unity_graph.compile().expect("valid graph");
+		assert_eq!(&unity.processors[..], &[AudioProcessor::PitchShift(2.0)]);
 	}
 
 	#[test]
@@ -1213,6 +1253,19 @@ mod tests {
 			}
 		);
 		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
+
+		let unity_graph = varispeed(varispeed(sample("audio/music.ogg"), 1.5), 1.0);
+		assert_eq!(unity_graph.nodes.len(), 2);
+		assert_eq!(
+			unity_graph
+				.nodes
+				.iter()
+				.filter(|node| matches!(&***node, AudioNode::Varispeed { .. }))
+				.count(),
+			1
+		);
+		let unity = unity_graph.compile().expect("valid graph");
+		assert_eq!(unity.playback_rate, PlaybackRate::from_rate(1.5));
 
 		let unity = varispeed(sample("audio/music.ogg"), 1.0).compile().expect("valid graph");
 		assert_eq!(unity.playback_rate, PlaybackRate::UNITY);

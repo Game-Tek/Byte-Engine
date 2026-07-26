@@ -134,10 +134,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn clear_images(&mut self, _textures: &[(BaseImageHandle, ClearValue)]) {
-		for &(image, clear) in _textures {
-			self.device
-				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear, self.sequence_index());
-		}
+		self.device
+			.clear_images(self.command_buffer, _textures, self.sequence_index());
 		self.descriptor_tables_dirty = true;
 	}
 

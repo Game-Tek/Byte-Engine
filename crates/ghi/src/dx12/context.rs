@@ -7051,15 +7051,40 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn begin_debug_region(&self, _command_buffer_handle: CommandBufferHandle, _name: &str) {
-		// DX12 debug regions require PIX-formatted event metadata. Passing arbitrary UTF-8 bytes to
-		// ID3D12GraphicsCommandList::BeginEvent can fault inside the native runtime, so this backend
-		// leaves regions disabled until PIX event encoding is implemented.
+	pub(crate) fn begin_debug_region(&self, command_buffer_handle: CommandBufferHandle, name: &str) {
+		if !self.settings.debug_labels {
+			return;
+		}
+
+		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.as_ref() else {
+			return;
+		};
+
+		// Metadata version zero tells PIX to decode the payload as a null-terminated UTF-16 event
+		// name. Keep the encoded name alive until BeginEvent has copied it into the command list.
+		let mut encoded_name = name.encode_utf16().collect::<SmallVec<[u16; 128]>>();
+		encoded_name.push(0);
+		let encoded_size = u32::try_from(std::mem::size_of_val(encoded_name.as_slice())).expect(
+			"PIX debug label is too long. The most likely cause is a generated label larger than the DX12 event-size limit.",
+		);
+		unsafe {
+			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
+		}
 		self.debug_region_begin_count.set(self.debug_region_begin_count.get() + 1);
 	}
 
-	pub(crate) fn end_debug_region(&self, _command_buffer_handle: CommandBufferHandle) {
-		// Keep this paired with `begin_debug_region`; see the comment above for why DX12 event calls are skipped.
+	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
+		if !self.settings.debug_labels {
+			return;
+		}
+
+		let Some(command_list) = self.command_buffers[command_buffer_handle.0 as usize].command_list.as_ref() else {
+			return;
+		};
+
+		unsafe {
+			command_list.EndEvent();
+		}
 		self.debug_region_end_count.set(self.debug_region_end_count.get() + 1);
 	}
 

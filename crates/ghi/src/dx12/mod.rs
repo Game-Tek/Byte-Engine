@@ -758,7 +758,8 @@ mod tests {
 
 	#[test]
 	fn debug_regions_encode_native_command_list_events() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+		let features = crate::device::Features::new().debug_labels(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
 			return;
 		};
 		let command_buffer = device.create_command_buffer(Some("debug regions"), queue_handle);

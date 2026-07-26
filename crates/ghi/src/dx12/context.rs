@@ -32,16 +32,16 @@ pub struct Device {
 	bottom_level_acceleration_structures: Vec<AccelerationStructure>,
 	texture_copies: Vec<Vec<u8>>,
 	allocations: Vec<Allocation>,
-	upload_resources: Vec<ID3D12Resource>,
-	readback_resources: Vec<ID3D12Resource>,
 	texture_readbacks: Vec<TextureReadback>,
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
 	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
 	present_transitions: HashMap<CommandBufferHandle, Vec<ID3D12Resource>>,
-	rtv_heaps: Vec<ID3D12DescriptorHeap>,
-	dsv_heaps: Vec<ID3D12DescriptorHeap>,
+	render_target_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
+	depth_stencil_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
 	buffer_states: HashMap<usize, D3D12_RESOURCE_STATES>,
 	image_states: HashMap<usize, D3D12_RESOURCE_STATES>,
+	render_target_view_allocation_count: usize,
+	depth_stencil_view_allocation_count: usize,
 	texture_copy_count: usize,
 	buffer_copy_count: usize,
 	buffer_clear_count: usize,
@@ -50,13 +50,16 @@ pub struct Device {
 	root_signature_bind_count: usize,
 	descriptor_heap_bind_count: usize,
 	descriptor_table_bind_count: usize,
+	#[cfg(test)]
 	descriptor_table_bind_records: Vec<DescriptorTableBindRecord>,
 	push_constant_write_count: usize,
+	#[cfg(test)]
 	push_constant_write_records: Vec<PushConstantWriteRecord>,
 	descriptor_write_count: usize,
 	image_srv_descriptor_write_count: usize,
 	image_uav_descriptor_write_count: usize,
 	acceleration_structure_descriptor_write_count: usize,
+	#[cfg(test)]
 	sampler_descriptor_write_records: Vec<SamplerDescriptorWriteRecord>,
 	pipeline_state_bind_count: usize,
 	compute_pipeline_state_create_attempt_count: usize,
@@ -189,16 +192,16 @@ impl Device {
 			bottom_level_acceleration_structures: Vec::new(),
 			texture_copies: Vec::new(),
 			allocations: Vec::new(),
-			upload_resources: Vec::new(),
-			readback_resources: Vec::new(),
 			texture_readbacks: Vec::new(),
 			gpu_uploaded_images: HashSet::default(),
 			pending_texture_syncs: Vec::new(),
 			present_transitions: HashMap::default(),
-			rtv_heaps: Vec::new(),
-			dsv_heaps: Vec::new(),
+			render_target_views: HashMap::default(),
+			depth_stencil_views: HashMap::default(),
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
+			render_target_view_allocation_count: 0,
+			depth_stencil_view_allocation_count: 0,
 			texture_copy_count: 0,
 			buffer_copy_count: 0,
 			buffer_clear_count: 0,
@@ -207,13 +210,16 @@ impl Device {
 			root_signature_bind_count: 0,
 			descriptor_heap_bind_count: 0,
 			descriptor_table_bind_count: 0,
+			#[cfg(test)]
 			descriptor_table_bind_records: Vec::new(),
 			push_constant_write_count: 0,
+			#[cfg(test)]
 			push_constant_write_records: Vec::new(),
 			descriptor_write_count: 0,
 			image_srv_descriptor_write_count: 0,
 			image_uav_descriptor_write_count: 0,
 			acceleration_structure_descriptor_write_count: 0,
+			#[cfg(test)]
 			sampler_descriptor_write_records: Vec::new(),
 			pipeline_state_bind_count: 0,
 			compute_pipeline_state_create_attempt_count: 0,
@@ -330,9 +336,17 @@ impl Device {
 		self.pending_texture_syncs
 			.retain(|(_, sequence_index)| *sequence_index < self.frames);
 		let image_count = self.frames.max(2);
+		let resizes_swapchains = self.swapchains.iter().any(|swapchain| {
+			swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0
+		});
+		if resizes_swapchains {
+			self.invalidate_attachment_views();
+		}
 
 		for swapchain in &mut self.swapchains {
 			if swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0 {
+				// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
+				swapchain.backbuffers = std::array::from_fn(|_| None);
 				let result = unsafe {
 					swapchain.swapchain.ResizeBuffers(
 						image_count as u32,
@@ -373,7 +387,8 @@ impl Device {
 				frame_resources.resize(self.frames as usize, None);
 			}
 		}
-		for key in retired_image_state_keys {
+		self.invalidate_attachment_views_for_resources(&retired_image_state_keys);
+		for &key in &retired_image_state_keys {
 			self.image_states.remove(&key);
 		}
 
@@ -1675,11 +1690,12 @@ impl Device {
 			Ok(heap) => Some(heap),
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				self.log_dx12_error(format!(
+				let message = format!(
 					"Failed to create a shader-visible DX12 descriptor heap. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
 					heap_type
-				));
-				None
+				);
+				self.log_dx12_error(&message);
+				panic!("{message}");
 			}
 		}
 	}
@@ -1700,15 +1716,16 @@ impl Device {
 			Ok(heap) => heap,
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				self.log_dx12_error(format!(
-					"Failed to create transient CPU DX12 descriptor heap. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+				let message = format!(
+					"Failed to create a transient CPU DX12 descriptor heap: {error:?}. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}",
 					heap_type
-				));
-				return None;
+				);
+				self.log_dx12_error(&message);
+				panic!("{message}");
 			}
 		};
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
-			command_buffer.staged_descriptor_heaps.push(heap.clone());
+			command_buffer.retained_descriptor_heaps.push(heap.clone());
 		}
 		Some(heap)
 	}
@@ -1751,7 +1768,7 @@ impl Device {
 			};
 			if let Some(previous) = target_arena.replace(DescriptorHeapArena { heap, capacity, used: 0 }) {
 				if previous.used > 0 {
-					command_buffer.staged_descriptor_heaps.push(previous.heap);
+					command_buffer.retained_descriptor_heaps.push(previous.heap);
 				}
 			}
 		}
@@ -1910,9 +1927,6 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		materialization: &DescriptorMaterialization,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
-			return;
-		};
 		for heap in [
 			materialization.cbv_srv_uav_heap.as_ref(),
 			materialization.sampler_heap.as_ref(),
@@ -1920,21 +1934,61 @@ impl Device {
 		.into_iter()
 		.flatten()
 		{
-			let identity = heap.as_raw();
-			if command_buffer
-				.staged_descriptor_heaps
-				.iter()
-				.any(|retained| retained.as_raw() == identity)
-			{
-				continue;
-			}
-			command_buffer.staged_descriptor_heaps.push(heap.clone());
+			self.retain_descriptor_heap(command_buffer_handle, heap);
 		}
+	}
+
+	/// Retains a descriptor heap until the command buffer's previous submission has completed.
+	fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &ID3D12DescriptorHeap) {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+			return;
+		};
+		let identity = heap.as_raw();
+		if command_buffer
+			.retained_descriptor_heaps
+			.iter()
+			.any(|retained| retained.as_raw() == identity)
+		{
+			return;
+		}
+		command_buffer.retained_descriptor_heaps.push(heap.clone());
+	}
+
+	/// Retains a temporary GPU resource until the command buffer's previous submission has completed.
+	fn retain_command_buffer_resource(&mut self, command_buffer_handle: CommandBufferHandle, resource: ID3D12Resource) {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+			return;
+		};
+		command_buffer.retained_resources.push(resource);
+	}
+
+	/// Retains an upload resource and tracks its live command-buffer-scoped allocation.
+	fn retain_command_buffer_upload_resource(&mut self, command_buffer_handle: CommandBufferHandle, resource: ID3D12Resource) {
+		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
+			return;
+		};
+		command_buffer.retained_resources.push(resource);
+		command_buffer.retained_upload_resource_count += 1;
 	}
 
 	/// Drops cached native snapshots after a resource replacement changes descriptor-visible addresses.
 	fn invalidate_descriptor_materializations(&mut self) {
 		self.descriptor_materializations.clear();
+	}
+
+	/// Drops attachment views whose native resources were replaced.
+	fn invalidate_attachment_views_for_resources(&mut self, resources: &[usize]) {
+		if resources.is_empty() {
+			return;
+		}
+		self.render_target_views.retain(|key, _| !resources.contains(&key.resource));
+		self.depth_stencil_views.retain(|key, _| !resources.contains(&key.resource));
+	}
+
+	/// Drops every retained attachment view after swapchain-wide resource replacement.
+	fn invalidate_attachment_views(&mut self) {
+		self.render_target_views.clear();
+		self.depth_stencil_views.clear();
 	}
 
 	fn descriptor_range_type(descriptor: ShaderResourceDescriptor, sampler_heap: bool) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
@@ -3002,7 +3056,9 @@ impl Device {
 			queue_handle,
 			allocator,
 			command_list,
-			staged_descriptor_heaps: Vec::new(),
+			retained_descriptor_heaps: Vec::new(),
+			retained_resources: Vec::new(),
+			retained_upload_resource_count: 0,
 			cbv_srv_uav_staging_heap: None,
 			sampler_staging_heap: None,
 			is_open: false,
@@ -3123,6 +3179,7 @@ impl Device {
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
 		let size = utils::texture_copy_size(builder.format, builder.extent);
 		let data = size.map(|bytes| vec![0u8; bytes]);
+		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
 		let frame_data = if builder.use_case == UseCases::DYNAMIC {
 			data.as_ref().map(|data| vec![data.clone(); self.frames as usize])
 		} else {
@@ -3131,14 +3188,11 @@ impl Device {
 		let resource = if builder.use_case == UseCases::DYNAMIC {
 			None
 		} else {
-			self.create_image_resource(
-				builder.extent,
-				builder.format,
-				builder.resource_uses,
-				builder.array_layers.map(|v| v.get()).unwrap_or(1),
-				None,
-			)
+			self.create_image_resource(builder.extent, builder.format, builder.resource_uses, array_layers, None)
 		};
+		if let Some(resource) = resource.as_ref() {
+			self.materialize_image_attachment_views(resource, builder.format, builder.resource_uses, array_layers);
+		}
 		let frame_resources = if builder.use_case == UseCases::DYNAMIC {
 			let mut resources = vec![None; self.frames as usize];
 			if let Some(first_resource) = resource.clone() {
@@ -3156,7 +3210,7 @@ impl Device {
 			format: builder.format,
 			uses: builder.resource_uses,
 			access: builder.device_accesses,
-			array_layers: builder.array_layers.map(|v| v.get()).unwrap_or(1),
+			array_layers,
 			resource,
 			data,
 			frame_data,
@@ -3242,6 +3296,9 @@ impl Device {
 
 		if needs_resource {
 			let resource = self.create_image_resource(extent, format, uses, array_layers, optimized_clear_value);
+			if let Some(resource) = resource.as_ref() {
+				self.materialize_image_attachment_views(resource, format, uses, array_layers);
+			}
 			let image = self.images.get_mut(image_handle.0 as usize)?;
 			if let Some(resources) = image.frame_resources.as_mut() {
 				if resources.len() <= frame_index {
@@ -3314,11 +3371,52 @@ impl Device {
 	}
 
 	pub(crate) fn upload_resource_count(&self) -> usize {
-		self.upload_resources.len()
+		self.command_buffers
+			.iter()
+			.map(|command_buffer| command_buffer.retained_upload_resource_count)
+			.sum()
 	}
 
 	pub(crate) fn readback_resource_count(&self) -> usize {
-		self.readback_resources.len()
+		self.texture_readbacks.len()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn render_target_view_count(&self) -> usize {
+		self.render_target_views.len()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn depth_stencil_view_count(&self) -> usize {
+		self.depth_stencil_views.len()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn render_target_view_allocation_count(&self) -> usize {
+		self.render_target_view_allocation_count
+	}
+
+	#[cfg(test)]
+	pub(crate) fn depth_stencil_view_allocation_count(&self) -> usize {
+		self.depth_stencil_view_allocation_count
+	}
+
+	#[cfg(test)]
+	pub(crate) fn depth_stencil_descriptor_count(&self) -> u32 {
+		self.depth_stencil_views
+			.values()
+			.map(|view| unsafe { view.heap.GetDesc() }.NumDescriptors)
+			.sum()
+	}
+
+	#[cfg(test)]
+	pub(crate) fn depth_stencil_view_array_range(array_layers: u32, layer: Option<u32>) -> Option<(u32, u32)> {
+		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, layer);
+		if descriptor.ViewDimension != D3D12_DSV_DIMENSION_TEXTURE2DARRAY {
+			return None;
+		}
+		let array = unsafe { descriptor.Anonymous.Texture2DArray };
+		Some((array.FirstArraySlice, array.ArraySize))
 	}
 
 	pub(crate) fn texture_readback_resolve_count(&self) -> usize {
@@ -3512,6 +3610,7 @@ impl Device {
 		self.descriptor_table_bind_count
 	}
 
+	#[cfg(test)]
 	pub(crate) fn descriptor_table_bind_records(&self) -> &[DescriptorTableBindRecord] {
 		&self.descriptor_table_bind_records
 	}
@@ -3520,6 +3619,7 @@ impl Device {
 		self.push_constant_write_count
 	}
 
+	#[cfg(test)]
 	pub(crate) fn push_constant_write_records(&self) -> &[PushConstantWriteRecord] {
 		&self.push_constant_write_records
 	}
@@ -3540,6 +3640,7 @@ impl Device {
 		self.acceleration_structure_descriptor_write_count
 	}
 
+	#[cfg(test)]
 	pub(crate) fn sampler_descriptor_write_records(&self) -> &[SamplerDescriptorWriteRecord] {
 		&self.sampler_descriptor_write_records
 	}
@@ -4465,7 +4566,7 @@ impl Device {
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.buffer_copy_count += 1;
-		self.upload_resources.push(staged.clone());
+		self.retain_command_buffer_upload_resource(command_buffer_handle, staged.clone());
 		Some(staged)
 	}
 
@@ -4660,7 +4761,7 @@ impl Device {
 		let Some(sequence_index) = self
 			.texture_readbacks
 			.iter()
-			.find(|readback| readback.texture_copy == Some(texture_copy_handle) && !readback.resolved)
+			.find(|readback| readback.texture_copy == texture_copy_handle && !readback.resolved)
 			.map(|readback| readback.sequence_index)
 		else {
 			return;
@@ -4867,19 +4968,25 @@ impl Device {
 			let _ = unsafe { command_list.Close() };
 			command_buffer.is_open = false;
 		}
-		command_buffer.staged_descriptor_heaps.clear();
+		command_buffer.recorded_work = false;
+		command_buffer.sequence_index = sequence_index;
+		command_buffer.last_submission = None;
+		let _ = unsafe { allocator.Reset() };
+		let _ = unsafe { command_list.Reset(allocator, None) };
+		// Reset removes recorded references before fence-complete transient resources and heaps are released.
+		command_buffer.retained_descriptor_heaps.clear();
+		command_buffer.retained_resources.clear();
+		command_buffer.retained_upload_resource_count = 0;
 		if let Some(arena) = command_buffer.cbv_srv_uav_staging_heap.as_mut() {
 			arena.used = 0;
 		}
 		if let Some(arena) = command_buffer.sampler_staging_heap.as_mut() {
 			arena.used = 0;
 		}
-		command_buffer.recorded_work = false;
-		command_buffer.sequence_index = sequence_index;
-		command_buffer.last_submission = None;
-		let _ = unsafe { allocator.Reset() };
-		let _ = unsafe { command_list.Reset(allocator, None) };
 		command_buffer.is_open = true;
+		// Resetting an unsubmitted command list discards its copies, so its pending readbacks have no future completion.
+		self.texture_readbacks
+			.retain(|readback| readback.command_buffer_handle != command_buffer_handle);
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.
@@ -5407,6 +5514,170 @@ impl Device {
 		self.draw_indexed_encode_count += 1;
 	}
 
+	/// Returns a stable RTV descriptor for one native resource view, creating it on first use.
+	fn retained_render_target_view(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		resource: &ID3D12Resource,
+		format: Formats,
+		array_layers: u32,
+		layer: Option<u32>,
+	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+		self.materialize_render_target_views(resource, format, array_layers);
+		Self::validate_attachment_layer(array_layers, layer);
+		let key = AttachmentViewKey {
+			resource: Self::native_resource_key(resource),
+			format: Self::dxgi_format(format)
+				.expect(
+					"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
+				)
+				.0,
+		};
+		let view = self
+			.render_target_views
+			.get(&key)
+			.expect(
+				"Missing retained DX12 render-target view. The most likely cause is that attachment view creation did not populate its cache.",
+			)
+			.heap
+			.clone();
+		let slot = Self::attachment_descriptor_slot(array_layers, layer);
+		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
+		self.retain_descriptor_heap(command_buffer_handle, &view);
+		handle
+	}
+
+	/// Returns a stable DSV descriptor for one native resource view, creating it on first use.
+	fn retained_depth_stencil_view(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		resource: &ID3D12Resource,
+		format: Formats,
+		array_layers: u32,
+		layer: Option<u32>,
+	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+		self.materialize_depth_stencil_views(resource, format, array_layers);
+		Self::validate_attachment_layer(array_layers, layer);
+		let key = AttachmentViewKey {
+			resource: Self::native_resource_key(resource),
+			format: Self::dxgi_format(format)
+				.expect(
+					"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
+				)
+				.0,
+		};
+		let view = self
+			.depth_stencil_views
+			.get(&key)
+			.expect(
+				"Missing retained DX12 depth-stencil view. The most likely cause is that attachment view creation did not populate its cache.",
+			)
+			.heap
+			.clone();
+		let slot = Self::attachment_descriptor_slot(array_layers, layer);
+		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
+		self.retain_descriptor_heap(command_buffer_handle, &view);
+		handle
+	}
+
+	/// Materializes every RTV descriptor for one image in a single retained heap.
+	fn materialize_render_target_views(&mut self, resource: &ID3D12Resource, format: Formats, array_layers: u32) {
+		let native_format = Self::dxgi_format(format).expect(
+			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
+		);
+		let key = AttachmentViewKey {
+			resource: Self::native_resource_key(resource),
+			format: native_format.0,
+		};
+		if self.render_target_views.contains_key(&key) {
+			return;
+		}
+
+		let descriptor_count = Self::attachment_descriptor_count(array_layers);
+		let heap =
+			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, descriptor_count, "render-target view");
+		for slot in 0..descriptor_count {
+			let layer = Self::attachment_descriptor_layer(array_layers, slot);
+			let descriptor = Self::render_target_view_desc(format, array_layers, layer);
+			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
+			unsafe {
+				self.device.CreateRenderTargetView(resource, Some(&descriptor), handle);
+			}
+		}
+		self.render_target_views.insert(key, CpuDescriptorView { heap });
+		self.render_target_view_allocation_count += 1;
+	}
+
+	/// Materializes every DSV descriptor for one image in a single retained heap.
+	fn materialize_depth_stencil_views(&mut self, resource: &ID3D12Resource, format: Formats, array_layers: u32) {
+		let native_format = Self::dxgi_format(format).expect(
+			"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
+		);
+		let key = AttachmentViewKey {
+			resource: Self::native_resource_key(resource),
+			format: native_format.0,
+		};
+		if self.depth_stencil_views.contains_key(&key) {
+			return;
+		}
+
+		let descriptor_count = Self::attachment_descriptor_count(array_layers);
+		let heap =
+			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, descriptor_count, "depth-stencil view");
+		for slot in 0..descriptor_count {
+			let layer = Self::attachment_descriptor_layer(array_layers, slot);
+			let descriptor = Self::depth_stencil_view_desc(format, array_layers, layer);
+			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
+			unsafe {
+				self.device.CreateDepthStencilView(resource, Some(&descriptor), handle);
+			}
+		}
+		self.depth_stencil_views.insert(key, CpuDescriptorView { heap });
+		self.depth_stencil_view_allocation_count += 1;
+	}
+
+	/// Materializes attachment descriptors alongside a newly created image resource.
+	fn materialize_image_attachment_views(
+		&mut self,
+		resource: &ID3D12Resource,
+		format: Formats,
+		uses: Uses,
+		array_layers: u32,
+	) {
+		if uses.intersects(Uses::RenderTarget) {
+			self.materialize_render_target_views(resource, format, array_layers);
+		}
+		if uses.intersects(Uses::DepthStencil) {
+			self.materialize_depth_stencil_views(resource, format, array_layers);
+		}
+	}
+
+	/// Creates one CPU-only descriptor heap for a retained attachment view.
+	fn create_attachment_descriptor_heap(
+		&self,
+		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
+		descriptor_count: u32,
+		purpose: &str,
+	) -> ID3D12DescriptorHeap {
+		let descriptor = D3D12_DESCRIPTOR_HEAP_DESC {
+			Type: heap_type,
+			NumDescriptors: descriptor_count,
+			Flags: Default::default(),
+			NodeMask: 0,
+		};
+		match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&descriptor) } {
+			Ok(heap) => heap,
+			Err(error) => {
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				let message = format!(
+					"Failed to create a DX12 {purpose} descriptor heap: {error:?}. The most likely cause is descriptor heap resource exhaustion or device removal. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}"
+				);
+				self.log_dx12_error(&message);
+				panic!("{message}");
+			}
+		}
+	}
+
 	/// Binds native DX12 render target views for color attachments in a render pass.
 	pub(crate) fn bind_render_targets_native(
 		&mut self,
@@ -5422,7 +5693,7 @@ impl Device {
 			return;
 		};
 
-		let mut target_resources = Vec::new();
+		let mut target_resources = SmallVec::<[RenderTargetAttachment; 8]>::new();
 		let mut depth_resource = None;
 		for attachment in attachments {
 			let format = self.attachment_format(attachment);
@@ -5440,6 +5711,7 @@ impl Device {
 					resource,
 					image.format,
 					image.array_layers,
+					attachment.layer,
 					attachment.load,
 					attachment.clear,
 				));
@@ -5453,43 +5725,41 @@ impl Device {
 			else {
 				continue;
 			};
-			target_resources.push((
+			let array_layers = image_handle
+				.and_then(|image_handle| self.images.get(image_handle.0 as usize))
+				.map(|image| image.array_layers)
+				.unwrap_or(1);
+			target_resources.push(RenderTargetAttachment {
 				image_handle,
 				resource,
 				format,
-				attachment.load,
-				attachment.clear,
+				array_layers,
+				layer: attachment.layer,
+				load: attachment.load,
+				clear: attachment.clear,
 				swapchain_backbuffer,
-			));
+			});
 		}
 
 		if target_resources.is_empty() && depth_resource.is_none() {
 			return;
 		}
 
-		let mut handles = Vec::with_capacity(target_resources.len());
+		let mut handles = SmallVec::<[D3D12_CPU_DESCRIPTOR_HANDLE; 8]>::new();
 		if !target_resources.is_empty() {
-			let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-				Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-				NumDescriptors: target_resources.len() as u32,
-				Flags: Default::default(),
-				NodeMask: 0,
-			};
-			let Some(heap) = (unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc).ok() }) else {
-				return;
-			};
-			let descriptor_size =
-				unsafe { self.device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) } as usize;
-			let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
-
-			for (slot, (image_handle, resource, format, load, clear, swapchain_backbuffer)) in
-				target_resources.into_iter().enumerate()
-			{
-				let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-					ptr: start.ptr + slot * descriptor_size,
-				};
+			for target in target_resources {
+				let RenderTargetAttachment {
+					image_handle,
+					resource,
+					format,
+					array_layers,
+					layer,
+					load,
+					clear,
+					swapchain_backbuffer,
+				} = target;
+				let handle = self.retained_render_target_view(command_buffer_handle, &resource, format, array_layers, layer);
 				unsafe {
-					self.device.CreateRenderTargetView(&resource, None, handle);
 					if let Some(image_handle) = image_handle {
 						self.transition_tracked_image(
 							&command_list,
@@ -5544,29 +5814,13 @@ impl Device {
 				handles.push(handle);
 			}
 
-			self.rtv_heaps.push(heap);
 			self.render_target_bind_count += 1;
 		}
 
 		let mut depth_handle = None;
-		if let Some((image_handle, resource, format, array_layers, load, clear)) = depth_resource {
-			let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-				Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-				NumDescriptors: 1,
-				Flags: Default::default(),
-				NodeMask: 0,
-			};
-			let Some(heap) = (unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc).ok() }) else {
-				return;
-			};
-			let handle = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+		if let Some((image_handle, resource, format, array_layers, layer, load, clear)) = depth_resource {
+			let handle = self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer);
 			unsafe {
-				if format == Formats::Depth32 {
-					let desc = Self::depth_stencil_view_desc(array_layers);
-					self.device.CreateDepthStencilView(&resource, Some(&desc), handle);
-				} else {
-					self.device.CreateDepthStencilView(&resource, None, handle);
-				}
 				self.transition_tracked_image(&command_list, image_handle, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 			}
 			if !load {
@@ -5578,7 +5832,6 @@ impl Device {
 				self.depth_stencil_clear_count += 1;
 			}
 			depth_handle = Some(handle);
-			self.dsv_heaps.push(heap);
 			self.depth_stencil_bind_count += 1;
 		}
 
@@ -6001,13 +6254,16 @@ impl Device {
 				}
 			}
 			table_binds += 1;
-			self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
-				root_parameter_index: table.root_parameter_index,
-				set_index: 0,
-				binding_index: 0,
-				sampler_heap: table.sampler_heap,
-				heap_slot: 0,
-			});
+			#[cfg(test)]
+			{
+				self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
+					root_parameter_index: table.root_parameter_index,
+					set_index: 0,
+					binding_index: 0,
+					sampler_heap: table.sampler_heap,
+					heap_slot: 0,
+				});
+			}
 		}
 		self.descriptor_table_bind_count += table_binds;
 	}
@@ -6077,12 +6333,15 @@ impl Device {
 			}
 		}
 		self.push_constant_write_count += 1;
-		self.push_constant_write_records.push(PushConstantWriteRecord {
-			root_parameter_index: range.root_parameter_index,
-			offset,
-			size: bytes.len() as u32,
-			compute_root,
-		});
+		#[cfg(test)]
+		{
+			self.push_constant_write_records.push(PushConstantWriteRecord {
+				root_parameter_index: range.root_parameter_index,
+				offset,
+				size: bytes.len() as u32,
+				compute_root,
+			});
+		}
 	}
 
 	pub(crate) fn submit_command_buffer(
@@ -6141,6 +6400,20 @@ impl Device {
 			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
 		}
 		self.signal_synchronizer_for_sequence(queue_handle, synchronizer_handle, sequence_index);
+		let completion = self
+			.synchronizer_for_sequence(synchronizer_handle, sequence_index)
+			.and_then(|handle| {
+				self.synchronizers
+					.get(handle.0 as usize)
+					.map(|synchronizer| (handle, synchronizer.value))
+			});
+		for readback in self
+			.texture_readbacks
+			.iter_mut()
+			.filter(|readback| readback.command_buffer_handle == command_buffer_handle)
+		{
+			readback.completion = completion;
+		}
 	}
 
 	pub(crate) fn record_present_preparation(
@@ -6529,7 +6802,7 @@ impl Device {
 			self.transition_tracked_buffer(&command_list, buffer_handle, &destination, D3D12_RESOURCE_STATE_COMMON);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.upload_resources.push(upload);
+		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
 		self.buffer_clear_count += 1;
 	}
 
@@ -6873,7 +7146,7 @@ impl Device {
 			);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.upload_resources.push(upload);
+		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
 		true
 	}
 
@@ -7150,9 +7423,18 @@ impl Device {
 			);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
+		if texture_copy.is_none() {
+			self.retain_command_buffer_resource(command_buffer_handle, readback);
+			return;
+		}
+		let texture_copy = texture_copy.expect(
+			"Missing DX12 texture-copy handle. The most likely cause is that a retained readback was created without CPU copy storage.",
+		);
 		self.texture_readbacks.push(TextureReadback {
+			command_buffer_handle,
 			texture_copy,
-			resource: readback.clone(),
+			completion: None,
+			resource: readback,
 			sequence_index,
 			row_pitch: readback_row_pitch,
 			row_bytes,
@@ -7161,7 +7443,6 @@ impl Device {
 			size: readback_size,
 			resolved: false,
 		});
-		self.readback_resources.push(readback);
 	}
 
 	fn refresh_readback_texture_copies(&mut self, sequence_index: Option<u8>) {
@@ -7173,9 +7454,15 @@ impl Device {
 			if sequence_index.is_some_and(|sequence_index| readback.sequence_index != sequence_index) {
 				continue;
 			}
-			let Some(texture_copy) = readback.texture_copy else {
+			let Some((synchronizer_handle, completion_value)) = readback.completion else {
 				continue;
 			};
+			let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
+				continue;
+			};
+			if unsafe { synchronizer.fence.GetCompletedValue() } < completion_value {
+				continue;
+			}
 			if readback.size == 0 {
 				continue;
 			}
@@ -7210,12 +7497,14 @@ impl Device {
 				readback.resource.Unmap(0, Some(&written_range));
 			}
 
-			if let Some(texture_copy) = self.texture_copies.get_mut(texture_copy.0 as usize) {
+			if let Some(texture_copy) = self.texture_copies.get_mut(readback.texture_copy.0 as usize) {
 				*texture_copy = compact;
 				self.texture_readback_resolve_count += 1;
 				readback.resolved = true;
 			}
 		}
+		// The compact CPU copy owns the result after resolution, so the native readback resource can retire now.
+		self.texture_readbacks.retain(|readback| !readback.resolved);
 	}
 
 	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {
@@ -7339,14 +7628,18 @@ impl Device {
 		swapchain_handle: SwapchainHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let swapchain = self.swapchains.get_mut(swapchain_handle.0 as usize)?;
-		let image_index = swapchain.acquired_image_indices[sequence_index as usize] as usize;
-		let image_index = image_index.min(swapchain.image_count.saturating_sub(1) as usize);
-		if swapchain.backbuffers[image_index].is_none() {
-			let resource = unsafe { swapchain.swapchain.GetBuffer::<ID3D12Resource>(image_index as u32) }.ok()?;
-			swapchain.backbuffers[image_index] = Some(resource);
-		}
-		swapchain.backbuffers[image_index].clone()
+		let resource = {
+			let swapchain = self.swapchains.get_mut(swapchain_handle.0 as usize)?;
+			let image_index = swapchain.acquired_image_indices[sequence_index as usize] as usize;
+			let image_index = image_index.min(swapchain.image_count.saturating_sub(1) as usize);
+			if swapchain.backbuffers[image_index].is_none() {
+				let resource = unsafe { swapchain.swapchain.GetBuffer::<ID3D12Resource>(image_index as u32) }.ok()?;
+				swapchain.backbuffers[image_index] = Some(resource);
+			}
+			swapchain.backbuffers[image_index].clone()?
+		};
+		self.materialize_render_target_views(&resource, Formats::BGRAu8, 1);
+		Some(resource)
 	}
 
 	fn attachment_image_handle(&mut self, attachment: &AttachmentInformation, sequence_index: u8) -> crate::BaseImageHandle {
@@ -7795,7 +8088,11 @@ impl Device {
 			retired_state_keys.extend(frame_resources.iter().flatten().map(Self::native_resource_key));
 		}
 		let resource = self.create_image_resource(extent, format, uses, array_layers, optimized_clear_value);
-		for key in retired_state_keys {
+		self.invalidate_attachment_views_for_resources(&retired_state_keys);
+		if let Some(resource) = resource.as_ref() {
+			self.materialize_image_attachment_views(resource, format, uses, array_layers);
+		}
+		for &key in &retired_state_keys {
 			self.image_states.remove(&key);
 		}
 
@@ -7817,12 +8114,21 @@ impl Device {
 	}
 
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle) -> Extent {
-		let Some(swapchain) = self.swapchains.get_mut(swapchain_handle.0 as usize) else {
+		let Some(swapchain) = self.swapchains.get(swapchain_handle.0 as usize) else {
 			return Extent::rectangle(0, 0);
 		};
-
 		let extent = Self::query_window_extent(&swapchain.handles, swapchain.extent);
 		if extent != swapchain.extent && extent.width() > 0 && extent.height() > 0 {
+			let retired_backbuffers = swapchain
+				.backbuffers
+				.iter()
+				.flatten()
+				.map(Self::native_resource_key)
+				.collect::<SmallVec<[usize; 8]>>();
+			self.invalidate_attachment_views_for_resources(&retired_backbuffers);
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
+			swapchain.backbuffers = std::array::from_fn(|_| None);
 			let result = unsafe {
 				swapchain.swapchain.ResizeBuffers(
 					swapchain.image_count as u32,
@@ -7840,7 +8146,6 @@ impl Device {
 			}
 
 			swapchain.extent = extent;
-			swapchain.backbuffers = std::array::from_fn(|_| None);
 		}
 		extent
 	}
@@ -8275,13 +8580,16 @@ impl Device {
 		unsafe {
 			self.device.CreateSampler(&desc, cpu_handle);
 		}
-		self.sampler_descriptor_write_records.push(SamplerDescriptorWriteRecord {
-			filter,
-			address_mode,
-			max_anisotropy,
-			min_lod: sampler.min_lod,
-			max_lod: sampler.max_lod,
-		});
+		#[cfg(test)]
+		{
+			self.sampler_descriptor_write_records.push(SamplerDescriptorWriteRecord {
+				filter,
+				address_mode,
+				max_anisotropy,
+				min_lod: sampler.min_lod,
+				max_lod: sampler.max_lod,
+			});
+		}
 		self.descriptor_write_count += 1;
 	}
 
@@ -8729,9 +9037,46 @@ impl Device {
 		None
 	}
 
-	fn depth_stencil_view_desc(array_layers: u32) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
+	/// Creates an RTV description that targets either the complete image or one requested array layer.
+	fn render_target_view_desc(format: Formats, array_layers: u32, layer: Option<u32>) -> D3D12_RENDER_TARGET_VIEW_DESC {
+		Self::validate_attachment_layer(array_layers, layer);
+		let format = Self::dxgi_format(format).expect(
+			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
+		);
+		D3D12_RENDER_TARGET_VIEW_DESC {
+			Format: format,
+			ViewDimension: if array_layers > 1 {
+				D3D12_RTV_DIMENSION_TEXTURE2DARRAY
+			} else {
+				D3D12_RTV_DIMENSION_TEXTURE2D
+			},
+			Anonymous: if array_layers > 1 {
+				D3D12_RENDER_TARGET_VIEW_DESC_0 {
+					Texture2DArray: D3D12_TEX2D_ARRAY_RTV {
+						MipSlice: 0,
+						FirstArraySlice: layer.unwrap_or(0),
+						ArraySize: layer.map_or(array_layers, |_| 1),
+						PlaneSlice: 0,
+					},
+				}
+			} else {
+				D3D12_RENDER_TARGET_VIEW_DESC_0 {
+					Texture2D: D3D12_TEX2D_RTV {
+						MipSlice: 0,
+						PlaneSlice: 0,
+					},
+				}
+			},
+		}
+	}
+
+	/// Creates a DSV description that targets either the complete image or one requested array layer.
+	fn depth_stencil_view_desc(format: Formats, array_layers: u32, layer: Option<u32>) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
+		Self::validate_attachment_layer(array_layers, layer);
 		D3D12_DEPTH_STENCIL_VIEW_DESC {
-			Format: DXGI_FORMAT_D32_FLOAT,
+			Format: Self::dxgi_format(format).expect(
+				"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
+			),
 			ViewDimension: if array_layers > 1 {
 				D3D12_DSV_DIMENSION_TEXTURE2DARRAY
 			} else {
@@ -8742,8 +9087,8 @@ impl Device {
 				D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
 					Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
 						MipSlice: 0,
-						FirstArraySlice: 0,
-						ArraySize: array_layers,
+						FirstArraySlice: layer.unwrap_or(0),
+						ArraySize: layer.map_or(array_layers, |_| 1),
 					},
 				}
 			} else {
@@ -8751,6 +9096,44 @@ impl Device {
 					Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
 				}
 			},
+		}
+	}
+
+	/// Rejects attachment layers that cannot address the native image array.
+	fn validate_attachment_layer(array_layers: u32, layer: Option<u32>) {
+		assert!(
+			array_layers > 0 && layer.is_none_or(|layer| layer < array_layers),
+			"Invalid DX12 attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
+		);
+	}
+
+	/// Returns the number of descriptors required for a whole-image view and every selectable array layer.
+	fn attachment_descriptor_count(array_layers: u32) -> u32 {
+		Self::validate_attachment_layer(array_layers, None);
+		if array_layers == 1 {
+			1
+		} else {
+			array_layers.checked_add(1).expect(
+				"Invalid DX12 attachment layer count. The most likely cause is that the image layer count cannot fit in a descriptor heap.",
+			)
+		}
+	}
+
+	/// Maps an attachment layer to its stable slot in the retained CPU descriptor heap.
+	fn attachment_descriptor_slot(array_layers: u32, layer: Option<u32>) -> u32 {
+		Self::validate_attachment_layer(array_layers, layer);
+		match layer {
+			Some(layer) if array_layers > 1 => layer + 1,
+			_ => 0,
+		}
+	}
+
+	/// Maps a retained CPU descriptor slot back to its attachment layer.
+	fn attachment_descriptor_layer(array_layers: u32, slot: u32) -> Option<u32> {
+		if slot == 0 || array_layers == 1 {
+			None
+		} else {
+			Some(slot - 1)
 		}
 	}
 
@@ -8888,7 +9271,9 @@ struct CommandBuffer {
 	queue_handle: QueueHandle,
 	allocator: Option<ID3D12CommandAllocator>,
 	command_list: Option<ID3D12GraphicsCommandList>,
-	staged_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
+	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
+	retained_resources: Vec<ID3D12Resource>,
+	retained_upload_resource_count: usize,
 	cbv_srv_uav_staging_heap: Option<DescriptorHeapArena>,
 	sampler_staging_heap: Option<DescriptorHeapArena>,
 	is_open: bool,
@@ -8901,6 +9286,30 @@ struct DescriptorHeapArena {
 	heap: ID3D12DescriptorHeap,
 	capacity: u32,
 	used: u32,
+}
+
+/// The `AttachmentViewKey` struct identifies a retained CPU descriptor for one native image view.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct AttachmentViewKey {
+	resource: usize,
+	format: i32,
+}
+
+/// The `CpuDescriptorView` struct retains native attachment descriptors for reuse across frames.
+struct CpuDescriptorView {
+	heap: ID3D12DescriptorHeap,
+}
+
+/// The `RenderTargetAttachment` struct carries one resolved color attachment through native binding.
+struct RenderTargetAttachment {
+	image_handle: Option<crate::BaseImageHandle>,
+	resource: ID3D12Resource,
+	format: Formats,
+	array_layers: u32,
+	layer: Option<u32>,
+	load: bool,
+	clear: ClearValue,
+	swapchain_backbuffer: bool,
 }
 
 pub(crate) struct Buffer {
@@ -8937,7 +9346,9 @@ struct BufferCopyInfo {
 }
 
 struct TextureReadback {
-	texture_copy: Option<TextureCopyHandle>,
+	command_buffer_handle: CommandBufferHandle,
+	texture_copy: TextureCopyHandle,
+	completion: Option<(crate::synchronizer::SynchronizerHandle, u64)>,
 	resource: ID3D12Resource,
 	sequence_index: u8,
 	row_pitch: usize,
@@ -9080,6 +9491,7 @@ struct RootConstantRange {
 	size: u32,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DescriptorTableBindRecord {
 	pub(crate) root_parameter_index: u32,
@@ -9089,6 +9501,7 @@ pub(crate) struct DescriptorTableBindRecord {
 	pub(crate) heap_slot: u32,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PushConstantWriteRecord {
 	pub(crate) root_parameter_index: u32,
@@ -9097,6 +9510,7 @@ pub(crate) struct PushConstantWriteRecord {
 	pub(crate) compute_root: bool,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SamplerDescriptorWriteRecord {
 	pub(crate) filter: D3D12_FILTER,
@@ -9573,10 +9987,10 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS, D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
 	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RAYTRACING_TIER_NOT_SUPPORTED, D3D12_RENDER_TARGET_BLEND_DESC,
-	D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-	D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_TYPE_UAV,
-	D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
-	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+	D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+	D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+	D3D12_RESOURCE_BARRIER_TYPE_UAV, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+	D3D12_RESOURCE_FLAGS, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
 	D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
 	D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
@@ -9585,17 +9999,18 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_TRANSITION_BARRIER,
 	D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
 	D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-	D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY,
-	D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC,
-	D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER,
-	D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
-	D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC, D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT,
-	D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE,
-	D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG,
-	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
-	D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEX2D_ARRAY_DSV,
-	D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEX3D_SRV,
-	D3D12_TEX3D_UAV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+	D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RTV_DIMENSION_TEXTURE2D,
+	D3D12_RTV_DIMENSION_TEXTURE2DARRAY, D3D12_RT_FORMAT_ARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
+	D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+	D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
+	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC,
+	D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT, D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY,
+	D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP,
+	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG,
+	D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
+	D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_RTV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV,
+	D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEX3D_SRV, D3D12_TEX3D_UAV,
+	D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
 	D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_COPY_LOCATION,
 	D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 	D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,

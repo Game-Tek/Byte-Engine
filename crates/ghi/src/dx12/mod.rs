@@ -2355,6 +2355,56 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.upload_resource_count(), 2);
 	}
 
+	/// Verifies that visibility-like render passes reuse retained attachment views across long frame runs.
+	#[test]
+	fn render_pass_attachment_view_allocations_remain_bounded() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let color = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::RenderTarget)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let depth = device.build_image(
+			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.array_layers(std::num::NonZeroU32::new(4))
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
+		assert_eq!(device.render_target_view_count(), 1);
+		assert_eq!(device.depth_stencil_view_count(), 1);
+		assert_eq!(device.render_target_view_allocation_count(), 1);
+		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
+		assert_eq!(device.depth_stencil_descriptor_count(), 5);
+
+		for frame_index in 0..1024 {
+			let cascade = frame_index % 4;
+			let attachments = [
+				crate::AttachmentInformation::new(color.0, crate::Layouts::RenderTarget, crate::ClearValue::None, true, true),
+				crate::AttachmentInformation::new(
+					depth.0,
+					crate::Layouts::RenderTarget,
+					crate::ClearValue::Depth(1.0),
+					true,
+					true,
+				)
+				.layer(cascade),
+			];
+			device.begin_command_buffer(command_buffer, 0);
+			device.bind_render_targets_native(command_buffer, &attachments, 0);
+		}
+
+		assert_eq!(device.render_target_view_count(), 1);
+		assert_eq!(device.depth_stencil_view_count(), 1);
+		assert_eq!(device.render_target_view_allocation_count(), 1);
+		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
+		assert_eq!(device.depth_stencil_descriptor_count(), 5);
+		assert_eq!(Device::depth_stencil_view_array_range(4, None), Some((0, 4)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, Some(2)), Some((2, 1)));
+	}
+
 	#[test]
 	fn descriptor_tables_bind_pipeline_defined_heap_offsets() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
@@ -3020,6 +3070,37 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.upload_resource_count(), 1);
 	}
 
+	/// Verifies that command-buffer reuse releases completed upload staging resources before recording again.
+	#[test]
+	fn repeated_image_uploads_keep_live_staging_resources_bounded() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(
+				crate::Formats::RGBA8UNORM,
+				crate::Uses::Image | crate::Uses::TransferDestination,
+			)
+			.extent(::utils::Extent::rectangle(1, 1))
+			.device_accesses(crate::DeviceAccesses::DeviceToHost),
+		);
+		let command_buffer = device.create_command_buffer(Some("bounded image uploads"), queue_handle);
+		let synchronizer = device.create_synchronizer(Some("bounded image uploads"), false);
+
+		for value in 0..512 {
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			crate::command_buffer::CommandBufferRecording::clear_images(
+				&mut recording,
+				&[(image.into(), crate::ClearValue::Integer(value, 0, 0, 0))],
+			);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+			assert_eq!(device.upload_resource_count(), 1);
+		}
+		let recording = device.create_command_buffer_recording(command_buffer);
+		drop(recording);
+		assert_eq!(device.upload_resource_count(), 0);
+	}
+
 	#[test]
 	fn transfer_textures_records_readback_copy() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
@@ -3066,7 +3147,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(device.get_image_data(copies[0]), &pixel);
-		assert_eq!(device.readback_resource_count(), 1);
+		assert_eq!(device.readback_resource_count(), 0);
 		assert_eq!(device.texture_readback_resolve_count(), 1);
 	}
 

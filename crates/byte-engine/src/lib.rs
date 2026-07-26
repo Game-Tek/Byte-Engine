@@ -122,6 +122,7 @@ pub mod utils {
 	}
 }
 
+pub mod animation;
 pub mod application;
 #[cfg(feature = "headed")]
 pub mod audio;

@@ -2476,9 +2476,19 @@ impl Device {
 			Vec::new()
 		};
 		let mesh_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Mesh)?;
-		let fragment_shader =
-			self.shader_dxil_for_stage_with_dxc_target(builder.shaders.as_ref(), ShaderTypes::Fragment, "ps_6_0")?;
-		if (has_task_shader && task_shader.is_empty()) || mesh_shader.is_empty() || fragment_shader.is_empty() {
+		let has_fragment_shader = builder
+			.shaders
+			.iter()
+			.any(|shader| matches!(shader.stage, ShaderTypes::Fragment));
+		let fragment_shader = if has_fragment_shader {
+			self.shader_dxil_for_stage_with_dxc_target(builder.shaders.as_ref(), ShaderTypes::Fragment, "ps_6_0")?
+		} else {
+			Vec::new()
+		};
+		if (has_task_shader && task_shader.is_empty())
+			|| mesh_shader.is_empty()
+			|| (has_fragment_shader && fragment_shader.is_empty())
+		{
 			return None;
 		}
 
@@ -2527,7 +2537,11 @@ impl Device {
 			pixel_shader: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
 				value: D3D12_SHADER_BYTECODE {
-					pShaderBytecode: fragment_shader.as_ptr().cast(),
+					pShaderBytecode: if fragment_shader.is_empty() {
+						std::ptr::null()
+					} else {
+						fragment_shader.as_ptr().cast()
+					},
 					BytecodeLength: fragment_shader.len(),
 				},
 			},

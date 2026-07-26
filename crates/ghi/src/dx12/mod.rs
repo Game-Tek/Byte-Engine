@@ -2129,6 +2129,62 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn depth_only_mesh_pipeline_encodes_native_dispatch_without_fragment_shader() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let mesh = match device.create_shader(
+			None,
+			crate::shader::Sources::HLSL {
+				source: r#"
+struct MeshVertex {
+	float4 position : SV_Position;
+};
+
+[numthreads(1, 1, 1)]
+[outputtopology("triangle")]
+void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
+	SetMeshOutputCounts(3, 1);
+	vertices[0].position = float4(0.0, 0.5, 0.0, 1.0);
+	vertices[1].position = float4(0.5, -0.5, 0.0, 1.0);
+	vertices[2].position = float4(-0.5, -0.5, 0.0, 1.0);
+	triangles[0] = uint3(0, 1, 2);
+}
+"#,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Mesh,
+			[],
+		) {
+			Ok(shader) => shader,
+			Err(()) => return,
+		};
+		let shaders = [crate::pipelines::ShaderParameter::new(&mesh, crate::ShaderTypes::Mesh)];
+		let depth_attachment = [crate::pipelines::raster::AttachmentDescriptor::new(crate::Formats::Depth32)];
+		let pipeline =
+			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &depth_attachment));
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_raster_pipeline(pipeline);
+		recording.dispatch_meshes(1, 1, 1);
+		drop(recording);
+
+		if device.supports_native_mesh_shaders() {
+			assert_eq!(
+				device.pipeline_has_native_state(pipeline),
+				Some(true),
+				"last graphics PSO error: {:?}",
+				device.graphics_pipeline_state_last_error()
+			);
+			assert_eq!(device.mesh_dispatch_encode_count(), 1);
+		} else {
+			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
+			assert_eq!(device.mesh_dispatch_encode_count(), 0);
+		}
+	}
+
+	#[test]
 	fn compute_dispatch_skips_native_encoding_without_pipeline_state() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;

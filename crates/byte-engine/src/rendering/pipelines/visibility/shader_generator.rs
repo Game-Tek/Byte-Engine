@@ -1332,7 +1332,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
 		float3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
 		float3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-		float3x3 TBN = float3x3(T, B, N);
 
 		float4 albedo = float4(1, 0, 0, 1);
 		float3 normal = float3(0, 0, 1);
@@ -1583,7 +1582,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		float ao_factor = ao.SampleLevel(ao_sampler, normalized_xy, 0.0).r;
 
-		normal = normalize(mul(TBN, normal));
+		// Combine the basis explicitly because HLSL matrix constructors treat T, B, and N as rows.
+		normal = normalize(normal.x * T + normal.y * B + normal.z * N);
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.xyz, metalness);
 		float NdotV = max(dot(normal, V), 0.0);
 
@@ -1862,6 +1862,41 @@ mod tests {
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
 		besl::lex(shader).unwrap();
+	}
+
+	/// Verifies HLSL transforms tangent-space normals with the same basis convention as GLSL and MSL.
+	#[test]
+	fn material_evaluation_hlsl_combines_tangent_basis_vectors() {
+		let material = material_metadata! {
+			"variables": [
+				{
+					"name": "normal_map",
+					"data_type": "Texture2D"
+				}
+			]
+		};
+		let shader_node =
+			besl::parse("main: fn () -> void { normal = sample_normal(normal_map); }").expect("test material should parse");
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = besl::lex(shader_generator.transform(shader_node, &material))
+			.expect("material evaluation should produce valid BESL");
+		let main = shader.get_main().expect(
+			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
+		);
+		let source = HLSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect(
+				"Failed to emit the HLSL material pass. The most likely cause is an invalid tangent-basis shader contract.",
+			);
+
+		assert!(
+			source.contains("normal = normalize(normal.x * T + normal.y * B + normal.z * N);"),
+			"HLSL did not combine the tangent basis explicitly. The most likely cause is that the material pass reintroduced a row-versus-column matrix assumption."
+		);
+		assert!(
+			!source.contains("mul(TBN, normal)"),
+			"HLSL multiplied a row-constructed tangent basis as a column basis. The most likely cause is that the material pass reintroduced the faceted-normal transform."
+		);
 	}
 
 	/// Verifies material evaluation with skinned geometry produces valid BESL.

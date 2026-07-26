@@ -2373,7 +2373,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let depth = device.build_image(
 			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
 				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.device_accesses(crate::DeviceAccesses::DeviceOnly)
+				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("native render target"), queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -2427,7 +2428,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
 				.extent(::utils::Extent::rectangle(1, 1))
 				.array_layers(std::num::NonZeroU32::new(4))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.device_accesses(crate::DeviceAccesses::DeviceOnly)
+				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
 		assert_eq!(device.render_target_view_count(), 1);

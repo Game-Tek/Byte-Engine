@@ -3397,10 +3397,20 @@ impl Device {
 		} else {
 			None
 		};
+		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
+		let optimized_clear_value = builder
+			.optimized_clear_value
+			.and_then(|clear| Self::optimized_image_clear_value(builder.format, flags, clear));
 		let resource = if builder.use_case == UseCases::DYNAMIC {
 			None
 		} else {
-			self.create_image_resource(builder.extent, builder.format, builder.resource_uses, array_layers, None)
+			self.create_image_resource(
+				builder.extent,
+				builder.format,
+				builder.resource_uses,
+				array_layers,
+				optimized_clear_value,
+			)
 		};
 		if let Some(resource) = resource.as_ref() {
 			self.materialize_image_attachment_views(resource, builder.format, builder.resource_uses, array_layers);
@@ -3427,7 +3437,7 @@ impl Device {
 			data,
 			frame_data,
 			frame_resources,
-			optimized_clear_value: None,
+			optimized_clear_value,
 		});
 
 		ImageHandle(crate::BaseImageHandle((self.images.len() - 1) as u64))
@@ -3536,15 +3546,6 @@ impl Device {
 				.or_else(|| resources.first().and_then(Clone::clone));
 		}
 		image.resource.clone()
-	}
-
-	/// Stores the optimized clear value used when a deferred DX12 image resource is created.
-	fn set_image_optimized_clear_value(&mut self, image_handle: crate::BaseImageHandle, clear: ClearValue) {
-		let Some(image) = self.images.get_mut(image_handle.0 as usize) else {
-			return;
-		};
-		let flags = Self::image_resource_flags(image.format, image.uses);
-		image.optimized_clear_value = Self::optimized_image_clear_value(image.format, flags, clear);
 	}
 
 	pub(crate) fn buffer_resource_state(
@@ -5942,7 +5943,6 @@ impl Device {
 			let format = self.attachment_format(attachment);
 			if format == Formats::Depth32 {
 				let image_handle = self.attachment_image_handle(attachment, sequence_index);
-				self.set_image_optimized_clear_value(image_handle, attachment.clear);
 				let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 					continue;
 				};
@@ -5959,9 +5959,6 @@ impl Device {
 					attachment.clear,
 				));
 				continue;
-			}
-			if let ImageOrSwapchain::Image(image_handle) = attachment.target {
-				self.set_image_optimized_clear_value(image_handle, attachment.clear);
 			}
 			let Some((image_handle, resource, swapchain_backbuffer)) =
 				self.attachment_render_target_resource(command_buffer_handle, attachment, sequence_index)

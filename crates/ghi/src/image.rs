@@ -2,8 +2,9 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
+use crate::{ClearValue, DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
+/// The `Builder` struct defines the allocation and usage contract for an image.
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
 	pub(crate) extent: Extent,
@@ -13,6 +14,7 @@ pub struct Builder<'a> {
 	pub(crate) use_case: UseCases,
 	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<NonZeroU32>,
+	pub(crate) optimized_clear_value: Option<ClearValue>,
 }
 
 impl<'a> Builder<'a> {
@@ -30,6 +32,7 @@ impl<'a> Builder<'a> {
 			use_case: UseCases::STATIC,
 			mip_levels: 1,
 			array_layers: None,
+			optimized_clear_value: None,
 		}
 	}
 
@@ -60,6 +63,14 @@ impl<'a> Builder<'a> {
 
 	pub fn array_layers(mut self, array_layers: Option<NonZeroU32>) -> Self {
 		self.array_layers = array_layers;
+		self
+	}
+
+	/// Declares the clear value the renderer normally uses for this attachment.
+	///
+	/// DX12 uses this value when allocating render-target and depth-stencil resources.
+	pub fn optimized_clear_value(mut self, clear_value: ClearValue) -> Self {
+		self.optimized_clear_value = Some(clear_value);
 		self
 	}
 
@@ -111,6 +122,7 @@ mod tests {
 		assert_eq!(builder.use_case, UseCases::STATIC);
 		assert_eq!(builder.mip_levels, 1);
 		assert_eq!(builder.array_layers, None);
+		assert_eq!(builder.optimized_clear_value, None);
 	}
 
 	#[test]
@@ -121,7 +133,8 @@ mod tests {
 			.device_accesses(DeviceAccesses::HostToDevice)
 			.use_case(UseCases::DYNAMIC)
 			.mip_levels(7)
-			.array_layers(NonZeroU32::new(6));
+			.array_layers(NonZeroU32::new(6))
+			.optimized_clear_value(crate::ClearValue::Depth(0.0));
 
 		assert_eq!(builder.get_name(), Some("albedo"));
 		assert_eq!(builder.extent, Extent::rectangle(64, 32));
@@ -130,6 +143,7 @@ mod tests {
 		assert_eq!(builder.use_case, UseCases::DYNAMIC);
 		assert_eq!(builder.mip_levels, 7);
 		assert_eq!(builder.array_layers, NonZeroU32::new(6));
+		assert_eq!(builder.optimized_clear_value, Some(crate::ClearValue::Depth(0.0)));
 	}
 
 	#[test]

@@ -882,7 +882,9 @@ impl PipelineManager for VisibilityPipelineManager {
 			.name("Lit"),
 		);
 		let depth_target = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"),
+			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
+				.name("Depth")
+				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 		let primitive_index = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"),
@@ -937,7 +939,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Shadow Map")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
+				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32))
+				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()

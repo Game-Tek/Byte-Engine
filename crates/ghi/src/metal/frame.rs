@@ -128,24 +128,14 @@ impl Frame<'_> {
 		self.device.write(descriptor_set_writes);
 	}
 
+	/// Resizes the current image and schedules the other frame-local images for safe replacement.
 	pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
 		let handle = self.get_current_image_handle(image_handle);
-		let image = self.device.images.resource(handle);
-
-		if image.extent == extent {
-			return;
+		if self.device.resize_image_internal(handle, extent) {
+			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
+			self.device
+				.resize_image_on_other_frames(image_handle, extent, self.frame_key.sequence_index);
 		}
-
-		let replacement = self.device.create_image_resource(
-			image.name.as_deref(),
-			extent,
-			image.format,
-			image.uses,
-			image.access,
-			image.array_layers,
-		);
-		*self.device.images.resource_mut(handle) = replacement;
-		self.device.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 	}
 
 	pub fn create_command_buffer_recording<'a>(

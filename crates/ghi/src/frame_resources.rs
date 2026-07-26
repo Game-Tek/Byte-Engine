@@ -15,6 +15,12 @@ use std::marker::PhantomData;
 
 use crate::{MasterHandle, PrivateHandle};
 
+/// Resolves a signed frame offset, where negative values select earlier frames.
+pub(crate) fn frame_index_with_offset(sequence_index: usize, frame_offset: i32, frame_count: usize) -> usize {
+	let frame_count = frame_count.max(1) as i32;
+	(sequence_index as i32 + frame_offset).rem_euclid(frame_count) as usize
+}
+
 #[derive(Debug)]
 /// The `MasterFrameResource` struct links one backend resource to its next frame-specific representation.
 pub(crate) struct MasterFrameResource<T, PH> {
@@ -208,6 +214,7 @@ impl<'a, T, MH: MasterHandle, PH: PrivateHandle> Creator<'a, T, MH, PH> {
 
 #[cfg(test)]
 mod tests {
+	use super::frame_index_with_offset;
 	use crate::{MasterHandle, PrivateHandle};
 
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +241,14 @@ mod tests {
 		fn index(&self) -> u64 {
 			self.0
 		}
+	}
+
+	#[test]
+	fn signed_frame_offsets_select_relative_frames_and_wrap() {
+		assert_eq!(frame_index_with_offset(1, -1, 3), 0);
+		assert_eq!(frame_index_with_offset(1, 1, 3), 2);
+		assert_eq!(frame_index_with_offset(0, -1, 3), 2);
+		assert_eq!(frame_index_with_offset(2, 1, 3), 0);
 	}
 
 	#[test]

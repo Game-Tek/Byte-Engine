@@ -724,7 +724,7 @@ impl Context {
 
 	/// Resolves a frame sequence and offset into a valid per-frame resource index.
 	fn frame_index_with_offset(&self, sequence_index: usize, frame_offset: i32) -> usize {
-		(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize
+		crate::frame_resources::frame_index_with_offset(sequence_index, frame_offset, self.frames as usize)
 	}
 
 	/// Selects the frame-local image handle for a chained image resource.

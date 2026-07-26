@@ -248,9 +248,9 @@ mod tests {
 
 		let mut world = DefaultWorld::new();
 		let mut listener = world.audio_graph_factory().listener();
-		let graph = gain(r#loop(sample("audio/ambience.ogg")), 0.5);
+		let mut graph = gain(r#loop(sample("audio/ambience.ogg")), 0.5);
 
-		let handle = world.audio_graph_factory_mut().create(graph);
+		let handle = world.audio_graph_factory_mut().create(&mut graph);
 		let created = listener.read().expect("audio graph creation");
 
 		assert_eq!(created.handle(), &handle);

@@ -1124,7 +1124,7 @@ pub(crate) enum Tasks {
 	},
 	/// Resize an image.
 	ResizeImage {
-		handle: ImageHandle,
+		handle: graphics_hardware_interface::BaseImageHandle,
 		extent: Extent,
 	},
 	BuildImage(BuildImage),

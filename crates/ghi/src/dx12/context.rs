@@ -1723,9 +1723,9 @@ impl Device {
 		}
 	}
 
-	fn create_transient_cpu_descriptor_heap(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
+	/// Creates one CPU-readable descriptor heap for reusable command-buffer staging.
+	fn create_cpu_descriptor_heap(
+		&self,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
 	) -> Option<DescriptorHeap> {
@@ -1744,17 +1744,60 @@ impl Device {
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				let message = format!(
-					"Failed to create a transient CPU DX12 descriptor heap: {error:?}. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}",
+					"Failed to create a CPU-only DX12 descriptor heap: {error:?}. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}",
 					heap_type
 				);
 				self.log_dx12_error(&message);
 				panic!("{message}");
 			}
 		};
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
-			command_buffer.retained_descriptor_heaps.push(heap.native.clone());
-		}
 		Some(heap)
+	}
+
+	/// Reserves CPU-readable descriptors for operations that also consume shader-visible descriptors.
+	fn reserve_cpu_descriptor_range(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		descriptor_count: u32,
+	) -> Option<(DescriptorHeap, u32)> {
+		if descriptor_count == 0 {
+			return None;
+		}
+
+		let command_buffer_index = command_buffer_handle.0 as usize;
+		let (current_capacity, current_used) = self
+			.command_buffers
+			.get(command_buffer_index)?
+			.cbv_srv_uav_cpu_staging_heap
+			.as_ref()
+			.map(|arena| (arena.capacity, arena.used))
+			.unwrap_or((0, 0));
+		let required = current_used.saturating_add(descriptor_count);
+
+		if required > current_capacity {
+			let capacity = required.max(current_capacity.saturating_mul(2)).max(256);
+			let heap = self.create_cpu_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, capacity)?;
+			let command_buffer = self.command_buffers.get_mut(command_buffer_index)?;
+			if let Some(previous) =
+				command_buffer
+					.cbv_srv_uav_cpu_staging_heap
+					.replace(DescriptorHeapArena { heap, capacity, used: 0 })
+			{
+				if previous.used > 0 {
+					// Recorded clears may still reference the previous arena until this command buffer completes.
+					command_buffer.retained_descriptor_heaps.push(previous.heap.native);
+				}
+			}
+		}
+
+		let arena = self
+			.command_buffers
+			.get_mut(command_buffer_index)?
+			.cbv_srv_uav_cpu_staging_heap
+			.as_mut()?;
+		let offset = arena.used;
+		arena.used = arena.used.saturating_add(descriptor_count);
+		Some((arena.heap.clone(), offset))
 	}
 
 	fn reserve_staged_descriptor_range(
@@ -3101,6 +3144,7 @@ impl Device {
 			retained_resources: Vec::new(),
 			retained_upload_resource_count: 0,
 			cbv_srv_uav_staging_heap: None,
+			cbv_srv_uav_cpu_staging_heap: None,
 			sampler_staging_heap: None,
 			is_open: false,
 			recorded_work: false,
@@ -3645,6 +3689,20 @@ impl Device {
 
 	pub(crate) fn descriptor_heap_bind_count(&self) -> usize {
 		self.descriptor_heap_bind_count
+	}
+
+	/// Returns the native identity, capacity, and used slots of one command buffer's CPU descriptor arena.
+	#[cfg(test)]
+	pub(crate) fn cpu_staging_descriptor_heap_state(
+		&self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> Option<(usize, u32, u32)> {
+		let arena = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)?
+			.cbv_srv_uav_cpu_staging_heap
+			.as_ref()?;
+		Some((arena.heap.native.as_raw() as usize, arena.capacity, arena.used))
 	}
 
 	pub(crate) fn descriptor_table_bind_count(&self) -> usize {
@@ -5019,6 +5077,9 @@ impl Device {
 		command_buffer.retained_resources.clear();
 		command_buffer.retained_upload_resource_count = 0;
 		if let Some(arena) = command_buffer.cbv_srv_uav_staging_heap.as_mut() {
+			arena.used = 0;
+		}
+		if let Some(arena) = command_buffer.cbv_srv_uav_cpu_staging_heap.as_mut() {
 			arena.used = 0;
 		}
 		if let Some(arena) = command_buffer.sampler_staging_heap.as_mut() {
@@ -6897,13 +6958,12 @@ impl Device {
 			let Some((heap, descriptor_offset)) = self.reserve_staged_descriptor_range(command_buffer_handle, false, 1) else {
 				return;
 			};
-			let Some(cpu_heap) =
-				self.create_transient_cpu_descriptor_heap(command_buffer_handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)
-			else {
+			let Some((cpu_heap, cpu_descriptor_offset)) = self.reserve_cpu_descriptor_range(command_buffer_handle, 1) else {
 				return;
 			};
 			let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
-			let cpu_read_handle = self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 0);
+			let cpu_read_handle =
+				self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, cpu_descriptor_offset);
 			let gpu_handle = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
 			let desc = Self::raw_buffer_clear_uav_desc(destination_size);
 
@@ -7957,9 +8017,7 @@ impl Device {
 			}
 			return;
 		};
-		let Some(cpu_heap) =
-			self.create_transient_cpu_descriptor_heap(command_buffer_handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)
-		else {
+		let Some((cpu_heap, cpu_descriptor_offset)) = self.reserve_cpu_descriptor_range(command_buffer_handle, 1) else {
 			self.record_image_clear_upload_fallback(
 				command_buffer_handle,
 				&command_list,
@@ -7978,7 +8036,8 @@ impl Device {
 			return;
 		};
 		let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
-		let cpu_read_handle = self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 0);
+		let cpu_read_handle =
+			self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, cpu_descriptor_offset);
 		let gpu_handle = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
 		let desc = Self::texture_uav_desc(format, array_layers);
 
@@ -9503,6 +9562,7 @@ pub(crate) fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result
 	Err("Invalid workload type")
 }
 
+/// The `CommandBuffer` struct owns reusable native recording state for one shared command-buffer handle.
 struct CommandBuffer {
 	queue_handle: QueueHandle,
 	allocator: Option<ID3D12CommandAllocator>,
@@ -9511,6 +9571,7 @@ struct CommandBuffer {
 	retained_resources: Vec<ID3D12Resource>,
 	retained_upload_resource_count: usize,
 	cbv_srv_uav_staging_heap: Option<DescriptorHeapArena>,
+	cbv_srv_uav_cpu_staging_heap: Option<DescriptorHeapArena>,
 	sampler_staging_heap: Option<DescriptorHeapArena>,
 	is_open: bool,
 	recorded_work: bool,
@@ -9526,6 +9587,7 @@ struct DescriptorHeap {
 	gpu_start: Option<D3D12_GPU_DESCRIPTOR_HANDLE>,
 }
 
+/// The `DescriptorHeapArena` struct exists to reuse descriptor slots across command-buffer recordings.
 struct DescriptorHeapArena {
 	heap: DescriptorHeap,
 	capacity: u32,

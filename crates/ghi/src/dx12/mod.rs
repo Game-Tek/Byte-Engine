@@ -3319,6 +3319,53 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn uav_clears_reuse_the_command_buffer_cpu_descriptor_heap() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let first_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let second_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(
+			&mut recording,
+			&[first_buffer.into(), second_buffer.into()],
+		);
+		drop(recording);
+
+		let (first_heap, first_capacity, first_used) = device
+			.cpu_staging_descriptor_heap_state(command_buffer)
+			.expect("A UAV clear should allocate the reusable CPU descriptor arena.");
+		assert!(first_capacity >= 2);
+		assert_eq!(first_used, 2);
+		device.submit_command_buffer(command_buffer, synchronizer);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[first_buffer.into()]);
+		drop(recording);
+
+		let (second_heap, second_capacity, second_used) = device
+			.cpu_staging_descriptor_heap_state(command_buffer)
+			.expect("Reusing the command buffer should retain its CPU descriptor arena.");
+		assert_eq!(second_heap, first_heap);
+		assert_eq!(second_capacity, first_capacity);
+		assert_eq!(second_used, 1);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert!(!device.has_errors());
+	}
+
+	#[test]
 	fn reusing_command_buffer_waits_for_previous_submission_before_allocator_reset() {
 		let features = crate::device::Features::new().validation(true);
 		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {

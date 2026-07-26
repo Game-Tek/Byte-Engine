@@ -1,6 +1,8 @@
 /// The `Device` struct exists to own DX12 GPU resources for the shared GHI device API.
 pub struct Device {
 	device: ID3D12Device,
+	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
+	descriptor_handle_increment_sizes: [u32; 4],
 	settings: Features,
 	native_16_bit_shader_ops_supported: bool,
 	info_queue: Option<ID3D12InfoQueue>,
@@ -159,8 +161,15 @@ impl Device {
 		queues: Vec<StoredQueue>,
 	) -> Self {
 		let native_16_bit_shader_ops_supported = Self::query_native_16_bit_shader_ops_support(&device);
+		let descriptor_handle_increment_sizes = [
+			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) },
+			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) },
+			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) },
+			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV) },
+		];
 		Self {
 			device,
+			descriptor_handle_increment_sizes,
 			settings,
 			native_16_bit_shader_ops_supported,
 			info_queue,
@@ -1650,6 +1659,14 @@ impl Device {
 		}
 	}
 
+	/// Returns the device-constant stride for a native descriptor heap type.
+	fn descriptor_handle_increment_size(
+		&self,
+		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
+	) -> u32 {
+		self.descriptor_handle_increment_sizes[heap_type.0 as usize]
+	}
+
 	fn descriptor_cpu_handle(
 		&self,
 		heap: &ID3D12DescriptorHeap,
@@ -1657,7 +1674,7 @@ impl Device {
 		slot: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
 		let mut handle = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
-		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
+		let stride = self.descriptor_handle_increment_size(heap_type) as usize;
 		handle.ptr = handle.ptr.saturating_add(slot as usize * stride);
 		handle
 	}
@@ -1669,7 +1686,7 @@ impl Device {
 		slot: u32,
 	) -> D3D12_GPU_DESCRIPTOR_HANDLE {
 		let mut handle = unsafe { heap.GetGPUDescriptorHandleForHeapStart() };
-		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as u64;
+		let stride = self.descriptor_handle_increment_size(heap_type) as u64;
 		handle.ptr = handle.ptr.saturating_add(slot as u64 * stride);
 		handle
 	}

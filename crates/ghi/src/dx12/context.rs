@@ -6690,17 +6690,8 @@ impl Device {
 
 		for &buffer_handle in buffer_handles {
 			let batched = gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle);
-			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index, !batched, !batched);
+			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index, !batched);
 		}
-
-		let mut completion_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
-		for (_, resource) in &gpu_clear_buffers {
-			completion_barriers.push(Self::unordered_access_resource_barrier(resource));
-		}
-		unsafe {
-			Self::submit_resource_barriers(&command_list, &completion_barriers);
-		}
-		self.uav_barrier_count += completion_barriers.len();
 	}
 
 	/// Returns whether a buffer clear must update CPU-visible shadow storage.
@@ -6849,7 +6840,6 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 		transition_before_clear: bool,
-		barrier_after_clear: bool,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -6901,14 +6891,8 @@ impl Device {
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_read_handle);
 				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_read_handle, &destination, &[0, 0, 0, 0], &[]);
-				if barrier_after_clear {
-					Self::unordered_access_barrier(&command_list, &destination);
-				}
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
-			if barrier_after_clear {
-				self.uav_barrier_count += 1;
-			}
 			self.buffer_clear_count += 1;
 			return;
 		}
@@ -7884,7 +7868,7 @@ impl Device {
 		clear: crate::ClearValue,
 		sequence_index: u8,
 		final_state: Option<D3D12_RESOURCE_STATES>,
-		barrier_after_clear: bool,
+		transition_before_clear: bool,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -7968,7 +7952,7 @@ impl Device {
 		let desc = Self::texture_uav_desc(format, array_layers);
 
 		unsafe {
-			if barrier_after_clear {
+			if transition_before_clear {
 				self.transition_tracked_image(
 					&command_list,
 					image_handle.0,
@@ -8008,15 +7992,10 @@ impl Device {
 			if let Some(final_state) = final_state {
 				// The transition orders the UAV clear and makes a separate UAV barrier redundant.
 				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-			} else if barrier_after_clear {
-				Self::unordered_access_barrier(&command_list, &destination);
 			}
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
-		if final_state.is_none() && barrier_after_clear {
-			self.uav_barrier_count += 1;
-		}
 		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 

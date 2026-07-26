@@ -1062,7 +1062,7 @@ impl Device {
 		&self,
 		layout: &PipelineLayout,
 		sampler_heap: bool,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		base_offset: u32,
 	) {
 		let heap_type = if sampler_heap {
@@ -1669,11 +1669,11 @@ impl Device {
 
 	fn descriptor_cpu_handle(
 		&self,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		slot: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-		let mut handle = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+		let mut handle = heap.cpu_start;
 		let stride = self.descriptor_handle_increment_size(heap_type) as usize;
 		handle.ptr = handle.ptr.saturating_add(slot as usize * stride);
 		handle
@@ -1681,11 +1681,13 @@ impl Device {
 
 	fn descriptor_gpu_handle(
 		&self,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		slot: u32,
 	) -> D3D12_GPU_DESCRIPTOR_HANDLE {
-		let mut handle = unsafe { heap.GetGPUDescriptorHandleForHeapStart() };
+		let mut handle = heap.gpu_start.expect(
+			"Missing GPU descriptor heap start. The most likely cause is that a CPU-only heap was used for a GPU descriptor table.",
+		);
 		let stride = self.descriptor_handle_increment_size(heap_type) as u64;
 		handle.ptr = handle.ptr.saturating_add(slot as u64 * stride);
 		handle
@@ -1696,7 +1698,7 @@ impl Device {
 		&self,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
-	) -> Option<ID3D12DescriptorHeap> {
+	) -> Option<DescriptorHeap> {
 		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
 			Type: heap_type,
 			NumDescriptors: descriptor_count,
@@ -1704,7 +1706,11 @@ impl Device {
 			NodeMask: 0,
 		};
 		match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
-			Ok(heap) => Some(heap),
+			Ok(native) => Some(DescriptorHeap {
+				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
+				gpu_start: Some(unsafe { native.GetGPUDescriptorHandleForHeapStart() }),
+				native,
+			}),
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				let message = format!(
@@ -1722,7 +1728,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
-	) -> Option<ID3D12DescriptorHeap> {
+	) -> Option<DescriptorHeap> {
 		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
 			Type: heap_type,
 			NumDescriptors: descriptor_count,
@@ -1730,7 +1736,11 @@ impl Device {
 			NodeMask: 0,
 		};
 		let heap = match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
-			Ok(heap) => heap,
+			Ok(native) => DescriptorHeap {
+				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
+				gpu_start: None,
+				native,
+			},
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				let message = format!(
@@ -1742,7 +1752,7 @@ impl Device {
 			}
 		};
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
-			command_buffer.retained_descriptor_heaps.push(heap.clone());
+			command_buffer.retained_descriptor_heaps.push(heap.native.clone());
 		}
 		Some(heap)
 	}
@@ -1752,7 +1762,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		sampler_heap: bool,
 		descriptor_count: u32,
-	) -> Option<(ID3D12DescriptorHeap, u32)> {
+	) -> Option<(DescriptorHeap, u32)> {
 		if descriptor_count == 0 {
 			return None;
 		}
@@ -1785,7 +1795,7 @@ impl Device {
 			};
 			if let Some(previous) = target_arena.replace(DescriptorHeapArena { heap, capacity, used: 0 }) {
 				if previous.used > 0 {
-					command_buffer.retained_descriptor_heaps.push(previous.heap);
+					command_buffer.retained_descriptor_heaps.push(previous.heap.native);
 				}
 			}
 		}
@@ -1821,11 +1831,11 @@ impl Device {
 			.as_ref()
 			.filter(|arena| arena.used > 0)
 		{
-			heaps[heap_count] = Some(arena.heap.clone());
+			heaps[heap_count] = Some(arena.heap.native.clone());
 			heap_count += 1;
 		}
 		if let Some(arena) = command_buffer.sampler_staging_heap.as_ref().filter(|arena| arena.used > 0) {
-			heaps[heap_count] = Some(arena.heap.clone());
+			heaps[heap_count] = Some(arena.heap.native.clone());
 			heap_count += 1;
 		}
 		if heap_count == 0 {
@@ -1956,11 +1966,11 @@ impl Device {
 	}
 
 	/// Retains a descriptor heap until the command buffer's previous submission has completed.
-	fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &ID3D12DescriptorHeap) {
+	fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &DescriptorHeap) {
 		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
 			return;
 		};
-		let identity = heap.as_raw();
+		let identity = heap.native.as_raw();
 		if command_buffer
 			.retained_descriptor_heaps
 			.iter()
@@ -1968,7 +1978,7 @@ impl Device {
 		{
 			return;
 		}
-		command_buffer.retained_descriptor_heaps.push(heap.clone());
+		command_buffer.retained_descriptor_heaps.push(heap.native.clone());
 	}
 
 	/// Retains a temporary GPU resource until the command buffer's previous submission has completed.
@@ -3436,7 +3446,7 @@ impl Device {
 	pub(crate) fn depth_stencil_descriptor_count(&self) -> u32 {
 		self.depth_stencil_views
 			.values()
-			.map(|view| unsafe { view.heap.GetDesc() }.NumDescriptors)
+			.map(|view| unsafe { view.heap.native.GetDesc() }.NumDescriptors)
 			.sum()
 	}
 
@@ -5689,7 +5699,7 @@ impl Device {
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
 		purpose: &str,
-	) -> ID3D12DescriptorHeap {
+	) -> DescriptorHeap {
 		let descriptor = D3D12_DESCRIPTOR_HEAP_DESC {
 			Type: heap_type,
 			NumDescriptors: descriptor_count,
@@ -5697,7 +5707,11 @@ impl Device {
 			NodeMask: 0,
 		};
 		match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&descriptor) } {
-			Ok(heap) => heap,
+			Ok(native) => DescriptorHeap {
+				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
+				gpu_start: None,
+				native,
+			},
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 				let message = format!(
@@ -6283,11 +6297,11 @@ impl Device {
 		let mut heaps = [None, None];
 		let mut heap_count = 0usize;
 		if let Some(heap) = materialization.cbv_srv_uav_heap.as_ref() {
-			heaps[heap_count] = Some(heap.clone());
+			heaps[heap_count] = Some(heap.native.clone());
 			heap_count += 1;
 		}
 		if let Some(heap) = materialization.sampler_heap.as_ref() {
-			heaps[heap_count] = Some(heap.clone());
+			heaps[heap_count] = Some(heap.native.clone());
 			heap_count += 1;
 		}
 		if heap_count == 0 {
@@ -8555,7 +8569,7 @@ impl Device {
 		array_element: u32,
 		sequence_index: u8,
 		sampler_heap: bool,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		base_offset: u32,
 	) {
 		if array_element >= resource.descriptor.count() {
@@ -8615,7 +8629,7 @@ impl Device {
 		handle: BaseBufferHandle,
 		size: crate::Ranges,
 		sequence_index: u8,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		slot: u32,
 	) {
 		// Descriptor reads should include CPU writes made through the host shadow before the bind.
@@ -8696,7 +8710,7 @@ impl Device {
 	fn write_native_acceleration_structure_descriptor(
 		&mut self,
 		handle: TopLevelAccelerationStructureHandle,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		slot: u32,
 	) {
 		let Some(acceleration_structure) = self.top_level_acceleration_structures.get(handle.0 as usize) else {
@@ -8731,7 +8745,7 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 		layer: Option<u32>,
-		heap: &ID3D12DescriptorHeap,
+		heap: &DescriptorHeap,
 		slot: u32,
 	) {
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
@@ -8770,12 +8784,7 @@ impl Device {
 		self.descriptor_write_count += 1;
 	}
 
-	fn write_native_sampler_descriptor(
-		&mut self,
-		sampler_handle: Option<SamplerHandle>,
-		heap: &ID3D12DescriptorHeap,
-		slot: u32,
-	) {
+	fn write_native_sampler_descriptor(&mut self, sampler_handle: Option<SamplerHandle>, heap: &DescriptorHeap, slot: u32) {
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, slot);
 		let fallback_sampler = Sampler {
 			filtering_mode: FilteringModes::Linear,
@@ -9509,8 +9518,16 @@ struct CommandBuffer {
 	last_submission: Option<(SynchronizerHandle, u8)>,
 }
 
+/// The `DescriptorHeap` struct caches native heap starts for allocation-free handle arithmetic.
+#[derive(Clone)]
+struct DescriptorHeap {
+	native: ID3D12DescriptorHeap,
+	cpu_start: D3D12_CPU_DESCRIPTOR_HANDLE,
+	gpu_start: Option<D3D12_GPU_DESCRIPTOR_HANDLE>,
+}
+
 struct DescriptorHeapArena {
-	heap: ID3D12DescriptorHeap,
+	heap: DescriptorHeap,
 	capacity: u32,
 	used: u32,
 }
@@ -9524,7 +9541,7 @@ struct AttachmentViewKey {
 
 /// The `CpuDescriptorView` struct retains native attachment descriptors for reuse across frames.
 struct CpuDescriptorView {
-	heap: ID3D12DescriptorHeap,
+	heap: DescriptorHeap,
 }
 
 /// The `RenderTargetAttachment` struct carries one resolved color attachment through native binding.
@@ -9675,8 +9692,8 @@ struct DescriptorMaterializationKey {
 #[derive(Clone)]
 struct DescriptorMaterialization {
 	versions: SmallVec<[u64; 8]>,
-	cbv_srv_uav_heap: Option<ID3D12DescriptorHeap>,
-	sampler_heap: Option<ID3D12DescriptorHeap>,
+	cbv_srv_uav_heap: Option<DescriptorHeap>,
+	sampler_heap: Option<DescriptorHeap>,
 }
 
 /// The `Binding` struct preserves the private handle item required by shared legacy exports.

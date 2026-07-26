@@ -5759,7 +5759,43 @@ impl Device {
 			return;
 		}
 
+		// Plan attachment transitions before recording any clears so independent attachments share
+		// one native ResourceBarrier call. Integer render targets transition through UAV in their clear.
+		let mut attachment_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		for target in &target_resources {
+			let state = if !target.load && matches!(target.clear, ClearValue::Integer(..)) && target.format == Formats::U32 {
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+			} else {
+				D3D12_RESOURCE_STATE_RENDER_TARGET
+			};
+			unsafe {
+				if let Some(image_handle) = target.image_handle {
+					self.transition_tracked_image_into(image_handle, &target.resource, state, &mut attachment_barriers);
+				} else {
+					attachment_barriers.push(Self::transition_resource_barrier(
+						&target.resource,
+						D3D12_RESOURCE_STATE_PRESENT,
+						D3D12_RESOURCE_STATE_RENDER_TARGET,
+					));
+				}
+			}
+		}
+		if let Some((image_handle, resource, ..)) = &depth_resource {
+			unsafe {
+				self.transition_tracked_image_into(
+					*image_handle,
+					resource,
+					D3D12_RESOURCE_STATE_DEPTH_WRITE,
+					&mut attachment_barriers,
+				);
+			}
+		}
+		unsafe {
+			Self::submit_resource_barriers(&command_list, &attachment_barriers);
+		}
+
 		let mut handles = SmallVec::<[D3D12_CPU_DESCRIPTOR_HANDLE; 8]>::new();
+		let mut integer_clear_targets = SmallVec::<[(crate::BaseImageHandle, ID3D12Resource); 8]>::new();
 		if !target_resources.is_empty() {
 			for target in target_resources {
 				let RenderTargetAttachment {
@@ -5773,43 +5809,21 @@ impl Device {
 					swapchain_backbuffer,
 				} = target;
 				let handle = self.retained_render_target_view(command_buffer_handle, &resource, format, array_layers, layer);
-				unsafe {
-					if let Some(image_handle) = image_handle {
-						self.transition_tracked_image(
-							&command_list,
-							image_handle,
-							&resource,
-							D3D12_RESOURCE_STATE_RENDER_TARGET,
-						);
-					} else {
-						Self::transition_resource(
-							&command_list,
-							&resource,
-							D3D12_RESOURCE_STATE_PRESENT,
-							D3D12_RESOURCE_STATE_RENDER_TARGET,
-						);
-					}
-				}
 				if swapchain_backbuffer {
 					self.swapchain_backbuffer_bind_count += 1;
 				}
 				if !load {
 					if matches!(clear, ClearValue::Integer(..)) && format == Formats::U32 {
 						if let Some(image_handle) = image_handle {
-							self.record_image_clear(
+							self.record_image_clear_with_final_state(
 								command_buffer_handle,
 								crate::ImageHandle(image_handle),
 								clear,
 								sequence_index,
+								None,
+								false,
 							);
-							unsafe {
-								self.transition_tracked_image(
-									&command_list,
-									image_handle,
-									&resource,
-									D3D12_RESOURCE_STATE_RENDER_TARGET,
-								);
-							}
+							integer_clear_targets.push((image_handle, resource.clone()));
 						} else {
 							let color = Self::clear_color_f32(clear);
 							unsafe {
@@ -5831,12 +5845,24 @@ impl Device {
 			self.render_target_bind_count += 1;
 		}
 
-		let mut depth_handle = None;
-		if let Some((image_handle, resource, format, array_layers, layer, load, clear)) = depth_resource {
-			let handle = self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer);
+		let mut post_clear_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		for (image_handle, resource) in integer_clear_targets {
 			unsafe {
-				self.transition_tracked_image(&command_list, image_handle, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+				self.transition_tracked_image_into(
+					image_handle,
+					&resource,
+					D3D12_RESOURCE_STATE_RENDER_TARGET,
+					&mut post_clear_barriers,
+				);
 			}
+		}
+		unsafe {
+			Self::submit_resource_barriers(&command_list, &post_clear_barriers);
+		}
+
+		let mut depth_handle = None;
+		if let Some((_, resource, format, array_layers, layer, load, clear)) = depth_resource {
+			let handle = self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer);
 			if !load {
 				let depth = Self::clear_depth_value(clear);
 				unsafe {
@@ -5965,6 +5991,25 @@ impl Device {
 			}
 		}
 
+		// Complete deferred uploads before collecting barriers. Holding a batch across a copy command
+		// would move an earlier transition past the command that depends on it.
+		for (_, retained_descriptor) in &retained {
+			let resource_sequence = self.frame_index_with_offset(
+				sequence_index as usize,
+				Some(retained_descriptor.frame_offset),
+				self.frames as usize,
+			) as u8;
+			match retained_descriptor.descriptor {
+				WriteData::Buffer { handle, .. } => self.sync_buffer_for_sequence(handle, resource_sequence),
+				WriteData::Image { handle, .. }
+				| WriteData::CombinedImageSampler {
+					image_handle: handle, ..
+				} => self.flush_pending_texture_syncs(command_buffer_handle, Some(handle), Some(resource_sequence)),
+				_ => {}
+			}
+		}
+
+		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
 		for (resource_descriptor, retained_descriptor) in retained {
 			let resource_sequence = self.frame_index_with_offset(
 				sequence_index as usize,
@@ -5974,7 +6019,6 @@ impl Device {
 			match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
 					// Buffer contents can change without changing the retained descriptor or its native heap.
-					self.sync_buffer_for_sequence(handle, resource_sequence);
 					let Some(resource) = self.buffer_resource_for_sequence(handle, resource_sequence) else {
 						continue;
 					};
@@ -5982,11 +6026,11 @@ impl Device {
 						continue;
 					}
 					unsafe {
-						self.transition_tracked_buffer(
-							&command_list,
+						self.transition_tracked_buffer_into(
 							handle,
 							&resource,
 							Self::descriptor_buffer_state(resource_descriptor),
+							&mut barriers,
 						);
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
@@ -5995,16 +6039,15 @@ impl Device {
 				| WriteData::CombinedImageSampler {
 					image_handle: handle, ..
 				} => {
-					self.flush_pending_texture_syncs(command_buffer_handle, Some(handle), Some(resource_sequence));
 					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
 						continue;
 					};
 					unsafe {
-						self.transition_tracked_image(
-							&command_list,
+						self.transition_tracked_image_into(
 							handle,
 							&resource,
 							Self::descriptor_image_state(resource_descriptor),
+							&mut barriers,
 						);
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
@@ -6017,17 +6060,20 @@ impl Device {
 						continue;
 					};
 					unsafe {
-						self.transition_tracked_image(
-							&command_list,
+						self.transition_tracked_image_into(
 							image.into(),
 							&resource,
 							Self::descriptor_image_state(resource_descriptor),
+							&mut barriers,
 						);
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				_ => {}
 			}
+		}
+		unsafe {
+			Self::submit_resource_barriers(&command_list, &barriers);
 		}
 	}
 
@@ -6469,26 +6515,33 @@ impl Device {
 
 			unsafe {
 				// Copy the engine swapchain proxy image into the actual DXGI backbuffer before Present.
-				self.transition_tracked_image(
-					&command_list,
+				let mut copy_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+				self.transition_tracked_image_into(
 					source_image.0,
 					&source_resource,
 					D3D12_RESOURCE_STATE_COPY_SOURCE,
+					&mut copy_barriers,
 				);
-				Self::transition_resource(
-					&command_list,
+				copy_barriers.push(Self::transition_resource_barrier(
 					&destination_resource,
 					D3D12_RESOURCE_STATE_PRESENT,
 					D3D12_RESOURCE_STATE_COPY_DEST,
-				);
+				));
+				Self::submit_resource_barriers(&command_list, &copy_barriers);
 				command_list.CopyResource(&destination_resource, &source_resource);
-				Self::transition_resource(
-					&command_list,
+				let mut present_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+				present_barriers.push(Self::transition_resource_barrier(
 					&destination_resource,
 					D3D12_RESOURCE_STATE_COPY_DEST,
 					D3D12_RESOURCE_STATE_PRESENT,
+				));
+				self.transition_tracked_image_into(
+					source_image.0,
+					&source_resource,
+					D3D12_RESOURCE_STATE_COMMON,
+					&mut present_barriers,
 				);
-				self.transition_tracked_image(&command_list, source_image.0, &source_resource, D3D12_RESOURCE_STATE_COMMON);
+				Self::submit_resource_barriers(&command_list, &present_barriers);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
 			self.texture_copy_count += 1;
@@ -6597,8 +6650,57 @@ impl Device {
 			if self.buffer_needs_cpu_shadow_clear(buffer_handle) {
 				self.clear_buffer_shadow(buffer_handle, sequence_index);
 			}
-			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index);
 		}
+
+		let Some(command_list) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone())
+		else {
+			return;
+		};
+		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
+		let mut clear_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		for &buffer_handle in buffer_handles {
+			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
+				continue;
+			};
+			if buffer.access.intersects(DeviceAccesses::GpuWrite)
+				&& buffer.heap_kind == BufferHeapKind::Default
+				&& buffer.size != 0
+				&& buffer.size % std::mem::size_of::<u32>() == 0
+			{
+				if gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle) {
+					continue;
+				}
+				unsafe {
+					self.transition_tracked_buffer_into(
+						buffer_handle,
+						&buffer.resource,
+						D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						&mut clear_barriers,
+					);
+				}
+				gpu_clear_buffers.push((buffer_handle, buffer.resource));
+			}
+		}
+		unsafe {
+			Self::submit_resource_barriers(&command_list, &clear_barriers);
+		}
+
+		for &buffer_handle in buffer_handles {
+			let batched = gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle);
+			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index, !batched, !batched);
+		}
+
+		let mut completion_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		for (_, resource) in &gpu_clear_buffers {
+			completion_barriers.push(Self::unordered_access_resource_barrier(resource));
+		}
+		unsafe {
+			Self::submit_resource_barriers(&command_list, &completion_barriers);
+		}
+		self.uav_barrier_count += completion_barriers.len();
 	}
 
 	/// Returns whether a buffer clear must update CPU-visible shadow storage.
@@ -6746,6 +6848,8 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
+		transition_before_clear: bool,
+		barrier_after_clear: bool,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -6783,22 +6887,28 @@ impl Device {
 			let desc = Self::raw_buffer_clear_uav_desc(destination_size);
 
 			unsafe {
-				self.transition_tracked_buffer(
-					&command_list,
-					buffer_handle,
-					&destination,
-					D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-				);
+				if transition_before_clear {
+					self.transition_tracked_buffer(
+						&command_list,
+						buffer_handle,
+						&destination,
+						D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+					);
+				}
 				self.device
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 				self.device
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_read_handle);
 				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_read_handle, &destination, &[0, 0, 0, 0], &[]);
-				Self::unordered_access_barrier(&command_list, &destination);
+				if barrier_after_clear {
+					Self::unordered_access_barrier(&command_list, &destination);
+				}
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.uav_barrier_count += 1;
+			if barrier_after_clear {
+				self.uav_barrier_count += 1;
+			}
 			self.buffer_clear_count += 1;
 			return;
 		}
@@ -7195,7 +7305,17 @@ impl Device {
 		before: D3D12_RESOURCE_STATES,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let barrier = D3D12_RESOURCE_BARRIER {
+		let barrier = Self::transition_resource_barrier(resource, before, after);
+		Self::submit_resource_barriers(command_list, &[barrier]);
+	}
+
+	/// Creates a transition barrier so callers can submit independent resource transitions together.
+	fn transition_resource_barrier(
+		resource: &ID3D12Resource,
+		before: D3D12_RESOURCE_STATES,
+		after: D3D12_RESOURCE_STATES,
+	) -> D3D12_RESOURCE_BARRIER {
+		D3D12_RESOURCE_BARRIER {
 			Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
 			Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
 			Anonymous: D3D12_RESOURCE_BARRIER_0 {
@@ -7206,12 +7326,24 @@ impl Device {
 					StateAfter: after,
 				}),
 			},
-		};
-		command_list.ResourceBarrier(&[barrier]);
+		}
+	}
+
+	/// Submits one native call for a group of barriers that share a synchronization boundary.
+	unsafe fn submit_resource_barriers(command_list: &ID3D12GraphicsCommandList, barriers: &[D3D12_RESOURCE_BARRIER]) {
+		if !barriers.is_empty() {
+			command_list.ResourceBarrier(barriers);
+		}
 	}
 
 	unsafe fn unordered_access_barrier(command_list: &ID3D12GraphicsCommandList, resource: &ID3D12Resource) {
-		let barrier = D3D12_RESOURCE_BARRIER {
+		let barrier = Self::unordered_access_resource_barrier(resource);
+		Self::submit_resource_barriers(command_list, &[barrier]);
+	}
+
+	/// Creates a resource-specific UAV barrier for a caller-owned synchronization batch.
+	fn unordered_access_resource_barrier(resource: &ID3D12Resource) -> D3D12_RESOURCE_BARRIER {
+		D3D12_RESOURCE_BARRIER {
 			Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
 			Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
 			Anonymous: D3D12_RESOURCE_BARRIER_0 {
@@ -7219,8 +7351,7 @@ impl Device {
 					pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
 				}),
 			},
-		};
-		command_list.ResourceBarrier(&[barrier]);
+		}
 	}
 
 	unsafe fn unordered_access_barrier_all(command_list: &ID3D12GraphicsCommandList) {
@@ -7281,6 +7412,19 @@ impl Device {
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
+		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		self.transition_tracked_buffer_into(_buffer, resource, after, &mut barriers);
+		Self::submit_resource_barriers(command_list, &barriers);
+	}
+
+	/// Appends a tracked buffer transition to a caller-owned synchronization batch.
+	unsafe fn transition_tracked_buffer_into(
+		&mut self,
+		_buffer: BaseBufferHandle,
+		resource: &ID3D12Resource,
+		after: D3D12_RESOURCE_STATES,
+		barriers: &mut SmallVec<[D3D12_RESOURCE_BARRIER; 32]>,
+	) {
 		let key = Self::native_resource_key(resource);
 		let heap_kind = self
 			.buffer_heap_kind_for_resource(_buffer, resource)
@@ -7298,12 +7442,12 @@ impl Device {
 			.unwrap_or_else(|| Self::initial_buffer_resource_state(heap_kind));
 		if before == after {
 			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
-				Self::unordered_access_barrier(command_list, resource);
+				barriers.push(Self::unordered_access_resource_barrier(resource));
 				self.uav_barrier_count += 1;
 			}
 			return;
 		}
-		Self::transition_resource(command_list, resource, before, after);
+		barriers.push(Self::transition_resource_barrier(resource, before, after));
 		self.buffer_states.insert(key, after);
 	}
 
@@ -7314,16 +7458,29 @@ impl Device {
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
+		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		self.transition_tracked_image_into(_image, resource, after, &mut barriers);
+		Self::submit_resource_barriers(command_list, &barriers);
+	}
+
+	/// Appends a tracked image transition to a caller-owned synchronization batch.
+	unsafe fn transition_tracked_image_into(
+		&mut self,
+		_image: crate::BaseImageHandle,
+		resource: &ID3D12Resource,
+		after: D3D12_RESOURCE_STATES,
+		barriers: &mut SmallVec<[D3D12_RESOURCE_BARRIER; 32]>,
+	) {
 		let key = Self::native_resource_key(resource);
 		let before = self.image_states.get(&key).copied().unwrap_or(D3D12_RESOURCE_STATE_COMMON);
 		if before == after {
 			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
-				Self::unordered_access_barrier(command_list, resource);
+				barriers.push(Self::unordered_access_resource_barrier(resource));
 				self.uav_barrier_count += 1;
 			}
 			return;
 		}
-		Self::transition_resource(command_list, resource, before, after);
+		barriers.push(Self::transition_resource_barrier(resource, before, after));
 		self.image_states.insert(key, after);
 	}
 
@@ -7716,6 +7873,19 @@ impl Device {
 		clear: crate::ClearValue,
 		sequence_index: u8,
 	) {
+		self.record_image_clear_with_final_state(command_buffer_handle, image_handle, clear, sequence_index, None, true);
+	}
+
+	/// Records an image clear and optionally transitions directly to the caller's next use.
+	fn record_image_clear_with_final_state(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		image_handle: ImageHandle,
+		clear: crate::ClearValue,
+		sequence_index: u8,
+		final_state: Option<D3D12_RESOURCE_STATES>,
+		barrier_after_clear: bool,
+	) {
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -7741,12 +7911,17 @@ impl Device {
 				command_buffer_handle,
 				&command_list,
 				image_handle.0,
-				destination,
+				destination.clone(),
 				image_format,
 				extent,
 				clear,
 				sequence_index,
 			);
+			if let Some(final_state) = final_state {
+				unsafe {
+					self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
+				}
+			}
 			return;
 		};
 		let Some((heap, descriptor_offset)) = self.reserve_staged_descriptor_range(command_buffer_handle, false, 1) else {
@@ -7754,12 +7929,17 @@ impl Device {
 				command_buffer_handle,
 				&command_list,
 				image_handle.0,
-				destination,
+				destination.clone(),
 				image_format,
 				extent,
 				clear,
 				sequence_index,
 			);
+			if let Some(final_state) = final_state {
+				unsafe {
+					self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
+				}
+			}
 			return;
 		};
 		let Some(cpu_heap) =
@@ -7769,12 +7949,17 @@ impl Device {
 				command_buffer_handle,
 				&command_list,
 				image_handle.0,
-				destination,
+				destination.clone(),
 				image_format,
 				extent,
 				clear,
 				sequence_index,
 			);
+			if let Some(final_state) = final_state {
+				unsafe {
+					self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
+				}
+			}
 			return;
 		};
 		let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
@@ -7783,12 +7968,14 @@ impl Device {
 		let desc = Self::texture_uav_desc(format, array_layers);
 
 		unsafe {
-			self.transition_tracked_image(
-				&command_list,
-				image_handle.0,
-				&destination,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			);
+			if barrier_after_clear {
+				self.transition_tracked_image(
+					&command_list,
+					image_handle.0,
+					&destination,
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+				);
+			}
 			self.device
 				.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 			self.device
@@ -7818,11 +8005,18 @@ impl Device {
 				}
 				crate::ClearValue::Depth(_) => {}
 			}
-			Self::unordered_access_barrier(&command_list, &destination);
+			if let Some(final_state) = final_state {
+				// The transition orders the UAV clear and makes a separate UAV barrier redundant.
+				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
+			} else if barrier_after_clear {
+				Self::unordered_access_barrier(&command_list, &destination);
+			}
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.uav_barrier_count += 1;
+		if final_state.is_none() && barrier_after_clear {
+			self.uav_barrier_count += 1;
+		}
 		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 

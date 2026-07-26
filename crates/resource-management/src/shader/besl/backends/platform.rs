@@ -173,6 +173,7 @@ impl Generator {
 							slot: binding.slot,
 							kind: binding.kind,
 							count: binding.count,
+							buffer_stride: binding.buffer_stride,
 							read: binding.read,
 							write: binding.write,
 						})

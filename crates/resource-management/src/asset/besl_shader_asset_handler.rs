@@ -436,6 +436,7 @@ fn prepare_shader(
 				binding.slot,
 				binding.kind,
 				binding.count,
+				binding.buffer_stride,
 				binding.read,
 				binding.write,
 			)
@@ -467,12 +468,30 @@ fn compile_shader(
 	let semantic_bindings = interface
 		.bindings
 		.iter()
-		.map(|binding| (binding.slot, binding.kind, binding.count, binding.read, binding.write))
+		.map(|binding| {
+			(
+				binding.slot,
+				binding.kind,
+				binding.count,
+				binding.buffer_stride,
+				binding.read,
+				binding.write,
+			)
+		})
 		.collect::<Vec<_>>();
 	let compiled_bindings = compiled
 		.bindings()
 		.iter()
-		.map(|binding| (binding.slot, binding.kind, binding.count, binding.read, binding.write))
+		.map(|binding| {
+			(
+				binding.slot,
+				binding.kind,
+				binding.count,
+				binding.buffer_stride,
+				binding.read,
+				binding.write,
+			)
+		})
 		.collect::<Vec<_>>();
 	if compiled_bindings != semantic_bindings {
 		return Err(
@@ -625,7 +644,7 @@ mod tests {
 					stage: settings.stage,
 					interface: ShaderInterface {
 						workgroup_size: settings.workgroup_size,
-						bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, false, true)],
+						bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
 					},
 					artifact: ShaderArtifact::Spirv,
 					source_hash,

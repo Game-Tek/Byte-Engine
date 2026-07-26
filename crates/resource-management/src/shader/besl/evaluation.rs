@@ -7,6 +7,7 @@ pub struct BindingUsage {
 	pub kind: BindingKind,
 	pub count: u32,
 	pub slot: u32,
+	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
 }
@@ -36,17 +37,34 @@ pub enum TextureView {
 
 /// The `BindingRecord` trait keeps binding discovery independent of evaluated and compiled metadata representations.
 pub(crate) trait BindingRecord: Sized {
-	fn from_usage(name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self;
+	fn from_usage(
+		name: &str,
+		kind: BindingKind,
+		count: u32,
+		slot: u32,
+		buffer_stride: Option<u32>,
+		read: bool,
+		write: bool,
+	) -> Self;
 	fn usage(&self) -> (u32, BindingKind, u32, bool, bool);
 }
 
 impl BindingRecord for BindingUsage {
-	fn from_usage(name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self {
+	fn from_usage(
+		name: &str,
+		kind: BindingKind,
+		count: u32,
+		slot: u32,
+		buffer_stride: Option<u32>,
+		read: bool,
+		write: bool,
+	) -> Self {
 		Self {
 			name: name.to_string(),
 			kind,
 			count,
 			slot,
+			buffer_stride,
 			read,
 			write,
 		}
@@ -61,6 +79,242 @@ impl BindingRecord for BindingUsage {
 struct BindingCollectionState {
 	visited: HashSet<besl::NodeReference>,
 	error: Option<String>,
+}
+
+/// The `StorageLayoutTarget` enum identifies the storage rules used by the active shader backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StorageLayoutTarget {
+	Hlsl,
+	Msl,
+	GlslScalar,
+}
+
+impl StorageLayoutTarget {
+	/// Selects the layout model that matches the backend compiled for this target.
+	const fn current() -> Self {
+		if cfg!(target_vendor = "apple") {
+			Self::Msl
+		} else if cfg!(target_os = "windows") {
+			Self::Hlsl
+		} else {
+			Self::GlslScalar
+		}
+	}
+}
+
+/// The `StorageLayout` struct records the byte size and alignment of one emitted shader type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StorageLayout {
+	size: usize,
+	alignment: usize,
+}
+
+/// Reflects the byte stride used when one storage-buffer element is addressed.
+fn reflected_storage_buffer_stride(members: &[besl::NodeReference]) -> Result<u32, String> {
+	reflected_storage_buffer_stride_for_target(members, StorageLayoutTarget::current())
+}
+
+/// Reflects one storage-buffer element using the selected backend's emitted layout.
+fn reflected_storage_buffer_stride_for_target(
+	members: &[besl::NodeReference],
+	target: StorageLayoutTarget,
+) -> Result<u32, String> {
+	if members.is_empty() {
+		return Err(
+			"Empty storage-buffer layout. The most likely cause is that the binding type declares no addressable members."
+				.to_string(),
+		);
+	}
+
+	let mut visiting = HashSet::new();
+	// A single array member is lowered as a linear element buffer. Other
+	// layouts retain their wrapper struct and therefore use the wrapper size.
+	let size = if let [member] = members {
+		let member = member.borrow();
+		match member.node() {
+			besl::Nodes::Member {
+				r#type, count: Some(_), ..
+			} => {
+				let element = reflected_storage_member_type_layout(r#type, target, true, true, &mut visiting)?;
+				checked_align_up(element.size, element.alignment)?
+			}
+			_ => reflected_storage_members_layout(members, target, true, &mut visiting)?.size,
+		}
+	} else {
+		reflected_storage_members_layout(members, target, true, &mut visiting)?.size
+	};
+
+	if size == 0 {
+		return Err(
+			"Zero storage-buffer stride. The most likely cause is that the binding contains a type without a storage representation."
+				.to_string(),
+		);
+	}
+	u32::try_from(size).map_err(|_| {
+		"Storage-buffer stride exceeds u32. The most likely cause is that a reflected element contains an excessively large fixed array."
+			.to_string()
+	})
+}
+
+/// Computes the aligned layout of all members in one emitted storage struct.
+fn reflected_storage_members_layout(
+	members: &[besl::NodeReference],
+	target: StorageLayoutTarget,
+	direct_binding_members: bool,
+	visiting: &mut HashSet<besl::NodeReference>,
+) -> Result<StorageLayout, String> {
+	let mut size = 0usize;
+	let mut alignment = 1usize;
+	for member in members {
+		let member = member.borrow();
+		let besl::Nodes::Member { name, r#type, count } = member.node() else {
+			return Err(
+				"Unsupported storage-buffer member. The most likely cause is that a buffer layout contains a node other than a named member."
+					.to_string(),
+			);
+		};
+		let element = reflected_storage_member_type_layout(r#type, target, direct_binding_members, count.is_some(), visiting)?;
+		let member_alignment = element.alignment;
+		let element_stride = checked_align_up(element.size, member_alignment)?;
+		let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
+		let member_size = element_stride.checked_mul(count).ok_or_else(|| {
+			format!(
+				"Storage-buffer member '{name}' is too large. The most likely cause is that its fixed array count overflows the reflected layout."
+			)
+		})?;
+		size = checked_align_up(size, member_alignment)?;
+		size = size.checked_add(member_size).ok_or_else(|| {
+			format!(
+				"Storage-buffer layout overflows at member '{name}'. The most likely cause is that the reflected members exceed addressable memory."
+			)
+		})?;
+		alignment = alignment.max(member_alignment);
+	}
+	Ok(StorageLayout {
+		size: checked_align_up(size, alignment)?,
+		alignment,
+	})
+}
+
+/// Applies direct Metal buffer-member packing before reflecting the member type.
+fn reflected_storage_member_type_layout(
+	r#type: &besl::NodeReference,
+	target: StorageLayoutTarget,
+	direct_binding_member: bool,
+	array_member: bool,
+	visiting: &mut HashSet<besl::NodeReference>,
+) -> Result<StorageLayout, String> {
+	let packed_msl_vector = target == StorageLayoutTarget::Msl
+		&& direct_binding_member
+		&& (array_member || matches!(r#type.borrow().get_name(), Some("vec2u16" | "vec4u16")));
+	reflected_storage_type_layout(r#type, target, packed_msl_vector, visiting)
+}
+
+/// Returns the native emitted storage layout for one BESL value type.
+fn reflected_storage_type_layout(
+	r#type: &besl::NodeReference,
+	target: StorageLayoutTarget,
+	packed_msl_vector: bool,
+	visiting: &mut HashSet<besl::NodeReference>,
+) -> Result<StorageLayout, String> {
+	let type_borrow = r#type.borrow();
+	let type_name = type_borrow.get_name().unwrap_or("unknown");
+	if let Some(layout) = primitive_storage_layout(type_name, target, packed_msl_vector) {
+		return Ok(layout);
+	}
+
+	let fields = match type_borrow.node() {
+		besl::Nodes::Struct { fields, .. } if !fields.is_empty() => fields.clone(),
+		_ => {
+			return Err(format!(
+				"Unsupported storage-buffer type '{type_name}'. The most likely cause is that the binding contains a resource handle or a type without a packed storage representation."
+			));
+		}
+	};
+	let type_name = type_name.to_string();
+	drop(type_borrow);
+
+	if !visiting.insert(r#type.clone()) {
+		return Err(format!(
+			"Recursive storage-buffer type '{type_name}'. The most likely cause is that a shader struct contains itself."
+		));
+	}
+	// Nested Metal structs use their native member types. Only members written
+	// directly into a generated binding wrapper receive packed vector aliases.
+	let layout = reflected_storage_members_layout(&fields, target, false, visiting);
+	visiting.remove(r#type);
+	layout
+}
+
+/// Returns the backend layout for one built-in BESL storage type.
+fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed_msl_vector: bool) -> Option<StorageLayout> {
+	let (size, alignment) = match target {
+		StorageLayoutTarget::Hlsl => match type_name {
+			// HLSL lowers narrow scalar values to 32-bit uint values. Its
+			// structured-buffer vectors and row-major matrices use scalar alignment.
+			"bool" | "u8" | "u16" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"vec2u16" => (4, 2),
+			"vec4u16" => (8, 2),
+			"vec2i" | "vec2u" | "vec2f" => (8, 4),
+			"vec3u" | "vec3f" => (12, 4),
+			"vec4u" | "vec4f" => (16, 4),
+			"mat2f" => (16, 4),
+			"mat3f" => (36, 4),
+			"mat4f" => (64, 4),
+			"mat4x3f" => (48, 4),
+			_ => return None,
+		},
+		StorageLayoutTarget::Msl => match type_name {
+			"bool" | "u8" => (1, 1),
+			"u16" => (2, 2),
+			"u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"vec2u16" => (4, if packed_msl_vector { 2 } else { 4 }),
+			"vec4u16" => (8, if packed_msl_vector { 2 } else { 8 }),
+			"vec2f" => (8, if packed_msl_vector { 4 } else { 8 }),
+			"vec2i" | "vec2u" => (8, 8),
+			"vec3f" => {
+				if packed_msl_vector {
+					(12, 4)
+				} else {
+					(16, 16)
+				}
+			}
+			"vec3u" => (16, 16),
+			"vec4u" | "vec4f" => (16, 16),
+			"mat2f" => (16, 8),
+			"mat3f" => (48, 16),
+			"mat4f" | "mat4x3f" => (64, 16),
+			_ => return None,
+		},
+		StorageLayoutTarget::GlslScalar => match type_name {
+			"u8" => (1, 1),
+			"u16" => (2, 2),
+			"bool" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"vec2u16" => (4, 2),
+			"vec4u16" => (8, 2),
+			"vec2i" | "vec2u" | "vec2f" => (8, 4),
+			"vec3u" | "vec3f" => (12, 4),
+			"vec4u" | "vec4f" => (16, 4),
+			"mat2f" => (16, 4),
+			"mat3f" => (36, 4),
+			"mat4f" => (64, 4),
+			"mat4x3f" => (48, 4),
+			_ => return None,
+		},
+	};
+	Some(StorageLayout { size, alignment })
+}
+
+/// Rounds a reflected byte offset up without allowing arithmetic overflow.
+fn checked_align_up(value: usize, alignment: usize) -> Result<usize, String> {
+	let remainder = value % alignment;
+	if remainder == 0 {
+		return Ok(value);
+	}
+	value.checked_add(alignment - remainder).ok_or_else(|| {
+		"Storage-buffer alignment overflow. The most likely cause is that the reflected layout exceeds addressable memory."
+			.to_string()
+	})
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,16 +492,28 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 			r#type,
 			count,
 		} => {
-			let kind = match r#type {
-				besl::BindingTypes::Buffer { .. } => BindingKind::StorageBuffer,
-				besl::BindingTypes::CombinedImageSampler { format } => BindingKind::CombinedImageSampler {
-					view: match format.as_str() {
-						"Texture3D" => TextureView::Texture3D,
-						"ArrayTexture2D" => TextureView::Texture2DArray,
-						_ => TextureView::Texture2D,
+			let (kind, buffer_stride) = match r#type {
+				besl::BindingTypes::Buffer { members } => {
+					let stride = match reflected_storage_buffer_stride(members) {
+						Ok(stride) => stride,
+						Err(error) => {
+							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));
+							return;
+						}
+					};
+					(BindingKind::StorageBuffer, Some(stride))
+				}
+				besl::BindingTypes::CombinedImageSampler { format } => (
+					BindingKind::CombinedImageSampler {
+						view: match format.as_str() {
+							"Texture3D" => TextureView::Texture3D,
+							"ArrayTexture2D" => TextureView::Texture2DArray,
+							_ => TextureView::Texture2D,
+						},
 					},
-				},
-				besl::BindingTypes::Image { .. } => BindingKind::StorageImage,
+					None,
+				),
+				besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
 			};
 			let count = count.map_or(1, |count| count.get());
 			if bindings.iter().any(|record| record.usage().0 == *slot) {
@@ -255,7 +521,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					"Duplicate resource declaration at slot {slot}. The most likely cause is that distinct binding nodes reuse one flat slot instead of sharing the same binding reference."
 				));
 			} else {
-				bindings.push(T::from_usage(name, kind, count, *slot, *read, *write));
+				bindings.push(T::from_usage(name, kind, count, *slot, buffer_stride, *read, *write));
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {
@@ -727,6 +993,15 @@ mod tests {
 	use super::*;
 	use crate::shader::generator;
 
+	fn assert_builtin_layout(root: &besl::Node, target: StorageLayoutTarget, type_name: &str, expected: StorageLayout) {
+		let r#type = root
+			.get_child(type_name)
+			.unwrap_or_else(|| panic!("Expected built-in type '{type_name}'"));
+		let layout = reflected_storage_type_layout(&r#type, target, false, &mut HashSet::new())
+			.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
+		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
+	}
+
 	#[test]
 	fn binding_metadata_is_sorted_and_classified() {
 		let main = generator::tests::bindings();
@@ -741,6 +1016,7 @@ mod tests {
 					binding.kind,
 					binding.count,
 					binding.slot,
+					binding.buffer_stride,
 					binding.read,
 					binding.write,
 				)
@@ -750,8 +1026,8 @@ mod tests {
 		assert_eq!(
 			bindings,
 			vec![
-				("buff", BindingKind::StorageBuffer, 1, 0, true, true),
-				("image", BindingKind::StorageImage, 1, 1, false, true),
+				("buff", BindingKind::StorageBuffer, 1, 0, Some(4), true, true),
+				("image", BindingKind::StorageImage, 1, 1, None, false, true),
 				(
 					"texture",
 					BindingKind::CombinedImageSampler {
@@ -759,11 +1035,369 @@ mod tests {
 					},
 					1,
 					2,
+					None,
 					true,
 					false,
 				),
 			]
 		);
+	}
+
+	#[test]
+	fn storage_buffer_strides_cover_flattened_arrays_and_wrapper_structs() {
+		let script = "main: fn () -> void { positions; indices; lighting; }";
+		let mut root = besl::Node::root();
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
+		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let u8_type = root.get_child("u8").expect("Expected u8");
+		let u16_type = root.get_child("u16").expect("Expected u16");
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		let light = root.add_child(
+			besl::Node::r#struct(
+				"Light",
+				vec![
+					besl::Node::member("position", vec3f.clone()).into(),
+					besl::Node::member("color", vec3f.clone()).into(),
+					besl::Node::member("direction", vec3f.clone()).into(),
+					besl::Node::member("cone_cosines", vec2f).into(),
+					besl::Node::member("light_type", u8_type).into(),
+					besl::Node::array("cascades", u32_type.clone(), 8),
+				],
+			)
+			.into(),
+		);
+		root.add_children(vec![
+			besl::Node::binding(
+				"positions",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("positions", vec3f, 16)],
+				},
+				0,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"indices",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("indices", u16_type, 16)],
+				},
+				1,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"lighting",
+				besl::BindingTypes::Buffer {
+					members: vec![
+						besl::Node::member("light_count", u32_type).into(),
+						besl::Node::array("lights", light, 16),
+					],
+				},
+				2,
+				true,
+				false,
+			)
+			.into(),
+		]);
+
+		let program = besl::compile_to_besl(script, Some(root)).expect("Expected stride-reflection shader to link");
+		let evaluation = ProgramEvaluation::from_program(&program).expect("Expected storage-buffer strides to reflect");
+		let strides = evaluation
+			.bindings()
+			.iter()
+			.map(|binding| binding.buffer_stride)
+			.collect::<Vec<_>>();
+
+		let expected = if cfg!(target_vendor = "apple") {
+			vec![Some(12), Some(2), Some(1552)]
+		} else if cfg!(target_os = "windows") {
+			vec![Some(12), Some(4), Some(1284)]
+		} else {
+			vec![Some(12), Some(2), Some(1284)]
+		};
+		assert_eq!(strides, expected);
+	}
+
+	#[test]
+	fn storage_layout_target_matches_the_compiled_backend() {
+		#[cfg(target_vendor = "apple")]
+		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Msl);
+
+		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Hlsl);
+
+		#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
+		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::GlslScalar);
+	}
+
+	#[test]
+	fn primitive_storage_layouts_follow_each_emitted_backend_type() {
+		let root = besl::Node::root();
+
+		for (type_name, size, alignment) in [
+			("u8", 4, 4),
+			("u16", 4, 4),
+			("u32", 4, 4),
+			("vec2u16", 4, 2),
+			("vec4u16", 8, 2),
+			("vec3f", 12, 4),
+		] {
+			assert_builtin_layout(&root, StorageLayoutTarget::Hlsl, type_name, StorageLayout { size, alignment });
+		}
+
+		for (type_name, size, alignment) in [
+			("u8", 1, 1),
+			("u16", 2, 2),
+			("u32", 4, 4),
+			("vec2u16", 4, 4),
+			("vec4u16", 8, 8),
+			("vec3f", 16, 16),
+		] {
+			assert_builtin_layout(&root, StorageLayoutTarget::Msl, type_name, StorageLayout { size, alignment });
+		}
+
+		for (type_name, size, alignment) in [
+			("u8", 1, 1),
+			("u16", 2, 2),
+			("u32", 4, 4),
+			("vec2u16", 4, 2),
+			("vec4u16", 8, 2),
+			("vec3f", 12, 4),
+		] {
+			assert_builtin_layout(
+				&root,
+				StorageLayoutTarget::GlslScalar,
+				type_name,
+				StorageLayout { size, alignment },
+			);
+		}
+	}
+
+	#[test]
+	fn flattened_narrow_scalar_arrays_use_the_emitted_element_width() {
+		let root = besl::Node::root();
+		let u8_type = root.get_child("u8").expect("Expected u8");
+		let u16_type = root.get_child("u16").expect("Expected u16");
+		let bytes = vec![besl::Node::array("bytes", u8_type, 8)];
+		let words = vec![besl::Node::array("words", u16_type, 8)];
+
+		for (target, byte_stride, word_stride) in [
+			(StorageLayoutTarget::Hlsl, 4, 4),
+			(StorageLayoutTarget::Msl, 1, 2),
+			(StorageLayoutTarget::GlslScalar, 1, 2),
+		] {
+			assert_eq!(reflected_storage_buffer_stride_for_target(&bytes, target), Ok(byte_stride));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&words, target), Ok(word_stride));
+		}
+	}
+
+	#[test]
+	fn matrix_storage_layouts_cover_all_besl_matrix_types() {
+		let mut root = besl::Node::root();
+		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
+		let mat2f = root.add_child(
+			besl::Node::r#struct(
+				"mat2f",
+				vec![
+					besl::Node::member("x", vec2f.clone()).into(),
+					besl::Node::member("y", vec2f).into(),
+				],
+			)
+			.into(),
+		);
+		let mat3f = root.add_child(
+			besl::Node::r#struct(
+				"mat3f",
+				vec![
+					besl::Node::member("x", vec3f.clone()).into(),
+					besl::Node::member("y", vec3f.clone()).into(),
+					besl::Node::member("z", vec3f).into(),
+				],
+			)
+			.into(),
+		);
+		let matrices = [
+			("mat2f", mat2f),
+			("mat3f", mat3f),
+			("mat4f", root.get_child("mat4f").expect("Expected mat4f")),
+			("mat4x3f", root.get_child("mat4x3f").expect("Expected mat4x3f")),
+		];
+
+		for (target, expected) in [
+			(StorageLayoutTarget::Hlsl, [(16, 4), (36, 4), (64, 4), (48, 4)]),
+			(StorageLayoutTarget::Msl, [(16, 8), (48, 16), (64, 16), (64, 16)]),
+			(StorageLayoutTarget::GlslScalar, [(16, 4), (36, 4), (64, 4), (48, 4)]),
+		] {
+			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
+				let layout = reflected_storage_type_layout(matrix, target, false, &mut HashSet::new())
+					.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
+				assert_eq!(layout, StorageLayout { size, alignment });
+			}
+		}
+	}
+
+	#[test]
+	fn nested_struct_arrays_apply_member_and_tail_alignment() {
+		let mut root = besl::Node::root();
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
+		let u8_type = root.get_child("u8").expect("Expected u8");
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		let mixed = root.add_child(
+			besl::Node::r#struct(
+				"Mixed",
+				vec![
+					besl::Node::member("position", vec3f.clone()).into(),
+					besl::Node::member("tag", u8_type).into(),
+				],
+			)
+			.into(),
+		);
+		let wrapper = vec![
+			besl::Node::array("items", mixed, 2),
+			besl::Node::member("tail", u32_type).into(),
+		];
+		let scalar_position = vec![besl::Node::member("position", vec3f.clone()).into()];
+		let flattened_positions = vec![besl::Node::array("positions", vec3f, 8)];
+
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Hlsl),
+			Ok(36)
+		);
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Msl),
+			Ok(80)
+		);
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::GlslScalar),
+			Ok(36)
+		);
+
+		// Metal emits packed_float3 only for the direct array member. Direct
+		// scalar members and fields nested inside Mixed retain native float3.
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Hlsl),
+			Ok(12)
+		);
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Msl),
+			Ok(16)
+		);
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::GlslScalar),
+			Ok(12)
+		);
+		for target in [
+			StorageLayoutTarget::Hlsl,
+			StorageLayoutTarget::Msl,
+			StorageLayoutTarget::GlslScalar,
+		] {
+			assert_eq!(
+				reflected_storage_buffer_stride_for_target(&flattened_positions, target),
+				Ok(12)
+			);
+		}
+	}
+
+	#[test]
+	fn visibility_storage_structs_match_the_backend_abi() {
+		let mut root = besl::Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32");
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
+		let mat4f = root.get_child("mat4f").expect("Expected mat4f");
+		let mat4x3f = root.get_child("mat4x3f").expect("Expected mat4x3f");
+
+		let mesh = root.add_child(
+			besl::Node::r#struct(
+				"Mesh",
+				vec![
+					besl::Node::member("model", mat4x3f).into(),
+					besl::Node::member("material_index", u32_type.clone()).into(),
+					besl::Node::member("base_vertex_index", u32_type.clone()).into(),
+					besl::Node::member("base_primitive_index", u32_type.clone()).into(),
+					besl::Node::member("base_triangle_index", u32_type.clone()).into(),
+					besl::Node::member("base_meshlet_index", u32_type.clone()).into(),
+					besl::Node::member("meshlet_count", u32_type.clone()).into(),
+					besl::Node::member("skinned_base_vertex_index", u32_type.clone()).into(),
+					besl::Node::member("padding0", u32_type.clone()).into(),
+				],
+			)
+			.into(),
+		);
+		let view = root.add_child(
+			besl::Node::r#struct(
+				"View",
+				vec![
+					besl::Node::member("view", mat4f.clone()).into(),
+					besl::Node::member("projection", mat4f.clone()).into(),
+					besl::Node::member("view_projection", mat4f.clone()).into(),
+					besl::Node::member("inverse_view", mat4f.clone()).into(),
+					besl::Node::member("inverse_projection", mat4f.clone()).into(),
+					besl::Node::member("inverse_view_projection", mat4f).into(),
+					besl::Node::member("fov", vec2f.clone()).into(),
+					besl::Node::member("near", f32_type.clone()).into(),
+					besl::Node::member("far", f32_type).into(),
+				],
+			)
+			.into(),
+		);
+		let meshlet = root.add_child(
+			besl::Node::r#struct(
+				"Meshlet",
+				vec![
+					besl::Node::member("primitive_offset", u32_type.clone()).into(),
+					besl::Node::member("triangle_offset", u32_type.clone()).into(),
+					besl::Node::member("primitive_count", u32_type.clone()).into(),
+					besl::Node::member("triangle_count", u32_type.clone()).into(),
+					besl::Node::member("center_radius", vec4f.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", vec4f.clone()).into(),
+					besl::Node::member("cone_axis", vec4f.clone()).into(),
+				],
+			)
+			.into(),
+		);
+		let light = root.add_child(
+			besl::Node::r#struct(
+				"Light",
+				vec![
+					besl::Node::member("position", vec4f.clone()).into(),
+					besl::Node::member("color", vec4f.clone()).into(),
+					besl::Node::member("direction", vec4f).into(),
+					besl::Node::member("cone_cosines", vec2f).into(),
+					besl::Node::member("type", u32_type.clone()).into(),
+					besl::Node::array("cascades", u32_type.clone(), 8),
+					besl::Node::member("_padding", u32_type.clone()).into(),
+				],
+			)
+			.into(),
+		);
+
+		let mesh_buffer = vec![besl::Node::array("meshes", mesh, 1024)];
+		let view_buffer = vec![besl::Node::array("views", view, 8)];
+		let meshlet_buffer = vec![besl::Node::array("meshlets", meshlet, 1024)];
+		let lighting_buffer = vec![
+			besl::Node::member("light_count", u32_type.clone()).into(),
+			besl::Node::array("_light_count_padding", u32_type, 3),
+			besl::Node::array("lights", light, 16),
+		];
+
+		for (target, mesh_stride) in [
+			(StorageLayoutTarget::Hlsl, 80),
+			(StorageLayoutTarget::Msl, 96),
+			(StorageLayoutTarget::GlslScalar, 80),
+		] {
+			assert_eq!(
+				reflected_storage_buffer_stride_for_target(&mesh_buffer, target),
+				Ok(mesh_stride)
+			);
+			assert_eq!(reflected_storage_buffer_stride_for_target(&view_buffer, target), Ok(400));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&meshlet_buffer, target), Ok(64));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1552));
+		}
 	}
 
 	#[test]

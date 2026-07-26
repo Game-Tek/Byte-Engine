@@ -20,12 +20,14 @@ pub struct CompiledShaderBinding {
 	pub slot: u32,
 	pub kind: BindingKind,
 	pub count: u32,
+	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl CompiledShaderBinding {
-	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+	/// Builds one validated compiled resource requirement.
+	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
 		assert!(
 			count > 0,
 			"Invalid resource count. The most likely cause is that a compiled shader resource was declared with an empty array."
@@ -34,10 +36,24 @@ impl CompiledShaderBinding {
 			slot.checked_add(count).is_some(),
 			"Invalid resource slot range. The most likely cause is that a compiled shader resource array extends beyond the flat slot space."
 		);
+		match (kind, buffer_stride) {
+			(BindingKind::StorageBuffer, Some(stride)) => assert!(
+				stride > 0,
+				"Invalid storage-buffer stride. The most likely cause is that compiled reflection produced a zero-byte element."
+			),
+			(BindingKind::StorageBuffer, None) => panic!(
+				"Missing storage-buffer stride. The most likely cause is that compiled reflection dropped the element layout."
+			),
+			(_, Some(_)) => panic!(
+				"Unexpected buffer stride. The most likely cause is that compiled reflection attached buffer metadata to a non-buffer resource."
+			),
+			(_, None) => {}
+		}
 		Self {
 			slot,
 			kind,
 			count,
+			buffer_stride,
 			read,
 			write,
 		}
@@ -674,7 +690,7 @@ pub mod tests {
 	#[test]
 	#[should_panic(expected = "Invalid resource slot range")]
 	fn compiled_shader_binding_rejects_flat_slot_overflow() {
-		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, Some(4), true, false);
 	}
 
 	#[test]

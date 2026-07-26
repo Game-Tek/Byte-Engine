@@ -10,8 +10,8 @@ pub struct VisibilitySceneManager {
 	/// Per-instance mesh data buffer holding transforms and material indices for this scene.
 	pub(crate) meshes_data_buffer:
 		ghi::DynamicBufferHandle<[ShaderMesh; crate::rendering::pipelines::visibility::MAX_INSTANCES]>, // Using crate::rendering::pipelines::visibility::MAX_INSTANCES to avoid hardcoding MAX_INSTANCES if not exported
-	/// Buffer containing lighting data for this scene.
-	pub(crate) light_data_buffer: ghi::BufferHandle<LightingData>,
+	/// Frame-local buffer containing lighting data for this scene.
+	pub(crate) light_data_buffer: ghi::DynamicBufferHandle<LightingData>,
 	/// Lights in the scene.
 	pub(crate) lights: StableVec<(Handle, Lights)>,
 	/// Information about the current render.
@@ -50,7 +50,7 @@ impl VisibilitySceneManager {
 
 	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
 	pub(crate) fn write_light_data(&self, frame: &mut ghi::implementation::Frame, shadow_light_index: Option<usize>) {
-		let lighting_data = frame.get_mut_buffer_slice(self.light_data_buffer);
+		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.light_data_buffer);
 		let light_count = self.lights.len().min(MAX_LIGHTS);
 
 		if self.lights.len() > MAX_LIGHTS {
@@ -59,6 +59,8 @@ impl VisibilitySceneManager {
 			);
 		}
 
+		// Rewrite the complete record so recycled frame sequences cannot retain stale counts, lights, or padding.
+		*lighting_data = LightingData::default();
 		lighting_data.count = light_count as u32;
 
 		for (index, (_, light)) in self.lights.iter().take(light_count).enumerate() {
@@ -85,6 +87,7 @@ impl VisibilitySceneManager {
 				cone_cosines: [light.inner_angle.cos(), light.outer_angle.cos()],
 				light_type: 1,
 				cascades: [0; 8],
+				_padding: 0,
 			},
 			Lights::Direction(light) => LightData {
 				position: light.direction.into(),
@@ -93,6 +96,7 @@ impl VisibilitySceneManager {
 				cone_cosines: [0.0; 2],
 				light_type: 68,
 				cascades,
+				_padding: 0,
 			},
 			Lights::Point(light) => LightData {
 				position: light.position.into(),
@@ -101,6 +105,7 @@ impl VisibilitySceneManager {
 				cone_cosines: [0.0; 2],
 				light_type: 0,
 				cascades: [0; 8],
+				_padding: 0,
 			},
 		}
 	}
@@ -175,7 +180,6 @@ mod tests {
 	}
 }
 
-use ghi::BufferHandle;
 use ghi::DescriptorSetHandle;
 use ghi::DynamicBufferHandle;
 use ghi::Frame as _;

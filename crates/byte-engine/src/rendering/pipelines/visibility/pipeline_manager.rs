@@ -19,8 +19,10 @@ struct EnvironmentTexture {
 /// See the [visibility render-model guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering/render-models/visibility)
 /// for its frame stages, resource ownership, and material evaluation path.
 pub struct VisibilityPipelineManager {
-	/// Materials data buffer shared across all scenes.
-	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
+	/// Canonical CPU material metadata retained across every frame sequence.
+	materials_data: std::boxed::Box<[MaterialData; MAX_MATERIALS]>,
+	/// Frame-local material metadata buffer shared across all scenes.
+	materials_data_buffer_handle: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
 	/// Application-owned baked resources used by the fixed visibility shader set.
@@ -66,7 +68,15 @@ impl VisibilityPipelineManager {
 				resource_manager.gpu_vertex_data_manager.skinning_weights_buffer.into(),
 			),
 		);
-		let materials_data_buffer_handle = context.build_buffer::<[MaterialData; MAX_MATERIALS]>(
+		let materials_data = vec![MaterialData::default(); MAX_MATERIALS]
+			.into_boxed_slice()
+			.try_into()
+			.unwrap_or_else(|_| {
+				unreachable!(
+					"Visibility material table has an invalid length. The most likely cause is that its fixed-size initialization no longer matches MAX_MATERIALS."
+				)
+			});
+		let materials_data_buffer_handle = context.build_dynamic_buffer::<[MaterialData; MAX_MATERIALS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Materials Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
@@ -126,14 +136,11 @@ impl VisibilityPipelineManager {
 			ghi::DescriptorWrite::buffer(descriptor_set, MESHLET_DATA_BINDING.slot(), meshlets_data_buffer.into()),
 		]);
 
-		let light_data_buffer = context.build_buffer::<LightingData>(
+		let light_data_buffer = context.build_dynamic_buffer::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Light Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-
-		let lighting_data = context.get_mut_buffer_slice(light_data_buffer);
-		lighting_data.count = 0; // Initially, no lights
 
 		// Material evaluation resources still vary by sink because the output images vary by sink.
 		let _sampler = context.build_sampler(
@@ -163,6 +170,7 @@ impl VisibilityPipelineManager {
 		}
 
 		Self {
+			materials_data,
 			materials_data_buffer_handle,
 			skinning_pass,
 			shader_resources,
@@ -278,7 +286,7 @@ impl VisibilityPipelineManager {
 					pending_pipeline,
 					alpha_mode,
 					textures,
-				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha_mode, textures),
+				} => self.adopt_material_completion(id, index, pipeline, pending_pipeline, alpha_mode, textures),
 				VisibilityResourceCompletion::ImageReady {
 					key: _,
 					index,
@@ -363,10 +371,9 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Adopts material metadata and writes the material texture table into the GPU material buffer.
+	/// Adopts material metadata into the canonical CPU table used by every frame sequence.
 	fn adopt_material_completion(
 		&mut self,
-		frame: &mut ghi::implementation::Frame,
 		id: String,
 		index: u32,
 		pipeline: Option<ghi::PipelineHandle>,
@@ -375,21 +382,20 @@ impl VisibilityPipelineManager {
 		textures: Vec<Option<(String, u32)>>,
 	) {
 		let pipeline = pipeline.or_else(|| self.loaded_pipelines.get(&id).copied());
-		let materials_data = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
-		let material_data = &mut materials_data[index as usize];
-		material_data.textures.fill(u32::MAX);
-
-		for (texture_index, texture) in textures.iter().enumerate() {
-			if texture_index >= MAX_MATERIAL_TEXTURES {
-				warn!(
-					"Visibility material {} has too many texture slots. The most likely cause is that the material shader expects more textures than the visibility material data supports.",
-					id
-				);
-				break;
-			}
-			material_data.textures[texture_index] = texture.as_ref().map(|(_, index)| *index).unwrap_or(u32::MAX);
+		let material_data = self.materials_data.get_mut(index as usize).unwrap_or_else(|| {
+			panic!(
+				"Visibility material index is out of range. The most likely cause is that the resource manager assigned more than MAX_MATERIALS material indices."
+			)
+		});
+		if write_material_texture_indices(
+			material_data,
+			textures.iter().map(|texture| texture.as_ref().map(|(_, index)| *index)),
+		) {
+			warn!(
+				"Visibility material {} has too many texture slots. The most likely cause is that the material shader expects more textures than the visibility material data supports.",
+				id
+			);
 		}
-		frame.sync_buffer(self.materials_data_buffer_handle);
 
 		let texture_indices = textures
 			.iter()
@@ -415,6 +421,14 @@ impl VisibilityPipelineManager {
 			},
 		);
 		self.rebuild_material_lists();
+	}
+
+	/// Copies canonical material metadata into the current frame-local buffer before rendering.
+	fn write_material_data(&self, frame: &mut ghi::implementation::Frame) {
+		frame
+			.get_mut_dynamic_buffer_slice(self.materials_data_buffer_handle)
+			.copy_from_slice(self.materials_data.as_ref());
+		frame.sync_buffer(self.materials_data_buffer_handle);
 	}
 
 	/// Rebuilds the opaque and transparent material lists consumed by the material evaluation pass.
@@ -764,6 +778,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.adopt_resource_completions(frame);
+		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
 
 		let shadow_light = self
@@ -1066,10 +1081,12 @@ pub struct ShaderMesh {
 	_padding: u32,
 }
 
+/// The `LightingData` struct preserves the complete CPU storage layout consumed by material evaluation.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct LightingData {
 	pub count: u32,
+	_padding: [u32; 3],
 	pub lights: [LightData; MAX_LIGHTS],
 }
 
@@ -1114,21 +1131,49 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
+/// The `LightData` struct preserves one 16-byte-aligned light record across shader backends.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct LightData {
 	pub position: ShaderVec3,
 	pub color: ShaderVec3,
 	pub direction: ShaderVec3,
 	pub cone_cosines: [f32; 2],
-	pub light_type: u8,
+	pub light_type: u32,
 	pub cascades: [u32; 8],
+	pub(crate) _padding: u32,
 }
 
+/// The `MaterialData` struct retains fixed-width material texture indices for frame-local GPU uploads.
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct MaterialData {
 	textures: [u32; MAX_MATERIAL_TEXTURES],
+}
+
+impl Default for MaterialData {
+	fn default() -> Self {
+		Self {
+			textures: [u32::MAX; MAX_MATERIAL_TEXTURES],
+		}
+	}
+}
+
+/// Replaces one complete canonical material record and reports whether input slots were truncated.
+fn write_material_texture_indices(
+	material_data: &mut MaterialData,
+	texture_indices: impl IntoIterator<Item = Option<u32>>,
+) -> bool {
+	*material_data = MaterialData::default();
+
+	for (slot, texture_index) in texture_indices.into_iter().enumerate() {
+		let Some(destination) = material_data.textures.get_mut(slot) else {
+			return true;
+		};
+		*destination = texture_index.unwrap_or(u32::MAX);
+	}
+
+	false
 }
 
 #[derive(Clone)]
@@ -1283,12 +1328,13 @@ mod tests {
 	use resource_management::types::AlphaMode;
 
 	use super::{
-		cached_skin_palette_base, reserve_deformed_vertex_range, Instance, LightData, LightingData, RenderInfo, ShaderMesh,
-		SkinningPaletteCacheEntry, ENVIRONMENT_BINDING, LIT_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, reserve_deformed_vertex_range, write_material_texture_indices, Instance, LightData,
+		LightingData, MaterialData, RenderInfo, ShaderMesh, SkinningPaletteCacheEntry, ENVIRONMENT_BINDING, LIT_BINDING,
+		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
-	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
+	use crate::rendering::pipelines::visibility::{MAX_MATERIAL_TEXTURES, MESH_DATA_BUFFER_STRIDE};
 
 	#[test]
 	fn environment_bindings_retain_diffuse_and_every_specular_level() {
@@ -1301,6 +1347,43 @@ mod tests {
 	#[test]
 	fn lit_binding_supports_transparent_read_modify_write() {
 		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
+	}
+
+	#[test]
+	fn material_data_defaults_every_texture_slot_to_missing() {
+		let material_data = MaterialData::default();
+
+		assert!(material_data.textures.iter().all(|texture_index| *texture_index == u32::MAX));
+	}
+
+	#[test]
+	fn material_texture_updates_replace_the_complete_canonical_record() {
+		let mut material_data = MaterialData {
+			textures: [41; MAX_MATERIAL_TEXTURES],
+		};
+
+		assert!(!write_material_texture_indices(&mut material_data, [Some(7), None, Some(11)]));
+		assert_eq!(material_data.textures[..3], [7, u32::MAX, 11]);
+		assert!(material_data.textures[3..]
+			.iter()
+			.all(|texture_index| *texture_index == u32::MAX));
+
+		assert!(!write_material_texture_indices(&mut material_data, [Some(3)]));
+		assert_eq!(material_data.textures[0], 3);
+		assert!(material_data.textures[1..]
+			.iter()
+			.all(|texture_index| *texture_index == u32::MAX));
+	}
+
+	#[test]
+	fn material_texture_updates_report_truncated_slots() {
+		let mut material_data = MaterialData::default();
+
+		assert!(write_material_texture_indices(
+			&mut material_data,
+			[Some(5); MAX_MATERIAL_TEXTURES + 1]
+		));
+		assert!(material_data.textures.iter().all(|texture_index| *texture_index == 5));
 	}
 
 	/// Verifies authored blend primitives are deferred while opaque and masked work stays in the first phase.
@@ -1423,7 +1506,7 @@ mod tests {
 	fn lighting_data_matches_gpu_buffer_layout() {
 		assert_eq!(
 			std::mem::size_of::<LightData>(),
-			80,
+			96,
 			"Unexpected visibility LightData size. The most likely cause is that the CPU light buffer layout drifted from the generated shader struct."
 		);
 		assert_eq!(
@@ -1433,16 +1516,20 @@ mod tests {
 		);
 		assert_eq!(std::mem::offset_of!(LightData, position), 0);
 		assert_eq!(std::mem::offset_of!(LightData, color), 16);
-		assert_eq!(std::mem::offset_of!(LightData, light_type), 32);
-		assert_eq!(std::mem::offset_of!(LightData, cascades), 36);
+		assert_eq!(std::mem::offset_of!(LightData, direction), 32);
+		assert_eq!(std::mem::offset_of!(LightData, cone_cosines), 48);
+		assert_eq!(std::mem::offset_of!(LightData, light_type), 56);
+		assert_eq!(std::mem::offset_of!(LightData, cascades), 60);
+		assert_eq!(std::mem::offset_of!(LightData, _padding), 92);
 
 		assert_eq!(
 			std::mem::size_of::<LightingData>(),
-			1296,
+			1552,
 			"Unexpected visibility LightingData size. The most likely cause is that the CPU lighting buffer no longer matches the shader struct array stride."
 		);
 		assert_eq!(std::mem::align_of::<LightingData>(), 16);
 		assert_eq!(std::mem::offset_of!(LightingData, count), 0);
+		assert_eq!(std::mem::offset_of!(LightingData, _padding), 4);
 		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
 	}
 }
@@ -1456,12 +1543,14 @@ const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResource
 	ghi::ResourceSlot::new(1045),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
-);
+)
+.buffer_stride(1552);
 const MATERIALS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1046),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
-);
+)
+.buffer_stride(64);
 const AO_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1051),
 	ghi::ResourceKind::CombinedImageSampler,

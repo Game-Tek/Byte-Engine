@@ -198,12 +198,14 @@ pub struct Binding {
 	pub slot: u32,
 	pub kind: BindingKind,
 	pub count: u32,
+	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl Binding {
-	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+	/// Builds one validated persisted shader resource requirement.
+	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
 		assert!(
 			count > 0,
 			"Invalid resource count. The most likely cause is that a shader interface resource was declared with an empty array."
@@ -212,21 +214,43 @@ impl Binding {
 			slot.checked_add(count).is_some(),
 			"Invalid resource slot range. The most likely cause is that a persisted shader resource array extends beyond the flat slot space."
 		);
+		match (kind, buffer_stride) {
+			(BindingKind::StorageBuffer, Some(stride)) => assert!(
+				stride > 0,
+				"Invalid storage-buffer stride. The most likely cause is that shader reflection produced a zero-byte element."
+			),
+			(BindingKind::StorageBuffer, None) => panic!(
+				"Missing storage-buffer stride. The most likely cause is that shader reflection was not retained in the persisted interface."
+			),
+			(_, Some(_)) => panic!(
+				"Unexpected buffer stride. The most likely cause is that buffer metadata was attached to a non-buffer resource."
+			),
+			(_, None) => {}
+		}
 		Self {
 			name: String::new(),
 			slot,
 			kind,
 			count,
+			buffer_stride,
 			read,
 			write,
 		}
 	}
 
 	/// Associates the authored BESL descriptor name with a validated persisted binding.
-	pub fn named(name: impl Into<String>, slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+	pub fn named(
+		name: impl Into<String>,
+		slot: u32,
+		kind: BindingKind,
+		count: u32,
+		buffer_stride: Option<u32>,
+		read: bool,
+		write: bool,
+	) -> Self {
 		Self {
 			name: name.into(),
-			..Self::new(slot, kind, count, read, write)
+			..Self::new(slot, kind, count, buffer_stride, read, write)
 		}
 	}
 }
@@ -333,17 +357,19 @@ mod tests {
 
 	#[test]
 	fn persisted_bindings_keep_named_and_unnamed_construction_distinct() {
-		let unnamed = Binding::new(0, BindingKind::StorageBuffer, 1, true, false);
-		let named = Binding::named("scene", 1, BindingKind::StorageBuffer, 1, true, false);
+		let unnamed = Binding::new(0, BindingKind::StorageBuffer, 1, Some(64), true, false);
+		let named = Binding::named("scene", 1, BindingKind::StorageBuffer, 1, Some(80), true, false);
 
 		assert!(unnamed.name.is_empty());
 		assert_eq!(named.name, "scene");
+		assert_eq!(unnamed.buffer_stride, Some(64));
+		assert_eq!(named.buffer_stride, Some(80));
 	}
 
 	#[test]
 	#[should_panic(expected = "Invalid resource slot range")]
 	fn persisted_binding_rejects_flat_slot_overflow() {
-		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, Some(4), true, false);
 	}
 
 	#[test]
@@ -352,5 +378,15 @@ mod tests {
 		let artifact: ShaderArtifact = crate::from_slice(&bytes).expect("DXIL artifact should deserialize");
 
 		assert!(matches!(artifact, ShaderArtifact::Dxil));
+	}
+
+	#[test]
+	fn storage_buffer_stride_round_trips_through_resource_archiving() {
+		let binding = Binding::named("meshlets", 8, BindingKind::StorageBuffer, 1, Some(64), true, false);
+		let bytes = crate::to_vec(&binding).expect("Storage-buffer binding should serialize");
+		let archived: Binding = crate::from_slice(&bytes).expect("Storage-buffer binding should deserialize");
+
+		assert_eq!(archived.name, "meshlets");
+		assert_eq!(archived.buffer_stride, Some(64));
 	}
 }

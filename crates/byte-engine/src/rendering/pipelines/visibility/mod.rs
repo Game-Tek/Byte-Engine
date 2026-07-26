@@ -53,16 +53,22 @@ pub(crate) const VERTEX_UV_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderR
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(8);
+// HLSL reads packed narrow indices through 32-bit structured words. Metal and
+// Vulkan expose their native scalar element widths directly.
+pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
 pub(crate) const VERTEX_INDICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(6),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
-);
+)
+.buffer_stride(VERTEX_INDEX_BUFFER_STRIDE);
+pub(crate) const PRIMITIVE_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 1 };
 pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(7),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
-);
+)
+.buffer_stride(PRIMITIVE_INDEX_BUFFER_STRIDE);
 pub(crate) const MESHLET_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(8),
 	ghi::ResourceKind::StorageBuffer,
@@ -81,17 +87,20 @@ pub(crate) const MATERIAL_COUNT_BINDING: ghi::ShaderResourceDescriptor = ghi::Sh
 	ghi::ResourceSlot::new(1033),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
-);
+)
+.buffer_stride(4);
 pub(crate) const MATERIAL_OFFSET_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1034),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
-);
+)
+.buffer_stride(4);
 pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1035),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
-);
+)
+.buffer_stride(4);
 pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1036),
 	ghi::ResourceKind::StorageBuffer,
@@ -103,7 +112,7 @@ pub(crate) const MATERIAL_XY_BINDING: ghi::ShaderResourceDescriptor = ghi::Shade
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::WRITE,
 )
-.buffer_stride(8);
+.buffer_stride(4);
 pub(crate) const TRIANGLE_INDEX_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1039),
 	ghi::ResourceKind::StorageImage,
@@ -169,7 +178,10 @@ mod tests {
 		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot,
 		TaskOutputs, Texture, Value, WorkgroupState,
 	};
-	use resource_management::shader::besl::evaluation::ProgramEvaluation;
+	use resource_management::shader::{
+		besl::{backends::hlsl::Generator as HlslGenerator, evaluation::ProgramEvaluation},
+		ShaderGenerationSettings,
+	};
 
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
@@ -242,6 +254,31 @@ mod tests {
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/shadow-task.besl"
 		)))
+	}
+
+	/// Verifies the checked-in task programs preserve BESL column indexing when emitted as HLSL.
+	#[test]
+	fn production_task_hlsl_transposes_square_matrix_column_accesses() {
+		for (name, program) in [("visibility", visibility_task_program()), ("shadow", shadow_task_program())] {
+			let source = HlslGenerator::new()
+				.minified(true)
+				.generate(
+					&ShaderGenerationSettings::task(utils::Extent::line(TASK_WORKGROUP_SIZE), TASK_WORKGROUP_SIZE),
+					&program,
+				)
+				.unwrap_or_else(|_| panic!("Failed to generate production {name} task HLSL."));
+
+			for column in 0..4 {
+				assert!(
+					source.contains(&format!("transpose(matrix)[{column}]")),
+					"Production {name} task HLSL lost BESL matrix column {column}. The most likely cause is that nested accessor lowering treated a square matrix as an HLSL row."
+				);
+			}
+			assert!(
+				source.contains("transpose(view.inverse_view)[3]"),
+				"Production {name} task HLSL lost the nested inverse-view translation column. The most likely cause is that struct-member matrix indexing diverged from BESL."
+			);
+		}
 	}
 
 	fn gtao_program() -> besl::NodeReference {

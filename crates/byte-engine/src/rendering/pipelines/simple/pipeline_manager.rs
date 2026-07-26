@@ -48,8 +48,8 @@ impl PipelineManager {
 			material::ShaderInterface {
 				workgroup_size: None,
 				bindings: vec![
-					material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+					material::Binding::new(0, material::BindingKind::StorageBuffer, 1, Some(64), true, false),
+					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, Some(64), true, false),
 				],
 			},
 		);

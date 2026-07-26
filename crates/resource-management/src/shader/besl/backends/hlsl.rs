@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, fmt::Write as _};
 
 use crate::shader::generator::{
 	emit_comma_separated_nodes, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings,
@@ -23,6 +23,7 @@ pub struct Generator {
 	raster_inputs: Vec<besl::NodeReference>,
 	raster_outputs: Vec<besl::NodeReference>,
 	user_struct_constructors: Vec<besl::NodeReference>,
+	packed_write_counter: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,7 @@ impl Generator {
 			raster_inputs: Vec::new(),
 			raster_outputs: Vec::new(),
 			user_struct_constructors: Vec::new(),
+			packed_write_counter: 0,
 		}
 	}
 
@@ -109,20 +111,57 @@ impl Generator {
 		}
 	}
 
+	/// Recovers a buffer member name and its source from either BESL member representation.
+	fn hlsl_buffer_member_reference(member: &besl::NodeReference) -> Option<(String, besl::NodeReference)> {
+		let member = member.borrow();
+		match member.node() {
+			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => Some((name.to_string(), source.clone())),
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
+				Some((Self::hlsl_member_name(right)?, left.clone()))
+			}
+			_ => None,
+		}
+	}
+
 	/// Recovers the underlying HLSL buffer and flattened-field metadata for an indexed BESL member expression.
 	fn hlsl_buffer_member_target(member: &besl::NodeReference) -> Option<(String, String, bool, Option<String>, bool)> {
-		let member = member.borrow();
-		let (name, source) = match member.node() {
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => (name.to_string(), source.clone()),
-			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
-				// Lexed buffer-member access can retain its dot operation as an accessor, so recover both sides before indexing it.
-				(Self::hlsl_member_name(right)?, left.clone())
-			}
-			_ => return None,
-		};
+		// Lexed buffer-member access can retain its dot operation as an accessor,
+		// so recover both sides before indexing it.
+		let (name, source) = Self::hlsl_buffer_member_reference(member)?;
 		let binding = Self::hlsl_buffer_binding_source(&source)?;
 		let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
 		Some((binding.name, name, binding.write, binding.flattened_element_type, flattened))
+	}
+
+	/// Reports whether an accessor selects one element from a declared buffer-member array.
+	fn hlsl_buffer_member_is_array(member: &besl::NodeReference) -> bool {
+		let Some((name, source)) = Self::hlsl_buffer_member_reference(member) else {
+			return false;
+		};
+		Self::hlsl_buffer_source_member_is_array(&source, &name)
+	}
+
+	/// Finds whether the named member is an array in the underlying buffer declaration.
+	fn hlsl_buffer_source_member_is_array(source: &besl::NodeReference, member_name: &str) -> bool {
+		match source.borrow().node() {
+			besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} => members.iter().any(|member| {
+				matches!(
+					member.borrow().node(),
+					besl::Nodes::Member {
+						name,
+						count: Some(_),
+						..
+					} if name == member_name
+				)
+			}),
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
+				Self::hlsl_buffer_source_member_is_array(source, member_name)
+			}
+			_ => false,
+		}
 	}
 
 	fn hlsl_buffer_member_type(source: &besl::NodeReference, member_name: &str) -> Option<String> {
@@ -160,35 +199,73 @@ impl Generator {
 			| besl::Nodes::Member { r#type, .. }
 			| besl::Nodes::Input { format: r#type, .. }
 			| besl::Nodes::Output { format: r#type, .. }
+			| besl::Nodes::TaskPayload { format: r#type, .. }
+			| besl::Nodes::Workgroup { format: r#type, .. }
 			| besl::Nodes::Specialization { r#type, .. }
+			| besl::Nodes::Const { r#type, .. }
 			| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => {
 				r#type.borrow().get_name().map(str::to_string)
 			}
+			besl::Nodes::Struct { name, .. } => Some(name.to_string()),
 			besl::Nodes::Function { return_type, .. }
 			| besl::Nodes::Intrinsic {
 				r#return: return_type, ..
 			} => return_type.borrow().get_name().map(str::to_string),
 			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Self::node_type_name(function),
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => Self::node_type_name(intrinsic),
+			besl::Nodes::Expression(besl::Expressions::Literal { value }) => Some(
+				if matches!(value.as_str(), "true" | "false") {
+					"bool"
+				} else if value.contains(['.', 'e', 'E']) {
+					"f32"
+				} else {
+					"u32"
+				}
+				.to_string(),
+			),
 			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
 				Self::referenced_member_type_name(name, source)
 			}
-			besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) => Self::accessor_type_name(left),
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, .. })
-				if *operator == besl::Operators::Multiply =>
-			{
-				Self::node_type_name(left)
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
+				if matches!(
+					right.borrow().node(),
+					besl::Nodes::Expression(besl::Expressions::Member { .. })
+				) {
+					Self::node_type_name(right)
+				} else {
+					Self::accessor_type_name(left)
+				}
+			}
+			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right }) => {
+				Self::operator_result_type_name(operator, left, right)
+			}
+			besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
+				Self::node_type_name(&elements[0])
 			}
 			_ => None,
 		}
 	}
 
 	fn referenced_member_type_name(name: &str, source: &besl::NodeReference) -> Option<String> {
-		if let besl::Nodes::Function { params, .. } = source.borrow().node() {
-			return params
-				.iter()
-				.find(|parameter| parameter.borrow().get_name() == Some(name))
-				.and_then(Self::node_type_name);
+		match source.borrow().node() {
+			besl::Nodes::Parameter { .. }
+			| besl::Nodes::Member { .. }
+			| besl::Nodes::Input { .. }
+			| besl::Nodes::Output { .. }
+			| besl::Nodes::TaskPayload { .. }
+			| besl::Nodes::Workgroup { .. }
+			| besl::Nodes::Specialization { .. }
+			| besl::Nodes::Const { .. }
+			| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
+				return Self::node_type_name(source);
+			}
+			besl::Nodes::Function { params, .. } => {
+				return params
+					.iter()
+					.find(|parameter| parameter.borrow().get_name() == Some(name))
+					.and_then(Self::node_type_name);
+			}
+			_ => {}
 		}
 
 		for child in source.borrow().get_children()? {
@@ -203,21 +280,97 @@ impl Generator {
 	}
 
 	fn accessor_type_name(left: &besl::NodeReference) -> Option<String> {
-		match left.borrow().node() {
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
-				let binding = Self::hlsl_buffer_binding_source(source)?;
+		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left) {
+			if let Some(binding) = Self::hlsl_buffer_binding_source(&source) {
 				let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
-				if flattened {
-					return None;
-				}
-				Self::hlsl_buffer_member_type(source, name)
+				let member_type = if flattened {
+					binding.flattened_element_type
+				} else {
+					Self::hlsl_buffer_member_type(&source, &name)
+				}?;
+				// The first index on an array member selects its declared element.
+				// Only a later index into that element selects a matrix column or vector component.
+				return if Self::hlsl_buffer_member_is_array(left) {
+					Some(member_type)
+				} else {
+					Some(Self::indexed_value_type_name(&member_type).to_string())
+				};
 			}
-			_ => Self::node_type_name(left),
+		}
+
+		// Local and parameter references do not carry buffer metadata. Their
+		// resolved value type still determines the result of one index operation.
+		Self::node_type_name(left).map(|type_name| Self::indexed_value_type_name(&type_name).to_string())
+	}
+
+	/// Returns the BESL value type produced by indexing one matrix, vector, or scalar-like value.
+	fn indexed_value_type_name(type_name: &str) -> &str {
+		if let Some((element_type, _)) = Self::hlsl_array_type(type_name) {
+			return element_type;
+		}
+		match type_name {
+			"mat2f" => "vec2f",
+			"mat3f" => "vec3f",
+			"mat4f" => "vec4f",
+			"mat4x3f" => "vec3f",
+			"vec2u16" | "vec4u16" => "u16",
+			"vec2i" => "i32",
+			"vec2u" | "vec3u" | "vec4u" => "u32",
+			"vec2f" | "vec3f" | "vec4f" => "f32",
+			_ => type_name,
 		}
 	}
 
-	fn is_matrix_type(type_name: Option<String>) -> bool {
-		type_name.is_some_and(|name| matches!(name.as_str(), "mat2f" | "mat3f" | "mat4f"))
+	/// Recovers matrix result types without mistaking matrix-vector products for matrices.
+	fn operator_result_type_name(
+		operator: &besl::Operators,
+		left: &besl::NodeReference,
+		right: &besl::NodeReference,
+	) -> Option<String> {
+		let left_type = Self::node_type_name(left);
+		let right_type = Self::node_type_name(right);
+		match operator {
+			besl::Operators::Plus
+			| besl::Operators::Minus
+			| besl::Operators::Multiply
+			| besl::Operators::Divide
+			| besl::Operators::Modulo => Self::matrix_arithmetic_result_type(left_type.as_deref(), right_type.as_deref()),
+			_ => None,
+		}
+	}
+
+	/// Mirrors the matrix and f32-broadcast result rules used by the BESL VM.
+	fn matrix_arithmetic_result_type(left_type: Option<&str>, right_type: Option<&str>) -> Option<String> {
+		match (left_type, right_type) {
+			(Some(left), Some(right)) if left == right && Self::is_matrix_type(Some(left)) => Some(left.to_string()),
+			(Some(matrix), Some("f32")) if Self::is_matrix_type(Some(matrix)) => Some(matrix.to_string()),
+			(Some("f32"), Some(matrix)) if Self::is_matrix_type(Some(matrix)) => Some(matrix.to_string()),
+			_ => None,
+		}
+	}
+
+	fn is_matrix_type(type_name: Option<&str>) -> bool {
+		type_name.is_some_and(|name| matches!(name, "mat2f" | "mat3f" | "mat4f" | "mat4x3f"))
+	}
+
+	fn hlsl_square_matrix_column_type(type_name: &str) -> Option<(&'static str, usize)> {
+		match type_name {
+			"mat2f" => Some(("vec2f", 2)),
+			"mat3f" => Some(("vec3f", 3)),
+			"mat4f" => Some(("vec4f", 4)),
+			_ => None,
+		}
+	}
+
+	fn is_square_column_vector_matrix_constructor(type_name: &str, parameters: &[besl::NodeReference]) -> bool {
+		let Some((column_type, column_count)) = Self::hlsl_square_matrix_column_type(type_name) else {
+			return false;
+		};
+
+		parameters.len() == column_count
+			&& parameters
+				.iter()
+				.all(|parameter| Self::node_type_name(parameter).as_deref() == Some(column_type))
 	}
 
 	fn hlsl_name_likely_matrix_operand(name: &str) -> bool {
@@ -775,6 +928,7 @@ impl Generator {
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
 		self.raster_outputs.clear();
+		self.packed_write_counter = 0;
 		for node in &order {
 			match node.borrow().node() {
 				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(node.clone()),
@@ -827,7 +981,7 @@ impl Generator {
 		}
 	}
 
-	/// Emits an amplification entry point with the local payload object required by `DispatchMesh`.
+	/// Emits an amplification entry point with the group-shared payload required by `DispatchMesh`.
 	fn emit_hlsl_task_entry(
 		&mut self,
 		string: &mut String,
@@ -837,6 +991,13 @@ impl Generator {
 		params: &[besl::NodeReference],
 	) {
 		let formatting = ShaderFormatting::new(self.minified);
+		if !self.task_payloads.is_empty() {
+			// Every amplification lane contributes to one payload, so it must use group-shared storage.
+			string.push_str("groupshared ObjectPayload payload;");
+			if !self.minified {
+				string.push('\n');
+			}
+		}
 		self.emit_function_attributes(string, node, "besl_main");
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push_str(" besl_main(");
@@ -845,11 +1006,6 @@ impl Generator {
 		});
 		self.emit_function_extra_parameters(string, node, "besl_main", !params.is_empty());
 		formatting.push_block_start(string);
-		if !self.task_payloads.is_empty() {
-			formatting.push_indentation(string, 1);
-			string.push_str("ObjectPayload payload");
-			formatting.push_statement_end(string);
-		}
 		self.emit_function_statement_block(string, statements, 1);
 		if !self.task_payloads.is_empty() {
 			// DXIL requires DispatchMesh to dominate the entry point, so every lane converges after BESL selects the count.
@@ -1364,6 +1520,20 @@ impl Generator {
 			hlsl_block.push('\n');
 		}
 	}
+
+	/// Emits the 32-bit word containing one packed logical narrow-buffer element.
+	fn emit_packed_word_access_by_name(
+		&self,
+		string: &mut String,
+		binding_name: &str,
+		index_name: &str,
+		elements_per_word: u32,
+	) {
+		string.push_str(binding_name);
+		string.push('[');
+		string.push_str(index_name);
+		let _ = write!(string, "/{elements_per_word}u]");
+	}
 }
 
 impl crate::shader::generator::NodeEmitter for Generator {
@@ -1463,6 +1633,15 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		else {
 			return false;
 		};
+		if Self::is_square_column_vector_matrix_constructor(name, parameters) {
+			// Square BESL matrix constructors take columns, while their HLSL equivalents take rows.
+			string.push_str("transpose(");
+			string.push_str(Self::translate_type(name));
+			string.push('(');
+			self.emit_call_arguments(string, parameters);
+			string.push_str("))");
+			return true;
+		}
 		if crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32()) {
 			return false;
 		}
@@ -1508,10 +1687,88 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
 		if let besl::Expressions::Operator { operator, left, right } = expression {
+			if *operator == besl::Operators::Assignment {
+				let indexed_target = {
+					let left = left.borrow();
+					let besl::Nodes::Expression(besl::Expressions::Accessor {
+						left: member,
+						right: index,
+					}) = left.node()
+					else {
+						return false;
+					};
+					Some((member.clone(), index.clone()))
+				};
+				if let Some((member, index)) = indexed_target {
+					if let Some((binding_name, _, write, element_type, flattened)) = Self::hlsl_buffer_member_target(&member) {
+						if write && flattened && matches!(element_type.as_deref(), Some("u8" | "u16")) {
+							let (elements_per_word, bits_per_element, element_mask) = if element_type.as_deref() == Some("u8") {
+								(4u32, 8u32, "0xffu")
+							} else {
+								(2u32, 16u32, "0xffffu")
+							};
+							let temporary_id = self.packed_write_counter;
+							self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
+								"Packed narrow-buffer write count overflowed. The most likely cause is an invalid shader with billions of assignment nodes.",
+							);
+							let index_name = format!("besl_packed_index_{temporary_id}");
+							let value_name = format!("besl_packed_value_{temporary_id}");
+
+							// Adjacent logical narrow elements share one DX12 word. Clear
+							// and set only this lane so concurrent writes preserve neighbors.
+							// Evaluate both source expressions before changing the shared word.
+							string.push_str("uint ");
+							string.push_str(&index_name);
+							string.push('=');
+							self.emit_node_string(string, &index);
+							string.push_str(";uint ");
+							string.push_str(&value_name);
+							string.push_str("=(uint(");
+							self.emit_node_string(string, right);
+							string.push_str(")&");
+							string.push_str(element_mask);
+							string.push_str(");InterlockedAnd(");
+							self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
+							string.push_str(",~(");
+							string.push_str(element_mask);
+							string.push_str("<<((");
+							string.push_str(&index_name);
+							let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u)));InterlockedOr(");
+							self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
+							string.push(',');
+							string.push_str(&value_name);
+							string.push_str("<<((");
+							string.push_str(&index_name);
+							let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u))");
+							return true;
+						}
+					}
+				}
+			}
+
+			let left_type = Self::node_type_name(left);
+			let right_type = Self::node_type_name(right);
 			if *operator == besl::Operators::Multiply
-				&& (Self::is_matrix_type(Self::node_type_name(left)) || Self::is_matrix_type(Self::node_type_name(right)))
+				&& left_type.as_deref() == Some("mat4x3f")
+				&& right_type.as_deref() == Some("vec4f")
 			{
-				// HLSL matrix-vector multiplication is best expressed through mul so row-major operands type-check.
+				// HLSL float4x3 stores the four BESL columns as rows, so the vector must be the left mul operand.
+				string.push_str("mul(");
+				self.emit_node_string(string, right);
+				string.push_str(", ");
+				self.emit_node_string(string, left);
+				string.push(')');
+				return true;
+			}
+			if *operator == besl::Operators::Multiply
+				&& matches!(
+					(left_type.as_deref(), right_type.as_deref()),
+					(Some("mat4f"), Some("mat4f" | "vec4f"))
+						| (Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"), Some("f32"))
+						| (Some("f32"), Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"))
+				) {
+				// BESL reserves algebraic multiplication for these matrix
+				// shapes. Same-shaped mat4x3 values use component-wise `*`.
 				string.push_str("mul(");
 				self.emit_node_string(string, left);
 				string.push_str(", ");
@@ -1519,7 +1776,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				string.push(')');
 				return true;
 			}
-			if *operator == besl::Operators::Multiply {
+			if *operator == besl::Operators::Multiply
+				&& !matches!(
+					(left_type.as_deref(), right_type.as_deref()),
+					(Some(left), Some(right))
+						if Self::is_matrix_type(Some(left)) && Self::is_matrix_type(Some(right))
+				) {
 				let left_name = left.borrow().get_name().map(str::to_string);
 				if left_name.as_deref().is_some_and(Self::hlsl_name_likely_matrix_operand) {
 					// Some expression references do not retain resolved types, so preserve known matrix operand names.
@@ -1546,11 +1808,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 
 		false
 	}
+
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		if matches!(
+		let right_is_member = matches!(
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
-		) {
+		);
+		if right_is_member {
 			if let Some((binding_name, field_name, _, _, flattened)) = Self::hlsl_buffer_member_target(left) {
 				if field_name != binding_name {
 					// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
@@ -1587,8 +1851,25 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((binding_name, field_name, write, element_type, flattened)) = Self::hlsl_buffer_member_target(left) {
-			if !write && matches!(element_type.as_deref(), Some("u8" | "u16")) {
+		if !right_is_member
+			&& !Self::hlsl_buffer_member_is_array(left)
+			&& Self::node_type_name(left)
+				.as_deref()
+				.and_then(Self::hlsl_square_matrix_column_type)
+				.is_some()
+		{
+			// BESL indexes square matrices by column. HLSL indexes them by row,
+			// regardless of the storage packing selected for the shader.
+			string.push_str("transpose(");
+			self.emit_node_string(string, left);
+			string.push_str(")[");
+			self.emit_node_string(string, right);
+			string.push(']');
+			return;
+		}
+
+		if let Some((binding_name, field_name, _, element_type, flattened)) = Self::hlsl_buffer_member_target(left) {
+			if flattened && matches!(element_type.as_deref(), Some("u8" | "u16")) {
 				let (word_index, bit_offset, element_mask) = if element_type.as_deref() == Some("u8") {
 					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")
 				} else {
@@ -1623,12 +1904,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		self.emit_node_string(string, left);
-		// BESL represents authored component access as a member expression. Preserve HLSL swizzles while keeping numeric access as a subscript.
-		if !matches!(
-			right.borrow().node(),
-			besl::Nodes::Expression(besl::Expressions::Member { .. })
-		) && left.borrow().node().is_indexable()
-		{
+		// BESL numeric access always remains an HLSL subscript, including when
+		// its left side is itself an array-element expression.
+		if !right_is_member {
 			string.push('[');
 			self.emit_node_string(string, right);
 			string.push(']');
@@ -1821,7 +2099,206 @@ mod tests {
 	}
 
 	#[test]
-	fn task_payload_and_workgroup_storage_compile_as_dxil_amplification_shader() {
+	fn affine_matrix_columns_and_mat4x3_multiplication_preserve_besl_semantics_in_dxil() {
+		let mut root = besl::Node::root();
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f type");
+		root.add_child(
+			besl::Node::binding(
+				"results",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", vec4f, 4)],
+				},
+				0,
+				false,
+				true,
+			)
+			.into(),
+		);
+		let root = besl::compile_to_besl(
+			r#"
+			extend_vec3f: fn (value: vec3f, w: f32) -> vec4f {
+				return vec4f(value.x, value.y, value.z, w);
+			}
+
+			expand_affine: fn (model: mat4x3f) -> mat4f {
+				return mat4f(
+					extend_vec3f(model[0], 0.0),
+					extend_vec3f(model[1], 0.0),
+					extend_vec3f(model[2], 0.0),
+					extend_vec3f(model[3], 1.0)
+				);
+			}
+
+			transform_affine: fn (model: mat4x3f, position: vec4f) -> vec3f {
+				return model * position;
+			}
+
+			componentwise_affine: fn (left: mat4x3f, right: mat4x3f) -> mat4x3f {
+				return left * right;
+			}
+
+			main: fn () -> void {
+				let model: mat4x3f = mat4x3f(
+					vec3f(1.0, 0.0, 0.0),
+					vec3f(0.0, 1.0, 0.0),
+					vec3f(0.0, 0.0, 1.0),
+					vec3f(10.0, 20.0, 30.0)
+				);
+				let position: vec4f = vec4f(2.0, 3.0, 4.0, 1.0);
+				let compact_result: vec3f = transform_affine(model, position);
+				let expanded_model: mat4f = expand_affine(model);
+				let expanded_result: vec4f = expanded_model * position;
+				let componentwise_result: mat4x3f = componentwise_affine(model, model);
+				results.values[0] = extend_vec3f(compact_result, 1.0);
+				results.values[1] = expanded_result;
+				results.values[2] = expanded_model[3];
+				results.values[3] = extend_vec3f(componentwise_result[3], 1.0);
+			}
+			"#,
+			Some(root),
+		)
+		.expect("Expected affine-matrix shader source to compile");
+		let main = root.get_main().expect("Expected affine-matrix shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected affine-matrix shader source to generate HLSL");
+
+		assert_string_contains!(shader, "return mul(position, model);");
+		assert_string_contains!(
+			shader,
+			"return transpose(float4x4(extend_vec3f(model[0],0.0),extend_vec3f(model[1],0.0),extend_vec3f(model[2],0.0),extend_vec3f(model[3],1.0)));"
+		);
+		assert_string_contains!(
+			shader,
+			"float4x3 model=float4x3(float3(1.0,0.0,0.0),float3(0.0,1.0,0.0),float3(0.0,0.0,1.0),float3(10.0,20.0,30.0));"
+		);
+		assert_string_contains!(shader, "return left*right;");
+		assert_string_contains!(shader, "results[2]=transpose(expanded_model)[3];");
+		assert_string_contains!(shader, "float4x3 componentwise_result=componentwise_affine(model,model);");
+		assert_string_contains!(shader, "model[3]");
+		assert_string_does_not_contain!(shader, "mul(model, position)");
+		assert_string_does_not_contain!(shader, "mul(left, right)");
+		assert_string_does_not_contain!(shader, "return float4x4(extend_vec3f(model[0]");
+		assert_string_does_not_contain!(shader, "transpose(model)[3]");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"affine-matrix-semantics-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected affine-matrix HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn square_matrix_columns_survive_buffer_and_expression_access_in_dxil() {
+		let mut root = besl::Node::root();
+		let mat4f = root.get_child("mat4f").expect("Expected mat4f type");
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f type");
+		root.add_children(vec![
+			besl::Node::binding(
+				"wrapped",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("matrix", mat4f.clone()).into()],
+				},
+				0,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"matrices",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", mat4f, 2)],
+				},
+				1,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"results",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", vec4f, 6)],
+				},
+				2,
+				false,
+				true,
+			)
+			.into(),
+		]);
+		let root = besl::compile_to_besl(
+			r#"
+			copy_matrix_columns: fn (matrix: mat4f) -> mat4f {
+				return mat4f(matrix[0], matrix[1], matrix[2], matrix[3]);
+			}
+
+			direct_constructed_column: fn (matrix: mat4f) -> vec4f {
+				return mat4f(matrix[0], matrix[1], matrix[2], matrix[3])[2];
+			}
+
+			matrix_arithmetic_columns: fn (matrix: mat4f, scale: f32) -> vec4f {
+				let multiplied: vec4f = (matrix * 2.0)[0];
+				let added: vec4f = (matrix + scale)[1];
+				let divided: vec4f = (matrix / scale)[2];
+				let subtracted: vec4f = (scale - matrix)[3];
+				let remainder: vec4f = (matrix % scale)[0];
+				return multiplied + added + divided + subtracted + remainder;
+			}
+
+			main: fn () -> void {
+				results.values[0] = wrapped.matrix[1];
+				results.values[1] = matrices.values[0][2];
+				results.values[2] = (wrapped.matrix + matrices.values[0])[3];
+				results.values[3] = copy_matrix_columns(wrapped.matrix)[2];
+				results.values[4] = direct_constructed_column(matrices.values[1]);
+				results.values[5] = matrix_arithmetic_columns(wrapped.matrix, 2.0);
+			}
+			"#,
+			Some(root),
+		)
+		.expect("Expected buffered matrix-column shader source to compile");
+		let main = root
+			.get_main()
+			.expect("Expected buffered matrix-column shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected buffered matrix-column shader source to generate HLSL");
+
+		assert_string_contains!(shader, "results[0]=transpose(wrapped[0].matrix)[1];");
+		assert_string_contains!(shader, "results[1]=transpose(matrices[0])[2];");
+		assert_string_contains!(shader, "results[2]=transpose(wrapped[0].matrix+matrices[0])[3];");
+		assert_string_contains!(
+			shader,
+			"return transpose(float4x4(transpose(matrix)[0],transpose(matrix)[1],transpose(matrix)[2],transpose(matrix)[3]));"
+		);
+		assert_string_contains!(
+			shader,
+			"return transpose(transpose(float4x4(transpose(matrix)[0],transpose(matrix)[1],transpose(matrix)[2],transpose(matrix)[3])))[2];"
+		);
+		assert_string_contains!(shader, "results[3]=transpose(copy_matrix_columns(wrapped[0].matrix))[2];");
+		assert_string_contains!(shader, "results[4]=direct_constructed_column(matrices[1]);");
+		assert_string_contains!(shader, "float4 multiplied=transpose(mul(matrix, 2.0))[0];");
+		assert_string_contains!(shader, "float4 added=transpose(matrix+scale)[1];");
+		assert_string_contains!(shader, "float4 divided=transpose(matrix/scale)[2];");
+		assert_string_contains!(shader, "float4 subtracted=transpose(scale-matrix)[3];");
+		assert_string_contains!(shader, "float4 remainder=transpose(matrix%scale)[0];");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"buffered-matrix-column-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected buffered matrix-column HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn task_payload_compaction_uses_groupshared_storage_and_compiles_as_dxil_amplification_shader() {
 		let root = besl::compile_to_besl(
 			r#"
 			meshlet_indices: task_payload<u32, 32>;
@@ -1855,7 +2332,7 @@ mod tests {
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
-		assert_string_contains!(shader, "ObjectPayload payload;");
+		assert_string_contains!(shader, "groupshared ObjectPayload payload;");
 		assert_string_contains!(shader, "besl_mesh_output_count = visible_count;");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
 
@@ -2380,6 +2857,89 @@ mod tests {
 
 		assert_string_contains!(shader, "vertex_indices[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
 		assert_string_contains!(shader, "primitive_indices[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
+	}
+
+	/// Verifies read-write narrow buffers preserve packed neighbors when one logical element changes.
+	#[test]
+	fn packed_narrow_buffer_writes_use_atomic_word_updates() {
+		let script = r#"
+		next_index: fn () -> u32 {
+			return 5;
+		}
+
+		main: fn () -> void {
+			bytes.values[next_index()] = bytes.values[5];
+			shorts.values[3] = shorts.values[3];
+		}
+		"#;
+		let mut root = besl::Node::root();
+		let u8_type = root.get_child("u8").expect("Expected u8 type");
+		let u16_type = root.get_child("u16").expect("Expected u16 type");
+		root.add_children(vec![
+			besl::Node::binding(
+				"bytes",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", u8_type, 8)],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+			besl::Node::binding(
+				"shorts",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", u16_type, 8)],
+				},
+				1,
+				true,
+				true,
+			)
+			.into(),
+		]);
+		let main = besl::compile_to_besl(script, Some(root))
+			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.")
+			.get_main()
+			.expect("Expected read-write narrow-buffer main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect(
+				"Failed to generate HLSL for read-write narrow buffers. The most likely cause is unsupported packed assignment.",
+			);
+
+		assert_string_contains!(shader, "RWStructuredBuffer<uint> bytes : register(u0, space0);");
+		assert_string_contains!(shader, "RWStructuredBuffer<uint> shorts : register(u1, space0);");
+		assert_string_contains!(shader, "bytes[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
+		assert_string_contains!(shader, "shorts[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
+		assert_string_contains!(shader, "uint besl_packed_index_");
+		assert_string_contains!(shader, "uint besl_packed_value_");
+		assert_string_contains!(shader, "InterlockedAnd(bytes[besl_packed_index_");
+		assert_string_contains!(shader, "InterlockedOr(bytes[besl_packed_index_");
+		assert_string_contains!(shader, "InterlockedAnd(shorts[besl_packed_index_");
+		assert_string_contains!(shader, "InterlockedOr(shorts[besl_packed_index_");
+		assert_eq!(
+			shader.matches("=next_index();").count(),
+			1,
+			"Packed writes must evaluate their index expression exactly once."
+		);
+		let value_position = shader
+			.find("uint besl_packed_value_")
+			.expect("Expected packed value temporary");
+		let clear_position = shader.find("InterlockedAnd(bytes").expect("Expected packed byte clear");
+		assert!(
+			value_position < clear_position,
+			"Packed writes must evaluate a self-reading right-hand side before clearing its destination lane."
+		);
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"packed-narrow-buffer-write-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected read-write narrow-buffer HLSL to compile to DXIL");
 	}
 
 	#[test]

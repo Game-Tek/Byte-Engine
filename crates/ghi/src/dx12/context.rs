@@ -703,6 +703,8 @@ impl Device {
 		argument_storage.push(Self::wide_argument(entry_point));
 		argument_storage.push(Self::wide_argument("-T"));
 		argument_storage.push(Self::wide_argument(target));
+		// Every declared slot is materialized before binding, so DXC can optimize under the fully-bound resource contract.
+		argument_storage.push(Self::wide_argument("-all_resources_bound"));
 		if Self::hlsl_uses_native_16_bit_types(source) {
 			// DXC only exposes native-width 16-bit arithmetic and storage types when this option is explicit.
 			argument_storage.push(Self::wide_argument("-enable-16bit-types"));
@@ -771,7 +773,8 @@ impl Device {
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Option<std::path::PathBuf> {
-		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v1");
+		// Version 4 uses DXC's official IDxcCompiler argument for the fully-bound resource contract.
+		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v4");
 		Self::fnv64_update_text(&mut hash, source);
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);

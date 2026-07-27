@@ -361,7 +361,7 @@ pub(crate) fn compile_shader_program(
 		bindings: shader_program
 			.bindings()
 			.iter()
-			.map(|b| Binding::new(b.slot, b.kind, b.count, b.read, b.write))
+			.map(|b| Binding::new(b.slot, b.kind, b.count, b.buffer_stride, b.read, b.write))
 			.collect(),
 	};
 
@@ -515,6 +515,7 @@ pub mod tests {
 							0,
 							crate::resources::material::BindingKind::StorageBuffer,
 							1,
+							Some(4),
 							true,
 							false,
 						)],

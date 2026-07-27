@@ -6,7 +6,7 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	context::ContextCreate as _,
+	context::{Context as _, ContextCreate as _},
 };
 use resource_management::{
 	shader::besl::evaluation::{BindingKind, BindingUsage, TextureView},
@@ -107,6 +107,7 @@ impl Pipeline {
 				kind: binding.kind,
 				count: binding.count,
 				slot: binding.slot,
+				buffer_stride: binding.buffer_stride,
 				read: binding.read,
 				write: binding.write,
 			})
@@ -351,6 +352,7 @@ mod tests {
 			kind,
 			count: 1,
 			slot,
+			buffer_stride: matches!(kind, BindingKind::StorageBuffer).then_some(4),
 			read,
 			write,
 		}

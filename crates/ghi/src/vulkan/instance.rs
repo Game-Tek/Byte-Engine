@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ash::vk::{self};
+use ash::vk::{self, TaggedStructure as _};
 
 use crate::{graphics_hardware_interface, vulkan::DebugCallbackData};
 
@@ -152,7 +152,7 @@ impl Instance {
 			.enabled_extension_names(&extension_names);
 
 		let instance_create_info = if settings.validation {
-			instance_create_info.push_next(&mut validation_features)
+			instance_create_info.push(&mut validation_features)
 		} else {
 			instance_create_info
 		};
@@ -182,7 +182,7 @@ impl Instance {
 		});
 
 		let (debug_utils, debug_utils_messenger) = if settings.validation {
-			let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+			let debug_utils = ash::ext::debug_utils::Instance::load(&entry, &instance);
 
 			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
 				.message_severity(

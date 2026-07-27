@@ -25,8 +25,16 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
 
 impl BindingRecord for CompiledShaderBinding {
-	fn from_usage(_name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self {
-		Self::new(slot, kind, count, read, write)
+	fn from_usage(
+		_name: &str,
+		kind: BindingKind,
+		count: u32,
+		slot: u32,
+		buffer_stride: Option<u32>,
+		read: bool,
+		write: bool,
+	) -> Self {
+		Self::new(slot, kind, count, buffer_stride, read, write)
 	}
 
 	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {

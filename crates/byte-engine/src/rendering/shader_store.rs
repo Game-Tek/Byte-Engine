@@ -73,9 +73,14 @@ pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSo
 	let resource_id = ResourceId::new(descriptor.id);
 
 	if crate::rendering::resource_loading::block_on(storage_backend.read(resource_id)).is_some() {
-		let shader = load_shader_reference(storage_backend, descriptor.id)?.into_resource();
-		if shader.source_hash == source_hash {
-			return Ok(shader);
+		// A cache schema can change before its source hash can be read. Treat an
+		// unreadable entry as stale because this descriptor is the authoritative
+		// source and `store` replaces the entry after a successful bake.
+		if let Ok(shader) = load_shader_reference(storage_backend, descriptor.id) {
+			let shader = shader.into_resource();
+			if shader.source_hash == source_hash {
+				return Ok(shader);
+			}
 		}
 	}
 
@@ -137,13 +142,13 @@ fn validate_besl_interface(descriptor: &ShaderSourceDescriptor<'_>) -> Result<()
 		.interface
 		.bindings
 		.iter()
-		.map(|binding| (binding.slot, binding.kind, binding.count))
+		.map(|binding| (binding.slot, binding.kind, binding.count, binding.buffer_stride))
 		.collect::<Vec<_>>();
 	declared.sort_by_key(|(slot, ..)| *slot);
 	let reflected = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(main_node)?
 		.bindings()
 		.iter()
-		.map(|binding| (binding.slot, binding.kind, binding.count))
+		.map(|binding| (binding.slot, binding.kind, binding.count, binding.buffer_stride))
 		.collect::<Vec<_>>();
 
 	if declared != reflected {
@@ -333,14 +338,15 @@ fn hash_text(hasher: &mut DefaultHasher, value: &str) {
 
 fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	// v3 is the intentionally incompatible flat-resource interface schema.
-	hasher.write(b"shader-store-mtlb-v3-flat-resources");
+	// v4 invalidates resources that predate retained structured-buffer strides.
+	hasher.write(b"shader-store-v4-retained-buffer-strides");
 	hash_text(&mut hasher, descriptor.id);
 	hash_text(&mut hasher, descriptor.name);
 	hasher.write_u8(shader_type_tag(descriptor.stage));
 	hash_shader_source_definition(descriptor.name, &descriptor.source, &mut hasher);
 	hasher.write_u64(descriptor.interface.bindings.len() as u64);
 	for binding in &descriptor.interface.bindings {
+		hash_text(&mut hasher, &binding.name);
 		hasher.write_u32(binding.slot);
 		match binding.kind {
 			resource_management::resources::material::BindingKind::StorageBuffer => hasher.write_u8(0),
@@ -355,6 +361,7 @@ fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 			resource_management::resources::material::BindingKind::StorageImage => hasher.write_u8(2),
 		}
 		hasher.write_u32(binding.count);
+		hasher.write_u32(binding.buffer_stride.unwrap_or(0));
 		hasher.write_u8(binding.read as u8);
 		hasher.write_u8(binding.write as u8);
 	}
@@ -400,6 +407,27 @@ pub(crate) fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDes
 		binding.count,
 		binding_access_policy(binding),
 	);
+	// Persisted resources bypass the public constructor during deserialization,
+	// so enforce the same invariant before GHI can fall back to its default.
+	let descriptor = match binding.kind {
+		BindingKind::StorageBuffer => {
+			let stride = binding.buffer_stride.expect(
+				"Missing persisted storage-buffer stride. The most likely cause is a stale or malformed shader interface resource.",
+			);
+			assert!(
+				stride > 0,
+				"Invalid persisted storage-buffer stride. The most likely cause is a stale or malformed shader interface resource."
+			);
+			descriptor.buffer_stride(stride)
+		}
+		_ => {
+			assert!(
+				binding.buffer_stride.is_none(),
+				"Unexpected persisted buffer stride. The most likely cause is a stale or malformed non-buffer shader binding."
+			);
+			descriptor
+		}
+	};
 
 	match binding.kind {
 		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
@@ -488,9 +516,97 @@ mod tests {
 			slot,
 			resource_management::resources::material::BindingKind::StorageBuffer,
 			count,
+			Some(4),
 			read,
 			write,
 		)
+	}
+
+	#[test]
+	fn unreadable_cached_shader_is_rebaked_from_the_authoritative_descriptor() {
+		use resource_management::{
+			resource::{storage_backend::redb_storage_backend::RedbStorageBackend, WriteStorageBackend as _},
+			resources::audio::Audio,
+			types::BitDepths,
+		};
+
+		let unique = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.expect("System clock should follow the Unix epoch")
+			.as_nanos();
+		let storage_path =
+			std::env::temp_dir().join(format!("byte-engine-shader-cache-migration-{}-{unique}", std::process::id()));
+		let storage = RedbStorageBackend::new_writable(storage_path.clone());
+		let descriptor = inline_descriptor(
+			"shader/stale-schema",
+			"Stale Schema",
+			"kernel void besl_main() {}",
+			"besl_main",
+			ShaderTypes::Compute,
+			interface(None, Vec::new()),
+		);
+		storage
+			.store(
+				ProcessedAsset::new(
+					ResourceId::new(descriptor.id),
+					Audio {
+						bit_depth: BitDepths::Sixteen,
+						channel_count: 1,
+						sample_rate: 48_000,
+						sample_count: 0,
+					},
+				),
+				&[],
+			)
+			.expect("Expected stale cache fixture to store");
+
+		let expected_hash = hash_shader_source(&descriptor);
+		let shader = upsert_shader(&storage, &descriptor)
+			.expect("An unreadable cached resource should be replaced from the shader descriptor");
+
+		assert_eq!(shader.source_hash, expected_hash);
+		let loaded_hash = load_shader_reference(&storage, descriptor.id)
+			.expect("Expected the replacement shader to load")
+			.resource
+			.source_hash;
+		assert_eq!(loaded_hash, expected_hash);
+
+		drop(storage);
+		std::fs::remove_dir_all(&storage_path).expect("Expected shader cache migration fixture cleanup");
+	}
+
+	#[test]
+	fn persisted_storage_buffer_stride_reaches_the_ghi_descriptor() {
+		let binding = Binding::new(
+			8,
+			resource_management::resources::material::BindingKind::StorageBuffer,
+			1,
+			Some(64),
+			true,
+			false,
+		);
+		let descriptor = binding_to_descriptor(&binding);
+
+		assert_eq!(descriptor.slot(), ghi::ResourceSlot::new(8));
+		assert_eq!(descriptor.buffer_element_stride(), 64);
+	}
+
+	#[test]
+	#[should_panic(expected = "Missing persisted storage-buffer stride")]
+	fn deserialized_storage_buffer_without_stride_is_rejected() {
+		let invalid = Binding {
+			name: "meshlets".to_string(),
+			slot: 8,
+			kind: resource_management::resources::material::BindingKind::StorageBuffer,
+			count: 1,
+			buffer_stride: None,
+			read: true,
+			write: false,
+		};
+		let json = serde_json::to_string(&invalid).expect("Malformed binding fixture should serialize");
+		let archived: Binding = serde_json::from_str(&json).expect("Malformed binding fixture should deserialize");
+
+		let _ = binding_to_descriptor(&archived);
 	}
 
 	/// Verifies structural BESL reflection drift is rejected before a backend can materialize incompatible IDs.
@@ -618,6 +734,43 @@ mod tests {
 				ShaderTypes::Compute,
 				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, false, true)]),
 			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(
+					Some((8, 4, 2)),
+					vec![Binding::named(
+						"renamed_scene",
+						3,
+						resource_management::resources::material::BindingKind::StorageBuffer,
+						1,
+						Some(4),
+						true,
+						false,
+					)],
+				),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(
+					Some((8, 4, 2)),
+					vec![Binding::new(
+						3,
+						resource_management::resources::material::BindingKind::StorageBuffer,
+						1,
+						Some(16),
+						true,
+						false,
+					)],
+				),
+			),
 		];
 
 		for descriptor in &changed {
@@ -638,6 +791,7 @@ mod tests {
 						view: resource_management::resources::material::TextureView::Texture2D,
 					},
 					1,
+					None,
 					true,
 					false,
 				)],
@@ -657,6 +811,7 @@ mod tests {
 						view: resource_management::resources::material::TextureView::Texture3D,
 					},
 					1,
+					None,
 					true,
 					false,
 				)],

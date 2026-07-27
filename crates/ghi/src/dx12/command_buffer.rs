@@ -134,10 +134,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn clear_images(&mut self, _textures: &[(BaseImageHandle, ClearValue)]) {
-		for &(image, clear) in _textures {
-			self.device
-				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear, self.sequence_index());
-		}
+		self.device
+			.clear_images(self.command_buffer, _textures, self.sequence_index());
 		self.descriptor_tables_dirty = true;
 	}
 
@@ -209,7 +207,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.device
 			.copy_image_for_sequences(source_image, destination_image, self.sequence_index(), self.sequence_index());
 		self.device
-			.record_image_copy(self.command_buffer, source_image, destination_image);
+			.record_image_copy(self.command_buffer, source_image, destination_image, self.sequence_index());
 	}
 
 	fn execute(self, synchronizer: SynchronizerHandle) {
@@ -235,18 +233,12 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_region(&self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
-		#[cfg(debug_assertions)]
-		let write_label = _write_label;
-		#[cfg(debug_assertions)]
-		{
-			let mut label = crate::command_buffer::DebugLabelWriter::new();
-			write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
-			self.device.begin_debug_region(self.command_buffer, label.as_str());
-		}
+		let mut label = crate::command_buffer::DebugLabelWriter::new();
+		_write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
+		self.device.begin_debug_region(self.command_buffer, label.as_str());
 	}
 
 	fn end_region(&self) {
-		#[cfg(debug_assertions)]
 		self.device.end_debug_region(self.command_buffer);
 	}
 

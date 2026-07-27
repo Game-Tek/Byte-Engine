@@ -1,6 +1,6 @@
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
-use utils::{hash::HashMap, partition, Extent};
+use utils::{hash::HashMap, Extent};
 
 use super::{
 	utils::{
@@ -8,10 +8,10 @@ use super::{
 		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
 	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
-	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorSet, Handles, Image, ImageHandle, Swapchain,
-	Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	CommandBufferInternal, Consumption, Context, Descriptor, Handles, Image, ImageHandle, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
-use crate::{descriptors::DescriptorSetHandle, graphics_hardware_interface, utils::StableVec, FrameKey, HandleLike as _, Size};
+use crate::{graphics_hardware_interface, FrameKey, HandleLike as _, Size};
 
 /// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
 pub struct CommandBufferReference<'a> {
@@ -39,8 +39,12 @@ pub struct CommandBufferRecording<'a> {
 
 	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
-	bound_descriptor_sets_in_recording: Vec<DescriptorSetHandle>,
+	bound_descriptor_set_handles: Vec<graphics_hardware_interface::DescriptorSetHandle>,
+	current_descriptor_materialization: Option<super::DescriptorMaterializationHandle>,
+	descriptor_materialization_dirty: bool,
+	descriptor_resources_initialized: bool,
+	descriptor_heaps_bound: bool,
+	pending_rendering: Option<(Extent, SmallVec<[graphics_hardware_interface::AttachmentInformation; 8]>)>,
 	active_rendering: bool,
 }
 
@@ -95,7 +99,11 @@ impl CommandBufferRecording<'_> {
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
-			bound_descriptor_sets_in_recording: Vec::new(),
+			current_descriptor_materialization: None,
+			descriptor_materialization_dirty: false,
+			descriptor_resources_initialized: false,
+			descriptor_heaps_bound: false,
+			pending_rendering: None,
 			active_rendering: false,
 
 			device,
@@ -206,168 +214,111 @@ impl CommandBufferRecording<'_> {
 		&self.device.command_buffers[self.command_buffer.0 as usize].frames[self.sequence_index as usize]
 	}
 
-	fn get_internal_descriptor_set_handle(
-		&self,
-		descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle,
-	) -> DescriptorSetHandle {
-		let handles = DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.device.descriptor_sets);
-		handles[self.sequence_index as usize]
-	}
-
-	fn get_descriptor_set(&self, descriptor_set_handle: &DescriptorSetHandle) -> &DescriptorSet {
-		&self.device.descriptor_sets[descriptor_set_handle.0 as usize]
-	}
-
-	/// Refreshes image descriptors for one internal descriptor set before it is used by a command buffer.
-	/// TODO: replace with a better fitted solution
-	fn refresh_image_descriptors_for_set(&mut self, descriptor_set_handle: DescriptorSetHandle) {
-		let Some(bindings) = self.device.descriptors.get(&descriptor_set_handle) else {
+	/// Binds the context's long-lived heaps once for this command buffer.
+	fn bind_descriptor_heaps_once(&mut self) {
+		if self.descriptor_heaps_bound {
 			return;
-		};
-
-		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
-		let mut writes = Vec::new();
-
-		for (binding_index, array_elements) in bindings {
-			let Some(binding) = self
-				.device
-				.bindings
-				.iter()
-				.find(|binding| binding.descriptor_set_handle == descriptor_set_handle && binding.index == *binding_index)
-			else {
-				continue;
-			};
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-
-			for (array_element, descriptor) in array_elements {
-				match descriptor {
-					Descriptor::Image { image, layout } => {
-						let image_resource = &self.device.images[image.0 as usize];
-						let image_view = if !image_resource.full_image_view.is_null() {
-							image_resource.full_image_view
-						} else {
-							image_resource.image_views[0]
-						};
-
-						if image_resource.image.is_null() || image_view.is_null() {
-							continue;
-						}
-
-						let image_info = images.append([vk::DescriptorImageInfo::default()
-							.image_layout(texture_format_and_resource_use_to_image_layout(
-								image_resource.format_,
-								*layout,
-								None,
-							))
-							.image_view(image_view)]);
-
-						writes.push(
-							vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(*binding_index)
-								.dst_array_element(*array_element)
-								.descriptor_type(binding.descriptor_type)
-								.image_info(&image_info),
-						);
-					}
-					Descriptor::CombinedImageSampler { image, sampler, layout } => {
-						let image_resource = &self.device.images[image.0 as usize];
-						let image_view = if !image_resource.full_image_view.is_null() {
-							image_resource.full_image_view
-						} else {
-							image_resource.image_views[0]
-						};
-
-						if image_resource.image.is_null() || image_view.is_null() {
-							continue;
-						}
-
-						let image_info = images.append([vk::DescriptorImageInfo::default()
-							.image_layout(texture_format_and_resource_use_to_image_layout(
-								image_resource.format_,
-								*layout,
-								None,
-							))
-							.image_view(image_view)
-							.sampler(*sampler)]);
-
-						writes.push(
-							vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(*binding_index)
-								.dst_array_element(*array_element)
-								.descriptor_type(binding.descriptor_type)
-								.image_info(&image_info),
-						);
-					}
-					_ => {}
-				}
-			}
 		}
 
-		if !writes.is_empty() {
-			unsafe { self.device.device.update_descriptor_sets(&writes, &[]) };
+		let command_buffer = self.get_command_buffer().command_buffer;
+		let heaps = self.device.descriptor_heaps.as_ref().expect(
+			"Missing Vulkan descriptor heaps. The most likely cause is that command recording started on an incompletely initialized context.",
+		);
+		let resource_bind_info = heaps.resource().bind_info();
+		let sampler_bind_info = heaps.sampler().bind_info();
+		unsafe {
+			self.device
+				.descriptor_heap
+				.cmd_bind_resource_heap(command_buffer, &resource_bind_info);
+			self.device
+				.descriptor_heap
+				.cmd_bind_sampler_heap(command_buffer, &sampler_bind_info);
 		}
+		self.descriptor_heaps_bound = true;
+	}
+
+	/// Materializes the retained flat-set union only after its pipeline layout or backing resources change.
+	fn ensure_descriptor_materialization(&mut self) -> Option<super::DescriptorMaterializationHandle> {
+		let layout_handle = self.bound_pipeline_layout.expect(
+			"No Vulkan pipeline layout is active. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
+		);
+		if self.device.pipeline_layouts[layout_handle.0 as usize].resources.is_empty() {
+			self.current_descriptor_materialization = None;
+			self.descriptor_materialization_dirty = false;
+			return None;
+		}
+		if !self.descriptor_materialization_dirty {
+			return self.current_descriptor_materialization;
+		}
+
+		self.frame_key.expect(
+			"Vulkan descriptor heaps require a frame-owned command buffer. The most likely cause is that descriptor sets were bound on a context-level transfer recording that has no retirement fence.",
+		);
+		let materialization =
+			self.device
+				.materialize_descriptor_sets(layout_handle, &self.bound_descriptor_set_handles, self.sequence_index);
+		self.bind_descriptor_heaps_once();
+
+		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
+		let snapshot = self.device.descriptor_materialization(materialization);
+		let heap_offsets = [snapshot.resource_heap_offset, snapshot.sampler_heap_offset];
+		// SAFETY: heap_offsets is plain u32 data and remains alive for the duration of vkCmdPushDataEXT.
+		let bytes =
+			unsafe { std::slice::from_raw_parts(heap_offsets.as_ptr().cast::<u8>(), std::mem::size_of_val(&heap_offsets)) };
+		let push_info = vk::PushDataInfoEXT::default()
+			.offset(layout.heap_push_data_offset)
+			.data(vk::HostAddressRangeConstEXT::default().address(bytes));
+		let command_buffer = self.get_command_buffer().command_buffer;
+		unsafe {
+			self.device.descriptor_heap.cmd_push_data(command_buffer, &push_info);
+		}
+
+		self.current_descriptor_materialization = Some(materialization);
+		self.descriptor_materialization_dirty = false;
+		Some(materialization)
 	}
 
 	#[must_use]
 	fn consume_resources_current(
-		&self,
+		&mut self,
 		additional_transitions: impl IntoIterator<Item = Consumption>,
-	) -> Box<dyn FnOnce(&mut Self) -> ()> {
-		let mut consumptions = Vec::with_capacity(32);
-
-		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
-
-		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
-
-		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
-			let set_handle = if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) {
-				h.1
-			} else {
-				continue;
-			};
-
-			let resources = match self.device.descriptors.get(&set_handle).map(|d| d.get(&binding_index)) {
-				Some(Some(b)) => b.values(),
-				_ => {
+	) -> TransitionStateUpdates {
+		let mut consumptions = SmallVec::<[Consumption; 128]>::new();
+		let include_read_only = !self.descriptor_resources_initialized;
+		if let Some(materialization) = self.ensure_descriptor_materialization() {
+			for resource in &self.device.descriptor_materialization(materialization).resources {
+				let writes = resource.access.intersects(crate::AccessPolicies::WRITE);
+				assert!(
+					!self.active_rendering || !writes,
+					"Writable Vulkan descriptors cannot be reused by multiple draws in one render pass. The most likely cause is that a storage resource needs a barrier; split the draws into separate render passes.",
+				);
+				if !include_read_only && !writes {
 					continue;
 				}
-			};
-
-			for idk in resources {
-				let (layout, handle) = match idk {
-					Descriptor::Buffer { buffer, .. } => (crate::Layouts::General, Handles::Buffer(*buffer)),
-					Descriptor::Image { layout, image } => (*layout, Handles::Image(*image)),
-					Descriptor::CombinedImageSampler { image, layout, .. } => (*layout, Handles::Image(*image)),
-					Descriptor::Swapchain { handle } => {
-						let swapchain = &self.device.swapchains[handle.0 as usize];
-						let image_index = swapchain.acquired_image_indices[self.sequence_index as usize] as usize;
-						(crate::Layouts::General, Handles::Image(swapchain.images[image_index]))
+				let (handle, layout) = match resource.descriptor {
+					Descriptor::Buffer { buffer, .. } => (Handles::Buffer(buffer), crate::Layouts::General),
+					Descriptor::Image { image, layout } => (Handles::Image(image), layout),
+					Descriptor::CombinedImageSampler { image, layout, .. } => (Handles::Image(image), layout),
+					Descriptor::AccelerationStructure { handle } => {
+						(Handles::TopLevelAccelerationStructure(handle), crate::Layouts::General)
 					}
+					Descriptor::Sampler { .. } => continue,
 				};
-
 				consumptions.push(Consumption {
 					handle,
-					stages,
-					access,
+					stages: resource.stages,
+					access: resource.access,
 					layout,
 				});
 			}
 		}
-
-		consumptions.extend(additional_transitions.into_iter().map(|c| Consumption {
-			handle: c.handle,
-			stages: c.stages,
-			access: c.access,
-			layout: c.layout,
-		}));
-
+		self.descriptor_resources_initialized = true;
+		consumptions.extend(additional_transitions);
 		self.consume_resources(consumptions)
 	}
 
 	#[must_use]
-	fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> Box<dyn FnOnce(&mut Self) -> ()> {
+	fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
 		// Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
 		let consumptions = consumptions.into_iter().map(|consumption| {
@@ -405,10 +356,7 @@ impl CommandBufferRecording<'_> {
 	/// Flags the passed resources as consumed.
 	/// Consumptions are specified directly in Vulkan terms.
 	#[must_use]
-	fn vulkan_consume_resources(
-		&self,
-		consumptions: impl IntoIterator<Item = VulkanConsumption>,
-	) -> Box<dyn FnOnce(&mut Self) -> ()> {
+	fn vulkan_consume_resources(&self, consumptions: impl IntoIterator<Item = VulkanConsumption>) -> TransitionStateUpdates {
 		Self::vulkan_consume_resources_impl(self.device, self, &self.states, consumptions)
 	}
 
@@ -418,7 +366,7 @@ impl CommandBufferRecording<'_> {
 		command_buffer: &CommandBufferRecording,
 		states: &HashMap<Handles, TransitionState>,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
-	) -> Box<dyn FnOnce(&mut Self) -> ()> {
+	) -> TransitionStateUpdates {
 		let planned = Self::plan_vulkan_resource_transitions(
 			states,
 			&command_buffer.buffer_states,
@@ -436,30 +384,17 @@ impl CommandBufferRecording<'_> {
 		let active_rendering = command_buffer.active_rendering;
 
 		if active_rendering {
-			if planned
-				.image_barriers
-				.iter()
-				.any(|barrier| barrier.old_layout != barrier.new_layout)
-			{
-				eprintln!(
-					"Unable to transition image layout inside an active render pass. The most likely cause is that a graphics draw samples or stores an image that was not transitioned before vkCmdBeginRendering."
-				);
-			}
+			assert!(
+				planned.image_barriers.is_empty()
+					&& planned.buffer_barriers.is_empty()
+					&& planned.memory_barriers.is_empty(),
+				"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
+			);
 
-			let new_states = planned.state_updates;
-			let buffer_state_updates = planned.buffer_state_updates;
-
-			// Dynamic rendering without dynamicRenderingLocalRead cannot call vkCmdPipelineBarrier2 at
-			// all while rendering is active. The state cache is still advanced so later passes do not
-			// repeatedly try to emit the same invalid in-render-pass barrier.
-			return Box::new(move |s: &mut Self| {
-				for (handle, state) in new_states {
-					s.states.insert(handle, state);
-				}
-				for (handle, states) in buffer_state_updates {
-					s.buffer_states.insert(handle, states);
-				}
-			});
+			return TransitionStateUpdates {
+				states: planned.state_updates,
+				buffer_states: planned.buffer_state_updates,
+			};
 		}
 
 		let folded_memory_barriers = planned.memory_barriers;
@@ -524,20 +459,13 @@ impl CommandBufferRecording<'_> {
 			})
 			.collect::<Vec<_>>();
 
-		let new_states = planned.state_updates;
-		let buffer_state_updates = planned.buffer_state_updates;
-
-		let ret = move |s: &mut Self| {
-			for (handle, state) in new_states {
-				s.states.insert(handle, state);
-			}
-			for (handle, states) in buffer_state_updates {
-				s.buffer_states.insert(handle, states);
-			}
+		let updates = TransitionStateUpdates {
+			states: planned.state_updates,
+			buffer_states: planned.buffer_state_updates,
 		};
 
 		if image_memory_barriers.is_empty() && buffer_memory_barriers.is_empty() && memory_barriers.is_empty() {
-			return Box::new(ret);
+			return updates;
 		} // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
 		let dependency_info = vk::DependencyInfo::default()
@@ -554,7 +482,7 @@ impl CommandBufferRecording<'_> {
 				.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info)
 		};
 
-		Box::new(ret)
+		updates
 	}
 
 	fn plan_vulkan_resource_transitions(
@@ -573,15 +501,22 @@ impl CommandBufferRecording<'_> {
 			if let Some(source_state) = source_state {
 				transition_state = transition_state.inherit_last_write_from(source_state);
 
-				if !matches!(consumption.handle, Handles::Buffer(_))
-					&& source_state == transition_state
+				let read_after_read = !TransitionState::access_includes_write(source_state.access)
 					&& !TransitionState::access_includes_write(transition_state.access)
-				{
+					&& source_state.layout == transition_state.layout;
+				if read_after_read {
+					transition_state.stage |= source_state.stage;
+					transition_state.access |= source_state.access;
+					if let Handles::Buffer(_) = consumption.handle {
+						let range = consumption.range.unwrap_or(BufferRange::new(0, vk::WHOLE_SIZE));
+						planned.update_buffer_state(consumption.handle, range, transition_state, buffer_states);
+					}
+					planned.state_updates.push((consumption.handle, transition_state));
 					continue;
 				}
 			}
 
-			let (mut src_stage, mut src_access, src_layout) = if let Some(source_state) = source_state {
+			let (src_stage, src_access, src_layout) = if let Some(source_state) = source_state {
 				(source_state.stage, source_state.access, source_state.layout)
 			} else {
 				(
@@ -750,6 +685,76 @@ impl CommandBufferRecording<'_> {
 			.unwrap_or_else(|| self.get_image(self.get_attachment_image_handle(attachment)).format_)
 	}
 
+	/// Begins deferred dynamic rendering only after descriptor-backed resources have been transitioned.
+	fn begin_rendering_if_needed(&mut self) {
+		if self.active_rendering {
+			return;
+		}
+		let Some((extent, attachments)) = self.pending_rendering.take() else {
+			return;
+		};
+
+		let render_area = vk::Rect2D::default()
+			.offset(vk::Offset2D::default().x(0).y(0))
+			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
+		let color_attachments = attachments
+			.iter()
+			.filter(|attachment| self.get_attachment_format(attachment) != crate::Formats::Depth32)
+			.map(|attachment| {
+				let image = self.get_image(self.get_attachment_image_handle(attachment));
+				let format = self.get_attachment_format(attachment);
+				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
+				if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
+					eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
+				}
+				vk::RenderingAttachmentInfo::default()
+					.image_view(image_view)
+					.image_layout(texture_format_and_resource_use_to_image_layout(format, attachment.layout, None))
+					.load_op(to_load_operation(attachment.load))
+					.store_op(to_store_operation(attachment.store))
+					.clear_value(to_clear_value(attachment.clear))
+			})
+			.collect::<Vec<_>>();
+		let depth_attachment = attachments
+			.iter()
+			.find(|attachment| self.get_attachment_format(attachment) == crate::Formats::Depth32)
+			.map(|attachment| {
+				let image = self.get_image(self.get_attachment_image_handle(attachment));
+				let format = self.get_attachment_format(attachment);
+				vk::RenderingAttachmentInfo::default()
+					.image_view(image.image_views[attachment.layer.unwrap_or(0) as usize])
+					.image_layout(texture_format_and_resource_use_to_image_layout(
+						format,
+						attachment.layout,
+						None,
+					))
+					.load_op(to_load_operation(attachment.load))
+					.store_op(to_store_operation(attachment.store))
+					.clear_value(to_clear_value(attachment.clear))
+			})
+			.unwrap_or_default();
+		let rendering_info = vk::RenderingInfoKHR::default()
+			.color_attachments(&color_attachments)
+			.depth_attachment(&depth_attachment)
+			.render_area(render_area)
+			.layer_count(1);
+		let viewports = [vk::Viewport {
+			x: 0.0,
+			y: extent.height() as f32,
+			width: extent.width() as f32,
+			height: -(extent.height() as f32),
+			min_depth: 0.0,
+			max_depth: 1.0,
+		}];
+		let command_buffer = self.get_command_buffer().command_buffer;
+		unsafe {
+			self.device.device.cmd_set_scissor(command_buffer, 0, &[render_area]);
+			self.device.device.cmd_set_viewport(command_buffer, 0, &viewports);
+			self.device.device.cmd_begin_rendering(command_buffer, &rendering_info);
+		}
+		self.active_rendering = true;
+	}
+
 	fn get_internal_handle(&self, handle: graphics_hardware_interface::Handles) -> Handles {
 		match handle {
 			graphics_hardware_interface::Handles::Image(handle) => {
@@ -823,7 +828,8 @@ impl CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			},
-		])(self);
+		])
+		.apply(self);
 
 		let vk_command_buffer = self.get_command_buffer().command_buffer;
 
@@ -873,7 +879,8 @@ impl CommandBufferRecording<'_> {
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::NONE,
 			layout: crate::Layouts::General,
-		}])(self);
+		}])
+		.apply(self);
 	}
 
 	pub fn handle_swapchain_proxies(&mut self, presentation_keys: &[graphics_hardware_interface::PresentKey]) {
@@ -909,7 +916,7 @@ impl CommandBufferRecording<'_> {
 			}
 		});
 
-		self.consume_resources(present_transitions)(self);
+		self.consume_resources(present_transitions).apply(self);
 	}
 
 	// Transition all resources which where written to but not consumed by any previous command
@@ -925,7 +932,7 @@ impl CommandBufferRecording<'_> {
 			_ => None,
 		});
 
-		self.consume_resources(consumptions)(self);
+		self.consume_resources(consumptions).apply(self);
 	}
 
 	pub fn end_recording(&self) {
@@ -954,7 +961,8 @@ impl CommandBufferRecording<'_> {
 			layout: vk::ImageLayout::UNDEFINED,
 			range: Some(BufferRange::new(e.dst_offset, e.size as vk::DeviceSize)),
 		});
-		self.vulkan_consume_resources(source_consumptions.chain(destination_consumptions))(self);
+		self.vulkan_consume_resources(source_consumptions.chain(destination_consumptions))
+			.apply(self);
 
 		for e in copy_buffers {
 			// Copy all staging buffers to their respective buffers
@@ -993,7 +1001,8 @@ impl CommandBufferRecording<'_> {
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
 			range: None,
-		}))(self);
+		}))
+		.apply(self);
 
 		let command_buffer = self.get_command_buffer();
 
@@ -1035,7 +1044,8 @@ impl CommandBufferRecording<'_> {
 			stages: crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
-		}))(self);
+		}))
+		.apply(self);
 	}
 }
 
@@ -1055,7 +1065,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Transfer,
-		}))(self);
+		}))
+		.apply(self);
 
 		let buffer_handles = image_handles.iter().filter_map(|image_handle| {
 			self.get_image(self.get_internal_base_image_handle(*image_handle))
@@ -1068,7 +1079,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
 			range: None,
-		}))(self);
+		}))
+		.apply(self);
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer = command_buffer.command_buffer;
@@ -1129,6 +1141,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl crate::command_buffer::RasterizationRenderPassMode {
+		assert!(
+			!self.active_rendering && self.pending_rendering.is_none(),
+			"A Vulkan render pass is already active. The most likely cause is that start_render_pass was called twice without end_render_pass.",
+		);
 		self.consume_resources(attachments.iter().map(|attachment| Consumption {
 			handle: Handles::Image(self.get_attachment_image_handle(attachment)),
 			stages: crate::Stages::FRAGMENT,
@@ -1138,90 +1154,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				crate::AccessPolicies::WRITE
 			},
 			layout: attachment.layout,
-		}))(self);
-
-		let render_area = vk::Rect2D::default()
-			.offset(vk::Offset2D::default().x(0).y(0))
-			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
-
-		let color_attchments = attachments
-			.iter()
-			.filter(|a| self.get_attachment_format(a) != crate::Formats::Depth32)
-			.map(|attachment| {
-				let image = self.get_image(self.get_attachment_image_handle(attachment));
-				let format = self.get_attachment_format(attachment);
-				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
-
-				if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
-					eprintln!("Creating a render pass with a color attachment from an image that has no image view and no extent. Image was likely created with extent 0 and resize was not called prior to rendering.");
-				}
-
-				vk::RenderingAttachmentInfo::default()
-					.image_view(image_view)
-					.image_layout(texture_format_and_resource_use_to_image_layout(format, attachment.layout, None))
-					.load_op(to_load_operation(attachment.load))
-					.store_op(to_store_operation(attachment.store))
-					.clear_value(to_clear_value(attachment.clear))
-			})
-			.collect::<Vec<_>>();
-
-		let depth_attachment = attachments
-			.iter()
-			.find(|attachment| self.get_attachment_format(attachment) == crate::Formats::Depth32)
-			.map(|attachment| {
-				let image = self.get_image(self.get_attachment_image_handle(attachment));
-				let format = self.get_attachment_format(attachment);
-				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
-
-				vk::RenderingAttachmentInfo::default()
-					.image_view(image_view)
-					.image_layout(texture_format_and_resource_use_to_image_layout(
-						format,
-						attachment.layout,
-						None,
-					))
-					.load_op(to_load_operation(attachment.load))
-					.store_op(to_store_operation(attachment.store))
-					.clear_value(to_clear_value(attachment.clear))
-			})
-			.or(Some(vk::RenderingAttachmentInfo::default()))
-			.unwrap();
-
-		let rendering_info = vk::RenderingInfoKHR::default()
-			.color_attachments(color_attchments.as_slice())
-			.depth_attachment(&depth_attachment)
-			.render_area(render_area)
-			.layer_count(1);
-
-		let viewports = [vk::Viewport {
-			x: 0.0,
-			y: (extent.height() as f32),
-			width: extent.width() as f32,
-			height: -(extent.height() as f32),
-			min_depth: 0.0,
-			max_depth: 1.0,
-		}];
-
-		let command_buffer = self.get_command_buffer();
-
-		unsafe {
-			self.device
-				.device
-				.cmd_set_scissor(command_buffer.command_buffer, 0, &[render_area]);
-		}
-		unsafe {
-			self.device
-				.device
-				.cmd_set_viewport(command_buffer.command_buffer, 0, &viewports);
-		}
-		unsafe {
-			self.device
-				.device
-				.cmd_begin_rendering(command_buffer.command_buffer, &rendering_info);
-		}
-
-		self.active_rendering = true;
-
+		}))
+		.apply(self);
+		// Delay vkCmdBeginRendering until the first draw so descriptor resources can transition outside rendering.
+		self.pending_rendering = Some((extent, attachments.iter().copied().collect()));
 		self
 	}
 
@@ -1297,7 +1233,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		let build_range_infos = build_range_infos
 			.iter()
-			.map(|build_range_info| build_range_info.as_slice())
+			.map(|build_range_info| Some(build_range_info.as_slice()))
 			.collect::<Vec<_>>();
 
 		unsafe {
@@ -1438,7 +1374,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 				let build_range_infos = build_range_infos
 					.iter()
-					.map(|build_range_info| build_range_info.as_slice())
+					.map(|build_range_info| Some(build_range_info.as_slice()))
 					.collect::<Vec<_>>();
 
 				unsafe {
@@ -1474,7 +1410,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				access: crate::AccessPolicies::WRITE,
 				layout: destination_layout,
 			},
-		])(self);
+		])
+		.apply(self);
 
 		let command_buffer = self.get_command_buffer();
 		let source_image = self.get_image(self.get_internal_base_image_handle(source_image));
@@ -1543,7 +1480,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
-		}))(self);
+		}))
+		.apply(self);
 
 		for (image_handle, clear_value) in textures {
 			let image = self.get_image(self.get_internal_base_image_handle(*image_handle));
@@ -1653,7 +1591,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				]
 			})
 			.collect::<Vec<_>>();
-		self.consume_resources(consumptions)(self);
+		self.consume_resources(consumptions).apply(self);
 
 		let command_buffer = self.get_command_buffer().command_buffer;
 
@@ -1696,7 +1634,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
-		}))(self);
+		}))
+		.apply(self);
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
@@ -1709,7 +1648,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
-		}))(self);
+		}))
+		.apply(self);
 
 		for buffer_handle in buffer_handles {
 			let internal_buffer_handle = self.get_internal_buffer_handle(*buffer_handle);
@@ -1752,7 +1692,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
-		}])(self);
+		}])
+		.apply(self);
 
 		let texture = self.get_image(internal_image_handle);
 
@@ -1823,7 +1764,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
-		}])(self);
+		}])
+		.apply(self);
 	}
 
 	fn execute(mut self, synchronizer: crate::SynchronizerHandle) {
@@ -1878,6 +1820,8 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(pipeline.layout);
+		self.descriptor_materialization_dirty = true;
+		self.descriptor_resources_initialized = false;
 
 		self
 	}
@@ -1899,6 +1843,8 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(pipeline.layout);
+		self.descriptor_materialization_dirty = true;
+		self.descriptor_resources_initialized = false;
 
 		self
 	}
@@ -1968,6 +1914,8 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(pipeline.layout);
+		self.descriptor_materialization_dirty = true;
+		self.descriptor_resources_initialized = false;
 
 		self
 	}
@@ -1981,7 +1929,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			range: None,
 		});
 
-		self.vulkan_consume_resources(consumptions)(self);
+		self.vulkan_consume_resources(consumptions).apply(self);
 
 		let command_buffer = self.get_command_buffer();
 
@@ -2015,7 +1963,8 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			access: vk::AccessFlags2::INDEX_READ,
 			layout: vk::ImageLayout::UNDEFINED,
 			range: None,
-		}])(self);
+		}])
+		.apply(self);
 
 		let command_buffer = self.get_command_buffer();
 
@@ -2043,6 +1992,12 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self) {
+		// A pass with no draws must still begin so attachment clear/load/store operations execute.
+		self.begin_rendering_if_needed();
+		assert!(
+			self.active_rendering,
+			"No Vulkan render pass is active. The most likely cause is that end_render_pass was called without start_render_pass.",
+		);
 		let command_buffer = self.get_command_buffer();
 		unsafe {
 			self.device.device.cmd_end_rendering(command_buffer.command_buffer);
@@ -2056,107 +2011,39 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
-		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
-		let command_buffer = self.get_command_buffer();
-		let pipeline_layout = self.device.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
-
-		let push_constant_stages =
-			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
-
-		let push_constant_stages = push_constant_stages
-			| if self.device.settings.mesh_shading {
-				vk::ShaderStageFlags::MESH_EXT
-			} else {
-				vk::ShaderStageFlags::empty()
-			};
-
+		let layout_handle = self.bound_pipeline_layout.expect(
+			"No Vulkan pipeline is bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
+		);
+		let size = std::mem::size_of::<T>();
+		let end = (offset as usize).checked_add(size).expect(
+			"Invalid Vulkan push-data range. The most likely cause is that the offset and data size overflow addressable memory.",
+		);
+		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
+		assert!(
+			offset % 4 == 0 && size % 4 == 0 && end <= layout.push_constant_size as usize,
+			"Invalid Vulkan push-data write. The most likely cause is that the offset or data size is not four-byte aligned or exceeds the pipeline's declared push-constant ranges.",
+		);
+		// SAFETY: data is Copy and remains alive for the duration of vkCmdPushDataEXT.
+		let bytes = unsafe { std::slice::from_raw_parts((&data as *const T).cast::<u8>(), size) };
+		let push_info = vk::PushDataInfoEXT::default()
+			.offset(offset)
+			.data(vk::HostAddressRangeConstEXT::default().address(bytes));
+		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.device.cmd_push_constants(
-				command_buffer.command_buffer,
-				pipeline_layout,
-				push_constant_stages,
-				offset,
-				std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>()),
-			);
+			self.device.descriptor_heap.cmd_push_data(command_buffer, &push_info);
 		}
 	}
 
 	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
-		if sets.is_empty() {
-			return self;
-		}
-
-		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
-
-		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
-
-		let s: SmallVec<[(u32, DescriptorSetHandle, vk::DescriptorSet); 16]> = sets
-			.iter()
-			.map(|descriptor_set_handle| {
-				let internal_descriptor_set_handle = self.get_internal_descriptor_set_handle(*descriptor_set_handle);
-				let descriptor_set = self.get_descriptor_set(&internal_descriptor_set_handle);
-				let index_in_layout = pipeline_layout
-					.descriptor_set_template_indices
-					.get(&descriptor_set.descriptor_set_layout)
-					.expect("Descriptor set layout not found in pipeline layout. You're likely trying to bind a descriptor set that is not compatible with the currently bound pipeline layout, which means you forgot to add this set to the layout or you bound the wrong layout");
-				(
-					*index_in_layout,
-					internal_descriptor_set_handle,
-					descriptor_set.descriptor_set,
-				)
-			})
-			.collect();
-
-		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
-
-		for &(descriptor_set_index, descriptor_set_handle, _) in &s {
-			if !self.bound_descriptor_sets_in_recording.contains(&descriptor_set_handle) {
-				// Updating a descriptor set after it has been bound invalidates this command buffer unless
-				// the set layout was created with UPDATE_AFTER_BIND. Keep this legacy refresh limited to
-				// the first use of each set in this recording.
-				self.refresh_image_descriptors_for_set(descriptor_set_handle);
-				self.bound_descriptor_sets_in_recording.push(descriptor_set_handle);
-			}
-
-			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[descriptor_set_index as usize] =
-					(descriptor_set_index, descriptor_set_handle);
-				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
-			} else {
-				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles
-					.push((descriptor_set_index, descriptor_set_handle));
-			}
-		}
-
-		let command_buffer = self.get_command_buffer();
-
-		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
-
-		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change.
-		// Descriptor bindings are scoped to the active bind point. Binding compute-only descriptor sets to graphics leaves
-		// storage/read image descriptors visible to later draws and makes Vulkan validate resources the graphics pipeline does
-		// not actually use.
-		for (base_index, descriptor_sets) in partitions {
-			let base_index = base_index as u32;
-
-			let descriptor_sets = descriptor_sets
-				.iter()
-				.map(|(_, descriptor_set)| self.get_descriptor_set(descriptor_set).descriptor_set)
-				.collect::<Vec<_>>();
-
-			unsafe {
-				self.device.device.cmd_bind_descriptor_sets(
-					command_buffer.command_buffer,
-					self.pipeline_bind_point,
-					vulkan_pipeline_layout_handle,
-					base_index,
-					&descriptor_sets,
-					&[],
-				);
-			}
-		}
-
+		self.bound_pipeline.expect(
+			"No Vulkan pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
+		);
+		// Binding replaces the complete flat set union; no implicit set index or prior binding survives.
+		self.bound_descriptor_set_handles.clear();
+		self.bound_descriptor_set_handles.extend_from_slice(sets);
+		self.current_descriptor_materialization = None;
+		self.descriptor_materialization_dirty = true;
+		self.descriptor_resources_initialized = false;
 		self
 	}
 }
@@ -2166,7 +2053,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		// Raster pipelines can read descriptor-backed resources in vertex, mesh, and fragment stages.
 		// Transition them before issuing the draw so transfer uploads are visible to shader reads.
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
+		self.begin_rendering_if_needed();
 
 		let command_buffer = self.get_command_buffer();
 
@@ -2203,7 +2091,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		// Mesh shaders in the visibility pipeline read descriptor-backed storage buffers populated by
 		// transfer uploads. Without this transition, Vulkan can execute the mesh read before those
 		// transfer writes are available even though the descriptor set itself is correctly bound.
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
+		self.begin_rendering_if_needed();
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -2215,7 +2104,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
 		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
+		self.begin_rendering_if_needed();
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -2240,7 +2130,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		first_instance: u32,
 	) {
 		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
+		self.begin_rendering_if_needed();
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -2265,7 +2156,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 
 		let (x, y, z) = dispatch.get_extent().as_tuple();
 
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
 
 		unsafe {
 			self.device.device.cmd_dispatch(command_buffer_handle, x, y, z);
@@ -2287,7 +2178,8 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 			stages: crate::Stages::COMPUTE,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Indirect,
-		}])(self);
+		}])
+		.apply(self);
 
 		unsafe {
 			self.device.device.cmd_dispatch_indirect(
@@ -2323,7 +2215,7 @@ impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecordi
 			vk::StridedDeviceAddressRegionKHR::default()
 		};
 
-		self.consume_resources_current([])(self);
+		self.consume_resources_current([]).apply(self);
 
 		unsafe {
 			self.device.ray_tracing_pipeline.cmd_trace_rays(
@@ -2437,6 +2329,23 @@ struct PlannedMemoryBarrier {
 	src_access: vk::AccessFlags2,
 	dst_stage: vk::PipelineStageFlags2,
 	dst_access: vk::AccessFlags2,
+}
+
+/// The `TransitionStateUpdates` struct carries planner state changes without allocating a boxed callback.
+struct TransitionStateUpdates {
+	states: SmallVec<[(Handles, TransitionState); 64]>,
+	buffer_states: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
+}
+
+impl TransitionStateUpdates {
+	fn apply(self, recording: &mut CommandBufferRecording<'_>) {
+		for (handle, state) in self.states {
+			recording.states.insert(handle, state);
+		}
+		for (handle, states) in self.buffer_states {
+			recording.buffer_states.insert(handle, states);
+		}
+	}
 }
 
 #[derive(Default)]
@@ -2558,6 +2467,39 @@ mod tests {
 		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
 		assert!(barrier.dst_stage == vk::PipelineStageFlags2::TRANSFER);
 		assert!(barrier.dst_access == vk::AccessFlags2::TRANSFER_WRITE);
+	}
+
+	#[test]
+	fn planner_merges_read_after_read_buffer_state_without_a_barrier() {
+		let handle = Handles::Buffer(BufferHandle(11));
+		let mut states = HashMap::default();
+		states.insert(
+			handle,
+			transition(
+				vk::PipelineStageFlags2::FRAGMENT_SHADER,
+				vk::AccessFlags2::SHADER_READ,
+				vk::ImageLayout::UNDEFINED,
+			),
+		);
+
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&states,
+			&HashMap::default(),
+			[consumption(
+				handle,
+				vk::PipelineStageFlags2::COMPUTE_SHADER,
+				vk::AccessFlags2::SHADER_READ,
+				vk::ImageLayout::UNDEFINED,
+			)],
+			|_| None,
+			|_| Some(vk::Buffer::from_raw(12)),
+		);
+
+		assert!(planned.buffer_barriers.is_empty());
+		assert_eq!(planned.state_updates.len(), 1);
+		let state = planned.state_updates[0].1;
+		assert!(state.stage.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER));
+		assert!(state.stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
 	}
 
 	#[test]

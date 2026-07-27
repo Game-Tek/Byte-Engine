@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{synchronizer::SynchronizerHandle, HandleLike, Next};
+use crate::synchronizer::SynchronizerHandle;
 
 #[derive(Clone)]
 pub struct Synchronizer {

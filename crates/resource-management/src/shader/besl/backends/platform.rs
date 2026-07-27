@@ -173,12 +173,15 @@ impl Generator {
 							slot: binding.slot,
 							kind: binding.kind,
 							count: binding.count,
+							buffer_stride: binding.buffer_stride,
 							read: binding.read,
 							write: binding.write,
 						})
 						.collect(),
 					extent: match shader_generation_settings.stage {
-						crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
+						crate::shader::generator::Stages::Compute { local_size }
+						| crate::shader::generator::Stages::Task { local_size, .. }
+						| crate::shader::generator::Stages::Mesh { local_size, .. } => Some(local_size),
 						_ => None,
 					},
 					entry_point: Some(PlatformShaderLanguage::Hlsl.entry_point()),

@@ -1,11 +1,11 @@
-use ash::vk::{self};
+use ash::vk::{self, TaggedStructure as _};
 use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
 	context::ContextCreate as _,
 	graphics_hardware_interface,
-	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
+	vulkan::{BufferCopy, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	FrameKey, HandleLike as _, MasterHandle as _,
 };
 
@@ -215,7 +215,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			)));
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -249,7 +249,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(swapchain.vk_present_mode);
 
 		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push_next(&mut vk_surface_present_mode)
+			.push(&mut vk_surface_present_mode)
 			.surface(swapchain.surface);
 
 		let mut vk_present_modes = [swapchain.vk_present_mode];
@@ -258,7 +258,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_present_modes);
 
 		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
+			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
 
 		unsafe {
 			self.device
@@ -320,8 +320,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
 			index as u8;
-		self.device
-			.update_swapchain_descriptors_for_sequence(swapchain_handle, self.frame_key.sequence_index as usize);
 
 		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
 			&& vk_surface_capabilities.current_extent.height != u32::MAX
@@ -564,28 +562,8 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		self.device.create_ray_tracing_pipeline(builder)
 	}
 
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: crate::DescriptorSetHandle,
-		binding_constructor: crate::BindingConstructor,
-	) -> crate::DescriptorSetBindingHandle {
-		self.device.create_descriptor_binding(descriptor_set, binding_constructor)
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
-	) -> crate::DescriptorSetHandle {
-		self.device.create_descriptor_set(name, descriptor_set_template_handle)
-	}
-
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[crate::DescriptorSetBindingTemplate],
-	) -> crate::DescriptorSetTemplateHandle {
-		self.device.create_descriptor_set_template(name, binding_templates)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> crate::DescriptorSetHandle {
+		self.device.create_descriptor_set(name)
 	}
 
 	fn create_shader(
@@ -593,10 +571,10 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		self.device
-			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> crate::SynchronizerHandle {
@@ -617,7 +595,6 @@ impl<'a> Frame<'a> {
 			pipeline: pipeline.pipeline,
 			layout: layout_handle,
 			shader_handles: pipeline.shader_handles,
-			resource_access: pipeline.resource_access,
 		});
 
 		handle

@@ -182,12 +182,14 @@ impl VisibilityShaderScope {
 		let light_struct = Node::r#struct(
 			"Light",
 			vec![
-				Node::member("position", "vec3f"),
-				Node::member("color", "vec3f"),
-				Node::member("direction", "vec3f"),
+				// Use explicit 16-byte vector fields so every storage-buffer backend shares the CPU layout.
+				Node::member("position", "vec4f"),
+				Node::member("color", "vec4f"),
+				Node::member("direction", "vec4f"),
 				Node::member("cone_cosines", "vec2f"),
-				Node::member("type", "u8"),
+				Node::member("type", "u32"),
 				Node::member("cascades", "u32[8]"),
+				Node::member("_padding", "u32"),
 			],
 		);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", material_texture_array_type())]);
@@ -350,7 +352,12 @@ impl VisibilityShaderScope {
 			"lighting_data",
 			Node::buffer(
 				"LightingBuffer",
-				vec![Node::member("light_count", "u32"), Node::member("lights", light_array_type())],
+				vec![
+					Node::member("light_count", "u32"),
+					// Keep the light array at the CPU record's 16-byte boundary on scalar-layout backends.
+					Node::member("_light_count_padding", "u32[3]"),
+					Node::member("lights", light_array_type()),
+				],
 			),
 			1045,
 			true,
@@ -476,7 +483,7 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position)), 0.0);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
 			// Slope-scaled depth bias tuning per cascade.
 			float cascade_bias_scale = float(cascade_index + 1u);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
@@ -521,7 +528,7 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position)), 0.0);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
 			float cascade_bias_scale = float(cascade_index + 1u);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
 			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
@@ -567,7 +574,7 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position)), 0.0);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
 			float cascade_bias_scale = float(cascade_index + 1u);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
 			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
@@ -1325,7 +1332,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
 		float3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
 		float3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-		float3x3 TBN = float3x3(T, B, N);
 
 		float4 albedo = float4(1, 0, 0, 1);
 		float3 normal = float3(0, 0, 1);
@@ -1375,9 +1381,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float3 L = float3(0.0);
 
 			if (light.type == 68) {
-				L = normalize(-light.position);
+				L = normalize(-light.position.xyz);
 			} else {
-				L = normalize(light.position - world_space_vertex_position);
+				L = normalize(light.position.xyz - world_space_vertex_position);
 			}
 
 			float NdotL = max(dot(normal, L), 0.0);
@@ -1397,12 +1403,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 				attenuation = 1.0;
 			} else {
-				float distance = length(light.position - world_space_vertex_position);
+				float distance = length(light.position.xyz - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
 
 				if (light.type == 1) {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					attenuation *= cone_factor;
 				}
@@ -1410,7 +1416,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			float3 H = normalize(V + L);
 
-			float3 radiance = light.color * attenuation;
+			float3 radiance = light.color.xyz * attenuation;
 
 			float3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
@@ -1480,9 +1486,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			vec3 L = vec3(0.0);
 
 			if (light.type == 68) { // Infinite
-				L = normalize(-light.position);
+				L = normalize(-light.position.xyz);
 			} else {
-				L = normalize(light.position - world_space_vertex_position);
+				L = normalize(light.position.xyz - world_space_vertex_position);
 			}
 
 			float NdotL = max(dot(normal, L), 0.0);
@@ -1503,12 +1509,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				// attenuation = occlusion_factor;
 				attenuation = 1.0;
 			} else {
-				float distance = length(light.position - world_space_vertex_position);
+				float distance = length(light.position.xyz - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
 
 				if (light.type == 1) {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					attenuation *= cone_factor;
 				}
@@ -1516,7 +1522,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			vec3 H = normalize(V + L);
 
-			vec3 radiance = light.color * attenuation;
+			vec3 radiance = light.color.xyz * attenuation;
 
 			vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
@@ -1576,7 +1582,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		float ao_factor = ao.SampleLevel(ao_sampler, normalized_xy, 0.0).r;
 
-		normal = normalize(mul(TBN, normal));
+		// Combine the basis explicitly because HLSL matrix constructors treat T, B, and N as rows.
+		normal = normalize(normal.x * T + normal.y * B + normal.z * N);
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.xyz, metalness);
 		float NdotV = max(dot(normal, V), 0.0);
 
@@ -1586,9 +1593,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float3 L = float3(0.0, 0.0, 0.0);
 
 			if (light.type == 68) {
-				L = normalize(-light.position);
+				L = normalize(-light.position.xyz);
 			} else {
-				L = normalize(light.position - world_space_vertex_position);
+				L = normalize(light.position.xyz - world_space_vertex_position);
 			}
 
 			float NdotL = max(dot(normal, L), 0.0);
@@ -1608,12 +1615,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 				attenuation = 1.0;
 			} else {
-				float distance = length(light.position - world_space_vertex_position);
+				float distance = length(light.position.xyz - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
 
 				if (light.type == 1) {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					attenuation *= cone_factor;
 				}
@@ -1621,7 +1628,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			float3 H = normalize(V + L);
 
-			float3 radiance = light.color * attenuation;
+			float3 radiance = light.color.xyz * attenuation;
 
 			float3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
@@ -1857,6 +1864,41 @@ mod tests {
 		besl::lex(shader).unwrap();
 	}
 
+	/// Verifies HLSL transforms tangent-space normals with the same basis convention as GLSL and MSL.
+	#[test]
+	fn material_evaluation_hlsl_combines_tangent_basis_vectors() {
+		let material = material_metadata! {
+			"variables": [
+				{
+					"name": "normal_map",
+					"data_type": "Texture2D"
+				}
+			]
+		};
+		let shader_node =
+			besl::parse("main: fn () -> void { normal = sample_normal(normal_map); }").expect("test material should parse");
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = besl::lex(shader_generator.transform(shader_node, &material))
+			.expect("material evaluation should produce valid BESL");
+		let main = shader.get_main().expect(
+			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
+		);
+		let source = HLSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect(
+				"Failed to emit the HLSL material pass. The most likely cause is an invalid tangent-basis shader contract.",
+			);
+
+		assert!(
+			source.contains("normal = normalize(normal.x * T + normal.y * B + normal.z * N);"),
+			"HLSL did not combine the tangent basis explicitly. The most likely cause is that the material pass reintroduced a row-versus-column matrix assumption."
+		);
+		assert!(
+			!source.contains("mul(TBN, normal)"),
+			"HLSL multiplied a row-constructed tangent basis as a column basis. The most likely cause is that the material pass reintroduced the faceted-normal transform."
+		);
+	}
+
 	/// Verifies material evaluation with skinned geometry produces valid BESL.
 	#[test]
 	fn material_evaluation_with_skinning_produces_valid_besl() {
@@ -1908,7 +1950,15 @@ mod tests {
 			assert!(source.contains("cone_cosines"));
 			assert!(source.contains("cone_attenuation"));
 			assert!(source.contains("light.type == 1"));
+			assert!(source.contains("_light_count_padding"));
+			assert!(source.contains("_padding"));
 		}
+		assert!(glsl.contains("vec4 position"));
+		assert!(glsl.contains("uint32_t type"));
+		assert!(hlsl.contains("float4 position"));
+		assert!(hlsl.contains("uint32_t type"));
+		assert!(msl.contains("float4 position"));
+		assert!(msl.contains("uint type"));
 
 		#[cfg(target_os = "macos")]
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
@@ -1963,6 +2013,41 @@ mod tests {
 			assert!(
 				binding.read,
 				"Material evaluation binding at slot {slot} is not readable. The most likely cause is incorrect visibility scope access metadata."
+			);
+		}
+
+		// These strides are the public CPU/GPU storage contract retained by baked shader artifacts.
+		for (slot, expected_stride) in [
+			(0, 400),
+			(1, crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE),
+			(2, 12),
+			(3, 12),
+			(4, 32),
+			(5, 8),
+			(6, crate::rendering::pipelines::visibility::VERTEX_INDEX_BUFFER_STRIDE),
+			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
+			(8, 64),
+			(1033, 4),
+			(1034, 4),
+			(1035, 4),
+			(1036, 16),
+			(1037, 4),
+			(1045, 1552),
+			(1046, 64),
+		] {
+			let binding = evaluation
+				.bindings()
+				.iter()
+				.find(|binding| binding.slot == slot)
+				.unwrap_or_else(|| {
+					panic!(
+					"Missing material evaluation binding at slot {slot}. The most likely cause is that visibility resource retention drifted."
+				)
+				});
+			assert_eq!(
+				binding.buffer_stride,
+				Some(expected_stride),
+				"Unexpected storage-buffer stride at slot {slot}. The most likely cause is that the BESL storage layout diverged from its CPU record."
 			);
 		}
 

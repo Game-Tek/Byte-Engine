@@ -4,8 +4,6 @@
 
 use utils::{Extent, RGBA};
 
-#[cfg(all(test, target_os = "linux"))]
-use crate::AccessPolicies;
 use crate::{
 	descriptors::{self, DescriptorType},
 	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
@@ -324,7 +322,7 @@ pub enum PresentationModes {
 	Mailbox,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClearValue {
 	None,
 	Color(RGBA),
@@ -1605,7 +1603,8 @@ pub(super) mod tests {
 		let depth_target = device.build_image(
 			crate::image::Builder::new(Formats::Depth32, Uses::DepthStencil)
 				.extent(extent)
-				.use_case(UseCases::STATIC),
+				.use_case(UseCases::STATIC)
+				.optimized_clear_value(ClearValue::Depth(0.0)),
 		);
 		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
@@ -3252,7 +3251,37 @@ void main() {
 				glsl: raygen_shader_code,
 				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void raygen_main() {}",
 				msl_entry_point: "raygen_main",
-				hlsl: "[shader(\"raygeneration\")] void raygen_main() {}",
+				hlsl: r#"
+struct Payload {
+	float3 hit_value;
+};
+
+RaytracingAccelerationStructure top_level_as : register(t0, space0);
+RWTexture2D<float4> output_image : register(u1, space0);
+
+[shader("raygeneration")]
+void raygen_main() {
+	uint2 launch_id = DispatchRaysIndex().xy;
+	uint2 launch_size = DispatchRaysDimensions().xy;
+	float2 pixel_center = float2(launch_id) + float2(0.5, 0.5);
+	float2 in_uv = pixel_center / float2(launch_size);
+	float2 direction_xy = in_uv * 2.0 - 1.0;
+	direction_xy.y *= -1.0;
+	direction_xy = lerp(direction_xy, float2(0.0, -0.33333334), 0.001);
+
+	RayDesc ray;
+	ray.Origin = float3(direction_xy, -1.0);
+	ray.TMin = 0.001;
+	ray.Direction = float3(0.0, 0.0, 1.0);
+	ray.TMax = 10.0;
+
+	Payload payload;
+	payload.hit_value = float3(0.0, 0.0, 0.0);
+	TraceRay(top_level_as, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 1, 0, ray, payload);
+
+	output_image[launch_id] = float4(payload.hit_value, 1.0);
+}
+"#,
 				hlsl_entry_point: "raygen_main",
 			},
 		)
@@ -3263,7 +3292,25 @@ void main() {
 				glsl: closest_hit_shader_code,
 				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void closest_hit_main() {}",
 				msl_entry_point: "closest_hit_main",
-				hlsl: "[shader(\"closesthit\")] void closest_hit_main() {}",
+				hlsl: r#"
+struct Payload {
+	float3 hit_value;
+};
+
+StructuredBuffer<float3> positions : register(t2, space0);
+StructuredBuffer<float4> colors : register(t3, space0);
+
+[shader("closesthit")]
+void closest_hit_main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attributes) {
+	float3 barycentric = float3(
+		1.0 - attributes.barycentrics.x - attributes.barycentrics.y,
+		attributes.barycentrics.x,
+		attributes.barycentrics.y
+	);
+	float4 color = colors[0] * barycentric.x + colors[1] * barycentric.y + colors[2] * barycentric.z;
+	payload.hit_value = color.xyz;
+}
+"#,
 				hlsl_entry_point: "closest_hit_main",
 			},
 		)
@@ -3274,7 +3321,16 @@ void main() {
 				glsl: miss_shader_code,
 				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void miss_main() {}",
 				msl_entry_point: "miss_main",
-				hlsl: "[shader(\"miss\")] void miss_main() {}",
+				hlsl: r#"
+struct Payload {
+	float3 hit_value;
+};
+
+[shader("miss")]
+void miss_main(inout Payload payload) {
+	payload.hit_value = float3(0.0, 0.0, 0.0);
+}
+"#,
 				hlsl_entry_point: "miss_main",
 			},
 		)

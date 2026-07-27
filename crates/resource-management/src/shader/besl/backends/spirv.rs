@@ -97,7 +97,7 @@ mod compilation {
 				Box::from(compilation_artifact.as_binary_u8()),
 				bindings
 					.iter()
-					.map(|b| CompiledShaderBinding::new(b.slot, b.kind, b.count, b.read, b.write))
+					.map(|b| CompiledShaderBinding::new(b.slot, b.kind, b.count, b.buffer_stride, b.read, b.write))
 					.collect(),
 				match shader_compilation_settings.stage {
 					crate::shader::generator::Stages::Compute { local_size } => Some(local_size),

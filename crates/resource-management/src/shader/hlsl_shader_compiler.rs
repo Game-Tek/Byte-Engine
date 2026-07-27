@@ -32,6 +32,8 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 		wide_argument("-T"),
 		wide_argument(target),
 		wide_argument("-O3"),
+		// Baked DXIL follows the same fully-bound descriptor contract as runtime DX12 compilation.
+		wide_argument("-all_resources_bound"),
 	];
 	if hlsl_uses_native_16_bit_types(source) {
 		argument_storage.push(wide_argument("-enable-16bit-types"));
@@ -105,8 +107,10 @@ fn dxil_target_profile(stage: ShaderTypes, source: &str) -> Result<&'static str,
 		(ShaderTypes::Fragment, true) => Ok("ps_6_2"),
 		(ShaderTypes::Compute, false) => Ok("cs_6_0"),
 		(ShaderTypes::Compute, true) => Ok("cs_6_2"),
+		(ShaderTypes::Task, _) => Ok("as_6_5"),
+		(ShaderTypes::Mesh, _) => Ok("ms_6_5"),
 		_ => Err(
-			"Unsupported DXIL shader stage. The most likely cause is that a standalone or material shader requested a stage outside Vertex, Fragment, or Compute."
+			"Unsupported DXIL shader stage. The most likely cause is that a standalone or material shader requested a stage outside Vertex, Fragment, Compute, Task, or Mesh."
 				.to_string(),
 		),
 	}
@@ -166,10 +170,12 @@ mod tests {
 			dxil_target_profile(ShaderTypes::Compute, "RWStructuredBuffer<uint16_t4> values;").unwrap(),
 			"cs_6_2"
 		);
+		assert_eq!(dxil_target_profile(ShaderTypes::Task, "float4 value;").unwrap(), "as_6_5");
+		assert_eq!(dxil_target_profile(ShaderTypes::Mesh, "float4 value;").unwrap(), "ms_6_5");
 	}
 
 	#[test]
 	fn dxil_profile_rejects_non_baked_shader_stages() {
-		assert!(dxil_target_profile(ShaderTypes::Mesh, "float4 value;").is_err());
+		assert!(dxil_target_profile(ShaderTypes::RayGen, "float4 value;").is_err());
 	}
 }

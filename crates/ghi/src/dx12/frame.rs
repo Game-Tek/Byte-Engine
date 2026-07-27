@@ -68,6 +68,7 @@ impl Frame<'_> {
 			.use_case(image.use_case)
 			.mip_levels(image.mip_levels)
 			.array_layers(image.array_layers);
+		builder.optimized_clear_value = image.optimized_clear_value;
 		if let Some(name) = image.name.as_deref() {
 			builder = builder.name(name);
 		}

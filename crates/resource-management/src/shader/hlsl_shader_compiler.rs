@@ -32,6 +32,8 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 		wide_argument("-T"),
 		wide_argument(target),
 		wide_argument("-O3"),
+		// Baked DXIL follows the same fully-bound descriptor contract as runtime DX12 compilation.
+		wide_argument("-all_resources_bound"),
 	];
 	if hlsl_uses_native_16_bit_types(source) {
 		argument_storage.push(wide_argument("-enable-16bit-types"));

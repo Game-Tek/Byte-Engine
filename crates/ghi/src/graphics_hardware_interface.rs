@@ -322,7 +322,7 @@ pub enum PresentationModes {
 	Mailbox,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClearValue {
 	None,
 	Color(RGBA),
@@ -1603,7 +1603,8 @@ pub(super) mod tests {
 		let depth_target = device.build_image(
 			crate::image::Builder::new(Formats::Depth32, Uses::DepthStencil)
 				.extent(extent)
-				.use_case(UseCases::STATIC),
+				.use_case(UseCases::STATIC)
+				.optimized_clear_value(ClearValue::Depth(0.0)),
 		);
 		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 

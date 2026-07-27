@@ -64,6 +64,7 @@ pub struct FactoryImage {
 	pub(crate) use_case: UseCases,
 	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<std::num::NonZeroU32>,
+	pub(crate) optimized_clear_value: Option<crate::ClearValue>,
 }
 
 /// The `FactorySampler` struct carries DX12 sampler parameters until a context interns them.
@@ -183,6 +184,7 @@ impl crate::device::Device for Factory {
 			use_case: builder.use_case,
 			mip_levels: builder.mip_levels,
 			array_layers: builder.array_layers,
+			optimized_clear_value: builder.optimized_clear_value,
 		}
 	}
 

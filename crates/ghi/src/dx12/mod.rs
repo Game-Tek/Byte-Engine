@@ -2373,7 +2373,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let depth = device.build_image(
 			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
 				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.device_accesses(crate::DeviceAccesses::DeviceOnly)
+				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("native render target"), queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -2427,7 +2428,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil)
 				.extent(::utils::Extent::rectangle(1, 1))
 				.array_layers(std::num::NonZeroU32::new(4))
-				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+				.device_accesses(crate::DeviceAccesses::DeviceOnly)
+				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
 		assert_eq!(device.render_target_view_count(), 1);
@@ -3315,6 +3317,119 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.buffer_clear_count(), 1);
 		assert_eq!(device.upload_resource_count(), upload_resource_count);
 		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn uav_clears_reuse_retained_cpu_descriptors() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let first_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let second_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let copy_call_count = device.clear_descriptor_copy_call_count();
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(
+			&mut recording,
+			&[first_buffer.into(), second_buffer.into()],
+		);
+		drop(recording);
+
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
+		assert_eq!(device.pending_clear_descriptor_copy_count(command_buffer), 0);
+		assert_eq!(device.clear_descriptor_copy_call_count(), copy_call_count + 1);
+		device.submit_command_buffer(command_buffer, synchronizer);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[first_buffer.into()]);
+		drop(recording);
+
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn resized_buffers_recycle_retained_clear_descriptors() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
+
+		device.resize_buffer(buffer, std::mem::size_of::<[u32; 8]>());
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn resized_images_recycle_retained_clear_descriptors() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(2, 2)),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_images(
+			&mut recording,
+			&[(image.into(), crate::ClearValue::Color(::utils::RGBA::black()))],
+		);
+		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
+
+		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4));
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::clear_images(
+			&mut recording,
+			&[(image.into(), crate::ClearValue::Color(::utils::RGBA::black()))],
+		);
+		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 		assert!(!device.has_errors());
 	}
 

@@ -27,51 +27,28 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_parse_parameter() {
-		let param = parse_parameter("parameter=value").unwrap();
-		assert_eq!(param.name(), "parameter");
-		assert_eq!(param.value(), "value");
-	}
+	fn parses_parameters_variables_and_arguments() {
+		// Cover each input source with and without an explicit value.
+		let cases = [
+			(
+				parse_parameter as fn(&str) -> Result<Parameter, ()>,
+				"parameter=value",
+				"parameter",
+				"value",
+			),
+			(parse_parameter, "parameter", "parameter", ""),
+			(parse_parameter, "", "", ""),
+			(parse_variable, "BE_VARIABLE=value", "VARIABLE", "value"),
+			(parse_variable, "BE_VARIABLE", "VARIABLE", ""),
+			(parse_argument, "--argument=value", "argument", "value"),
+			(parse_argument, "--argument", "argument", ""),
+		];
 
-	#[test]
-	fn test_parse_parameter_no_value() {
-		let param = parse_parameter("parameter").unwrap();
-		assert_eq!(param.name(), "parameter");
-		assert_eq!(param.value(), "");
-	}
+		for (parse, input, expected_name, expected_value) in cases {
+			let parameter = parse(input).unwrap();
 
-	#[test]
-	fn test_parse_empty_parameter() {
-		let param = parse_parameter("").unwrap();
-		assert_eq!(param.name(), "");
-		assert_eq!(param.value(), "");
-	}
-
-	#[test]
-	fn test_parse_variable() {
-		let param = parse_variable("BE_VARIABLE=value").unwrap();
-		assert_eq!(param.name(), "VARIABLE");
-		assert_eq!(param.value(), "value");
-	}
-
-	#[test]
-	fn test_parse_variable_no_value() {
-		let param = parse_variable("BE_VARIABLE").unwrap();
-		assert_eq!(param.name(), "VARIABLE");
-		assert_eq!(param.value(), "");
-	}
-
-	#[test]
-	fn test_parse_argument() {
-		let param = parse_argument("--argument=value").unwrap();
-		assert_eq!(param.name(), "argument");
-		assert_eq!(param.value(), "value");
-	}
-
-	#[test]
-	fn test_parse_argument_no_value() {
-		let param = parse_argument("--argument").unwrap();
-		assert_eq!(param.name(), "argument");
-		assert_eq!(param.value(), "");
+			assert_eq!(parameter.name(), expected_name, "input: {input}");
+			assert_eq!(parameter.value(), expected_value, "input: {input}");
+		}
 	}
 }

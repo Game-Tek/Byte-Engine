@@ -68,47 +68,22 @@ mod tests {
 	}
 
 	#[test]
-	fn temperature_0() {
-		assert_temperature(0, 255, 67, 0);
-	}
+	fn converts_representative_temperatures_and_clamps_out_of_range_values() {
+		// Cover both conversion branches, their boundaries, and input clamping.
+		let cases = [
+			(0, 255, 67, 0),
+			(1500, 255, 108, 0),
+			(2500, 255, 159, 70),
+			(5000, 255, 228, 205),
+			(6600, 255, 255, 255),
+			(10000, 201, 218, 255),
+			(15000, 181, 205, 255),
+			(40000, 151, 185, 255),
+			(60000, 151, 185, 255),
+		];
 
-	#[test]
-	fn temperature_1500() {
-		assert_temperature(1500, 255, 108, 0);
-	}
-
-	#[test]
-	fn temperature_2500() {
-		assert_temperature(2500, 255, 159, 70);
-	}
-
-	#[test]
-	fn temperature_5000() {
-		assert_temperature(5000, 255, 228, 205);
-	}
-
-	#[test]
-	fn temperature_6600() {
-		assert_temperature(6600, 255, 255, 255);
-	}
-
-	#[test]
-	fn temperature_10000() {
-		assert_temperature(10000, 201, 218, 255);
-	}
-
-	#[test]
-	fn temperature_15000() {
-		assert_temperature(15000, 181, 205, 255);
-	}
-
-	#[test]
-	fn temperature_40000() {
-		assert_temperature(40000, 151, 185, 255);
-	}
-
-	#[test]
-	fn temperature_60000() {
-		assert_temperature(60000, 151, 185, 255);
+		for (temperature, r, g, b) in cases {
+			assert_temperature(temperature, r, g, b);
+		}
 	}
 }

@@ -6,7 +6,7 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	context::ContextCreate as _,
+	context::{Context as _, ContextCreate as _},
 };
 use resource_management::{
 	shader::besl::evaluation::{BindingKind, BindingUsage, TextureView},

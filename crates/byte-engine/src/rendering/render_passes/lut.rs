@@ -413,7 +413,11 @@ mod tests {
 
 use std::boxed::Box as StdBox;
 
-use ghi::{context::Context as _, frame::Frame as _, types::Size as _};
+use ghi::{
+	context::{Context as _, ContextCreate as _},
+	frame::Frame as _,
+	types::Size as _,
+};
 use half::f16;
 use resource_management::{
 	resource::ReadTargetsMut,

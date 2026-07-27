@@ -2,7 +2,7 @@
 pub struct Device {
 	pub inner: Option<InnerDevice>,
 	device: ash::Device,
-	descriptor_set_layouts: Vec<DescriptorSetLayout>,
+	descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 	shaders: Vec<crate::vulkan::Shader>,
 }
 
@@ -21,28 +21,23 @@ impl Device {
 		let inner = InnerDevice::new(settings, instance, queues)?;
 		let device = inner.device.clone();
 
+		let descriptor_heap_properties = inner.descriptor_heap_properties;
 		Ok(Self {
 			inner: Some(inner),
 			device,
-			descriptor_set_layouts: Vec::new(),
+			descriptor_heap_properties,
 			shaders: Vec::new(),
 		})
 	}
 
-	pub(crate) fn detached(device: ash::Device) -> Self {
+	pub(crate) fn detached_with_resources(
+		device: ash::Device,
+		descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
+	) -> Self {
 		Self {
 			inner: None,
 			device,
-			descriptor_set_layouts: Vec::new(),
-			shaders: Vec::new(),
-		}
-	}
-
-	pub(crate) fn detached_with_resources(device: ash::Device, descriptor_set_layouts: Vec<DescriptorSetLayout>) -> Self {
-		Self {
-			inner: None,
-			device,
-			descriptor_set_layouts,
+			descriptor_heap_properties,
 			shaders: Vec::with_capacity(64),
 		}
 	}
@@ -61,15 +56,15 @@ impl InnerDevice {
 		let vk_instance = &instance.instance;
 
 		#[cfg(target_os = "linux")]
-		let wayland_surface = ash::khr::wayland_surface::Instance::new(vk_entry, vk_instance);
+		let wayland_surface = ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance);
 
 		#[cfg(target_os = "windows")]
-		let win32_surface = ash::khr::win32_surface::Instance::new(vk_entry, vk_instance);
+		let win32_surface = ash::khr::win32_surface::Instance::load(vk_entry, vk_instance);
 
 		#[cfg(target_os = "macos")]
-		let macos_surface = ash::ext::metal_surface::Instance::new(vk_entry, vk_instance);
+		let macos_surface = ash::ext::metal_surface::Instance::load(vk_entry, vk_instance);
 
-		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
+		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
 			if required {
@@ -195,9 +190,9 @@ impl InnerDevice {
 					let mut physical_device_barycentric_features =
 						vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
 					let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-						.push_next(&mut physical_device_vulkan_12_features)
-						.push_next(&mut physical_device_barycentric_features)
-						.push_next(&mut physical_device_mesh_shading_features);
+						.push(&mut physical_device_vulkan_12_features)
+						.push(&mut physical_device_barycentric_features)
+						.push(&mut physical_device_mesh_shading_features);
 
 					unsafe { vk_instance.get_physical_device_features2(physical_device, &mut physical_device_features) };
 
@@ -375,8 +370,32 @@ impl InnerDevice {
 			})
 		};
 
-		let mut device_extension_names = Vec::new();
+		if !is_device_extension_available(ash::ext::descriptor_heap::NAME.to_str().unwrap()) {
+			return Err(
+				"Vulkan descriptor heap extension is unavailable. The most likely cause is that the selected GPU driver does not support VK_EXT_descriptor_heap.",
+			);
+		}
 
+		let mut available_descriptor_heap_features = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default();
+		let mut available_features = vk::PhysicalDeviceFeatures2::default().push(&mut available_descriptor_heap_features);
+		unsafe { vk_instance.get_physical_device_features2(physical_device, &mut available_features) };
+		if available_descriptor_heap_features.descriptor_heap == vk::FALSE {
+			return Err(
+				"Vulkan descriptor heaps are unavailable. The most likely cause is that the selected GPU exposes VK_EXT_descriptor_heap without its required feature.",
+			);
+		}
+
+		let mut descriptor_heap_properties = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
+		let mut physical_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut descriptor_heap_properties);
+		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
+		if physical_device_properties.properties.api_version < vk::API_VERSION_1_4 {
+			return Err(
+				"Vulkan 1.4 is required for descriptor heaps. The most likely cause is that the selected device needs dependency extensions that this backend does not enable.",
+			);
+		}
+
+		let mut device_extension_names = Vec::new();
+		device_extension_names.push(ash::ext::descriptor_heap::NAME.as_ptr());
 		device_extension_names.push(ash::khr::swapchain::NAME.as_ptr());
 
 		if settings.ray_tracing {
@@ -418,7 +437,7 @@ impl InnerDevice {
 		let device_create_info = if settings.mesh_shading {
 			if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
 				device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
-				device_create_info.push_next(&mut physical_device_mesh_shading_required_features)
+				device_create_info.push(&mut physical_device_mesh_shading_required_features)
 			} else {
 				return Err("Mesh shader extension not available");
 			}
@@ -426,26 +445,28 @@ impl InnerDevice {
 			device_create_info
 		};
 
+		let mut descriptor_heap_features = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default().descriptor_heap(true);
 		let mut swapchain_maintenance_features =
 			vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default().swapchain_maintenance1(true);
 
 		device_extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
 
 		let device_create_info = device_create_info
-			.push_next(&mut physical_device_vulkan_11_required_features)
-			.push_next(&mut physical_device_vulkan_12_required_features)
-			.push_next(&mut physical_device_vulkan_13_required_features)
-			.push_next(&mut shader_atomic_float_required_features)
-			.push_next(&mut barycentric_required_features)
-			.push_next(&mut swapchain_maintenance_features)
+			.push(&mut descriptor_heap_features)
+			.push(&mut physical_device_vulkan_11_required_features)
+			.push(&mut physical_device_vulkan_12_required_features)
+			.push(&mut physical_device_vulkan_13_required_features)
+			.push(&mut shader_atomic_float_required_features)
+			.push(&mut barycentric_required_features)
+			.push(&mut swapchain_maintenance_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_required_features);
 
 		let device_create_info = if settings.ray_tracing {
 			device_create_info
-				.push_next(&mut physical_device_acceleration_structure_features)
-				.push_next(&mut physical_device_ray_tracing_pipeline_features)
+				.push(&mut physical_device_acceleration_structure_features)
+				.push(&mut physical_device_ray_tracing_pipeline_features)
 		} else {
 			device_create_info
 		};
@@ -498,16 +519,17 @@ impl InnerDevice {
 			})
 			.collect::<Vec<_>>();
 
-		let acceleration_structure = ash::khr::acceleration_structure::Device::new(&vk_instance, &device);
-		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::new(&vk_instance, &device);
+		let acceleration_structure = ash::khr::acceleration_structure::Device::load(vk_instance, &device);
+		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::load(vk_instance, &device);
 
-		let swapchain = ash::khr::swapchain::Device::new(&vk_instance, &device);
-		let surface = ash::khr::surface::Instance::new(&vk_entry, &vk_instance);
+		let swapchain = ash::khr::swapchain::Device::load(vk_instance, &device);
+		let surface = ash::khr::surface::Instance::load(vk_entry, vk_instance);
 
-		let mesh_shading = ash::ext::mesh_shader::Device::new(&vk_instance, &device);
+		let mesh_shading = ash::ext::mesh_shader::Device::load(vk_instance, &device);
+		let descriptor_heap = ash::ext::descriptor_heap::Device::load(vk_instance, &device);
 
 		let debug_utils = if settings.validation {
-			Some(ash::ext::debug_utils::Device::new(&vk_instance, &device))
+			Some(ash::ext::debug_utils::Device::load(vk_instance, &device))
 		} else {
 			None
 		};
@@ -545,6 +567,8 @@ impl InnerDevice {
 			acceleration_structure,
 			ray_tracing_pipeline,
 			mesh_shading,
+			descriptor_heap,
+			descriptor_heap_properties,
 			// #[cfg(debug_assertions)]
 			// debugger: RenderDebugger::new(),
 		})
@@ -556,7 +580,7 @@ impl InnerDevice {
 		format: vk::Format,
 	) -> bool {
 		let mut format_properties_3 = vk::FormatProperties3::default();
-		let mut format_properties_2 = vk::FormatProperties2::default().push_next(&mut format_properties_3);
+		let mut format_properties_2 = vk::FormatProperties2::default().push(&mut format_properties_3);
 
 		unsafe {
 			vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2);
@@ -690,7 +714,7 @@ impl InnerDevice {
 		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
 
 		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push_next(&mut vk_surface_present_mode)
+			.push(&mut vk_surface_present_mode)
 			.surface(vk_surface);
 
 		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
@@ -699,7 +723,7 @@ impl InnerDevice {
 			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
 
 		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
+			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
 
 		unsafe {
 			self.surface_capabilities
@@ -757,7 +781,7 @@ impl InnerDevice {
 		};
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-			.push_next(&mut present_modes_create_info)
+			.push(&mut present_modes_create_info)
 			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
 			.surface(vk_surface)
 			.min_image_count(requested_image_count)
@@ -834,6 +858,8 @@ pub struct InnerDevice {
 	pub(super) acceleration_structure: ash::khr::acceleration_structure::Device,
 	pub(super) ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device,
 	pub(super) mesh_shading: ash::ext::mesh_shader::Device,
+	pub(super) descriptor_heap: ash::ext::descriptor_heap::Device,
+	pub(super) descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 
 	#[cfg(target_os = "linux")]
@@ -893,7 +919,7 @@ impl crate::device::Device for Device {
 		_name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		let shader = match shader_source_type {
 			crate::shader::Sources::SPIRV(spirv) => {
@@ -924,7 +950,7 @@ impl crate::device::Device for Device {
 		self.shaders.push(crate::vulkan::Shader {
 			shader: shader_module,
 			stage: stage.into(),
-			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 		});
 
 		Ok(handle)
@@ -935,7 +961,7 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		self.create_compute_pipeline_with_resources(builder, &self.descriptor_set_layouts, &self.shaders)
+		self.create_compute_pipeline_with_resources(builder, &self.shaders)
 	}
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
@@ -1040,41 +1066,6 @@ impl InnerDevice {
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 		}
-	}
-
-	/// Creates a Vulkan sampler from the resolved sampler builder parameters.
-	pub(super) fn create_vulkan_sampler(
-		&self,
-		min_mag_filter: vk::Filter,
-		reduction_mode: vk::SamplerReductionMode,
-		mip_map_filter: vk::SamplerMipmapMode,
-		address_mode: vk::SamplerAddressMode,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> vk::Sampler {
-		let mut vk_sampler_reduction_mode_create_info =
-			vk::SamplerReductionModeCreateInfo::default().reduction_mode(reduction_mode);
-
-		let sampler_create_info = vk::SamplerCreateInfo::default()
-			.push_next(&mut vk_sampler_reduction_mode_create_info)
-			.mag_filter(min_mag_filter)
-			.min_filter(min_mag_filter)
-			.mipmap_mode(mip_map_filter)
-			.address_mode_u(address_mode)
-			.address_mode_v(address_mode)
-			.address_mode_w(address_mode)
-			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
-			.anisotropy_enable(anisotropy.is_some())
-			.max_anisotropy(anisotropy.unwrap_or(0f32))
-			.compare_enable(false)
-			.compare_op(vk::CompareOp::NEVER)
-			.min_lod(min_lod)
-			.max_lod(max_lod)
-			.mip_lod_bias(0.0)
-			.unnormalized_coordinates(false);
-
-		unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") }
 	}
 
 	/// Creates a Vulkan fence with the requested initial signal state.
@@ -1196,7 +1187,6 @@ pub struct ComputePipeline {
 	pub(crate) pipeline: vk::Pipeline,
 	pub(crate) layout: crate::vulkan::PipelineLayout,
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
 }
 
 unsafe impl Send for ComputePipeline {}
@@ -1227,49 +1217,43 @@ pub struct FactorySampler {
 }
 
 impl Device {
-	/// Creates a detached compute pipeline using context-owned shader modules and descriptor set layouts without storing them on the detached device.
+	/// Creates a detached compute pipeline whose flat bindings map directly into descriptor heaps.
 	pub(crate) fn create_compute_pipeline_with_resources(
 		&self,
 		builder: crate::pipelines::compute::Builder,
-		descriptor_set_layouts: &[DescriptorSetLayout],
 		shaders: &[crate::vulkan::Shader],
 	) -> ComputePipeline {
-		let layout = self.build_pipeline_layout(
-			builder.descriptor_set_templates,
-			builder.push_constant_ranges,
-			descriptor_set_layouts,
-		);
 		let shader_parameter = builder.shader;
 		let shader = &shaders[shader_parameter.handle.0 as usize];
+		let stage_resources = [(shader.stage, shader.shader_resource_descriptors.clone())];
+		let layout = crate::vulkan::build_pipeline_layout(
+			&stage_resources,
+			builder.push_constant_ranges,
+			&self.descriptor_heap_properties,
+		);
+		let mappings = crate::vulkan::build_shader_mappings(&layout, &shader.shader_resource_descriptors);
+		let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
 		let (specialization_entries_buffer, specialization_map_entries) =
 			build_specialization_entries(shader_parameter.specialization_map);
 		let specialization_info = vk::SpecializationInfo::default()
 			.data(&specialization_entries_buffer)
 			.map_entries(&specialization_map_entries);
+		let stage = vk::PipelineShaderStageCreateInfo::default()
+			.push(&mut mapping_info)
+			.stage(vk::ShaderStageFlags::COMPUTE)
+			.module(shader.shader)
+			.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+			.specialization_info(&specialization_info);
+		let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 		let create_infos = [vk::ComputePipelineCreateInfo::default()
-			.stage(
-				vk::PipelineShaderStageCreateInfo::default()
-					.stage(vk::ShaderStageFlags::COMPUTE)
-					.module(shader.shader)
-					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
-					.specialization_info(&specialization_info),
-			)
-			.layout(layout.pipeline_layout)];
+			.push(&mut flags)
+			.stage(stage)
+			.layout(vk::PipelineLayout::null())];
 		let pipeline = unsafe {
 			self.device
 				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
-				.expect("Vulkan compute pipeline creation failed. The most likely cause is that shader specialization or pipeline layout creation failed.")[0]
+				.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.")[0]
 		};
-		let resource_access = shader
-			.shader_binding_descriptors
-			.iter()
-			.map(|descriptor| {
-				(
-					(descriptor.set, descriptor.binding),
-					(crate::Stages::COMPUTE, descriptor.access),
-				)
-			})
-			.collect::<Vec<_>>();
 		let mut shader_handles = HashMap::default();
 		shader_handles.insert(*shader_parameter.handle, [0; 32]);
 
@@ -1277,58 +1261,6 @@ impl Device {
 			pipeline,
 			layout,
 			shader_handles,
-			resource_access,
-		}
-	}
-
-	fn build_pipeline_layout(
-		&self,
-		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
-		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-		stored_descriptor_set_layouts: &[DescriptorSetLayout],
-	) -> crate::vulkan::PipelineLayout {
-		// Resolve template handles against the caller-provided layouts so the factory device stays stateless.
-		let descriptor_set_layouts = descriptor_set_template_handles
-			.iter()
-			.map(|handle| stored_descriptor_set_layouts[handle.0 as usize].descriptor_set_layout)
-			.collect::<Vec<_>>();
-		let default_push_constant_range;
-		let push_constant_ranges = if push_constant_ranges.is_empty() {
-			default_push_constant_range = [crate::pipelines::PushConstantRange::new(0, 128)];
-			default_push_constant_range.as_slice()
-		} else {
-			push_constant_ranges
-		};
-		let push_constant_stages = vk::ShaderStageFlags::VERTEX
-			| vk::ShaderStageFlags::FRAGMENT
-			| vk::ShaderStageFlags::COMPUTE
-			| vk::ShaderStageFlags::MESH_EXT;
-		let push_constant_ranges_vk = push_constant_ranges
-			.iter()
-			.map(|range| {
-				vk::PushConstantRange::default()
-					.stage_flags(push_constant_stages)
-					.offset(range.offset)
-					.size(range.size)
-			})
-			.collect::<Vec<_>>();
-		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
-			.set_layouts(&descriptor_set_layouts)
-			.push_constant_ranges(&push_constant_ranges_vk);
-		let pipeline_layout = unsafe {
-			self.device
-				.create_pipeline_layout(&pipeline_layout_create_info, None)
-				.expect("Vulkan detached pipeline layout creation failed. The most likely cause is that a descriptor set template handle was invalid.")
-		};
-		let descriptor_set_template_indices = descriptor_set_template_handles
-			.iter()
-			.enumerate()
-			.map(|(index, handle)| (*handle, index as u32))
-			.collect();
-
-		crate::vulkan::PipelineLayout {
-			pipeline_layout,
-			descriptor_set_template_indices,
 		}
 	}
 }
@@ -1362,39 +1294,17 @@ fn build_specialization_entries(
 	(data, entries)
 }
 
-use std::{borrow::Cow, num::NonZeroU32, u64};
+use std::{borrow::Cow, num::NonZeroU32};
 
-use ash::vk::{self, Handle as _};
-use smallvec::SmallVec;
-use utils::hash::{HashSet, HashSetExt};
-use utils::{
-	hash::{HashMap, HashMapExt},
-	Extent,
-};
+use ash::vk::{self, TaggedStructure as _};
+use utils::{hash::HashMap, Extent};
 
 use super::{
-	utils::{
-		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
-		to_shader_stage_flags, uses_to_vk_usage_flags,
-	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
+	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
 };
-use crate::vulkan::utils::extent_into_vk_extent;
-use crate::vulkan::StoredQueue;
-use crate::PrivateHandles as Handles;
 use crate::{
-	binding::DescriptorSetBindingHandle,
-	descriptors::DescriptorSetHandle,
-	graphics_hardware_interface, image,
-	render_debugger::RenderDebugger,
-	sampler::{self, SamplerHandle},
-	synchronizer::SynchronizerHandle,
-	utils::StableVec,
-	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Context, Descriptor, DescriptorWrite, Descriptors,
-		Frame, ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
-	},
-	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
+	graphics_hardware_interface,
+	vulkan::{Context, Instance, MAX_SWAPCHAIN_IMAGES},
+	window,
 };

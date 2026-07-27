@@ -7,14 +7,17 @@ pub struct Context {
 	pub(super) queues: Vec<StoredQueue>,
 	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
-	pub(super) samplers: Vec<vk::Sampler>,
+	pub(super) samplers: Vec<Sampler>,
 	pub(super) allocations: Vec<Allocation>,
-	pub(super) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(super) pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
-	pub(super) bindings: Vec<Binding>,
-	pub(super) descriptor_pools: Vec<vk::DescriptorPool>,
 	pub(super) descriptor_sets: Vec<DescriptorSet>,
+	pub(super) descriptor_heaps: Option<DescriptorHeaps>,
+	pub(super) descriptor_materializations: Vec<Option<DescriptorMaterialization>>,
+	materialization_indices: HashMap<MaterializationKey, DescriptorMaterializationHandle>,
+	retired_materializations: [Vec<DescriptorMaterializationHandle>; MAX_FRAMES_IN_FLIGHT],
+	free_materialization_handles: Vec<DescriptorMaterializationHandle>,
+	descriptor_sequence_epochs: [u64; MAX_FRAMES_IN_FLIGHT],
 	pub(super) meshes: Vec<Mesh>,
 	pub(super) acceleration_structures: Vec<AccelerationStructure>,
 	pub(super) shaders: Vec<Shader>,
@@ -22,14 +25,6 @@ pub struct Context {
 	pub(super) command_buffers: Vec<CommandBuffer>,
 	pub(super) synchronizers: Vec<Synchronizer>,
 	pub(super) swapchains: Vec<Swapchain>,
-
-	/// Maps a resource to N descriptors that reference it.
-	resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32)>>,
-
-	pub(super) descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, Descriptor>>>,
-
-	/// Maps a descriptor set binding element to N resources that it references.
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
 
@@ -60,6 +55,23 @@ pub struct Context {
 	pub(crate) tasks: Vec<Task>,
 }
 
+/// Accepts deferred descriptor work only while both its payload and post-write version remain current.
+fn descriptor_task_is_current(
+	set: &DescriptorSet,
+	descriptor_write: crate::descriptors::DescriptorWrite,
+	expected_set_version: u64,
+) -> bool {
+	if set.version != expected_set_version {
+		return false;
+	}
+
+	let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
+	set.descriptors
+		.get(&descriptor_write.slot)
+		.and_then(|elements| elements.get(&descriptor_write.array_element))
+		.is_some_and(|current| current.descriptor == descriptor_write.descriptor && current.frame_offset == frame_offset)
+}
+
 impl Context {
 	pub(super) fn new(device: &Device) -> Result<Self, &'static str> {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
@@ -69,7 +81,7 @@ impl Context {
 		let swapchain_native_supports_formatless_storage_write = device.swapchain_native_supports_formatless_storage_write;
 		let swapchain_proxy_supports_formatless_storage_write = device.swapchain_proxy_supports_formatless_storage_write;
 
-		Ok(Context {
+		let mut context = Context {
 			device,
 
 			memory_properties,
@@ -81,12 +93,15 @@ impl Context {
 			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
 			samplers: Vec::with_capacity(128),
-			descriptor_sets_layouts: Vec::with_capacity(128),
 			pipeline_layouts: Vec::with_capacity(64),
 			pipeline_layout_indices: HashMap::with_capacity(64),
-			bindings: Vec::with_capacity(1024),
-			descriptor_pools: Vec::with_capacity(512),
 			descriptor_sets: Vec::with_capacity(512),
+			descriptor_heaps: None,
+			descriptor_materializations: Vec::with_capacity(512),
+			materialization_indices: HashMap::with_capacity(512),
+			retired_materializations: std::array::from_fn(|_| Vec::with_capacity(128)),
+			free_materialization_handles: Vec::with_capacity(128),
+			descriptor_sequence_epochs: [0; MAX_FRAMES_IN_FLIGHT],
 			acceleration_structures: Vec::new(),
 			shaders: Vec::with_capacity(1024),
 			pipelines: Vec::with_capacity(1024),
@@ -94,10 +109,6 @@ impl Context {
 			command_buffers: Vec::with_capacity(32),
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
-
-			resource_to_descriptor: HashMap::with_capacity(4096),
-			descriptors: HashMap::with_capacity(4096),
-			descriptor_set_to_resource: HashMap::with_capacity(4096),
 
 			settings,
 
@@ -115,14 +126,16 @@ impl Context {
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity(4096),
-		})
+		};
+		context.descriptor_heaps = Some(context.create_descriptor_heaps());
+		Ok(context)
 	}
 
 	/// Creates a detached-resource factory backed by this Vulkan device.
 	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
 		Some(crate::implementation::Factory::detached_with_resources(
 			self.device.device.clone(),
-			self.descriptor_sets_layouts.clone(),
+			self.device.descriptor_heap_properties,
 		))
 	}
 
@@ -184,31 +197,47 @@ impl Context {
 		command_buffer_handle
 	}
 
-	pub(crate) fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
-		let writes = descriptor_set_writes.iter().flat_map(|descriptor_set_write| {
-			let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
-
-			// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
-
-			match descriptor_set_write.descriptor {
-				crate::descriptors::WriteData::Buffer { .. }
-				| crate::descriptors::WriteData::Image { .. }
-				| crate::descriptors::WriteData::CombinedImageSampler { .. }
-				| crate::descriptors::WriteData::Sampler(_)
-				| crate::descriptors::WriteData::Swapchain(_) => {}
-				_ => unimplemented!(),
+	/// Retains flat descriptor writes and schedules frame-local snapshot refreshes without touching command-visible heap memory.
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		for &descriptor_write in descriptor_set_writes {
+			assert!(
+				!matches!(
+					descriptor_write.descriptor,
+					crate::descriptors::WriteData::StaticSamplers
+						| crate::descriptors::WriteData::CombinedImageSamplerArray
+				),
+				"Unsupported Vulkan descriptor write. The most likely cause is that a removed legacy descriptor constructor is still in use.",
+			);
+			let set_index = descriptor_write.descriptor_set.0 as usize;
+			let retained = crate::vulkan::descriptor_set::RetainedDescriptor {
+				descriptor: descriptor_write.descriptor,
+				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
+			};
+			let descriptor_set = self.descriptor_sets.get_mut(set_index).expect(
+				"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context.",
+			);
+			let previous = descriptor_set
+				.descriptors
+				.get(&descriptor_write.slot)
+				.and_then(|elements| elements.get(&descriptor_write.array_element))
+				.copied();
+			if previous == Some(retained) {
+				continue;
 			}
 
-			binding_handles
-				.into_iter()
-				.enumerate()
-				.filter_map(|(sequence_index, binding_handle)| {
-					self.resolve_descriptor_write_for_sequence(descriptor_set_write, binding_handle, sequence_index)
-				})
-		});
-
-		let writes = self.produce_writes(writes);
-		self.process_write_results(writes);
+			descriptor_set
+				.descriptors
+				.entry(descriptor_write.slot)
+				.or_default()
+				.insert(descriptor_write.array_element, retained);
+			descriptor_set.version = descriptor_set.version.wrapping_add(1);
+			let expected_set_version = descriptor_set.version;
+			self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, None);
+			self.add_task_to_all_frames(Tasks::UpdateDescriptor {
+				descriptor_write,
+				expected_set_version,
+			});
+		}
 	}
 
 	pub(crate) fn create_command_buffer_recording(
@@ -659,8 +688,13 @@ impl Context {
 		};
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
 
-		// Build lazy resources before the frame may need them
+		// The sequence fence has completed, so immutable snapshots retired by earlier updates can now be reused.
+		self.release_retired_descriptor_materializations(frame_key.sequence_index);
+
+		// Build lazy resources before the frame may need them.
 		self.process_tasks(frame_key.sequence_index);
+		// Tasks processed after the fence can retire prior-frame snapshots immediately.
+		self.release_retired_descriptor_materializations(frame_key.sequence_index);
 
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
@@ -734,200 +768,70 @@ impl Context {
 		handles[sequence_index.rem_euclid(handles.len())]
 	}
 
-	/// Selects the frame-local descriptor binding handle for a chained binding resource.
-	fn descriptor_binding_for_sequence(
-		&self,
-		handle: graphics_hardware_interface::DescriptorSetBindingHandle,
-		sequence_index: usize,
-	) -> Option<DescriptorSetBindingHandle> {
-		let binding_handles = DescriptorSetBindingHandle(handle.0).get_all(&self.bindings);
-		if binding_handles.is_empty() {
-			return None;
-		}
-
-		Some(binding_handles[sequence_index.rem_euclid(binding_handles.len())])
-	}
-
-	fn descriptor_targets_swapchain_image(&self, descriptor: &crate::descriptors::WriteData) -> bool {
-		match descriptor {
-			crate::descriptors::WriteData::Image { handle, .. }
-			| crate::descriptors::WriteData::CombinedImageSampler {
-				image_handle: handle, ..
-			} => self.is_swapchain_image_root(graphics_hardware_interface::ImageHandle(*handle)),
-			crate::descriptors::WriteData::Swapchain(_) => true,
-			_ => false,
-		}
-	}
-
-	/// Resolves a public descriptor write into the frame-local Vulkan write used by one descriptor set.
-	fn resolve_descriptor_write_for_sequence(
-		&self,
-		descriptor_set_write: &crate::descriptors::Write,
-		binding_handle: DescriptorSetBindingHandle,
-		sequence_index: usize,
-	) -> Option<DescriptorWrite> {
-		let frame_offset = descriptor_set_write.frame_offset.unwrap_or(0);
-		let write = match descriptor_set_write.descriptor {
-			crate::descriptors::WriteData::Buffer { handle, size } => {
-				let handle = self
-					.buffers
-					.nth_handle(handle, self.frame_index_with_offset(sequence_index, frame_offset))
-					.unwrap();
-				Descriptors::Buffer { handle, size }
-			}
-			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handle = self.resolve_descriptor_image_handle(
-					graphics_hardware_interface::ImageHandle(handle),
-					sequence_index,
-					frame_offset,
-				);
-				Descriptors::Image { handle, layout }
-			}
-			crate::descriptors::WriteData::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				layout,
-				layer,
-			} => {
-				let image_handle = self.resolve_descriptor_image_handle(
-					graphics_hardware_interface::ImageHandle(image_handle),
-					sequence_index,
-					frame_offset,
-				);
-				Descriptors::CombinedImageSampler {
-					image_handle,
-					sampler_handle: SamplerHandle(sampler_handle.0),
-					layout,
-					layer,
-				}
-			}
-			crate::descriptors::WriteData::Sampler(handle) => Descriptors::Sampler {
-				handle: SamplerHandle(handle.0),
-			},
-			crate::descriptors::WriteData::Swapchain(handle) => Descriptors::Swapchain { handle },
-			_ => return None,
-		};
-
-		Some(DescriptorWrite::new(write, binding_handle).index(descriptor_set_write.array_element))
-	}
-
-	fn descriptor_set_sequence_index(&self, descriptor_set_handle: DescriptorSetHandle) -> usize {
-		let root = descriptor_set_handle.root(&self.descriptor_sets);
-		root.get_all(&self.descriptor_sets)
+	/// Removes cached keys immediately while retaining their immutable bytes until the owning frame sequence completes.
+	fn retire_descriptor_materializations(&mut self, predicate: impl Fn(&MaterializationKey) -> bool) {
+		let stale = self
+			.materialization_indices
 			.iter()
-			.position(|handle| *handle == descriptor_set_handle)
-			.unwrap_or(0)
-	}
-
-	fn swapchain_descriptor_image_handle(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		descriptor_set_handle: DescriptorSetHandle,
-	) -> ImageHandle {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		let sequence_index = self.descriptor_set_sequence_index(descriptor_set_handle);
-		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
-
-		swapchain.images[image_index]
-	}
-
-	/// Selects the Vulkan image view a descriptor should bind for a full image or layer.
-	fn descriptor_image_view(image: &Image, layer: Option<u32>) -> vk::ImageView {
-		if let Some(layer) = layer {
-			return image.image_views[layer as usize];
-		}
-
-		if !image.full_image_view.is_null() {
-			image.full_image_view
-		} else {
-			image.image_views[0]
+			.filter(|(key, _)| predicate(key))
+			.map(|(key, handle)| (key.clone(), *handle))
+			.collect::<Vec<_>>();
+		for (key, handle) in stale {
+			self.materialization_indices.remove(&key);
+			self.retired_materializations[key.sequence_index as usize].push(handle);
 		}
 	}
 
-	pub(crate) fn update_swapchain_descriptors_for_sequence(
+	fn invalidate_descriptor_set_materializations(
 		&mut self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		sequence_index: usize,
+		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
+		sequence_index: Option<u8>,
 	) {
-		let targets = self
-			.descriptors
-			.iter()
-			.filter(|(descriptor_set_handle, _)| self.descriptor_set_sequence_index(**descriptor_set_handle) == sequence_index)
-			.flat_map(|(descriptor_set_handle, bindings)| {
-				bindings.iter().flat_map(move |(binding_index, array_elements)| {
-					array_elements
-						.iter()
-						.filter_map(move |(array_element, descriptor)| match descriptor {
-							Descriptor::Swapchain { handle } if *handle == swapchain_handle => {
-								Some((*descriptor_set_handle, *binding_index, *array_element))
-							}
-							_ => None,
-						})
-				})
-			})
-			.collect::<Vec<_>>();
-
-		if targets.is_empty() {
-			return;
-		}
-
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
-		let image_handle = swapchain.images[image_index];
-		let image = &self.images[image_handle.0 as usize];
-		let image_view = Self::descriptor_image_view(image, None);
-
-		if image.image.is_null() || image_view.is_null() {
-			eprintln!(
-				"Vulkan swapchain descriptor update skipped for swapchain {:?}. The most likely cause is that the acquired swapchain image does not have a valid image view.",
-				swapchain_handle
-			);
-			return;
-		}
-
-		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
-		let writes = targets
-			.into_iter()
-			.filter_map(|(descriptor_set_handle, binding_index, array_element)| {
-				let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-				let Some(binding) = self
-					.bindings
-					.iter()
-					.find(|binding| binding.descriptor_set_handle == descriptor_set_handle && binding.index == binding_index)
-				else {
-					eprintln!(
-						"Vulkan swapchain descriptor update skipped for binding {}. The most likely cause is that descriptor bookkeeping lost the binding handle for this descriptor set.",
-						binding_index
-					);
-					return None;
-				};
-
-				let image_info = images.append([vk::DescriptorImageInfo::default()
-					.image_layout(texture_format_and_resource_use_to_image_layout(
-						image.format_,
-						crate::Layouts::General,
-						None,
-					))
-					.image_view(image_view)]);
-
-				Some(
-					vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(array_element)
-						.descriptor_type(binding.descriptor_type)
-						.image_info(&image_info),
-				)
-			})
-			.collect::<Vec<_>>();
-
-		unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+		self.retire_descriptor_materializations(|key| {
+			sequence_index.is_none_or(|sequence_index| key.sequence_index == sequence_index)
+				&& key.descriptor_sets.iter().any(|(handle, ..)| *handle == descriptor_set)
+		});
 	}
 
-	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
-		let mut descriptor_writes = Vec::with_capacity(32);
-		let mut recurring_tasks = Vec::new();
+	fn bump_descriptor_sequence_epoch(&mut self, sequence_index: u8) {
+		let epoch = &mut self.descriptor_sequence_epochs[sequence_index as usize];
+		*epoch = epoch.wrapping_add(1);
+		self.retire_descriptor_materializations(|key| {
+			key.resource_epochs
+				.iter()
+				.any(|(resource_sequence, _)| *resource_sequence == sequence_index)
+		});
+	}
 
+	/// Reclaims stale heap ranges only after the sequence fence proves that no command buffer still references them.
+	fn release_retired_descriptor_materializations(&mut self, sequence_index: u8) {
+		let sequence_index = sequence_index as usize;
+		if self.retired_materializations[sequence_index].is_empty() {
+			return;
+		}
+		let mut retired = std::mem::take(&mut self.retired_materializations[sequence_index]);
+
+		let heaps = self.descriptor_heaps.as_mut().expect(
+			"Missing Vulkan descriptor heaps. The most likely cause is that snapshot retirement ran before context initialization completed.",
+		);
+		for handle in retired.drain(..) {
+			let Some(materialization) = self.descriptor_materializations[handle.0 as usize].take() else {
+				continue;
+			};
+			heaps
+				.resource_mut()
+				.release(materialization.resource_heap_offset, materialization.resource_heap_size);
+			heaps
+				.sampler_mut()
+				.release(materialization.sampler_heap_offset, materialization.sampler_heap_size);
+			self.free_materialization_handles.push(handle);
+		}
+		retired.clear();
+		self.retired_materializations[sequence_index] = retired;
+	}
+
+	/// Executes deferred resource work and invalidates only the frame-local immutable descriptor snapshots that may reference it.
+	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut tasks = self.tasks.split_off(0);
 
 		// TODO: optimize consecutive tasks such as two resize tasks
@@ -967,48 +871,23 @@ impl Context {
 						self.device.destroy_buffer(*handle, None);
 					}
 				}
-				Tasks::UpdateBufferDescriptors { handle } => {
-					self.add_descriptor_writes_for_update_buffer_descriptors(*handle, &mut descriptor_writes);
-				}
-				Tasks::UpdateDescriptor { descriptor_write } => {
-					let Some(binding) =
-						self.descriptor_binding_for_sequence(descriptor_write.binding_handle, sequence_index as usize)
-					else {
-						return false;
-					};
-
-					let targets_swapchain = self.descriptor_targets_swapchain_image(&descriptor_write.descriptor);
-					let new_descriptor_write =
-						self.resolve_descriptor_write_for_sequence(descriptor_write, binding, sequence_index as usize);
-
-					if let crate::descriptors::WriteData::Swapchain(handle) = descriptor_write.descriptor {
-						let binding_data = binding.access(&self.bindings);
-						self.store_descriptor(
-							binding_data.descriptor_set_handle,
-							binding,
-							binding_data.index,
-							descriptor_write.array_element,
-							Descriptor::Swapchain { handle },
-						);
-
-						// Swapchain descriptors still need an actual Vulkan descriptor write after
-						// their bookkeeping entry is stored. Frame acquisition refreshes stored
-						// swapchain descriptors later, but first use cannot rely on that refresh
-						// having seen a descriptor entry that did not exist yet.
-						if let Some(write) = new_descriptor_write {
-							descriptor_writes.push(write);
-						}
-					} else if let Some(write) = new_descriptor_write {
-						descriptor_writes.push(write);
-
-						if targets_swapchain {
-							recurring_tasks.push(Task::new(
-								Tasks::UpdateDescriptor {
-									descriptor_write: *descriptor_write,
-								},
-								Some(sequence_index),
-							));
-						}
+				Tasks::UpdateDescriptor {
+					descriptor_write,
+					expected_set_version,
+				} => {
+					let current = self
+						.descriptor_sets
+						.get_mut(descriptor_write.descriptor_set.0 as usize)
+						.is_some_and(|set| {
+							if !descriptor_task_is_current(set, *descriptor_write, *expected_set_version) {
+								return false;
+							}
+							let version = &mut set.sequence_versions[sequence_index as usize];
+							*version = version.wrapping_add(1);
+							true
+						});
+					if current {
+						self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, Some(sequence_index));
 					}
 				}
 				Tasks::BuildImage(builder) => {
@@ -1026,6 +905,7 @@ impl Context {
 						previous_image.extent,
 						previous_image.uses,
 					);
+					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
 				Tasks::BuildBuffer(builder) => {
 					let name = self.get_object_debug_name(builder.master.into());
@@ -1051,6 +931,7 @@ impl Context {
 						buffer.staging = Some(per_frame_staging);
 						buffer.source = Some(source_handle);
 					}
+					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
 				Tasks::ResizeImage { handle, extent } => {
 					let handle = self.image_handle_for_sequence(*handle, sequence_index as usize);
@@ -1061,9 +942,6 @@ impl Context {
 			false
 		});
 
-		self.write_internal(descriptor_writes);
-
-		tasks.extend(recurring_tasks);
 		self.tasks = tasks;
 	}
 
@@ -1086,22 +964,26 @@ impl Context {
 		}
 	}
 
+	/// Builds a graphics pipeline description whose shader stages use flat descriptor-heap mappings.
 	fn create_vulkan_graphics_pipeline_create_info<'a, R>(
 		&'a mut self,
 		builder: crate::pipelines::raster::Builder,
-		after_build: impl FnOnce(&'a mut Self, crate::pipelines::raster::Builder, vk::GraphicsPipelineCreateInfo) -> R,
+		after_build: impl FnOnce(
+			&'a mut Self,
+			crate::pipelines::raster::Builder,
+			graphics_hardware_interface::PipelineLayoutHandle,
+			vk::GraphicsPipelineCreateInfo,
+		) -> R,
 	) -> R {
 		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
 			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
 		;
 
-		let pipeline_layout_handle = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let pipeline_layout_handle =
+			self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
-		let pipeline_create_info = pipeline_create_info.layout(pipeline_layout.pipeline_layout);
+		let pipeline_create_info = pipeline_create_info.layout(vk::PipelineLayout::null());
 
 		let mut vertex_input_attribute_descriptions = vec![];
 
@@ -1149,10 +1031,23 @@ impl Context {
 		let mut entry_count = 0;
 		let specilization_info_count = 0;
 
-		let stages = builder
+		let stage_mappings = builder
 			.shaders
 			.iter()
 			.map(|stage| {
+				let shader = &self.shaders[stage.handle.0 as usize];
+				crate::vulkan::build_shader_mappings(pipeline_layout, &shader.shader_resource_descriptors)
+			})
+			.collect::<Vec<_>>();
+		let mut mapping_infos = stage_mappings
+			.iter()
+			.map(|mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings))
+			.collect::<Vec<_>>();
+		let stages = builder
+			.shaders
+			.iter()
+			.zip(mapping_infos.iter_mut())
+			.map(|(stage, mapping_info)| {
 				for entry in stage.specialization_map.iter() {
 					specialization_entries_buffer.extend_from_slice(entry.get_data());
 
@@ -1169,6 +1064,7 @@ impl Context {
 				assert!(specilization_info_count == 0);
 
 				vk::PipelineShaderStageCreateInfo::default()
+					.push(mapping_info)
 					.stage(to_shader_stage_flags(stage.stage))
 					.module(shader.shader)
 					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
@@ -1219,9 +1115,17 @@ impl Context {
 			.attachments(&pipeline_color_blend_attachments)
 			.blend_constants([0.0, 0.0, 0.0, 0.0]);
 
+		let has_depth = builder
+			.render_targets
+			.iter()
+			.any(|attachment| attachment.format == crate::Formats::Depth32);
 		let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
 			.color_attachment_formats(&color_attachement_formats)
-			.depth_attachment_format(vk::Format::UNDEFINED);
+			.depth_attachment_format(if has_depth {
+				vk::Format::D32_SFLOAT
+			} else {
+				vk::Format::UNDEFINED
+			});
 
 		let pipeline_create_info = pipeline_create_info.color_blend_state(&color_blend_state);
 
@@ -1234,14 +1138,9 @@ impl Context {
 			.front(vk::StencilOpState::default())
 			.back(vk::StencilOpState::default());
 
-		let pipeline_create_info = if let Some(_) = builder.render_targets.iter().find(|a| a.format == crate::Formats::Depth32)
-		{
-			rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
-			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
-			let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
-			pipeline_create_info
+		let pipeline_create_info = if has_depth {
+			pipeline_create_info.depth_stencil_state(&depth_stencil_state)
 		} else {
-			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
 			pipeline_create_info
 		};
 
@@ -1299,78 +1198,41 @@ impl Context {
 			.rasterization_state(&rasterization_state)
 			.multisample_state(&multisample_state)
 			.input_assembly_state(&input_assembly_state);
+		let mut descriptor_heap_flags =
+			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+		let pipeline_create_info = pipeline_create_info
+			.push(&mut descriptor_heap_flags)
+			.push(&mut rendering_info);
 
-		after_build(self, builder, pipeline_create_info)
+		after_build(self, builder, pipeline_layout_handle, pipeline_create_info)
 	}
 
+	/// Returns a cached descriptor-heap layout derived from shader resource metadata.
 	fn get_or_create_pipeline_layout(
 		&mut self,
-		descriptor_set_layout_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		shaders: &[crate::pipelines::ShaderParameter],
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let key = PipelineLayoutKey {
-			descriptor_set_templates: descriptor_set_layout_handles.to_vec(),
-			push_constant_ranges: push_constant_ranges.to_vec(),
-		};
-
+		let stage_resources = shaders
+			.iter()
+			.map(|shader_parameter| {
+				let shader = &self.shaders[shader_parameter.handle.0 as usize];
+				(shader.stage, shader.shader_resource_descriptors.clone())
+			})
+			.collect::<Vec<_>>();
+		let layout = crate::vulkan::build_pipeline_layout(
+			&stage_resources,
+			push_constant_ranges,
+			&self.device.descriptor_heap_properties,
+		);
+		let key = PipelineLayoutKey::new(&layout);
 		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
 			return *handle;
 		}
 
-		let push_constant_stages =
-			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
-
-		let push_constant_stages = push_constant_stages
-			| if self.settings.mesh_shading {
-				vk::ShaderStageFlags::MESH_EXT
-			} else {
-				vk::ShaderStageFlags::empty()
-			};
-
-		let default_push_constant_range;
-		let push_constant_ranges = if push_constant_ranges.is_empty() {
-			default_push_constant_range = [crate::pipelines::PushConstantRange::new(0, 128)];
-			default_push_constant_range.as_slice()
-		} else {
-			push_constant_ranges
-		};
-
-		let push_constant_ranges = push_constant_ranges
-			.iter()
-			.map(|push_constant_range| {
-				vk::PushConstantRange::default()
-					.size(push_constant_range.size)
-					.offset(push_constant_range.offset)
-					.stage_flags(push_constant_stages)
-			})
-			.collect::<Vec<_>>();
-		let set_layouts = descriptor_set_layout_handles
-			.iter()
-			.map(|set_layout| self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout)
-			.collect::<Vec<_>>();
-
-		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
-			.set_layouts(&set_layouts)
-			.push_constant_ranges(&push_constant_ranges);
-
-		let pipeline_layout = unsafe {
-			self.device
-				.create_pipeline_layout(&pipeline_layout_create_info, None)
-				.expect("No pipeline layout")
-		};
-
 		let handle = graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
-
-		self.pipeline_layouts.push(PipelineLayout {
-			pipeline_layout,
-			descriptor_set_template_indices: descriptor_set_layout_handles
-				.iter()
-				.enumerate()
-				.map(|(i, handle)| (*handle, i as u32))
-				.collect(),
-		});
+		self.pipeline_layouts.push(layout);
 		self.pipeline_layout_indices.insert(key, handle);
-
 		handle
 	}
 
@@ -1378,45 +1240,30 @@ impl Context {
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		self.create_vulkan_graphics_pipeline_create_info(builder, |this, builder, pipeline_create_info| {
-			let pipeline_layout_handle = this.get_or_create_pipeline_layout(
-				builder.descriptor_set_templates.as_ref(),
-				builder.push_constant_ranges.as_ref(),
-			);
-			let pipeline_create_infos = [pipeline_create_info];
+		self.create_vulkan_graphics_pipeline_create_info(
+			builder,
+			|this, _builder, pipeline_layout_handle, pipeline_create_info| {
+				let pipeline_create_infos = [pipeline_create_info];
 
-			let pipelines = unsafe {
-				this.device
-					.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None)
-					.expect("No pipeline")
-			};
+				let pipelines = unsafe {
+					this.device
+						.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None)
+						.expect("No pipeline")
+				};
 
-			let pipeline = pipelines[0];
+				let pipeline = pipelines[0];
 
-			let handle = graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
+				let handle = graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
 
-			let resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))> = builder
-				.shaders
-				.iter()
-				.map(|s| {
-					let shader = &this.shaders[s.handle.0 as usize];
-					shader
-						.shader_binding_descriptors
-						.iter()
-						.map(|sbd| ((sbd.set, sbd.binding), (Into::<crate::Stages>::into(s.stage), sbd.access)))
-				})
-				.flatten()
-				.collect::<Vec<_>>();
+				this.pipelines.push(Pipeline {
+					pipeline,
+					layout: pipeline_layout_handle,
+					shader_handles: HashMap::new(),
+				});
 
-			this.pipelines.push(Pipeline {
-				pipeline,
-				layout: pipeline_layout_handle,
-				shader_handles: HashMap::new(),
-				resource_access,
-			});
-
-			handle
-		})
+				handle
+			},
+		)
 	}
 
 	pub(super) fn get_image_subresource_layout(
@@ -1620,7 +1467,7 @@ impl Context {
 		let memory_allocate_info = vk::MemoryAllocateInfo::default()
 			.allocation_size(size as u64)
 			.memory_type_index(memory_type_index)
-			.push_next(&mut memory_allocate_flags_info);
+			.push(&mut memory_allocate_flags_info);
 
 		let memory = unsafe { self.device.allocate_memory(&memory_allocate_info, None).expect("No memory") };
 
@@ -1686,7 +1533,7 @@ impl Context {
 	/// GPU-visible storage.
 	fn build_buffer_internal(
 		&mut self,
-		next: Option<BufferHandle>,
+		_next: Option<BufferHandle>,
 		name: Option<&str>,
 		resource_uses: crate::Uses,
 		size: usize,
@@ -2018,7 +1865,6 @@ impl Context {
 			let current_vk_buffer = current_buffer.buffer;
 
 			self.tasks.push(Task::delete_vulkan_buffer(current_vk_buffer, None));
-			self.tasks.push(Task::update_buffer_descriptor(buffer_handle, None));
 
 			// todo!("copy data from old buffer to new buffer");
 		}
@@ -2032,6 +1878,9 @@ impl Context {
 		);
 
 		*self.buffers.resource_mut(buffer_handle) = new_buffer;
+		for sequence_index in 0..self.frames {
+			self.bump_descriptor_sequence_epoch(sequence_index);
+		}
 	}
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
@@ -2089,7 +1938,7 @@ impl Context {
 			state.layout = vk::ImageLayout::UNDEFINED;
 		}
 
-		self.update_image_bindings(image_handle);
+		self.bump_descriptor_sequence_epoch(sequence_index);
 	}
 
 	/// Add the task to all frames
@@ -2109,400 +1958,702 @@ impl Context {
 		}
 	}
 
-	#[must_use]
-	fn produce_writes(&self, writes: impl IntoIterator<Item = DescriptorWrite>) -> SmallVec<[WriteResult; 128]> {
-		let mut buffers: StableVec<vk::DescriptorBufferInfo, 1024> = StableVec::new();
-		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
+	/// Creates one persistently mapped heap whose retired immutable snapshot ranges can be reused after fence completion.
+	fn create_descriptor_heap_arena(
+		&mut self,
+		name: &str,
+		size: u64,
+		heap_alignment: u64,
+		descriptor_alignment: u64,
+		reserved_size: u64,
+	) -> DescriptorHeapArena {
+		assert!(
+			size <= u32::MAX as u64,
+			"Vulkan descriptor heap exceeds the 32-bit push-index address space. The most likely cause is an implementation reservation larger than the mapping interface supports.",
+		);
+		let buffer_size = size
+			.checked_add(heap_alignment)
+			.expect("Vulkan descriptor heap size overflowed. The most likely cause is invalid descriptor-heap properties.");
+		let creation = self.create_vulkan_buffer(
+			Some(name),
+			usize::try_from(buffer_size).expect(
+				"Vulkan descriptor heap exceeds addressable host memory. The most likely cause is invalid device limits.",
+			),
+			vk::BufferUsageFlags::DESCRIPTOR_HEAP_EXT | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+		);
+		let host_device_local = self
+			.memory_properties
+			.memory_types
+			.iter()
+			.enumerate()
+			.take(self.memory_properties.memory_type_count as usize)
+			.any(|(index, memory_type)| {
+				creation.memory_flags & (1 << index) != 0
+					&& memory_type.property_flags.contains(
+						vk::MemoryPropertyFlags::HOST_VISIBLE
+							| vk::MemoryPropertyFlags::HOST_COHERENT
+							| vk::MemoryPropertyFlags::DEVICE_LOCAL,
+					)
+			});
+		let device_accesses = crate::DeviceAccesses::CpuWrite
+			| if host_device_local {
+				crate::DeviceAccesses::GpuRead
+			} else {
+				crate::DeviceAccesses::empty()
+			};
+		let (allocation, _) = self.create_allocation_internal(creation.size, creation.memory_flags.into(), device_accesses);
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
+		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
+		let base_offset = aligned_address - device_address;
+		assert!(base_offset + size <= buffer_size);
 
-		let mut write_results = SmallVec::<[WriteResult; 128]>::new();
-
-		let writes = writes
-			.into_iter()
-			.filter_map(|descriptor_set_write| {
-				let binding_handle = descriptor_set_write.binding;
-				let binding = binding_handle.access(&self.bindings);
-				let descriptor_set_handle = binding.descriptor_set_handle;
-				let descriptor_set = descriptor_set_handle.access(&self.descriptor_sets);
-
-				let binding_index = binding.index;
-				let descriptor_type = binding.descriptor_type;
-
-				match descriptor_set_write.write {
-					Descriptors::Buffer { handle, size } => {
-						let buffer_handle = handle;
-						let buffer = self.buffers.resource(buffer_handle);
-
-						let res = if !buffer.buffer.is_null() {
-							let e = buffers.append([vk::DescriptorBufferInfo::default()
-								.buffer(buffer.buffer)
-								.offset(0u64)
-								.range(match size {
-									graphics_hardware_interface::Ranges::Size(size) => size as u64,
-									graphics_hardware_interface::Ranges::Whole => vk::WHOLE_SIZE,
-								})]);
-
-							let write_info = vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(binding_index)
-								.dst_array_element(descriptor_set_write.array_element)
-								.descriptor_type(descriptor_type)
-								.buffer_info(e);
-
-							Some(write_info)
-						} else {
-							None
-						};
-
-						write_results.push(WriteResult {
-							array_element: descriptor_set_write.array_element,
-							binding_handle,
-							descriptor_set_handle,
-							binding_index,
-							descriptor: Descriptor::Buffer {
-								size,
-								buffer: buffer_handle,
-							},
-						});
-
-						res
-					}
-					Descriptors::Image { handle, layout } => {
-						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-
-						let image_handle = handle;
-
-						let image = &self.images[image_handle.0 as usize];
-						let image_view = Self::descriptor_image_view(image, None);
-						let format = image.format_;
-						let image = image.image;
-
-						let res = if !image.is_null() && !image_view.is_null() {
-							let e = images.append([vk::DescriptorImageInfo::default()
-								.image_layout(texture_format_and_resource_use_to_image_layout(format, layout, None))
-								.image_view(image_view)]);
-
-							let write_info = vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(binding_index)
-								.dst_array_element(descriptor_set_write.array_element)
-								.descriptor_type(descriptor_type)
-								.image_info(&e);
-
-							Some(write_info)
-						} else {
-							None
-						};
-
-						write_results.push(WriteResult {
-							array_element: descriptor_set_write.array_element,
-							binding_handle,
-							descriptor_set_handle,
-							binding_index,
-							descriptor: Descriptor::Image {
-								layout,
-								image: image_handle,
-							},
-						});
-
-						res
-					}
-					Descriptors::CombinedImageSampler {
-						image_handle,
-						sampler_handle,
-						layout,
-						layer,
-					} => {
-						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-
-						let image = &self.images[image_handle.0 as usize];
-
-						let res = if !image.image.is_null() {
-							let image_view = Self::descriptor_image_view(image, layer);
-
-							let e = images.append([vk::DescriptorImageInfo::default()
-								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-								.image_view(image_view)
-								.sampler(vk::Sampler::from_raw(sampler_handle.0))]);
-
-							let write_info = vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(binding_index)
-								.dst_array_element(descriptor_set_write.array_element)
-								.descriptor_type(descriptor_type)
-								.image_info(e);
-
-							Some(write_info)
-						} else {
-							None
-						};
-
-						write_results.push(WriteResult {
-							array_element: descriptor_set_write.array_element,
-							binding_handle,
-							descriptor_set_handle,
-							binding_index,
-							descriptor: Descriptor::CombinedImageSampler {
-								image: image_handle,
-								sampler: vk::Sampler::from_raw(sampler_handle.0),
-								layout,
-							},
-						});
-
-						res
-					}
-					Descriptors::Sampler { handle } => {
-						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-						let sampler_handle = handle;
-						let e = images
-							.append([vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))]);
-
-						let write_info = vk::WriteDescriptorSet::default()
-							.dst_set(descriptor_set.descriptor_set)
-							.dst_binding(binding_index)
-							.dst_array_element(descriptor_set_write.array_element)
-							.descriptor_type(descriptor_type)
-							.image_info(e);
-
-						// self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::Sampler{ sampler: vk::Sampler::from_raw(sampler_handle.0) });
-						// self.resource_to_descriptor.entry(Handle::Sampler(sampler_handle)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
-
-						Some(write_info)
-					}
-					Descriptors::Swapchain { handle } => {
-						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-						let image_handle = self.swapchain_descriptor_image_handle(handle, descriptor_set_handle);
-						let image = &self.images[image_handle.0 as usize];
-						let image_view = Self::descriptor_image_view(image, None);
-
-						let res = if !image.image.is_null() && !image_view.is_null() {
-							let e = images.append([vk::DescriptorImageInfo::default()
-								.image_layout(texture_format_and_resource_use_to_image_layout(
-									image.format_,
-									crate::Layouts::General,
-									None,
-								))
-								.image_view(image_view)]);
-
-							let write_info = vk::WriteDescriptorSet::default()
-								.dst_set(descriptor_set.descriptor_set)
-								.dst_binding(binding_index)
-								.dst_array_element(descriptor_set_write.array_element)
-								.descriptor_type(descriptor_type)
-								.image_info(&e);
-
-							Some(write_info)
-						} else {
-							None
-						};
-
-						write_results.push(WriteResult {
-							array_element: descriptor_set_write.array_element,
-							binding_handle,
-							descriptor_set_handle,
-							binding_index,
-							descriptor: Descriptor::Swapchain { handle },
-						});
-
-						res
-					}
-				}
-			})
-			.collect::<SmallVec<[vk::WriteDescriptorSet; 128]>>();
-
-		unsafe { self.device.update_descriptor_sets(&writes, &[]) };
-
-		write_results
+		let application_offset = crate::vulkan::align_up(reserved_size, descriptor_alignment);
+		assert!(
+			application_offset < size,
+			"Vulkan descriptor heap has no application-owned range. The most likely cause is that the implementation reservation consumes the device's maximum heap size.",
+		);
+		DescriptorHeapArena {
+			buffer: creation.resource,
+			pointer: unsafe { pointer.add(base_offset as usize) },
+			device_address: aligned_address,
+			size,
+			reserved_size,
+			free_ranges: vec![super::DescriptorHeapRange {
+				offset: application_offset,
+				size: size - application_offset,
+			}],
+		}
 	}
 
-	fn process_write_results(&mut self, writes: SmallVec<[WriteResult; 128]>) {
-		for write in writes {
-			let descriptor_set_handle = write.descriptor_set_handle;
-			let binding_index = write.binding_index;
-			let array_element = write.array_element;
-			let binding_handle = write.binding_handle;
+	/// Allocates the long-lived resource and sampler heaps once for the context.
+	fn create_descriptor_heaps(&mut self) -> DescriptorHeaps {
+		const RESOURCE_HEAP_TARGET_SIZE: u64 = 64 * 1024 * 1024;
+		const SAMPLER_HEAP_TARGET_SIZE: u64 = 1024 * 1024;
+		let properties = self.device.descriptor_heap_properties;
+		let resource_descriptor_alignment = properties
+			.buffer_descriptor_alignment
+			.max(properties.image_descriptor_alignment);
+		let resource_minimum =
+			crate::vulkan::align_up(properties.min_resource_heap_reserved_range, resource_descriptor_alignment)
+				.checked_add(properties.buffer_descriptor_size.max(properties.image_descriptor_size))
+				.unwrap();
+		let sampler_minimum = crate::vulkan::align_up(
+			properties.min_sampler_heap_reserved_range,
+			properties.sampler_descriptor_alignment,
+		)
+		.checked_add(properties.sampler_descriptor_size)
+		.unwrap();
+		assert!(
+			resource_minimum <= properties.max_resource_heap_size,
+			"Vulkan resource heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for one resource descriptor.",
+		);
+		assert!(
+			sampler_minimum <= properties.max_sampler_heap_size,
+			"Vulkan sampler heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for one sampler descriptor.",
+		);
+		let resource_size = RESOURCE_HEAP_TARGET_SIZE
+			.max(resource_minimum)
+			.min(properties.max_resource_heap_size);
+		let sampler_size = SAMPLER_HEAP_TARGET_SIZE
+			.max(sampler_minimum)
+			.min(properties.max_sampler_heap_size);
 
-			self.store_descriptor(
-				descriptor_set_handle,
-				binding_handle,
-				binding_index,
-				array_element,
-				write.descriptor,
+		DescriptorHeaps {
+			resource: self.create_descriptor_heap_arena(
+				"GHI Resource Descriptor Heap",
+				resource_size,
+				properties.resource_heap_alignment,
+				resource_descriptor_alignment,
+				properties.min_resource_heap_reserved_range,
+			),
+			sampler: self.create_descriptor_heap_arena(
+				"GHI Sampler Descriptor Heap",
+				sampler_size,
+				properties.sampler_heap_alignment,
+				properties.sampler_descriptor_alignment,
+				properties.min_sampler_heap_reserved_range,
+			),
+		}
+	}
+
+	fn descriptors_at_slot<'a>(
+		&'a self,
+		sets: &[graphics_hardware_interface::DescriptorSetHandle],
+		slot: crate::shader::ResourceSlot,
+	) -> Option<&'a HashMap<u32, crate::vulkan::descriptor_set::RetainedDescriptor>> {
+		sets.iter()
+			.find_map(|set| self.descriptor_sets[set.0 as usize].descriptors.get(&slot))
+	}
+
+	fn descriptor_matches_kind(descriptor: crate::descriptors::WriteData, kind: crate::shader::ResourceKind) -> bool {
+		match descriptor {
+			crate::descriptors::WriteData::Buffer { .. } => matches!(
+				kind,
+				crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer
+			),
+			crate::descriptors::WriteData::Image { .. } | crate::descriptors::WriteData::Swapchain(_) => matches!(
+				kind,
+				crate::shader::ResourceKind::SampledImage
+					| crate::shader::ResourceKind::StorageImage
+					| crate::shader::ResourceKind::InputAttachment
+			),
+			crate::descriptors::WriteData::CombinedImageSampler { .. } => {
+				kind == crate::shader::ResourceKind::CombinedImageSampler
+			}
+			crate::descriptors::WriteData::Sampler(_) => kind == crate::shader::ResourceKind::Sampler,
+			crate::descriptors::WriteData::AccelerationStructure { .. } => {
+				kind == crate::shader::ResourceKind::AccelerationStructure
+			}
+			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => false,
+		}
+	}
+
+	/// Compares the native resource and image layout consumed by two materialized descriptors.
+	fn descriptors_consume_same_resource(left: Descriptor, right: Descriptor) -> bool {
+		match (left, right) {
+			(Descriptor::Buffer { buffer: left, .. }, Descriptor::Buffer { buffer: right, .. }) => left == right,
+			(
+				Descriptor::Image {
+					image: left,
+					layout: left_layout,
+				},
+				Descriptor::Image {
+					image: right,
+					layout: right_layout,
+				},
+			)
+			| (
+				Descriptor::Image {
+					image: left,
+					layout: left_layout,
+				},
+				Descriptor::CombinedImageSampler {
+					image: right,
+					layout: right_layout,
+					..
+				},
+			)
+			| (
+				Descriptor::CombinedImageSampler {
+					image: left,
+					layout: left_layout,
+					..
+				},
+				Descriptor::Image {
+					image: right,
+					layout: right_layout,
+				},
+			)
+			| (
+				Descriptor::CombinedImageSampler {
+					image: left,
+					layout: left_layout,
+					..
+				},
+				Descriptor::CombinedImageSampler {
+					image: right,
+					layout: right_layout,
+					..
+				},
+			) => left == right && left_layout == right_layout,
+			(Descriptor::AccelerationStructure { handle: left }, Descriptor::AccelerationStructure { handle: right }) => {
+				left == right
+			}
+			_ => false,
+		}
+	}
+
+	/// Validates one complete logical set union against the active flat pipeline layout.
+	fn validate_descriptor_sets(&self, layout: &PipelineLayout, sets: &[graphics_hardware_interface::DescriptorSetHandle]) {
+		for set in sets {
+			assert!(
+				(set.0 as usize) < self.descriptor_sets.len(),
+				"Invalid Vulkan descriptor set. The most likely cause is that a bound handle came from another context.",
 			);
 		}
+
+		for resource in &layout.resources {
+			let descriptor = resource.descriptor;
+			for set in sets {
+				assert!(
+					self.descriptor_sets[set.0 as usize]
+						.descriptors
+						.keys()
+						.all(|slot| crate::vulkan::resource_accepts_retained_slot_key(descriptor, *slot)),
+					"Invalid retained Vulkan descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array base.",
+				);
+			}
+
+			let owners = sets
+				.iter()
+				.filter(|set| {
+					self.descriptor_sets[set.0 as usize]
+						.descriptors
+						.contains_key(&descriptor.slot())
+				})
+				.count();
+			assert!(
+				owners <= 1,
+				"Overlapping retained Vulkan descriptor sets. The most likely cause is that two bound sets write the same active flat resource slot.",
+			);
+
+			let elements = self.descriptors_at_slot(sets, descriptor.slot());
+			if descriptor.count() == 1 {
+				assert!(
+					elements.is_some_and(|elements| elements.contains_key(&0)),
+					"Missing retained Vulkan descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
+					descriptor.slot().index(),
+				);
+			}
+			if let Some(elements) = elements {
+				for (&array_element, retained) in elements {
+					assert!(
+						array_element < descriptor.count(),
+						"Vulkan descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
+					);
+					assert!(
+						Self::descriptor_matches_kind(retained.descriptor, descriptor.kind()),
+						"Vulkan descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
+					);
+				}
+			}
+		}
 	}
 
-	/// Stores a descriptor value and refreshes the reverse resource tracking for its binding element.
-	fn store_descriptor(
-		&mut self,
-		descriptor_set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
-		array_element: u32,
-		descriptor: Descriptor,
-	) {
-		self.clear_descriptor_tracking(descriptor_set_handle, binding_handle, binding_index, array_element);
-		self.register_descriptor_tracking(
-			descriptor_set_handle,
-			binding_handle,
-			binding_index,
-			array_element,
-			&descriptor,
-		);
-
-		self.descriptors
-			.entry(descriptor_set_handle)
-			.or_insert_with(HashMap::new)
-			.entry(binding_index)
-			.or_insert_with(HashMap::new)
-			.insert(array_element, descriptor);
+	fn swapchain_key_for_image(
+		&self,
+		handle: graphics_hardware_interface::BaseImageHandle,
+		sequence_index: u8,
+	) -> Option<(graphics_hardware_interface::SwapchainHandle, u8)> {
+		self.swapchains.iter().enumerate().find_map(|(index, swapchain)| {
+			(swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0).then_some((
+				graphics_hardware_interface::SwapchainHandle(index as u64),
+				swapchain.acquired_image_indices[sequence_index as usize],
+			))
+		})
 	}
 
-	/// Removes stale resource-to-descriptor links before a binding element is overwritten.
-	fn clear_descriptor_tracking(
-		&mut self,
-		descriptor_set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
-		array_element: u32,
-	) {
-		let key = (descriptor_set_handle, binding_index, array_element);
-		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
-			return;
-		};
-
-		for resource in resources {
-			let should_remove = if let Some(descriptor_bindings) = self.resource_to_descriptor.get_mut(&resource) {
-				descriptor_bindings.remove(&(binding_handle, array_element));
-				descriptor_bindings.is_empty()
-			} else {
-				false
+	fn materialization_key(
+		&self,
+		layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
+		sets: &[graphics_hardware_interface::DescriptorSetHandle],
+		sequence_index: u8,
+	) -> MaterializationKey {
+		let layout = &self.pipeline_layouts[layout_handle.0 as usize];
+		let mut descriptor_sets = sets
+			.iter()
+			.map(|set| {
+				let descriptor_set = &self.descriptor_sets[set.0 as usize];
+				(
+					*set,
+					descriptor_set.version,
+					descriptor_set.sequence_versions[sequence_index as usize],
+				)
+			})
+			.collect::<SmallVec<[_; 4]>>();
+		descriptor_sets.sort_unstable_by_key(|(set, ..)| set.0);
+		let mut resource_epochs = SmallVec::<[_; MAX_FRAMES_IN_FLIGHT]>::new();
+		let mut swapchain_images = SmallVec::<[_; 4]>::new();
+		for resource in &layout.resources {
+			let Some(elements) = self.descriptors_at_slot(sets, resource.descriptor.slot()) else {
+				continue;
 			};
-
-			if should_remove {
-				self.resource_to_descriptor.remove(&resource);
+			for retained in elements.values() {
+				let target_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset) as u8;
+				let key = match retained.descriptor {
+					crate::descriptors::WriteData::Buffer { .. } => {
+						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
+						None
+					}
+					crate::descriptors::WriteData::Swapchain(handle) => {
+						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
+						Some((
+							handle,
+							self.swapchains[handle.0 as usize].acquired_image_indices[target_sequence as usize],
+						))
+					}
+					crate::descriptors::WriteData::Image { handle, .. }
+					| crate::descriptors::WriteData::CombinedImageSampler {
+						image_handle: handle, ..
+					} => {
+						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
+						self.swapchain_key_for_image(handle, target_sequence)
+					}
+					_ => None,
+				};
+				if let Some(key) = key {
+					swapchain_images.push(key);
+				}
 			}
+		}
+		resource_epochs.sort_unstable_by_key(|(sequence, _)| *sequence);
+		resource_epochs.dedup();
+		swapchain_images.sort_unstable_by_key(|(handle, image)| (handle.0, *image));
+		swapchain_images.dedup();
+
+		MaterializationKey {
+			layout: layout_handle,
+			descriptor_sets,
+			sequence_index,
+			resource_epochs,
+			swapchain_images,
 		}
 	}
 
-	/// Registers resource-backed descriptors so backing resource rebuilds can refresh affected bindings.
-	fn register_descriptor_tracking(
+	fn resolve_retained_descriptor(
+		&self,
+		retained: crate::vulkan::descriptor_set::RetainedDescriptor,
+		sequence_index: u8,
+	) -> Descriptor {
+		let resource_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset);
+		match retained.descriptor {
+			crate::descriptors::WriteData::Buffer { handle, size } => Descriptor::Buffer {
+				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
+					"Missing deferred Vulkan buffer. The most likely cause is that frame resource tasks were not processed before descriptor materialization.",
+				),
+				size,
+			},
+			crate::descriptors::WriteData::Image { handle, layout } => Descriptor::Image {
+				image: self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(handle),
+					sequence_index as usize,
+					retained.frame_offset,
+				),
+				layout,
+			},
+			crate::descriptors::WriteData::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer,
+			} => Descriptor::CombinedImageSampler {
+				image: self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(image_handle),
+					sequence_index as usize,
+					retained.frame_offset,
+				),
+				sampler: sampler_handle,
+				layout,
+				layer,
+			},
+			crate::descriptors::WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
+			crate::descriptors::WriteData::AccelerationStructure { handle } => Descriptor::AccelerationStructure {
+				handle: TopLevelAccelerationStructureHandle(handle.0),
+			},
+			crate::descriptors::WriteData::Swapchain(handle) => {
+				let swapchain = &self.swapchains[handle.0 as usize];
+				let image_index = swapchain.acquired_image_indices[resource_sequence] as usize;
+				Descriptor::Image {
+					image: swapchain.images[image_index],
+					layout: crate::Layouts::General,
+				}
+			}
+			crate::descriptors::WriteData::StaticSamplers
+			| crate::descriptors::WriteData::CombinedImageSamplerArray => unreachable!(
+				"Legacy Vulkan descriptor write reached materialization. The most likely cause is that write validation was bypassed."
+			),
+		}
+	}
+
+	fn descriptor_image_view_create_info(
+		&self,
+		image: &Image,
+		view_type: crate::TextureViewTypes,
+		layer: Option<u32>,
+	) -> vk::ImageViewCreateInfo<'static> {
+		let (vk_view_type, base_array_layer, layer_count) = match view_type {
+			crate::TextureViewTypes::Texture2D => {
+				assert!(layer.is_none() && image.layers.is_none() && image.extent.depth().max(1) == 1,
+					"Vulkan 2D descriptor view mismatch. The most likely cause is that a layered or 3D image was written to a Texture2D shader resource.");
+				(vk::ImageViewType::TYPE_2D, 0, 1)
+			}
+			crate::TextureViewTypes::Texture2DArray => {
+				let layers = image.layers.map(|layers| layers.get()).expect(
+					"Vulkan array descriptor view mismatch. The most likely cause is that a non-array image was written to a Texture2DArray shader resource.",
+				);
+				let base = layer.unwrap_or(0);
+				assert!(
+					base < layers,
+					"Vulkan image layer is out of range. The most likely cause is an invalid combined-image-sampler layer."
+				);
+				(
+					vk::ImageViewType::TYPE_2D_ARRAY,
+					base,
+					if layer.is_some() { 1 } else { layers },
+				)
+			}
+			crate::TextureViewTypes::Texture3D => {
+				assert!(layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
+					"Vulkan 3D descriptor view mismatch. The most likely cause is that a 2D image was written to a Texture3D shader resource.");
+				(vk::ImageViewType::TYPE_3D, 0, 1)
+			}
+		};
+		vk::ImageViewCreateInfo::default()
+			.image(image.image)
+			.view_type(vk_view_type)
+			.format(image.format)
+			.components(vk::ComponentMapping::default())
+			.subresource_range(vk::ImageSubresourceRange {
+				aspect_mask: if image.format_ == crate::Formats::Depth32 {
+					vk::ImageAspectFlags::DEPTH
+				} else {
+					vk::ImageAspectFlags::COLOR
+				},
+				base_mip_level: 0,
+				level_count: 1,
+				base_array_layer,
+				layer_count,
+			})
+	}
+
+	/// Writes one immutable logical-set union into previously unused descriptor-heap memory and caches it.
+	pub(crate) fn materialize_descriptor_sets(
 		&mut self,
-		descriptor_set_handle: DescriptorSetHandle,
-		binding_handle: DescriptorSetBindingHandle,
-		binding_index: u32,
-		array_element: u32,
-		descriptor: &Descriptor,
-	) {
-		let resource = match descriptor {
-			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(*buffer)),
-			Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
-				Some(PrivateHandles::Image(*image))
+		layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
+		sets: &[graphics_hardware_interface::DescriptorSetHandle],
+		sequence_index: u8,
+	) -> DescriptorMaterializationHandle {
+		let key = self.materialization_key(layout_handle, sets, sequence_index);
+		if let Some(handle) = self.materialization_indices.get(&key) {
+			return *handle;
+		}
+
+		let layout = self.pipeline_layouts[layout_handle.0 as usize].clone();
+		self.validate_descriptor_sets(&layout, sets);
+		let mut resolved = Vec::<(PipelineResourceDescriptor, u32, Descriptor)>::new();
+		for resource in &layout.resources {
+			let Some(elements) = self.descriptors_at_slot(sets, resource.descriptor.slot()) else {
+				continue;
+			};
+			let mut elements = elements.iter().collect::<SmallVec<[_; 16]>>();
+			elements.sort_unstable_by_key(|(array_element, _)| **array_element);
+			for (&array_element, &retained) in elements {
+				resolved.push((
+					*resource,
+					array_element,
+					self.resolve_retained_descriptor(retained, sequence_index),
+				));
 			}
-			Descriptor::Swapchain { .. } => None,
+		}
+
+		let properties = self.device.descriptor_heap_properties;
+		let resource_alignment = properties
+			.buffer_descriptor_alignment
+			.max(properties.image_descriptor_alignment);
+		let (resource_heap_offset, sampler_heap_offset) = {
+			let heaps = self.descriptor_heaps.as_mut().unwrap();
+			let resource_offset = (layout.resource_heap_size > 0)
+				.then(|| heaps.resource_mut().allocate(layout.resource_heap_size, resource_alignment))
+				.unwrap_or(0);
+			let sampler_offset = (layout.sampler_heap_size > 0)
+				.then(|| {
+					heaps
+						.sampler_mut()
+						.allocate(layout.sampler_heap_size, properties.sampler_descriptor_alignment)
+				})
+				.unwrap_or(0);
+			(resource_offset, sampler_offset)
 		};
 
-		let Some(resource) = resource else {
-			return;
-		};
-
-		self.descriptor_set_to_resource
-			.entry((descriptor_set_handle, binding_index, array_element))
-			.or_insert_with(HashSet::new)
-			.insert(resource);
-		self.resource_to_descriptor
-			.entry(resource)
-			.or_insert_with(HashSet::new)
-			.insert((binding_handle, array_element));
-	}
-
-	/// Returns descriptor binding elements that need to be refreshed when a resource changes.
-	fn tracked_descriptor_bindings(&self, resource: PrivateHandles) -> SmallVec<[(DescriptorSetBindingHandle, u32); 8]> {
-		self.resource_to_descriptor
-			.get(&resource)
-			.into_iter()
-			.flat_map(|bindings| bindings.iter().copied())
-			.collect()
-	}
-
-	/// Looks up the descriptor currently stored for a descriptor binding element.
-	fn stored_descriptor(&self, binding: &Binding, array_element: u32) -> Option<&Descriptor> {
-		self.descriptors
-			.get(&binding.descriptor_set_handle)
-			.and_then(|descriptors| descriptors.get(&binding.index))
-			.and_then(|descriptors| descriptors.get(&array_element))
-	}
-
-	fn write_internal(&mut self, writes: impl IntoIterator<Item = DescriptorWrite>) {
-		let writes = self.produce_writes(writes);
-		self.process_write_results(writes);
-	}
-
-	pub(crate) fn add_descriptor_writes_for_update_buffer_descriptors(
-		&self,
-		handle: BufferHandle,
-		descriptor_writes: &mut impl Extend<DescriptorWrite>,
-	) {
-		for (binding_handle, index) in self.tracked_descriptor_bindings(handle.into()) {
-			let binding = binding_handle.access(&self.bindings);
-
-			if let Some(descriptor) = self.stored_descriptor(binding, index) {
-				match descriptor {
-					Descriptor::Buffer { size, .. } => {
-						descriptor_writes.extend_one(
-							DescriptorWrite::new(Descriptors::Buffer { handle, size: *size }, binding_handle).index(index),
-						);
-					}
-					_ => {
-						println!("Unexpected descriptor type for buffer handle {:#?}", handle);
-					}
+		let mut address_writes = Vec::<(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64)>::new();
+		let mut image_writes = Vec::<(vk::DescriptorType, vk::ImageViewCreateInfo, vk::ImageLayout, u32, u64)>::new();
+		let mut sampler_writes = Vec::<(graphics_hardware_interface::SamplerHandle, u32, u64)>::new();
+		let mut materialized_resources = SmallVec::<[ResolvedPipelineDescriptor; 128]>::new();
+		for (resource, array_element, descriptor) in resolved {
+			let resource_offset = resource
+				.resource_heap_offset
+				.map(|offset| resource_heap_offset + offset + array_element * resource.resource_stride);
+			let sampler_offset = resource
+				.sampler_heap_offset
+				.map(|offset| sampler_heap_offset + offset + array_element * resource.sampler_stride);
+			match descriptor {
+				Descriptor::Buffer { buffer, size } => {
+					let buffer = self.buffers.resource(buffer);
+					let size = match size {
+						graphics_hardware_interface::Ranges::Whole => buffer.size as u64,
+						graphics_hardware_interface::Ranges::Size(size) => size as u64,
+					};
+					assert!(size > 0 && size <= buffer.size as u64, "Invalid Vulkan buffer descriptor range. The most likely cause is that a descriptor exceeds its backing buffer.");
+					address_writes.push((
+						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
+						vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size),
+						resource_offset.unwrap(),
+						resource.resource_stride as u64,
+					));
+				}
+				Descriptor::Image {
+					image,
+					layout: image_layout,
+				} => {
+					let image = &self.images[image.0 as usize];
+					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
+					image_writes.push((
+						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
+						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), None),
+						vk_layout,
+						resource_offset.unwrap(),
+						resource.resource_stride as u64,
+					));
+				}
+				Descriptor::CombinedImageSampler {
+					image,
+					sampler,
+					layout: image_layout,
+					layer,
+				} => {
+					let image = &self.images[image.0 as usize];
+					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
+					image_writes.push((
+						vk::DescriptorType::SAMPLED_IMAGE,
+						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), layer),
+						vk_layout,
+						resource_offset.unwrap(),
+						resource.resource_stride as u64,
+					));
+					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
+				}
+				Descriptor::Sampler { sampler } => {
+					sampler_writes.push((sampler, sampler_offset.unwrap(), resource.sampler_stride as u64));
+				}
+				Descriptor::AccelerationStructure { handle } => {
+					let acceleration_structure = &self.acceleration_structures[handle.0 as usize];
+					let address = unsafe {
+						self.acceleration_structure.get_acceleration_structure_device_address(
+							&vk::AccelerationStructureDeviceAddressInfoKHR::default()
+								.acceleration_structure(acceleration_structure.acceleration_structure),
+						)
+					};
+					address_writes.push((
+						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+						vk::DeviceAddressRangeEXT::default().address(address).size(0),
+						resource_offset.unwrap(),
+						resource.resource_stride as u64,
+					));
+				}
+			}
+			if !matches!(descriptor, Descriptor::Sampler { .. }) {
+				if let Some(existing) = materialized_resources
+					.iter_mut()
+					.find(|existing| Self::descriptors_consume_same_resource(existing.descriptor, descriptor))
+				{
+					existing.stages |= resource.stages;
+					existing.access |= resource.descriptor.access();
+				} else {
+					materialized_resources.push(ResolvedPipelineDescriptor {
+						descriptor,
+						stages: resource.stages,
+						access: resource.descriptor.access(),
+					});
 				}
 			}
 		}
-	}
 
-	pub(crate) fn add_descriptor_writes_for_update_image_descriptors(
-		&self,
-		handle: ImageHandle,
-		descriptor_writes: &mut impl Extend<DescriptorWrite>,
-	) {
-		for (binding_handle, index) in self.tracked_descriptor_bindings(handle.into()) {
-			let binding = binding_handle.access(&self.bindings);
-
-			if let Some(descriptor) = self.stored_descriptor(binding, index) {
-				match descriptor {
-					Descriptor::Image { layout, .. } => {
-						descriptor_writes.extend_one(
-							DescriptorWrite::new(Descriptors::Image { handle, layout: *layout }, binding_handle).index(index),
-						);
-					}
-					Descriptor::CombinedImageSampler { sampler, layout, .. } => {
-						descriptor_writes.extend_one(
-							DescriptorWrite::new(
-								Descriptors::CombinedImageSampler {
-									image_handle: handle,
-									sampler_handle: SamplerHandle(sampler.as_raw()),
-									layout: *layout,
-									layer: None,
-								},
-								binding_handle,
-							)
-							.index(index),
-						);
-					}
-					_ => {
-						println!("Unexpected descriptor type for image handle {:#?}", handle);
-					}
-				}
+		let heaps = self.descriptor_heaps.as_ref().unwrap();
+		if !address_writes.is_empty() {
+			let ranges = address_writes.iter().map(|(_, range, ..)| *range).collect::<Box<[_]>>();
+			let infos = address_writes
+				.iter()
+				.enumerate()
+				.map(|(index, (ty, ..))| {
+					vk::ResourceDescriptorInfoEXT::default()
+						.ty(*ty)
+						.data(vk::ResourceDescriptorDataEXT {
+							p_address_range: &ranges[index],
+						})
+				})
+				.collect::<Box<[_]>>();
+			let destinations = address_writes
+				.iter()
+				.map(|(_, _, offset, size)| heaps.resource().host_range(*offset, *size))
+				.collect::<Box<[_]>>();
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_resource_descriptors(&infos, &destinations)
+					.expect("Vulkan buffer descriptor write failed. The most likely cause is an invalid device address range.");
 			}
 		}
+		if !image_writes.is_empty() {
+			let views = image_writes.iter().map(|(_, view, ..)| *view).collect::<Box<[_]>>();
+			let images = image_writes
+				.iter()
+				.enumerate()
+				.map(|(index, (_, _, layout, ..))| vk::ImageDescriptorInfoEXT::default().view(&views[index]).layout(*layout))
+				.collect::<Box<[_]>>();
+			let infos = image_writes
+				.iter()
+				.enumerate()
+				.map(|(index, (ty, ..))| {
+					vk::ResourceDescriptorInfoEXT::default()
+						.ty(*ty)
+						.data(vk::ResourceDescriptorDataEXT { p_image: &images[index] })
+				})
+				.collect::<Box<[_]>>();
+			let destinations = image_writes
+				.iter()
+				.map(|(_, _, _, offset, size)| heaps.resource().host_range(*offset, *size))
+				.collect::<Box<[_]>>();
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_resource_descriptors(&infos, &destinations)
+					.expect("Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.");
+			}
+		}
+		if !sampler_writes.is_empty() {
+			let reductions = sampler_writes
+				.iter()
+				.map(|(handle, ..)| {
+					vk::SamplerReductionModeCreateInfo::default()
+						.reduction_mode(self.samplers[handle.0 as usize].reduction_mode)
+				})
+				.collect::<Box<[_]>>();
+			let mut samplers = sampler_writes
+				.iter()
+				.map(|(handle, ..)| self.samplers[handle.0 as usize].create_info())
+				.collect::<Box<[_]>>();
+			for (sampler, reduction) in samplers.iter_mut().zip(reductions.iter()) {
+				sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
+			}
+			let destinations = sampler_writes
+				.iter()
+				.map(|(_, offset, size)| heaps.sampler().host_range(*offset, *size))
+				.collect::<Box<[_]>>();
+			unsafe {
+				self.device
+					.descriptor_heap
+					.write_sampler_descriptors(&samplers, &destinations)
+					.expect(
+						"Vulkan sampler descriptor write failed. The most likely cause is an unsupported sampler description.",
+					);
+			}
+		}
+
+		let materialization = DescriptorMaterialization {
+			resource_heap_offset,
+			resource_heap_size: layout.resource_heap_size,
+			sampler_heap_offset,
+			sampler_heap_size: layout.sampler_heap_size,
+			resources: materialized_resources,
+		};
+		let handle = self
+			.free_materialization_handles
+			.pop()
+			.unwrap_or_else(|| DescriptorMaterializationHandle(self.descriptor_materializations.len() as u64));
+		if handle.0 as usize == self.descriptor_materializations.len() {
+			self.descriptor_materializations.push(Some(materialization));
+		} else {
+			self.descriptor_materializations[handle.0 as usize] = Some(materialization);
+		}
+		self.materialization_indices.insert(key, handle);
+		handle
 	}
 
-	pub(crate) fn update_image_bindings(&mut self, handle: ImageHandle) {
-		let mut writes = SmallVec::<[DescriptorWrite; 8]>::new();
-		self.add_descriptor_writes_for_update_image_descriptors(handle, &mut writes);
-		self.write_internal(writes);
+	pub(crate) fn descriptor_materialization(&self, handle: DescriptorMaterializationHandle) -> &DescriptorMaterialization {
+		self.descriptor_materializations[handle.0 as usize].as_ref().expect(
+			"Retired Vulkan descriptor materialization was reused. The most likely cause is that a command buffer outlived its frame sequence fence.",
+		)
 	}
-
 	#[inline]
 	fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
 		#[cfg(debug_assertions)]
@@ -2749,8 +2900,8 @@ impl crate::context::Context for Context {
 		self.write_texture(texture_handle, f);
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
-		self.write(descriptor_set_writes);
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		Context::write(self, descriptor_set_writes);
 	}
 
 	fn write_instance(
@@ -2795,7 +2946,7 @@ impl crate::context::Context for Context {
 	}
 
 	fn get_image_data<'a>(&'a mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
-		self.get_image_data(texture_copy_handle)
+		Context::get_image_data(self, texture_copy_handle)
 	}
 
 	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
@@ -2880,7 +3031,7 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let shader = match shader_source_type {
 			crate::shader::Sources::SPIRV(spirv) => {
@@ -2906,7 +3057,7 @@ impl crate::context::ContextCreate for Context {
 		self.shaders.push(Shader {
 			shader: shader_module,
 			stage: stage.into(),
-			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
+			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 		});
 
 		self.set_name(shader_module, name);
@@ -2914,212 +3065,15 @@ impl crate::context::ContextCreate for Context {
 		Ok(handle)
 	}
 
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		bindings: &[graphics_hardware_interface::DescriptorSetBindingTemplate],
-	) -> graphics_hardware_interface::DescriptorSetTemplateHandle {
-		let bindings = bindings
-			.iter()
-			.map(|binding| {
-				let b = vk::DescriptorSetLayoutBinding::default()
-					.binding(binding.binding)
-					.descriptor_type(match binding.descriptor_type {
-						crate::descriptors::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-						crate::descriptors::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
-						crate::descriptors::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
-						crate::descriptors::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-						crate::descriptors::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
-						crate::descriptors::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
-						crate::descriptors::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
-						crate::descriptors::DescriptorType::AccelerationStructure => {
-							vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
-						}
-					})
-					.descriptor_count(binding.descriptor_count)
-					.stage_flags(binding.stages.into());
-
-				assert_ne!(binding.descriptor_count, 0, "Descriptor count must be greater than 0.");
-
-				let _ = if let Some(inmutable_samplers) = &binding.immutable_samplers {
-					inmutable_samplers
-						.iter()
-						.map(|sampler| vk::Sampler::from_raw(sampler.0))
-						.collect::<Vec<_>>()
-				} else {
-					Vec::new()
-				};
-
-				b
-			})
-			.collect::<Vec<_>>();
-
-		let binding_flags = bindings
-			.iter()
-			.map(|binding| {
-				if binding.descriptor_count > 1 {
-					vk::DescriptorBindingFlags::PARTIALLY_BOUND
-				} else {
-					vk::DescriptorBindingFlags::empty()
-				}
-			})
-			.collect::<Vec<_>>();
-
-		let mut dslbfci = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
-
-		let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
-			.push_next(&mut dslbfci)
-			.bindings(&bindings);
-
-		let descriptor_set_layout = unsafe {
-			self.device
-				.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
-				.expect("No descriptor set layout")
-		};
-
-		self.set_name(descriptor_set_layout, name);
-
-		let handle = graphics_hardware_interface::DescriptorSetTemplateHandle(self.descriptor_sets_layouts.len() as u64);
-
-		self.descriptor_sets_layouts.push(DescriptorSetLayout {
-			bindings: bindings
-				.iter()
-				.map(|binding| (binding.descriptor_type, binding.descriptor_count))
-				.collect::<Vec<_>>(),
-			descriptor_set_layout,
-		});
-
-		handle
-	}
-
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
-		constructor: graphics_hardware_interface::BindingConstructor,
-	) -> graphics_hardware_interface::DescriptorSetBindingHandle {
-		let binding = constructor.descriptor_set_binding_template;
-		let descriptor = constructor.descriptor;
-		let frame_offset = constructor.frame_offset.map(i32::from);
-		let array_element = constructor.array_element();
-
-		let descriptor_type = match binding.descriptor_type {
-			crate::descriptors::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-			crate::descriptors::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
-			crate::descriptors::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
-			crate::descriptors::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-			crate::descriptors::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
-			crate::descriptors::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
-			crate::descriptors::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
-			crate::descriptors::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-		};
-
-		let descriptor_set_handles = DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
-
-		let mut next = None;
-
-		for descriptor_set_handle in descriptor_set_handles.iter().rev() {
-			let binding_handle = DescriptorSetBindingHandle(self.bindings.len() as u64);
-
-			let created_binding = Binding {
-				next,
-				descriptor_set_handle: *descriptor_set_handle,
-				descriptor_type,
-				_count: binding.descriptor_count,
-				index: binding.binding,
-			};
-
-			self.bindings.push(created_binding);
-
-			next = Some(binding_handle);
-		}
-
-		let handle = graphics_hardware_interface::DescriptorSetBindingHandle(next.expect("No next binding").0);
-
-		let mut descriptor_write = crate::descriptors::Write::new(handle, descriptor);
-		descriptor_write.array_element = array_element;
-		descriptor_write.frame_offset = frame_offset;
-
-		// Descriptor creation must make the descriptor set immediately valid. The
-		// queued task below still refreshes frame-specific resources that may be
-		// created after this binding, but first use cannot depend on a future frame
-		// task being processed by the graphics queue.
-		match descriptor_write.descriptor {
-			crate::descriptors::WriteData::Buffer { .. }
-			| crate::descriptors::WriteData::Image { .. }
-			| crate::descriptors::WriteData::CombinedImageSampler { .. }
-			| crate::descriptors::WriteData::Sampler(_) => self.write(&[descriptor_write]),
-			crate::descriptors::WriteData::AccelerationStructure { .. }
-			| crate::descriptors::WriteData::Swapchain(_)
-			| crate::descriptors::WriteData::StaticSamplers
-			| crate::descriptors::WriteData::CombinedImageSamplerArray => {}
-		}
-
-		self.add_task_to_all_frames(Tasks::UpdateDescriptor { descriptor_write });
-
-		handle
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_layout_handle: &graphics_hardware_interface::DescriptorSetTemplateHandle,
-	) -> graphics_hardware_interface::DescriptorSetHandle {
-		let pool_sizes = self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize]
-			.bindings
-			.iter()
-			.map(|(descriptor_type, descriptor_count)| {
-				vk::DescriptorPoolSize::default()
-					.ty(*descriptor_type)
-					.descriptor_count(descriptor_count * self.frames as u32)
-			})
-			.collect::<Vec<_>>();
-
-		let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-			.max_sets(self.frames as _)
-			.pool_sizes(&pool_sizes);
-
-		let descriptor_pool = unsafe {
-			self.device
-				.create_descriptor_pool(&descriptor_pool_create_info, None)
-				.expect("No descriptor pool")
-		};
-		self.descriptor_pools.push(descriptor_pool);
-
-		let descriptor_set_layout = self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize].descriptor_set_layout;
-
-		let descriptor_set_layouts = vec![descriptor_set_layout; self.frames as usize];
-
-		let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
-			.descriptor_pool(descriptor_pool)
-			.set_layouts(&descriptor_set_layouts);
-
-		let descriptor_sets = unsafe {
-			self.device
-				.allocate_descriptor_sets(&descriptor_set_allocate_info)
-				.expect("No descriptor set")
-		};
-
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
 		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
-		let mut previous_handle: Option<DescriptorSetHandle> = None;
-
-		for descriptor_set in descriptor_sets {
-			let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
-
-			self.descriptor_sets.push(DescriptorSet {
-				next: None,
-				descriptor_set,
-				descriptor_set_layout: *descriptor_set_layout_handle,
-			});
-
-			if let Some(previous_handle) = previous_handle {
-				self.descriptor_sets[previous_handle.0 as usize].next = Some(handle);
-			}
-
-			self.set_name(descriptor_set, name);
-
-			previous_handle = Some(handle);
-		}
-
+		self.descriptor_sets.push(DescriptorSet {
+			next: None,
+			version: 0,
+			sequence_versions: [0; MAX_FRAMES_IN_FLIGHT],
+			descriptors: HashMap::new(),
+		});
+		self.set_object_debug_name(name, graphics_hardware_interface::Handles::DescriptorSet(handle));
 		handle
 	}
 
@@ -3134,9 +3088,9 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline_layout_handle =
-			self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
 		let shader_parameter = builder.shader;
+		let pipeline_layout_handle =
+			self.get_or_create_pipeline_layout(std::slice::from_ref(&shader_parameter), builder.push_constant_ranges);
 		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
 
 		let mut specialization_map_entries = Vec::with_capacity(48);
@@ -3203,18 +3157,21 @@ impl crate::context::ContextCreate for Context {
 			.map_entries(&specialization_map_entries);
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
-
 		let shader = &self.shaders[shader_parameter.handle.0 as usize];
-
+		let mappings = crate::vulkan::build_shader_mappings(pipeline_layout, &shader.shader_resource_descriptors);
+		let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
+		let stage = vk::PipelineShaderStageCreateInfo::default()
+			.push(&mut mapping_info)
+			.stage(vk::ShaderStageFlags::COMPUTE)
+			.module(shader.shader)
+			.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+			.specialization_info(&specialization_info);
+		let mut descriptor_heap_flags =
+			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 		let create_infos = [vk::ComputePipelineCreateInfo::default()
-			.stage(
-				vk::PipelineShaderStageCreateInfo::default()
-					.stage(vk::ShaderStageFlags::COMPUTE)
-					.module(shader.shader)
-					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
-					.specialization_info(&specialization_info),
-			)
-			.layout(pipeline_layout.pipeline_layout)];
+			.push(&mut descriptor_heap_flags)
+			.stage(stage)
+			.layout(vk::PipelineLayout::null())];
 
 		let pipeline_handle = unsafe {
 			self.device
@@ -3224,22 +3181,10 @@ impl crate::context::ContextCreate for Context {
 
 		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
 
-		let resource_access = shader
-			.shader_binding_descriptors
-			.iter()
-			.map(|descriptor| {
-				(
-					(descriptor.set, descriptor.binding),
-					(crate::Stages::COMPUTE, descriptor.access),
-				)
-			})
-			.collect::<Vec<_>>();
-
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			layout: pipeline_layout_handle,
 			shader_handles: HashMap::new(),
-			resource_access,
 		});
 
 		handle
@@ -3249,19 +3194,31 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline_layout_handle = self.get_or_create_pipeline_layout(
-			builder.descriptor_set_templates.as_ref(),
-			builder.push_constant_ranges.as_ref(),
-		);
+		let pipeline_layout_handle =
+			self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let shaders = builder.shaders;
 		let mut groups = Vec::with_capacity(1024);
 
-		let stages = shaders
+		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
+		let stage_mappings = shaders
 			.iter()
 			.map(|stage| {
 				let shader = &self.shaders[stage.handle.0 as usize];
+				crate::vulkan::build_shader_mappings(pipeline_layout, &shader.shader_resource_descriptors)
+			})
+			.collect::<Vec<_>>();
+		let mut mapping_infos = stage_mappings
+			.iter()
+			.map(|mappings| vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(mappings))
+			.collect::<Vec<_>>();
+		let stages = shaders
+			.iter()
+			.zip(mapping_infos.iter_mut())
+			.map(|(stage, mapping_info)| {
+				let shader = &self.shaders[stage.handle.0 as usize];
 
 				vk::PipelineShaderStageCreateInfo::default()
+					.push(mapping_info)
 					.stage(to_shader_stage_flags(stage.stage))
 					.module(shader.shader)
 					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
@@ -3316,10 +3273,11 @@ impl crate::context::ContextCreate for Context {
 			}
 		}
 
-		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
-
+		let mut descriptor_heap_flags =
+			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-			.layout(pipeline_layout.pipeline_layout)
+			.push(&mut descriptor_heap_flags)
+			.layout(vk::PipelineLayout::null())
 			.stages(&stages)
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
@@ -3353,25 +3311,10 @@ impl crate::context::ContextCreate for Context {
 
 		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
 
-		let resource_access = shaders
-			.iter()
-			.map(|shader| {
-				let shader = &self.shaders[shader.handle.0 as usize];
-
-				shader
-					.shader_binding_descriptors
-					.iter()
-					.map(|descriptor| ((descriptor.set, descriptor.binding), (shader.stage, descriptor.access)))
-					.collect::<Vec<_>>()
-			})
-			.flatten()
-			.collect::<Vec<_>>();
-
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			layout: pipeline_layout_handle,
 			shader_handles: handles,
-			resource_access,
 		});
 
 		handle
@@ -3440,19 +3383,18 @@ impl crate::context::ContextCreate for Context {
 			crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
 		};
 
-		let sampler = self.create_vulkan_sampler(
-			filtering_mode,
-			reduction_mode,
-			mip_map_filter,
+		let handle = graphics_hardware_interface::SamplerHandle(self.samplers.len() as u64);
+		self.samplers.push(Sampler {
+			mag_filter: filtering_mode,
+			min_filter: filtering_mode,
+			mipmap_mode: mip_map_filter,
 			address_mode,
-			builder.anisotropy,
-			builder.min_lod,
-			builder.max_lod,
-		);
-
-		self.samplers.push(sampler);
-
-		graphics_hardware_interface::SamplerHandle(sampler.as_raw())
+			reduction_mode,
+			anisotropy: builder.anisotropy,
+			min_lod: builder.min_lod,
+			max_lod: builder.max_lod,
+		});
+		handle
 	}
 
 	fn create_acceleration_structure_instance_buffer(
@@ -3514,7 +3456,7 @@ impl crate::context::ContextCreate for Context {
 			self.acceleration_structure.get_acceleration_structure_build_sizes(
 				vk::AccelerationStructureBuildTypeKHR::DEVICE,
 				&build_info,
-				&[max_instance_count],
+				Some(&[max_instance_count]),
 				&mut size_info,
 			);
 		}
@@ -3614,7 +3556,7 @@ impl crate::context::ContextCreate for Context {
 			self.acceleration_structure.get_acceleration_structure_build_sizes(
 				vk::AccelerationStructureBuildTypeKHR::DEVICE,
 				&build_info,
-				&[primitive_count],
+				Some(&[primitive_count]),
 				&mut size_info,
 			);
 		}
@@ -3770,6 +3712,9 @@ impl crate::context::ContextCreate for Context {
 impl Drop for Context {
 	fn drop(&mut self) {
 		unsafe {
+			self.device.device_wait_idle().expect(
+				"Failed to wait for the Vulkan device during context destruction. The most likely cause is that the device was lost.",
+			);
 			self.command_buffers.iter().for_each(|command_buffer| {
 				command_buffer.frames.iter().for_each(|command_buffer| {
 					self.device.destroy_command_pool(command_buffer.command_pool, None);
@@ -3779,15 +3724,6 @@ impl Drop for Context {
 			self.synchronizers.iter().for_each(|synchronizer| {
 				self.device.destroy_semaphore(synchronizer.semaphore, None);
 				self.device.destroy_fence(synchronizer.fence, None);
-			});
-
-			self.descriptor_sets_layouts.iter().for_each(|descriptor_set_layout| {
-				self.device
-					.destroy_descriptor_set_layout(descriptor_set_layout.descriptor_set_layout, None);
-			});
-
-			self.descriptor_pools.iter().for_each(|descriptor_pool| {
-				self.device.destroy_descriptor_pool(*descriptor_pool, None);
 			});
 
 			self.pipelines.iter().for_each(|pipeline| {
@@ -3801,6 +3737,10 @@ impl Drop for Context {
 			self.buffers.iter().for_each(|buffer| {
 				self.device.destroy_buffer(buffer.buffer, None);
 			});
+			if let Some(heaps) = &self.descriptor_heaps {
+				self.device.destroy_buffer(heaps.resource().buffer, None);
+				self.device.destroy_buffer(heaps.sampler().buffer, None);
+			}
 
 			self.images.iter().for_each(|image| {
 				if let Some(staging_buffer) = image.staging_buffer {
@@ -3831,14 +3771,6 @@ impl Drop for Context {
 				self.device.destroy_shader_module(shader.shader, None);
 			});
 
-			self.samplers.iter().for_each(|sampler| {
-				self.device.destroy_sampler(*sampler, None);
-			});
-
-			self.pipeline_layouts.iter().for_each(|pipeline_layout| {
-				self.device.destroy_pipeline_layout(pipeline_layout.pipeline_layout, None);
-			});
-
 			self.allocations.iter().for_each(|allocation| {
 				self.device.free_memory(allocation.memory, None);
 			});
@@ -3846,17 +3778,9 @@ impl Drop for Context {
 	}
 }
 
-struct WriteResult {
-	descriptor_set_handle: DescriptorSetHandle,
-	binding_index: u32,
-	array_element: u32,
-	descriptor: Descriptor,
-	binding_handle: DescriptorSetBindingHandle,
-}
-
 use std::{borrow::Cow, num::NonZeroU32, u64};
 
-use ash::vk::{self, Handle as _};
+use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
 use utils::hash::{HashSet, HashSetExt};
 use utils::{
@@ -3869,22 +3793,68 @@ use super::{
 		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
 		uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorSet,
-	DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, Shader,
-	Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
+	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MaterializationKey,
+	MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, PipelineResourceDescriptor,
+	ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState,
+	MAX_FRAMES_IN_FLIGHT,
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	binding::DescriptorSetBindingHandle,
-	descriptors::DescriptorSetHandle,
-	graphics_hardware_interface, image,
-	render_debugger::RenderDebugger,
-	sampler::{self, SamplerHandle},
+	graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
-	utils::StableVec,
 	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
-		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, Task, Tasks,
+		MAX_SWAPCHAIN_IMAGES,
 	},
-	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
+	window, FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size,
 };
+
+#[cfg(test)]
+mod descriptor_task_tests {
+	use super::*;
+
+	fn retained_set(write: crate::descriptors::DescriptorWrite, version: u64) -> DescriptorSet {
+		let mut descriptors = HashMap::new();
+		descriptors.entry(write.slot).or_insert_with(HashMap::new).insert(
+			write.array_element,
+			crate::vulkan::descriptor_set::RetainedDescriptor {
+				descriptor: write.descriptor,
+				frame_offset: write.frame_offset.unwrap_or(0),
+			},
+		);
+		DescriptorSet {
+			next: None,
+			version,
+			sequence_versions: [0; MAX_FRAMES_IN_FLIGHT],
+			descriptors,
+		}
+	}
+
+	fn buffer_write(buffer: u64) -> crate::descriptors::DescriptorWrite {
+		crate::descriptors::DescriptorWrite::buffer(
+			graphics_hardware_interface::DescriptorSetHandle(0),
+			crate::shader::ResourceSlot::new(3),
+			graphics_hardware_interface::BaseBufferHandle(buffer),
+		)
+	}
+
+	#[test]
+	fn deferred_descriptor_task_ignores_an_overwritten_payload() {
+		let old = buffer_write(4);
+		let current = buffer_write(5);
+		let set = retained_set(current, 2);
+
+		assert!(!descriptor_task_is_current(&set, old, 1));
+		assert!(descriptor_task_is_current(&set, current, 2));
+	}
+
+	#[test]
+	fn deferred_descriptor_task_uses_version_to_reject_aba_writes() {
+		let value = buffer_write(7);
+		let set = retained_set(value, 3);
+
+		assert!(!descriptor_task_is_current(&set, value, 1));
+		assert!(descriptor_task_is_current(&set, value, 3));
+	}
+}

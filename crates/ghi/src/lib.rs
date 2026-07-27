@@ -20,7 +20,7 @@
 	clippy::unnecessary_literal_unwrap
 )]
 #![feature(generic_const_exprs)]
-#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, extend_one, str_as_str))]
+#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, str_as_str))]
 
 pub mod window;
 
@@ -39,6 +39,7 @@ pub mod metal;
 pub mod vulkan;
 
 pub(crate) use crate::frame_resources::*;
+pub(crate) use crate::graphics_hardware_interface::PipelineLayoutHandle;
 pub use crate::graphics_hardware_interface::{
 	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureDescriptions, BottomLevelAccelerationStructureHandle, BufferHandle, ClearValue,
@@ -47,11 +48,10 @@ pub use crate::graphics_hardware_interface::{
 	SamplerHandle, ShaderHandle, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes,
 	TopLevelAccelerationStructureHandle,
 };
-// Legacy backend-only handles remain crate-private while the non-Metal backends migrate on their target machines.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// DX12 still uses these legacy backend-only handles internally.
+#[cfg(target_os = "windows")]
 pub(crate) use crate::graphics_hardware_interface::{
 	BindingConstructor, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetTemplateHandle,
-	PipelineLayoutHandle,
 };
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle, Ranges};
 pub use crate::window::Window;
@@ -176,7 +176,7 @@ pub mod implementation {
 	}
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
@@ -224,7 +224,7 @@ pub(crate) fn debug_name(_name: Option<&str>) -> Option<String> {
 	None
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub(crate) use implementation::Binding;
 pub(crate) use implementation::DescriptorSet;
 pub(crate) use implementation::Synchronizer;

@@ -4,8 +4,6 @@
 
 use utils::{Extent, RGBA};
 
-#[cfg(all(test, target_os = "linux"))]
-use crate::AccessPolicies;
 use crate::{
 	descriptors::{self, DescriptorType},
 	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,

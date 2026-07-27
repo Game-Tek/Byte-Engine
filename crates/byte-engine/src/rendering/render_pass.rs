@@ -7,6 +7,7 @@
 
 pub mod simple_compute;
 
+use ghi::context::ContextCreate as _;
 use utils::Box;
 
 use crate::rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescriptor, Sink};

@@ -1,9 +1,14 @@
-//! Skeletal animation evaluation and pose construction.
+//! Skeletal animation sampling, pose blending, and transition utilities.
 //!
-//! Use [`sample_pose`] to turn imported animation data into global skeleton
-//! matrices for a renderable. Then send those matrices through
+//! Use [`sample_local_pose`] to sample clips before applying [`blend`] or
+//! [`inertialization`]. Build renderer-facing matrices with
+//! [`write_global_pose`], then send those matrices through
 //! [`crate::rendering::UpdatePose`].
 
+pub mod blend;
+pub mod inertialization;
+mod math;
+pub mod root_motion;
 pub mod skeletal;
 
-pub use skeletal::sample_pose;
+pub use skeletal::{sample_local_pose, sample_pose, write_global_pose, PoseError};

@@ -1245,16 +1245,16 @@ impl std::fmt::Display for VisibilityResourceKey {
 /// The `FactoryTexture` struct packages detached texture resources with upload bytes for render-thread adoption.
 struct FactoryTexture {
 	index: u32,
-	image: ghi::implementation::FactoryImage,
-	sampler: ghi::implementation::FactorySampler,
+	image: ghi::implementation::factory::Image,
+	sampler: ghi::implementation::factory::Sampler,
 	upload: TextureUpload,
 }
 
 /// The `FactoryEnvironment` struct keeps one baked IBL set together until the render thread interns its GPU resources.
 pub(crate) struct FactoryEnvironment {
-	diffuse_image: ghi::implementation::FactoryImage,
-	specular_images: [ghi::implementation::FactoryImage; IBL_SPECULAR_LEVEL_COUNT],
-	sampler: ghi::implementation::FactorySampler,
+	diffuse_image: ghi::implementation::factory::Image,
+	specular_images: [ghi::implementation::factory::Image; IBL_SPECULAR_LEVEL_COUNT],
+	sampler: ghi::implementation::factory::Sampler,
 	diffuse_upload: TextureUpload,
 	specular_uploads: [TextureUpload; IBL_SPECULAR_LEVEL_COUNT],
 }

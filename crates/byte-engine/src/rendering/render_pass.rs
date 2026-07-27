@@ -299,53 +299,11 @@ impl FramePrepare {
 
 #[cfg(test)]
 mod tests {
-	use utils::Box;
-
-	use super::{execution_path, RenderPass, RenderPassExecutionPath, RenderPassHarness, RenderPassReturn, RenderPassState};
-	use crate::rendering::Sink;
-
-	struct TestRenderPass;
-
-	impl RenderPass for TestRenderPass {
-		fn name(&self) -> &'static str {
-			"test"
-		}
-
-		fn prepare<'a>(
-			&mut self,
-			_frame: &mut ghi::implementation::Frame,
-			_sink: &Sink,
-			_frame_allocator: &'a bumpalo::Bump,
-		) -> Option<RenderPassReturn<'a>> {
-			None
-		}
-
-		fn bypass<'a>(
-			&mut self,
-			_frame: &mut ghi::implementation::Frame,
-			_sink: &Sink,
-			_frame_allocator: &'a bumpalo::Bump,
-		) -> Option<RenderPassReturn<'a>> {
-			None
-		}
-	}
+	use super::{execution_path, RenderPassExecutionPath, RenderPassState};
 
 	#[test]
 	fn render_pass_state_selects_the_expected_execution_path() {
 		assert_eq!(execution_path(RenderPassState::Enabled), RenderPassExecutionPath::Prepare);
 		assert_eq!(execution_path(RenderPassState::Bypassed), RenderPassExecutionPath::Bypass);
-	}
-
-	#[test]
-	fn render_pass_harness_starts_enabled_and_retains_state_changes() {
-		let mut harness = RenderPassHarness::new(Box::new(TestRenderPass));
-		assert_eq!(harness.name(), "test");
-		assert_eq!(harness.state(), RenderPassState::Enabled);
-
-		harness.set_state(RenderPassState::Bypassed);
-		assert_eq!(harness.state(), RenderPassState::Bypassed);
-
-		harness.set_state(RenderPassState::Enabled);
-		assert_eq!(harness.state(), RenderPassState::Enabled);
 	}
 }

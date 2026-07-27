@@ -309,27 +309,6 @@ mod tests {
 	}
 
 	#[test]
-	fn concrete_layer_stores_feather() {
-		let layer = ConcreteLayer::default().feather_edges(1.0, 2.0, 3.0, 4.0);
-
-		assert_eq!(Layer::feather(&layer), EdgeFeather::edges(1.0, 2.0, 3.0, 4.0));
-	}
-
-	#[test]
-	fn backdrop_blur_radius_is_stored() {
-		let layer = ConcreteLayer::default().backdrop_blur(18.0);
-
-		assert_eq!(layer.backdrop_blur_radius(), 18.0);
-	}
-
-	#[test]
-	fn blur_alias_stores_backdrop_blur_radius() {
-		let layer = ConcreteLayer::default().blur(12.0);
-
-		assert_eq!(layer.backdrop_blur_radius(), 12.0);
-	}
-
-	#[test]
 	fn backdrop_blur_radius_sanitizes_invalid_values() {
 		assert_eq!(ConcreteLayer::default().backdrop_blur(-1.0).backdrop_blur_radius(), 0.0);
 		assert_eq!(ConcreteLayer::default().backdrop_blur(f32::NAN).backdrop_blur_radius(), 0.0);

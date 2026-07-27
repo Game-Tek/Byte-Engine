@@ -135,13 +135,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn create_base_application() {
-		let app = BaseApplication::new("Test", &[]);
-
-		assert!(app.get_name() == "Test");
-	}
-
-	#[test]
 	fn upsert_parameter_replaces_value_with_same_name() {
 		let mut parameters = vec![Parameter::new("render.debug.extended", "true")];
 

@@ -522,6 +522,25 @@ mod tests {
 		)
 	}
 
+	fn canonical_descriptor() -> ShaderSourceDescriptor<'static> {
+		inline_descriptor(
+			"shader/id",
+			"Shader Name",
+			"kernel void main0() {}",
+			"main0",
+			ShaderTypes::Compute,
+			interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
+		)
+	}
+
+	/// Verifies that changing one persisted descriptor input changes its source hash.
+	fn assert_hash_changes(change: impl FnOnce(&mut ShaderSourceDescriptor<'static>)) {
+		let base = canonical_descriptor();
+		let mut changed = canonical_descriptor();
+		change(&mut changed);
+		assert_ne!(hash_shader_source(&changed), hash_shader_source(&base));
+	}
+
 	#[test]
 	fn unreadable_cached_shader_is_rebaked_from_the_authoritative_descriptor() {
 		use resource_management::{
@@ -642,182 +661,52 @@ mod tests {
 
 	#[test]
 	fn source_hash_is_stable_and_covers_every_persisted_input() {
-		let base = inline_descriptor(
-			"shader/id",
-			"Shader Name",
-			"kernel void main0() {}",
-			"main0",
-			ShaderTypes::Compute,
-			interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
+		assert_eq!(
+			hash_shader_source(&canonical_descriptor()),
+			hash_shader_source(&canonical_descriptor())
 		);
-		let duplicate = inline_descriptor(
-			"shader/id",
-			"Shader Name",
-			"kernel void main0() {}",
-			"main0",
-			ShaderTypes::Compute,
-			interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-		);
-		let base_hash = hash_shader_source(&base);
-		assert_eq!(hash_shader_source(&duplicate), base_hash);
 
-		let changed = [
-			inline_descriptor(
-				"shader/other",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Other Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void changed() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"other",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Fragment,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((4, 4, 2)), vec![storage_binding(3, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(4, 1, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 2, true, false)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, false, true)]),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(
-					Some((8, 4, 2)),
-					vec![Binding::named(
-						"renamed_scene",
-						3,
-						resource_management::resources::material::BindingKind::StorageBuffer,
-						1,
-						Some(4),
-						true,
-						false,
-					)],
-				),
-			),
-			inline_descriptor(
-				"shader/id",
-				"Shader Name",
-				"kernel void main0() {}",
-				"main0",
-				ShaderTypes::Compute,
-				interface(
-					Some((8, 4, 2)),
-					vec![Binding::new(
-						3,
-						resource_management::resources::material::BindingKind::StorageBuffer,
-						1,
-						Some(16),
-						true,
-						false,
-					)],
-				),
-			),
-		];
+		assert_hash_changes(|shader| shader.id = "shader/other");
+		assert_hash_changes(|shader| shader.name = "Other Name");
+		assert_hash_changes(|shader| {
+			shader.source = ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Msl {
+				source: "kernel void changed() {}",
+				entry_point: "main0",
+			});
+		});
+		assert_hash_changes(|shader| {
+			shader.source = ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Msl {
+				source: "kernel void main0() {}",
+				entry_point: "other",
+			});
+		});
+		assert_hash_changes(|shader| shader.stage = ShaderTypes::Fragment);
+		assert_hash_changes(|shader| shader.interface.workgroup_size = Some((4, 4, 2)));
+		assert_hash_changes(|shader| shader.interface.bindings[0].slot = 4);
+		assert_hash_changes(|shader| shader.interface.bindings[0].count = 2);
+		assert_hash_changes(|shader| {
+			shader.interface.bindings[0].read = false;
+			shader.interface.bindings[0].write = true;
+		});
+		assert_hash_changes(|shader| shader.interface.bindings[0].name = "renamed_scene".into());
+		assert_hash_changes(|shader| shader.interface.bindings[0].buffer_stride = Some(16));
 
-		for descriptor in &changed {
-			assert_ne!(hash_shader_source(descriptor), base_hash);
-		}
-
-		let sampled_2d = inline_descriptor(
-			"shader/id",
-			"Shader Name",
-			"kernel void main0() {}",
-			"main0",
-			ShaderTypes::Compute,
-			interface(
-				Some((8, 4, 2)),
-				vec![Binding::new(
-					3,
-					resource_management::resources::material::BindingKind::CombinedImageSampler {
-						view: resource_management::resources::material::TextureView::Texture2D,
-					},
-					1,
-					None,
-					true,
-					false,
-				)],
-			),
+		let sampled_hash = |view| {
+			let mut shader = canonical_descriptor();
+			shader.interface.bindings[0] = Binding::new(
+				3,
+				resource_management::resources::material::BindingKind::CombinedImageSampler { view },
+				1,
+				None,
+				true,
+				false,
+			);
+			hash_shader_source(&shader)
+		};
+		assert_ne!(
+			sampled_hash(resource_management::resources::material::TextureView::Texture2D),
+			sampled_hash(resource_management::resources::material::TextureView::Texture3D)
 		);
-		let sampled_3d = inline_descriptor(
-			"shader/id",
-			"Shader Name",
-			"kernel void main0() {}",
-			"main0",
-			ShaderTypes::Compute,
-			interface(
-				Some((8, 4, 2)),
-				vec![Binding::new(
-					3,
-					resource_management::resources::material::BindingKind::CombinedImageSampler {
-						view: resource_management::resources::material::TextureView::Texture3D,
-					},
-					1,
-					None,
-					true,
-					false,
-				)],
-			),
-		);
-		assert_ne!(hash_shader_source(&sampled_2d), hash_shader_source(&sampled_3d));
 
 		let partitioned_left = inline_descriptor("ab", "c", "de", "f", ShaderTypes::Compute, interface(None, Vec::new()));
 		let partitioned_right = inline_descriptor("a", "bc", "d", "ef", ShaderTypes::Compute, interface(None, Vec::new()));

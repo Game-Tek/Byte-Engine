@@ -113,6 +113,10 @@ impl PipelineManager {
 
 				let positions = generator.positions();
 				let indices = generator.indices();
+				debug_assert!(
+					indices.iter().all(|&index| u16::try_from(index).is_ok()),
+					"Simple mesh index exceeds u16. The most likely cause is submitting geometry that is too large for the simple pipeline."
+				);
 				let indices = indices.iter().map(|&index| index as u16);
 
 				let vertex_count = positions.len();
@@ -126,11 +130,23 @@ impl PipelineManager {
 
 				let vertex_buffer_offset = mesh_ref.vertex_offset();
 				let index_buffer_offset = mesh_ref.index_offset();
+				debug_assert!(
+					vertex_buffer_offset
+						.checked_add(vertex_count)
+						.is_some_and(|end| end <= vertex_buffer.len()),
+					"Simple vertex buffer is too small. The most likely cause is inconsistent mesh allocation statistics."
+				);
 
 				vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
 				frame.sync_buffer(self.vertex_positions_buffer);
 
 				let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
+				debug_assert!(
+					index_buffer_offset
+						.checked_add(index_count)
+						.is_some_and(|end| end <= index_buffer.len()),
+					"Simple index buffer is too small. The most likely cause is inconsistent mesh allocation statistics."
+				);
 
 				index_buffer[index_buffer_offset..][..index_count]
 					.iter_mut()

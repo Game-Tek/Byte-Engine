@@ -163,6 +163,14 @@ pub fn create_shader_from_source(
 /// Builds a perspective [`View`] from a scene camera and render target extent.
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {
 	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.get_direction(), camera.get_fov());
+	debug_assert!(
+		extent.width() > 0 && extent.height() > 0,
+		"Perspective extent is empty. The most likely cause is building a camera view before the render target is sized."
+	);
+	debug_assert!(
+		fov_y.is_finite() && fov_y > 0.0 && fov_y < std::f32::consts::PI,
+		"Camera field of view is invalid. The most likely cause is an unset, non-finite, or out-of-range perspective angle."
+	);
 
 	let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 

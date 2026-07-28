@@ -69,11 +69,19 @@ impl AudioGraphTime {
 
 	/// Returns the time at the start of the block in seconds.
 	pub fn seconds(self) -> f64 {
+		debug_assert!(
+			self.sample_rate > 0,
+			"Audio sample rate is zero. The most likely cause is constructing graph time outside the audio system."
+		);
 		self.sample_index as f64 / f64::from(self.sample_rate)
 	}
 
 	/// Returns the time of one sample in the block in seconds.
 	pub fn seconds_at(self, sample_offset: usize) -> f64 {
+		debug_assert!(
+			self.sample_rate > 0,
+			"Audio sample rate is zero. The most likely cause is constructing graph time outside the audio system."
+		);
 		(self.sample_index as f64 + sample_offset as f64) / f64::from(self.sample_rate)
 	}
 }

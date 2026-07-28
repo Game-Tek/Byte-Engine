@@ -217,7 +217,12 @@ impl World {
 
 		let vab = a_vel - b_vel;
 
-		let impulse = (1.0 + elasticity) * dot(vab, n) / (a_inv_mass + b_inv_mass + angular_factor);
+		let impulse_denominator = a_inv_mass + b_inv_mass + angular_factor;
+		debug_assert!(
+			impulse_denominator.is_finite() && impulse_denominator > f32::EPSILON,
+			"Collision impulse denominator is invalid. The most likely cause is non-finite body mass or inertia data."
+		);
+		let impulse = (1.0 + elasticity) * dot(vab, n) / impulse_denominator;
 		let impulse_vector = impulse * n;
 
 		if let Some(a) = self.bodies.get_slot_mut(a_index) {
@@ -231,14 +236,20 @@ impl World {
 		let vel_normal = n * dot(vab, n);
 		let vel_tangent = vab - vel_normal;
 
-		let relative_vel_tangent = normalize(vel_tangent);
-
-		let a_inertia = cross(a_inv_world_inertia * cross(ra, relative_vel_tangent), ra);
-		let b_inertia = cross(b_inv_world_inertia * cross(rb, relative_vel_tangent), rb);
-		let inv_inertia = dot(a_inertia + b_inertia, relative_vel_tangent);
-
-		let reduced_mass = 1.0 / (a_inv_mass + b_inv_mass + inv_inertia);
-		let impulse_friction = vel_tangent * reduced_mass * friction;
+		let impulse_friction = if magnitude_squared(vel_tangent) <= f32::EPSILON {
+			Vector3::zero()
+		} else {
+			let relative_vel_tangent = normalize(vel_tangent);
+			let a_inertia = cross(a_inv_world_inertia * cross(ra, relative_vel_tangent), ra);
+			let b_inertia = cross(b_inv_world_inertia * cross(rb, relative_vel_tangent), rb);
+			let inv_inertia = dot(a_inertia + b_inertia, relative_vel_tangent);
+			let friction_denominator = a_inv_mass + b_inv_mass + inv_inertia;
+			debug_assert!(
+				friction_denominator.is_finite() && friction_denominator > f32::EPSILON,
+				"Friction impulse denominator is invalid. The most likely cause is non-finite body mass or inertia data."
+			);
+			vel_tangent * (friction / friction_denominator)
+		};
 
 		if let Some(a) = self.bodies.get_slot_mut(a_index) {
 			a.apply_impulse(a_point, -impulse_friction);

@@ -48,9 +48,18 @@ impl PartialOrd for PseudoBody {
 
 /// Projects swept body bounds onto the broad-phase axis and sorts their endpoints.
 pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[PseudoBody; 32]> {
+	debug_assert!(
+		dt.is_finite() && dt >= 0.0,
+		"Broad-phase delta is invalid. The most likely cause is passing a negative or non-finite frame interval."
+	);
 	let axis = normalize(Vector3::one());
 
-	let mut pseudo_bodies = SmallVec::with_capacity(bodies.size_hint().0 * 2);
+	let minimum_body_count = bodies.size_hint().0;
+	debug_assert!(
+		minimum_body_count.checked_mul(2).is_some(),
+		"Broad-phase endpoint capacity overflowed. The most likely cause is an invalid iterator size hint."
+	);
+	let mut pseudo_bodies = SmallVec::with_capacity(minimum_body_count.saturating_mul(2));
 
 	for (i, body) in bodies {
 		let mut bounds = body.bounds(); // TODO: bounds() does not adjust by orientation
@@ -96,8 +105,17 @@ pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
 			// Preserve opening order so contact generation remains deterministic even
 			// when an early interval closes while later intervals stay active.
 			active.remove(index);
+		} else {
+			debug_assert!(
+				false,
+				"Broad-phase interval closes before opening. The most likely cause is malformed or unsorted endpoint input."
+			);
 		}
 	}
+	debug_assert!(
+		active.is_empty(),
+		"Broad-phase intervals remain open. The most likely cause is a missing maximum endpoint."
+	);
 
 	pairs
 }

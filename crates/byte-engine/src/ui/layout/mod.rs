@@ -545,7 +545,13 @@ impl Sizing {
 
 	pub fn calculate(&self, available: f32) -> f32 {
 		match self {
-			Sizing::Relative(num, denom) => available * *num as f32 / *denom as f32,
+			Sizing::Relative(num, denom) => {
+				debug_assert_ne!(
+					*denom, 0,
+					"Relative sizing denominator is zero. The most likely cause is constructing `Sizing::Relative` directly with an invalid ratio."
+				);
+				available * *num as f32 / *denom as f32
+			}
 			Sizing::Absolute(value) => *value,
 		}
 	}

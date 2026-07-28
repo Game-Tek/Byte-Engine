@@ -131,6 +131,18 @@ impl LutRenderPass {
 }
 
 fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
+	debug_assert!(
+		lut.size > 0,
+		"LUT size is zero. The most likely cause is accepting an empty LUT resource."
+	);
+	debug_assert!(
+		(0..3).all(|index| {
+			lut.domain_min[index].is_finite()
+				&& lut.domain_max[index].is_finite()
+				&& lut.domain_max[index] > lut.domain_min[index]
+		}),
+		"LUT domain is invalid. The most likely cause is a non-finite or non-increasing color range."
+	);
 	let domain_scale: [f32; 3] = std::array::from_fn(|index| 1.0 / (lut.domain_max[index] - lut.domain_min[index]));
 	let lut_size = lut.size as f32;
 	LutShaderParameters {

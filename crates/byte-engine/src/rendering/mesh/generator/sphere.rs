@@ -147,6 +147,18 @@ impl MeshGenerator for SphereMeshGenerator {
 	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> {
 		let segments = self.segments;
 		let rings = self.rings;
+		debug_assert!(
+			segments > 0 && rings > 0,
+			"Sphere topology is empty. The most likely cause is constructing a generator with zero segments or rings."
+		);
+		debug_assert!(
+			rings
+				.checked_add(1)
+				.zip(segments.checked_add(1))
+				.and_then(|(rings, segments)| rings.checked_mul(segments))
+				.is_some_and(|vertex_count| vertex_count <= u8::MAX as u32 + 1),
+			"Sphere meshlet index exceeds u8. The most likely cause is increasing sphere tessellation without widening meshlet indices."
+		);
 		let mut indices = Vec::new();
 
 		for ring in 0..rings {

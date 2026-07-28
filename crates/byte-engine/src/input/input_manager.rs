@@ -63,6 +63,10 @@ impl InputManager {
 	/// Use PascalCase for `name` so trigger paths remain consistent.
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
 		let device_class = DeviceClass { name: name.to_string() };
+		debug_assert!(
+			self.device_classes.len() < u32::MAX as usize,
+			"Device-class handle space is exhausted. The most likely cause is registering classes continuously instead of reusing them."
+		);
 
 		DeviceClassHandle(insert_return_length(&mut self.device_classes, device_class) as u32)
 	}
@@ -91,6 +95,14 @@ impl InputManager {
 			"Default value type does not match input source type"
 		);
 
+		debug_assert!(
+			(device_handle.0 as usize) < self.device_classes.len(),
+			"Trigger device class is unknown. The most likely cause is using a handle from another input manager."
+		);
+		debug_assert!(
+			self.triggers.len() < u32::MAX as usize,
+			"Trigger handle space is exhausted. The most likely cause is registering triggers continuously instead of reusing them."
+		);
 		let input_source = Trigger {
 			device_class_handle: *device_handle,
 			name: name.to_string(),
@@ -118,6 +130,14 @@ impl InputManager {
 	/// Call this once for each physical or virtual device, such as each connected
 	/// gamepad.
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
+		debug_assert!(
+			(device_class_handle.0 as usize) < self.device_classes.len(),
+			"Device class is unknown. The most likely cause is using a handle from another input manager."
+		);
+		debug_assert!(
+			self.devices.len() < u32::MAX as usize,
+			"Device handle space is exhausted. The most likely cause is creating devices without retiring old state."
+		);
 		let other_device = self
 			.devices
 			.iter()

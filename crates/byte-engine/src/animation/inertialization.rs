@@ -219,15 +219,27 @@ impl std::error::Error for InertializationError {}
 
 /// Evaluates an exact critically damped offset with the supplied initial velocity.
 fn decay_vector(offset: [f32; 3], velocity: [f32; 3], rate: f32, time: f32) -> [f32; 3] {
+	debug_assert!(
+		rate.is_finite() && rate >= 0.0 && time.is_finite() && time >= 0.0,
+		"Inertial decay inputs are invalid. The most likely cause is bypassing transition time validation."
+	);
 	let decay = (-rate * time).exp();
 	std::array::from_fn(|component| (offset[component] + (velocity[component] + rate * offset[component]) * time) * decay)
 }
 
 fn velocity3(previous: [f32; 3], current: [f32; 3], delta: f32) -> [f32; 3] {
+	debug_assert!(
+		delta.is_finite() && delta > 0.0,
+		"Velocity delta is invalid. The most likely cause is bypassing sample interval validation."
+	);
 	std::array::from_fn(|component| (current[component] - previous[component]) / delta)
 }
 
 fn angular_velocity(previous: [f32; 4], current: [f32; 4], delta: f32) -> [f32; 3] {
+	debug_assert!(
+		delta.is_finite() && delta > 0.0,
+		"Angular velocity delta is invalid. The most likely cause is bypassing sample interval validation."
+	);
 	let delta_rotation = multiply_quaternion(current, conjugate_quaternion(previous));
 	let rotation_vector = quaternion_log(delta_rotation);
 	std::array::from_fn(|component| rotation_vector[component] / delta)

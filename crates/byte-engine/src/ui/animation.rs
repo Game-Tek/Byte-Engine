@@ -218,6 +218,14 @@ impl Spring {
 
 	pub fn step(&mut self, dt: MediaTime) -> f32 {
 		let dt = dt.as_seconds_f32().min(MAX_STEP);
+		debug_assert!(
+			dt.is_finite() && dt >= 0.0,
+			"Spring delta is invalid. The most likely cause is advancing UI animation with negative or non-finite time."
+		);
+		debug_assert!(
+			self.mass.is_finite() && self.mass > 0.0,
+			"Spring mass is invalid. The most likely cause is constructing an invalid spring configuration."
+		);
 		if dt <= 0.0 {
 			return self.value;
 		}

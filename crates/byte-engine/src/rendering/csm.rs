@@ -9,6 +9,14 @@ use super::view::View;
 pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> impl ExactSizeIterator<Item = (f32, f32)> {
 	let near = camera_view.near();
 	let far = camera_view.far();
+	debug_assert!(
+		num_cascades > 0,
+		"Cascade count is zero. The most likely cause is creating a shadow pipeline without any cascade layers."
+	);
+	debug_assert!(
+		near.is_finite() && far.is_finite() && near > 0.0 && far > near,
+		"Camera depth range is invalid. The most likely cause is a nonpositive near plane or a far plane that does not follow it."
+	);
 	let range = far - near;
 	let ratio = far / near;
 	let mut cascade_near = near;
@@ -31,6 +39,13 @@ pub fn make_csm_views(
 	num_cascades: usize,
 	shadow_map_resolution: u32,
 ) -> impl ExactSizeIterator<Item = View> {
+	debug_assert!(
+		light_direction.x.is_finite()
+			&& light_direction.y.is_finite()
+			&& light_direction.z.is_finite()
+			&& length(light_direction) > f32::EPSILON,
+		"Shadow light direction is invalid. The most likely cause is supplying a zero or non-finite direction."
+	);
 	let light_direction = normalize(light_direction);
 	let camera_far = camera_view.far();
 

@@ -78,6 +78,10 @@ pub fn extract_root_motion(
 			root_node,
 			pose_len: current_pose.len(),
 		})?;
+	debug_assert!(
+		root_node < current_pose.len(),
+		"Root-motion node is missing from the current pose. The most likely cause is inconsistent pose validation."
+	);
 	let current = current_pose[root_node];
 	let delta = RootMotionDelta::between(previous, current);
 	current_pose[root_node].translation = reference.translation;

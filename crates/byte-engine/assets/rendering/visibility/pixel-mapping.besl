@@ -27,20 +27,88 @@ material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_wri
 pixel_mapping_buffer: descriptor<PixelMapping, 1037, write>;
 instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
 
+tile_histogram_keys: workgroup<atomicu32, 32>;
+tile_histogram_counts: workgroup<atomicu32, 32>;
+tile_mapping_bases: workgroup<u32, 32>;
+
+PIXEL_MAPPING_TILE_CAPACITY: const u32 = 32;
+INVALID_INDEX: const u32 = 4294967295;
+PIXEL_MAPPING_CAPACITY: const u32 = 8294400;
+
 main: fn () -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(instance_index_render_target, coord);
-	let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+	let initial_coord: vec2u = thread_id();
+	let extent: vec2u = image_size(instance_index_render_target);
+	let material_index: u32 = INVALID_INDEX;
+	let packed_tile_mapping: u32 = INVALID_INDEX;
 
-	if (pixel_instance_index < 4294967295 && pixel_instance_index < 1024) {
-		let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
+	if (initial_coord.x < extent.x) {
+		if (initial_coord.y < extent.y) {
+			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, initial_coord);
 
-		if (material_index < 1024) {
-			let pixel_mapping_index: u32 = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
-
-			if (pixel_mapping_index < 8294400) {
-				pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
+			if (pixel_instance_index < INVALID_INDEX && pixel_instance_index < 1024) {
+				material_index = mesh_data.meshes[pixel_instance_index].material_index;
 			}
+		}
+	}
+
+	if (thread_idx() < PIXEL_MAPPING_TILE_CAPACITY) {
+		atomic_store(tile_histogram_keys[thread_idx()], INVALID_INDEX);
+		atomic_store(tile_histogram_counts[thread_idx()], 0);
+	}
+	workgroup_barrier();
+
+	// Pack the slot and rank so only one tile-mapping value remains live across barriers.
+	if (material_index < 1024) {
+		for (
+			let probe: u32 = 0;
+			probe < PIXEL_MAPPING_TILE_CAPACITY && packed_tile_mapping == INVALID_INDEX;
+			probe = probe + 1
+		) {
+			let slot: u32 = (material_index + probe) & 31;
+			let previous_key: u32 = atomic_compare_exchange(
+				tile_histogram_keys[slot],
+				INVALID_INDEX,
+				material_index
+			);
+
+			if (previous_key == INVALID_INDEX || previous_key == material_index) {
+				let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
+				packed_tile_mapping = (tile_rank << 5) | slot;
+			}
+		}
+	}
+	workgroup_barrier();
+
+	// One lane per occupied slot reserves a contiguous global run for the whole tile.
+	if (thread_idx() < PIXEL_MAPPING_TILE_CAPACITY) {
+		let key: u32 = atomic_load(tile_histogram_keys[thread_idx()]);
+
+		if (key < 1024) {
+			let tile_count: u32 = atomic_load(tile_histogram_counts[thread_idx()]);
+			tile_mapping_bases[thread_idx()] = atomic_add(
+				material_offset_scratch_buffer.material_offset_scratch[key],
+				tile_count
+			);
+		}
+	}
+	workgroup_barrier();
+
+	if (material_index < 1024) {
+		let pixel_mapping_index: u32 = INVALID_INDEX;
+
+		if (packed_tile_mapping < INVALID_INDEX) {
+			let tile_slot: u32 = packed_tile_mapping & 31;
+			let tile_rank: u32 = packed_tile_mapping >> 5;
+			pixel_mapping_index = tile_mapping_bases[tile_slot] + tile_rank;
+		}
+		if (packed_tile_mapping == INVALID_INDEX) {
+			// A tile with more distinct materials than local slots retains the per-pixel fallback.
+			pixel_mapping_index = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
+		}
+
+		if (pixel_mapping_index < PIXEL_MAPPING_CAPACITY) {
+			let coord: vec2u = thread_id();
+			pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 		}
 	}
 }

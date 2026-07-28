@@ -207,6 +207,8 @@ mod tests {
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
 	const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
 	const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
+	const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
+	const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 
 	/// Parses the checked-in BESL source that production baking consumes.
 	fn asset_program(source: &str) -> besl::NodeReference {
@@ -966,14 +968,22 @@ mod tests {
 		// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.
 		let mut pixel_mapping = buffer(&pixel_mapping_program, PIXEL_MAPPING_SLOT);
 		{
+			let mut workgroup = WorkgroupState::new();
+			let configs: [ExecutionConfig; PIXEL_MAPPING_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+				let lane = lane as u32;
+				ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+					.with_thread_idx(lane)
+					.with_thread_id([lane % PIXEL_MAPPING_WORKGROUP_WIDTH, lane / PIXEL_MAPPING_WORKGROUP_WIDTH])
+			});
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
 			descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
 			descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
 			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
-			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
-				run_at(&pixel_mapping_program, &mut descriptors, coordinate);
-			}
+			descriptors.bind_workgroup_state(&mut workgroup);
+			pixel_mapping_program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the production pixel-mapping workgroup. The most likely cause is broken tile reservation or synchronization.",
+			);
 		}
 
 		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 0), [1, 1]);
@@ -981,6 +991,74 @@ mod tests {
 		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 2), [2, 1]);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 2), 2);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 5), 3);
+	}
+
+	/// Verifies tile-local reservations preserve mappings when distinct materials exceed the bounded histogram.
+	#[test]
+	fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
+		let program = crate::rendering::shader_vm_test::compile(pixel_mapping_program());
+		let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+		let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+		for material_index in 0..33 {
+			mesh_data
+				.write_indexed_field("meshes", material_index, "material_index", Value::U32(material_index as u32))
+				.expect("Failed to initialize a VM mesh. The most likely cause is a drifted Mesh buffer layout.");
+			material_offset_scratch
+				.write_indexed("material_offset_scratch", material_index, Value::U32(material_index as u32))
+				.expect("Failed to initialize a material mapping offset. The most likely cause is a drifted scratch layout.");
+		}
+
+		let mut instance_indices = Texture::new(PIXEL_MAPPING_WORKGROUP_WIDTH, PIXEL_MAPPING_WORKGROUP_WIDTH)
+			.expect("Failed to create the pixel-mapping overflow fixture. The most likely cause is an invalid extent.");
+		for lane in 0..PIXEL_MAPPING_WORKGROUP_SIZE {
+			let instance_index = if lane < 33 { lane as u32 } else { u32::MAX };
+			instance_indices
+				.write_u32(
+					[
+						(lane % PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u32,
+						(lane / PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u32,
+					],
+					instance_index,
+				)
+				.expect("Failed to initialize a mapping texel. The most likely cause is an invalid coordinate.");
+		}
+
+		let mut pixel_mapping = buffer(&program, PIXEL_MAPPING_SLOT);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; PIXEL_MAPPING_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % PIXEL_MAPPING_WORKGROUP_WIDTH, lane / PIXEL_MAPPING_WORKGROUP_WIDTH])
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
+			descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the overflowing pixel-mapping workgroup. The most likely cause is broken fallback reservation.",
+			);
+		}
+
+		for material_index in 0..33 {
+			let expected_coordinate = [
+				(material_index % PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u16 + 1,
+				(material_index / PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u16 + 1,
+			];
+			assert_eq!(
+				read_vec2u16(&pixel_mapping, "pixel_mapping", material_index),
+				expected_coordinate,
+				"Unexpected coordinate for material {material_index}. The most likely cause is a dropped tile reservation."
+			);
+			assert_eq!(
+				read_u32(&material_offset_scratch, "material_offset_scratch", material_index),
+				material_index as u32 + 1,
+				"Unexpected cursor for material {material_index}. The most likely cause is a duplicated tile reservation."
+			);
+		}
 	}
 
 	/// Verifies a tile with more unique materials than histogram slots preserves every count through the overflow path.

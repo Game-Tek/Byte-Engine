@@ -580,7 +580,7 @@ mod tests {
 		layout::{ConcreteElement, Depth, Position, Sizing},
 		Element,
 	};
-	use super::layout_elements;
+	use super::{layout_elements, LayoutElement};
 	use crate::ui::{
 		font::TextSystem,
 		layout::IdedElement,
@@ -608,141 +608,73 @@ mod tests {
 			.collect()
 	}
 
+	/// Lays out test containers whose relationships refer to their array indexes.
+	fn layout(
+		containers: impl IntoIterator<Item = Container>,
+		relations: &[(usize, usize)],
+		viewport: Size,
+	) -> std::vec::Vec<LayoutElement> {
+		let elements = make_elements(containers);
+		let relations = relations
+			.iter()
+			.map(|&(parent, child)| (elements[parent].id(), elements[child].id()))
+			.collect::<std::vec::Vec<_>>();
+		let frame_allocator = bumpalo::Bump::new();
+
+		layout_elements(elements, &relations, viewport, &mut TextSystem::new(), &frame_allocator)
+			.into_iter()
+			.collect()
+	}
+
+	fn assert_layout(element: &LayoutElement, size: Size, position: Location3) {
+		assert_eq!(element.size, size);
+		assert_eq!(element.position, position);
+	}
+
 	#[test]
 	fn layout_root() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-
-		let elements = make_elements([root]);
-
-		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new(), &frame_allocator);
+		let elements = layout([Container::default()], &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
-
-		let element = &elements[0];
-
-		assert_eq!(element.size, Size::new(1024, 10));
+		assert_eq!(elements[0].size, Size::new(1024, 10));
 	}
 
 	#[test]
 	fn layout_root_half_size() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().size(Sizing::Relative(1, 2));
-
-		let elements = make_elements([root]);
-
-		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new(), &frame_allocator);
+		let elements = layout([Container::default().size(Sizing::Relative(1, 2))], &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
-
-		let element = &elements[0];
-
-		assert_eq!(element.size, Size::new(512, 5));
+		assert_eq!(elements[0].size, Size::new(512, 5));
 	}
 
 	#[test]
 	fn layout_half_children() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let a = Container::default().size(Sizing::Relative(1, 2));
-		let b = Container::default().size(Sizing::Relative(1, 2));
-		let c = Container::default().size(Sizing::Relative(1, 2));
-		let d = Container::default().size(Sizing::Relative(1, 2));
-
-		let elements = make_elements([root, a, b, c, d]);
-
-		let root = &elements[0];
-		let a = &elements[1];
-		let b = &elements[2];
-		let c = &elements[3];
-		let d = &elements[4];
-
-		let relations = [(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
+		let half = || Container::default().size(Sizing::Relative(1, 2));
+		let elements = layout(
+			[Container::default(), half(), half(), half(), half()],
+			&[(0, 1), (1, 2), (2, 3), (3, 4)],
 			Size::new(1024, 1024),
-			&mut TextSystem::new(),
-			&frame_allocator,
 		);
 
-		assert_eq!(elements.len(), 5);
-
-		let element = &elements[0];
-		assert_eq!(element.size, Size::new(1024, 1024));
-		assert_eq!(element.position, Location3::new(0, 0, 0));
-
-		let element = &elements[1];
-		assert_eq!(element.size, Size::new(512, 512));
-		assert_eq!(element.position, Location3::new(0, 0, 1));
-
-		let element = &elements[2];
-		assert_eq!(element.size, Size::new(256, 256));
-		assert_eq!(element.position, Location3::new(0, 0, 2));
-
-		let element = &elements[3];
-		assert_eq!(element.size, Size::new(128, 128));
-		assert_eq!(element.position, Location3::new(0, 0, 3));
-
-		let element = &elements[4];
-		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 0, 4));
+		let expected_sizes = [1024, 512, 256, 128, 64];
+		for (index, size) in expected_sizes.into_iter().enumerate() {
+			assert_layout(&elements[index], Size::new(size, size), Location3::new(0, 0, index as u32));
+		}
 	}
 
 	#[test]
 	fn layout_column() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::column);
-		let a = Container::default().size(Sizing::pixels(64));
-		let b = Container::default().size(Sizing::pixels(64));
-		let c = Container::default().size(Sizing::pixels(64));
-		let d = Container::default().size(Sizing::pixels(64));
-
-		let elements = make_elements([root, a, b, c, d]);
-
-		let root = &elements[0];
-		let a = &elements[1];
-		let b = &elements[2];
-		let c = &elements[3];
-		let d = &elements[4];
-
-		let relations = [
-			(root.id(), a.id()),
-			(root.id(), b.id()),
-			(root.id(), c.id()),
-			(root.id(), d.id()),
-		];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
+		let child = || Container::default().size(Sizing::pixels(64));
+		let elements = layout(
+			[Container::default().flow(flow::column), child(), child(), child(), child()],
+			&[(0, 1), (0, 2), (0, 3), (0, 4)],
 			Size::new(1024, 1024),
-			&mut TextSystem::new(),
-			&frame_allocator,
 		);
 
-		assert_eq!(elements.len(), 5);
-
-		let element = &elements[0];
-		assert_eq!(element.size, Size::new(1024, 1024));
-		assert_eq!(element.position, Location3::new(0, 0, 0));
-
-		let element = &elements[1];
-		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 0, 1));
-
-		let element = &elements[2];
-		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 64, 1));
-
-		let element = &elements[3];
-		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 128, 1));
-
-		let element = &elements[4];
-		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 192, 1));
+		assert_layout(&elements[0], Size::new(1024, 1024), Location3::new(0, 0, 0));
+		for (index, y) in [0, 64, 128, 192].into_iter().enumerate() {
+			assert_layout(&elements[index + 1], Size::new(64, 64), Location3::new(0, y, 1));
+		}
 	}
 
 	#[test]

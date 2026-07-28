@@ -22,16 +22,66 @@ mesh_data: descriptor<MeshData, 1, read>;
 material_count_buffer: descriptor<MaterialCount, 1033, read_write>;
 instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
 
+tile_histogram_keys: workgroup<atomicu32, 32>;
+tile_histogram_counts: workgroup<atomicu32, 32>;
+
+MATERIAL_COUNT_TILE_CAPACITY: const u32 = 32;
+INVALID_MATERIAL_INDEX: const u32 = 4294967295;
+
 main: fn () -> void {
 	let coord: vec2u = thread_id();
-	guard_image_bounds(instance_index_render_target, coord);
-	let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+	let extent: vec2u = image_size(instance_index_render_target);
+	let lane: u32 = thread_idx();
+	let material_index: u32 = INVALID_MATERIAL_INDEX;
 
-	if (pixel_instance_index < 4294967295 && pixel_instance_index < 1024) {
-		let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
+	if (coord.x < extent.x) {
+		if (coord.y < extent.y) {
+			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 
-		if (material_index < 1024) {
+			if (pixel_instance_index < INVALID_MATERIAL_INDEX && pixel_instance_index < 1024) {
+				material_index = mesh_data.meshes[pixel_instance_index].material_index;
+			}
+		}
+	}
+
+	if (lane < MATERIAL_COUNT_TILE_CAPACITY) {
+		atomic_store(tile_histogram_keys[lane], INVALID_MATERIAL_INDEX);
+		atomic_store(tile_histogram_counts[lane], 0);
+	}
+	workgroup_barrier();
+
+	// Every lane claims or increments one bounded tile slot. A full table falls back without losing pixels.
+	if (material_index < 1024) {
+		let inserted: bool = false;
+
+		for (let probe: u32 = 0; probe < MATERIAL_COUNT_TILE_CAPACITY; probe = probe + 1) {
+			if (inserted == false) {
+				let slot: u32 = (material_index + probe) % MATERIAL_COUNT_TILE_CAPACITY;
+				let previous_key: u32 = atomic_compare_exchange(
+					tile_histogram_keys[slot],
+					INVALID_MATERIAL_INDEX,
+					material_index
+				);
+
+				if (previous_key == INVALID_MATERIAL_INDEX || previous_key == material_index) {
+					atomic_add(tile_histogram_counts[slot], 1);
+					inserted = true;
+				}
+			}
+		}
+
+		if (inserted == false) {
 			atomic_add(material_count_buffer.material_count[material_index], 1);
+		}
+	}
+	workgroup_barrier();
+
+	// Distinct occupied slots flush independently after the tile histogram is complete.
+	if (lane < MATERIAL_COUNT_TILE_CAPACITY) {
+		let key: u32 = atomic_load(tile_histogram_keys[lane]);
+
+		if (key < 1024) {
+			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[lane]));
 		}
 	}
 }

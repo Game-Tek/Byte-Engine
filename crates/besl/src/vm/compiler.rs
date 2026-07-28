@@ -951,6 +951,56 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"atomic_compare_exchange" => {
+				require_argument_count(arguments, 3)?;
+				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+					if target.value_type != ValueType::U32 {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: target.value_type.name().to_string(),
+						});
+					}
+					let index = target
+						.index_expression
+						.as_ref()
+						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.transpose()?;
+					let expected = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+					let desired = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::AtomicCompareExchangeWorkgroup {
+						register,
+						name: target.name,
+						index,
+						count: target.count,
+						expected,
+						desired,
+					});
+					return Ok(register);
+				}
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
+				if target.value_type != ValueType::U32 {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::U32.name().to_string(),
+						found: target.value_type.name().to_string(),
+					});
+				}
+				let target = self.lower_buffer_access(target, descriptor_layouts)?;
+				let expected = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let desired = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::AtomicCompareExchangeBuffer {
+					register,
+					slot: target.slot,
+					offset: target.offset,
+					stride: target.stride,
+					count: target.count,
+					index: target.index,
+					expected,
+					desired,
+				});
+				Ok(register)
+			}
 			"texture_size" => {
 				require_argument_count(arguments, 1)?;
 
@@ -2081,7 +2131,7 @@ impl<'a> Compiler<'a> {
 				self.emit_buffer_store(target, register);
 				Ok(())
 			}
-			"atomic_add" | "image_atomic_or" => {
+			"atomic_add" | "atomic_compare_exchange" | "image_atomic_or" => {
 				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32, descriptor_layouts)?;
 				Ok(())
 			}

@@ -2197,6 +2197,64 @@ fn compute_workgroup_array_shares_values_across_a_barrier() {
 }
 
 #[test]
+fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			previous: u32[2],
+			observed: u32[2],
+		}
+		result: descriptor<Result, 42, read_write>;
+		shared_value: workgroup<atomicu32>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			if (lane == 0) {
+				atomic_store(shared_value, 5);
+			}
+			workgroup_barrier();
+			result.previous[lane] = atomic_compare_exchange(shared_value, 5, 9);
+			result.observed[lane] = atomic_load(shared_value);
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(42));
+	let mut workgroup = WorkgroupState::new();
+	let configs = [
+		ExecutionConfig::new(64).with_thread_idx(0),
+		ExecutionConfig::new(64).with_thread_idx(1),
+	];
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(42), &mut result);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable.run_workgroup(&mut descriptors, &configs).expect(
+			"Compare exchange failed. The most likely cause is broken shared-atomic scheduling or previous-value handling.",
+		);
+	}
+
+	assert_eq!(
+		result
+			.read_indexed("previous", 0)
+			.expect("Expected successful previous value"),
+		Value::U32(5)
+	);
+	assert_eq!(
+		result.read_indexed("previous", 1).expect("Expected failed previous value"),
+		Value::U32(9)
+	);
+	assert_eq!(
+		result.read_indexed("observed", 0).expect("Expected lane zero observation"),
+		Value::U32(9)
+	);
+	assert_eq!(
+		result.read_indexed("observed", 1).expect("Expected lane one observation"),
+		Value::U32(9)
+	);
+}
+
+#[test]
 fn compute_workgroup_array_rejects_out_of_bounds_indices() {
 	let executable = compile_test_program(
 		r#"

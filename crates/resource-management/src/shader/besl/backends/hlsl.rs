@@ -402,6 +402,21 @@ impl Generator {
 		(name == "atomic_add").then(|| arguments.clone())
 	}
 
+	fn atomic_compare_exchange_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
+		let expression = expression.borrow();
+		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic, arguments, ..
+		}) = expression.node()
+		else {
+			return None;
+		};
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic { name, .. } = intrinsic.node() else {
+			return None;
+		};
+		(name == "atomic_compare_exchange").then(|| arguments.clone())
+	}
+
 	fn image_size_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
 		let expression = expression.borrow();
 		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
@@ -429,6 +444,25 @@ impl Generator {
 		string.push(')');
 	}
 
+	fn emit_atomic_compare_exchange_call(
+		&mut self,
+		string: &mut String,
+		arguments: &[besl::NodeReference],
+		previous_value: Option<&str>,
+	) {
+		string.push_str("InterlockedCompareExchange(");
+		self.emit_node_string(string, &arguments[0]);
+		string.push_str(", ");
+		self.emit_node_string(string, &arguments[1]);
+		string.push_str(", ");
+		self.emit_node_string(string, &arguments[2]);
+		if let Some(previous_value) = previous_value {
+			string.push_str(", ");
+			string.push_str(previous_value);
+		}
+		string.push(')');
+	}
+
 	fn emit_atomic_add_assignment(
 		&mut self,
 		string: &mut String,
@@ -449,6 +483,29 @@ impl Generator {
 		string.push_str(name);
 		string.push(';');
 		self.emit_atomic_add_call(string, &arguments, Some(name));
+		true
+	}
+
+	fn emit_atomic_compare_exchange_assignment(
+		&mut self,
+		string: &mut String,
+		left: &besl::NodeReference,
+		right: &besl::NodeReference,
+	) -> bool {
+		let Some(arguments) = Self::atomic_compare_exchange_arguments(right) else {
+			return false;
+		};
+		let left = left.borrow();
+		let besl::Nodes::Expression(besl::Expressions::VariableDeclaration { name, r#type }) = left.node() else {
+			return false;
+		};
+
+		// HLSL exposes the previous value through an out parameter.
+		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+		string.push(' ');
+		string.push_str(name);
+		string.push(';');
+		self.emit_atomic_compare_exchange_call(string, &arguments, Some(name));
 		true
 	}
 
@@ -828,6 +885,12 @@ impl Generator {
 			"atomic_add" => {
 				self.emit_atomic_add_call(string, arguments, None);
 			}
+			"atomic_compare_exchange" => {
+				// HLSL requires an out parameter even when BESL discards the previous value.
+				string.push_str("{ uint _besl_atomic_previous; ");
+				self.emit_atomic_compare_exchange_call(string, arguments, Some("_besl_atomic_previous"));
+				string.push_str("; }");
+			}
 			"atomic_load" => self.emit_node_string(string, &arguments[0]),
 			"atomic_store" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -1170,6 +1233,9 @@ impl Generator {
 			} => self.emit_hlsl_struct_node(string, this_node, name, fields, template),
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_atomic_add_assignment(string, left, right) => {}
+			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
+				if *operator == besl::Operators::Assignment
+					&& self.emit_atomic_compare_exchange_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
@@ -2946,6 +3012,34 @@ mod tests {
 			crate::types::ShaderTypes::Compute,
 		)
 		.expect("Expected read-write narrow-buffer HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn atomic_compare_exchange_lowers_to_hlsl() {
+		let script = r#"
+		shared_keys: workgroup<atomicu32, 8>;
+
+		main: fn () -> void {
+			let previous: u32 = atomic_compare_exchange(shared_keys[thread_idx()], 4294967295, 7);
+			atomic_compare_exchange(shared_keys[thread_idx()], 7, 9);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected compare-exchange shader source to lex");
+		let main = root.get_main().expect("Expected compare-exchange main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Expected compare-exchange source to lower to HLSL");
+
+		assert_string_contains!(
+			shader,
+			"uint32_t previous;InterlockedCompareExchange(shared_keys[group_thread_index], 4294967295, 7, previous);"
+		);
+		assert_string_contains!(
+			shader,
+			"{ uint _besl_atomic_previous; InterlockedCompareExchange(shared_keys[group_thread_index], 7, 9, _besl_atomic_previous); }"
+		);
 	}
 
 	#[test]

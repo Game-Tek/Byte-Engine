@@ -118,6 +118,50 @@ impl<A: Allocator + Clone> Generator<A> {
 		&self.allocator
 	}
 
+	/// Reports whether one reachable AST branch uses compare exchange.
+	fn uses_atomic_compare_exchange(node: &besl::NodeReference) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::uses_atomic_compare_exchange),
+			besl::Nodes::Conditional { condition, statements } => {
+				Self::uses_atomic_compare_exchange(condition) || statements.iter().any(Self::uses_atomic_compare_exchange)
+			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				Self::uses_atomic_compare_exchange(initializer)
+					|| Self::uses_atomic_compare_exchange(condition)
+					|| Self::uses_atomic_compare_exchange(update)
+					|| statements.iter().any(Self::uses_atomic_compare_exchange)
+			}
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::IntrinsicCall {
+					intrinsic, arguments, ..
+				} => {
+					intrinsic.borrow().get_name().as_deref() == Some("atomic_compare_exchange")
+						|| arguments.iter().any(Self::uses_atomic_compare_exchange)
+				}
+				besl::Expressions::Operator { left, right, .. } => {
+					Self::uses_atomic_compare_exchange(left) || Self::uses_atomic_compare_exchange(right)
+				}
+				besl::Expressions::FunctionCall { parameters, .. } => parameters.iter().any(Self::uses_atomic_compare_exchange),
+				besl::Expressions::Expression { elements } => elements.iter().any(Self::uses_atomic_compare_exchange),
+				besl::Expressions::Macro { body, .. } => Self::uses_atomic_compare_exchange(body),
+				besl::Expressions::Member { source, .. } => Self::uses_atomic_compare_exchange(source),
+				besl::Expressions::Return { value } => value.as_ref().is_some_and(Self::uses_atomic_compare_exchange),
+				besl::Expressions::Accessor { left, right } => {
+					Self::uses_atomic_compare_exchange(left) || Self::uses_atomic_compare_exchange(right)
+				}
+				besl::Expressions::VariableDeclaration { .. }
+				| besl::Expressions::Literal { .. }
+				| besl::Expressions::Continue => false,
+			},
+			_ => false,
+		}
+	}
+
 	/// Detects whether a function's reachable AST needs backend resource parameters.
 	fn function_requires_resource_context(&self, function_node: &besl::NodeReference, include_push_constant: bool) -> bool {
 		fn node_requires_resource_context<A: Allocator + Clone>(
@@ -285,7 +329,8 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		let mut string = String::with_capacity(2048);
 
-		self.generate_msl_header_block(&mut string, shader_compilation_settings);
+		let uses_atomic_compare_exchange = order.iter().any(Self::uses_atomic_compare_exchange);
+		self.generate_msl_header_block(&mut string, shader_compilation_settings, uses_atomic_compare_exchange);
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(&order) => {
@@ -2327,6 +2372,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", memory_order_relaxed)");
 			}
+			"atomic_compare_exchange" => {
+				string.push_str("_besl_atomic_compare_exchange(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"atomic_load" => {
 				string.push_str("atomic_load_explicit(&");
 				self.emit_node_string(string, &arguments[0]);
@@ -2726,9 +2776,33 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	fn generate_msl_header_block(&self, msl_block: &mut String, compilation_settings: &ShaderGenerationSettings) {
+	fn generate_msl_header_block(
+		&self,
+		msl_block: &mut String,
+		compilation_settings: &ShaderGenerationSettings,
+		uses_atomic_compare_exchange: bool,
+	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
+		if uses_atomic_compare_exchange {
+			// Metal returns compare-exchange success as a bool, so these helpers preserve BESL's previous-value contract.
+			msl_block.push_str(
+				"inline uint _besl_atomic_compare_exchange(device atomic_uint& value, uint expected, uint desired) {\n\
+				 \tuint original = expected;\n\
+				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
+				 \t\tif (expected != original) { return expected; }\n\
+				 \t}\n\
+				 \treturn original;\n\
+				 }\n\
+				 inline uint _besl_atomic_compare_exchange(threadgroup atomic_uint& value, uint expected, uint desired) {\n\
+				 \tuint original = expected;\n\
+				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
+				 \t\tif (expected != original) { return expected; }\n\
+				 \t}\n\
+				 \treturn original;\n\
+				 }\n",
+			);
+		}
 
 		match compilation_settings.stage {
 			Stages::Vertex => msl_block.push_str("// #pragma shader_stage(vertex)\n"),
@@ -4414,6 +4488,7 @@ struct PrimitiveOutput {
 			}
 			counters: descriptor<Counters, 2, read_write>;
 			index_image: descriptor<StorageImage<r32ui>, 4, read>;
+			shared_keys: workgroup<atomicu32, 8>;
 			push_constant: push_constant {
 				base: u32,
 			}
@@ -4421,6 +4496,8 @@ struct PrimitiveOutput {
 				let coord: vec2u = thread_id();
 				let index: u32 = image_load_u32(index_image, coord) + push_constant.base;
 				let old: u32 = atomic_add(counters.values[index], 1);
+				let claimed: u32 = atomic_compare_exchange(counters.values[index], old, 7);
+				let shared_claimed: u32 = atomic_compare_exchange(shared_keys[index % 8], 4294967295, index);
 				atomic_store(counters.values[index], atomic_load(counters.values[old]));
 			}
 		"#;
@@ -4437,8 +4514,21 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
 		assert_string_contains!(shader, ".read(coord).x");
 		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
+		assert_string_contains!(
+			shader,
+			"_besl_atomic_compare_exchange(resources.counters->values[index],old,7)"
+		);
+		assert_string_contains!(shader, "_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)");
+		assert_string_contains!(
+			shader,
+			"while (!atomic_compare_exchange_weak_explicit(&value, &expected, desired"
+		);
 		assert_string_contains!(shader, "atomic_load_explicit(&");
 		assert_string_contains!(shader, "atomic_store_explicit(&");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-atomic-compare-exchange")
+			.expect("Expected compare-exchange MSL to compile natively");
 	}
 
 	#[test]

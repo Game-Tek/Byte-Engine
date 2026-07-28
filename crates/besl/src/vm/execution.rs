@@ -426,6 +426,25 @@ impl ExecutableProgram {
 						.atomic_add_u32(name, index, *count, value)?;
 					registers[*register] = Some(Value::U32(previous));
 				}
+				Instruction::AtomicCompareExchangeWorkgroup {
+					register,
+					name,
+					index,
+					count,
+					expected,
+					desired,
+				} => {
+					let index = index
+						.map(|index| read_register(registers, index).and_then(expect_u32))
+						.transpose()?
+						.unwrap_or(0) as usize;
+					let expected = expect_u32(read_register(registers, *expected)?)?;
+					let desired = expect_u32(read_register(registers, *desired)?)?;
+					let previous = descriptors
+						.workgroup_state_mut()?
+						.atomic_compare_exchange_u32(name, index, *count, expected, desired)?;
+					registers[*register] = Some(Value::U32(previous));
+				}
 				Instruction::WorkgroupBarrier => match barrier_behavior {
 					BarrierBehavior::Ignore => {
 						// A single invocation has no peers to await, so ordinary execution preserves program order.
@@ -697,6 +716,30 @@ impl ExecutableProgram {
 					let address = *offset + *stride * index;
 					let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
 					buffer.write_value(address, &ValueType::U32, &Value::U32(previous.wrapping_add(value)))?;
+					registers[*register] = Some(Value::U32(previous));
+				}
+				Instruction::AtomicCompareExchangeBuffer {
+					register,
+					slot,
+					offset,
+					stride,
+					count,
+					index,
+					expected,
+					desired,
+				} => {
+					let index = match index {
+						Some(index) => read_buffer_array_index(registers, *index, *count)?,
+						None => 0,
+					};
+					let expected = expect_u32(read_register(registers, *expected)?)?;
+					let desired = expect_u32(read_register(registers, *desired)?)?;
+					let buffer = descriptors.buffer_mut(*slot)?;
+					let address = *offset + *stride * index;
+					let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
+					if previous == expected {
+						buffer.write_value(address, &ValueType::U32, &Value::U32(desired))?;
+					}
 					registers[*register] = Some(Value::U32(previous));
 				}
 				Instruction::Call {

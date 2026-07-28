@@ -205,6 +205,8 @@ mod tests {
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 	const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
+	const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
+	const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
 
 	/// Parses the checked-in BESL source that production baking consumes.
 	fn asset_program(source: &str) -> besl::NodeReference {
@@ -909,13 +911,21 @@ mod tests {
 
 		let mut material_counts = buffer(&material_count_program, MATERIAL_COUNT_SLOT);
 		{
+			let mut workgroup = WorkgroupState::new();
+			let configs: [ExecutionConfig; MATERIAL_COUNT_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+				let lane = lane as u32;
+				ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+					.with_thread_idx(lane)
+					.with_thread_id([lane % MATERIAL_COUNT_WORKGROUP_WIDTH, lane / MATERIAL_COUNT_WORKGROUP_WIDTH])
+			});
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
 			descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
 			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
-			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
-				run_at(&material_count_program, &mut descriptors, coordinate);
-			}
+			descriptors.bind_workgroup_state(&mut workgroup);
+			material_count_program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the production material-count workgroup. The most likely cause is broken tile synchronization or invalid histogram storage.",
+			);
 		}
 
 		assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
@@ -971,6 +981,60 @@ mod tests {
 		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 2), [2, 1]);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 2), 2);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 5), 3);
+	}
+
+	/// Verifies a tile with more unique materials than histogram slots preserves every count through the overflow path.
+	#[test]
+	fn material_count_tile_histogram_preserves_overflowed_materials() {
+		let program = crate::rendering::shader_vm_test::compile(material_count_program());
+		let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+		for material_index in 0..33 {
+			mesh_data
+				.write_indexed_field("meshes", material_index, "material_index", Value::U32(material_index as u32))
+				.expect("Failed to initialize a VM mesh. The most likely cause is a drifted Mesh buffer layout.");
+		}
+
+		let mut instance_indices = Texture::new(8, 8)
+			.expect("Failed to create the histogram fixture. The most likely cause is an invalid test extent.");
+		for lane in 0..MATERIAL_COUNT_WORKGROUP_SIZE {
+			instance_indices
+				.write_u32(
+					[
+						(lane % MATERIAL_COUNT_WORKGROUP_WIDTH as usize) as u32,
+						(lane / MATERIAL_COUNT_WORKGROUP_WIDTH as usize) as u32,
+					],
+					(lane % 33) as u32,
+				)
+				.expect("Failed to initialize a histogram texel. The most likely cause is an invalid coordinate.");
+		}
+
+		let mut material_counts = buffer(&program, MATERIAL_COUNT_SLOT);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; MATERIAL_COUNT_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % MATERIAL_COUNT_WORKGROUP_WIDTH, lane / MATERIAL_COUNT_WORKGROUP_WIDTH])
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the overflowing material-count workgroup. The most likely cause is broken safe-overflow handling.",
+			);
+		}
+
+		for material_index in 0..33 {
+			let expected = if material_index < 31 { 2 } else { 1 };
+			assert_eq!(
+				read_u32(&material_counts, "material_count", material_index),
+				expected,
+				"Unexpected count for material {material_index}. The most likely cause is a dropped or duplicated tile-histogram entry."
+			);
+		}
 	}
 
 	/// Executes the standard GTAO shader with one deterministic depth fixture.

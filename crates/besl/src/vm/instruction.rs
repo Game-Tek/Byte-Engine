@@ -133,6 +133,14 @@ pub(super) enum Instruction {
 		count: usize,
 		value: usize,
 	},
+	AtomicCompareExchangeWorkgroup {
+		register: usize,
+		name: String,
+		index: Option<usize>,
+		count: usize,
+		expected: usize,
+		desired: usize,
+	},
 	WorkgroupBarrier,
 	SetTaskMeshOutputCount {
 		count: usize,
@@ -248,6 +256,16 @@ pub(super) enum Instruction {
 		count: usize,
 		index: Option<usize>,
 		value: usize,
+	},
+	AtomicCompareExchangeBuffer {
+		register: usize,
+		slot: ResourceSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: Option<usize>,
+		expected: usize,
+		desired: usize,
 	},
 	Call {
 		register: Option<usize>,

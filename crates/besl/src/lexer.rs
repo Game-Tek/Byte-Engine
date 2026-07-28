@@ -393,6 +393,15 @@ impl Node {
 				vec![("value", atomic_u32.clone()), ("increment", u32_t.clone())],
 				u32_t.clone(),
 			),
+			builtin_intrinsic(
+				"atomic_compare_exchange",
+				vec![
+					("value", atomic_u32.clone()),
+					("expected", u32_t.clone()),
+					("desired", u32_t.clone()),
+				],
+				u32_t.clone(),
+			),
 			builtin_intrinsic("atomic_load", vec![("value", atomic_u32.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"atomic_store",

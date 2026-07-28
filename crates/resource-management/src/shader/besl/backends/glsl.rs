@@ -249,6 +249,19 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
+			"atomic_compare_exchange" => {
+				string.push_str("atomicCompSwap(");
+				self.emit_node_string(string, &arguments[0]);
+				for argument in &arguments[1..] {
+					if self.minified {
+						string.push(',');
+					} else {
+						string.push_str(", ");
+					}
+					self.emit_node_string(string, argument);
+				}
+				string.push(')');
+			}
 			"atomic_load" => {
 				self.emit_node_string(string, &arguments[0]);
 			}
@@ -1150,6 +1163,29 @@ mod tests {
 
 		assert_string_contains!(shader, "const float[3] WEIGHTS = float[3](0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
+	}
+
+	#[test]
+	fn atomic_compare_exchange_lowers_to_glsl() {
+		let script = r#"
+		shared_keys: workgroup<atomicu32, 8>;
+
+		main: fn () -> void {
+			let previous: u32 = atomic_compare_exchange(shared_keys[thread_idx()], 4294967295, 7);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected compare-exchange shader source to lex");
+		let main = root.get_main().expect("Expected compare-exchange main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Expected compare-exchange source to lower to GLSL");
+
+		assert_string_contains!(
+			shader,
+			"atomicCompSwap(shared_keys[uint(gl_LocalInvocationIndex)],4294967295,7)"
+		);
 	}
 
 	#[test]

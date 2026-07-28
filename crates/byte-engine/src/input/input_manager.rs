@@ -630,6 +630,15 @@ mod tests {
 		InputManager::new(action_listener, event_channel)
 	}
 
+	fn build_input_manager_with_device(
+		register_device_class: fn(&mut InputManager) -> DeviceClassHandle,
+	) -> (InputManager, DeviceHandle) {
+		let mut input_manager = build_input_manager();
+		let device_class = register_device_class(&mut input_manager);
+		let device = input_manager.create_device(&device_class);
+		(input_manager, device)
+	}
+
 	fn update_input_manager(input_manager: &mut InputManager) {
 		let frame_allocator = bumpalo::Bump::new();
 		input_manager.update(&frame_allocator);
@@ -904,11 +913,7 @@ mod tests {
 
 	#[test]
 	fn record_bool_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_keyboard_device_class);
 
 		let handle = TriggerReference::Name("Keyboard.Up");
 
@@ -917,11 +922,7 @@ mod tests {
 
 	#[test]
 	fn record_unicode_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_keyboard_device_class);
 
 		let handle = TriggerReference::Name("Keyboard.Character");
 
@@ -930,35 +931,31 @@ mod tests {
 
 	#[test]
 	fn unicode_action_emits_character_events() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-		let device = input_manager.create_device(&device_class_handle);
-		let seat = SeatHandle::stub();
-
-		let action = Action::new(
+		let mut fixture = InputFixture::with_keyboard();
+		let handle = fixture.factory.create(Action::new(
 			"KeyboardCharacter",
 			&[ActionBindingDescription::new("Keyboard.Character")],
 			Types::Unicode,
+		));
+		fixture.update();
+
+		fixture.input_manager.record_trigger_value_for_device(
+			fixture.seat,
+			fixture.device.expect("keyboard fixture should have a device"),
+			TriggerReference::Name("Keyboard.Character"),
+			'é'.into(),
 		);
-		let handle = factory.create(action);
-		update_input_manager(&mut input_manager);
+		fixture.update();
 
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Character"), 'é'.into());
-		update_input_manager(&mut input_manager);
-
-		let event = Listener::read(&mut event_listener).expect("expected character action event");
+		let event = fixture.next_event().expect("expected character action event");
 		assert_eq!(event.handle(), handle);
 		assert_eq!(event.value(), Value::Unicode('é'));
-		assert!(Listener::read(&mut event_listener).is_none());
+		assert!(fixture.next_event().is_none());
 	}
 
 	#[test]
 	fn record_int_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = declare_funky_input_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(declare_funky_input_device_class);
 
 		let handle = TriggerReference::Name("Funky.Int");
 
@@ -967,11 +964,7 @@ mod tests {
 
 	#[test]
 	fn record_float_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_gamepad_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_gamepad_device_class);
 
 		let handle = TriggerReference::Name("Gamepad.LeftTrigger");
 
@@ -980,11 +973,7 @@ mod tests {
 
 	#[test]
 	fn record_vector2_input_source_action() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_gamepad_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_gamepad_device_class);
 
 		let handle = TriggerReference::Name("Gamepad.LeftStick");
 
@@ -1000,11 +989,7 @@ mod tests {
 
 	#[test]
 	fn record_vector3_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = declare_vr_headset_input_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(declare_vr_headset_input_device_class);
 
 		let handle = TriggerReference::Name("Headset.Position");
 
@@ -1028,11 +1013,7 @@ mod tests {
 
 	#[test]
 	fn record_quaternion_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = declare_vr_headset_input_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(declare_vr_headset_input_device_class);
 
 		let handle = TriggerReference::Name("Headset.Orientation");
 
@@ -1048,11 +1029,7 @@ mod tests {
 
 	#[test]
 	fn record_rgba_input_source_actions() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = declare_funky_input_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(declare_funky_input_device_class);
 
 		let handle = TriggerReference::Name("Funky.Rgba");
 
@@ -1111,11 +1088,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_float_interpolation() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_keyboard_device_class);
 
 		let handle = TriggerReference::Name("Keyboard.Up");
 
@@ -1132,11 +1105,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_vector2_interpolation() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_keyboard_device_class);
 
 		let handle = TriggerReference::Name("Keyboard.Up");
 
@@ -1153,11 +1122,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_vector3_interpolation() {
-		let mut input_manager = build_input_manager();
-
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-
-		let device = input_manager.create_device(&device_class_handle);
+		let (mut input_manager, device) = build_input_manager_with_device(register_keyboard_device_class);
 
 		let handle = TriggerReference::Name("Keyboard.Up");
 
@@ -1187,74 +1152,113 @@ mod tests {
 
 	fn count_events(listener: &mut DefaultListener<ActionEvent>) -> usize {
 		let mut count = 0;
-		while let Some(_) = Listener::read(listener) {
+		while Listener::read(listener).is_some() {
 			count += 1;
 		}
 		count
 	}
 
+	/// The `InputFixture` struct keeps input tests focused on actions, transitions, and emitted events.
+	struct InputFixture {
+		input_manager: InputManager,
+		factory: crate::core::factory::Factory<Action>,
+		event_listener: DefaultListener<ActionEvent>,
+		seat: SeatHandle,
+		device: Option<DeviceHandle>,
+	}
+
+	impl InputFixture {
+		fn new() -> Self {
+			let (input_manager, factory, event_listener) = build_input_manager_with_factory();
+			Self {
+				input_manager,
+				factory,
+				event_listener,
+				seat: SeatHandle::stub(),
+				device: None,
+			}
+		}
+
+		fn with_keyboard() -> Self {
+			let mut fixture = Self::new();
+			let device_class = register_keyboard_device_class(&mut fixture.input_manager);
+			fixture.device = Some(fixture.input_manager.create_device(&device_class));
+			fixture
+		}
+
+		fn register_tick_action(&mut self, policy: TickPolicy) {
+			let action = Action::new(
+				"MoveForward",
+				&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
+				Types::Float,
+			)
+			.tick_policy(policy);
+			self.factory.create(action);
+		}
+
+		fn set_up_key(&mut self, pressed: bool) {
+			self.input_manager.record_trigger_value_for_device(
+				self.seat,
+				self.device.expect("keyboard fixture should have a device"),
+				TriggerReference::Name("Keyboard.Up"),
+				pressed.into(),
+			);
+		}
+
+		fn update(&mut self) {
+			update_input_manager(&mut self.input_manager);
+		}
+
+		fn tick(&mut self) -> usize {
+			self.update();
+			count_events(&mut self.event_listener)
+		}
+
+		fn next_event(&mut self) -> Option<ActionEvent> {
+			Listener::read(&mut self.event_listener)
+		}
+	}
+
 	#[test]
 	fn test_tick_policy_on_change_only_emits_on_input() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-		let device = input_manager.create_device(&device_class_handle);
-		let seat = SeatHandle::stub();
+		let mut fixture = InputFixture::with_keyboard();
+		fixture.register_tick_action(TickPolicy::OnChange);
 
-		let action = Action::new(
-			"MoveForward",
-			&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
-			Types::Float,
-		)
-		.tick_policy(TickPolicy::OnChange);
-		factory.create(action);
+		assert_eq!(fixture.tick(), 0);
+		assert_eq!(fixture.tick(), 0);
 
-		// First update with no input: drains factory, no records -> no events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
+		fixture.set_up_key(true);
+		assert_eq!(fixture.tick(), 1);
+		assert_eq!(fixture.tick(), 0);
 
-		// Second update with no input: no events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
-
-		// Press key -> 1 event.
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// No new input -> no events (OnChange doesn't re-emit).
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
-
-		// Release key -> 1 event.
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// No new input -> no events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
+		fixture.set_up_key(false);
+		assert_eq!(fixture.tick(), 1);
+		assert_eq!(fixture.tick(), 0);
 	}
 
 	#[test]
 	fn manual_action_is_queued_and_updates_synthetic_state() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		let seat = SeatHandle(7);
-		let action = Action::new("Manual", &[], Types::Float);
-		let event_handle = factory.create(action);
-		update_input_manager(&mut input_manager);
+		let mut fixture = InputFixture::new();
+		fixture.seat = SeatHandle(7);
+		let event_handle = fixture.factory.create(Action::new("Manual", &[], Types::Float));
+		fixture.update();
 		let action_handle = ActionHandle(0);
 
-		input_manager.trigger_action(seat, action_handle, Value::Float(3.5)).unwrap();
-		assert!(Listener::read(&mut event_listener).is_none());
-		update_input_manager(&mut input_manager);
+		fixture
+			.input_manager
+			.trigger_action(fixture.seat, action_handle, Value::Float(3.5))
+			.unwrap();
+		assert!(fixture.next_event().is_none());
+		fixture.update();
 
-		let event = Listener::read(&mut event_listener).expect("expected manual action event");
-		assert_eq!(event.seat_handle(), seat);
+		let event = fixture.next_event().expect("expected manual action event");
+		assert_eq!(event.seat_handle(), fixture.seat);
 		assert_eq!(event.handle(), event_handle);
 		assert_eq!(event.value(), Value::Float(3.5));
 		assert_eq!(
-			input_manager
-				.get_action_state(seat, action_handle, InputManager::manual_action_device_handle())
+			fixture
+				.input_manager
+				.get_action_state(fixture.seat, action_handle, InputManager::manual_action_device_handle())
 				.value,
 			Value::Float(3.5)
 		);
@@ -1262,135 +1266,81 @@ mod tests {
 
 	#[test]
 	fn manual_action_rejects_unknown_handles_and_wrong_values() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		factory.create(Action::new("Manual", &[], Types::Float));
-		update_input_manager(&mut input_manager);
+		let mut fixture = InputFixture::new();
+		fixture.factory.create(Action::new("Manual", &[], Types::Float));
+		fixture.update();
 
 		assert!(matches!(
-			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(99), Value::Float(1.0)),
+			fixture
+				.input_manager
+				.trigger_action(fixture.seat, ActionHandle(99), Value::Float(1.0)),
 			Err(InputActionError::UnknownAction(ActionHandle(99)))
 		));
 		assert!(matches!(
-			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Bool(true)),
+			fixture
+				.input_manager
+				.trigger_action(fixture.seat, ActionHandle(0), Value::Bool(true)),
 			Err(InputActionError::TypeMismatch {
 				expected: Types::Float,
 				actual: Types::Boolean
 			})
 		));
-		update_input_manager(&mut input_manager);
-		assert!(Listener::read(&mut event_listener).is_none());
+		fixture.update();
+		assert!(fixture.next_event().is_none());
 	}
 
 	#[test]
 	fn manual_actions_preserve_queue_order() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		factory.create(Action::new("Manual", &[], Types::Int));
-		update_input_manager(&mut input_manager);
+		let mut fixture = InputFixture::new();
+		fixture.factory.create(Action::new("Manual", &[], Types::Int));
+		fixture.update();
 
-		input_manager
-			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(1))
+		fixture
+			.input_manager
+			.trigger_action(fixture.seat, ActionHandle(0), Value::Int(1))
 			.unwrap();
-		input_manager
-			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(2))
+		fixture
+			.input_manager
+			.trigger_action(fixture.seat, ActionHandle(0), Value::Int(2))
 			.unwrap();
-		update_input_manager(&mut input_manager);
+		fixture.update();
 
-		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(1));
-		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(2));
+		assert_eq!(fixture.next_event().unwrap().value(), Value::Int(1));
+		assert_eq!(fixture.next_event().unwrap().value(), Value::Int(2));
 	}
 
 	#[test]
 	fn test_tick_policy_while_active_emits_while_non_default() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-		let device = input_manager.create_device(&device_class_handle);
-		let seat = SeatHandle::stub();
+		let mut fixture = InputFixture::with_keyboard();
+		fixture.register_tick_action(TickPolicy::WhileActive);
 
-		let action = Action::new(
-			"MoveForward",
-			&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
-			Types::Float,
-		)
-		.tick_policy(TickPolicy::WhileActive);
-		factory.create(action);
+		assert_eq!(fixture.tick(), 0);
 
-		// First update registers the action, no records -> no events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
+		fixture.set_up_key(true);
+		assert!(fixture.tick() >= 1);
+		assert_eq!(fixture.tick(), 1);
+		assert_eq!(fixture.tick(), 1);
 
-		// Press key -> Phase A emits 1 event + Phase B sees value is non-default and emits 1 = 2.
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
-		update_input_manager(&mut input_manager);
-		let events = count_events(&mut event_listener);
-		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
-
-		// No new input, key still held -> WhileActive re-emits because value is non-default.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// Still held -> re-emits again.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// Release key.
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
-		update_input_manager(&mut input_manager);
-		// Phase A emits change event, Phase B sees value is default so does not re-emit.
-		// The value is now 0.0 (default), so WhileActive should not emit in Phase B.
-		let events_on_release = count_events(&mut event_listener);
-		assert!(
-			events_on_release >= 1,
-			"Expected at least 1 event on key release, got {}",
-			events_on_release
-		);
-
-		// No new input, value is default -> no events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
+		fixture.set_up_key(false);
+		assert!(fixture.tick() >= 1);
+		assert_eq!(fixture.tick(), 0);
 	}
 
 	#[test]
 	fn test_tick_policy_always_emits_every_frame() {
-		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
-		let device_class_handle = register_keyboard_device_class(&mut input_manager);
-		let device = input_manager.create_device(&device_class_handle);
-		let seat = SeatHandle::stub();
+		let mut fixture = InputFixture::with_keyboard();
+		fixture.register_tick_action(TickPolicy::Always);
 
-		let action = Action::new(
-			"MoveForward",
-			&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
-			Types::Float,
-		)
-		.tick_policy(TickPolicy::Always);
-		factory.create(action);
+		assert_eq!(fixture.tick(), 0);
 
-		// Registers the action, no device has interacted yet -> no Always events.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 0);
+		fixture.set_up_key(true);
+		assert!(fixture.tick() >= 1);
+		assert_eq!(fixture.tick(), 1);
 
-		// Press key -> events emitted.
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
-		update_input_manager(&mut input_manager);
-		let events = count_events(&mut event_listener);
-		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
-
-		// No new input -> Always still emits.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// Release key -> Still emits (Always emits regardless of value).
-		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
-		update_input_manager(&mut input_manager);
-		let events = count_events(&mut event_listener);
-		assert!(events >= 1);
-
-		// No new input, value is default -> Always STILL emits.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
-
-		// And again.
-		update_input_manager(&mut input_manager);
-		assert_eq!(count_events(&mut event_listener), 1);
+		fixture.set_up_key(false);
+		assert!(fixture.tick() >= 1);
+		assert_eq!(fixture.tick(), 1);
+		assert_eq!(fixture.tick(), 1);
 	}
 }
 

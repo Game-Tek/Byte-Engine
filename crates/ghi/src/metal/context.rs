@@ -41,6 +41,18 @@ pub struct Context {
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
 }
 
+/// Reports whether a CAMetalLayer drawable can satisfy the requested texture uses directly.
+fn drawable_supports_uses(uses: crate::Uses) -> bool {
+	let drawable_uses = Uses::RenderTarget
+		| Uses::Storage
+		| Uses::Image
+		| Uses::InputAttachment
+		| Uses::TransferSource
+		| Uses::TransferDestination
+		| Uses::Clear;
+	!uses.is_empty() && drawable_uses.contains(uses)
+}
+
 impl Context {
 	// Creates a Metal command buffer with enhanced encoder execution status enabled.
 	pub(super) fn create_metal_command_buffer(
@@ -1814,17 +1826,16 @@ impl Context {
 		let layer = CAMetalLayer::new();
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(mtl::MTLPixelFormat::BGRA8Unorm);
-		layer.setFramebufferOnly(false); // If true, higher perfomance but can only write to image from raster render pass
+		let uses_proxy = !drawable_supports_uses(uses);
+		// framebufferOnly permits Metal's optimized display path when raster output is the drawable's only use.
+		let framebuffer_only_uses = Uses::RenderTarget | Uses::Clear;
+		layer.setFramebufferOnly(!uses_proxy && framebuffer_only_uses.contains(uses));
 
 		window_os_handles.view.setWantsLayer(true);
 		window_os_handles.view.setLayer(Some(layer.as_super()));
 		let extent = get_layer_extent(&layer, &window_os_handles.view);
 
 		let format = mtl::MTLPixelFormat::BGRA8Unorm;
-
-		let needs_proxies = {
-			true // Force proxy creation, easier to handle descriptors, for now at least
-		};
 
 		let format = match format {
 			mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
@@ -1836,7 +1847,7 @@ impl Context {
 
 		let mut images = [None; super::MAX_SWAPCHAIN_IMAGES];
 
-		if needs_proxies {
+		if uses_proxy {
 			// Create proxies for every swapchain image
 
 			for image_index in 0..super::MAX_SWAPCHAIN_IMAGES {
@@ -1860,8 +1871,9 @@ impl Context {
 		self.swapchains.push(Swapchain {
 			layer,
 			view: window_os_handles.view.clone(),
-			extent,
 			images,
+			uses_proxy,
+			extent,
 		});
 
 		handle
@@ -2242,3 +2254,18 @@ use crate::{
 	sampler::{self as sampler_builder, SamplerHandle},
 	window, DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
 };
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn drawable_uses_accept_render_and_shader_output() {
+		assert!(drawable_supports_uses(Uses::RenderTarget | Uses::Storage));
+	}
+
+	#[test]
+	fn drawable_uses_reject_non_texture_roles() {
+		assert!(!drawable_supports_uses(Uses::RenderTarget | Uses::Vertex));
+	}
+}

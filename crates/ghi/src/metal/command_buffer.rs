@@ -361,6 +361,19 @@ impl<'a> CommandBufferRecording<'a> {
 		NSString::from_str(suffix)
 	}
 
+	/// Retains acquired drawables that may be referenced directly while recording this frame.
+	pub(crate) fn attach_drawables(
+		&mut self,
+		drawables: impl Iterator<
+			Item = (
+				graphics_hardware_interface::SwapchainHandle,
+				Retained<ProtocolObject<dyn CAMetalDrawable>>,
+			),
+		>,
+	) {
+		self.drawables.extend(drawables);
+	}
+
 	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer<'static> {
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
@@ -473,6 +486,15 @@ impl<'a> CommandBufferRecording<'a> {
 		self.ensure_compute_encoder().memoryBarrierWithScope(scope);
 		self.pending_compute_barrier_scope = mtl::MTLBarrierScope(0);
 		self.compute_written_resources.clear();
+	}
+
+	/// Returns the acquired drawable texture for a direct swapchain.
+	fn drawable_texture(&self, handle: crate::swapchain::SwapchainHandle) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
+		self.drawables
+			.iter()
+			.find(|(swapchain, _)| swapchain.0 == handle.0)
+			.map(|(_, drawable)| drawable.texture())
+			.expect("Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.")
 	}
 
 	fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
@@ -780,6 +802,10 @@ impl CommandBufferRecording<'_> {
 						{
 							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
 							encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
+						} else {
+							let texture = self.drawable_texture(handle);
+							let tex: &ProtocolObject<dyn mtl::MTLTexture> = texture.as_ref();
+							encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
 						}
 					}
 					Descriptor::AccelerationStructure { handle } => {
@@ -820,6 +846,10 @@ impl CommandBufferRecording<'_> {
 							self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
 						{
 							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
+							encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+						} else {
+							let texture = self.drawable_texture(handle);
+							let tex: &ProtocolObject<dyn mtl::MTLTexture> = texture.as_ref();
 							encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
 						}
 					}
@@ -867,11 +897,13 @@ impl CommandBufferRecording<'_> {
 						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
-						let proxy = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize].expect(
-							"Missing Metal swapchain proxy. The most likely cause is that a swapchain descriptor was materialized before acquiring its frame image.",
-						);
-						let image = self.device.images.resource(proxy);
-						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
+							let image = self.device.images.resource(proxy);
+							layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+						} else {
+							let texture = self.drawable_texture(handle);
+							layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _);
+						}
 					},
 					(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
 						let sampler = &self.device.samplers[sampler.0 as usize];
@@ -1367,16 +1399,15 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.iter()
 			.flat_map(|copy| {
 				let source_handle = match copy.source {
-					ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
-					ImageOrSwapchain::Swapchain(swapchain) => {
-						self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize].expect(
-							"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
-						)
-					}
+					ImageOrSwapchain::Image(image) => PrivateHandles::Image(self.get_internal_image_handle(image)),
+					ImageOrSwapchain::Swapchain(swapchain) => self.device.swapchains[swapchain.0 as usize].images
+						[self.sequence_index as usize]
+						.map(PrivateHandles::Image)
+						.unwrap_or(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(swapchain.0))),
 				};
 				[
 					Consumption {
-						handle: PrivateHandles::Image(source_handle),
+						handle: source_handle,
 						stages: crate::Stages::TRANSFER,
 						access: crate::AccessPolicies::READ,
 						layout: crate::Layouts::Transfer,
@@ -1410,23 +1441,32 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		for copy in copies {
-			let source_handle = match copy.source {
-				ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
+			let (source_texture, source_format, source_extent, source_array_layers) = match copy.source {
+				ImageOrSwapchain::Image(image) => {
+					let source = self.device.images.resource(self.get_internal_image_handle(image));
+					(source.texture.clone(), source.format, source.extent, source.array_layers)
+				}
 				ImageOrSwapchain::Swapchain(swapchain) => {
-					self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize].expect(
-						"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
-					)
+					if let Some(proxy) = self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize] {
+						let source = self.device.images.resource(proxy);
+						(source.texture.clone(), source.format, source.extent, source.array_layers)
+					} else {
+						(
+							self.drawable_texture(crate::swapchain::SwapchainHandle(swapchain.0)),
+							crate::Formats::BGRAu8,
+							self.device.swapchains[swapchain.0 as usize].extent,
+							1,
+						)
+					}
 				}
 			};
-			let source = self.device.images.resource(source_handle);
 			let destination = self
 				.device
 				.buffers
 				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
-			let Some((compact_bytes_per_row, row_count, _)) = utils::texture_upload_layout(source.format, source.extent) else {
+			let Some((compact_bytes_per_row, row_count, _)) = utils::texture_upload_layout(source_format, source_extent) else {
 				panic!(
-					"Metal texture copy layout is unsupported. The most likely cause is that the source format has no buffer copy layout. format={:?}, extent={:?}",
-					source.format, source.extent
+					"Metal texture copy layout is unsupported. The most likely cause is that the source format has no buffer copy layout. format={source_format:?}, extent={source_extent:?}"
 				);
 			};
 			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
@@ -1434,50 +1474,45 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			assert_eq!(
 				copy.destination_offset % 256,
 				0,
-				"Metal image copy destination offset alignment mismatch. The most likely cause is that the destination buffer offset is not 256-byte aligned. destination_offset={}, destination_bytes_per_row={}, destination_bytes_per_image={}, format={:?}, extent={:?}",
+				"Metal image copy destination offset alignment mismatch. The most likely cause is that the destination buffer offset is not 256-byte aligned. destination_offset={}, destination_bytes_per_row={}, destination_bytes_per_image={}, format={source_format:?}, extent={source_extent:?}",
 				copy.destination_offset,
 				copy.destination_bytes_per_row,
 				copy.destination_bytes_per_image,
-				source.format,
-				source.extent
 			);
 			assert_eq!(
 				copy.destination_bytes_per_row, expected_bytes_per_row,
-				"Metal image copy row pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_row={}, expected={expected_bytes_per_row}",
-				source.format, source.extent, copy.destination_bytes_per_row
+				"Metal image copy row pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about row padding. format={source_format:?}, extent={source_extent:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_row={}, expected={expected_bytes_per_row}",
+				copy.destination_bytes_per_row
 			);
 			assert_eq!(
 				copy.destination_bytes_per_image, expected_bytes_per_image,
-				"Metal image copy image pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_image={}, expected={expected_bytes_per_image}",
-				source.format, source.extent, copy.destination_bytes_per_image
+				"Metal image copy image pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about padded rows per image. format={source_format:?}, extent={source_extent:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_image={}, expected={expected_bytes_per_image}",
+				copy.destination_bytes_per_image
 			);
 			let required_destination_bytes = copy
 				.destination_bytes_per_image
-				.checked_mul(source.array_layers as usize)
+				.checked_mul(source_array_layers as usize)
 				.and_then(|copy_bytes| copy.destination_offset.checked_add(copy_bytes))
 				.expect(
 					"Metal image copy destination bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
 				);
 			assert!(
 				required_destination_bytes <= destination.size,
-				"Metal image copy destination buffer is too small. The most likely cause is that the readback buffer allocation is smaller than the recorded texture copy. destination_size={}, required_destination_bytes={required_destination_bytes}, destination_offset={}, array_layers={}, destination_bytes_per_image={}, format={:?}, extent={:?}",
+				"Metal image copy destination buffer is too small. The most likely cause is that the readback buffer allocation is smaller than the recorded texture copy. destination_size={}, required_destination_bytes={required_destination_bytes}, destination_offset={}, array_layers={source_array_layers}, destination_bytes_per_image={}, format={source_format:?}, extent={source_extent:?}",
 				destination.size,
 				copy.destination_offset,
-				source.array_layers,
 				copy.destination_bytes_per_image,
-				source.format,
-				source.extent
 			);
 
-			let mut source_size = utils::texture_copy_size(source.format, source.extent);
+			let mut source_size = utils::texture_copy_size(source_format, source_extent);
 			source_size.depth = 1;
 			let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
-			for slice in 0..source.array_layers as usize {
+			for slice in 0..source_array_layers as usize {
 				let destination_offset = copy.destination_offset + slice * copy.destination_bytes_per_image;
 				unsafe {
 					blit_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
-						source.texture.as_ref(),
+						source_texture.as_ref(),
 						slice as _,
 						0,
 						source_origin,

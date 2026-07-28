@@ -1760,7 +1760,9 @@ pub mod swapchain {
 	pub(crate) struct Swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
+		/// Proxy images exist only when the declared uses cannot be applied to a drawable texture.
 		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
+		pub uses_proxy: bool,
 		pub extent: Extent,
 	}
 }

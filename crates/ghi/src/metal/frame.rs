@@ -142,8 +142,16 @@ impl Frame<'_> {
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::CommandBufferRecording<'a> {
-		self.device
-			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key))
+		let drawables = self
+			.drawables
+			.iter()
+			.map(|(swapchain, drawable)| (*swapchain, drawable.clone()))
+			.collect::<SmallVec<[_; 4]>>();
+		let mut recording = self
+			.device
+			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key));
+		recording.attach_drawables(drawables.into_iter());
+		recording
 	}
 
 	pub fn acquire_swapchain_image(
@@ -160,9 +168,12 @@ impl Frame<'_> {
 			let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
 			update_layer_extent(&swapchain.layer, &swapchain.view)
 		};
+		self.device.swapchains[swapchain_handle.0 as usize].extent = extent;
 
-		// Resize proxy images to match the new drawable size so the blit has matching dimensions.
-		self.device.resize_swapchain_images(swapchain_handle, extent);
+		// Proxy swapchains must keep their intermediate texture aligned with the drawable.
+		if self.device.swapchains[swapchain_handle.0 as usize].uses_proxy {
+			self.device.resize_swapchain_images(swapchain_handle, extent);
+		}
 
 		let drawable = self.device.swapchains[swapchain_handle.0 as usize]
 			.layer
@@ -176,6 +187,13 @@ impl Frame<'_> {
 		};
 
 		self.drawables.push((swapchain_handle, drawable));
+		if !self.device.swapchains[swapchain_handle.0 as usize].uses_proxy {
+			// A CAMetalLayer supplies a different drawable texture on each acquisition.
+			self.device
+				.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(
+					swapchain_handle.0,
+				)));
+		}
 
 		(present_key, extent)
 	}
@@ -212,7 +230,10 @@ impl Frame<'_> {
 			present_drawables.push((present_key, drawable));
 		}
 
-		if !present_keys.is_empty() {
+		if present_keys
+			.iter()
+			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy)
+		{
 			let blit_encoder = command_buffer.blitCommandEncoder().expect(
 				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
 			);
@@ -222,6 +243,9 @@ impl Frame<'_> {
 			}
 
 			for (present_key, drawable) in &present_drawables {
+				if !self.device.swapchains[present_key.swapchain.0 as usize].uses_proxy {
+					continue;
+				}
 				let Some(drawable) = drawable else {
 					continue;
 				};

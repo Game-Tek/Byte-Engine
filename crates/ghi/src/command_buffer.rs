@@ -122,10 +122,10 @@ pub trait CommonCommandBufferMode {
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
 	/// Starts a named GPU debug region.
-	fn start_region(&self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result);
+	fn start_region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result);
 
 	/// Ends the current GPU debug region.
-	fn end_region(&self);
+	fn end_region(&mut self);
 
 	/// Starts a debug region on the GPU and executes the closure.
 	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self));

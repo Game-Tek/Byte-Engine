@@ -32,7 +32,6 @@ pub struct Context {
 		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), (crate::descriptors::WriteData, i32)>,
 
 	pub settings: crate::device::Features,
-	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
@@ -148,7 +147,6 @@ impl Context {
 			descriptor_set_to_resource: HashMap::default(),
 			descriptor_sources: HashMap::default(),
 			settings,
-			states: HashMap::default(),
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
@@ -1456,7 +1454,6 @@ impl Context {
 			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::command_buffer::RecordingCommit {
-			states: &mut self.states,
 			synchronizers: &mut self.synchronizers,
 		};
 

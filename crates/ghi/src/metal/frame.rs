@@ -211,7 +211,6 @@ impl Frame<'_> {
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
-			state_updates,
 			_marker,
 		} = cbr;
 		let mut present_drawables = SmallVec::<
@@ -274,8 +273,6 @@ impl Frame<'_> {
 
 		self.device
 			.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, self.frame_key.sequence_index);
-
-		self.device.states.extend(state_updates);
 	}
 }
 

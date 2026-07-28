@@ -199,6 +199,8 @@ impl VisibilityPipelineManager {
 					skinning_dispatches: Vec::with_capacity(MAX_INSTANCES),
 					opaque_materials: Vec::new(),
 					transparent_materials: Vec::new(),
+					opaque_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
+					transparent_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
 				},
 				sink_states: Vec::new(),
 			},
@@ -462,6 +464,17 @@ impl VisibilityPipelineManager {
 			}
 		}
 
+		// Materials with the same generated shader share one pipeline. Keep them adjacent so recording can retain
+		// the native pipeline and argument-buffer binding across consecutive indirect dispatches.
+		self.scene
+			.render_info
+			.opaque_materials
+			.sort_unstable_by(|left, right| left.2.cmp(&right.2).then(left.1.cmp(&right.1)));
+		self.scene
+			.render_info
+			.transparent_materials
+			.sort_unstable_by(|left, right| left.2.cmp(&right.2).then(left.1.cmp(&right.1)));
+
 		log::debug!(
 			"Visibility material lists rebuilt: loaded={}, opaque_ready={}, transparent_ready={}, missing_pipeline={}, missing_textures={}",
 			self.loaded_materials.len(),
@@ -578,7 +591,9 @@ impl VisibilityPipelineManager {
 				shader_mesh_index: active_index as u32,
 				meshlet_count: shader_mesh.meshlet_count,
 			};
-			self.scene.render_info.push_active_instance(instance, &material.alpha_mode);
+			self.scene
+				.render_info
+				.push_active_instance(instance, shader_mesh.material_index, &material.alpha_mode);
 			active_index += 1;
 		}
 		// The active mesh table is frame-local dynamic data; flush the current frame resource after rebuilding it.
@@ -846,6 +861,8 @@ impl PipelineManager for VisibilityPipelineManager {
 						&self.scene.render_info.transparent_instances,
 						&self.scene.render_info.opaque_materials,
 						&self.scene.render_info.transparent_materials,
+						&self.scene.render_info.opaque_material_mask,
+						&self.scene.render_info.transparent_material_mask,
 						shadow_light_index.is_some(),
 					),
 				)
@@ -903,7 +920,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_xy = context.build_buffer(
+		let material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material XY")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
@@ -1054,7 +1071,6 @@ impl PipelineManager for VisibilityPipelineManager {
 			ghi::BaseImageHandle::from(depth_target),
 			ghi::BaseImageHandle::from(primitive_index),
 			ghi::BaseImageHandle::from(instance_id),
-			material_xy,
 			material_offset_buffer,
 			material_offset_scratch_buffer,
 			material_evaluation_dispatches,
@@ -1245,6 +1261,8 @@ pub struct RenderInfo {
 	skinning_dispatches: Vec<SkinningDispatch>,
 	opaque_materials: Vec<(String, u32, ghi::PipelineHandle)>,
 	transparent_materials: Vec<(String, u32, ghi::PipelineHandle)>,
+	opaque_material_mask: ActiveMaterialMask,
+	transparent_material_mask: ActiveMaterialMask,
 }
 
 impl RenderInfo {
@@ -1253,14 +1271,25 @@ impl RenderInfo {
 		self.opaque_instances.clear();
 		self.transparent_instances.clear();
 		self.skinning_dispatches.clear();
+		self.opaque_material_mask.fill(0);
+		self.transparent_material_mask.fill(0);
 	}
 
 	/// Adds one active primitive to its authored material phase.
-	fn push_active_instance(&mut self, instance: Instance, alpha_mode: &AlphaMode) {
+	fn push_active_instance(&mut self, instance: Instance, material_index: u32, alpha_mode: &AlphaMode) {
+		let material_index = material_index as usize;
+		assert!(
+			material_index < MAX_MATERIALS,
+			"Visibility material index is out of range. The most likely cause is that an active primitive references a material beyond MAX_MATERIALS."
+		);
+		let material_bit = 1u64 << (material_index % u64::BITS as usize);
+		let material_word = material_index / u64::BITS as usize;
 		if is_transparent(alpha_mode) {
 			self.transparent_instances.push(instance);
+			self.transparent_material_mask[material_word] |= material_bit;
 		} else {
 			self.opaque_instances.push(instance);
+			self.opaque_material_mask[material_word] |= material_bit;
 		}
 	}
 
@@ -1337,7 +1366,7 @@ mod tests {
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
-	use crate::rendering::pipelines::visibility::{MAX_MATERIAL_TEXTURES, MESH_DATA_BUFFER_STRIDE};
+	use crate::rendering::pipelines::visibility::{MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESH_DATA_BUFFER_STRIDE};
 
 	#[test]
 	fn environment_bindings_retain_diffuse_and_every_specular_level() {
@@ -1398,6 +1427,8 @@ mod tests {
 			skinning_dispatches: Vec::new(),
 			opaque_materials: Vec::new(),
 			transparent_materials: Vec::new(),
+			opaque_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
+			transparent_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
 		};
 		let blended = Instance {
 			shader_mesh_index: 3,
@@ -1412,12 +1443,15 @@ mod tests {
 			meshlet_count: 3,
 		};
 
-		render_info.push_active_instance(blended, &AlphaMode::Blend);
-		render_info.push_active_instance(opaque, &AlphaMode::Opaque);
-		render_info.push_active_instance(masked, &AlphaMode::Mask(0.5));
+		render_info.push_active_instance(blended, 7, &AlphaMode::Blend);
+		render_info.push_active_instance(opaque, 11, &AlphaMode::Opaque);
+		render_info.push_active_instance(masked, 68, &AlphaMode::Mask(0.5));
 
 		assert_eq!(render_info.opaque_instances, [opaque, masked]);
 		assert_eq!(render_info.transparent_instances, [blended]);
+		assert_eq!(render_info.opaque_material_mask[0], 1 << 11);
+		assert_eq!(render_info.opaque_material_mask[1], 1 << 4);
+		assert_eq!(render_info.transparent_material_mask[0], 1 << 7);
 		assert_eq!(render_info.active_instance_count(), 3);
 	}
 
@@ -1625,12 +1659,12 @@ use crate::rendering::pipelines::visibility::skinning::{
 	SkinningDispatch, SkinningPass, SkinningSourceBuffers, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
 };
 use crate::rendering::pipelines::visibility::{
-	ShaderMeshletData, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	ActiveMaterialMask, ShaderMeshletData, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
 	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES, MAX_INSTANCES,
-	MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
-	SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES,
+	MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;

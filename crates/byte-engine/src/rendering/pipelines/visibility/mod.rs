@@ -104,7 +104,7 @@ pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::ShaderResourceDescriptor 
 pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1036),
 	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::WRITE,
+	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
 )
 .buffer_stride(16);
 pub(crate) const MATERIAL_XY_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
@@ -132,6 +132,7 @@ const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
 const MAX_MESHLETS: usize = 1024 * 4;
 const MAX_INSTANCES: usize = 1024;
 const MAX_MATERIALS: usize = 1024;
+pub(super) type ActiveMaterialMask = [u64; MAX_MATERIALS / u64::BITS as usize];
 // Materials keep a small indirection table so generated shaders can use stable per-material slots,
 // while the descriptor array itself is a larger scene-wide bindless texture pool.
 const MAX_MATERIAL_TEXTURES: usize = 16;
@@ -937,17 +938,19 @@ mod tests {
 		assert_eq!(read_u32(&material_offsets, "material_offset", 2), 0);
 		assert_eq!(read_u32(&material_offsets, "material_offset", 5), 2);
 		assert_eq!(read_u32(&material_offsets, "material_offset", 6), 3);
+		assert_eq!(read_u32(&material_counts, "material_count", 2), 0);
+		assert_eq!(read_u32(&material_counts, "material_count", 5), 0);
 		assert_eq!(
 			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 0),
 			[0, 1, 1, 0]
 		);
 		assert_eq!(
 			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 2),
-			[1, 1, 1, 0]
+			[1, 1, 1, 2]
 		);
 		assert_eq!(
 			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 5),
-			[1, 1, 1, 0]
+			[1, 1, 1, 1]
 		);
 
 		// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.

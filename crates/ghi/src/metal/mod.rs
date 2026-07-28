@@ -4,6 +4,7 @@ extern "C" {}
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::hash::HashMap;
@@ -68,22 +69,6 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
-
-#[derive(Clone, Copy, PartialEq)]
-pub(super) struct Consumption {
-	pub(super) handle: PrivateHandles,
-	pub(super) stages: crate::Stages,
-	pub(super) access: crate::AccessPolicies,
-	pub(super) layout: crate::Layouts,
-}
-
-#[derive(Clone, PartialEq)]
-pub(super) struct MetalConsumption {
-	pub(super) handle: PrivateHandles,
-	pub(super) stages: crate::Stages,
-	pub(super) access: crate::AccessPolicies,
-	pub(super) layout: crate::Layouts,
-}
 
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
@@ -444,7 +429,7 @@ pub(crate) struct MaterializationKey {
 #[derive(Clone)]
 pub(crate) struct Materialization {
 	versions: SmallVec<[u64; 4]>,
-	argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>,
+	argument_buffers: Rc<SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>>,
 }
 
 #[derive(Clone)]
@@ -1059,11 +1044,6 @@ pub(crate) struct Allocation {
 pub(crate) struct DebugCallbackData {
 	error_count: AtomicU64,
 	error_log_function: fn(&str),
-}
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub(crate) struct TransitionState {
-	layout: crate::Layouts,
 }
 
 pub(crate) struct Mesh {

@@ -765,8 +765,8 @@ mod tests {
 		let command_buffer = device.create_command_buffer(Some("debug regions"), queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 
-		crate::command_buffer::CommonCommandBufferMode::start_region(&recording, |label| label.write_str("outer"));
-		crate::command_buffer::CommonCommandBufferMode::end_region(&recording);
+		crate::command_buffer::CommonCommandBufferMode::start_region(&mut recording, |label| label.write_str("outer"));
+		crate::command_buffer::CommonCommandBufferMode::end_region(&mut recording);
 		crate::command_buffer::CommonCommandBufferMode::region(&mut recording, |label| label.write_str("inner"), |_| {});
 		drop(recording);
 

@@ -1000,7 +1000,7 @@ impl VisibilityShaderScope {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
-		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
+		let a = "if (gl_GlobalInvocationID.x >= material_evaluation_dispatches.material_evaluation_dispatches[push_constant.material_id].w) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
 		uvec2 raw_pixel_coordinates = uvec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
@@ -1109,7 +1109,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec3 emission = vec3(0.0)"
 			.trim();
 
-		let a_msl = "if (gid.x >= resources.material_count->material_count[push_constant.material_id]) { return; }
+		let a_msl = "if (gid.x >= resources.material_evaluation_dispatches->material_evaluation_dispatches[push_constant.material_id].w) { return; }
 
 		uint offset = resources.material_offset->material_offset[push_constant.material_id];
 		uint2 raw_pixel_coordinates = uint2(resources.pixel_mapping->pixel_mapping[offset + gid.x]);
@@ -1217,7 +1217,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 emission = float3(0.0, 0.0, 0.0)"
 			.trim();
 
-		let a_hlsl = "if (dispatch_thread_id.x >= material_count[push_constant.material_id]) { return; }
+		let a_hlsl = "if (dispatch_thread_id.x >= material_evaluation_dispatches[push_constant.material_id].w) { return; }
 
 		uint offset = material_offset[push_constant.material_id];
 		uint2 raw_pixel_coordinates = uint2(pixel_mapping[offset + dispatch_thread_id.x]);
@@ -1700,7 +1700,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 						"material_offset_scratch",
 						"material_evaluation_dispatches",
 						"pixel_mapping",
-						"material_count",
 						"meshes",
 						"meshlets",
 						"materials",
@@ -1994,7 +1993,7 @@ mod tests {
 			"variables": []
 		};
 
-		// Material evaluation reads count, offset, and mapping state while retaining the lit target for transparent blending.
+		// Material evaluation reads the exact dispatch count, offset, and mapping state while retaining the lit target for transparent blending.
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(material_program, &material_metadata);
 		let program = besl::lex(shader).expect(
@@ -2007,7 +2006,7 @@ mod tests {
 			"Failed to reflect the trivial material evaluation pass. The most likely cause is an invalid visibility resource graph.",
 		);
 
-		for slot in [1033, 1034, 1037] {
+		for slot in [1034, 1036, 1037] {
 			let binding = evaluation.bindings().iter().find(|binding| binding.slot == slot).unwrap_or_else(|| {
 				panic!(
 					"Missing required material evaluation binding at slot {slot}. The most likely cause is that generated material reachability drifted."
@@ -2030,7 +2029,6 @@ mod tests {
 			(6, crate::rendering::pipelines::visibility::VERTEX_INDEX_BUFFER_STRIDE),
 			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
 			(8, 64),
-			(1033, 4),
 			(1034, 4),
 			(1035, 4),
 			(1036, 16),

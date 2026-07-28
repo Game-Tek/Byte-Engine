@@ -86,7 +86,7 @@ pub struct CommandBufferHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ShaderHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct PipelineHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

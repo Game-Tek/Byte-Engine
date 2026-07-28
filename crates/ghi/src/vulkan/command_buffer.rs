@@ -1849,7 +1849,7 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self
 	}
 
-	fn start_region(&self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
+	fn start_region(&mut self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
 		#[cfg(debug_assertions)]
 		let write_label = _write_label;
 		#[cfg(debug_assertions)]
@@ -1882,7 +1882,7 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self.end_region();
 	}
 
-	fn end_region(&self) {
+	fn end_region(&mut self) {
 		#[cfg(debug_assertions)]
 		{
 			let command_buffer = self.get_command_buffer();

@@ -203,6 +203,19 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 	ordered_shader_nodes_in(main_function_node, backend_name, Global)
 }
 
+/// Rejects shared storage in stages that do not have workgroup execution semantics.
+pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+	if matches!(stage, Stages::Compute { .. } | Stages::Task { .. })
+		|| !order
+			.iter()
+			.any(|node| matches!(node.borrow().node(), besl::Nodes::Workgroup { .. }))
+	{
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
 /// Returns the reachable non-leaf shader nodes in emission order using the provided allocator for transient graph storage.
 pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 	main_function_node: &besl::NodeReference,
@@ -703,6 +716,39 @@ pub mod tests {
 				maximum_mesh_threadgroups: 32,
 			} if local_size == Extent::new(32, 1, 1)
 		));
+	}
+
+	#[test]
+	fn workgroup_storage_is_limited_to_compute_and_task_stages() {
+		let program = besl::compile_to_besl(
+			r#"
+			scratch: workgroup<f32, 64>;
+			main: fn () -> void {
+				scratch[thread_idx()] = 1.0;
+			}
+			"#,
+			None,
+		)
+		.expect("workgroup fixture should link");
+		let main = program.get_main().expect("workgroup fixture should contain main");
+		let order = super::ordered_shader_nodes(&main, "stage validation");
+
+		assert!(super::validate_workgroup_storage_stage(
+			&super::Stages::Compute {
+				local_size: Extent::square(8)
+			},
+			&order
+		)
+		.is_ok());
+		assert!(super::validate_workgroup_storage_stage(
+			&super::Stages::Task {
+				local_size: Extent::line(32),
+				maximum_mesh_threadgroups: 32,
+			},
+			&order,
+		)
+		.is_ok());
+		assert!(super::validate_workgroup_storage_stage(&super::Stages::Fragment, &order).is_err());
 	}
 
 	pub fn bindings() -> besl::NodeReference {

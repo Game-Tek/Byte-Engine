@@ -669,11 +669,12 @@ impl Node {
 		}
 	}
 
-	pub fn workgroup(name: &str, format: NodeReference) -> Node {
+	pub fn workgroup(name: &str, format: NodeReference, count: Option<NonZeroUsize>) -> Node {
 		Node {
 			node: Nodes::Workgroup {
 				name: name.to_string(),
 				format,
+				count,
 			},
 		}
 	}
@@ -881,6 +882,7 @@ pub enum Nodes {
 	Workgroup {
 		name: String,
 		format: NodeReference,
+		count: Option<NonZeroUsize>,
 	},
 	Parameter {
 		name: String,
@@ -934,6 +936,7 @@ impl Nodes {
 			Nodes::Input { format, .. } => type_is_indexable(format),
 			Nodes::Output { format, count, .. } => count.is_some() || type_is_indexable(format),
 			Nodes::TaskPayload { .. } => true,
+			Nodes::Workgroup { count, format, .. } => count.is_some() || type_is_indexable(format),
 			Nodes::Parameter { r#type, .. }
 			| Nodes::Specialization { r#type, .. }
 			| Nodes::Const { r#type, .. }
@@ -1122,12 +1125,13 @@ impl std::fmt::Debug for Node {
 					count
 				)
 			}
-			Nodes::Workgroup { name, format } => {
+			Nodes::Workgroup { name, format, count } => {
 				write!(
 					f,
-					"Workgroup {{ name: {}, format: {:?} }}",
+					"Workgroup {{ name: {}, format: {:?}, count: {:?} }}",
 					name,
-					format.0.borrow().get_name().map(|e| e.to_string())
+					format.0.borrow().get_name().map(|e| e.to_string()),
+					count
 				)
 			}
 			Nodes::Literal { name, value } => {
@@ -1764,11 +1768,12 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			})
 			.into()
 		}
-		parser::Nodes::Workgroup { name, format } => {
+		parser::Nodes::Workgroup { name, format, count } => {
 			let format = resolve_type(&chain, format)?;
 			Node::new(Nodes::Workgroup {
 				name: name.to_string(),
 				format,
+				count: *count,
 			})
 			.into()
 		}
@@ -2155,7 +2160,13 @@ fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(value),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(source),
-		Nodes::Expression(Expressions::Accessor { right, .. }) => infer_expression_type(right),
+		Nodes::Expression(Expressions::Accessor { left, right }) => {
+			if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
+				infer_member_type(left)
+			} else {
+				infer_expression_type(right)
+			}
+		}
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => match operator {
@@ -2200,7 +2211,13 @@ fn infer_member_type(source: &NodeReference) -> Option<NodeReference> {
 			let parent_type = infer_member_type(source)?;
 			find_named_member_type(&parent_type, name)
 		}
-		Nodes::Expression(Expressions::Accessor { right, .. }) => infer_expression_type(right),
+		Nodes::Expression(Expressions::Accessor { left, right }) => {
+			if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
+				infer_member_type(left)
+			} else {
+				infer_expression_type(right)
+			}
+		}
 		_ => None,
 	}
 }
@@ -2482,6 +2499,7 @@ mod tests {
 			primitive_index: output<u32, 1>;
 			visible_meshlets: task_payload<u32, 32>;
 			visible_count: workgroup<atomicu32>;
+			scratch: workgroup<f32, 64>;
 			main: fn () -> void {
 				let position: u32 = thread_position();
 				visible_meshlets[thread_idx()] = position;
@@ -2512,6 +2530,19 @@ mod tests {
 			workgroup.borrow().node(),
 			Nodes::Workgroup { format, .. } if format.borrow().get_name() == Some("atomicu32")
 		));
+		let scratch = root
+			.borrow()
+			.get_child("scratch")
+			.expect("counted workgroup declaration should be linked");
+		assert!(matches!(
+			scratch.borrow().node(),
+			Nodes::Workgroup {
+				format,
+				count: Some(count),
+				..
+			} if count.get() == 64 && format.borrow().get_name() == Some("f32")
+		));
+		assert!(scratch.borrow().node().is_indexable());
 		assert!(root.get_main().is_some());
 	}
 

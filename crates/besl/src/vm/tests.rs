@@ -1964,7 +1964,7 @@ fn task_stage_intrinsics_capture_payload_and_mesh_output_count() {
 		descriptors.bind_task_outputs(&mut outputs);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		executable
-			.run_task_workgroup(&mut descriptors, &configs)
+			.run_workgroup(&mut descriptors, &configs)
 			.expect("Task workgroup execution failed. The most likely cause is broken barrier or shared-atomic scheduling.");
 	}
 
@@ -2008,7 +2008,7 @@ fn task_workgroup_reuse_clears_stale_payload_values() {
 		descriptors.bind_task_outputs(&mut outputs);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		executable
-			.run_task_workgroup(&mut descriptors, &[config])
+			.run_workgroup(&mut descriptors, &[config])
 			.expect("Task capture reuse failed. The most likely cause is stale workgroup or task-output state.");
 		assert_eq!(outputs.mesh_output_count(), Some(expected_count));
 	}
@@ -2032,7 +2032,7 @@ fn task_mesh_output_counts_respect_execution_limits() {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_task_outputs(&mut outputs);
 		executable
-			.run_task_workgroup(&mut descriptors, &[config])
+			.run_workgroup(&mut descriptors, &[config])
 			.expect_err("Task output limit was ignored. The most likely cause is missing task-count validation.")
 	};
 
@@ -2057,7 +2057,7 @@ fn task_workgroup_rejects_barrier_divergence() {
 	];
 	let mut descriptors = DescriptorBindings::new();
 	let error = executable
-		.run_task_workgroup(&mut descriptors, &configs)
+		.run_workgroup(&mut descriptors, &configs)
 		.expect_err("Barrier divergence was accepted. The most likely cause is a broken task rendezvous check.");
 
 	assert!(matches!(
@@ -2091,7 +2091,7 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 	];
 	let mut descriptors = DescriptorBindings::new();
 	let error = executable
-		.run_task_workgroup(&mut descriptors, &configs)
+		.run_workgroup(&mut descriptors, &configs)
 		.expect_err("Static barrier divergence was accepted. The most likely cause is a broken rendezvous phase check.");
 
 	assert!(matches!(
@@ -2126,7 +2126,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 		descriptors.bind_task_outputs(&mut outputs);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		executable
-			.run_task_workgroup(&mut descriptors, &[ExecutionConfig::new(32).with_thread_position(0)])
+			.run_workgroup(&mut descriptors, &[ExecutionConfig::new(32).with_thread_position(0)])
 			.expect("Initial workgroup execution failed. The most likely cause is broken workgroup storage initialization.");
 	}
 	assert_eq!(outputs.mesh_output_count(), Some(1));
@@ -2136,7 +2136,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 		descriptors.bind_task_outputs(&mut outputs);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		executable
-			.run_task_workgroup(
+			.run_workgroup(
 				&mut descriptors,
 				&[ExecutionConfig::new(32).with_thread_position(1)],
 			)
@@ -2148,6 +2148,78 @@ fn task_workgroup_reuse_clears_shared_storage() {
 		error,
 		VmError::UninitializedWorkgroupValue {
 			name: "shared_count".to_string()
+		}
+	);
+}
+
+#[test]
+fn compute_workgroup_array_shares_values_across_a_barrier() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			values: u32[2],
+		}
+		result: descriptor<Result, 41, read_write>;
+		scratch: workgroup<u32, 2>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			scratch[lane] = lane + 10;
+			workgroup_barrier();
+			result.values[lane] = scratch[1 - lane];
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(41));
+	let mut workgroup = WorkgroupState::new();
+	let configs = [
+		ExecutionConfig::new(32).with_thread_idx(0),
+		ExecutionConfig::new(32).with_thread_idx(1),
+	];
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(41), &mut result);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable.run_workgroup(&mut descriptors, &configs).expect(
+			"Compute workgroup exchange failed. The most likely cause is broken indexed shared storage or barrier scheduling.",
+		);
+	}
+
+	assert_eq!(
+		result.read_indexed("values", 0).expect("Expected lane zero result"),
+		Value::U32(11)
+	);
+	assert_eq!(
+		result.read_indexed("values", 1).expect("Expected lane one result"),
+		Value::U32(10)
+	);
+}
+
+#[test]
+fn compute_workgroup_array_rejects_out_of_bounds_indices() {
+	let executable = compile_test_program(
+		r#"
+		scratch: workgroup<u32, 2>;
+		main: fn () -> void {
+			scratch[2] = 7;
+		}
+		"#,
+		None,
+	);
+	let mut workgroup = WorkgroupState::new();
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_workgroup_state(&mut workgroup);
+	let error = executable
+		.run_workgroup(&mut descriptors, &[ExecutionConfig::new(32)])
+		.expect_err("Out-of-bounds workgroup storage access should fail");
+
+	assert_eq!(
+		error,
+		VmError::WorkgroupIndexOutOfBounds {
+			name: "scratch".to_string(),
+			index: 2,
+			count: 2,
 		}
 	);
 }

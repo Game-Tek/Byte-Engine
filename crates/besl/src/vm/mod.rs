@@ -845,10 +845,10 @@ impl TaskOutputs {
 	}
 }
 
-/// The `WorkgroupState` struct provides task-stage invocations with explicitly shared workgroup storage.
+/// The `WorkgroupState` struct provides task and compute invocations with explicitly shared workgroup storage.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkgroupState {
-	values: HashMap<String, Option<Value>>,
+	values: HashMap<String, Vec<Option<Value>>>,
 }
 
 impl WorkgroupState {
@@ -859,17 +859,25 @@ impl WorkgroupState {
 
 	/// Clears values from the previous workgroup while retaining its names and allocated map storage.
 	fn begin_workgroup(&mut self) {
-		for value in self.values.values_mut() {
-			*value = None;
+		for values in self.values.values_mut() {
+			values.fill(None);
 		}
 	}
 
 	/// Loads one value initialized by an earlier instruction in the bound workgroup state.
-	fn load(&self, name: &str, value_type: &ValueType) -> Result<Value, VmError> {
+	fn load(&self, name: &str, index: usize, count: usize, value_type: &ValueType) -> Result<Value, VmError> {
+		if index >= count {
+			return Err(VmError::WorkgroupIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count,
+			});
+		}
 		let value = self
 			.values
 			.get(name)
-			.and_then(Option::as_ref)
+			.filter(|values| values.len() == count)
+			.and_then(|values| values[index].as_ref())
 			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
 		if !value.matches_type(value_type) {
 			return Err(VmError::TypeMismatch {
@@ -881,27 +889,43 @@ impl WorkgroupState {
 	}
 
 	/// Replaces one workgroup value after validating the declaration's portable type.
-	fn store(&mut self, name: &str, value_type: &ValueType, value: Value) -> Result<(), VmError> {
+	fn store(&mut self, name: &str, index: usize, count: usize, value_type: &ValueType, value: Value) -> Result<(), VmError> {
+		if index >= count {
+			return Err(VmError::WorkgroupIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count,
+			});
+		}
 		if !value.matches_type(value_type) {
 			return Err(VmError::TypeMismatch {
 				expected: value_type.name().to_string(),
 				found: value.value_type().name().to_string(),
 			});
 		}
-		if let Some(stored) = self.values.get_mut(name) {
-			*stored = Some(value);
-		} else {
-			self.values.insert(name.to_string(), Some(value));
+		let values = self.values.entry(name.to_string()).or_insert_with(|| vec![None; count]);
+		if values.len() != count {
+			values.clear();
+			values.resize(count, None);
 		}
+		values[index] = Some(value);
 		Ok(())
 	}
 
-	/// Applies the wrapping atomic-u32 addition used by task compaction counters.
-	fn atomic_add_u32(&mut self, name: &str, value: u32) -> Result<u32, VmError> {
+	/// Applies wrapping atomic-u32 addition to one shared scalar or array element.
+	fn atomic_add_u32(&mut self, name: &str, index: usize, count: usize, value: u32) -> Result<u32, VmError> {
+		if index >= count {
+			return Err(VmError::WorkgroupIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count,
+			});
+		}
 		let stored = self
 			.values
 			.get_mut(name)
-			.and_then(Option::as_mut)
+			.filter(|values| values.len() == count)
+			.and_then(|values| values[index].as_mut())
 			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
 		let Value::U32(previous) = stored else {
 			return Err(VmError::TypeMismatch {
@@ -1024,8 +1048,8 @@ impl<'a> DescriptorBindings<'a> {
 		self.workgroup_state.as_deref_mut().ok_or(VmError::MissingWorkgroupState)
 	}
 
-	/// Starts a fresh task workgroup without reallocating reusable capture storage.
-	fn begin_task_workgroup(&mut self) {
+	/// Starts a fresh task or compute workgroup without reallocating reusable capture storage.
+	fn begin_workgroup(&mut self) {
 		if let Some(task_outputs) = self.task_outputs.as_deref_mut() {
 			task_outputs.begin_workgroup();
 		}

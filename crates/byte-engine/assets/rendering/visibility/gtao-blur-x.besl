@@ -174,13 +174,8 @@ compute_local_depth_variance: fn (
 	return max(normalized_mean_sq - normalized_mean * normalized_mean, 0.0);
 }
 
-compute_bilateral_weight: fn (relative_depth_difference: f32, local_depth_variance: f32) -> f32 {
-	let local_depth_stddev: f32 = sqrt(local_depth_variance);
-	let sigma_scale: f32 = 1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE;
-	let sigma_candidate: f32 = GTAO_BLUR_BASE_RELATIVE_SIGMA / sigma_scale;
-	let sigma: f32 = max(GTAO_BLUR_MIN_RELATIVE_SIGMA, sigma_candidate);
-	let denominator: f32 = max(2.0 * sigma * sigma, 0.000001);
-	let exponent_value: f32 = (relative_depth_difference * relative_depth_difference) / denominator;
+compute_bilateral_weight: fn (relative_depth_difference: f32, inverse_depth_variance_scale: f32) -> f32 {
+	let exponent_value: f32 = relative_depth_difference * relative_depth_difference * inverse_depth_variance_scale;
 	return exp(0.0 - exponent_value);
 }
 
@@ -207,6 +202,11 @@ main: fn () -> void {
 	);
 	let local_depth_stddev: f32 = sqrt(local_depth_variance);
 	let blur_mix: f32 = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
+	// Reuse the pixel-invariant bilateral scale across every depth tap.
+	let sigma_scale: f32 = 1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE;
+	let sigma_candidate: f32 = GTAO_BLUR_BASE_RELATIVE_SIGMA / sigma_scale;
+	let sigma: f32 = max(GTAO_BLUR_MIN_RELATIVE_SIGMA, sigma_candidate);
+	let inverse_depth_variance_scale: f32 = 1.0 / max(2.0 * sigma * sigma, 0.000001);
 
 	let filtered_ao: f32 = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
 	let total_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[0];
@@ -218,7 +218,7 @@ main: fn () -> void {
 		let positive_depth: f32 = fetch(visibility_depth, positive_coord).x;
 		if (positive_depth != 0.0) {
 			let positive_difference: f32 = abs(relative_depth_delta(center_linear_depth, positive_depth, inverse_projection));
-			let positive_weight: f32 = spatial_weight * compute_bilateral_weight(positive_difference, local_depth_variance);
+			let positive_weight: f32 = spatial_weight * compute_bilateral_weight(positive_difference, inverse_depth_variance_scale);
 			filtered_ao = filtered_ao + fetch(ao_source, positive_coord).x * positive_weight;
 			total_weight = total_weight + positive_weight;
 		}
@@ -227,7 +227,7 @@ main: fn () -> void {
 		let negative_depth: f32 = fetch(visibility_depth, negative_coord).x;
 		if (negative_depth != 0.0) {
 			let negative_difference: f32 = abs(relative_depth_delta(center_linear_depth, negative_depth, inverse_projection));
-			let negative_weight: f32 = spatial_weight * compute_bilateral_weight(negative_difference, local_depth_variance);
+			let negative_weight: f32 = spatial_weight * compute_bilateral_weight(negative_difference, inverse_depth_variance_scale);
 			filtered_ao = filtered_ao + fetch(ao_source, negative_coord).x * negative_weight;
 			total_weight = total_weight + negative_weight;
 		}

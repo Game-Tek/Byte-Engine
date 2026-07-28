@@ -530,7 +530,7 @@ fn compile_shader(
 /// Hashes every source-side input that can change a standalone shader resource.
 fn hash_shader_source(id: &str, source: &str, settings: BESLShaderSettings) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	hasher.write(b"standalone-besl-shader-v2");
+	hasher.write(b"standalone-besl-shader-v3");
 	hash_text(&mut hasher, id);
 	hash_text(&mut hasher, source);
 	hasher.write_u8(match settings.stage {

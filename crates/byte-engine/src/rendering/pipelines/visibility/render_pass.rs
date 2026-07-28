@@ -46,6 +46,18 @@ const GTAO_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResou
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::WRITE,
 );
+const GTAO_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_DEPTH_PYRAMID_LEVEL_COUNT: usize = 3;
+const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
 
 /// Loads one fixed visibility shader from the application resource store and verifies its persisted stage contract.
 fn load_visibility_shader(
@@ -602,12 +614,15 @@ impl PixelMappingPass {
 pub struct GtaoPass {
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	gtao_descriptor_set: ghi::DescriptorSetHandle,
+	depth_pyramid_descriptor_sets: [ghi::DescriptorSetHandle; GTAO_DEPTH_PYRAMID_LEVEL_COUNT],
 	blur_descriptor_set_x: ghi::DescriptorSetHandle,
 	blur_descriptor_set_y: ghi::DescriptorSetHandle,
 	gtao_pipeline: ghi::PipelineHandle,
+	depth_pyramid_pipeline: ghi::PipelineHandle,
 	blur_pipeline_x: ghi::PipelineHandle,
 	blur_pipeline_y: ghi::PipelineHandle,
 	ao_map: ghi::BaseImageHandle,
+	depth_pyramid_images: [ghi::DynamicImageHandle; GTAO_DEPTH_PYRAMID_LEVEL_COUNT],
 	temp_ao_map: ghi::DynamicImageHandle,
 }
 
@@ -620,6 +635,13 @@ impl GtaoPass {
 		ao_map: ghi::BaseImageHandle,
 	) -> Self {
 		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"));
+		let depth_pyramid_descriptor_sets = std::array::from_fn(|level| {
+			context.create_descriptor_set(Some(match level {
+				0 => "GTAO Depth Pyramid 1 Descriptor Set",
+				1 => "GTAO Depth Pyramid 2 Descriptor Set",
+				_ => "GTAO Depth Pyramid 3 Descriptor Set",
+			}))
+		});
 		let blur_descriptor_set_x = context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"));
 		let blur_descriptor_set_y = context.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"));
 		let depth_sampler = context.build_sampler(
@@ -644,6 +666,39 @@ impl GtaoPass {
 				.name("GTAO Blur Intermediate")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
+		let depth_pyramid_images = std::array::from_fn(|level| {
+			context.build_dynamic_image(
+				ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+					.name(match level {
+						0 => "GTAO Depth Pyramid 1",
+						1 => "GTAO Depth Pyramid 2",
+						_ => "GTAO Depth Pyramid 3",
+					})
+					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+			)
+		});
+		for (level, descriptor_set) in depth_pyramid_descriptor_sets.iter().copied().enumerate() {
+			let source: ghi::BaseImageHandle = if level == 0 {
+				depth
+			} else {
+				depth_pyramid_images[level - 1].into()
+			};
+			context.write(&[
+				ghi::DescriptorWrite::combined_image_sampler(
+					descriptor_set,
+					GTAO_DEPTH_PYRAMID_SOURCE_BINDING.slot(),
+					source,
+					depth_sampler,
+					ghi::Layouts::Read,
+				),
+				ghi::DescriptorWrite::image(
+					descriptor_set,
+					GTAO_DEPTH_PYRAMID_OUTPUT_BINDING.slot(),
+					depth_pyramid_images[level],
+					ghi::Layouts::General,
+				),
+			]);
+		}
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				gtao_descriptor_set,
@@ -653,6 +708,27 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(gtao_descriptor_set, GTAO_OUTPUT_BINDING.slot(), ao_map, ghi::Layouts::General),
+			ghi::DescriptorWrite::combined_image_sampler(
+				gtao_descriptor_set,
+				ghi::ResourceSlot::new(GTAO_DEPTH_PYRAMID_FIRST_SLOT),
+				depth_pyramid_images[0],
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				gtao_descriptor_set,
+				ghi::ResourceSlot::new(GTAO_DEPTH_PYRAMID_FIRST_SLOT + 1),
+				depth_pyramid_images[1],
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				gtao_descriptor_set,
+				ghi::ResourceSlot::new(GTAO_DEPTH_PYRAMID_FIRST_SLOT + 2),
+				depth_pyramid_images[2],
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_descriptor_set_x,
 				GTAO_BLUR_DEPTH_BINDING.slot(),
@@ -694,6 +770,13 @@ impl GtaoPass {
 				ghi::Layouts::General,
 			),
 		]);
+		let depth_pyramid_shader = load_visibility_shader(
+			context,
+			shader_resources,
+			"byte-engine/rendering/visibility/gtao-depth-pyramid.besl",
+			"GTAO Depth Pyramid Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 		let gtao_shader = load_visibility_shader(
 			context,
 			shader_resources,
@@ -702,6 +785,10 @@ impl GtaoPass {
 			ResourceShaderTypes::Compute,
 		);
 
+		let depth_pyramid_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[],
+			ghi::ShaderParameter::new(&depth_pyramid_shader, ghi::ShaderTypes::Compute),
+		));
 		let gtao_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
 			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
@@ -734,12 +821,15 @@ impl GtaoPass {
 		Self {
 			base_descriptor_set,
 			gtao_descriptor_set,
+			depth_pyramid_descriptor_sets,
 			blur_descriptor_set_x,
 			blur_descriptor_set_y,
 			gtao_pipeline,
+			depth_pyramid_pipeline,
 			blur_pipeline_x,
 			blur_pipeline_y,
 			ao_map,
+			depth_pyramid_images,
 			temp_ao_map,
 		}
 	}
@@ -747,43 +837,88 @@ impl GtaoPass {
 	fn prepare(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
 		let base_descriptor_set = self.base_descriptor_set;
 		let gtao_descriptor_set = self.gtao_descriptor_set;
+		let depth_pyramid_descriptor_sets = self.depth_pyramid_descriptor_sets;
 		let blur_descriptor_set_x = self.blur_descriptor_set_x;
 		let blur_descriptor_set_y = self.blur_descriptor_set_y;
 		let gtao_pipeline = self.gtao_pipeline;
+		let depth_pyramid_pipeline = self.depth_pyramid_pipeline;
 		let blur_pipeline_x = self.blur_pipeline_x;
 		let blur_pipeline_y = self.blur_pipeline_y;
 		let ao_map = self.ao_map;
+		let depth_pyramid_images = self.depth_pyramid_images;
 		let temp_ao_map = self.temp_ao_map;
 		let extent = sink.extent();
 
 		frame.resize_image(ao_map, extent);
 		frame.resize_image(temp_ao_map.into(), extent);
+		for (level, image) in depth_pyramid_images.iter().copied().enumerate() {
+			frame.resize_image(image.into(), gtao_depth_pyramid_extent(extent, level));
+		}
 
 		move |c, _| {
 			c.start_region(|label| label.write_str("GTAO"));
-			c.clear_images(&[(ao_map, ghi::ClearValue::Color(RGBA::white()))]);
 
+			c.start_region(|label| label.write_str("GTAO Clear Output"));
+			c.clear_images(&[(ao_map, ghi::ClearValue::Color(RGBA::white()))]);
+			c.end_region();
+
+			c.start_region(|label| label.write_str("GTAO Depth Pyramid"));
+			for (level, descriptor_set) in depth_pyramid_descriptor_sets.iter().copied().enumerate() {
+				c.start_region(|label| {
+					label.write_str(match level {
+						0 => "GTAO Depth Pyramid Level 1",
+						1 => "GTAO Depth Pyramid Level 2",
+						_ => "GTAO Depth Pyramid Level 3",
+					})
+				});
+				let c = c.bind_compute_pipeline(depth_pyramid_pipeline);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(
+					gtao_depth_pyramid_extent(extent, level),
+					Extent::new(8, 8, 1),
+				));
+				c.end_region();
+			}
+			c.end_region();
+
+			c.start_region(|label| label.write_str("GTAO Evaluate"));
 			{
 				let c = c.bind_compute_pipeline(gtao_pipeline);
 				c.bind_descriptor_sets(&[base_descriptor_set, gtao_descriptor_set]);
 				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
 			}
+			c.end_region();
 
+			c.start_region(|label| label.write_str("GTAO Denoise"));
+			c.start_region(|label| label.write_str("GTAO Denoise Horizontal"));
 			{
 				let c = c.bind_compute_pipeline(blur_pipeline_x);
 				c.bind_descriptor_sets(&[base_descriptor_set, blur_descriptor_set_x]);
 				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
 			}
+			c.end_region();
 
+			c.start_region(|label| label.write_str("GTAO Denoise Vertical"));
 			{
 				let c = c.bind_compute_pipeline(blur_pipeline_y);
 				c.bind_descriptor_sets(&[base_descriptor_set, blur_descriptor_set_y]);
 				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
 			}
+			c.end_region();
+			c.end_region();
 
 			c.end_region();
 		}
 	}
+}
+
+/// Returns the nonzero sink-relative extent for one half-resolution depth-pyramid level.
+fn gtao_depth_pyramid_extent(extent: Extent, level: usize) -> Extent {
+	let divisor = 1u32 << (level as u32 + 1);
+	Extent::rectangle(
+		extent.width().div_ceil(divisor).max(1),
+		extent.height().div_ceil(divisor).max(1),
+	)
 }
 
 /// The `MaterialEvaluationPass` struct owns material dispatch state shared by opaque writes and transparent composition.

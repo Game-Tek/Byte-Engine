@@ -22,8 +22,8 @@ struct ExecutionFrame {
 	instruction_index: usize,
 }
 
-/// The `TaskLane` struct gives the workgroup scheduler one resumable frame and execution budget per task invocation.
-struct TaskLane<'a> {
+/// The `WorkgroupLane` struct gives the scheduler one resumable frame and execution budget per invocation.
+struct WorkgroupLane<'a> {
 	frame: ExecutionFrame,
 	state: ExecutionState<'a>,
 }
@@ -61,18 +61,15 @@ impl ExecutableProgram {
 		Ok(())
 	}
 
-	/// Executes every task invocation in one workgroup with synchronized barriers and shared bound state.
+	/// Executes every invocation in one task or compute workgroup with synchronized barriers and shared bound state.
 	///
 	/// Configurations run in slice order between barriers. This ordering makes
 	/// atomic compaction deterministic for VM assertions. The scheduler rejects
 	/// barriers in nested helper functions because only the `main` frame participates
-	/// in the rendezvous.
-	pub fn run_task_workgroup(
-		&self,
-		descriptors: &mut DescriptorBindings<'_>,
-		configs: &[ExecutionConfig],
-	) -> Result<(), VmError> {
-		descriptors.begin_task_workgroup();
+	/// in the rendezvous. Bind shared storage with
+	/// [`DescriptorBindings::bind_workgroup_state`] before calling this method.
+	pub fn run_workgroup(&self, descriptors: &mut DescriptorBindings<'_>, configs: &[ExecutionConfig]) -> Result<(), VmError> {
+		descriptors.begin_workgroup();
 		if configs.is_empty() {
 			return Ok(());
 		}
@@ -81,7 +78,7 @@ impl ExecutableProgram {
 			.map(|config| {
 				let mut state = ExecutionState::new(config);
 				state.enter_call()?;
-				Ok(TaskLane {
+				Ok(WorkgroupLane {
 					frame: self.create_frame(self.main_function, &[])?,
 					state,
 				})
@@ -130,7 +127,7 @@ impl ExecutableProgram {
 			}
 			let (Some(divergent_lane), Some(expected_instruction)) = (first_completed_lane, expected_barrier) else {
 				unreachable!(
-					"Invalid task workgroup phase accounting. The most likely cause is that a lane outcome was not counted as either a barrier or completion."
+					"Invalid workgroup phase accounting. The most likely cause is that a lane outcome was not counted as either a barrier or completion."
 				)
 			};
 			return Err(VmError::DivergentWorkgroupBarrier {
@@ -385,18 +382,48 @@ impl ExecutableProgram {
 				Instruction::LoadWorkgroup {
 					register,
 					name,
+					index,
+					count,
 					value_type,
 				} => {
-					let value = descriptors.workgroup_state_mut()?.load(name, value_type)?;
+					let index = index
+						.map(|index| read_register(registers, index).and_then(expect_u32))
+						.transpose()?
+						.unwrap_or(0) as usize;
+					let value = descriptors.workgroup_state_mut()?.load(name, index, *count, value_type)?;
 					registers[*register] = Some(value);
 				}
-				Instruction::StoreWorkgroup { name, value_type, value } => {
+				Instruction::StoreWorkgroup {
+					name,
+					index,
+					count,
+					value_type,
+					value,
+				} => {
+					let index = index
+						.map(|index| read_register(registers, index).and_then(expect_u32))
+						.transpose()?
+						.unwrap_or(0) as usize;
 					let value = read_register(registers, *value)?;
-					descriptors.workgroup_state_mut()?.store(name, value_type, value)?;
+					descriptors
+						.workgroup_state_mut()?
+						.store(name, index, *count, value_type, value)?;
 				}
-				Instruction::AtomicAddWorkgroup { register, name, value } => {
+				Instruction::AtomicAddWorkgroup {
+					register,
+					name,
+					index,
+					count,
+					value,
+				} => {
+					let index = index
+						.map(|index| read_register(registers, index).and_then(expect_u32))
+						.transpose()?
+						.unwrap_or(0) as usize;
 					let value = expect_u32(read_register(registers, *value)?)?;
-					let previous = descriptors.workgroup_state_mut()?.atomic_add_u32(name, value)?;
+					let previous = descriptors
+						.workgroup_state_mut()?
+						.atomic_add_u32(name, index, *count, value)?;
 					registers[*register] = Some(Value::U32(previous));
 				}
 				Instruction::WorkgroupBarrier => match barrier_behavior {
@@ -410,7 +437,7 @@ impl ExecutableProgram {
 					}
 					BarrierBehavior::Reject => {
 						return Err(VmError::UnsupportedStatement {
-							message: "Workgroup barriers inside called functions cannot participate in task rendezvous"
+							message: "Workgroup barriers inside called functions cannot participate in workgroup rendezvous"
 								.to_string(),
 						});
 					}

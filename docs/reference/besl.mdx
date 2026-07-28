@@ -146,13 +146,17 @@ Add a positive element count when a mesh stage emits per-primitive values:
 out_instance_index: output<u32, 0, 126>;
 ```
 
-Task and mesh stages can share payload arrays. A task stage can also declare
-workgroup-local storage:
+Task and mesh stages can share payload arrays. Task and compute stages can also
+declare storage shared by every invocation in one workgroup:
 
 ```rust
 visible_meshlets: task_payload<u32, 32>;
 visible_count: workgroup<atomicu32>;
+scratch: workgroup<f32, 64>;
 ```
+
+Omit the count for one shared value. Add a positive count for shared arrays.
+Use `workgroup_barrier()` before reading values written by other invocations.
 
 Use push constants for small uniform values outside normal descriptor bindings:
 
@@ -228,7 +232,7 @@ program.
 Intrinsics are built-in calls that Byte Engine lowers to platform code. Use them
 for math, texture, image, compute, atomic, and mesh-stage operations.
 
-Task stages use `thread_position`, `thread_idx`, `workgroup_barrier`, and `set_task_mesh_output_count`. Mesh stages use `threadgroup_position`, `thread_idx`, `set_mesh_output_counts`, `set_mesh_vertex_position`, and `set_mesh_triangle`.
+Task stages use `thread_position`, `thread_idx`, `workgroup_barrier`, and `set_task_mesh_output_count`. Compute stages use `thread_id`, `thread_idx`, `threadgroup_position`, and `workgroup_barrier`. Mesh stages use `threadgroup_position`, `thread_idx`, `set_mesh_output_counts`, `set_mesh_vertex_position`, and `set_mesh_triangle`.
 
 ### Math
 
@@ -324,6 +328,10 @@ Compute helpers expose invocation identity:
 - `thread_id()`
 - `thread_idx()`
 - `threadgroup_position()`
+
+`thread_idx()` returns the linear index inside the local workgroup, including
+multidimensional workgroups. Call `workgroup_barrier()` to synchronize shared
+workgroup reads and writes in task and compute stages.
 
 Mesh-stage helpers include:
 

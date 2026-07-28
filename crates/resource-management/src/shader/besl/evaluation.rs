@@ -482,7 +482,13 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 			besl::Expressions::VariableDeclaration { r#type, .. } => {
 				build_bindings(bindings, r#type, state);
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
+			besl::Expressions::Return { value } => {
+				// A returned expression can be the only path from main to a resource used by a helper function.
+				if let Some(value) = value {
+					build_bindings(bindings, value, state);
+				}
+			}
+			besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
 		besl::Nodes::Binding {
 			name,

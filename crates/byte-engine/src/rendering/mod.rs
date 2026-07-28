@@ -168,7 +168,7 @@ pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> Vie
 		"Perspective extent is empty. The most likely cause is building a camera view before the render target is sized."
 	);
 	debug_assert!(
-		fov_y.is_finite() && fov_y > 0.0 && fov_y < std::f32::consts::PI,
+		fov_y.is_finite() && fov_y > 0.0 && fov_y < 180f32,
 		"Camera field of view is invalid. The most likely cause is an unset, non-finite, or out-of-range perspective angle."
 	);
 

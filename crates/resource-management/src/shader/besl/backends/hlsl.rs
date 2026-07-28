@@ -924,6 +924,7 @@ impl Generator {
 		};
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
+		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		self.task_payloads.clear();
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
@@ -1312,11 +1313,16 @@ impl Generator {
 					self.emit_object_payload_struct(string);
 				}
 			}
-			besl::Nodes::Workgroup { name, format } => {
+			besl::Nodes::Workgroup { name, format, count } => {
 				string.push_str("groupshared ");
 				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 				string.push(' ');
 				string.push_str(name);
+				if let Some(count) = count {
+					string.push('[');
+					string.push_str(&count.to_string());
+					string.push(']');
+				}
 				string.push(';');
 				if !self.minified {
 					string.push('\n');

@@ -288,6 +288,29 @@ mod tests {
 		)))
 	}
 
+	fn gtao_depth_pyramid_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/gtao-depth-pyramid.besl"
+		)))
+	}
+
+	/// Guards the complete GTAO interface persisted beside the native shader artifact.
+	#[test]
+	fn gtao_reflects_depth_pyramid_resources_used_by_nested_helpers() {
+		assert_reflected_resources(
+			gtao_program(),
+			&[
+				(0, "views"),
+				(1033, "visibility_depth"),
+				(1034, "ao_output"),
+				(1035, "depth_pyramid_1"),
+				(1036, "depth_pyramid_2"),
+				(1037, "depth_pyramid_3"),
+			],
+		);
+	}
+
 	/// Verifies a BESL prepass exposes only its reachable flat resources.
 	fn assert_reflected_resources(program: besl::NodeReference, expected: &[(u32, &str)]) {
 		let evaluation = ProgramEvaluation::from_main(&program)
@@ -500,7 +523,7 @@ mod tests {
 			descriptors.bind_task_outputs(&mut task_outputs);
 			descriptors.bind_workgroup_state(&mut workgroup_state);
 
-			program.run_task_workgroup(&mut descriptors, &configs).expect(
+			program.run_workgroup(&mut descriptors, &configs).expect(
 				"Failed to execute a production task workgroup. The most likely cause is missing task synchronization support or an invalid fixture binding.",
 			);
 		}
@@ -966,9 +989,87 @@ mod tests {
 		rgba(&output, coordinate)
 	}
 
-	/// Verifies the standard GTAO shader's background contract and bounded foreground output.
+	/// Runs the production GTAO shader with uniform coarse levels so a fixture can isolate hierarchical sampling.
+	fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_depth: f32) -> [f32; 4] {
+		const EXTENT: u32 = 129;
+		const CENTER: [u32; 2] = [64, 64];
+		let mut full_resolution_texels = vec![[0.35, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
+		full_resolution_texels[(CENTER[1] * EXTENT + CENTER[0]) as usize] = [0.75, 0.0, 0.0, 1.0];
+
+		let mut views = gtao_views(program);
+		let mut depth = texture_2d(EXTENT, EXTENT, &full_resolution_texels);
+		let mut pyramid_1 = texture_2d(65, 65, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 65 * 65]);
+		let mut pyramid_2 = texture_2d(33, 33, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 33 * 33]);
+		let mut pyramid_3 = texture_2d(17, 17, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 17 * 17]);
+		let mut output = empty_image(EXTENT, EXTENT);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
+			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
+			descriptors.bind_texture(ResourceSlot::new(1037), &mut pyramid_3);
+			run_at(program, &mut descriptors, CENTER);
+		}
+		rgba(&output, CENTER)
+	}
+
+	/// Verifies each production depth-pyramid texel keeps the nearest reversed-depth sample in its source footprint.
 	#[test]
-	fn gtao_writes_white_for_background_and_bounded_finite_foreground() {
+	fn gtao_depth_pyramid_reduces_odd_extents_with_conservative_maximums() {
+		let program = crate::rendering::shader_vm_test::compile(gtao_depth_pyramid_program());
+		let mut source = texture_2d(
+			3,
+			3,
+			&[
+				[0.1, 0.0, 0.0, 1.0],
+				[0.2, 0.0, 0.0, 1.0],
+				[0.3, 0.0, 0.0, 1.0],
+				[0.4, 0.0, 0.0, 1.0],
+				[0.9, 0.0, 0.0, 1.0],
+				[0.5, 0.0, 0.0, 1.0],
+				[0.6, 0.0, 0.0, 1.0],
+				[0.7, 0.0, 0.0, 1.0],
+				[0.8, 0.0, 0.0, 1.0],
+			],
+		);
+		let mut reduced = empty_image(2, 2);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
+			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
+				run_at(&program, &mut descriptors, coordinate);
+			}
+		}
+
+		for (coordinate, expected) in [
+			([0, 0], [0.9, 0.0, 0.0, 1.0]),
+			([1, 0], [0.5, 0.0, 0.0, 1.0]),
+			([0, 1], [0.7, 0.0, 0.0, 1.0]),
+			([1, 1], [0.8, 0.0, 0.0, 1.0]),
+		] {
+			assert_rgba_close(rgba(&reduced, coordinate), expected, 0.00001);
+		}
+	}
+
+	/// Verifies distant GTAO steps consume conservative hierarchy levels instead of always fetching full-resolution depth.
+	#[test]
+	fn gtao_uses_depth_pyramid_for_distant_samples() {
+		let program = crate::rendering::shader_vm_test::compile(gtao_program());
+		let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0);
+		let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.35);
+
+		assert!(
+			occupied_coarse_depth[0] < empty_coarse_depth[0],
+			"Expected populated coarse depth to increase distant occlusion. The most likely cause is that GTAO stopped selecting hierarchy levels."
+		);
+	}
+
+	/// Verifies the standard GTAO shader's background contract and recessed-foreground response.
+	#[test]
+	fn gtao_writes_white_for_background_and_expected_recessed_foreground_ao() {
 		let program = crate::rendering::shader_vm_test::compile(gtao_program());
 		let background = run_gtao_fixture(&program, 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0]);
 		assert_rgba_close(background, [1.0, 1.0, 1.0, 1.0], 0.00001);
@@ -977,10 +1078,7 @@ mod tests {
 		let mut foreground = [[0.35, 0.0, 0.0, 1.0]; 25];
 		foreground[12] = [0.75, 0.0, 0.0, 1.0];
 		let foreground = run_gtao_fixture(&program, 5, 5, &foreground, [2, 2]);
-		for channel in foreground[..3].iter().copied() {
-			assert!(channel.is_finite() && (0.0..=1.0).contains(&channel));
-		}
-		assert_eq!(foreground[3], 1.0);
+		assert_rgba_close(foreground, [0.86012965, 0.86012965, 0.86012965, 1.0], 0.00001);
 	}
 
 	/// Compiles one checked-in axis-specific GTAO blur asset.

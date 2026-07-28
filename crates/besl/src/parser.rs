@@ -363,9 +363,9 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn workgroup(name: &'a str, format: &'a str) -> Node<'a> {
+	pub fn workgroup(name: &'a str, format: &'a str, count: Option<NonZeroUsize>) -> Node<'a> {
 		Node {
-			node: Nodes::Workgroup { name, format },
+			node: Nodes::Workgroup { name, format, count },
 		}
 	}
 
@@ -590,6 +590,7 @@ pub enum Nodes<'a> {
 	Workgroup {
 		name: &'a str,
 		format: &'a str,
+		count: Option<NonZeroUsize>,
 	},
 	Literal {
 		name: &'a str,
@@ -1199,7 +1200,32 @@ fn parse_shader_interface_declaration<'i, 'a: 'i>(mut iterator: std::slice::Iter
 			}
 			Node::task_payload(name, format, count)
 		}
-		"workgroup" => Node::workgroup(name, format),
+		"workgroup" => {
+			let count = if iterator.clone().next().copied() == Some(",") {
+				iterator.next();
+				let count = iterator
+					.next()
+					.ok_or_else(|| {
+						syntax_error(format!(
+							"Expected an element count in workgroup {name}. The most likely cause is that the second declaration argument is missing."
+						))
+					})?
+					.parse::<u32>()
+					.map_err(|_| {
+						syntax_error(format!(
+							"Invalid element count in workgroup {name}. The most likely cause is that the count is not a u32 literal."
+						))
+					})?;
+				Some(NonZeroUsize::new(count as usize).ok_or_else(|| {
+					syntax_error(format!(
+						"Invalid element count in workgroup {name}. The most likely cause is that a workgroup array was declared with zero elements."
+					))
+				})?)
+			} else {
+				None
+			};
+			Node::workgroup(name, format, count)
+		}
 		_ => unreachable!("Shader interface declaration was validated above."),
 	};
 
@@ -2004,6 +2030,7 @@ mod tests {
 				meshlet_indices: output<u32, 2, 126>;
 				visible_meshlets: task_payload<u32, 32>;
 				visible_count: workgroup<atomicu32>;
+				scratch: workgroup<f32, 64>;
 			"#,
 		)
 		.expect("stage-interface source should tokenize");
@@ -2047,6 +2074,20 @@ mod tests {
 			root["visible_count"].node(),
 			Nodes::Workgroup { format: "atomicu32", .. }
 		));
+		assert!(matches!(
+			root["scratch"].node(),
+			Nodes::Workgroup {
+				format: "f32",
+				count: Some(count),
+				..
+			} if count.get() == 64
+		));
+	}
+
+	#[test]
+	fn workgroup_array_rejects_zero_elements() {
+		let tokens = tokenize("scratch: workgroup<f32, 0>;").expect("workgroup array source should tokenize");
+		parse(&tokens).expect_err("zero-length workgroup array should fail");
 	}
 
 	#[test]

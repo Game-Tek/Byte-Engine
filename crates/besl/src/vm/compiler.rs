@@ -325,6 +325,22 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
+				if let Some(target) = resolve_workgroup_access(&left)? {
+					let index = target
+						.index_expression
+						.as_ref()
+						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.transpose()?;
+					let value = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+					self.instructions.push(Instruction::StoreWorkgroup {
+						name: target.name,
+						index,
+						count: target.count,
+						value_type: target.value_type,
+						value,
+					});
+					return Ok(());
+				}
 				if let Some(target) = resolve_task_payload_access(&left)? {
 					let index = self.compile_value_expression(&target.index_expression, &ValueType::U32, descriptor_layouts)?;
 					let value = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
@@ -585,6 +601,28 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
+		if let Some(target) = resolve_workgroup_access(expression)? {
+			if &target.value_type != expected_type {
+				return Err(VmError::TypeMismatch {
+					expected: expected_type.name().to_string(),
+					found: target.value_type.name().to_string(),
+				});
+			}
+			let index = target
+				.index_expression
+				.as_ref()
+				.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+				.transpose()?;
+			let register = self.allocate_register();
+			self.instructions.push(Instruction::LoadWorkgroup {
+				register,
+				name: target.name,
+				index,
+				count: target.count,
+				value_type: target.value_type,
+			});
+			return Ok(register);
+		}
 		if let Some(target) = resolve_task_payload_access(expression)? {
 			if &target.value_type != expected_type {
 				return Err(VmError::TypeMismatch {
@@ -849,10 +887,17 @@ impl<'a> Compiler<'a> {
 							found: target.value_type.name().to_string(),
 						});
 					}
+					let index = target
+						.index_expression
+						.as_ref()
+						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.transpose()?;
 					let register = self.allocate_register();
 					self.instructions.push(Instruction::LoadWorkgroup {
 						register,
 						name: target.name,
+						index,
+						count: target.count,
 						value_type: target.value_type,
 					});
 					return Ok(register);
@@ -869,11 +914,18 @@ impl<'a> Compiler<'a> {
 							found: target.value_type.name().to_string(),
 						});
 					}
+					let index = target
+						.index_expression
+						.as_ref()
+						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.transpose()?;
 					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
 					let register = self.allocate_register();
 					self.instructions.push(Instruction::AtomicAddWorkgroup {
 						register,
 						name: target.name,
+						index,
+						count: target.count,
 						value,
 					});
 					return Ok(register);
@@ -1361,7 +1413,9 @@ impl<'a> Compiler<'a> {
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
-				if let Some(target) = resolve_task_payload_access(expression)? {
+				if let Some(target) = resolve_workgroup_access(expression)? {
+					Ok(target.value_type)
+				} else if let Some(target) = resolve_task_payload_access(expression)? {
 					Ok(target.value_type)
 				} else if accessor_references_buffer(expression) {
 					Ok(self
@@ -1947,7 +2001,7 @@ impl<'a> Compiler<'a> {
 			}
 			"workgroup_barrier" => {
 				require_argument_count(arguments, 0)?;
-				// Preserve the barrier as an instruction so task workgroup execution can rendezvous every lane.
+				// Preserve the barrier as an instruction so workgroup execution can rendezvous every lane.
 				self.instructions.push(Instruction::WorkgroupBarrier);
 				Ok(())
 			}
@@ -2000,9 +2054,16 @@ impl<'a> Compiler<'a> {
 							found: target.value_type.name().to_string(),
 						});
 					}
+					let index = target
+						.index_expression
+						.as_ref()
+						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.transpose()?;
 					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
 					self.instructions.push(Instruction::StoreWorkgroup {
 						name: target.name,
+						index,
+						count: target.count,
 						value_type: target.value_type,
 						value,
 					});
@@ -2061,22 +2122,49 @@ struct ResolvedTaskPayloadAccess {
 /// The `ResolvedWorkgroupAccess` struct carries one typed workgroup value into instruction lowering.
 struct ResolvedWorkgroupAccess {
 	name: String,
+	index_expression: Option<NodeReference>,
+	count: usize,
 	value_type: ValueType,
 }
 
 /// Resolves a workgroup reference without confusing it with descriptor-backed memory.
 fn resolve_workgroup_access(expression: &NodeReference) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
-	let Some(workgroup) = extract_workgroup_reference(expression) else {
-		return Ok(None);
+	let (workgroup, index_expression) = {
+		let borrowed = expression.borrow();
+		match borrowed.node() {
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let Some(workgroup) = extract_workgroup_reference(left) else {
+					return Ok(None);
+				};
+				(workgroup, Some(right.clone()))
+			}
+			_ => {
+				drop(borrowed);
+				let Some(workgroup) = extract_workgroup_reference(expression) else {
+					return Ok(None);
+				};
+				(workgroup, None)
+			}
+		}
 	};
 	let workgroup = workgroup.borrow();
-	let Nodes::Workgroup { name, format } = workgroup.node() else {
+	let Nodes::Workgroup {
+		name,
+		format,
+		count: declared_count,
+	} = workgroup.node()
+	else {
 		unreachable!(
 			"Invalid resolved workgroup reference. The most likely cause is that workgroup reference extraction returned a different node kind."
 		)
 	};
+	if index_expression.is_some() && declared_count.is_none() {
+		return Ok(None);
+	}
 	Ok(Some(ResolvedWorkgroupAccess {
 		name: name.clone(),
+		index_expression,
+		count: declared_count.map_or(1, |count| count.get()),
 		value_type: resolve_value_type(format)?,
 	}))
 }

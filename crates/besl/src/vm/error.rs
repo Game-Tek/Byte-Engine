@@ -50,6 +50,11 @@ pub enum VmError {
 	UninitializedWorkgroupValue {
 		name: String,
 	},
+	WorkgroupIndexOutOfBounds {
+		name: String,
+		index: usize,
+		count: usize,
+	},
 	MissingTaskPayload {
 		name: String,
 	},
@@ -231,11 +236,15 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::MissingWorkgroupState => write!(
 				f,
-				"Missing workgroup state. The most likely cause is that a BESL task shader accessed workgroup storage without binding `WorkgroupState`."
+				"Missing workgroup state. The most likely cause is that a BESL task or compute shader accessed workgroup storage without binding `WorkgroupState`."
 			),
 			VmError::UninitializedWorkgroupValue { name } => write!(
 				f,
 				"Uninitialized workgroup value `{name}`. The most likely cause is that the BESL shader loaded workgroup storage before one invocation initialized it."
+			),
+			VmError::WorkgroupIndexOutOfBounds { name, index, count } => write!(
+				f,
+				"Workgroup index {index} is out of bounds for `{name}` with {count} elements. The most likely cause is that a BESL invocation indexed shared storage outside its declared length."
 			),
 			VmError::MissingTaskPayload { name } => write!(
 				f,
@@ -272,7 +281,7 @@ impl std::fmt::Display for VmError {
 			} => match found_instruction {
 				Some(found_instruction) => write!(
 					f,
-					"Divergent workgroup barrier in lane {lane}: expected instruction {expected_instruction} but found {found_instruction}. The most likely cause is that task invocations reached different barriers in the same synchronization phase."
+					"Divergent workgroup barrier in lane {lane}: expected instruction {expected_instruction} but found {found_instruction}. The most likely cause is that workgroup invocations reached different barriers in the same synchronization phase."
 				),
 				None => write!(
 					f,

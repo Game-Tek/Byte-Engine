@@ -115,16 +115,22 @@ pub(super) enum Instruction {
 	LoadWorkgroup {
 		register: usize,
 		name: String,
+		index: Option<usize>,
+		count: usize,
 		value_type: ValueType,
 	},
 	StoreWorkgroup {
 		name: String,
+		index: Option<usize>,
+		count: usize,
 		value_type: ValueType,
 		value: usize,
 	},
 	AtomicAddWorkgroup {
 		register: usize,
 		name: String,
+		index: Option<usize>,
+		count: usize,
 		value: usize,
 	},
 	WorkgroupBarrier,

@@ -13,6 +13,7 @@ pub struct Generator {
 	minified: bool,
 	current_stage_interpolates_inputs: bool,
 	current_stage_interpolates_outputs: bool,
+	current_stage_supports_workgroup_storage: bool,
 }
 
 impl ShaderGenerator for Generator {}
@@ -24,6 +25,7 @@ impl Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			current_stage_interpolates_inputs: false,
 			current_stage_interpolates_outputs: false,
+			current_stage_supports_workgroup_storage: false,
 		}
 	}
 
@@ -57,8 +59,10 @@ impl Generator {
 		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
 		self.current_stage_interpolates_outputs =
 			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
+		self.current_stage_supports_workgroup_storage = matches!(shader_compilation_settings.stage, Stages::Compute { .. });
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
+		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 
 		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
 
@@ -261,10 +265,13 @@ impl Generator {
 				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
 			}
 			"thread_idx" => {
-				string.push_str("uint(gl_LocalInvocationID.x)");
+				string.push_str("uint(gl_LocalInvocationIndex)");
 			}
 			"threadgroup_position" => {
 				string.push_str("uint(gl_WorkGroupID.x)");
+			}
+			"workgroup_barrier" => {
+				string.push_str("barrier()");
 			}
 			"set_mesh_output_counts" => {
 				string.push_str("SetMeshOutputsEXT(");
@@ -546,6 +553,21 @@ impl Generator {
 						"layout(location={}){space_char}{qualifier}out {} {};{break_char}",
 						location, type_name, name
 					));
+				}
+			}
+			besl::Nodes::Workgroup { name, format, count } if self.current_stage_supports_workgroup_storage => {
+				string.push_str("shared ");
+				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				string.push(' ');
+				string.push_str(name);
+				if let Some(count) = count {
+					string.push('[');
+					string.push_str(&count.to_string());
+					string.push(']');
+				}
+				string.push(';');
+				if !self.minified {
+					string.push('\n');
 				}
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {

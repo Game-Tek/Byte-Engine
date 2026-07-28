@@ -45,19 +45,21 @@ struct TaskStageContext {
 	has_resources: bool,
 	has_push_constant: bool,
 	has_task_payload: bool,
-	workgroups: Vec<TaskWorkgroup>,
+	workgroups: Vec<StageWorkgroup>,
 }
 
 #[derive(Clone, Debug)]
-struct TaskWorkgroup {
+struct StageWorkgroup {
 	name: String,
 	msl_type: String,
+	count: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
 struct ComputeStageContext {
 	has_resources: bool,
 	has_push_constant: bool,
+	workgroups: Vec<StageWorkgroup>,
 }
 
 /// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
@@ -132,7 +134,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let result = match node.borrow().node() {
 				besl::Nodes::Binding { .. } => true,
 				besl::Nodes::TaskPayload { .. } => true,
-				besl::Nodes::Workgroup { .. } => false,
+				besl::Nodes::Workgroup { .. } => true,
 				besl::Nodes::PushConstant { .. } => include_push_constant,
 				besl::Nodes::Scope { children, .. } => children
 					.iter()
@@ -273,6 +275,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
+		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		Self::validate_reachable_binding_layout(&order)?;
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
@@ -901,9 +904,26 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		let workgroups = nodes
+			.workgroups
+			.iter()
+			.filter_map(|workgroup| {
+				let workgroup = workgroup.borrow();
+				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
+					return None;
+				};
+				let msl_type = Self::translate_type(format.borrow().get_name().unwrap()).to_string();
+				Some(StageWorkgroup {
+					name: name.clone(),
+					msl_type,
+					count: count.map(|count| count.get()),
+				})
+			})
+			.collect();
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
+			workgroups,
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
@@ -929,6 +949,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					main_function_node,
 					!bindings.is_empty(),
 					nodes.push_constant,
+					&nodes.workgroups,
 				);
 			}
 			ComputeBindingMode::BareResources => {
@@ -937,6 +958,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					main_function_node,
 					nodes.bindings.as_slice(),
 					nodes.push_constant,
+					&nodes.workgroups,
 				);
 			}
 		}
@@ -963,13 +985,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			.iter()
 			.filter_map(|workgroup| {
 				let workgroup = workgroup.borrow();
-				let besl::Nodes::Workgroup { name, format } = workgroup.node() else {
+				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
 				let msl_type = Self::translate_type(format.borrow().get_name().unwrap()).to_string();
-				Some(TaskWorkgroup {
+				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,
+					count: count.map(|count| count.get()),
 				})
 			})
 			.collect();
@@ -1303,6 +1326,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		bindings: &[&besl::NodeReference],
 		push_constant: Option<&besl::NodeReference>,
+		workgroups: &[&besl::NodeReference],
 	) {
 		let node = RefCell::borrow(main_function_node);
 
@@ -1324,6 +1348,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		if !workgroups.is_empty() {
+			self.emit_separator(string);
+			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
+		}
 
 		for param in params {
 			self.emit_separator(string);
@@ -1341,6 +1369,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
 
+		self.emit_compute_workgroup_declarations(string, workgroups);
 		self.emit_statement_block(string, statements, 1);
 
 		self.emit_block_end(string);
@@ -1352,6 +1381,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
+		workgroups: &[&besl::NodeReference],
 	) {
 		let node = RefCell::borrow(main_function_node);
 
@@ -1373,6 +1403,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		if !workgroups.is_empty() {
+			self.emit_separator(string);
+			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
+		}
 
 		for param in params {
 			self.emit_separator(string);
@@ -1391,9 +1425,31 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
 
+		self.emit_compute_workgroup_declarations(string, workgroups);
 		self.emit_statement_block(string, statements, 1);
 
 		self.emit_block_end(string);
+	}
+
+	/// Emits function-scope threadgroup variables shared by every invocation in one compute workgroup.
+	fn emit_compute_workgroup_declarations(&mut self, string: &mut String, workgroups: &[&besl::NodeReference]) {
+		for workgroup in workgroups {
+			let workgroup = workgroup.borrow();
+			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
+				continue;
+			};
+			self.emit_indentation(string, 1);
+			string.push_str("threadgroup ");
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			if let Some(count) = count {
+				string.push('[');
+				string.push_str(&count.to_string());
+				string.push(']');
+			}
+			self.emit_statement_end(string);
+		}
 	}
 
 	fn emit_task_entry_point(
@@ -1466,7 +1522,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		ShaderFormatting::new(self.minified).push_block_start(string);
 		for workgroup in workgroups {
 			let workgroup = workgroup.borrow();
-			let besl::Nodes::Workgroup { name, format } = workgroup.node() else {
+			let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 				continue;
 			};
 			self.emit_indentation(string, 1);
@@ -1474,6 +1530,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
+			if let Some(count) = count {
+				string.push('[');
+				string.push_str(&count.to_string());
+				string.push(']');
+			}
 			self.emit_statement_end(string);
 		}
 		self.emit_statement_block(string, statements, 1);
@@ -1692,7 +1753,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			string.push_str("threadgroup ");
 			string.push_str(&workgroup.msl_type);
-			string.push_str("& ");
+			if workgroup.count.is_some() {
+				string.push_str("* ");
+			} else {
+				string.push_str("& ");
+			}
 			string.push_str(&workgroup.name);
 			has_previous_parameter = true;
 		}
@@ -1859,6 +1924,30 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_separator(string);
 			}
 			string.push_str("constant _resources& resources");
+			has_previous_parameter = true;
+		}
+
+		if !compute_stage_context.workgroups.is_empty() {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("uint thread_index");
+			has_previous_parameter = true;
+		}
+
+		for workgroup in &compute_stage_context.workgroups {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("threadgroup ");
+			string.push_str(&workgroup.msl_type);
+			if workgroup.count.is_some() {
+				string.push_str("* ");
+			} else {
+				string.push_str("& ");
+			}
+			string.push_str(&workgroup.name);
+			has_previous_parameter = true;
 		}
 	}
 
@@ -1909,6 +1998,23 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_separator(string);
 			}
 			string.push_str("resources");
+			has_previous_parameter = true;
+		}
+
+		if !compute_stage_context.workgroups.is_empty() {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("thread_index");
+			has_previous_parameter = true;
+		}
+
+		for workgroup in &compute_stage_context.workgroups {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(&workgroup.name);
+			has_previous_parameter = true;
 		}
 	}
 
@@ -3210,6 +3316,21 @@ mod tests {
 		}
 	"#;
 
+	const COMPUTE_WORKGROUP_FIXTURE_SOURCE: &str = r#"
+		scratch: workgroup<f32, 64>;
+
+		store_scratch: fn (value: f32) -> void {
+			scratch[thread_idx()] = value;
+			workgroup_barrier();
+		}
+
+		main: fn () -> void {
+			store_scratch(f32(thread_idx()));
+			let value: f32 = scratch[thread_idx()];
+			value;
+		}
+	"#;
+
 	const MESH_PAYLOAD_FIXTURE_SOURCE: &str = r#"
 		visible_meshlets: task_payload<u32, 32>;
 		out_instance_index: output<u32, 0, 126>;
@@ -3237,6 +3358,20 @@ mod tests {
 			.minified(true)
 			.generate(settings, &main)
 			.expect("Expected stage fixture to lower to MSL")
+	}
+
+	#[test]
+	fn compute_stage_lowers_counted_workgroup_storage_through_helpers() {
+		let shader = lower_fixture(
+			COMPUTE_WORKGROUP_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
+		assert_string_contains!(shader, "threadgroup float scratch[64];");
+		assert_string_contains!(shader, "threadgroup float* scratch");
+		assert_string_contains!(shader, "threadgroup_barrier(mem_flags::mem_threadgroup)");
+		assert_string_contains!(shader, "store_scratch(float(thread_index),gid,thread_index,scratch)");
 	}
 
 	#[test]
@@ -3314,6 +3449,18 @@ mod tests {
 			.expect("Expected generated task MSL to compile natively");
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-payload-fixture")
 			.expect("Expected generated mesh MSL to compile natively");
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn generated_compute_workgroup_stage_compiles_with_metal() {
+		let shader = lower_fixture(
+			COMPUTE_WORKGROUP_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		);
+
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-workgroup-fixture")
+			.expect("Expected generated compute workgroup MSL to compile natively");
 	}
 
 	#[test]

@@ -321,24 +321,22 @@ impl Context {
 		handle
 	}
 
-	fn upload_texture_from_staging(
-		&mut self,
+	/// Copies one compact CPU texture into an upload buffer and appends its blits to a shared encoder.
+	fn encode_texture_upload(
+		&self,
+		blit_encoder: &ProtocolObject<dyn mtl::MTLBlitCommandEncoder>,
 		texture: &ProtocolObject<dyn mtl::MTLTexture>,
 		format: crate::Formats,
 		extent: Extent,
 		array_layers: u32,
 		staging: &[u8],
-		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
-		sequence_index: u8,
 	) {
 		let Some((bytes_per_row, row_count, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
 			return;
 		};
-
 		let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
 		let aligned_bytes_per_image = aligned_bytes_per_row * row_count;
 		let upload_size = aligned_bytes_per_image * array_layers as usize;
-
 		let upload_buffer = self
 			.device
 			.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
@@ -348,19 +346,14 @@ impl Context {
 		for slice in 0..array_layers as usize {
 			let source_offset = slice * bytes_per_image;
 			let destination_offset = slice * aligned_bytes_per_image;
-
 			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
 				break;
 			};
-
 			for row in 0..row_count {
-				let source_row_offset = row * bytes_per_row;
-				let destination_row_offset = destination_offset + row * aligned_bytes_per_row;
-
 				unsafe {
 					std::ptr::copy_nonoverlapping(
-						source_bytes.as_ptr().add(source_row_offset),
-						destination.add(destination_row_offset),
+						source_bytes.as_ptr().add(row * bytes_per_row),
+						destination.add(destination_offset + row * aligned_bytes_per_row),
 						bytes_per_row,
 					);
 				}
@@ -377,26 +370,9 @@ impl Context {
 			);
 		}
 
-		let queue = queue_handle
-			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
-			.unwrap_or_else(|| self.transfer_queue());
-		let command_buffer = self.create_metal_command_buffer(
-			queue.queue.as_ref(),
-			Some("Texture Upload"),
-			"Metal texture upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
-		);
-		let blit_encoder = command_buffer.blitCommandEncoder().expect(
-			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
-		);
-		#[cfg(debug_assertions)]
-		if self.settings.debug_labels {
-			blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
-		}
-
 		let mut source_size = utils::texture_copy_size(format, extent);
 		source_size.depth = 1;
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
-
 		for slice in 0..array_layers as usize {
 			unsafe {
 				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
@@ -412,7 +388,31 @@ impl Context {
 				);
 			}
 		}
+	}
 
+	/// Uploads one texture immediately when no pending-upload batch owns the work.
+	fn upload_texture_from_staging(
+		&mut self,
+		texture: &ProtocolObject<dyn mtl::MTLTexture>,
+		format: crate::Formats,
+		extent: Extent,
+		array_layers: u32,
+		staging: &[u8],
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
+	) {
+		let queue = queue_handle
+			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
+			.unwrap_or_else(|| self.transfer_queue());
+		let command_buffer = self.create_metal_command_buffer(
+			queue.queue.as_ref(),
+			Some("Texture Upload"),
+			"Metal texture upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
+		);
+		let blit_encoder = command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		self.encode_texture_upload(blit_encoder.as_ref(), texture, format, extent, array_layers, staging);
 		blit_encoder.endEncoding();
 		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
@@ -1595,86 +1595,62 @@ impl Context {
 		}
 	}
 
-	fn upload_buffer_from_staging(
-		&mut self,
-		buffer_handle: BufferHandle,
-		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
-		sequence_index: u8,
-	) {
-		let buffer = self.buffers.resource(buffer_handle);
-
-		let Some(staging_handle) = buffer.staging else {
+	/// Appends every pending buffer and image upload to one Metal blit submission.
+	fn flush_pending_uploads(&mut self, queue_handle: Option<graphics_hardware_interface::QueueHandle>, sequence_index: u8) {
+		if self.pending_buffer_syncs.is_empty() && self.pending_image_syncs.is_empty() {
 			return;
-		};
+		}
 
-		let staging = self.buffers.resource(staging_handle);
 		let queue = queue_handle
 			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
 			.unwrap_or_else(|| self.transfer_queue());
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
-			Some("Buffer Upload"),
-			"Metal command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
+			Some("Pending Uploads"),
+			"Metal upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
 		);
 		let blit_encoder = command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
-			blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
+			blit_encoder.setLabel(Some(&NSString::from_str("Pending Uploads")));
 		}
 
-		unsafe {
-			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-				staging.buffer.as_ref(),
-				0,
-				buffer.buffer.as_ref(),
-				0,
-				buffer.size as _,
+		while let Some(buffer_handle) = self.pending_buffer_syncs.pop_front() {
+			let buffer = self.buffers.resource(buffer_handle);
+			let Some(staging_handle) = buffer.staging else {
+				continue;
+			};
+			let staging = self.buffers.resource(staging_handle);
+			unsafe {
+				blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+					staging.buffer.as_ref(),
+					0,
+					buffer.buffer.as_ref(),
+					0,
+					buffer.size as _,
+				);
+			}
+		}
+
+		while let Some(image_handle) = self.pending_image_syncs.pop_front() {
+			let image = self.images.resource(image_handle);
+			let Some(staging) = image.staging.as_ref() else {
+				continue;
+			};
+			self.encode_texture_upload(
+				blit_encoder.as_ref(),
+				image.texture.as_ref(),
+				image.format,
+				image.extent,
+				image.array_layers,
+				staging,
 			);
 		}
 
 		blit_encoder.endEncoding();
 		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
-	}
-
-	fn upload_image_from_staging(
-		&mut self,
-		image_handle: ImageHandle,
-		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
-		sequence_index: u8,
-	) {
-		let image = self.images.resource_mut(image_handle);
-
-		let Some(staging) = image.staging.as_ref() else {
-			return;
-		};
-
-		let texture = image.texture.clone();
-		let format = image.format;
-		let extent = image.extent;
-		let array_layers = image.array_layers;
-		let staging = staging.to_vec();
-
-		self.upload_texture_from_staging(
-			texture.as_ref(),
-			format,
-			extent,
-			array_layers,
-			&staging,
-			queue_handle,
-			sequence_index,
-		);
-	}
-
-	fn flush_pending_uploads(&mut self, queue_handle: Option<graphics_hardware_interface::QueueHandle>, sequence_index: u8) {
-		while let Some(buffer_handle) = self.pending_buffer_syncs.pop_front() {
-			self.upload_buffer_from_staging(buffer_handle, queue_handle, sequence_index);
-		}
-
-		while let Some(image_handle) = self.pending_image_syncs.pop_front() {
-			self.upload_image_from_staging(image_handle, queue_handle, sequence_index);
-		}
 	}
 
 	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {

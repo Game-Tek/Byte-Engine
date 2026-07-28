@@ -1369,7 +1369,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 diffuse = float3(0.0, 0.0, 0.0);
 		float3 specular = float3(0.0, 0.0, 0.0);
 
-		float ao_factor = resources.ao.sample(resources.ao_sampler, normalized_xy, level(0.0)).r;
+		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
+		// surface would composite the opaque surface's occlusion over that surface.
+		float ao_factor = push_constant.blend != 0u
+			? 1.0
+			: resources.ao.sample(resources.ao_sampler, normalized_xy, level(0.0)).r;
 
 		normal = normalize(TBN * normal);
 		float3 F0 = mix(float3(0.04), albedo.xyz, metalness);
@@ -1474,7 +1478,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec3 diffuse = vec3(0.0);
 		vec3 specular = vec3(0.0);
 
-		float ao_factor = texture(ao, normalized_xy).r;
+		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
+		// surface would composite the opaque surface's occlusion over that surface.
+		float ao_factor = push_constant.blend != 0u
+			? 1.0
+			: texture(ao, normalized_xy).r;
 
 		normal = normalize(TBN * normal);
 		vec3 F0 = mix(vec3(0.04), albedo.xyz, metalness);
@@ -1580,7 +1588,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 diffuse = float3(0.0, 0.0, 0.0);
 		float3 specular = float3(0.0, 0.0, 0.0);
 
-		float ao_factor = ao.SampleLevel(ao_sampler, normalized_xy, 0.0).r;
+		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
+		// surface would composite the opaque surface's occlusion over that surface.
+		float ao_factor = push_constant.blend != 0u
+			? 1.0
+			: ao.SampleLevel(ao_sampler, normalized_xy, 0.0).r;
 
 		// Combine the basis explicitly because HLSL matrix constructors treat T, B, and N as rows.
 		normal = normalize(normal.x * T + normal.y * B + normal.z * N);

@@ -917,7 +917,7 @@ mod tests {
 	fn create_graphics_application() {
 		let mut app = GraphicsApplication::new("Test", &[]);
 
-		assert!(app.get_name() == "Test");
+		assert_eq!(app.get_name(), "Test");
 
 		let start_time = std::time::Instant::now();
 

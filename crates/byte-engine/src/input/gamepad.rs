@@ -955,7 +955,7 @@ mod tests {
 		let prefixed = [0x07].into_iter().chain(released_x).collect::<Vec<_>>();
 		assert_states_equal(
 			parse_generic_joystick(&prefixed).expect("valid report-id report"),
-			parse_generic_joystick(&released_x).unwrap(),
+			parse_generic_joystick(&released_x).expect("expected test value"),
 		);
 	}
 

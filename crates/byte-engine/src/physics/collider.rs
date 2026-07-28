@@ -580,7 +580,7 @@ mod tests {
 			Vector3::new(0.0, 0.0, 1.0),
 			Vector3::new(1.0, 0.0, 0.0),
 		)
-		.unwrap();
+		.expect("expected test value");
 
 		assert_float_eq!(speed, 2.0);
 	}
@@ -698,7 +698,7 @@ mod tests {
 			Vector3::new(0.25, 0.25, 0.25),
 		];
 
-		let (verts, triangles) = build_tetrahedron(points.into_iter()).unwrap();
+		let (verts, triangles) = build_tetrahedron(points.into_iter()).expect("expected test value");
 
 		assert_eq!(verts.len(), 4);
 		assert_eq!(triangles, vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)]);
@@ -719,7 +719,7 @@ mod tests {
 			Vector3::new(10.0, 0.0, 1.0),
 		];
 
-		let (verts, _) = build_tetrahedron(points.into_iter()).unwrap();
+		let (verts, _) = build_tetrahedron(points.into_iter()).expect("expected test value");
 		let has_min_x = verts.iter().any(|point| point.x == 10.0);
 		let has_max_x = verts.iter().any(|point| point.x == 11.0);
 
@@ -767,7 +767,7 @@ mod tests {
 			Vector3::zero(),
 		];
 
-		let (vertices, triangles) = build_convex_hull(&points).unwrap();
+		let (vertices, triangles) = build_convex_hull(&points).expect("expected test value");
 
 		assert_eq!(vertices.len(), 8);
 		assert_eq!(triangles.len(), 12);

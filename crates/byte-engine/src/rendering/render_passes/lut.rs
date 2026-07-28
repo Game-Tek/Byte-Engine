@@ -363,19 +363,23 @@ mod tests {
 		write_lut_bytes_to_rgba16f_upload_target(&lut, &lut_bytes, &mut upload);
 
 		assert_eq!(
-			u16::from_le_bytes(upload[0..2].try_into().unwrap()),
+			u16::from_le_bytes(upload[0..2].try_into().expect("expected test value")),
 			f16::from_f32(0.0).to_bits()
 		);
 		assert_eq!(
-			u16::from_le_bytes(upload[6..8].try_into().unwrap()),
+			u16::from_le_bytes(upload[6..8].try_into().expect("expected test value")),
 			f16::from_f32(1.0).to_bits()
 		);
 		assert_eq!(
-			u16::from_le_bytes(upload[upload.len() - 8..upload.len() - 6].try_into().unwrap()),
+			u16::from_le_bytes(
+				upload[upload.len() - 8..upload.len() - 6]
+					.try_into()
+					.expect("expected test value")
+			),
 			f16::from_f32(1.0).to_bits()
 		);
 		assert_eq!(
-			u16::from_le_bytes(upload[upload.len() - 2..].try_into().unwrap()),
+			u16::from_le_bytes(upload[upload.len() - 2..].try_into().expect("expected test value")),
 			f16::from_f32(1.0).to_bits()
 		);
 	}

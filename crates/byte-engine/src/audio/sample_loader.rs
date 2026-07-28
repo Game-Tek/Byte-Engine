@@ -500,20 +500,22 @@ mod tests {
 
 	#[test]
 	fn decoder_normalizes_supported_little_endian_pcm_depths() {
-		let eight = LoadedAudioSample::decode(metadata(BitDepths::Eight, 1, 3), &[0, 128, 255]).unwrap();
+		let eight = LoadedAudioSample::decode(metadata(BitDepths::Eight, 1, 3), &[0, 128, 255]).expect("expected test value");
 		assert_eq!(&*eight.samples, &[-1.0, 0.0, 127.0 / 128.0]);
 
 		let mut sixteen_bytes = Vec::new();
 		for sample in [i16::MIN, 0, i16::MAX] {
 			sixteen_bytes.extend_from_slice(&sample.to_le_bytes());
 		}
-		let sixteen = LoadedAudioSample::decode(metadata(BitDepths::Sixteen, 1, 3), &sixteen_bytes).unwrap();
+		let sixteen =
+			LoadedAudioSample::decode(metadata(BitDepths::Sixteen, 1, 3), &sixteen_bytes).expect("expected test value");
 		assert_eq!(sixteen.samples[0], -1.0);
 		assert_eq!(sixteen.samples[1], 0.0);
 		assert!((sixteen.samples[2] - i16::MAX as f32 / 32_768.0).abs() < f32::EPSILON);
 
 		let twenty_four_bytes = [0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0x7f];
-		let twenty_four = LoadedAudioSample::decode(metadata(BitDepths::TwentyFour, 1, 3), &twenty_four_bytes).unwrap();
+		let twenty_four =
+			LoadedAudioSample::decode(metadata(BitDepths::TwentyFour, 1, 3), &twenty_four_bytes).expect("expected test value");
 		assert_eq!(twenty_four.samples[0], -1.0);
 		assert_eq!(twenty_four.samples[1], 0.0);
 		assert!((twenty_four.samples[2] - 8_388_607.0 / 8_388_608.0).abs() < f32::EPSILON);
@@ -522,7 +524,8 @@ mod tests {
 		for sample in [i32::MIN, 0, i32::MAX] {
 			thirty_two_bytes.extend_from_slice(&sample.to_le_bytes());
 		}
-		let thirty_two = LoadedAudioSample::decode(metadata(BitDepths::ThirtyTwo, 1, 3), &thirty_two_bytes).unwrap();
+		let thirty_two =
+			LoadedAudioSample::decode(metadata(BitDepths::ThirtyTwo, 1, 3), &thirty_two_bytes).expect("expected test value");
 		assert_eq!(thirty_two.samples[0], -1.0);
 		assert_eq!(thirty_two.samples[1], 0.0);
 		assert!(thirty_two.samples[2] > 0.99);
@@ -578,9 +581,13 @@ mod tests {
 		let handle = factory.create(());
 		let _ = listener.read();
 
-		assert!(client.queue(handle, r#loop(sample("first.wav")).compile().unwrap(), 0));
+		assert!(client.queue(handle, r#loop(sample("first.wav")).compile().expect("expected test value"), 0));
 		let first_generation = client.pending[0].generation;
-		assert!(client.queue(handle, gain(sample("second.wav"), 0.25).compile().unwrap(), 0));
+		assert!(client.queue(
+			handle,
+			gain(sample("second.wav"), 0.25).compile().expect("expected test value"),
+			0
+		));
 		let second_generation = client.pending[0].generation;
 		assert_ne!(first_generation, second_generation);
 
@@ -592,7 +599,7 @@ mod tests {
 				sample: sample.clone(),
 				render_plan: prepared_plan(SamplePlaybackMode::Loop, []),
 			})
-			.unwrap();
+			.expect("expected test value");
 
 		let mut created = Vec::new();
 		client.update(|handle, _, plan| {
@@ -609,7 +616,7 @@ mod tests {
 				sample,
 				render_plan: prepared_plan(SamplePlaybackMode::Once, [AudioProcessor::Gain(0.25)]),
 			})
-			.unwrap();
+			.expect("expected test value");
 		client.update(|handle, _, plan| {
 			created.push((handle, plan.playback_mode, plan.output_gain));
 		});
@@ -626,7 +633,7 @@ mod tests {
 		let mut factory = Factory::new();
 		let handle = factory.create(());
 
-		assert!(client.queue(handle, sample("deleted.wav").compile().unwrap(), 0));
+		assert!(client.queue(handle, sample("deleted.wav").compile().expect("expected test value"), 0));
 		let generation = client.pending[0].generation;
 		client.remove(handle);
 		completion_sender
@@ -636,7 +643,7 @@ mod tests {
 				sample: Arc::new(LoadedAudioSample::from_normalized_samples(48_000, 1, Box::from([0.0]))),
 				render_plan: prepared_plan(SamplePlaybackMode::Once, []),
 			})
-			.unwrap();
+			.expect("expected test value");
 
 		let mut created = false;
 		client.update(|_, _, _| created = true);
@@ -653,18 +660,22 @@ mod tests {
 		let mut client = AudioSampleLoaderClient::new(commands.to_sync(), completions.to_sync());
 		let mut factory = Factory::new();
 		let handle = factory.create(());
-		assert!(client.queue(handle, r#loop(sample("replacement.wav")).compile().unwrap(), 0));
+		assert!(client.queue(
+			handle,
+			r#loop(sample("replacement.wav")).compile().expect("expected test value"),
+			0
+		));
 
 		client.request_cache_prune();
 		client.request_cache_prune();
 		client.submit_requests();
 
 		assert!(matches!(
-			command_receiver.try_recv().unwrap(),
+			command_receiver.try_recv().expect("expected test value"),
 			Some(AudioLoaderCommand::Load(request)) if request.handle == handle
 		));
 		assert!(matches!(
-			command_receiver.try_recv().unwrap(),
+			command_receiver.try_recv().expect("expected test value"),
 			Some(AudioLoaderCommand::PruneCache)
 		));
 		assert!(!client.cache_prune_requested);

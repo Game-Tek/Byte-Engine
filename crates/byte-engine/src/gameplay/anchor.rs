@@ -162,9 +162,9 @@ mod tests {
 		let children = anchor.children();
 
 		assert_eq!(children.len(), 2);
-		assert!(children[0].0 == first);
+		assert!(children[0].0 == first, "first attachment should preserve its handle");
 		assert!(matches!(children[0].1, Anchorage::Default));
-		assert!(children[1].0 == second);
+		assert!(children[1].0 == second, "second attachment should preserve its handle");
 		assert!(matches!(
 			&children[1].1,
 			Anchorage::Offset { offset } if offset.get_position() == Vector3::new(3.0, 4.0, 5.0)

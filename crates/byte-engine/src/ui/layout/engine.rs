@@ -1720,14 +1720,14 @@ mod tests {
 		engine.mount(move |ctx| {
 			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
-				*observed.lock().unwrap() = Some(ctx.pointer());
+				*observed.lock().expect("expected test value") = Some(ctx.pointer());
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*observed.lock().unwrap(),
+			*observed.lock().expect("expected test value"),
 			Some(PointerState {
 				position: Vector2::new(0.25, -0.5),
 				pressed: true,
@@ -1745,9 +1745,9 @@ mod tests {
 		engine.mount(move |ctx| {
 			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
-				observed.lock().unwrap().push(ctx.pointer());
+				observed.lock().expect("expected test value").push(ctx.pointer());
 				ctx.render().await;
-				observed.lock().unwrap().push(ctx.pointer());
+				observed.lock().expect("expected test value").push(ctx.pointer());
 			})
 		});
 
@@ -1759,7 +1759,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*observed.lock().unwrap(),
+			*observed.lock().expect("expected test value"),
 			vec![
 				PointerState {
 					position: Vector2::new(-1.0, -1.0),
@@ -1786,7 +1786,7 @@ mod tests {
 				let mut parent = ctx.element("parent").container(Container::default());
 				parent.element("child").container(Container::default());
 				let event = parent.on(Events::Scrolled).await;
-				*received.lock().unwrap() = event.delta;
+				*received.lock().expect("expected test value") = event.delta;
 			})
 		});
 
@@ -1795,7 +1795,7 @@ mod tests {
 		engine.update_scroll_state(Vector2::new(0.0, -1.0));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().unwrap(), Some(Vector2::new(0.0, -1.0)));
+		assert_eq!(*received.lock().expect("expected test value"), Some(Vector2::new(0.0, -1.0)));
 	}
 
 	#[test]
@@ -1962,7 +1962,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 3).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 3)
+			.expect("expected test value");
 
 		assert_eq!(child.position, Location3::new(35, 10, 2));
 		assert_eq!(child.size, Size::new(30, 30));
@@ -1991,7 +1994,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 3).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 3)
+			.expect("expected test value");
 
 		assert_eq!(child.position, Location3::new(70, 0, 2));
 		assert_eq!(child.clip, Some(Geometry::new(Location3::new(0, 0, 0), Size::new(100, 100))));
@@ -2092,7 +2098,10 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
+		let toast = render
+			.elements()
+			.find(|element| element.position.x() == 70.0)
+			.expect("expected test value");
 		assert_eq!(toast.size, Size::new(20, 20));
 	}
 
@@ -2119,7 +2128,10 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let toast = render.elements().find(|element| element.position.x() == 70.0).unwrap();
+		let toast = render
+			.elements()
+			.find(|element| element.position.x() == 70.0)
+			.expect("expected test value");
 		assert_eq!(toast.size, Size::new(20, 20));
 		assert_eq!(toast.clip, None);
 	}
@@ -2180,16 +2192,16 @@ mod tests {
 
 				assert_eq!(button.geometry(), None);
 				button.render().await;
-				*geometry.lock().unwrap() = button.geometry();
+				*geometry.lock().expect("expected test value") = button.geometry();
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		assert_eq!(*geometry.lock().unwrap(), None);
+		assert_eq!(*geometry.lock().expect("expected test value"), None);
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(
-			*geometry.lock().unwrap(),
+			*geometry.lock().expect("expected test value"),
 			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
 		);
 	}
@@ -2218,7 +2230,7 @@ mod tests {
 					container.set_position((24, 36));
 				}));
 				button.render().await;
-				*geometry.lock().unwrap() = button.geometry();
+				*geometry.lock().expect("expected test value") = button.geometry();
 			})
 		});
 
@@ -2227,7 +2239,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*geometry.lock().unwrap(),
+			*geometry.lock().expect("expected test value"),
 			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
 		);
 	}
@@ -2449,13 +2461,13 @@ mod tests {
 		engine.mount(move |ctx| {
 			let seen = Arc::clone(&seen_for_task);
 			Box::pin(async move {
-				seen.lock().unwrap().push(ctx.ctx().value);
+				seen.lock().expect("expected test value").push(ctx.ctx().value);
 
 				ctx.element("child")
 					.component(move |ctx: &mut EvaluationContext<TestContext>| {
 						let seen = Arc::clone(&seen);
 						Box::pin(async move {
-							seen.lock().unwrap().push(ctx.ctx().value + 1);
+							seen.lock().expect("expected test value").push(ctx.ctx().value + 1);
 						})
 					});
 			})
@@ -2463,7 +2475,7 @@ mod tests {
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*seen.lock().unwrap(), vec![7, 8]);
+		assert_eq!(*seen.lock().expect("expected test value"), vec![7, 8]);
 	}
 
 	#[test]
@@ -2481,13 +2493,13 @@ mod tests {
 			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let value = ctx.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
-				*result.lock().unwrap() = Some(value);
+				*result.lock().expect("expected test value") = Some(value);
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().unwrap(), Some(11));
+		assert_eq!(*result.lock().expect("expected test value"), Some(11));
 	}
 
 	#[test]
@@ -2511,19 +2523,19 @@ mod tests {
 						})
 					})
 					.await;
-				*result.lock().unwrap() = Some(value);
+				*result.lock().expect("expected test value") = Some(value);
 			})
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(first.elements.len(), 2);
-		assert_eq!(*result.lock().unwrap(), None);
+		assert_eq!(*result.lock().expect("expected test value"), None);
 
 		engine.set_cursor_position(Vector2::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().unwrap(), Some(42));
+		assert_eq!(*result.lock().expect("expected test value"), Some(42));
 	}
 
 	#[test]
@@ -2664,7 +2676,7 @@ mod tests {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				let value = frame.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
-				*result.lock().unwrap() = Some(value);
+				*result.lock().expect("expected test value") = Some(value);
 			})
 		});
 
@@ -2672,7 +2684,7 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().unwrap(), Some(Result::Cancelled));
+		assert_eq!(*result.lock().expect("expected test value"), Some(Result::Cancelled));
 	}
 
 	#[test]
@@ -2694,7 +2706,7 @@ mod tests {
 							let ids = Arc::clone(&ids);
 							Box::pin(async move {
 								let mut button = ctx.element("button").container(Container::default());
-								ids.lock().unwrap().push(button.id());
+								ids.lock().expect("expected test value").push(button.id());
 								button.on(Events::Actuated).await;
 							})
 						})
@@ -2713,7 +2725,7 @@ mod tests {
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(second.elements.len(), 2);
 
-		let ids = ids.lock().unwrap();
+		let ids = ids.lock().expect("expected test value");
 		assert_eq!(ids.len(), 2);
 		assert_eq!(ids[0], ids[1]);
 	}
@@ -2782,7 +2794,10 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		let modal = render.elements().find(|element| element.position.x() == 30.0).unwrap();
+		let modal = render
+			.elements()
+			.find(|element| element.position.x() == 30.0)
+			.expect("expected test value");
 		assert_eq!(modal.size, Size::new(80, 30));
 		assert_eq!(modal.clip, None);
 	}
@@ -2926,9 +2941,15 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let parent = render.elements().find(|element| element.id == 1).unwrap();
-		let child = render.elements().find(|element| element.id == 2).unwrap();
-		let text = render.texts().find(|text| text.id == 3).unwrap();
+		let parent = render
+			.elements()
+			.find(|element| element.id == 1)
+			.expect("expected test value");
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
+		let text = render.texts().find(|text| text.id == 3).expect("expected test value");
 		let expected = FeatherMask {
 			geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
 			feather: EdgeFeather::vertical(8.0),
@@ -2963,7 +2984,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
 
 		assert_eq!(child.feather_mask, None);
 	}
@@ -2991,7 +3015,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
 
 		assert_eq!(
 			child.feather_mask,
@@ -3027,8 +3054,11 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 2).unwrap();
-		let mask = child.feather_mask.unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
+		let mask = child.feather_mask.expect("expected test value");
 
 		assert_eq!(mask.corner_radius, 8.0);
 		assert_eq!(mask.corner_exponent, 4.0);
@@ -3052,8 +3082,14 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let parent = render.elements().find(|element| element.id == 1).unwrap();
-		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let parent = render
+			.elements()
+			.find(|element| element.id == 1)
+			.expect("expected test value");
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
 
 		assert_eq!(parent.opacity, 0.5);
 		assert_eq!(child.opacity, 0.5);
@@ -3077,7 +3113,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
 
 		assert_eq!(child.opacity, 0.125);
 	}
@@ -3100,7 +3139,7 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let text = render.texts().next().unwrap();
+		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.opacity, 0.5);
 		assert_eq!(text.color, RGBA::new(1.0, 1.0, 1.0, 0.8));
@@ -3145,8 +3184,22 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements().find(|element| element.id == 2).unwrap().opacity, 0.0);
-		assert_eq!(render.elements().find(|element| element.id == 3).unwrap().opacity, 1.0);
+		assert_eq!(
+			render
+				.elements()
+				.find(|element| element.id == 2)
+				.expect("expected test value")
+				.opacity,
+			0.0
+		);
+		assert_eq!(
+			render
+				.elements()
+				.find(|element| element.id == 3)
+				.expect("expected test value")
+				.opacity,
+			1.0
+		);
 	}
 
 	#[test]
@@ -3210,7 +3263,7 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let frame = render.elements().next().unwrap();
+		let frame = render.elements().next().expect("expected test value");
 
 		assert_eq!(frame.position, Location3::new(5.0, 8.5, 0));
 		assert_eq!(frame.size, Size::new(10, 5));
@@ -3238,7 +3291,10 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
 
 		assert_eq!(child.position, Location3::new(25, 35, 1));
 		assert_eq!(child.size, Size::new(10, 5));
@@ -3375,7 +3431,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let text = render.texts().next().unwrap();
+		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.content, "Updated");
 		assert_eq!(text.color, RGBA::new(0.7, 0.8, 0.9, 1.0));
@@ -3408,7 +3464,7 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let text = render.texts().next().unwrap();
+		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.content, "Hello");
 		assert!(text.size.x() > 0.0);
@@ -3428,7 +3484,7 @@ mod tests {
 				let mut field = ctx.element("field").text_field(TextField::new(""));
 				field.request_focus();
 				let event = field.on_text_edit().await;
-				*received.lock().unwrap() = Some(event.edit);
+				*received.lock().expect("expected test value") = Some(event.edit);
 			})
 		});
 
@@ -3436,7 +3492,7 @@ mod tests {
 		engine.input_character('a');
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().unwrap(), Some(TextEdit::Inserted('a')));
+		assert_eq!(*received.lock().expect("expected test value"), Some(TextEdit::Inserted('a')));
 	}
 
 	#[test]
@@ -3451,7 +3507,7 @@ mod tests {
 			Box::pin(async move {
 				let mut field = ctx.element("field").text_field(TextField::new(""));
 				let event = field.on_text_edit().await;
-				*received.lock().unwrap() = Some(event.edit);
+				*received.lock().expect("expected test value") = Some(event.edit);
 			})
 		});
 
@@ -3459,7 +3515,7 @@ mod tests {
 		engine.input_character('a');
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().unwrap(), None);
+		assert_eq!(*received.lock().expect("expected test value"), None);
 	}
 
 	#[test]
@@ -3475,7 +3531,7 @@ mod tests {
 				let mut field = ctx.element("field").text_field(TextField::new("Hié"));
 				field.request_focus();
 				let event = field.on_text_edit().await;
-				*received.lock().unwrap() = Some(event.edit);
+				*received.lock().expect("expected test value") = Some(event.edit);
 			})
 		});
 
@@ -3483,7 +3539,7 @@ mod tests {
 		engine.delete_text_backward();
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().unwrap(), Some(TextEdit::Deleted('é')));
+		assert_eq!(*received.lock().expect("expected test value"), Some(TextEdit::Deleted('é')));
 	}
 
 	#[test]
@@ -3496,12 +3552,12 @@ mod tests {
 		engine.mount(move |ctx| {
 			let content = Arc::clone(&content_for_task);
 			Box::pin(async move {
-				let initial = content.lock().unwrap().clone();
+				let initial = content.lock().expect("expected test value").clone();
 				let mut field = ctx.element("field").text_field(TextField::new(initial));
 				field.request_focus();
 				let event = field.on_text_edit().await;
 				{
-					let mut content = content.lock().unwrap();
+					let mut content = content.lock().expect("expected test value");
 					event.edit.apply_to(&mut content);
 					let updated = content.clone();
 					assert!(field.update_text_field(|field| field.set_content(updated)));
@@ -3515,9 +3571,9 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let text = render.texts().next().unwrap();
+		let text = render.texts().next().expect("expected test value");
 
-		assert_eq!(*content.lock().unwrap(), "ab");
+		assert_eq!(*content.lock().expect("expected test value"), "ab");
 		assert_eq!(text.content, "ab");
 	}
 

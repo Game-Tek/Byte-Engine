@@ -124,7 +124,7 @@ mod tests {
 	#[test]
 	fn transformed_rect_preserves_subpixel_motion_at_retina_scale() {
 		let element = LayoutElement {
-			id: NonZeroU32::new(1).unwrap(),
+			id: NonZeroU32::new(1).expect("expected test value"),
 			position: Location3::new(10, 10, 0),
 			size: Size::new(100, 40),
 			hit_testable: false,

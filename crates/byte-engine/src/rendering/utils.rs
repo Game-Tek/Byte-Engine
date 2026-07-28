@@ -346,7 +346,7 @@ mod tests {
 		let batches = mesh_buffer_stats.get_instance_batches();
 		let mut batches = batches.iter();
 
-		let batch = batches.next().unwrap();
+		let batch = batches.next().expect("expected test value");
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 0);
@@ -369,7 +369,7 @@ mod tests {
 		let batches = mesh_buffer_stats.get_instance_batches();
 		let mut batches = batches.iter();
 
-		let batch = batches.next().unwrap();
+		let batch = batches.next().expect("expected test value");
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 2);
 		assert_eq!(batch.base_vertex(), 0);
@@ -397,14 +397,14 @@ mod tests {
 		batches.sort_by_key(|e| e.batch.base_instance);
 		let mut batches = batches.iter();
 
-		let batch = batches.next().unwrap();
+		let batch = batches.next().expect("expected test value");
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 0);
 		assert_eq!(batch.base_index(), 0);
 		assert_eq!(batch.base_instance(), 0);
 
-		let batch = batches.next().unwrap();
+		let batch = batches.next().expect("expected test value");
 		assert_eq!(batch.index_count(), 192);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 32);

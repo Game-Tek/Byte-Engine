@@ -220,7 +220,7 @@ mod tests {
 				time: 1,
 			},
 		)
-		.unwrap();
+		.expect("expected test value");
 
 		assert!(matches!(
 			result.2,
@@ -241,7 +241,7 @@ mod tests {
 				time: 1,
 			},
 		)
-		.unwrap();
+		.expect("expected test value");
 
 		assert!(matches!(
 			result.2,
@@ -261,7 +261,7 @@ mod tests {
 				key: ghi::window::input::Keys::Backspace,
 			},
 		)
-		.unwrap();
+		.expect("expected test value");
 
 		assert!(matches!(
 			result.2,
@@ -280,7 +280,7 @@ mod tests {
 				character: 'é',
 			},
 		)
-		.unwrap();
+		.expect("expected test value");
 
 		assert!(matches!(
 			result.2,

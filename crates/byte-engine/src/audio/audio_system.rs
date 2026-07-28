@@ -508,7 +508,7 @@ mod tests {
 		fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]> {
 			self.observed
 				.lock()
-				.unwrap()
+				.expect("expected test value")
 				.push((settings.sample_rate, state.current_sample));
 			for sample in buffer.iter_mut() {
 				*sample += self.value;
@@ -559,7 +559,7 @@ mod tests {
 
 		render_sources(&sources, 48_000, &mut buffer);
 		assert_eq!(buffer, [0.65; 4]);
-		assert_eq!(*observed.lock().unwrap(), [(48_000, 128), (48_000, 256)]);
+		assert_eq!(*observed.lock().expect("expected test value"), [(48_000, 128), (48_000, 256)]);
 	}
 
 	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {

@@ -387,8 +387,8 @@ mod tests {
 		world.resolve_contact(&contacts[0]);
 
 		intersect(
-			(world.bodies.get_slot(0).unwrap(), 0),
-			(world.bodies.get_slot(1).unwrap(), 1),
+			(world.bodies.get_slot(0).expect("expected test value"), 0),
+			(world.bodies.get_slot(1).expect("expected test value"), 1),
 			dt,
 		)
 		.map_or(0.0, |intersection| intersection.depth)
@@ -430,7 +430,10 @@ mod tests {
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
-		let separation = length(world.bodies.get_slot(1).unwrap().position - world.bodies.get_slot(0).unwrap().position);
+		let separation = length(
+			world.bodies.get_slot(1).expect("expected test value").position
+				- world.bodies.get_slot(0).expect("expected test value").position,
+		);
 		assert!(separation >= 2.0 - 1e-4);
 	}
 }

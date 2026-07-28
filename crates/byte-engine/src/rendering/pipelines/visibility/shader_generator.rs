@@ -1791,13 +1791,13 @@ mod tests {
 
 		let shader_source = "main: fn () -> void { albedo = vec4f(1, 2, 3, 4); }";
 
-		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_node = besl::parse(shader_source).expect("expected test value");
 
 		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
 		let shader = shader_generator.transform(shader_node, &material);
 
-		let _node = besl::lex(shader).unwrap();
+		let _node = besl::lex(shader).expect("expected test value");
 	}
 
 	#[test]
@@ -1814,7 +1814,7 @@ mod tests {
 
 		let shader_source = "main: fn () -> void { out_color = albedo; }";
 
-		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_node = besl::parse(shader_source).expect("expected test value");
 
 		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
@@ -1835,12 +1835,12 @@ mod tests {
 			]
 		};
 		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); }";
-		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_node = besl::parse(shader_source).expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
 		let shader = shader_generator.transform(shader_node, &material);
 
-		besl::lex(shader).unwrap();
+		besl::lex(shader).expect("expected test value");
 	}
 
 	#[test]
@@ -1858,10 +1858,10 @@ mod tests {
 			]
 		};
 		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }";
-		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_node = besl::parse(shader_source).expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
-		besl::lex(shader).unwrap();
+		besl::lex(shader).expect("expected test value");
 	}
 
 	/// Verifies HLSL transforms tangent-space normals with the same basis convention as GLSL and MSL.
@@ -1905,10 +1905,11 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
-		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_node =
+			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
-		besl::lex(shader).unwrap();
+		besl::lex(shader).expect("expected test value");
 	}
 
 	/// Verifies material evaluation with baked environment IBL produces valid BESL.
@@ -1917,10 +1918,11 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
-		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_node =
+			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
-		besl::lex(shader).unwrap();
+		besl::lex(shader).expect("expected test value");
 	}
 
 	#[test]
@@ -1928,9 +1930,10 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
-		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_node =
+			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-		let shader = besl::lex(shader_generator.transform(shader_node, &material)).unwrap();
+		let shader = besl::lex(shader_generator.transform(shader_node, &material)).expect("expected test value");
 		let main = shader.get_main().expect(
 			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
 		);
@@ -2109,11 +2112,11 @@ mod tests {
 		];
 
 		for (material, shader_source) in cases {
-			let shader_node = besl::parse(shader_source).unwrap();
+			let shader_node = besl::parse(shader_source).expect("expected test value");
 			let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 			let shader = shader_generator.transform(shader_node, &material);
-			let root = besl::lex(shader).unwrap();
-			let main_node = root.get_main().unwrap();
+			let root = besl::lex(shader).expect("expected test value");
+			let main_node = root.get_main().expect("expected test value");
 			let evaluation =
 				ProgramEvaluation::from_main(&main_node).expect("Expected material evaluation reflection to succeed");
 			let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(

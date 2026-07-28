@@ -595,7 +595,7 @@ mod tests {
 			.map(|e| {
 				let id = counter;
 
-				counter = counter.checked_add(1).unwrap();
+				counter = counter.checked_add(1).expect("expected test value");
 
 				IdedElement {
 					id,

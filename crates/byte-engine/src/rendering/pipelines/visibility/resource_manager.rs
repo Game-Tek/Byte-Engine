@@ -1844,20 +1844,21 @@ mod tests {
 
 	#[test]
 	fn resource_commands_reach_the_async_worker_in_fifo_order() {
-		let executor = resource_management::r#async::Executor::new().unwrap();
+		let executor = resource_management::r#async::Executor::new().expect("expected test value");
 		let (sender, receiver) = kanal::unbounded_async();
 		let sender = sender.to_sync();
 
 		for id in ["first", "second", "third"] {
 			sender
 				.send(VisibilityTransferCommand::RequestEnvironment { id: id.to_string() })
-				.unwrap();
+				.expect("expected test value");
 		}
 
 		let received = executor.block_on(async {
 			let mut ids = Vec::new();
 			for _ in 0..3 {
-				let VisibilityTransferCommand::RequestEnvironment { id } = receiver.recv().await.unwrap() else {
+				let VisibilityTransferCommand::RequestEnvironment { id } = receiver.recv().await.expect("expected test value")
+				else {
 					panic!(
 						"Unexpected visibility command. The most likely cause is that the FIFO test enqueued the wrong variant."
 					);
@@ -1876,7 +1877,7 @@ mod tests {
 		let compact_row = 2 * 16;
 		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
 
-		let upload = make_texture_upload(ghi::Formats::BC7, extent, &source).unwrap();
+		let upload = make_texture_upload(ghi::Formats::BC7, extent, &source).expect("expected test value");
 
 		assert_eq!(upload.source_bytes_per_row, 256);
 		assert_eq!(upload.source_bytes_per_image, 256 * 2);
@@ -1884,7 +1885,8 @@ mod tests {
 		assert!(upload.data[compact_row..256].iter().all(|byte| *byte == 0));
 		assert_eq!(&upload.data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
 
-		let zero_extent = make_texture_upload(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), &[1, 2, 3, 4]).unwrap();
+		let zero_extent =
+			make_texture_upload(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), &[1, 2, 3, 4]).expect("expected test value");
 		assert_eq!(zero_extent.source_bytes_per_row, 256);
 		assert_eq!(zero_extent.source_bytes_per_image, 256);
 		assert_eq!(&zero_extent.data[..4], &[1, 2, 3, 4]);
@@ -1897,7 +1899,7 @@ mod tests {
 		let compact_row = 2 * 8;
 		let source = (0..compact_row * 2).map(|value| value as u8).collect::<Vec<_>>();
 
-		let upload = make_texture_upload(ghi::Formats::RGBA16F, extent, &source).unwrap();
+		let upload = make_texture_upload(ghi::Formats::RGBA16F, extent, &source).expect("expected test value");
 
 		assert_eq!(
 			resource_image_format_to_ghi(resource_management::types::Formats::RGBA16F),

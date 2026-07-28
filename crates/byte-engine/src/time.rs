@@ -282,7 +282,7 @@ mod tests {
 		];
 
 		for rate in rates {
-			let frame = MediaTime::from_frames(1, rate).unwrap();
+			let frame = MediaTime::from_frames(1, rate).expect("expected test value");
 			assert_eq!(frame.as_ticks() * i64::from(rate), TICKS_PER_SECOND);
 		}
 	}
@@ -297,7 +297,7 @@ mod tests {
 	#[test]
 	fn media_timebase_exactly_represents_supported_audio_rates() {
 		for rate in [44_100, 48_000, 96_000, 192_000] {
-			let sample = MediaTime::from_samples(1, rate).unwrap();
+			let sample = MediaTime::from_samples(1, rate).expect("expected test value");
 			assert_eq!(sample.as_ticks() * i64::from(rate), TICKS_PER_SECOND);
 		}
 	}
@@ -314,7 +314,7 @@ mod tests {
 
 	#[test]
 	fn arithmetic_preserves_signed_timeline_offsets() {
-		let frame = MediaTime::from_frames(1, 24).unwrap();
+		let frame = MediaTime::from_frames(1, 24).expect("expected test value");
 		let offset = frame * 3 - MediaTime::from_seconds(1);
 
 		assert_eq!(offset.as_ticks(), -24_696_000);

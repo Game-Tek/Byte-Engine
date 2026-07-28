@@ -25,22 +25,22 @@ pub mod channel {
 			client.connect(Instant::now());
 
 			for _ in 0..3 {
-				client.update().unwrap();
-				server.update(Instant::now()).unwrap();
+				client.update().expect("expected test value");
+				server.update(Instant::now()).expect("expected test value");
 			}
-			client.update().unwrap();
+			client.update().expect("expected test value");
 
 			assert!(client.is_connected());
 			assert!(server.is_connected());
 
-			client.send(true, [7; 1024]).unwrap();
-			client.update().unwrap();
-			server.update(Instant::now()).unwrap();
+			client.send(true, [7; 1024]).expect("expected test value");
+			client.update().expect("expected test value");
+			server.update(Instant::now()).expect("expected test value");
 			assert_eq!(server.drain_received().next().map(|e| e.data), Some([7; 1024]));
 
 			server.send(true, [9; 1024]);
-			server.update(Instant::now()).unwrap();
-			client.update().unwrap();
+			server.update(Instant::now()).expect("expected test value");
+			client.update().expect("expected test value");
 			assert_eq!(client.drain_received().next(), Some([9; 1024]));
 		}
 
@@ -54,12 +54,12 @@ pub mod channel {
 			client_b.connect(Instant::now());
 
 			for _ in 0..3 {
-				client_a.update().unwrap();
-				client_b.update().unwrap();
-				server.update(Instant::now()).unwrap();
+				client_a.update().expect("expected test value");
+				client_b.update().expect("expected test value");
+				server.update(Instant::now()).expect("expected test value");
 			}
-			client_a.update().unwrap();
-			client_b.update().unwrap();
+			client_a.update().expect("expected test value");
+			client_b.update().expect("expected test value");
 
 			assert!(client_a.is_connected());
 			assert!(client_b.is_connected());

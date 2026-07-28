@@ -38,7 +38,9 @@ mod tests {
 	#[test]
 	fn assets_repeat_in_insertion_order() {
 		let mut source = RoundRobin::new(vec!["a".into(), "b".into(), "c".into()]);
-		let sequence: Vec<_> = (0..8).map(|_| source.get().unwrap().to_string()).collect();
+		let sequence: Vec<_> = (0..8)
+			.map(|_| source.get().expect("expected test value").to_string())
+			.collect();
 
 		assert_eq!(sequence, ["a", "b", "c", "a", "b", "c", "a", "b"]);
 		assert_eq!(source.get_assets(), &["a", "b", "c"]);

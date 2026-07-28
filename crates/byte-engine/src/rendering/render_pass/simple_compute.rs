@@ -385,9 +385,10 @@ mod tests {
 			Resource::buffer("parameters", buffer),
 			Resource::combined_image_sampler("source", image, sampler, ghi::Layouts::Read),
 		];
-		assert!(validate_resources(&bindings, &resources).is_ok());
+		validate_resources(&bindings, &resources).expect("complete resources should validate");
 		assert!(bindings[0].read && !bindings[0].write);
-		assert!(validate_shared_schema(&bindings, &[bindings[0].clone(), bindings[2].clone()]).is_ok());
+		validate_shared_schema(&bindings, &[bindings[0].clone(), bindings[2].clone()])
+			.expect("compatible shared bindings should validate");
 		let incompatible = BindingUsage {
 			kind: BindingKind::StorageImage,
 			..bindings[0].clone()
@@ -424,6 +425,6 @@ mod tests {
 			resources[2],
 			Resource::planned_buffer("future", buffer),
 		];
-		assert!(validate_resources(&bindings, &planned).is_ok());
+		validate_resources(&bindings, &planned).expect("planned resources should validate");
 	}
 }

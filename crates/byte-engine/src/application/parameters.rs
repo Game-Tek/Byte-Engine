@@ -45,7 +45,7 @@ mod tests {
 		];
 
 		for (parse, input, expected_name, expected_value) in cases {
-			let parameter = parse(input).unwrap();
+			let parameter = parse(input).expect("test parameter should parse");
 
 			assert_eq!(parameter.name(), expected_name, "input: {input}");
 			assert_eq!(parameter.value(), expected_value, "input: {input}");

@@ -1162,7 +1162,7 @@ mod tests {
 		let inputs = (0..63).map(|index| sample(format!("audio/{index}.wav")));
 		let maximum = round_robin(inputs);
 		assert_eq!(maximum.nodes.len(), 64);
-		assert_eq!(maximum.compile().unwrap().resource_id, "audio/0.wav");
+		assert_eq!(maximum.compile().expect("expected test value").resource_id, "audio/0.wav");
 
 		let too_many = std::panic::catch_unwind(|| round_robin((0..64).map(|index| sample(format!("audio/{index}.wav")))));
 		assert!(too_many.is_err());
@@ -1397,7 +1397,7 @@ mod tests {
 		let inputs = (0..63).map(|index| sample(format!("audio/{index}.wav")));
 		let maximum = random(inputs);
 		assert_eq!(maximum.nodes.len(), 64);
-		assert!(maximum.compile().is_ok());
+		maximum.compile().expect("maximum-size random graph should compile");
 
 		let too_many = std::panic::catch_unwind(|| random((0..64).map(|index| sample(format!("audio/{index}.wav")))));
 		assert!(too_many.is_err());

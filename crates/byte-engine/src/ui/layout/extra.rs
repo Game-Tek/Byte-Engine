@@ -371,7 +371,7 @@ mod tests {
 			index: None,
 		};
 
-		let hit = evaluate_hit_test(&root, 0, 0).unwrap();
+		let hit = evaluate_hit_test(&root, 0, 0).expect("expected test value");
 
 		assert_eq!(hit.index, Some(0));
 	}

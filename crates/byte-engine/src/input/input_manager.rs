@@ -849,7 +849,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			a
 		); // Assert default value
 
@@ -860,7 +860,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			b
 		); // Assert alternate value after recording.
 
@@ -871,7 +871,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			a
 		); // Assert default value after recording.
 
@@ -882,7 +882,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			a
 		); // Assert default value after recording.
 
@@ -894,7 +894,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			b
 		); // Assert value is last value recorded.
 
@@ -905,7 +905,7 @@ mod tests {
 		assert_eq!(
 			input_manager
 				.get_trigger_value_for_device(seat, device, trigger_reference)
-				.unwrap(),
+				.expect("expected test value"),
 			b
 		);
 		// Assert last value is kept after recording a different type.
@@ -1247,7 +1247,7 @@ mod tests {
 		fixture
 			.input_manager
 			.trigger_action(fixture.seat, action_handle, Value::Float(3.5))
-			.unwrap();
+			.expect("registered manual action should accept a float value");
 		assert!(fixture.next_event().is_none());
 		fixture.update();
 
@@ -1298,15 +1298,21 @@ mod tests {
 		fixture
 			.input_manager
 			.trigger_action(fixture.seat, ActionHandle(0), Value::Int(1))
-			.unwrap();
+			.expect("registered manual action should accept the first integer");
 		fixture
 			.input_manager
 			.trigger_action(fixture.seat, ActionHandle(0), Value::Int(2))
-			.unwrap();
+			.expect("registered manual action should accept the second integer");
 		fixture.update();
 
-		assert_eq!(fixture.next_event().unwrap().value(), Value::Int(1));
-		assert_eq!(fixture.next_event().unwrap().value(), Value::Int(2));
+		assert_eq!(
+			fixture.next_event().expect("first queued event should exist").value(),
+			Value::Int(1)
+		);
+		assert_eq!(
+			fixture.next_event().expect("second queued event should exist").value(),
+			Value::Int(2)
+		);
 	}
 
 	#[test]

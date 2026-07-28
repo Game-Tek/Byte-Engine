@@ -276,15 +276,17 @@ mod tests {
 				MediaTime::from_millis(16),
 				MediaTime::from_millis(200),
 			)
-			.unwrap();
+			.expect("expected test value");
 
-		inertializer.apply(&destination, MediaTime::ZERO, &mut output).unwrap();
+		inertializer
+			.apply(&destination, MediaTime::ZERO, &mut output)
+			.expect("expected test value");
 		assert!((output[0].translation[0] - 1.0).abs() < 1.0e-4);
 		assert!((output[0].rotation[1] - source[0].rotation[1]).abs() < 1.0e-4);
 
 		inertializer
 			.apply(&destination, MediaTime::from_millis(200), &mut output)
-			.unwrap();
+			.expect("expected test value");
 		assert_eq!(output, destination);
 		assert!(!inertializer.is_active());
 	}
@@ -304,8 +306,10 @@ mod tests {
 				MediaTime::from_millis(16),
 				MediaTime::ZERO,
 			)
-			.unwrap();
-		inertializer.apply(&destination, MediaTime::ZERO, &mut output).unwrap();
+			.expect("expected test value");
+		inertializer
+			.apply(&destination, MediaTime::ZERO, &mut output)
+			.expect("expected test value");
 		assert_eq!(output, destination);
 	}
 }

@@ -301,7 +301,10 @@ mod tests {
 		let port = configuration.register("render.pass.");
 
 		let id = configuration.update("render.pass.bloom", "bypassed");
-		assert_eq!(configuration.event(id).unwrap().state(), &ConfigurationUpdateState::Pending);
+		assert_eq!(
+			configuration.event(id).expect("expected test value").state(),
+			&ConfigurationUpdateState::Pending
+		);
 
 		let update = port.read().expect("render configuration update");
 		assert_eq!(update.id(), id);
@@ -310,7 +313,7 @@ mod tests {
 
 		port.set(id, ConfigurationValue::from("bypassed"));
 		assert_eq!(
-			configuration.event(id).unwrap().state(),
+			configuration.event(id).expect("expected test value").state(),
 			&ConfigurationUpdateState::Set {
 				value: ConfigurationValue::from("bypassed"),
 			}
@@ -324,7 +327,7 @@ mod tests {
 		let id = configuration.update("audio.master.gain", ConfigurationValue::Float(0.5));
 
 		assert!(matches!(
-			configuration.event(id).unwrap().state(),
+			configuration.event(id).expect("expected test value").state(),
 			ConfigurationUpdateState::NotSet { reason } if reason.contains("no system registered")
 		));
 	}

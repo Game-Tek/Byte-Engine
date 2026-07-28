@@ -202,6 +202,8 @@ mod tests {
 	const FIXTURE_MESHLET_INDEX: usize = 5;
 	const TASK_WORKGROUP_SIZE: u32 = 32;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
+	const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
+	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
 
 	/// Parses the checked-in BESL source that production baking consumes.
 	fn asset_program(source: &str) -> besl::NodeReference {
@@ -1086,7 +1088,7 @@ mod tests {
 		crate::rendering::shader_vm_test::compile(asset_program(source))
 	}
 
-	/// Runs one generic GTAO blur invocation for a selected specialization direction.
+	/// Runs one complete GTAO blur workgroup and reads the selected output pixel.
 	fn run_gtao_blur_fixture(
 		program: &ExecutableProgram,
 		width: u32,
@@ -1099,13 +1101,24 @@ mod tests {
 		let mut depth = texture_2d(width, height, depth_texels);
 		let mut ao = texture_2d(width, height, ao_texels);
 		let mut output = empty_image(width, height);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; GTAO_BLUR_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % GTAO_BLUR_WORKGROUP_WIDTH, lane / GTAO_BLUR_WORKGROUP_WIDTH])
+		});
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
 			descriptors.bind_image(ResourceSlot::new(1035), &mut output);
-			run_at(program, &mut descriptors, coordinate);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute a production GTAO blur workgroup. The most likely cause is broken shared-tile synchronization or an invalid fixture binding.",
+			);
 		}
 		rgba(&output, coordinate)
 	}

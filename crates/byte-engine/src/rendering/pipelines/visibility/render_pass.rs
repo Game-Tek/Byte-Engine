@@ -472,7 +472,7 @@ impl MaterialCountPass {
 
 			let compute_pipeline_command = c.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
-			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(8)));
 
 			c.end_region();
 		}

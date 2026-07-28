@@ -475,63 +475,81 @@ mod tests {
 		(executable, results)
 	}
 
-	/// Executes a common-function test that only writes its result buffer.
-	fn run_common(program: &ExecutableProgram, results: &mut Buffer) {
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(RESULT_SLOT, results);
-		run_at(program, &mut descriptors, [0, 0]);
+	/// The `CommonShaderFixture` struct keeps common-shader tests focused on expected VM results.
+	struct CommonShaderFixture {
+		program: ExecutableProgram,
+		results: Buffer,
 	}
 
-	/// Reads one scalar result while keeping type failures local to the named assertion.
+	impl CommonShaderFixture {
+		fn new(
+			source: &'static str,
+			result_members: Vec<besl::ParserNode<'static>>,
+			extra_nodes: Vec<besl::ParserNode<'static>>,
+		) -> Self {
+			let (program, results) = compile_common_main(source, result_members, extra_nodes);
+			Self { program, results }
+		}
+
+		fn run(&mut self) {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(RESULT_SLOT, &mut self.results);
+			run_at(&self.program, &mut descriptors, [0, 0]);
+		}
+
+		fn f32(&self, name: &str) -> f32 {
+			read_f32(&self.results, name)
+		}
+
+		fn vec2(&self, name: &str) -> [f32; 2] {
+			read_vec2f(&self.results, name)
+		}
+
+		fn vec3(&self, name: &str) -> [f32; 3] {
+			read_vec3f(&self.results, name)
+		}
+
+		fn vec4(&self, name: &str) -> [f32; 4] {
+			read_vec4f(&self.results, name)
+		}
+
+		fn assert_f32(&self, name: &str, expected: f32) {
+			assert_f32_close(self.f32(name), expected, 0.00001);
+		}
+
+		fn assert_vec2(&self, name: &str, expected: [f32; 2]) {
+			assert_floats_close(self.vec2(name), expected, 0.00001);
+		}
+
+		fn assert_vec3(&self, name: &str, expected: [f32; 3]) {
+			assert_floats_close(self.vec3(name), expected, 0.00001);
+		}
+
+		fn assert_vec4(&self, name: &str, expected: [f32; 4]) {
+			assert_floats_close(self.vec4(name), expected, 0.00001);
+		}
+	}
+
+	macro_rules! read_result {
+		($results:expr, $name:expr, $variant:ident) => {{
+			let Value::$variant(value) = $results.read($name).expect("Missing common shader result.") else {
+				panic!("Unexpected common shader result type for `{}`.", $name)
+			};
+			value
+		}};
+	}
+
 	fn read_f32(results: &Buffer, name: &str) -> f32 {
-		match results
-			.read(name)
-			.expect("Missing common shader scalar result. The most likely cause is a mismatched test buffer member.")
-		{
-			Value::F32(value) => value,
-			value => panic!(
-				"Invalid common shader scalar result `{value:?}`. The most likely cause is an incorrect test member type."
-			),
-		}
+		read_result!(results, name, F32)
 	}
-
-	/// Reads one two-component vector result while preserving an allocation-free assertion path.
 	fn read_vec2f(results: &Buffer, name: &str) -> [f32; 2] {
-		match results
-			.read(name)
-			.expect("Missing common shader vec2 result. The most likely cause is a mismatched test buffer member.")
-		{
-			Value::Vec2F(value) => value,
-			value => {
-				panic!("Invalid common shader vec2 result `{value:?}`. The most likely cause is an incorrect test member type.")
-			}
-		}
+		read_result!(results, name, Vec2F)
 	}
-
-	/// Reads one three-component vector result while preserving an allocation-free assertion path.
 	fn read_vec3f(results: &Buffer, name: &str) -> [f32; 3] {
-		match results
-			.read(name)
-			.expect("Missing common shader vec3 result. The most likely cause is a mismatched test buffer member.")
-		{
-			Value::Vec3F(value) => value,
-			value => {
-				panic!("Invalid common shader vec3 result `{value:?}`. The most likely cause is an incorrect test member type.")
-			}
-		}
+		read_result!(results, name, Vec3F)
 	}
-
-	/// Reads one four-component vector result while preserving an allocation-free assertion path.
 	fn read_vec4f(results: &Buffer, name: &str) -> [f32; 4] {
-		match results
-			.read(name)
-			.expect("Missing common shader vec4 result. The most likely cause is a mismatched test buffer member.")
-		{
-			Value::Vec4F(value) => value,
-			value => {
-				panic!("Invalid common shader vec4 result `{value:?}`. The most likely cause is an incorrect test member type.")
-			}
-		}
+		read_result!(results, name, Vec4F)
 	}
 
 	/// Compares finite float arrays with tolerance scaled to each expected component.
@@ -561,10 +579,10 @@ mod tests {
 			}
 		"#;
 		let members = vec![besl::ParserNode::member("composited", "vec4f")];
-		let (program, mut results) = compile_common_main(source, members, Vec::new());
-		run_common(&program, &mut results);
+		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+		fixture.run();
 
-		assert_floats_close(read_vec4f(&results, "composited"), [0.35, 0.35, 0.475, 0.625], 0.000001);
+		fixture.assert_vec4("composited", [0.35, 0.35, 0.475, 0.625]);
 	}
 
 	/// Verifies the reusable scalar, vector, sampling-direction, and coordinate helpers together.
@@ -618,12 +636,13 @@ mod tests {
 			besl::ParserNode::member("pixel_uv", "vec2f"),
 			besl::ParserNode::member("rotated", "vec2f"),
 		];
-		let (program, mut results) = compile_common_main(source, members, Vec::new());
-		run_common(&program, &mut results);
+		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+		fixture.run();
+		let results = &fixture.results;
 
-		assert_eq!(read_f32(&results, "squared_vec2"), 25.0);
-		assert_eq!(read_f32(&results, "squared_vec3"), 9.0);
-		assert_eq!(read_f32(&results, "squared_vec4"), 25.0);
+		assert_eq!(fixture.f32("squared_vec2"), 25.0);
+		assert_eq!(fixture.f32("squared_vec3"), 9.0);
+		assert_eq!(fixture.f32("squared_vec4"), 25.0);
 		assert_eq!(read_vec3f(&results, "min_a"), [1.0, 0.0, 0.0]);
 		assert_eq!(read_vec3f(&results, "min_b"), [-2.0, 0.0, 0.0]);
 		assert_eq!(read_vec3f(&results, "min_tie"), [0.0, -1.0, 0.0]);
@@ -634,12 +653,12 @@ mod tests {
 		let expected_noise = (52.9829189 * (0.06711056 * x + 0.00583715 * y).fract()).fract();
 		assert_f32_close(read_f32(&results, "noise"), expected_noise, 0.00001);
 		assert_eq!(read_f32(&results, "noise"), read_f32(&results, "periodic_noise"));
-		assert_f32_close(read_f32(&results, "sine"), 0.8660254, 0.00001);
-		assert_f32_close(read_f32(&results, "tangent_value"), -1.0, 0.00001);
+		fixture.assert_f32("sine", 0.8660254);
+		fixture.assert_f32("tangent_value", -1.0);
 		assert_floats_close(read_vec3f(&results, "normal"), [0.0, 0.0, 1.0], 0.00001);
 		assert_floats_close(read_vec3f(&results, "perpendicular_x"), [-0.8944272, 0.4472136, 0.0], 0.00001);
 		assert_floats_close(read_vec3f(&results, "perpendicular_z"), [0.0, -0.4472136, 0.8944272], 0.00001);
-		assert_floats_close(read_vec2f(&results, "snapped_uv"), [0.25, 0.75], 0.00001);
+		fixture.assert_vec2("snapped_uv", [0.25, 0.75]);
 		assert_floats_close(read_vec3f(&results, "hemisphere"), [-0.5, 0.0, 0.8660254], 0.00001);
 		assert_floats_close(read_vec3f(&results, "hemisphere_normal"), [0.0, 0.0, 1.0], 0.00001);
 		assert_floats_close(read_vec2f(&results, "pixel_uv"), [0.375, 0.75], 0.00001);
@@ -682,24 +701,17 @@ mod tests {
 			besl::ParserNode::member("rough_fresnel", "vec3f"),
 			besl::ParserNode::member("rough_fresnel_grazing", "vec3f"),
 		];
-		let (program, mut results) = compile_common_main(source, members, Vec::new());
-		run_common(&program, &mut results);
+		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+		fixture.run();
+		let results = &fixture.results;
 
 		let expected_geometry = 0.5 / (0.5 * (1.0 - 0.28125) + 0.28125);
 		assert_f32_close(read_f32(&results, "distribution"), 16.0 / std::f32::consts::PI, 0.00001);
-		assert_f32_close(
-			read_f32(&results, "distribution_roughness_one"),
-			1.0 / std::f32::consts::PI,
-			0.00001,
-		);
+		fixture.assert_f32("distribution_roughness_one", 1.0 / std::f32::consts::PI);
 		assert_f32_close(read_f32(&results, "geometry"), expected_geometry, 0.00001);
 		assert_eq!(read_f32(&results, "geometry_zero"), 0.0);
 		assert_eq!(read_f32(&results, "geometry_one"), 1.0);
-		assert_f32_close(
-			read_f32(&results, "geometry_smith"),
-			expected_geometry * expected_geometry,
-			0.00001,
-		);
+		fixture.assert_f32("geometry_smith", expected_geometry * expected_geometry);
 		assert_floats_close(read_vec3f(&results, "fresnel"), [0.07; 3], 0.00001);
 		assert_floats_close(read_vec3f(&results, "fresnel_normal"), [0.04; 3], 0.00001);
 		assert_floats_close(read_vec3f(&results, "fresnel_grazing"), [1.0; 3], 0.00001);
@@ -768,10 +780,11 @@ mod tests {
 			besl::ParserNode::member("unit_vector_edge", "vec3f"),
 			besl::ParserNode::member("unit_vector_outside", "vec3f"),
 		];
-		let (program, mut results) = compile_common_main(source, members, Vec::new());
-		run_common(&program, &mut results);
+		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+		fixture.run();
+		let results = &fixture.results;
 
-		assert_floats_close(read_vec3f(&results, "barycentric"), [0.5, 0.25, 0.25], 0.00001);
+		fixture.assert_vec3("barycentric", [0.5, 0.25, 0.25]);
 		assert_eq!(read_vec3f(&results, "degenerate"), [1.0, 0.0, 0.0]);
 		assert_floats_close(read_vec3f(&results, "full_lambda"), [0.5, 0.25, 0.25], 0.00001);
 		assert_floats_close(read_vec3f(&results, "full_ddx"), [-0.25, 0.25, 0.0], 0.00001);
@@ -914,8 +927,9 @@ mod tests {
 			}
 		"#;
 		let members = vec![besl::ParserNode::member("colors", "vec4f[17]")];
-		let (program, mut results) = compile_common_main(source, members, Vec::new());
-		run_common(&program, &mut results);
+		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+		fixture.run();
+		let results = &fixture.results;
 
 		let expected = [
 			[0.16863, 0.40392, 0.77647, 1.0],

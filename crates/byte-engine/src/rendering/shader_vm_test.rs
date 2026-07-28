@@ -5,6 +5,36 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 const TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 const TEST_CALL_DEPTH_LIMIT: usize = 128;
 
+/// Creates a VM input buffer from a compiled shader interface.
+pub(crate) fn input_buffer(program: &ExecutableProgram, index: u8) -> Buffer {
+	Buffer::new(program.input_layout(index).expect("Missing VM input layout.").clone())
+}
+
+/// Creates a VM output buffer from a compiled shader interface.
+pub(crate) fn output_buffer(program: &ExecutableProgram, index: u8) -> Buffer {
+	Buffer::new(program.output_layout(index).expect("Missing VM output layout.").clone())
+}
+
+/// Creates the builtin-position output buffer from a compiled vertex shader.
+pub(crate) fn builtin_position_buffer(program: &ExecutableProgram) -> Buffer {
+	Buffer::new(
+		program
+			.builtin_position_layout()
+			.expect("Missing VM position output.")
+			.clone(),
+	)
+}
+
+/// Creates a push-constant buffer from a compiled shader interface.
+pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
+	Buffer::new(
+		program
+			.push_constant_layout()
+			.expect("Missing VM push-constant layout.")
+			.clone(),
+	)
+}
+
 /// Compiles the exact production shader entry point for a VM runtime test.
 pub(crate) fn compile(main: besl::NodeReference) -> ExecutableProgram {
 	ExecutableProgram::compile(main).expect(

@@ -419,11 +419,10 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{
-		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value,
-	};
+	use besl::vm::{builtin_position_slot, input_slot, output_slot, DescriptorBindings, ResourceSlot, Value};
 
 	use super::{create_simple_fragment_program, create_simple_vertex_program};
+	use crate::rendering::shader_vm_test::{buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at};
 
 	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
@@ -435,12 +434,10 @@ mod tests {
 
 	/// Executes the production simple fragment shader for one instance and object-space position.
 	fn run_fragment(instance_index: u32, local_position: [f32; 3]) -> [f32; 4] {
-		let executable = ExecutableProgram::compile(create_simple_fragment_program()).expect(
-			"Failed to compile simple fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
-		);
-		let mut instance = Buffer::new(executable.input_layout(0).expect("Expected instance input layout").clone());
-		let mut position = Buffer::new(executable.input_layout(1).expect("Expected position input layout").clone());
-		let mut output = Buffer::new(executable.output_layout(0).expect("Expected albedo output layout").clone());
+		let program = compile(create_simple_fragment_program());
+		let mut instance = input_buffer(&program, 0);
+		let mut position = input_buffer(&program, 1);
+		let mut output = output_buffer(&program, 0);
 		instance
 			.write("in_instance_index", Value::U32(instance_index))
 			.expect("Failed to seed the instance index. The most likely cause is a simple fragment interface type mismatch.");
@@ -453,52 +450,26 @@ mod tests {
 			descriptors.bind_buffer(input_slot(0), &mut instance);
 			descriptors.bind_buffer(input_slot(1), &mut position);
 			descriptors.bind_buffer(output_slot(0), &mut output);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute simple fragment shader. The most likely cause is incomplete BESL VM support.");
+			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
-		match output.read("out_albedo").expect("Expected simple fragment albedo output") {
-			Value::Vec4F(color) => color,
-			value => panic!(
-				"Invalid simple fragment output `{value:?}`. The most likely cause is a BESL VM interface type mismatch."
-			),
-		}
+		let Ok(Value::Vec4F(color)) = output.read("out_albedo") else {
+			panic!("Expected vec4 fragment output")
+		};
+		color
 	}
 
 	/// Verifies the production vertex program applies indexed transforms and preserves its varyings.
 	#[test]
 	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
-		let executable = ExecutableProgram::compile(create_simple_vertex_program()).expect(
-			"Failed to compile simple vertex shader for the BESL VM. The most likely cause is missing VM shader support.",
-		);
-		let mut cameras = Buffer::new(
-			executable
-				.buffer_layout(ResourceSlot::new(0))
-				.expect("Expected camera buffer layout")
-				.clone(),
-		);
-		let mut instances = Buffer::new(
-			executable
-				.buffer_layout(ResourceSlot::new(1))
-				.expect("Expected instance buffer layout")
-				.clone(),
-		);
-		let mut input_position = Buffer::new(executable.input_layout(0).expect("Expected vertex position input").clone());
-		let mut input_instance = Buffer::new(executable.input_layout(1).expect("Expected vertex instance input").clone());
-		let mut output_position = Buffer::new(
-			executable
-				.builtin_position_layout()
-				.expect("Expected builtin position output")
-				.clone(),
-		);
-		let mut output_instance = Buffer::new(executable.output_layout(0).expect("Expected instance varying output").clone());
-		let mut output_local = Buffer::new(
-			executable
-				.output_layout(1)
-				.expect("Expected local-position varying output")
-				.clone(),
-		);
+		let program = compile(create_simple_vertex_program());
+		let mut cameras = buffer(&program, ResourceSlot::new(0));
+		let mut instances = buffer(&program, ResourceSlot::new(1));
+		let mut input_position = input_buffer(&program, 0);
+		let mut input_instance = input_buffer(&program, 1);
+		let mut output_position = builtin_position_buffer(&program);
+		let mut output_instance = output_buffer(&program, 0);
+		let mut output_local = output_buffer(&program, 1);
 
 		cameras
 			.write_indexed_field("cameras", 0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
@@ -525,25 +496,12 @@ mod tests {
 			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
 			descriptors.bind_buffer(output_slot(0), &mut output_instance);
 			descriptors.bind_buffer(output_slot(1), &mut output_local);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute simple vertex shader. The most likely cause is incomplete BESL VM support.");
+			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
-		assert_eq!(
-			output_position.read("position").expect("Expected transformed position"),
-			Value::Vec4F([11.0, 22.0, 33.0, 1.0])
-		);
-		assert_eq!(
-			output_instance.read("out_instance_index").expect("Expected instance varying"),
-			Value::U32(3)
-		);
-		assert_eq!(
-			output_local
-				.read("out_local_position")
-				.expect("Expected local position varying"),
-			Value::Vec3F([1.0, 2.0, 3.0])
-		);
+		assert_eq!(output_position.read("position"), Ok(Value::Vec4F([11.0, 22.0, 33.0, 1.0])));
+		assert_eq!(output_instance.read("out_instance_index"), Ok(Value::U32(3)));
+		assert_eq!(output_local.read("out_local_position"), Ok(Value::Vec3F([1.0, 2.0, 3.0])));
 	}
 
 	/// Verifies palette selection, grid blending, and wrapped instance indices in the VM.

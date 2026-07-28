@@ -229,7 +229,7 @@ mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{buffer, compile, run_at};
+	use crate::rendering::shader_vm_test::{buffer, compile, push_constant_buffer, run_at};
 
 	/// Parses and links the exact checked-in shader consumed by the runtime resource path.
 	fn production_skinning_main() -> besl::NodeReference {
@@ -264,12 +264,7 @@ mod tests {
 		let mut weights = buffer(&program, ResourceSlot::new(3));
 		let mut palette = buffer(&program, ResourceSlot::new(4));
 		let mut output = buffer(&program, ResourceSlot::new(5));
-		let mut push_constant = Buffer::new(
-			program
-				.push_constant_layout()
-				.expect("Missing skinning push constant layout.")
-				.clone(),
-		);
+		let mut push_constant = push_constant_buffer(&program);
 
 		positions
 			.write_indexed("values", 1, Value::Vec3F([1.0, 1.0, 1.0]))

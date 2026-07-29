@@ -1,4 +1,5 @@
 use ghi::{
+	command_buffer::CommonCommandBufferMode as _,
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
@@ -8,10 +9,26 @@ use utils::Extent;
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
+		render_pass::{allocate_render_command, simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
 	},
 };
+
+const TRANSMITTANCE_LUT_WIDTH: u32 = 256;
+const TRANSMITTANCE_LUT_HEIGHT: u32 = 64;
+const SKY_VIEW_LUT_SIZE: u32 = 256;
+
+fn transmittance_lut_extent() -> Extent {
+	Extent::rectangle(TRANSMITTANCE_LUT_WIDTH, TRANSMITTANCE_LUT_HEIGHT)
+}
+
+fn sky_view_lut_extent() -> Extent {
+	Extent::square(SKY_VIEW_LUT_SIZE)
+}
+
+fn should_rebuild_sky_view(transmittance_valid: bool, cached_camera_height: Option<u32>, camera_height: u32) -> bool {
+	!transmittance_valid || cached_camera_height != Some(camera_height)
+}
 
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
 #[derive(Clone, Copy, Debug)]
@@ -60,9 +77,13 @@ struct SkyShaderData {
 
 /// The `AtmosphereSkyRenderPass` struct places an atmosphere behind scene color wherever opaque depth remains at infinity.
 pub struct AtmosphereSkyRenderPass {
-	pass: simple_compute::Pass,
+	transmittance_pass: simple_compute::Pass,
+	sky_view_pass: simple_compute::Pass,
+	composite_pass: simple_compute::Pass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
+	transmittance_valid: bool,
+	sky_view_camera_height: Option<u32>,
 }
 
 impl Entity for AtmosphereSkyRenderPass {}
@@ -78,43 +99,115 @@ impl AtmosphereSkyRenderPass {
 		let depth = render_pass_builder.read_from("depth");
 		let _main_read = render_pass_builder.read_from("main");
 		let main = render_pass_builder.render_to("main");
-		let pipeline = simple_compute::Pipeline::compile(
+		let transmittance_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Sky", "byte-engine/rendering/sky.besl", "Sky Render Pass Compute Shader"),
+			simple_compute::Descriptor::new(
+				"Sky Transmittance LUT",
+				"byte-engine/rendering/sky-transmittance.besl",
+				"Sky Transmittance LUT Compute Shader",
+			),
+		)
+		.expect("Failed to create the sky transmittance shader. The most likely cause is an incompatible shader interface.");
+		let sky_view_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new(
+				"Sky View LUT",
+				"byte-engine/rendering/sky-view.besl",
+				"Sky View LUT Compute Shader",
+			),
+		)
+		.expect("Failed to create the sky-view shader. The most likely cause is an incompatible shader interface.");
+		let composite_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new(
+				"Sky Composite",
+				"byte-engine/rendering/sky.besl",
+				"Sky Render Pass Compute Shader",
+			),
 		)
 		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.");
-		let parameters = render_pass_builder.context().build_dynamic_buffer(
+		let context = render_pass_builder.context();
+		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sky Render Pass Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let sampler = render_pass_builder.context().build_sampler(
+		let transmittance_lut = context.build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+				.name("Sky Transmittance LUT")
+				.extent(transmittance_lut_extent())
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
+		let sky_view_lut = context.build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+				.name("Sky View LUT")
+				.extent(sky_view_lut_extent())
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
+		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let pass = pipeline
+		let transmittance_pass = transmittance_pipeline
+			.bind(
+				render_pass_builder,
+				"Sky Transmittance LUT Descriptor Set",
+				&[
+					simple_compute::Resource::image("transmittance_lut", transmittance_lut),
+					simple_compute::Resource::buffer("parameters", parameters),
+				],
+			)
+			.expect("Failed to bind sky transmittance resources. The most likely cause is a changed BESL binding contract.");
+		let sky_view_pass = sky_view_pipeline
+			.bind(
+				render_pass_builder,
+				"Sky View LUT Descriptor Set",
+				&[
+					simple_compute::Resource::combined_image_sampler(
+						"transmittance_lut",
+						transmittance_lut,
+						sampler,
+						ghi::Layouts::Read,
+					),
+					simple_compute::Resource::image("sky_view_lut", sky_view_lut),
+					simple_compute::Resource::buffer("parameters", parameters),
+				],
+			)
+			.expect("Failed to bind sky-view resources. The most likely cause is a changed BESL binding contract.");
+		let composite_pass = composite_pipeline
 			.bind(
 				render_pass_builder,
 				"Sky Render Pass Descriptor Set",
 				&[
 					simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::image("main_texture", main),
+					simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
+					simple_compute::Resource::combined_image_sampler(
+						"transmittance_lut",
+						transmittance_lut,
+						sampler,
+						ghi::Layouts::Read,
+					),
 					simple_compute::Resource::buffer("parameters", parameters),
 				],
 			)
 			.expect("Failed to bind the sky resources. The most likely cause is a changed BESL binding contract.");
 
 		Self {
-			pass,
+			transmittance_pass,
+			sky_view_pass,
+			composite_pass,
 			parameters,
 			settings,
+			transmittance_valid: false,
+			sky_view_camera_height: None,
 		}
 	}
 
 	/// Updates per-view sky constants from the active camera before dispatch.
-	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) {
+	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> f32 {
 		let view = sink.view();
 		let inverse_view_projection = view.view_projection().inverse();
 		let inverse_view = view.view().inverse();
@@ -150,6 +243,8 @@ impl AtmosphereSkyRenderPass {
 			0.0,
 			0.0,
 		];
+
+		camera_position.y
 	}
 }
 
@@ -164,8 +259,34 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		self.write_parameters(frame, sink);
-		self.pass.prepare(frame, sink, frame_allocator)
+		let camera_height = self.write_parameters(frame, sink).to_bits();
+		let rebuild_transmittance = !self.transmittance_valid;
+		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera in X/Z.
+		let rebuild_sky_view = should_rebuild_sky_view(self.transmittance_valid, self.sky_view_camera_height, camera_height);
+		self.transmittance_valid = true;
+		self.sky_view_camera_height = Some(camera_height);
+
+		let transmittance_pass = self.transmittance_pass;
+		let sky_view_pass = self.sky_view_pass;
+		let composite_pass = self.composite_pass;
+		let extent = sink.extent();
+		let transmittance_extent = transmittance_lut_extent();
+		let sky_view_extent = sky_view_lut_extent();
+
+		Some(allocate_render_command(frame_allocator, move |command_buffer, _| {
+			command_buffer.region(
+				|label| label.write_str("Sky"),
+				|command_buffer| {
+					if rebuild_transmittance {
+						transmittance_pass.record(command_buffer, transmittance_extent);
+					}
+					if rebuild_sky_view {
+						sky_view_pass.record(command_buffer, sky_view_extent);
+					}
+					composite_pass.record(command_buffer, extent);
+				},
+			);
+		}))
 	}
 
 	fn bypass<'a>(
@@ -180,28 +301,18 @@ impl RenderPass for AtmosphereSkyRenderPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
 	use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
 
 	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
 	const SKY_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky.besl");
+	const SKY_TRANSMITTANCE_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-transmittance.besl");
+	const SKY_VIEW_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-view.besl");
 
-	/// Verifies foreground preservation and a finite default atmosphere result through the VM.
-	#[test]
-	fn sky_besl_vm_preserves_foreground_and_renders_a_bounded_default_background() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
-		let sentinel = [0.2, 0.3, 0.4, 0.5];
-		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
-		let mut foreground_target = texture_2d(1, 1, &[sentinel]);
-		let mut foreground_descriptors = DescriptorBindings::new();
-		foreground_descriptors.bind_texture(ResourceSlot::new(0), &mut foreground_depth);
-		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_target);
-		run_at(&program, &mut foreground_descriptors, [0, 0]);
-		drop(foreground_descriptors);
-		assert_rgba_close(rgba(&foreground_target, [0, 0]), sentinel, 0.0);
-
+	/// Builds the production sky parameter layout with deterministic default atmosphere values.
+	fn default_parameters(program: &besl::vm::ExecutableProgram, parameter_slot: ResourceSlot) -> Buffer {
 		let settings = super::AtmosphereSkyRenderPassSettings::default();
 		let view = crate::rendering::View::new_perspective(
 			60.0,
@@ -213,9 +324,8 @@ mod tests {
 		);
 		let inverse_view_projection = ShaderMatrix4::from(view.view_projection().inverse()).0;
 		let sun_direction = math::normalize(settings.sun_direction);
-		let parameter_slot = ResourceSlot::new(2);
-		let mut parameters = buffer(&program, parameter_slot);
-		// Mirror the production upload field-for-field so the VM validates the real atmosphere parameter contract.
+		let mut parameters = buffer(program, parameter_slot);
+		// Mirror the production upload field-for-field so every LUT test validates the real buffer contract.
 		for (name, value) in [
 			("camera_position", [0.0, 0.0, 0.0, settings.sun_intensity]),
 			(
@@ -257,12 +367,99 @@ mod tests {
 		parameters
 			.write("inverse_view_projection", Value::Mat4F(inverse_view_projection))
 			.expect("Failed to initialize the sky matrix. The most likely cause is a changed production buffer layout.");
+		parameters
+	}
+
+	fn assert_finite_nonnegative_color(color: [f32; 4], name: &str) {
+		assert!(
+			color[..3].iter().all(|channel| channel.is_finite() && *channel >= 0.0),
+			"Invalid {name} VM output. The most likely cause is unstable atmosphere integration: {color:?}"
+		);
+	}
+
+	#[test]
+	fn sky_view_cache_rebuilds_for_initialization_and_height_changes_only() {
+		let height = 2.0_f32.to_bits();
+		assert!(super::should_rebuild_sky_view(false, None, height));
+		assert!(super::should_rebuild_sky_view(true, None, height));
+		assert!(super::should_rebuild_sky_view(true, Some(3.0_f32.to_bits()), height));
+		assert!(!super::should_rebuild_sky_view(true, Some(height), height));
+	}
+
+	/// Verifies the production transmittance LUT writes finite optical transmission.
+	#[test]
+	fn sky_transmittance_besl_vm_writes_bounded_transmission() {
+		let program =
+			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_TRANSMITTANCE_SHADER_BESL));
+		let parameter_slot = ResourceSlot::new(1);
+		let mut parameters = default_parameters(&program, parameter_slot);
+		let mut output = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(ResourceSlot::new(0), &mut output);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+
+		let transmission = rgba(&output, [0, 0]);
+		assert_finite_nonnegative_color(transmission, "sky transmittance");
+		assert!(
+			transmission[..3].iter().all(|channel| *channel <= 1.0),
+			"Out-of-range sky transmittance. The most likely cause is an invalid optical-depth sign: {transmission:?}"
+		);
+		assert_rgba_close([0.0, 0.0, 0.0, transmission[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
+	}
+
+	/// Verifies the sky-view LUT consumes transmittance and produces finite HDR scattering.
+	#[test]
+	fn sky_view_besl_vm_integrates_scattering_from_transmittance() {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_VIEW_SHADER_BESL));
+		let parameter_slot = ResourceSlot::new(2);
+		let mut parameters = default_parameters(&program, parameter_slot);
+		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
+		let mut output = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(0), &mut transmittance);
+		descriptors.bind_image(ResourceSlot::new(1), &mut output);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+
+		let scattering = rgba(&output, [0, 0]);
+		assert_finite_nonnegative_color(scattering, "sky-view");
+		assert!(
+			scattering[..3].iter().any(|channel| *channel > 0.0),
+			"Empty sky-view VM output. The most likely cause is an invalid atmosphere interval: {scattering:?}"
+		);
+		assert_rgba_close([0.0, 0.0, 0.0, scattering[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
+	}
+
+	/// Verifies foreground preservation and a finite default atmosphere result through the VM.
+	#[test]
+	fn sky_besl_vm_preserves_foreground_and_renders_a_bounded_default_background() {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
+		let sentinel = [0.2, 0.3, 0.4, 0.5];
+		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
+		let mut foreground_target = texture_2d(1, 1, &[sentinel]);
+		let mut foreground_descriptors = DescriptorBindings::new();
+		foreground_descriptors.bind_texture(ResourceSlot::new(0), &mut foreground_depth);
+		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_target);
+		run_at(&program, &mut foreground_descriptors, [0, 0]);
+		drop(foreground_descriptors);
+		assert_rgba_close(rgba(&foreground_target, [0, 0]), sentinel, 0.0);
+
+		let parameter_slot = ResourceSlot::new(4);
+		let mut parameters = default_parameters(&program, parameter_slot);
+		let sky_scattering = [0.2, 0.3, 0.4, 1.0];
+		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
+		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 
 		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut background_target = empty_image(1, 1);
 		let mut background_descriptors = DescriptorBindings::new();
 		background_descriptors.bind_texture(ResourceSlot::new(0), &mut background_depth);
 		background_descriptors.bind_image(ResourceSlot::new(1), &mut background_target);
+		background_descriptors.bind_texture(ResourceSlot::new(2), &mut sky_view);
+		background_descriptors.bind_texture(ResourceSlot::new(3), &mut transmittance);
 		background_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut background_descriptors, [0, 0]);
 		drop(background_descriptors);
@@ -287,6 +484,8 @@ mod tests {
 		let mut transparent_descriptors = DescriptorBindings::new();
 		transparent_descriptors.bind_texture(ResourceSlot::new(0), &mut transparent_depth);
 		transparent_descriptors.bind_image(ResourceSlot::new(1), &mut transparent_target);
+		transparent_descriptors.bind_texture(ResourceSlot::new(2), &mut sky_view);
+		transparent_descriptors.bind_texture(ResourceSlot::new(3), &mut transmittance);
 		transparent_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut transparent_descriptors, [0, 0]);
 		drop(transparent_descriptors);

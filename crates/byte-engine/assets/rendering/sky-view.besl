@@ -1,0 +1,116 @@
+SkyParameters: struct {
+	inverse_view_projection: mat4f,
+	camera_position: vec4f,
+	sun_direction: vec4f,
+	planet_center: vec4f,
+	atmosphere: vec4f,
+	misc: vec4f,
+}
+
+transmittance_lut: descriptor<Texture2D, 0, read>;
+sky_view_lut: descriptor<StorageImage<rgba16>, 1, write>;
+parameters: descriptor<SkyParameters, 2, read>;
+
+get_camera_position: fn () -> vec3f {
+	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);
+}
+
+get_sun_direction: fn () -> vec3f {
+	return vec3f(parameters.sun_direction.x, parameters.sun_direction.y, parameters.sun_direction.z);
+}
+
+get_planet_center: fn () -> vec3f {
+	return vec3f(parameters.planet_center.x, parameters.planet_center.y, parameters.planet_center.z);
+}
+
+get_ground_radius: fn () -> f32 { return parameters.atmosphere.x; }
+get_atmosphere_radius: fn () -> f32 { return parameters.atmosphere.y; }
+get_rayleigh_scale_height: fn () -> f32 { return parameters.atmosphere.z; }
+get_mie_scale_height: fn () -> f32 { return parameters.atmosphere.w; }
+get_mie_anisotropy: fn () -> f32 { return parameters.sun_direction.w; }
+get_sun_intensity: fn () -> f32 { return parameters.camera_position.w; }
+get_ozone_strength: fn () -> f32 { return parameters.misc.x; }
+
+should_skip_below_horizon: fn () -> bool {
+	return parameters.misc.y > 0.5;
+}
+
+phase_rayleigh: fn (cosine_theta: f32) -> f32 {
+	let pi: f32 = 3.14159265359;
+	return (3.0 / (16.0 * pi)) * (1.0 + cosine_theta * cosine_theta);
+}
+
+phase_mie: fn (cosine_theta: f32, anisotropy: f32) -> f32 {
+	let pi: f32 = 3.14159265359;
+	let anisotropy_squared: f32 = anisotropy * anisotropy;
+	let denominator: f32 = 1.0 + anisotropy_squared - 2.0 * anisotropy * cosine_theta;
+	let denominator_root: f32 = sqrt(max(0.0001, denominator));
+	return (3.0 / (8.0 * pi))
+		* ((1.0 - anisotropy_squared) * (1.0 + cosine_theta * cosine_theta))
+		/ ((2.0 + anisotropy_squared) * max(0.0001, denominator * denominator_root));
+}
+
+main: fn () -> void {
+	let pixel: vec2u = thread_id();
+	guard_image_bounds(sky_view_lut, pixel);
+	let extent: vec2u = image_size(sky_view_lut);
+	let uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let direction: vec3f = octahedral_decode(uv);
+	let origin: vec3f = get_camera_position();
+	let planet_center: vec3f = get_planet_center();
+	let local_up: vec3f = normalize(origin - planet_center);
+	if (should_skip_below_horizon() && dot(direction, local_up) < 0.0) {
+		write(sky_view_lut, pixel, vec4f(0.0, 0.0, 0.0, 1.0));
+		return;
+	}
+	let atmosphere_roots: vec2f = atmosphere_ray_sphere_roots(origin, direction, planet_center, get_atmosphere_radius());
+	if (atmosphere_roots.x > atmosphere_roots.y || atmosphere_roots.y <= 0.0) {
+		write(sky_view_lut, pixel, vec4f(0.0, 0.0, 0.0, 1.0));
+		return;
+	}
+
+	let atmosphere_start: f32 = max(0.0, atmosphere_roots.x);
+	let distance_through_atmosphere: f32 = atmosphere_roots.y - atmosphere_start;
+	let optical_depth: vec3f = vec3f(0.0, 0.0, 0.0);
+	let luminance: vec3f = vec3f(0.0, 0.0, 0.0);
+	let sun_direction: vec3f = get_sun_direction();
+	let cosine_theta: f32 = dot(direction, sun_direction);
+	let phase_r: f32 = phase_rayleigh(cosine_theta);
+	let phase_m: f32 = phase_mie(cosine_theta, get_mie_anisotropy());
+	for (let i: u32 = 0; i < 32; i = i + 1) {
+		let t0: f32 = atmosphere_start + distance_through_atmosphere * (f32(i) / 32.0);
+		let t1: f32 = atmosphere_start + distance_through_atmosphere * (f32(i + 1) / 32.0);
+		let sample_position: vec3f = origin + direction * (0.5 * (t0 + t1));
+		let density: vec3f = atmosphere_density_profile(
+			sample_position,
+			planet_center,
+			get_ground_radius(),
+			get_rayleigh_scale_height(),
+			get_mie_scale_height(),
+			get_ozone_strength()
+		);
+		optical_depth = optical_depth + density * (t1 - t0);
+		let transmittance_to_camera: vec3f = exp(
+			vec3f(0.0, 0.0, 0.0) - atmosphere_extinction_from_density(optical_depth)
+		);
+		let transmittance_uv: vec2f = atmosphere_transmittance_uv(
+			sample_position,
+			sun_direction,
+			planet_center,
+			get_ground_radius(),
+			get_atmosphere_radius()
+		);
+		let sampled_transmittance: vec4f = texture_lod(transmittance_lut, transmittance_uv);
+		let transmittance_to_sun: vec3f = vec3f(
+			sampled_transmittance.x,
+			sampled_transmittance.y,
+			sampled_transmittance.z
+		);
+		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+		let scattering: vec3f = density.x * beta_rayleigh * phase_r + density.y * beta_mie * phase_m;
+		luminance = luminance + transmittance_to_camera * transmittance_to_sun * scattering * (t1 - t0);
+	}
+	let color: vec3f = luminance * get_sun_intensity();
+	write(sky_view_lut, pixel, vec4f(color.x, color.y, color.z, 1.0));
+}

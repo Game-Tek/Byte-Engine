@@ -37,6 +37,98 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return vec4f(color.x, color.y, color.z, alpha);
 	}
 
+	sign_not_zero: fn (value: f32) -> f32 {
+		if (value < 0.0) {
+			return 0.0 - 1.0;
+		}
+		return 1.0;
+	}
+
+	octahedral_encode: fn (direction: vec3f) -> vec2f {
+		let denominator: f32 = abs(direction.x) + abs(direction.y) + abs(direction.z);
+		let unit: vec3f = direction / max(denominator, 0.000001);
+		let encoded: vec2f = vec2f(unit.x, unit.y);
+		if (unit.z < 0.0) {
+			encoded = vec2f(
+				(1.0 - abs(unit.y)) * sign_not_zero(unit.x),
+				(1.0 - abs(unit.x)) * sign_not_zero(unit.y)
+			);
+		}
+		return encoded * 0.5 + vec2f(0.5, 0.5);
+	}
+
+	octahedral_decode: fn (uv: vec2f) -> vec3f {
+		let encoded: vec2f = uv * 2.0 - vec2f(1.0, 1.0);
+		let direction: vec3f = vec3f(encoded.x, encoded.y, 1.0 - abs(encoded.x) - abs(encoded.y));
+		let fold: f32 = clamp(0.0 - direction.z, 0.0, 1.0);
+		let x_adjustment: f32 = 0.0 - fold;
+		if (direction.x < 0.0) {
+			x_adjustment = fold;
+		}
+		let y_adjustment: f32 = 0.0 - fold;
+		if (direction.y < 0.0) {
+			y_adjustment = fold;
+		}
+		return normalize(vec3f(direction.x + x_adjustment, direction.y + y_adjustment, direction.z));
+	}
+
+	atmosphere_ray_sphere_roots: fn (
+		origin: vec3f,
+		direction: vec3f,
+		center: vec3f,
+		radius: f32
+	) -> vec2f {
+		let offset: vec3f = origin - center;
+		let b: f32 = dot(offset, direction);
+		let c: f32 = dot(offset, offset) - radius * radius;
+		let discriminant: f32 = b * b - c;
+		if (discriminant < 0.0) {
+			return vec2f(1.0, 0.0);
+		}
+		let root: f32 = sqrt(discriminant);
+		return vec2f((0.0 - b) - root, (0.0 - b) + root);
+	}
+
+	atmosphere_density_profile: fn (
+		sample_position: vec3f,
+		planet_center: vec3f,
+		ground_radius: f32,
+		rayleigh_scale_height: f32,
+		mie_scale_height: f32,
+		ozone_strength: f32
+	) -> vec3f {
+		let altitude: f32 = length(sample_position - planet_center) - ground_radius;
+		if (altitude < 0.0) {
+			return vec3f(0.0, 0.0, 0.0);
+		}
+		let rayleigh: f32 = exp((0.0 - altitude) / rayleigh_scale_height);
+		let mie: f32 = exp((0.0 - altitude) / mie_scale_height);
+		let ozone: f32 = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * ozone_strength;
+		return vec3f(rayleigh, mie, ozone);
+	}
+
+	atmosphere_extinction_from_density: fn (density: vec3f) -> vec3f {
+		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+		let beta_ozone: vec3f = vec3f(0.000000650, 0.000001881, 0.000000085);
+		return density.x * beta_rayleigh + density.y * beta_mie + density.z * beta_ozone;
+	}
+
+	atmosphere_transmittance_uv: fn (
+		position: vec3f,
+		direction: vec3f,
+		planet_center: vec3f,
+		ground_radius: f32,
+		atmosphere_radius: f32
+	) -> vec2f {
+		let radial: vec3f = normalize(position - planet_center);
+		let altitude: f32 = length(position - planet_center) - ground_radius;
+		let atmosphere_height: f32 = atmosphere_radius - ground_radius;
+		let height: f32 = clamp(altitude / atmosphere_height, 0.0, 1.0);
+		let zenith_cosine: f32 = clamp(dot(radial, direction), 0.0 - 1.0, 1.0);
+		return vec2f(zenith_cosine * 0.5 + 0.5, height);
+	}
+
 	min_diff: fn (p: vec3f, a: vec3f, b: vec3f) -> vec3f {
 		let a_to_p: vec3f = a - p;
 		let b_to_p: vec3f = p - b;
@@ -614,6 +706,8 @@ mod tests {
 				results.hemisphere_normal = make_cosine_hemisphere_sample(0.0, 0.75, vec3f(0.0, 0.0, 1.0));
 				results.pixel_uv = make_uv(vec2i(1, 1), vec2u(4, 2));
 				results.rotated = rotate_directions(vec2f(1.0, 0.0), vec2f(0.0, 1.0));
+				results.oct_encoded = octahedral_encode(vec3f(0.0, 0.0, 1.0));
+				results.oct_decoded = octahedral_decode(vec2f(0.5, 0.5));
 			}
 		"#;
 		let members = vec![
@@ -635,6 +729,8 @@ mod tests {
 			besl::ParserNode::member("hemisphere_normal", "vec3f"),
 			besl::ParserNode::member("pixel_uv", "vec2f"),
 			besl::ParserNode::member("rotated", "vec2f"),
+			besl::ParserNode::member("oct_encoded", "vec2f"),
+			besl::ParserNode::member("oct_decoded", "vec3f"),
 		];
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
 		fixture.run();
@@ -646,6 +742,8 @@ mod tests {
 		assert_eq!(read_vec3f(&results, "min_a"), [1.0, 0.0, 0.0]);
 		assert_eq!(read_vec3f(&results, "min_b"), [-2.0, 0.0, 0.0]);
 		assert_eq!(read_vec3f(&results, "min_tie"), [0.0, -1.0, 0.0]);
+		assert_floats_close(read_vec2f(&results, "oct_encoded"), [0.5, 0.5], 0.00001);
+		assert_floats_close(read_vec3f(&results, "oct_decoded"), [0.0, 0.0, 1.0], 0.00001);
 
 		let wrapped_frame = 1.0_f32;
 		let x = 10.0 + 5.588238 * wrapped_frame;

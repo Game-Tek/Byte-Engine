@@ -205,6 +205,8 @@ mod tests {
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 	const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
+	const GTAO_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
+	const GTAO_PYRAMID_WORKGROUP_SIZE: usize = 64;
 	const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
 	const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
 	const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
@@ -839,9 +841,12 @@ mod tests {
 
 	/// Creates the minimum camera data shared by the GTAO shader fixtures.
 	fn gtao_views(program: &ExecutableProgram) -> besl::vm::Buffer {
+		use math::{mat::MatInverse as _, ShaderMatrix4};
+
 		let mut views = buffer(program, VIEWS_SLOT);
+		let inverse_projection: ShaderMatrix4 = math::projection_matrix(60.0, 1.0, 0.1, 100.0).inverse().into();
 		views
-			.write_indexed_field("views", 0, "inverse_projection", Value::Mat4F(identity_matrix()))
+			.write_indexed_field("views", 0, "inverse_projection", Value::Mat4F(inverse_projection.0))
 			.expect("Failed to initialize the GTAO inverse projection. The most likely cause is a drifted View layout.");
 		views
 			.write_indexed_field("views", 0, "fov", Value::Vec2F([60.0, 60.0]))
@@ -1125,12 +1130,33 @@ mod tests {
 	) -> [f32; 4] {
 		let mut views = gtao_views(program);
 		let mut depth = texture_2d(width, height, depth_texels);
+		let pyramid_1_extent = [width.div_ceil(2).max(1), height.div_ceil(2).max(1)];
+		let pyramid_2_extent = [width.div_ceil(4).max(1), height.div_ceil(4).max(1)];
+		let pyramid_3_extent = [width.div_ceil(8).max(1), height.div_ceil(8).max(1)];
+		let mut pyramid_1 = texture_2d(
+			pyramid_1_extent[0],
+			pyramid_1_extent[1],
+			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_1_extent[0] * pyramid_1_extent[1]) as usize],
+		);
+		let mut pyramid_2 = texture_2d(
+			pyramid_2_extent[0],
+			pyramid_2_extent[1],
+			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_2_extent[0] * pyramid_2_extent[1]) as usize],
+		);
+		let mut pyramid_3 = texture_2d(
+			pyramid_3_extent[0],
+			pyramid_3_extent[1],
+			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_3_extent[0] * pyramid_3_extent[1]) as usize],
+		);
 		let mut output = empty_image(width, height);
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
+			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
+			descriptors.bind_texture(ResourceSlot::new(1037), &mut pyramid_3);
 			run_at(program, &mut descriptors, coordinate);
 		}
 		rgba(&output, coordinate)
@@ -1140,8 +1166,8 @@ mod tests {
 	fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_depth: f32) -> [f32; 4] {
 		const EXTENT: u32 = 129;
 		const CENTER: [u32; 2] = [64, 64];
-		let mut full_resolution_texels = vec![[0.35, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
-		full_resolution_texels[(CENTER[1] * EXTENT + CENTER[0]) as usize] = [0.75, 0.0, 0.0, 1.0];
+		let mut full_resolution_texels = vec![[0.75, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
+		full_resolution_texels[(CENTER[1] * EXTENT + CENTER[0]) as usize] = [0.35, 0.0, 0.0, 1.0];
 
 		let mut views = gtao_views(program);
 		let mut depth = texture_2d(EXTENT, EXTENT, &full_resolution_texels);
@@ -1181,14 +1207,27 @@ mod tests {
 				[0.8, 0.0, 0.0, 1.0],
 			],
 		);
-		let mut reduced = empty_image(2, 2);
+		let mut reduced_1 = empty_image(2, 2);
+		let mut reduced_2 = empty_image(1, 1);
+		let mut reduced_3 = empty_image(1, 1);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; GTAO_PYRAMID_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % GTAO_PYRAMID_WORKGROUP_WIDTH, lane / GTAO_PYRAMID_WORKGROUP_WIDTH])
+		});
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
-			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
-				run_at(&program, &mut descriptors, coordinate);
-			}
+			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
+			descriptors.bind_image(ResourceSlot::new(1036), &mut reduced_3);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the fused GTAO depth pyramid. The most likely cause is broken shared reduction synchronization or an invalid fixture binding.",
+			);
 		}
 
 		for (coordinate, expected) in [
@@ -1197,8 +1236,10 @@ mod tests {
 			([0, 1], [0.7, 0.0, 0.0, 1.0]),
 			([1, 1], [0.8, 0.0, 0.0, 1.0]),
 		] {
-			assert_rgba_close(rgba(&reduced, coordinate), expected, 0.00001);
+			assert_rgba_close(rgba(&reduced_1, coordinate), expected, 0.00001);
 		}
+		assert_rgba_close(rgba(&reduced_2, [0, 0]), [0.9, 0.0, 0.0, 1.0], 0.00001);
+		assert_rgba_close(rgba(&reduced_3, [0, 0]), [0.9, 0.0, 0.0, 1.0], 0.00001);
 	}
 
 	/// Verifies distant GTAO steps consume conservative hierarchy levels instead of always fetching full-resolution depth.
@@ -1206,7 +1247,7 @@ mod tests {
 	fn gtao_uses_depth_pyramid_for_distant_samples() {
 		let program = crate::rendering::shader_vm_test::compile(gtao_program());
 		let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0);
-		let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.35);
+		let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.75);
 
 		assert!(
 			occupied_coarse_depth[0] < empty_coarse_depth[0],
@@ -1221,11 +1262,12 @@ mod tests {
 		let background = run_gtao_fixture(&program, 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0]);
 		assert_rgba_close(background, [1.0, 1.0, 1.0, 1.0], 0.00001);
 
-		// A recessed center surrounded by nearer depth exercises reconstruction, normal estimation, and the bounded AO integral.
-		let mut foreground = [[0.35, 0.0, 0.0, 1.0]; 25];
-		foreground[12] = [0.75, 0.0, 0.0, 1.0];
+		// A recessed center surrounded by nearer depth exercises reconstruction,
+		// normal estimation, and the adaptive bounded AO integral.
+		let mut foreground = [[0.75, 0.0, 0.0, 1.0]; 25];
+		foreground[12] = [0.35, 0.0, 0.0, 1.0];
 		let foreground = run_gtao_fixture(&program, 5, 5, &foreground, [2, 2]);
-		assert_rgba_close(foreground, [0.86012965, 0.86012965, 0.86012965, 1.0], 0.00001);
+		assert_rgba_close(foreground, [0.8315444, 0.8315444, 0.8315444, 1.0], 0.00001);
 	}
 
 	/// Compiles one checked-in axis-specific GTAO blur asset.

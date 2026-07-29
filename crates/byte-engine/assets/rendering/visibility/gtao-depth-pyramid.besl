@@ -1,5 +1,11 @@
 source_depth: descriptor<Texture2D, 1033, read>;
-reduced_depth: descriptor<StorageImage<r32f>, 1034, write>;
+reduced_depth_1: descriptor<StorageImage<r32f>, 1034, write>;
+reduced_depth_2: descriptor<StorageImage<r32f>, 1035, write>;
+reduced_depth_3: descriptor<StorageImage<r32f>, 1036, write>;
+
+shared_depth: workgroup<f32, 64>;
+
+GTAO_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 
 clamp_source_coordinate: fn (coordinate: vec2u, extent: vec2u) -> vec2u {
 	let clamped_x: u32 = coordinate.x;
@@ -15,23 +21,71 @@ clamp_source_coordinate: fn (coordinate: vec2u, extent: vec2u) -> vec2u {
 
 main: fn () -> void {
 	let coord: vec2u = thread_id();
-	guard_image_bounds(reduced_depth, coord);
+	let lane: u32 = thread_idx();
 	let source_extent: vec2u = texture_size(source_depth);
-	let source_coord: vec2u = coord * vec2u(2, 2);
-	let top_left: f32 = fetch(source_depth, clamp_source_coordinate(source_coord, source_extent)).x;
-	let top_right: f32 = fetch(
-		source_depth,
-		clamp_source_coordinate(source_coord + vec2u(1, 0), source_extent)
-	).x;
-	let bottom_left: f32 = fetch(
-		source_depth,
-		clamp_source_coordinate(source_coord + vec2u(0, 1), source_extent)
-	).x;
-	let bottom_right: f32 = fetch(
-		source_depth,
-		clamp_source_coordinate(source_coord + vec2u(1, 1), source_extent)
-	).x;
-	// Visibility uses reversed depth with zero as the background, so max keeps the nearest conservative sample.
-	let maximum_depth: f32 = max(max(top_left, top_right), max(bottom_left, bottom_right));
-	write(reduced_depth, coord, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+	let workgroup_origin: vec2u = vec2u(
+		coord.x - coord.x % GTAO_PYRAMID_WORKGROUP_WIDTH,
+		coord.y - coord.y % GTAO_PYRAMID_WORKGROUP_WIDTH
+	);
+	let local_coordinate: vec2u = vec2u(
+		lane % GTAO_PYRAMID_WORKGROUP_WIDTH,
+		lane / GTAO_PYRAMID_WORKGROUP_WIDTH
+	);
+	let source_coordinate: vec2u = clamp_source_coordinate(workgroup_origin + local_coordinate, source_extent);
+
+	// Load each full-resolution depth texel once, then build all three
+	// conservative levels through progressively smaller shared reductions.
+	shared_depth[lane] = fetch(source_depth, source_coordinate).x;
+	workgroup_barrier();
+
+	if (lane < 16) {
+		let level_coordinate: vec2u = vec2u(lane % 4, lane / 4);
+		let source_x: u32 = level_coordinate.x * 2;
+		let source_y: u32 = level_coordinate.y * 2;
+		let source_index: u32 = source_y * GTAO_PYRAMID_WORKGROUP_WIDTH + source_x;
+		let maximum_depth: f32 = max(
+			max(shared_depth[source_index], shared_depth[source_index + 1]),
+			max(
+				shared_depth[source_index + GTAO_PYRAMID_WORKGROUP_WIDTH],
+				shared_depth[source_index + GTAO_PYRAMID_WORKGROUP_WIDTH + 1]
+			)
+		);
+		shared_depth[lane] = maximum_depth;
+
+		let output_coordinate: vec2u = workgroup_origin / vec2u(2, 2) + level_coordinate;
+		let output_extent: vec2u = image_size(reduced_depth_1);
+		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
+			write(reduced_depth_1, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		}
+	}
+	workgroup_barrier();
+
+	if (lane < 4) {
+		let level_coordinate: vec2u = vec2u(lane % 2, lane / 2);
+		let source_index: u32 = level_coordinate.y * 8 + level_coordinate.x * 2;
+		let maximum_depth: f32 = max(
+			max(shared_depth[source_index], shared_depth[source_index + 1]),
+			max(shared_depth[source_index + 4], shared_depth[source_index + 5])
+		);
+		shared_depth[lane] = maximum_depth;
+
+		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + level_coordinate;
+		let output_extent: vec2u = image_size(reduced_depth_2);
+		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
+			write(reduced_depth_2, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		}
+	}
+	workgroup_barrier();
+
+	if (lane == 0) {
+		let maximum_depth: f32 = max(
+			max(shared_depth[0], shared_depth[1]),
+			max(shared_depth[2], shared_depth[3])
+		);
+		let output_coordinate: vec2u = workgroup_origin / vec2u(8, 8);
+		let output_extent: vec2u = image_size(reduced_depth_3);
+		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
+			write(reduced_depth_3, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		}
+	}
 }

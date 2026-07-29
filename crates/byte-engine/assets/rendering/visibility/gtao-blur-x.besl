@@ -19,7 +19,7 @@ visibility_depth: descriptor<Texture2D, 1033, read>;
 ao_source: descriptor<Texture2D, 1034, read>;
 ao_output: descriptor<StorageImage<r8>, 1035, write>;
 
-shared_depth: workgroup<f32, 160>;
+shared_linear_depth: workgroup<f32, 160>;
 shared_ao: workgroup<f32, 128>;
 
 GTAO_BLUR_WORKGROUP_WIDTH: const u32 = 8;
@@ -63,13 +63,20 @@ clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
 }
 
 linear_view_depth: fn (depth: f32, inverse_projection: mat4f) -> f32 {
-	let clip_space: vec4f = vec4f(0.0, 0.0, depth, 1.0);
-	let view_space: vec4f = inverse_projection * clip_space;
-	return max(view_space.z / view_space.w, 0.0001);
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	let view_z: f32 = (
+		depth * inverse_projection[2].z
+		+ inverse_projection[3].z
+	) / (
+		depth * inverse_projection[2].w
+		+ inverse_projection[3].w
+	);
+	return max(view_z, 0.0001);
 }
 
-relative_depth_delta: fn (center_linear_depth: f32, sample_depth: f32, inverse_projection: mat4f) -> f32 {
-	let sample_linear_depth: f32 = linear_view_depth(sample_depth, inverse_projection);
+relative_depth_delta: fn (center_linear_depth: f32, sample_linear_depth: f32) -> f32 {
 	return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 0.0001);
 }
 
@@ -82,7 +89,7 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 }
 
 shared_depth_at: fn (coordinate: vec2u) -> f32 {
-	return shared_depth[coordinate.y * GTAO_BLUR_DEPTH_TILE_WIDTH + coordinate.x];
+	return shared_linear_depth[coordinate.y * GTAO_BLUR_DEPTH_TILE_WIDTH + coordinate.x];
 }
 
 shared_ao_at: fn (coordinate: vec2u) -> f32 {
@@ -121,32 +128,27 @@ neighbor_stats: fn (
 	offset_x: u32,
 	offset_y: u32,
 	negative_x: u32,
-	negative_y: u32,
-	inverse_projection: mat4f
+	negative_y: u32
 ) -> vec3f {
-	let sample_depth: f32 = neighbor_depth(pixel, offset_x, offset_y, negative_x, negative_y);
-	if (sample_depth == 0.0) {
+	let sample_linear_depth: f32 = neighbor_depth(pixel, offset_x, offset_y, negative_x, negative_y);
+	if (sample_linear_depth == 0.0) {
 		return vec3f(0.0, 0.0, 0.0);
 	}
 
-	let delta: f32 = relative_depth_delta(center_linear_depth, sample_depth, inverse_projection);
+	let delta: f32 = relative_depth_delta(center_linear_depth, sample_linear_depth);
 	return vec3f(delta, delta * delta, 1.0);
 }
 
-compute_local_depth_variance: fn (
-	pixel: vec2u,
-	center_linear_depth: f32,
-	inverse_projection: mat4f
-) -> f32 {
-	let sample_aa: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 1, inverse_projection);
-	let sample_ab: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 1, inverse_projection);
-	let sample_ac: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 1, inverse_projection);
-	let sample_ba: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 1, 0, inverse_projection);
-	let sample_bb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 0, 0, 0, inverse_projection);
-	let sample_bc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 0, 0, inverse_projection);
-	let sample_ca: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 0, inverse_projection);
-	let sample_cb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 0, inverse_projection);
-	let sample_cc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 0, inverse_projection);
+compute_local_depth_variance: fn (pixel: vec2u, center_linear_depth: f32) -> f32 {
+	let sample_aa: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 1);
+	let sample_ab: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 1);
+	let sample_ac: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 1);
+	let sample_ba: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 1, 0);
+	let sample_bb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 0, 0, 0);
+	let sample_bc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 0, 0, 0);
+	let sample_ca: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 1, 0);
+	let sample_cb: vec3f = neighbor_stats(pixel, center_linear_depth, 0, 1, 0, 0);
+	let sample_cc: vec3f = neighbor_stats(pixel, center_linear_depth, 1, 1, 0, 0);
 
 	let mean: f32 = sample_aa.x;
 	mean = mean + sample_ab.x;
@@ -200,8 +202,10 @@ main: fn () -> void {
 		coord.y - coord.y % GTAO_BLUR_WORKGROUP_HEIGHT
 	);
 	let lane: u32 = thread_idx();
+	let inverse_projection: mat4f = views.views[0].inverse_projection;
 
-	// Every lane loads part of the depth and AO halos before the workgroup reads either tile.
+	// Linearize each depth texel once while loading the shared tile. Every later
+	// variance and bilateral tap reuses that value without another matrix multiply.
 	for (let index: u32 = lane; index < GTAO_BLUR_DEPTH_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let tile_coordinate: vec2u = vec2u(
 			index % GTAO_BLUR_DEPTH_TILE_WIDTH,
@@ -211,7 +215,7 @@ main: fn () -> void {
 			tiled_source_coordinate(workgroup_origin.x, tile_coordinate.x, GTAO_BLUR_DEPTH_HALO_X, extent.x),
 			tiled_source_coordinate(workgroup_origin.y, tile_coordinate.y, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
 		);
-		shared_depth[index] = fetch(visibility_depth, source_coordinate).x;
+		shared_linear_depth[index] = linear_view_depth(fetch(visibility_depth, source_coordinate).x, inverse_projection);
 	}
 	for (let index: u32 = lane; index < GTAO_BLUR_AO_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let tile_coordinate: vec2u = vec2u(
@@ -228,7 +232,6 @@ main: fn () -> void {
 
 	// Partial edge workgroups must synchronize before their out-of-bounds lanes return.
 	guard_image_bounds(ao_output, coord);
-	let inverse_projection: mat4f = views.views[0].inverse_projection;
 	let local_coordinate: vec2u = coord - workgroup_origin;
 	let depth_coordinate: vec2u = vec2u(
 		local_coordinate.x + GTAO_BLUR_DEPTH_HALO_X,
@@ -239,19 +242,14 @@ main: fn () -> void {
 		local_coordinate.y
 	);
 
-	let center_depth: f32 = shared_depth_at(depth_coordinate);
-	if (center_depth == 0.0) {
+	let center_linear_depth: f32 = shared_depth_at(depth_coordinate);
+	if (center_linear_depth == 0.0) {
 		write(ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 
 	let center_ao: f32 = shared_ao_at(ao_coordinate);
-	let center_linear_depth: f32 = linear_view_depth(center_depth, inverse_projection);
-	let local_depth_variance: f32 = compute_local_depth_variance(
-		depth_coordinate,
-		center_linear_depth,
-		inverse_projection
-	);
+	let local_depth_variance: f32 = compute_local_depth_variance(depth_coordinate, center_linear_depth);
 	let local_depth_stddev: f32 = sqrt(local_depth_variance);
 	let blur_mix: f32 = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
 	// Reuse the pixel-invariant bilateral scale across every depth tap.
@@ -268,9 +266,9 @@ main: fn () -> void {
 
 		let positive_depth_coord: vec2u = blur_sample_coordinate(depth_coordinate, offset, 0);
 		let positive_ao_coord: vec2u = blur_sample_coordinate(ao_coordinate, offset, 0);
-		let positive_depth: f32 = shared_depth_at(positive_depth_coord);
-		if (positive_depth != 0.0) {
-			let positive_difference: f32 = abs(relative_depth_delta(center_linear_depth, positive_depth, inverse_projection));
+		let positive_linear_depth: f32 = shared_depth_at(positive_depth_coord);
+		if (positive_linear_depth != 0.0) {
+			let positive_difference: f32 = abs(relative_depth_delta(center_linear_depth, positive_linear_depth));
 			let positive_weight: f32 = spatial_weight * compute_bilateral_weight(positive_difference, inverse_depth_variance_scale);
 			filtered_ao = filtered_ao + shared_ao_at(positive_ao_coord) * positive_weight;
 			total_weight = total_weight + positive_weight;
@@ -278,9 +276,9 @@ main: fn () -> void {
 
 		let negative_depth_coord: vec2u = blur_sample_coordinate(depth_coordinate, offset, 1);
 		let negative_ao_coord: vec2u = blur_sample_coordinate(ao_coordinate, offset, 1);
-		let negative_depth: f32 = shared_depth_at(negative_depth_coord);
-		if (negative_depth != 0.0) {
-			let negative_difference: f32 = abs(relative_depth_delta(center_linear_depth, negative_depth, inverse_projection));
+		let negative_linear_depth: f32 = shared_depth_at(negative_depth_coord);
+		if (negative_linear_depth != 0.0) {
+			let negative_difference: f32 = abs(relative_depth_delta(center_linear_depth, negative_linear_depth));
 			let negative_weight: f32 = spatial_weight * compute_bilateral_weight(negative_difference, inverse_depth_variance_scale);
 			filtered_ao = filtered_ao + shared_ao_at(negative_ao_coord) * negative_weight;
 			total_weight = total_weight + negative_weight;

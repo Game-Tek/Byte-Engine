@@ -225,9 +225,14 @@ mod tests {
 mod debug_tests {
 	use std::{
 		fs,
-		sync::Arc,
+		sync::{
+			atomic::{AtomicUsize, Ordering},
+			Arc,
+		},
 		time::{SystemTime, UNIX_EPOCH},
 	};
+
+	use utils::sync::Mutex;
 
 	use super::ResourceManager;
 	use crate::{
@@ -239,7 +244,9 @@ mod debug_tests {
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
-		resources::material::Shader,
+		resources::material::{Shader, ShaderArtifact, ShaderInterface},
+		types::ShaderTypes,
+		ProcessedAsset,
 	};
 
 	struct ResolvingAssetHandler;
@@ -251,6 +258,48 @@ mod debug_tests {
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 			context.resolve(id).await.map(|_| ())
+		}
+	}
+
+	struct CoordinatingShaderHandler {
+		invocations: Arc<AtomicUsize>,
+		started: Mutex<Option<announcement::Announcer<()>>>,
+		release: announcement::Listener<()>,
+	}
+
+	impl AssetHandler for CoordinatingShaderHandler {
+		fn can_handle(&self, extension: &str) -> bool {
+			extension == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			self.invocations.fetch_add(1, Ordering::SeqCst);
+			self.started
+				.lock()
+				.take()
+				.expect("the test handler should start once")
+				.announce(())
+				.expect("test startup announcement should be open");
+			self.release
+				.listen()
+				.await
+				.expect("test release announcement should remain open");
+			context.store_primary(
+				ProcessedAsset::new(
+					id,
+					Shader {
+						id: id.to_string(),
+						stage: ShaderTypes::Compute,
+						interface: ShaderInterface {
+							workgroup_size: None,
+							bindings: Vec::new(),
+						},
+						artifact: ShaderArtifact::Spirv,
+						source_hash: 0,
+					},
+				),
+				&[],
+			)
 		}
 	}
 
@@ -317,6 +366,42 @@ mod debug_tests {
 		assert_eq!(items.len(), 1);
 		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
 		fs::remove_dir_all(assets).unwrap();
+	}
+
+	#[r#async::test]
+	async fn concurrent_resource_requests_share_one_missing_asset_bake() {
+		let invocations = Arc::new(AtomicUsize::new(0));
+		let (started, started_announcement) = announcement::Announcement::new();
+		let (release, release_announcement) = announcement::Announcement::new();
+		let mut asset_manager = AssetManager::new(AssetTestStorageBackend::new());
+		asset_manager.add_asset_handler(CoordinatingShaderHandler {
+			invocations: Arc::clone(&invocations),
+			started: Mutex::new(Some(started)),
+			release: release_announcement.listener(),
+		});
+		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		resource_manager.set_asset_manager(asset_manager);
+
+		let release_handler = async {
+			started_announcement
+				.listener()
+				.listen()
+				.await
+				.expect("asset bake should start");
+			release.announce(()).expect("release should be announced once");
+		};
+		let requests = async {
+			std::future::join!(
+				resource_manager.request::<Shader>("shared.test"),
+				resource_manager.request::<Shader>("shared.test"),
+			)
+			.await
+		};
+		let (_, (first, second)) = std::future::join!(release_handler, requests).await;
+
+		assert!(first.is_ok());
+		assert!(second.is_ok());
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 	}
 }
 

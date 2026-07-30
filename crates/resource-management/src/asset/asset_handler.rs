@@ -5,7 +5,7 @@ use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{asset_manager::AssetManager, AssetStorageBytes, BEADType, ResourceId};
 use crate::{asset, resource, Model, ProcessedAsset, ReferenceModel, SerializableResource};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadErrors {
 	AssetDoesNotExist,
 	FailedToProcess,

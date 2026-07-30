@@ -1,22 +1,3 @@
-use std::{
-	alloc::{Allocator, Global},
-	cell::Cell,
-};
-
-#[cfg(debug_assertions)]
-use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
-use super::{
-	asset_handler::{AssetHandler, BakeContext},
-	StorageBackend,
-};
-use crate::{
-	asset::{self, asset_handler::LoadErrors, ResourceId},
-	online_docs_url,
-	r#async::BoxedFuture,
-	resource::{self, StorageBackend as ResourceStorageBackend},
-	Model, ProcessedAsset, ReferenceModel,
-};
-
 const ASSETS_DOCS_PATH: &str = "develop/design/resource-management/assets";
 
 trait AbstractAssetHandler: Send + Sync {
@@ -36,12 +17,13 @@ trait AbstractAssetHandler: Send + Sync {
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn StorageBackend>,
+	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
 }
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadMessages {
 	/// The asset was not found in the storage backend.
 	NoAsset,
@@ -66,6 +48,7 @@ impl AssetManager {
 		Self {
 			asset_handlers: Vec::with_capacity(8),
 			storage_backend: Box::new(storage_backend),
+			in_flight_bakes: Mutex::new(HashMap::with_capacity(32)),
 			#[cfg(debug_assertions)]
 			resource_trace: ResourceTrace::default(),
 		}
@@ -155,7 +138,51 @@ impl AssetManager {
 		resource_storage_backend: &dyn ResourceStorageBackend,
 		allocator: &dyn Allocator,
 	) -> Result<(), LoadMessages> {
+		enum Role {
+			Leader(announcement::Announcer<Result<(), LoadMessages>>),
+			Follower(announcement::Listener<Result<(), LoadMessages>>),
+		}
+
+		let notification = {
+			let mut registry = self.in_flight_bakes.lock();
+
+			match registry.entry(id.to_owned()) {
+				Occupied(entry) => Role::Follower(entry.get().listener()),
+				Vacant(entry) => {
+					let (announcer, announcement) = announcement::Announcement::new();
+
+					entry.insert(announcement);
+
+					Role::Leader(announcer)
+				}
+			}
+		};
+
+		match notification {
+			Role::Leader(notification) => {
+				let result = self.bake_uncoalesced(id, resource_storage_backend, allocator).await;
+
+				notification.announce(result.clone()).unwrap();
+
+				self.in_flight_bakes.lock().remove(id);
+
+				result
+			}
+			Role::Follower(notification) => notification.listen().await.unwrap(), // This will panic when the announcer is closed, eg: when the bake is cancelled
+		}
+	}
+
+	/// Runs one asset handler invocation without consulting the in-flight registry.
+	///
+	/// Call this method directly when no coalescing is desired.
+	async fn bake_uncoalesced(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+		allocator: &dyn Allocator,
+	) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
+
 		#[cfg(debug_assertions)]
 		{
 			self.resource_trace.clear(id);
@@ -193,7 +220,8 @@ impl AssetManager {
 		let start_time = std::time::Instant::now();
 
 		// The shared flag enforces the primary-write contract without rereading potentially expensive storage.
-		let primary_stored = Cell::new(false);
+		let primary_stored = Cell::new(false); // TODO: revise this
+
 		let context = BakeContext::new(
 			self,
 			resource_storage_backend,
@@ -304,6 +332,14 @@ impl AssetManager {
 
 #[cfg(test)]
 pub mod tests {
+	use std::{
+		future::Future,
+		sync::{
+			atomic::{AtomicUsize, Ordering},
+			Arc,
+		},
+	};
+
 	use super::*;
 	#[cfg(debug_assertions)]
 	use crate::asset::ResourceTraceLevel;
@@ -329,6 +365,72 @@ pub mod tests {
 		fn new() -> TestAssetHandler {
 			TestAssetHandler {}
 		}
+	}
+
+	struct CoordinatingAssetHandler {
+		invocations: Arc<AtomicUsize>,
+		started: Arc<Vec<Mutex<Option<announcement::Announcer<()>>>>>,
+		release: announcement::Listener<()>,
+		fail: bool,
+		block_first_only: bool,
+	}
+
+	impl AssetHandler for CoordinatingAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			let invocation = self.invocations.fetch_add(1, Ordering::SeqCst);
+			self.started[invocation]
+				.lock()
+				.take()
+				.expect("each test invocation should announce once")
+				.announce(())
+				.expect("test invocation announcement should be open");
+			if !self.block_first_only || invocation == 0 {
+				self.release
+					.listen()
+					.await
+					.expect("test release announcement should remain open");
+			}
+
+			if self.fail {
+				Err(LoadErrors::FailedToProcess)
+			} else {
+				context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+			}
+		}
+	}
+
+	fn coordinating_asset_manager(
+		fail: bool,
+		block_first_only: bool,
+	) -> (
+		AssetManager,
+		Arc<AtomicUsize>,
+		Vec<announcement::Listener<()>>,
+		announcement::Announcer<()>,
+	) {
+		let invocations = Arc::new(AtomicUsize::new(0));
+		let mut started_announcers = Vec::with_capacity(8);
+		let mut started_listeners = Vec::with_capacity(8);
+		for _ in 0..8 {
+			let (announcer, announcement) = announcement::Announcement::new();
+			started_announcers.push(Mutex::new(Some(announcer)));
+			started_listeners.push(announcement.listener());
+		}
+		let started = Arc::new(started_announcers);
+		let (release, release_announcement) = announcement::Announcement::new();
+		let mut manager = AssetManager::new(TestStorageBackend::new());
+		manager.add_asset_handler(CoordinatingAssetHandler {
+			invocations: Arc::clone(&invocations),
+			started: Arc::clone(&started),
+			release: release_announcement.listener(),
+			fail,
+			block_first_only,
+		});
+		(manager, invocations, started_listeners, release)
 	}
 
 	impl AssetHandler for TestAssetHandler {
@@ -416,6 +518,99 @@ pub mod tests {
 			.get_resource(ResourceId::new("example.test"))
 			.expect("baked resource should be stored");
 		assert_eq!(resource.class, "TestResource");
+	}
+
+	#[r#async::test]
+	async fn concurrent_bakes_for_one_asset_and_store_share_one_invocation() {
+		let (asset_manager, invocations, started, release) = coordinating_asset_manager(false, false);
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let release_handler = async {
+			started[0].listen().await.expect("first invocation should start");
+			release.announce(()).expect("release should be announced once");
+		};
+		let requests = async {
+			std::future::join!(
+				asset_manager.bake("coalesced.test", &resource_storage_backend),
+				asset_manager.bake("coalesced.test", &resource_storage_backend),
+				asset_manager.bake("coalesced.test", &resource_storage_backend),
+			)
+			.await
+		};
+		let (_, results) = std::future::join!(release_handler, requests).await;
+
+		assert_eq!(results, (Ok(()), Ok(()), Ok(())));
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+	}
+
+	#[r#async::test]
+	async fn concurrent_failures_are_shared_but_later_bakes_retry() {
+		let (asset_manager, invocations, started, release) = coordinating_asset_manager(true, false);
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let release_handler = async {
+			started[0].listen().await.expect("first invocation should start");
+			release.announce(()).expect("release should be announced once");
+		};
+		let requests = async {
+			std::future::join!(
+				asset_manager.bake("failed.test", &resource_storage_backend),
+				asset_manager.bake("failed.test", &resource_storage_backend),
+			)
+			.await
+		};
+		let (_, (first, follower)) = std::future::join!(release_handler, requests).await;
+
+		assert_eq!(first, follower);
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		let retry = asset_manager.bake("failed.test", &resource_storage_backend).await;
+
+		assert_eq!(retry, first);
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+	}
+
+	#[r#async::test]
+	async fn completed_explicit_bake_is_not_memoized() {
+		let (asset_manager, invocations, started, release) = coordinating_asset_manager(false, true);
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let release_handler = async {
+			started[0].listen().await.expect("first invocation should start");
+			release.announce(()).expect("release should be announced once");
+		};
+		let (_, first) =
+			std::future::join!(release_handler, asset_manager.bake("repeat.test", &resource_storage_backend),).await;
+		assert_eq!(first, Ok(()));
+		assert_eq!(asset_manager.bake("repeat.test", &resource_storage_backend).await, Ok(()));
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+	}
+
+	#[r#async::test]
+	async fn different_assets_and_destination_stores_do_not_coalesce() {
+		let (asset_manager, invocations, started, release) = coordinating_asset_manager(false, false);
+		let first_storage = ResourceTestStorageBackend::new();
+		let second_storage = ResourceTestStorageBackend::new();
+
+		let release_handler = async {
+			// Three invocations are enough to prove progress without hanging when two stores are incorrectly coalesced.
+			started[2].listen().await.expect("three independent invocations should start");
+			release.announce(()).expect("release should be announced once");
+		};
+		let requests = async {
+			std::future::join!(
+				asset_manager.bake("first.test", &first_storage),
+				asset_manager.bake("second.test", &first_storage),
+				asset_manager.bake("shared.test", &first_storage),
+				asset_manager.bake("shared.test", &second_storage),
+			)
+			.await
+		};
+		let (_, results) = std::future::join!(release_handler, requests).await;
+
+		assert_eq!(results, (Ok(()), Ok(()), Ok(()), Ok(())));
+		assert_eq!(invocations.load(Ordering::SeqCst), 4);
 	}
 
 	#[r#async::test]
@@ -541,3 +736,29 @@ pub mod tests {
 		assert!(resource_storage_backend.get_resources().is_empty());
 	}
 }
+
+use std::{
+	alloc::{Allocator, Global},
+	cell::Cell,
+	collections::hash_map::Entry::{Occupied, Vacant},
+	ops::Deref,
+	sync::Arc,
+};
+
+use announcement;
+use gxhash::HashMapExt;
+use utils::{hash::HashMap, sync::Mutex};
+
+#[cfg(debug_assertions)]
+use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
+use super::{
+	asset_handler::{AssetHandler, BakeContext},
+	StorageBackend,
+};
+use crate::{
+	asset::{self, asset_handler::LoadErrors, ResourceId},
+	online_docs_url,
+	r#async::BoxedFuture,
+	resource::{self, StorageBackend as ResourceStorageBackend},
+	Model, ProcessedAsset, ReferenceModel,
+};

@@ -118,12 +118,17 @@ impl<A: Allocator + Clone> Generator<A> {
 		&self.allocator
 	}
 
-	/// Reports whether one reachable AST branch uses compare exchange.
-	fn uses_atomic_compare_exchange(node: &besl::NodeReference) -> bool {
+	/// Reports whether one reachable AST branch uses the requested intrinsic.
+	fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
 		match node.borrow().node() {
-			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::uses_atomic_compare_exchange),
+			besl::Nodes::Function { statements, .. } => statements
+				.iter()
+				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
 			besl::Nodes::Conditional { condition, statements } => {
-				Self::uses_atomic_compare_exchange(condition) || statements.iter().any(Self::uses_atomic_compare_exchange)
+				Self::uses_intrinsic(condition, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
 			}
 			besl::Nodes::ForLoop {
 				initializer,
@@ -131,28 +136,38 @@ impl<A: Allocator + Clone> Generator<A> {
 				update,
 				statements,
 			} => {
-				Self::uses_atomic_compare_exchange(initializer)
-					|| Self::uses_atomic_compare_exchange(condition)
-					|| Self::uses_atomic_compare_exchange(update)
-					|| statements.iter().any(Self::uses_atomic_compare_exchange)
+				Self::uses_intrinsic(initializer, intrinsic_name)
+					|| Self::uses_intrinsic(condition, intrinsic_name)
+					|| Self::uses_intrinsic(update, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
 			}
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				} => {
-					intrinsic.borrow().get_name().as_deref() == Some("atomic_compare_exchange")
-						|| arguments.iter().any(Self::uses_atomic_compare_exchange)
+					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+						|| arguments
+							.iter()
+							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
 				}
 				besl::Expressions::Operator { left, right, .. } => {
-					Self::uses_atomic_compare_exchange(left) || Self::uses_atomic_compare_exchange(right)
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
 				}
-				besl::Expressions::FunctionCall { parameters, .. } => parameters.iter().any(Self::uses_atomic_compare_exchange),
-				besl::Expressions::Expression { elements } => elements.iter().any(Self::uses_atomic_compare_exchange),
-				besl::Expressions::Macro { body, .. } => Self::uses_atomic_compare_exchange(body),
-				besl::Expressions::Member { source, .. } => Self::uses_atomic_compare_exchange(source),
-				besl::Expressions::Return { value } => value.as_ref().is_some_and(Self::uses_atomic_compare_exchange),
+				besl::Expressions::FunctionCall { parameters, .. } => parameters
+					.iter()
+					.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name)),
+				besl::Expressions::Expression { elements } => {
+					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
+				}
+				besl::Expressions::Macro { body, .. } => Self::uses_intrinsic(body, intrinsic_name),
+				besl::Expressions::Member { source, .. } => Self::uses_intrinsic(source, intrinsic_name),
+				besl::Expressions::Return { value } => value
+					.as_ref()
+					.is_some_and(|value| Self::uses_intrinsic(value, intrinsic_name)),
 				besl::Expressions::Accessor { left, right } => {
-					Self::uses_atomic_compare_exchange(left) || Self::uses_atomic_compare_exchange(right)
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
 				}
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
@@ -329,8 +344,14 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		let mut string = String::with_capacity(2048);
 
-		let uses_atomic_compare_exchange = order.iter().any(Self::uses_atomic_compare_exchange);
-		self.generate_msl_header_block(&mut string, shader_compilation_settings, uses_atomic_compare_exchange);
+		let uses_atomic_compare_exchange = order.iter().any(|node| Self::uses_intrinsic(node, "atomic_compare_exchange"));
+		let uses_sincos = order.iter().any(|node| Self::uses_intrinsic(node, "sincos"));
+		self.generate_msl_header_block(
+			&mut string,
+			shader_compilation_settings,
+			uses_atomic_compare_exchange,
+			uses_sincos,
+		);
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(&order) => {
@@ -2341,6 +2362,21 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"fma" => {
+				string.push_str("fma(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"sincos" => {
+				string.push_str("_besl_sincos(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push(')');
+			}
+			"round_to_i32" => {
+				string.push_str("int2(round(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
 			"radians" => {
 				string.push('(');
 				self.emit_node_string(string, &arguments[0]);
@@ -2781,6 +2817,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		msl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
 		uses_atomic_compare_exchange: bool,
+		uses_sincos: bool,
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
@@ -2800,6 +2837,16 @@ impl<A: Allocator + Clone> Generator<A> {
 				 \t\tif (expected != original) { return expected; }\n\
 				 \t}\n\
 				 \treturn original;\n\
+				 }\n",
+			);
+		}
+		if uses_sincos {
+			// Metal's two-result intrinsic returns sine and writes cosine through the second argument.
+			msl_block.push_str(
+				"inline float2 _besl_sincos(float value) {\n\
+				 \tfloat cosine;\n\
+				 \tfloat sine = sincos(value, cosine);\n\
+				 \treturn float2(sine, cosine);\n\
 				 }\n",
 			);
 		}
@@ -3309,8 +3356,14 @@ mod tests {
 		main: fn () -> void {
 			let angle: f32 = radians(180.0);
 			let inverse: f32 = inversesqrt(4.0);
+			let trigonometry: vec2f = sincos(angle);
+			let fused: vec2f = fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0));
+			let rounded: vec2i = round_to_i32(vec2f(0.0 - 1.6, 2.4));
 			angle;
 			inverse;
+			trigonometry;
+			fused;
+			rounded;
 		}
 		"#;
 
@@ -3326,6 +3379,9 @@ mod tests {
 
 		assert_string_contains!(shader, "float angle=(180.0*(PI/180.0));");
 		assert_string_contains!(shader, "rsqrt(4.0)");
+		assert_string_contains!(shader, "float2 trigonometry=_besl_sincos(angle);");
+		assert_string_contains!(shader, "float2 fused=fma(float2(2.0,3.0),float2(4.0,5.0),float2(1.0,2.0));");
+		assert_string_contains!(shader, "int2 rounded=int2(round(float2(0.0-1.6,2.4)));");
 	}
 
 	#[test]

@@ -179,6 +179,8 @@ mod tests {
 		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot,
 		TaskOutputs, Texture, Value, WorkgroupState,
 	};
+	#[cfg(target_os = "macos")]
+	use resource_management::shader::besl::backends::msl::Generator as MslGenerator;
 	use resource_management::shader::{
 		besl::{backends::hlsl::Generator as HlslGenerator, evaluation::ProgramEvaluation},
 		ShaderGenerationSettings,
@@ -203,6 +205,9 @@ mod tests {
 	const FIXTURE_MESHLET_INDEX: usize = 5;
 	const TASK_WORKGROUP_SIZE: u32 = 32;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
+	const GTAO_WORKGROUP_WIDTH: u32 = 16;
+	const GTAO_WORKGROUP_HEIGHT: u32 = 8;
+	const GTAO_WORKGROUP_SIZE: usize = 128;
 	const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
 	const GTAO_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
@@ -306,18 +311,54 @@ mod tests {
 
 	/// Guards the complete GTAO interface persisted beside the native shader artifact.
 	#[test]
-	fn gtao_reflects_depth_pyramid_resources_used_by_nested_helpers() {
+	fn gtao_reflects_compact_view_and_linear_hierarchy_resources() {
 		assert_reflected_resources(
 			gtao_program(),
 			&[
-				(0, "views"),
+				(0, "gtao_view"),
 				(1033, "visibility_depth"),
 				(1034, "ao_output"),
-				(1035, "depth_pyramid_1"),
-				(1036, "depth_pyramid_2"),
-				(1037, "depth_pyramid_3"),
+				(1035, "linear_depth_1"),
+				(1036, "linear_depth_2"),
+				(1037, "linear_depth_3"),
 			],
 		);
+		assert_reflected_resources(
+			gtao_depth_pyramid_program(),
+			&[
+				(0, "gtao_view"),
+				(1033, "source_depth"),
+				(1034, "reduced_depth_1"),
+				(1035, "reduced_depth_2"),
+				(1036, "reduced_depth_3"),
+			],
+		);
+	}
+
+	/// Verifies the production GTAO source reaches Apple's compiler with its shared cache and compact camera layout.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn gtao_metal_sources_compile_with_linear_hierarchy_and_shared_cache() {
+		for (name, workgroup, program) in [
+			(
+				"gtao-linear-depth-hierarchy",
+				utils::Extent::square(GTAO_PYRAMID_WORKGROUP_WIDTH),
+				gtao_depth_pyramid_program(),
+			),
+			(
+				"gtao-shared-cache",
+				utils::Extent::new(GTAO_WORKGROUP_WIDTH, GTAO_WORKGROUP_HEIGHT, 1),
+				gtao_program(),
+			),
+		] {
+			let source = MslGenerator::new()
+				.minified(true)
+				.generate(&ShaderGenerationSettings::compute(workgroup), &program)
+				.expect("Failed to generate production GTAO Metal source. The most likely cause is unsupported BESL lowering.");
+
+			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name)
+				.expect("Failed to compile production GTAO Metal source. The most likely cause is invalid generated MSL.");
+		}
 	}
 
 	/// Verifies a BESL prepass exposes only its reachable flat resources.
@@ -839,18 +880,155 @@ mod tests {
 		);
 	}
 
-	/// Creates the minimum camera data shared by the GTAO shader fixtures.
-	fn gtao_views(program: &ExecutableProgram) -> besl::vm::Buffer {
+	/// Creates compact camera data for one square GTAO shader fixture.
+	fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
+		let near = 0.1f32;
+		let far = 100.0f32;
+		let projection = math::projection_matrix(60.0, width as f32 / height as f32, near, far);
+		let projection_x = projection[0];
+		let projection_y = projection[5];
+		let width = width as f32;
+		let height = height as f32;
+		let mut view = buffer(program, VIEWS_SLOT);
+		for (member, value) in [
+			(
+				"pixel_to_ray_mul",
+				Value::Vec2F([2.0 / (width * projection_x), -2.0 / (height * projection_y)]),
+			),
+			(
+				"pixel_to_ray_add",
+				Value::Vec2F([(1.0 / width - 1.0) / projection_x, (1.0 - 1.0 / height) / projection_y]),
+			),
+			("projection_pixels_y", Value::F32(height * projection_y * 0.5)),
+			("view_z_sign", Value::F32(1.0)),
+			("depth_unproject_numerator", Value::F32(near * far / (far - near))),
+			("depth_unproject_denominator_offset", Value::F32(near / (far - near))),
+		] {
+			view.write(member, value)
+				.expect("Failed to initialize compact GTAO view data. The most likely cause is a drifted FastGTAOView layout.");
+		}
+		view
+	}
+
+	/// Reconstructs the positive fixture distance encoded by one reversed device depth.
+	fn gtao_fixture_linear_depth(depth: f32) -> f32 {
+		if depth == 0.0 {
+			return 0.0;
+		}
+		let near = 0.1f32;
+		let far = 100.0f32;
+		let range = far - near;
+		(near * far / range) / (depth + near / range)
+	}
+
+	/// Encodes positive view-space distance as the reversed device depth used by the GTAO fixture camera.
+	fn gtao_fixture_device_depth(linear_depth: f32) -> f32 {
+		let near = 0.1f32;
+		let far = 100.0f32;
+		let range = far - near;
+		(near * far / (range * linear_depth) - near / range).clamp(0.0, 1.0)
+	}
+
+	/// Reduces one positive-linear-depth image while ignoring zero-valued background texels.
+	fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) -> (Vec<[f32; 4]>, u32, u32) {
+		let reduced_width = width.div_ceil(2).max(1);
+		let reduced_height = height.div_ceil(2).max(1);
+		let mut reduced = vec![[0.0, 0.0, 0.0, 1.0]; (reduced_width * reduced_height) as usize];
+
+		for y in 0..reduced_height {
+			for x in 0..reduced_width {
+				let mut nearest = 0.0f32;
+				for offset_y in 0..2 {
+					for offset_x in 0..2 {
+						let source_x = (x * 2 + offset_x).min(width - 1);
+						let source_y = (y * 2 + offset_y).min(height - 1);
+						let depth = source[(source_y * width + source_x) as usize][0];
+						if depth != 0.0 && (nearest == 0.0 || depth < nearest) {
+							nearest = depth;
+						}
+					}
+				}
+				reduced[(y * reduced_width + x) as usize][0] = nearest;
+			}
+		}
+
+		(reduced, reduced_width, reduced_height)
+	}
+
+	/// Executes GTAO over a flat floor whose pixel footprint crosses the former absolute normal cutoff.
+	fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> [f32; 4] {
+		const EXTENT: u32 = 64;
+		let projection = math::projection_matrix(60.0, 1.0, 0.1, 100.0);
+		let ray_mul_y = -2.0 / (EXTENT as f32 * projection[5]);
+		let ray_add_y = (1.0 - 1.0 / EXTENT as f32) / projection[5];
+		let mut device_depth = vec![[0.0, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
+		let mut linear_depth = vec![[0.0, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
+
+		for y in 0..EXTENT {
+			let ray_y = y as f32 * ray_mul_y + ray_add_y;
+			if ray_y >= 0.0 {
+				continue;
+			}
+			let depth = (0.0 - camera_height) / ray_y;
+			if !(0.1..=100.0).contains(&depth) {
+				continue;
+			}
+			for x in 0..EXTENT {
+				let index = (y * EXTENT + x) as usize;
+				device_depth[index][0] = gtao_fixture_device_depth(depth);
+				linear_depth[index][0] = depth;
+			}
+		}
+
+		let (linear_depth_1, width_1, height_1) = reduce_nearest_nonzero_depth(&linear_depth, EXTENT, EXTENT);
+		let (linear_depth_2, width_2, height_2) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
+		let (linear_depth_3, width_3, height_3) = reduce_nearest_nonzero_depth(&linear_depth_2, width_2, height_2);
+		let mut view = gtao_view_data(program, EXTENT, EXTENT);
+		let mut depth = texture_2d(EXTENT, EXTENT, &device_depth);
+		let mut pyramid_1 = texture_2d(width_1, height_1, &linear_depth_1);
+		let mut pyramid_2 = texture_2d(width_2, height_2, &linear_depth_2);
+		let mut pyramid_3 = texture_2d(width_3, height_3, &linear_depth_3);
+		let mut output = empty_image(EXTENT, EXTENT);
+		let group_base = [
+			coordinate[0] / GTAO_WORKGROUP_WIDTH * GTAO_WORKGROUP_WIDTH,
+			coordinate[1] / GTAO_WORKGROUP_HEIGHT * GTAO_WORKGROUP_HEIGHT,
+		];
+		let configs: [ExecutionConfig; GTAO_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([
+					group_base[0] + lane % GTAO_WORKGROUP_WIDTH,
+					group_base[1] + lane / GTAO_WORKGROUP_WIDTH,
+				])
+		});
+		let mut workgroup = WorkgroupState::new();
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
+			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
+			descriptors.bind_texture(ResourceSlot::new(1037), &mut pyramid_3);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program
+				.run_workgroup(&mut descriptors, &configs)
+				.expect("Failed to execute the floor-normal GTAO fixture. The most likely cause is invalid shared-cache synchronization.");
+		}
+		rgba(&output, coordinate)
+	}
+
+	/// Creates the legacy camera data still consumed by the edge-aware blur shaders.
+	fn gtao_blur_views(program: &ExecutableProgram) -> besl::vm::Buffer {
 		use math::{mat::MatInverse as _, ShaderMatrix4};
 
 		let mut views = buffer(program, VIEWS_SLOT);
 		let inverse_projection: ShaderMatrix4 = math::projection_matrix(60.0, 1.0, 0.1, 100.0).inverse().into();
 		views
 			.write_indexed_field("views", 0, "inverse_projection", Value::Mat4F(inverse_projection.0))
-			.expect("Failed to initialize the GTAO inverse projection. The most likely cause is a drifted View layout.");
-		views
-			.write_indexed_field("views", 0, "fov", Value::Vec2F([60.0, 60.0]))
-			.expect("Failed to initialize the GTAO field of view. The most likely cause is a drifted View layout.");
+			.expect("Failed to initialize the GTAO blur inverse projection. The most likely cause is a drifted View layout.");
 		views
 	}
 
@@ -1128,7 +1306,7 @@ mod tests {
 		depth_texels: &[[f32; 4]],
 		coordinate: [u32; 2],
 	) -> [f32; 4] {
-		let mut views = gtao_views(program);
+		let mut view = gtao_view_data(program, width, height);
 		let mut depth = texture_2d(width, height, depth_texels);
 		let pyramid_1_extent = [width.div_ceil(2).max(1), height.div_ceil(2).max(1)];
 		let pyramid_2_extent = [width.div_ceil(4).max(1), height.div_ceil(4).max(1)];
@@ -1149,54 +1327,86 @@ mod tests {
 			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_3_extent[0] * pyramid_3_extent[1]) as usize],
 		);
 		let mut output = empty_image(width, height);
+		let group_base = [
+			coordinate[0] / GTAO_WORKGROUP_WIDTH * GTAO_WORKGROUP_WIDTH,
+			coordinate[1] / GTAO_WORKGROUP_HEIGHT * GTAO_WORKGROUP_HEIGHT,
+		];
+		let configs: [ExecutionConfig; GTAO_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([
+					group_base[0] + lane % GTAO_WORKGROUP_WIDTH,
+					group_base[1] + lane / GTAO_WORKGROUP_WIDTH,
+				])
+		});
+		let mut workgroup = WorkgroupState::new();
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
 			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
 			descriptors.bind_texture(ResourceSlot::new(1037), &mut pyramid_3);
-			run_at(program, &mut descriptors, coordinate);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the production GTAO workgroup. The most likely cause is broken cache synchronization or an invalid fixture binding.",
+			);
 		}
 		rgba(&output, coordinate)
 	}
 
 	/// Runs the production GTAO shader with uniform coarse levels so a fixture can isolate hierarchical sampling.
-	fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_depth: f32) -> [f32; 4] {
+	fn run_gtao_hierarchical_fixture(program: &ExecutableProgram, coarse_linear_depth: f32) -> [f32; 4] {
 		const EXTENT: u32 = 129;
 		const CENTER: [u32; 2] = [64, 64];
 		let mut full_resolution_texels = vec![[0.75, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
 		full_resolution_texels[(CENTER[1] * EXTENT + CENTER[0]) as usize] = [0.35, 0.0, 0.0, 1.0];
 
-		let mut views = gtao_views(program);
+		let mut view = gtao_view_data(program, EXTENT, EXTENT);
 		let mut depth = texture_2d(EXTENT, EXTENT, &full_resolution_texels);
-		let mut pyramid_1 = texture_2d(65, 65, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 65 * 65]);
-		let mut pyramid_2 = texture_2d(33, 33, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 33 * 33]);
-		let mut pyramid_3 = texture_2d(17, 17, &vec![[coarse_depth, 0.0, 0.0, 1.0]; 17 * 17]);
+		let mut pyramid_1 = texture_2d(65, 65, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 65 * 65]);
+		let mut pyramid_2 = texture_2d(33, 33, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 33 * 33]);
+		let mut pyramid_3 = texture_2d(17, 17, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 17 * 17]);
 		let mut output = empty_image(EXTENT, EXTENT);
+		let configs: [ExecutionConfig; GTAO_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([
+					CENTER[0] + lane % GTAO_WORKGROUP_WIDTH,
+					CENTER[1] + lane / GTAO_WORKGROUP_WIDTH,
+				])
+		});
+		let mut workgroup = WorkgroupState::new();
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
 			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
 			descriptors.bind_texture(ResourceSlot::new(1037), &mut pyramid_3);
-			run_at(program, &mut descriptors, CENTER);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the hierarchical GTAO fixture. The most likely cause is broken shared-cache addressing.",
+			);
 		}
 		rgba(&output, CENTER)
 	}
 
-	/// Verifies each production depth-pyramid texel keeps the nearest reversed-depth sample in its source footprint.
+	/// Verifies each production depth-pyramid texel keeps the nearest nonzero linear depth in its source footprint.
 	#[test]
-	fn gtao_depth_pyramid_reduces_odd_extents_with_conservative_maximums() {
+	fn gtao_depth_pyramid_reduces_odd_extents_to_nearest_linear_depth() {
 		let program = crate::rendering::shader_vm_test::compile(gtao_depth_pyramid_program());
 		let mut source = texture_2d(
 			3,
 			3,
 			&[
-				[0.1, 0.0, 0.0, 1.0],
+				[0.0, 0.0, 0.0, 1.0],
 				[0.2, 0.0, 0.0, 1.0],
 				[0.3, 0.0, 0.0, 1.0],
 				[0.4, 0.0, 0.0, 1.0],
@@ -1210,6 +1420,7 @@ mod tests {
 		let mut reduced_1 = empty_image(2, 2);
 		let mut reduced_2 = empty_image(1, 1);
 		let mut reduced_3 = empty_image(1, 1);
+		let mut view = gtao_view_data(&program, 3, 3);
 		let mut workgroup = WorkgroupState::new();
 		let configs: [ExecutionConfig; GTAO_PYRAMID_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
 			let lane = lane as u32;
@@ -1220,6 +1431,7 @@ mod tests {
 		});
 		{
 			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
 			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
@@ -1231,15 +1443,16 @@ mod tests {
 		}
 
 		for (coordinate, expected) in [
-			([0, 0], [0.9, 0.0, 0.0, 1.0]),
-			([1, 0], [0.5, 0.0, 0.0, 1.0]),
-			([0, 1], [0.7, 0.0, 0.0, 1.0]),
-			([1, 1], [0.8, 0.0, 0.0, 1.0]),
+			([0, 0], [gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0]),
+			([1, 0], [gtao_fixture_linear_depth(0.5), 0.0, 0.0, 1.0]),
+			([0, 1], [gtao_fixture_linear_depth(0.7), 0.0, 0.0, 1.0]),
+			([1, 1], [gtao_fixture_linear_depth(0.8), 0.0, 0.0, 1.0]),
 		] {
 			assert_rgba_close(rgba(&reduced_1, coordinate), expected, 0.00001);
 		}
-		assert_rgba_close(rgba(&reduced_2, [0, 0]), [0.9, 0.0, 0.0, 1.0], 0.00001);
-		assert_rgba_close(rgba(&reduced_3, [0, 0]), [0.9, 0.0, 0.0, 1.0], 0.00001);
+		let nearest = [gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0];
+		assert_rgba_close(rgba(&reduced_2, [0, 0]), nearest, 0.00001);
+		assert_rgba_close(rgba(&reduced_3, [0, 0]), nearest, 0.00001);
 	}
 
 	/// Verifies distant GTAO steps consume conservative hierarchy levels instead of always fetching full-resolution depth.
@@ -1247,7 +1460,7 @@ mod tests {
 	fn gtao_uses_depth_pyramid_for_distant_samples() {
 		let program = crate::rendering::shader_vm_test::compile(gtao_program());
 		let empty_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.0);
-		let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, 0.75);
+		let occupied_coarse_depth = run_gtao_hierarchical_fixture(&program, gtao_fixture_linear_depth(0.75));
 
 		assert!(
 			occupied_coarse_depth[0] < empty_coarse_depth[0],
@@ -1270,6 +1483,21 @@ mod tests {
 		assert_rgba_close(foreground, [0.8315444, 0.8315444, 0.8315444, 1.0], 0.00001);
 	}
 
+	/// Verifies flat-floor normals remain valid when their world-space finite differences become very small.
+	#[test]
+	fn gtao_floor_has_no_scale_dependent_normal_seam() {
+		let program = crate::rendering::shader_vm_test::compile(gtao_program());
+		let larger_floor = run_gtao_floor_fixture(&program, 0.1, [32, 63]);
+		let scaled_floor = run_gtao_floor_fixture(&program, 0.06, [32, 63]);
+
+		assert!(
+			(larger_floor[0] - scaled_floor[0]).abs() < 0.0005,
+			"Expected geometrically identical floors to preserve AO across world scales, got large={} and scaled={}. The most likely cause is a scale-dependent normal fallback.",
+			larger_floor[0],
+			scaled_floor[0]
+		);
+	}
+
 	/// Compiles one checked-in axis-specific GTAO blur asset.
 	fn compile_gtao_blur(source: &str) -> ExecutableProgram {
 		crate::rendering::shader_vm_test::compile(asset_program(source))
@@ -1284,7 +1512,7 @@ mod tests {
 		ao_texels: &[[f32; 4]],
 		coordinate: [u32; 2],
 	) -> [f32; 4] {
-		let mut views = gtao_views(program);
+		let mut views = gtao_blur_views(program);
 		let mut depth = texture_2d(width, height, depth_texels);
 		let mut ao = texture_2d(width, height, ao_texels);
 		let mut output = empty_image(width, height);

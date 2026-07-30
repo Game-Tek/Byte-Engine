@@ -909,6 +909,23 @@ impl Generator {
 			"threadgroup_position" => {
 				string.push_str("group_id.x");
 			}
+			"fma" => {
+				string.push_str("mad(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"sincos" => {
+				string.push_str("float2(sin(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("), cos(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
+			"round_to_i32" => {
+				string.push_str("int2(round(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
 			"workgroup_barrier" => {
 				string.push_str("GroupMemoryBarrierWithGroupSync()");
 			}

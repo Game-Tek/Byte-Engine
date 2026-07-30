@@ -73,6 +73,10 @@ pub(super) enum Instruction {
 		operator: ScalarUnaryOperator,
 		value: usize,
 	},
+	RoundToVec2I {
+		register: usize,
+		value: usize,
+	},
 	BinaryScalar {
 		register: usize,
 		operator: ScalarBinaryOperator,
@@ -337,4 +341,5 @@ pub(super) enum ScalarTernaryOperator {
 	Smoothstep,
 	Mix,
 	Clamp,
+	Fma,
 }

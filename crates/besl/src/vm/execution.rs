@@ -311,6 +311,16 @@ impl ExecutableProgram {
 					let value = read_register(registers, *value)?;
 					registers[*register] = Some(apply_scalar_unary(*operator, &value)?);
 				}
+				Instruction::RoundToVec2I { register, value } => {
+					let value = read_register(registers, *value)?;
+					let Value::Vec2F(value) = value else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec2F.name().to_string(),
+							found: value.value_type().name().to_string(),
+						});
+					};
+					registers[*register] = Some(Value::Vec2I(value.map(|component| component.round() as i32)));
+				}
 				Instruction::BinaryScalar {
 					register,
 					operator,

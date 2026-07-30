@@ -228,6 +228,23 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"fma" => {
+				string.push_str("fma(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"sincos" => {
+				string.push_str("vec2(sin(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("), cos(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
+			"round_to_i32" => {
+				string.push_str("ivec2(round(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
 			"f32" => {
 				string.push_str("float(");
 				self.emit_call_arguments(string, arguments);

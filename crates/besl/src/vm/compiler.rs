@@ -566,8 +566,9 @@ impl<'a> Compiler<'a> {
 					};
 					let value = source_value.ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!(
-							"Unsupported source for member `{member_name}`. The member resolves to a {} node that the VM cannot load.",
-							describe_node(source.borrow().node())
+							"Unsupported source `{}` for member `{member_name}`. The source resolves to a {} node that the VM cannot load.",
+							source.borrow().get_name().unwrap_or("<unnamed>"),
+							describe_node(source.borrow().node()),
 						),
 					})??;
 					if !value.matches_type(expected_type) {
@@ -1143,6 +1144,36 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"sincos" => {
+				require_argument_count(arguments, 1)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let sine = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register: sine,
+					operator: ScalarUnaryOperator::Sin,
+					value,
+				});
+				let cosine = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register: cosine,
+					operator: ScalarUnaryOperator::Cos,
+					value,
+				});
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Construct {
+					register,
+					value_type: ValueType::Vec2F,
+					components: vec![sine, cosine],
+				});
+				Ok(register)
+			}
+			"round_to_i32" => {
+				require_argument_count(arguments, 1)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::Vec2F, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::RoundToVec2I { register, value });
+				Ok(register)
+			}
 			"f32" => {
 				require_argument_count(arguments, 1)?;
 				if expected_type != &ValueType::F32 {
@@ -1226,10 +1257,10 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"smoothstep" | "mix" | "clamp" => {
+			"smoothstep" | "mix" | "clamp" | "fma" => {
 				require_argument_count(arguments, 3)?;
 
-				let argument_type = if name == "clamp" {
+				let argument_type = if name == "clamp" || name == "fma" {
 					return_type.clone()
 				} else {
 					ValueType::F32
@@ -1244,6 +1275,7 @@ impl<'a> Compiler<'a> {
 						"smoothstep" => ScalarTernaryOperator::Smoothstep,
 						"mix" => ScalarTernaryOperator::Mix,
 						"clamp" => ScalarTernaryOperator::Clamp,
+						"fma" => ScalarTernaryOperator::Fma,
 						_ => unreachable!("Expected scalar ternary intrinsic"),
 					},
 					first,

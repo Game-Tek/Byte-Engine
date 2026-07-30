@@ -21,6 +21,11 @@ use crate::rendering::pipelines::visibility::{
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
+const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
 const GTAO_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1033),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -68,6 +73,53 @@ const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::
 );
 const GTAO_DEPTH_PYRAMID_LEVEL_COUNT: usize = 3;
 const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
+
+/// The `FastGtaoViewData` struct provides compact camera reconstruction constants to the GTAO compute passes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FastGtaoViewData {
+	pixel_to_ray_mul: [f32; 2],
+	pixel_to_ray_add: [f32; 2],
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+/// Builds pixel-ray and reversed-depth reconstruction constants for one perspective sink.
+fn fast_gtao_view_data(sink: &Sink) -> FastGtaoViewData {
+	let extent = sink.extent();
+	let view = sink.view();
+	let projection = view.projection();
+	let width = extent.width() as f32;
+	let height = extent.height() as f32;
+	let projection_x = projection[0];
+	let projection_y = projection[5];
+	let near = view.near();
+	let far = view.far();
+	let clip_range = far - near;
+
+	debug_assert!(
+		width > 0.0 && height > 0.0 && projection_x > 0.0 && projection_y > 0.0,
+		"GTAO camera constants are invalid. The most likely cause is an empty target or a non-perspective sink."
+	);
+	debug_assert!(
+		near > 0.0 && far > near,
+		"GTAO clipping planes are invalid. The most likely cause is a perspective view with an empty depth range."
+	);
+
+	FastGtaoViewData {
+		pixel_to_ray_mul: [2.0 / (width * projection_x), -2.0 / (height * projection_y)],
+		pixel_to_ray_add: [(1.0 / width - 1.0) / projection_x, (1.0 - 1.0 / height) / projection_y],
+		projection_pixels_y: height * projection_y * 0.5,
+		// Byte Engine perspective views look down positive view-space Z.
+		view_z_sign: 1.0,
+		// projection_matrix() maps z to depth as a + b / z. These constants
+		// reconstruct positive z as b / (depth - a).
+		depth_unproject_numerator: near * far / clip_range,
+		depth_unproject_denominator_offset: near / clip_range,
+	}
+}
 
 /// Loads one fixed visibility shader from the application resource store and verifies its persisted stage contract.
 fn load_visibility_shader(
@@ -629,6 +681,7 @@ pub struct GtaoPass {
 	blur_pipeline_x: ghi::PipelineHandle,
 	blur_pipeline_y: ghi::PipelineHandle,
 	ao_map: ghi::BaseImageHandle,
+	view_data: ghi::DynamicBufferHandle<FastGtaoViewData>,
 	depth_pyramid_images: [ghi::DynamicImageHandle; GTAO_DEPTH_PYRAMID_LEVEL_COUNT],
 	temp_ao_map: ghi::DynamicImageHandle,
 }
@@ -645,6 +698,11 @@ impl GtaoPass {
 		let depth_pyramid_descriptor_set = context.create_descriptor_set(Some("GTAO Depth Pyramid Descriptor Set"));
 		let blur_descriptor_set_x = context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"));
 		let blur_descriptor_set_y = context.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"));
+		let view_data = context.build_dynamic_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("GTAO View Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -679,6 +737,7 @@ impl GtaoPass {
 			)
 		});
 		context.write(&[
+			ghi::DescriptorWrite::buffer(depth_pyramid_descriptor_set, GTAO_VIEW_BINDING.slot(), view_data.into()),
 			ghi::DescriptorWrite::combined_image_sampler(
 				depth_pyramid_descriptor_set,
 				GTAO_DEPTH_PYRAMID_SOURCE_BINDING.slot(),
@@ -711,6 +770,7 @@ impl GtaoPass {
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
+			ghi::DescriptorWrite::buffer(gtao_descriptor_set, GTAO_VIEW_BINDING.slot(), view_data.into()),
 			ghi::DescriptorWrite::image(gtao_descriptor_set, GTAO_OUTPUT_BINDING.slot(), ao_map, ghi::Layouts::General),
 			ghi::DescriptorWrite::combined_image_sampler(
 				gtao_descriptor_set,
@@ -833,6 +893,7 @@ impl GtaoPass {
 			blur_pipeline_x,
 			blur_pipeline_y,
 			ao_map,
+			view_data,
 			depth_pyramid_images,
 			temp_ao_map,
 		}
@@ -849,10 +910,13 @@ impl GtaoPass {
 		let blur_pipeline_x = self.blur_pipeline_x;
 		let blur_pipeline_y = self.blur_pipeline_y;
 		let ao_map = self.ao_map;
+		let view_data = self.view_data;
 		let depth_pyramid_images = self.depth_pyramid_images;
 		let temp_ao_map = self.temp_ao_map;
 		let extent = sink.extent();
 
+		*frame.get_mut_dynamic_buffer_slice(view_data) = fast_gtao_view_data(sink);
+		frame.sync_buffer(view_data);
 		frame.resize_image(ao_map, extent);
 		frame.resize_image(temp_ao_map.into(), extent);
 		for (level, image) in depth_pyramid_images.iter().copied().enumerate() {
@@ -871,8 +935,8 @@ impl GtaoPass {
 			c.start_region(|label| label.write_str("GTAO Evaluate"));
 			{
 				let c = c.bind_compute_pipeline(gtao_pipeline);
-				c.bind_descriptor_sets(&[base_descriptor_set, gtao_descriptor_set]);
-				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+				c.bind_descriptor_sets(&[gtao_descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(16, 8, 1)));
 			}
 			c.end_region();
 
@@ -1196,7 +1260,11 @@ impl VisibilityPipelineRenderPass {
 
 #[cfg(test)]
 mod tests {
-	use super::{transparent_visibility_layer, Instance};
+	use math::Vector3;
+	use utils::Extent;
+
+	use super::{fast_gtao_view_data, transparent_visibility_layer, Instance};
+	use crate::rendering::{view::View, Sink};
 
 	#[test]
 	fn transparent_visibility_uses_one_depth_resolved_layer() {
@@ -1220,6 +1288,49 @@ mod tests {
 			meshlet_count: 0,
 		}])
 		.is_none());
+	}
+
+	#[test]
+	fn fast_gtao_view_reconstructs_pixel_rays_and_reversed_depth() {
+		use math::Vector4;
+
+		let extent = Extent::rectangle(1920, 1080);
+		let view = View::new_perspective(
+			60.0,
+			extent.width() as f32 / extent.height() as f32,
+			0.1,
+			100.0,
+			Vector3::new(0.0, 0.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+		);
+		let sink = Sink::new(view, extent, 0);
+		let constants = fast_gtao_view_data(&sink);
+		let projection = view.projection();
+		assert_eq!(std::mem::size_of_val(&constants), 32);
+
+		for z in [0.1f32, 0.5, 1.0, 10.0, 100.0] {
+			let clip = projection * Vector4::new(0.0, 0.0, z, 1.0);
+			let depth = clip.z / clip.w;
+			let reconstructed = constants.depth_unproject_numerator / (depth + constants.depth_unproject_denominator_offset);
+			assert!(
+				(reconstructed - z).abs() <= z.max(1.0) * 0.00001,
+				"Unexpected GTAO depth reconstruction for z={z}: {reconstructed}"
+			);
+		}
+
+		for pixel in [[0.0f32, 0.0], [959.0, 539.0], [1919.0, 1079.0]] {
+			let ray = [
+				pixel[0] * constants.pixel_to_ray_mul[0] + constants.pixel_to_ray_add[0],
+				pixel[1] * constants.pixel_to_ray_mul[1] + constants.pixel_to_ray_add[1],
+			];
+			let ndc = [
+				2.0 * (pixel[0] + 0.5) / extent.width() as f32 - 1.0,
+				1.0 - 2.0 * (pixel[1] + 0.5) / extent.height() as f32,
+			];
+			assert!((ray[0] - ndc[0] / projection[0]).abs() < 0.000001);
+			assert!((ray[1] - ndc[1] / projection[5]).abs() < 0.000001);
+		}
+		assert_eq!(constants.view_z_sign, 1.0);
 	}
 
 	#[test]

@@ -1,25 +1,39 @@
-View: struct {
-	view: mat4f,
-	projection: mat4f,
-	view_projection: mat4f,
-	inverse_view: mat4f,
-	inverse_projection: mat4f,
-	inverse_view_projection: mat4f,
-	fov: vec2f,
-	near: f32,
-	far: f32,
+// visibility_depth stores reversed device depth: 1.0 is near and 0.0 is background.
+// linear_depth_1..3 store conservative nearest-nonzero positive view-space distance.
+// Level zero is linearized while loading the shared cache because portable GHI storage
+// bindings expose the reduced levels as separate image views.
+FastGTAOView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
 }
 
-Views: struct {
-	views: View[8],
+NormalDelta: struct {
+	value: vec3f,
+	valid: bool,
 }
 
-views: descriptor<Views, 0, read>;
+RadiusData: struct {
+	screen_radius: f32,
+	inverse_world_radius_sq: f32,
+	fade: f32,
+}
+
+SampleAddress: struct {
+	coord: vec2u,
+	level: u32,
+	key: u32,
+}
+
+gtao_view: descriptor<FastGTAOView, 0, read>;
 visibility_depth: descriptor<Texture2D, 1033, read>;
 ao_output: descriptor<StorageImage<r8>, 1034, write>;
-depth_pyramid_1: descriptor<Texture2D, 1035, read>;
-depth_pyramid_2: descriptor<Texture2D, 1036, read>;
-depth_pyramid_3: descriptor<Texture2D, 1037, read>;
+linear_depth_1: descriptor<Texture2D, 1035, read>;
+linear_depth_2: descriptor<Texture2D, 1036, read>;
+linear_depth_3: descriptor<Texture2D, 1037, read>;
 
 GTAO_RADIUS: const f32 = 1.0;
 GTAO_BIAS: const f32 = 0.05;
@@ -27,332 +41,690 @@ GTAO_STRENGTH: const f32 = 1.0;
 GTAO_MIN_RADIUS_PIXELS: const f32 = 4.0;
 GTAO_MAX_RADIUS_PIXELS: const f32 = 64.0;
 GTAO_MIN_EFFECTIVE_RADIUS_PIXELS: const f32 = 1.0;
-GTAO_DIRECTIONS: const u32 = 8;
-GTAO_STEPS: const u32 = 6;
 GTAO_PI: const f32 = 3.14159265359;
-GTAO_DIRECTION_BASIS_ABS_X: const f32[8] = f32[8](
-	1.0,
-	0.70710678118,
-	0.0,
-	0.70710678118,
-	1.0,
-	0.70710678118,
-	0.0,
-	0.70710678118
-);
-GTAO_DIRECTION_BASIS_ABS_Y: const f32[8] = f32[8](
-	0.0,
-	0.70710678118,
-	1.0,
-	0.70710678118,
-	0.0,
-	0.70710678118,
-	1.0,
-	0.70710678118
-);
+GTAO_SQRT_HALF: const f32 = 0.70710678118;
+GTAO_GOLDEN: const f32 = 0.618033988749;
+GTAO_INV_STEPS: const f32 = 0.166666666667;
+// This threshold tests sin squared between the finite-difference tangents.
+// Unlike a world-space area threshold, it is invariant under projection scale.
+GTAO_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
+
+WORKGROUP_X: const u32 = 16;
+WORKGROUP_Y: const u32 = 8;
+WORKGROUP_THREADS: const u32 = 128;
+
+L0_HALO: const u32 = 7;
+L1_HALO: const u32 = 8;
+L2_HALO: const u32 = 8;
+L3_HALO: const u32 = 8;
+
+L0_WIDTH: const u32 = 30;
+L0_HEIGHT: const u32 = 22;
+L0_STRIDE: const u32 = 31;
+
+L1_WIDTH: const u32 = 24;
+L1_HEIGHT: const u32 = 20;
+L1_STRIDE: const u32 = 25;
+
+L2_WIDTH: const u32 = 20;
+L2_HEIGHT: const u32 = 18;
+L2_STRIDE: const u32 = 21;
+
+L3_WIDTH: const u32 = 18;
+L3_HEIGHT: const u32 = 17;
+L3_STRIDE: const u32 = 19;
+
+// Complete cached rectangles are 30x22, 24x20, 20x18, and 18x17.
+// Each row has one padding element to reduce shared-memory bank conflicts.
+L0_BASE: const u32 = 0;
+L1_BASE: const u32 = 682;
+L2_BASE: const u32 = 1182;
+L3_BASE: const u32 = 1560;
+INVALID_SAMPLE_KEY: const u32 = 4294967295;
+
+cached_depth: workgroup<f32, 1883>;
+required_mips: workgroup<u32, 128>;
+group_required_mip: workgroup<u32, 1>;
 
 interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }
 
-make_uv: fn (pixel: vec2u, extent: vec2u) -> vec2f {
-	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let extent_f: vec2f = vec2f(f32(extent.x), f32(extent.y));
-	return (pixel_f + vec2f(0.5, 0.5)) / extent_f;
-}
-
-clamp_subtract: fn (value: u32, offset: u32) -> u32 {
-	if (value < offset) {
-		return 0;
+linearize_depth: fn (depth: f32) -> f32 {
+	if (depth == 0.0) {
+		return 0.0;
 	}
 
-	return value - offset;
+	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
+}
+
+hierarchy_extent: fn (level: u32) -> vec2u {
+	if (level == 3) {
+		return texture_size(linear_depth_3);
+	}
+	if (level == 2) {
+		return texture_size(linear_depth_2);
+	}
+	if (level == 1) {
+		return texture_size(linear_depth_1);
+	}
+	return texture_size(visibility_depth);
+}
+
+fetch_linear_depth: fn (coordinate: vec2u, level: u32) -> f32 {
+	if (level == 3) {
+		return fetch(linear_depth_3, coordinate).x;
+	}
+	if (level == 2) {
+		return fetch(linear_depth_2, coordinate).x;
+	}
+	if (level == 1) {
+		return fetch(linear_depth_1, coordinate).x;
+	}
+	return linearize_depth(fetch(visibility_depth, coordinate).x);
 }
 
 clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
 	let maximum: u32 = extent - 1;
-	if (value + offset > maximum) {
+	if (offset > maximum - value) {
 		return maximum;
 	}
-
 	return value + offset;
 }
 
-clamp_sample_coordinate: fn (
-	pixel: vec2u,
-	extent: vec2u,
-	offset_x: u32,
-	offset_y: u32,
-	negative_x: u32,
-	negative_y: u32
-) -> vec2u {
-	let sample_x: u32 = clamp_add(pixel.x, offset_x, extent.x);
-	let sample_y: u32 = clamp_add(pixel.y, offset_y, extent.y);
-	if (negative_x == 1) {
-		sample_x = clamp_subtract(pixel.x, offset_x);
+clamp_subtract: fn (value: u32, offset: u32) -> u32 {
+	if (offset > value) {
+		return 0;
 	}
-	if (negative_y == 1) {
-		sample_y = clamp_subtract(pixel.y, offset_y);
-	}
-
-	return vec2u(sample_x, sample_y);
+	return value - offset;
 }
 
-reconstruct_view_space_position: fn (uv: vec2f, depth: f32, inverse_projection: mat4f) -> vec3f {
-	let ndc: vec2f = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-	let clip_space: vec4f = vec4f(ndc.x, ndc.y, depth, 1.0);
-	let view_space: vec4f = inverse_projection * clip_space;
-	let view_position: vec4f = view_space / view_space.w;
-	return vec3f(view_position.x, view_position.y, view_position.z);
+// Maps a shared-tile coordinate to the corresponding clamped texture coordinate.
+halo_coordinate: fn (base: u32, tile_coordinate: u32, halo: u32, extent: u32) -> u32 {
+	if (tile_coordinate < halo) {
+		return clamp_subtract(base, halo - tile_coordinate);
+	}
+	return clamp_add(base, tile_coordinate - halo, extent);
 }
 
-sample_view_space_position: fn (
-	pixel: vec2u,
-	extent: vec2u,
-	offset_x: u32,
-	offset_y: u32,
-	negative_x: u32,
-	negative_y: u32,
-	fallback_position: vec3f,
-	depth_texture: Texture2D,
-	inverse_projection: mat4f
-) -> vec3f {
-	let sample_coord: vec2u = clamp_sample_coordinate(pixel, extent, offset_x, offset_y, negative_x, negative_y);
-	let depth: f32 = fetch(depth_texture, sample_coord).x;
-	if (depth == 0.0) {
-		return fallback_position;
+// Maps one texture coordinate back into a cache whose logical origin may be off-screen.
+cache_coordinate: fn (coordinate: u32, base: u32, halo: u32) -> u32 {
+	if (coordinate >= base) {
+		return halo + coordinate - base;
 	}
-
-	let uv: vec2f = make_uv(sample_coord, extent);
-	return reconstruct_view_space_position(uv, depth, inverse_projection);
+	return halo - (base - coordinate);
 }
 
-min_diff: fn (center: vec3f, a: vec3f, b: vec3f) -> vec3f {
-	let da: vec3f = a - center;
-	let db: vec3f = b - center;
-	if (dot(da, da) < dot(db, db)) {
-		return da;
-	}
+prefetch_level: fn (
+	level: u32,
+	level_group_base: vec2u,
+	tile_width: u32,
+	tile_height: u32,
+	tile_stride: u32,
+	halo: u32,
+	destination_base: u32,
+	skip_level_zero_interior: bool
+) -> void {
+	let lane: u32 = thread_idx();
+	let extent: vec2u = hierarchy_extent(level);
 
-	return db;
+	for (
+		let index: u32 = lane;
+		index < tile_width * tile_height;
+		index = index + WORKGROUP_THREADS
+	) {
+		let tile_x: u32 = index % tile_width;
+		let tile_y: u32 = index / tile_width;
+
+		if (
+			skip_level_zero_interior &&
+			tile_x >= L0_HALO &&
+			tile_x < L0_HALO + WORKGROUP_X &&
+			tile_y >= L0_HALO &&
+			tile_y < L0_HALO + WORKGROUP_Y
+		) {
+			continue;
+		}
+
+		let mip_coord: vec2u = vec2u(
+			halo_coordinate(level_group_base.x, tile_x, halo, extent.x),
+			halo_coordinate(level_group_base.y, tile_y, halo, extent.y)
+		);
+		cached_depth[destination_base + tile_y * tile_stride + tile_x] = fetch_linear_depth(mip_coord, level);
+	}
 }
 
-reconstruct_normal: fn (
-	pixel: vec2u,
-	extent: vec2u,
-	center_position: vec3f,
-	depth_texture: Texture2D,
-	inverse_projection: mat4f
-) -> vec3f {
-	let right_position: vec3f = sample_view_space_position(
-		pixel,
-		extent,
-		1,
-		0,
-		0,
-		0,
-		center_position,
-		depth_texture,
-		inverse_projection
-	);
-	let left_position: vec3f = sample_view_space_position(
-		pixel,
-		extent,
-		1,
-		0,
-		1,
-		0,
-		center_position,
-		depth_texture,
-		inverse_projection
-	);
-	let top_position: vec3f = sample_view_space_position(
-		pixel,
-		extent,
-		0,
-		1,
-		0,
-		1,
-		center_position,
-		depth_texture,
-		inverse_projection
-	);
-	let bottom_position: vec3f = sample_view_space_position(
-		pixel,
-		extent,
-		0,
-		1,
-		0,
-		0,
-		center_position,
-		depth_texture,
-		inverse_projection
-	);
-
-	let dx: vec3f = min_diff(center_position, right_position, left_position);
-	let dy: vec3f = min_diff(center_position, bottom_position, top_position);
-	let normal: vec3f = normalize(cross(dx, dy));
-	let view_direction: vec3f = vec3f(0.0, 0.0, 0.0) - center_position;
-
-	if (dot(normal, view_direction) < 0.0) {
-		return vec3f(0.0, 0.0, 0.0) - normal;
-	}
-
-	return normal;
-}
-
-compute_radii: fn (view_position: vec3f, extent: vec2u, view_fov: vec2f) -> vec3f {
-	let tan_half_fov_y: f32 = tan(radians(view_fov.y) * 0.5);
-	let pixels_per_unit: f32 = f32(extent.y) / max(2.0 * tan_half_fov_y * abs(view_position.z), 0.001);
-	let ideal: f32 = GTAO_RADIUS * pixels_per_unit;
-	let radius_fade: f32 = smoothstep(0.0, GTAO_MIN_RADIUS_PIXELS, ideal);
-	let screen_radius: f32 = clamp(ideal, GTAO_MIN_EFFECTIVE_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
-	let world_radius: f32 = screen_radius / pixels_per_unit;
-	return vec3f(screen_radius, world_radius, radius_fade);
-}
-
-depth_pyramid_level: fn (offset_x: u32, offset_y: u32) -> u32 {
-	let sample_distance_pixels: u32 = offset_x;
-	if (offset_y > sample_distance_pixels) {
-		sample_distance_pixels = offset_y;
-	}
-	// Keep each conservative reduction footprint at most one quarter of the sample distance.
-	if (sample_distance_pixels >= 32) {
-		return 3;
-	}
-	if (sample_distance_pixels >= 16) {
-		return 2;
-	}
-	if (sample_distance_pixels >= 8) {
-		return 1;
-	}
-	return 0;
-}
-
-fetch_hierarchical_depth: fn (pixel: vec2u, level: u32, full_resolution_depth: Texture2D) -> f32 {
+cached_hierarchical_depth: fn (
+	full_resolution_coord: vec2u,
+	level: u32,
+	group_base: vec2u
+) -> f32 {
 	if (level == 3) {
-		return fetch(depth_pyramid_3, vec2u(pixel.x / 8, pixel.y / 8)).x;
+		let mip_coord: vec2u = full_resolution_coord / vec2u(8, 8);
+		let mip_group_base: vec2u = group_base / vec2u(8, 8);
+		return cached_depth[
+			L3_BASE +
+			cache_coordinate(mip_coord.y, mip_group_base.y, L3_HALO) * L3_STRIDE +
+			cache_coordinate(mip_coord.x, mip_group_base.x, L3_HALO)
+		];
 	}
 	if (level == 2) {
-		return fetch(depth_pyramid_2, vec2u(pixel.x / 4, pixel.y / 4)).x;
+		let mip_coord: vec2u = full_resolution_coord / vec2u(4, 4);
+		let mip_group_base: vec2u = group_base / vec2u(4, 4);
+		return cached_depth[
+			L2_BASE +
+			cache_coordinate(mip_coord.y, mip_group_base.y, L2_HALO) * L2_STRIDE +
+			cache_coordinate(mip_coord.x, mip_group_base.x, L2_HALO)
+		];
 	}
 	if (level == 1) {
-		return fetch(depth_pyramid_1, vec2u(pixel.x / 2, pixel.y / 2)).x;
+		let mip_coord: vec2u = full_resolution_coord / vec2u(2, 2);
+		let mip_group_base: vec2u = group_base / vec2u(2, 2);
+		return cached_depth[
+			L1_BASE +
+			cache_coordinate(mip_coord.y, mip_group_base.y, L1_HALO) * L1_STRIDE +
+			cache_coordinate(mip_coord.x, mip_group_base.x, L1_HALO)
+		];
 	}
-	return fetch(full_resolution_depth, pixel).x;
+	return cached_depth[
+		L0_BASE +
+		cache_coordinate(full_resolution_coord.y, group_base.y, L0_HALO) * L0_STRIDE +
+		cache_coordinate(full_resolution_coord.x, group_base.x, L0_HALO)
+	];
 }
 
-sample_direction: fn (
-	pixel: vec2u,
-	center_position: vec3f,
-	normal: vec3f,
-	direction: vec2f,
-	screen_radius: f32,
-	world_radius: f32,
-	extent: vec2u,
-	noise: f32,
-	depth_texture: Texture2D,
-	inverse_projection: mat4f
-) -> f32 {
-	let max_occlusion: f32 = 0.0;
-	let radius_sq: f32 = world_radius * world_radius;
+view_ray_xy: fn (pixel: vec2u) -> vec2f {
+	return fma(
+		vec2f(f32(pixel.x), f32(pixel.y)),
+		gtao_view.pixel_to_ray_mul,
+		gtao_view.pixel_to_ray_add
+	);
+}
 
-	for (let step: u32 = 1; step <= GTAO_STEPS; step = step + 1) {
-		let step_noise: f32 = fract(noise + f32(step) * 0.618033988749);
-		let step_ratio: f32 = (f32(step) - 0.5 + step_noise * 0.5) / f32(GTAO_STEPS);
-		let sample_offset: vec2f = direction * screen_radius * step_ratio;
-		let rounded_offset: vec2f = round(sample_offset);
-		let offset_x: u32 = u32(abs(rounded_offset.x));
-		let offset_y: u32 = u32(abs(rounded_offset.y));
-		let negative_x: u32 = 0;
-		let negative_y: u32 = 0;
-		if (rounded_offset.x < 0.0) {
-			negative_x = 1;
-		}
-		if (rounded_offset.y < 0.0) {
-			negative_y = 1;
-		}
+pixel_delta: fn (sample: u32, center: u32) -> f32 {
+	if (sample >= center) {
+		return f32(sample - center);
+	}
+	return 0.0 - f32(center - sample);
+}
 
-		let sample_coord: vec2u = clamp_sample_coordinate(pixel, extent, offset_x, offset_y, negative_x, negative_y);
-		let sample_level: u32 = depth_pyramid_level(offset_x, offset_y);
-		let sample_depth: f32 = fetch_hierarchical_depth(sample_coord, sample_level, depth_texture);
-		if (sample_depth == 0.0) {
-			continue;
-		}
+// Reconstructs Psample - Pcenter without materializing either complete position.
+view_position_delta: fn (
+	delta_pixel: vec2f,
+	sample_linear_depth: f32,
+	center_ray: vec2f,
+	center_z: f32
+) -> vec3f {
+	let sample_z: f32 = sample_linear_depth * gtao_view.view_z_sign;
+	let delta_z: f32 = sample_z - center_z;
+	let delta_ray: vec2f = delta_pixel * gtao_view.pixel_to_ray_mul;
+	let delta_xy: vec2f = fma(center_ray, vec2f(delta_z, delta_z), delta_ray * sample_z);
+	return vec3f(delta_xy.x, delta_xy.y, delta_z);
+}
 
-		let sample_uv: vec2f = make_uv(sample_coord, extent);
-		let sample_position: vec3f = reconstruct_view_space_position(sample_uv, sample_depth, inverse_projection);
-		let sample_vector: vec3f = sample_position - center_position;
-		let distance_sq: f32 = dot(sample_vector, sample_vector);
-
-		if (distance_sq <= 0.00001 || distance_sq > radius_sq) {
-			continue;
-		}
-
-		let sample_direction_vector: vec3f = sample_vector * inversesqrt(distance_sq);
-		let alignment: f32 = max(dot(normal, sample_direction_vector) - GTAO_BIAS, 0.0);
-		let falloff: f32 = 1.0 - distance_sq / radius_sq;
-		max_occlusion = max(max_occlusion, alignment * falloff * falloff);
+normal_delta: fn (
+	sample_coord: vec2u,
+	center_coord: vec2u,
+	sample_depth: f32,
+	center_ray: vec2f,
+	center_z: f32
+) -> NormalDelta {
+	if (sample_depth == 0.0) {
+		return NormalDelta(vec3f(0.0, 0.0, 0.0), false);
+	}
+	if (sample_coord.x == center_coord.x && sample_coord.y == center_coord.y) {
+		return NormalDelta(vec3f(0.0, 0.0, 0.0), false);
 	}
 
-	return max_occlusion;
+	return NormalDelta(
+		view_position_delta(
+			vec2f(
+				pixel_delta(sample_coord.x, center_coord.x),
+				pixel_delta(sample_coord.y, center_coord.y)
+			),
+			sample_depth,
+			center_ray,
+			center_z
+		),
+		true
+	);
+}
+
+// Returns a derivative oriented toward the positive screen axis. The negative
+// candidate initially points left or up, so selecting it requires negation.
+nearer_oriented_delta: fn (
+	positive: NormalDelta,
+	negative: NormalDelta
+) -> NormalDelta {
+	if (positive.valid == false) {
+		if (negative.valid == false) {
+			return NormalDelta(vec3f(0.0, 0.0, 0.0), false);
+		}
+		return NormalDelta(vec3f(0.0, 0.0, 0.0) - negative.value, true);
+	}
+	if (negative.valid == false) {
+		return positive;
+	}
+	if (dot(positive.value, positive.value) <= dot(negative.value, negative.value)) {
+		return positive;
+	}
+	return NormalDelta(vec3f(0.0, 0.0, 0.0) - negative.value, true);
+}
+
+// Derives camera-facing winding from the projection convention. This remains
+// stable at grazing angles where a per-pixel face-forward dot becomes ambiguous.
+camera_facing_normal_winding: fn () -> f32 {
+	let winding_test: f32 =
+		(0.0 - gtao_view.view_z_sign) *
+		gtao_view.pixel_to_ray_mul.x *
+		gtao_view.pixel_to_ray_mul.y;
+	if (winding_test < 0.0) {
+		return 0.0 - 1.0;
+	}
+	return 1.0;
+}
+
+reconstruct_normal_cached: fn (
+	pixel: vec2u,
+	extent: vec2u,
+	group_base: vec2u,
+	center_ray: vec2f,
+	center_z: f32
+) -> vec3f {
+	let right_coord: vec2u = vec2u(clamp_add(pixel.x, 1, extent.x), pixel.y);
+	let left_coord: vec2u = vec2u(clamp_subtract(pixel.x, 1), pixel.y);
+	let top_coord: vec2u = vec2u(pixel.x, clamp_subtract(pixel.y, 1));
+	let bottom_coord: vec2u = vec2u(pixel.x, clamp_add(pixel.y, 1, extent.y));
+
+	// Issue all four shared loads before consuming any result.
+	let right_depth: f32 = cached_hierarchical_depth(right_coord, 0, group_base);
+	let left_depth: f32 = cached_hierarchical_depth(left_coord, 0, group_base);
+	let top_depth: f32 = cached_hierarchical_depth(top_coord, 0, group_base);
+	let bottom_depth: f32 = cached_hierarchical_depth(bottom_coord, 0, group_base);
+
+	let dx: NormalDelta = nearer_oriented_delta(
+		normal_delta(right_coord, pixel, right_depth, center_ray, center_z),
+		normal_delta(left_coord, pixel, left_depth, center_ray, center_z)
+	);
+	let dy: NormalDelta = nearer_oriented_delta(
+		normal_delta(bottom_coord, pixel, bottom_depth, center_ray, center_z),
+		normal_delta(top_coord, pixel, top_depth, center_ray, center_z)
+	);
+
+	// Without two reliable tangents, returning zero suppresses AO instead of
+	// inventing a camera-ray normal with unrelated geometry.
+	if (dx.valid == false || dy.valid == false) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+
+	let dx_length_sq: f32 = dot(dx.value, dx.value);
+	let dy_length_sq: f32 = dot(dy.value, dy.value);
+	let unnormalized: vec3f =
+		cross(dx.value, dy.value) * camera_facing_normal_winding();
+	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
+	// cross squared divided by the tangent-length product is sin squared of
+	// the angle between the derivatives. Compare without performing division.
+	let tangent_product: f32 = dx_length_sq * dy_length_sq;
+	if (normal_length_sq <= tangent_product * GTAO_NORMAL_SIN_SQ_EPSILON) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+
+	return unnormalized * inversesqrt(normal_length_sq);
+}
+
+compute_radius_data: fn (linear_depth: f32) -> RadiusData {
+	let pixels_per_unit: f32 = gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
+	let ideal_screen_radius: f32 = GTAO_RADIUS * pixels_per_unit;
+	let screen_radius: f32 = clamp(
+		ideal_screen_radius,
+		GTAO_MIN_EFFECTIVE_RADIUS_PIXELS,
+		GTAO_MAX_RADIUS_PIXELS
+	);
+	let inverse_world_radius: f32 = pixels_per_unit / screen_radius;
+	return RadiusData(
+		screen_radius,
+		inverse_world_radius * inverse_world_radius,
+		smoothstep(0.0, GTAO_MIN_RADIUS_PIXELS, ideal_screen_radius)
+	);
+}
+
+maximum_required_mip: fn (linear_depth: f32) -> u32 {
+	if (linear_depth == 0.0) {
+		return 0;
+	}
+
+	let pixels_per_unit: f32 = gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
+	let screen_radius: f32 = clamp(
+		GTAO_RADIUS * pixels_per_unit,
+		GTAO_MIN_EFFECTIVE_RADIUS_PIXELS,
+		GTAO_MAX_RADIUS_PIXELS
+	);
+	let level: u32 = 0;
+	if (screen_radius >= 7.5) {
+		level = level + 1;
+	}
+	if (screen_radius >= 15.5) {
+		level = level + 1;
+	}
+	if (screen_radius >= 31.5) {
+		level = level + 1;
+	}
+	return level;
+}
+
+signed_magnitude: fn (value: i32) -> u32 {
+	if (value < 0) {
+		let magnitude: i32 = 0 - value;
+		return u32(magnitude);
+	}
+	return u32(value);
+}
+
+apply_signed_offset: fn (coordinate: u32, offset: i32, extent: u32) -> u32 {
+	if (offset < 0) {
+		return clamp_subtract(coordinate, signed_magnitude(offset));
+	}
+	return clamp_add(coordinate, u32(offset), extent);
+}
+
+pack_sample_key: fn (coord: vec2u, level: u32) -> u32 {
+	return coord.x | (coord.y << 14) | (level << 28);
+}
+
+make_sample_address: fn (
+	pixel: vec2u,
+	extent: vec2u,
+	direction: vec2f,
+	screen_radius: f32,
+	step_ratio: f32
+) -> SampleAddress {
+	let requested_offset: vec2i = round_to_i32(direction * screen_radius * step_ratio);
+	let maximum_offset: u32 = signed_magnitude(requested_offset.x);
+	let offset_y: u32 = signed_magnitude(requested_offset.y);
+	if (offset_y > maximum_offset) {
+		maximum_offset = offset_y;
+	}
+
+	let level: u32 = 0;
+	if (maximum_offset >= 8) {
+		level = level + 1;
+	}
+	if (maximum_offset >= 16) {
+		level = level + 1;
+	}
+	if (maximum_offset >= 32) {
+		level = level + 1;
+	}
+
+	let sample_coord: vec2u = vec2u(
+		apply_signed_offset(pixel.x, requested_offset.x, extent.x),
+		apply_signed_offset(pixel.y, requested_offset.y, extent.y)
+	);
+	return SampleAddress(sample_coord, level, pack_sample_key(sample_coord, level));
+}
+
+update_direction_occlusion: fn (
+	previous_occlusion: f32,
+	sample_coord: vec2u,
+	sample_linear_depth: f32,
+	pixel: vec2u,
+	center_ray: vec2f,
+	center_z: f32,
+	normal: vec3f,
+	inverse_radius_sq: f32
+) -> f32 {
+	if (sample_linear_depth == 0.0) {
+		return previous_occlusion;
+	}
+
+	let delta: vec3f = view_position_delta(
+		vec2f(
+			pixel_delta(sample_coord.x, pixel.x),
+			pixel_delta(sample_coord.y, pixel.y)
+		),
+		sample_linear_depth,
+		center_ray,
+		center_z
+	);
+	let distance_sq: f32 = dot(delta, delta);
+	let normalized_distance_sq: f32 = distance_sq * inverse_radius_sq;
+	if (distance_sq <= 0.00001 || normalized_distance_sq > 1.0) {
+		return previous_occlusion;
+	}
+
+	let alignment: f32 = max(dot(normal, delta) * inversesqrt(distance_sq) - GTAO_BIAS, 0.0);
+	let falloff: f32 = 1.0 - normalized_distance_sq;
+	return max(previous_occlusion, alignment * falloff * falloff);
 }
 
 main: fn () -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(ao_output, coord);
+	let lane: u32 = thread_idx();
+	let local: vec2u = vec2u(lane % WORKGROUP_X, lane / WORKGROUP_X);
+	let pixel: vec2u = thread_id();
+	let group_base: vec2u = pixel - local;
 	let extent: vec2u = image_size(ao_output);
-	let inverse_projection: mat4f = views.views[0].inverse_projection;
-	let view_fov: vec2f = views.views[0].fov;
+	let in_bounds: bool = pixel.x < extent.x && pixel.y < extent.y;
+	let safe_pixel: vec2u = vec2u(
+		clamp_add(0, pixel.x, extent.x),
+		clamp_add(0, pixel.y, extent.y)
+	);
 
-	let center_depth: f32 = fetch(visibility_depth, coord).x;
-	if (center_depth == 0.0) {
-		write(ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
+	// One coalesced center load per lane preserves the group-level background early out.
+	let center_linear_depth: f32 = fetch_linear_depth(safe_pixel, 0);
+	let center_shared_index: u32 =
+		L0_BASE +
+		(local.y + L0_HALO) * L0_STRIDE +
+		(local.x + L0_HALO);
+	cached_depth[center_shared_index] = center_linear_depth;
+
+	let active: bool = in_bounds && center_linear_depth != 0.0;
+	required_mips[lane] = 0;
+	if (active) {
+		// Encode active mip zero as one so zero remains the all-background sentinel.
+		required_mips[lane] = maximum_required_mip(center_linear_depth) + 1;
+	}
+	workgroup_barrier();
+
+	// One lane reduces both workgroup predicates. This costs two barriers instead
+	// of a seven-stage tree and keeps the result uniform for later prefetch branches.
+	if (lane == 0) {
+		let encoded_maximum: u32 = 0;
+		for (let index: u32 = 0; index < WORKGROUP_THREADS; index = index + 1) {
+			if (required_mips[index] > encoded_maximum) {
+				encoded_maximum = required_mips[index];
+			}
+		}
+		group_required_mip[0] = encoded_maximum;
+	}
+	workgroup_barrier();
+
+	let encoded_group_mip: u32 = group_required_mip[0];
+	if (encoded_group_mip == 0) {
+		if (in_bounds) {
+			write(ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		}
+		return;
+	}
+	let group_maximum_mip: u32 = encoded_group_mip - 1;
+
+	// Level-zero interior was initialized by the center-depth loads above.
+	prefetch_level(
+		0,
+		group_base,
+		L0_WIDTH,
+		L0_HEIGHT,
+		L0_STRIDE,
+		L0_HALO,
+		L0_BASE,
+		true
+	);
+	if (group_maximum_mip >= 1) {
+		prefetch_level(
+			1,
+			group_base / vec2u(2, 2),
+			L1_WIDTH,
+			L1_HEIGHT,
+			L1_STRIDE,
+			L1_HALO,
+			L1_BASE,
+			false
+		);
+	}
+	if (group_maximum_mip >= 2) {
+		prefetch_level(
+			2,
+			group_base / vec2u(4, 4),
+			L2_WIDTH,
+			L2_HEIGHT,
+			L2_STRIDE,
+			L2_HALO,
+			L2_BASE,
+			false
+		);
+	}
+	if (group_maximum_mip >= 3) {
+		prefetch_level(
+			3,
+			group_base / vec2u(8, 8),
+			L3_WIDTH,
+			L3_HEIGHT,
+			L3_STRIDE,
+			L3_HALO,
+			L3_BASE,
+			false
+		);
+	}
+	workgroup_barrier();
+
+	if (in_bounds == false) {
+		return;
+	}
+	if (center_linear_depth == 0.0) {
+		write(ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 
-	let uv: vec2f = make_uv(coord, extent);
-	let center_position: vec3f = reconstruct_view_space_position(uv, center_depth, inverse_projection);
-	let normal: vec3f = reconstruct_normal(coord, extent, center_position, visibility_depth, inverse_projection);
-	let radii: vec3f = compute_radii(center_position, extent, view_fov);
-	let rotation: f32 = interleaved_gradient_noise(coord) * GTAO_PI;
-	// Rotate the fixed octagonal basis once per pixel instead of evaluating trigonometry for every direction.
-	let rotation_cos: f32 = cos(rotation);
-	let rotation_sin: f32 = sin(rotation);
-	let occlusion: f32 = 0.0;
+	// Recompute short-lived values after prefetching instead of carrying them
+	// across the shared-memory loading phase.
+	let center_ray: vec2f = view_ray_xy(pixel);
+	let center_z: f32 = center_linear_depth * gtao_view.view_z_sign;
+	let normal: vec3f = reconstruct_normal_cached(
+		pixel,
+		extent,
+		group_base,
+		center_ray,
+		center_z
+	);
+	if (dot(normal, normal) == 0.0) {
+		write(ao_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
+		return;
+	}
+	let radius: RadiusData = compute_radius_data(center_linear_depth);
+	let rotation: f32 = interleaved_gradient_noise(pixel) * GTAO_PI;
+	let rotation_trigonometry: vec2f = sincos(rotation);
+	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);
+	let total_occlusion: f32 = 0.0;
 
-	for (let direction_index: u32 = 0; direction_index < GTAO_DIRECTIONS; direction_index = direction_index + 1) {
-		// BESL constant arrays cannot contain negative literals, so apply the octant signs after lookup.
-		let base_x: f32 = GTAO_DIRECTION_BASIS_ABS_X[direction_index];
-		let base_y: f32 = GTAO_DIRECTION_BASIS_ABS_Y[direction_index];
-		if (direction_index >= 3 && direction_index <= 5) {
-			base_x = 0.0 - base_x;
-		}
-		if (direction_index >= 5) {
-			base_y = 0.0 - base_y;
-		}
-		let base_direction: vec2f = vec2f(base_x, base_y);
-		let direction: vec2f = vec2f(
-			base_direction.x * rotation_cos - base_direction.y * rotation_sin,
-			base_direction.x * rotation_sin + base_direction.y * rotation_cos
+	// Keep this loop rolled. Unrolling the complete sample set can raise the
+	// backend's register-allocation tier and reduce occupancy.
+	for (let axis_index: u32 = 0; axis_index < 4; axis_index = axis_index + 1) {
+		let positive_index: u32 = axis_index;
+		let negative_index: u32 = axis_index + 4;
+		let positive_noise: f32 = interleaved_gradient_noise(
+			pixel + vec2u(positive_index * 7, positive_index * 13)
 		);
-		let noise_coord: vec2u = coord + vec2u(direction_index * 7, direction_index * 13);
-		occlusion = occlusion + sample_direction(
-			coord,
-			center_position,
-			normal,
-			direction,
-			radii.x,
-			radii.y,
-			extent,
-			interleaved_gradient_noise(noise_coord),
-			visibility_depth,
-			inverse_projection
+		let negative_noise: f32 = interleaved_gradient_noise(
+			pixel + vec2u(negative_index * 7, negative_index * 13)
+		);
+		let positive_maximum: f32 = 0.0;
+		let negative_maximum: f32 = 0.0;
+		let previous_positive_key: u32 = INVALID_SAMPLE_KEY;
+		let previous_negative_key: u32 = INVALID_SAMPLE_KEY;
+
+		for (let step: u32 = 1; step <= 6; step = step + 1) {
+			let step_f: f32 = f32(step);
+			let positive_step_noise: f32 = fract(positive_noise + step_f * GTAO_GOLDEN);
+			let negative_step_noise: f32 = fract(negative_noise + step_f * GTAO_GOLDEN);
+			let positive_ratio: f32 =
+				(step_f - 0.5 + positive_step_noise * 0.5) * GTAO_INV_STEPS;
+			let negative_ratio: f32 =
+				(step_f - 0.5 + negative_step_noise * 0.5) * GTAO_INV_STEPS;
+			let positive_sample: SampleAddress = make_sample_address(
+				pixel,
+				extent,
+				axis_direction,
+				radius.screen_radius,
+				positive_ratio
+			);
+			let negative_sample: SampleAddress = make_sample_address(
+				pixel,
+				extent,
+				vec2f(0.0, 0.0) - axis_direction,
+				radius.screen_radius,
+				negative_ratio
+			);
+			let evaluate_positive: bool = positive_sample.key != previous_positive_key;
+			let evaluate_negative: bool = negative_sample.key != previous_negative_key;
+			let positive_depth: f32 = 0.0;
+			let negative_depth: f32 = 0.0;
+
+			// Issue both shared reads before consuming either result.
+			if (evaluate_positive) {
+				positive_depth = cached_hierarchical_depth(
+					positive_sample.coord,
+					positive_sample.level,
+					group_base
+				);
+			}
+			if (evaluate_negative) {
+				negative_depth = cached_hierarchical_depth(
+					negative_sample.coord,
+					negative_sample.level,
+					group_base
+				);
+			}
+
+			if (evaluate_positive) {
+				positive_maximum = update_direction_occlusion(
+					positive_maximum,
+					positive_sample.coord,
+					positive_depth,
+					pixel,
+					center_ray,
+					center_z,
+					normal,
+					radius.inverse_world_radius_sq
+				);
+			}
+			if (evaluate_negative) {
+				negative_maximum = update_direction_occlusion(
+					negative_maximum,
+					negative_sample.coord,
+					negative_depth,
+					pixel,
+					center_ray,
+					center_z,
+					normal,
+					radius.inverse_world_radius_sq
+				);
+			}
+
+			previous_positive_key = positive_sample.key;
+			previous_negative_key = negative_sample.key;
+		}
+
+		total_occlusion = total_occlusion + positive_maximum + negative_maximum;
+		axis_direction = vec2f(
+			(axis_direction.x - axis_direction.y) * GTAO_SQRT_HALF,
+			(axis_direction.x + axis_direction.y) * GTAO_SQRT_HALF
 		);
 	}
 
-	let average_occlusion: f32 = clamp(occlusion / f32(GTAO_DIRECTIONS) * GTAO_STRENGTH, 0.0, 1.0);
-	let faded_occlusion: f32 = average_occlusion * radii.z;
-	let ao: f32 = 1.0 - faded_occlusion;
-	write(ao_output, coord, vec4f(ao, ao, ao, 1.0));
+	let average_occlusion: f32 = clamp(
+		total_occlusion * 0.125 * GTAO_STRENGTH,
+		0.0,
+		1.0
+	);
+	let ao: f32 = 1.0 - average_occlusion * radius.fade;
+	write(ao_output, pixel, vec4f(ao, ao, ao, 1.0));
 }

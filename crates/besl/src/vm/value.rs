@@ -911,6 +911,7 @@ pub(super) fn apply_scalar_ternary(
 		match operator {
 			ScalarTernaryOperator::Mix => first + (second - first) * third,
 			ScalarTernaryOperator::Clamp => first.clamp(second, third),
+			ScalarTernaryOperator::Fma => first.mul_add(second, third),
 			ScalarTernaryOperator::Smoothstep => {
 				let t = ((third - first) / (second - first)).clamp(0.0, 1.0);
 				t * t * (3.0 - 2.0 * t)

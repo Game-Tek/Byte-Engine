@@ -1724,6 +1724,55 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 }
 
 #[test]
+fn executable_program_evaluates_paired_trigonometry_fma_and_signed_rounding() {
+	let script = r#"
+	main: fn () -> void {
+		buff.trigonometry = sincos(0.0);
+		buff.fused = fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0));
+		buff.rounded = round_to_i32(vec2f(0.0 - 1.6, 2.4));
+	}
+	"#;
+
+	let mut root = Node::root();
+	let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+	let vec2i = root.get_child("vec2i").expect("Expected vec2i");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("trigonometry", vec2f.clone()).into(),
+					Node::member("fused", vec2f).into(),
+					Node::member("rounded", vec2i).into(),
+				],
+			},
+			36,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(36);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(
+		buffer.read("trigonometry").expect("Expected paired trigonometry"),
+		Value::Vec2F([0.0, 1.0])
+	);
+	assert_eq!(
+		buffer.read("fused").expect("Expected fused result"),
+		Value::Vec2F([9.0, 17.0])
+	);
+	assert_eq!(
+		buffer.read("rounded").expect("Expected rounded result"),
+		Value::Vec2I([-2, 2])
+	);
+}
+
+#[test]
 fn executable_program_evaluates_scalar_max_and_clamp() {
 	let script = r#"
 	main: fn () -> void {

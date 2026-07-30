@@ -9,8 +9,9 @@
 /// rendering pipeline, and window.
 ///
 /// After setup, create application actions through
-/// [`GraphicsApplication::action_factory`] and run the application with
-/// [`GraphicsApplication::do_loop`].
+/// [`GraphicsApplication::action_factory`], select scene lighting through
+/// [`crate::gameplay::world::DefaultWorld::environment_factory_mut`], and run
+/// the application with [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
@@ -25,7 +26,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 		loading_tasks.push(task);
 	});
 
-	setup_pbr_visibility_shading_render_pipeline(application, None, |task| {
+	setup_pbr_visibility_shading_render_pipeline(application, |task| {
 		loading_tasks.push(task);
 	});
 

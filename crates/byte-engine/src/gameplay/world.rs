@@ -19,7 +19,7 @@ use crate::{
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
 	physics::{self, dynabit},
-	rendering::{lights::Lights, Camera, RenderableMesh, UpdatePose},
+	rendering::{lights::Lights, Camera, Environment, RenderableMesh, UpdatePose},
 };
 
 #[derive(Clone)]
@@ -33,6 +33,7 @@ pub struct DefaultWorld {
 	cameras: Factory<Camera>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 	light_factory: Factory<Lights>,
+	environment_factory: Factory<Environment>,
 	audio_graph_factory: AudioGraphFactory,
 
 	anchor_system: AnchorSystem,
@@ -64,6 +65,7 @@ impl DefaultWorld {
 			cameras,
 			renderable_factory,
 			light_factory: Factory::new(),
+			environment_factory: Factory::new(),
 			audio_graph_factory: AudioGraphFactory::new(),
 
 			anchor_system,
@@ -132,6 +134,19 @@ impl DefaultWorld {
 
 	pub fn light_factory_mut(&mut self) -> &mut Factory<Lights> {
 		&mut self.light_factory
+	}
+
+	/// Returns the factory used to select the world's scene environment.
+	pub fn environment_factory(&self) -> &Factory<Environment> {
+		&self.environment_factory
+	}
+
+	/// Returns mutable access to the factory used to select the world's scene environment.
+	///
+	/// Next, call [`Factory::create`] with an [`Environment`] after installing
+	/// the visibility pipeline.
+	pub fn environment_factory_mut(&mut self) -> &mut Factory<Environment> {
+		&mut self.environment_factory
 	}
 
 	/// Returns the factory used to spawn resource-backed audio graphs.
@@ -205,6 +220,17 @@ mod tests {
 		assert_eq!(transform.handle(), &lifecycle_handle);
 		assert_eq!(transform.transform().get_position(), Vector3::new(4.0, 5.0, 6.0));
 		assert_eq!(deletion.handle(), &lifecycle_handle);
+	}
+
+	#[test]
+	fn world_routes_environment_creation_to_rendering_listeners() {
+		let mut world = DefaultWorld::new();
+		let mut listener = world.environment_factory().listener();
+
+		world.environment_factory_mut().create(Environment::new("studio.exr"));
+
+		let message = listener.read().expect("environment creation");
+		assert_eq!(message.data().resource_id(), "studio.exr");
 	}
 
 	#[test]

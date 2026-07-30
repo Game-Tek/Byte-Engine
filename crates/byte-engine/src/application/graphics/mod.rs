@@ -577,13 +577,13 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
 ///
-/// `environment_resource_id` selects the optional HDR image used for ambient and specular reflections.
+/// Next, create an [`Environment`] through
+/// [`DefaultWorld::environment_factory_mut`] to select the HDR image used for
+/// ambient and specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
-	environment_resource_id: Option<&str>,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
-	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
@@ -623,6 +623,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		pose_receiver: DefaultListener<UpdatePose>,
+		environment_receiver: DefaultListener<CreateMessage<Environment>>,
+		pending_environments: VecDeque<CreateMessage<Environment>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
@@ -669,6 +671,17 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 					.update_pose(message.handle(), message.global_matrices());
 			}
 		}
+
+		/// Drains environment creation commands into the visibility resource request path.
+		fn request_pending_environments(&mut self) {
+			while let Some(message) = self.environment_receiver.read() {
+				self.pending_environments.push_back(message);
+			}
+
+			while let Some(message) = self.pending_environments.pop_front() {
+				self.visibility_pipeline_manager.create_environment(message.into_data());
+			}
+		}
 	}
 
 	impl PipelineManager for CustomPipelineManager {
@@ -680,6 +693,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
+			self.request_pending_environments();
 			self.process_pose_updates();
 
 			self.process_deletions();
@@ -710,6 +724,13 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let mesh_receiver = application.world().renderable_factory().listener();
 		let mesh_delete_receiver = application.world().delete_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();
+		let pending_environments = application
+			.world_mut()
+			.environment_factory_mut()
+			.drain_created_before_listener()
+			.into_iter()
+			.collect::<VecDeque<_>>();
+		let environment_receiver = application.world().environment_factory().listener();
 
 		let renderer = &mut application.renderer;
 
@@ -718,7 +739,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				renderer.context_mut(),
 				resource_manager_client,
 				visibility_shader_resources,
-				environment_resource_id,
 			),
 			light_receiver,
 			light_delete_receiver,
@@ -727,6 +747,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			mesh_delete_receiver,
 			pending_meshes,
 			pose_receiver,
+			environment_receiver,
+			pending_environments,
 		};
 
 		renderer.add_pipeline_manager(sm);
@@ -925,7 +947,7 @@ use crate::{
 			bloom::{BloomPass, BloomPassSettings},
 			sky::AtmosphereSkyRenderPass,
 		},
-		renderable, renderer, RenderableMesh, UpdatePose,
+		renderable, renderer, Environment, RenderableMesh, UpdatePose,
 	},
 	time::MediaTime,
 	ui::{layout::engine::Render, render_pass::UiRenderPass},

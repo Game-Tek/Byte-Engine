@@ -20,6 +20,8 @@ use crate::space::Positionable as _;
 #[doc(hidden)]
 pub mod common_shader_generator;
 
+mod environment;
+
 #[doc(hidden)]
 pub mod lights;
 #[doc(hidden)]
@@ -73,6 +75,7 @@ pub mod csm;
 pub mod utils;
 
 pub use camera::Camera;
+pub use environment::Environment;
 pub use lights::{ConeLight, DirectionalLight, Light, LightClasses, Lights, PointLight};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};

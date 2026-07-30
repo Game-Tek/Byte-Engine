@@ -55,7 +55,6 @@ impl VisibilityPipelineManager {
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
 		shader_resources: EntityHandle<ResourceManager>,
-		environment_resource_id: Option<String>,
 	) -> Self {
 		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
@@ -165,10 +164,6 @@ impl VisibilityPipelineManager {
 			vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 			context.create_factory(),
 		));
-		if let Some(resource_id) = environment_resource_id.as_ref() {
-			resource_manager.request_environment(resource_id.clone());
-		}
-
 		Self {
 			materials_data,
 			materials_data_buffer_handle,
@@ -183,7 +178,7 @@ impl VisibilityPipelineManager {
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
 			loaded_pipelines: HashMap::new(),
-			environment_resource_id,
+			environment_resource_id: None,
 			environment_texture,
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
@@ -209,6 +204,13 @@ impl VisibilityPipelineManager {
 
 	pub(crate) fn create_light(&mut self, handle: Handle, light: Lights) {
 		self.scene.lights.push((handle, light));
+	}
+
+	/// Selects an environment and requests its baked lighting resources.
+	pub(crate) fn create_environment(&mut self, environment: Environment) {
+		let resource_id = environment.resource_id().to_owned();
+		self.environment_resource_id = Some(resource_id.clone());
+		self.resource_manager.request_environment(resource_id);
 	}
 
 	pub(crate) fn remove_light(&mut self, handle: Handle) {
@@ -1671,7 +1673,7 @@ use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::view::View;
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
-	RenderableMesh, Sink,
+	Environment, RenderableMesh, Sink,
 };
 use crate::resource_management::{self};
 use crate::space::Transformable as _;

@@ -1,7 +1,6 @@
-// visibility_depth stores reversed device depth: 1.0 is near and 0.0 is background.
-// linear_depth_1..3 store conservative nearest-nonzero positive view-space distance.
-// Level zero is linearized while loading the shared cache because portable GHI storage
-// bindings expose the reduced levels as separate image views.
+// linear_depth_0..2 store conservative nearest-nonzero positive view-space distance.
+// The first level is half resolution, matching the GTAO output. The later levels
+// reduce that logical grid by another factor of two for distant samples.
 FastGTAOView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -29,17 +28,18 @@ SampleAddress: struct {
 }
 
 gtao_view: descriptor<FastGTAOView, 0, read>;
-visibility_depth: descriptor<Texture2D, 1033, read>;
+linear_depth_0: descriptor<Texture2D, 1033, read>;
 ao_output: descriptor<StorageImage<r8>, 1034, write>;
 linear_depth_1: descriptor<Texture2D, 1035, read>;
 linear_depth_2: descriptor<Texture2D, 1036, read>;
-linear_depth_3: descriptor<Texture2D, 1037, read>;
 
 GTAO_RADIUS: const f32 = 1.0;
 GTAO_BIAS: const f32 = 0.05;
 GTAO_STRENGTH: const f32 = 1.0;
 GTAO_MIN_RADIUS_PIXELS: const f32 = 4.0;
-GTAO_MAX_RADIUS_PIXELS: const f32 = 64.0;
+// Half-resolution pixels cover two sink pixels, so 32 preserves the original
+// 64-pixel full-resolution search bound.
+GTAO_MAX_RADIUS_PIXELS: const f32 = 32.0;
 GTAO_MIN_EFFECTIVE_RADIUS_PIXELS: const f32 = 1.0;
 GTAO_PI: const f32 = 3.14159265359;
 GTAO_SQRT_HALF: const f32 = 0.70710678118;
@@ -56,7 +56,6 @@ WORKGROUP_THREADS: const u32 = 128;
 L0_HALO: const u32 = 7;
 L1_HALO: const u32 = 8;
 L2_HALO: const u32 = 8;
-L3_HALO: const u32 = 8;
 
 L0_WIDTH: const u32 = 30;
 L0_HEIGHT: const u32 = 22;
@@ -70,19 +69,14 @@ L2_WIDTH: const u32 = 20;
 L2_HEIGHT: const u32 = 18;
 L2_STRIDE: const u32 = 21;
 
-L3_WIDTH: const u32 = 18;
-L3_HEIGHT: const u32 = 17;
-L3_STRIDE: const u32 = 19;
-
-// Complete cached rectangles are 30x22, 24x20, 20x18, and 18x17.
+// Complete cached rectangles are 30x22, 24x20, and 20x18.
 // Each row has one padding element to reduce shared-memory bank conflicts.
 L0_BASE: const u32 = 0;
 L1_BASE: const u32 = 682;
 L2_BASE: const u32 = 1182;
-L3_BASE: const u32 = 1560;
 INVALID_SAMPLE_KEY: const u32 = 4294967295;
 
-cached_depth: workgroup<f32, 1883>;
+cached_depth: workgroup<f32, 1560>;
 required_mips: workgroup<u32, 128>;
 group_required_mip: workgroup<u32, 1>;
 
@@ -90,38 +84,24 @@ interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }
 
-linearize_depth: fn (depth: f32) -> f32 {
-	if (depth == 0.0) {
-		return 0.0;
-	}
-
-	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
-}
-
 hierarchy_extent: fn (level: u32) -> vec2u {
-	if (level == 3) {
-		return texture_size(linear_depth_3);
-	}
 	if (level == 2) {
 		return texture_size(linear_depth_2);
 	}
 	if (level == 1) {
 		return texture_size(linear_depth_1);
 	}
-	return texture_size(visibility_depth);
+	return texture_size(linear_depth_0);
 }
 
 fetch_linear_depth: fn (coordinate: vec2u, level: u32) -> f32 {
-	if (level == 3) {
-		return fetch(linear_depth_3, coordinate).x;
-	}
 	if (level == 2) {
 		return fetch(linear_depth_2, coordinate).x;
 	}
 	if (level == 1) {
 		return fetch(linear_depth_1, coordinate).x;
 	}
-	return linearize_depth(fetch(visibility_depth, coordinate).x);
+	return fetch(linear_depth_0, coordinate).x;
 }
 
 clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
@@ -195,21 +175,12 @@ prefetch_level: fn (
 }
 
 cached_hierarchical_depth: fn (
-	full_resolution_coord: vec2u,
+	base_resolution_coord: vec2u,
 	level: u32,
 	group_base: vec2u
 ) -> f32 {
-	if (level == 3) {
-		let mip_coord: vec2u = full_resolution_coord / vec2u(8, 8);
-		let mip_group_base: vec2u = group_base / vec2u(8, 8);
-		return cached_depth[
-			L3_BASE +
-			cache_coordinate(mip_coord.y, mip_group_base.y, L3_HALO) * L3_STRIDE +
-			cache_coordinate(mip_coord.x, mip_group_base.x, L3_HALO)
-		];
-	}
 	if (level == 2) {
-		let mip_coord: vec2u = full_resolution_coord / vec2u(4, 4);
+		let mip_coord: vec2u = base_resolution_coord / vec2u(4, 4);
 		let mip_group_base: vec2u = group_base / vec2u(4, 4);
 		return cached_depth[
 			L2_BASE +
@@ -218,7 +189,7 @@ cached_hierarchical_depth: fn (
 		];
 	}
 	if (level == 1) {
-		let mip_coord: vec2u = full_resolution_coord / vec2u(2, 2);
+		let mip_coord: vec2u = base_resolution_coord / vec2u(2, 2);
 		let mip_group_base: vec2u = group_base / vec2u(2, 2);
 		return cached_depth[
 			L1_BASE +
@@ -228,8 +199,8 @@ cached_hierarchical_depth: fn (
 	}
 	return cached_depth[
 		L0_BASE +
-		cache_coordinate(full_resolution_coord.y, group_base.y, L0_HALO) * L0_STRIDE +
-		cache_coordinate(full_resolution_coord.x, group_base.x, L0_HALO)
+		cache_coordinate(base_resolution_coord.y, group_base.y, L0_HALO) * L0_STRIDE +
+		cache_coordinate(base_resolution_coord.x, group_base.x, L0_HALO)
 	];
 }
 
@@ -406,9 +377,6 @@ maximum_required_mip: fn (linear_depth: f32) -> u32 {
 	if (screen_radius >= 15.5) {
 		level = level + 1;
 	}
-	if (screen_radius >= 31.5) {
-		level = level + 1;
-	}
 	return level;
 }
 
@@ -452,10 +420,6 @@ make_sample_address: fn (
 	if (maximum_offset >= 16) {
 		level = level + 1;
 	}
-	if (maximum_offset >= 32) {
-		level = level + 1;
-	}
-
 	let sample_coord: vec2u = vec2u(
 		apply_signed_offset(pixel.x, requested_offset.x, extent.x),
 		apply_signed_offset(pixel.y, requested_offset.y, extent.y)
@@ -579,18 +543,6 @@ main: fn () -> void {
 			L2_STRIDE,
 			L2_HALO,
 			L2_BASE,
-			false
-		);
-	}
-	if (group_maximum_mip >= 3) {
-		prefetch_level(
-			3,
-			group_base / vec2u(8, 8),
-			L3_WIDTH,
-			L3_HEIGHT,
-			L3_STRIDE,
-			L3_HALO,
-			L3_BASE,
 			false
 		);
 	}

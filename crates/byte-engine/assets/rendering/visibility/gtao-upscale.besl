@@ -1,0 +1,219 @@
+// The final GTAO stage reconstructs full-resolution AO while completing the
+// vertical denoise. Horizontal interpolation adds the smoothing that would
+// otherwise require a separate upscale pass.
+FastGTAOView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+gtao_view: descriptor<FastGTAOView, 0, read>;
+visibility_depth: descriptor<Texture2D, 1033, read>;
+ao_source: descriptor<Texture2D, 1034, read>;
+ao_output: descriptor<StorageImage<r8>, 1035, write>;
+low_resolution_depth: descriptor<Texture2D, 1036, read>;
+
+shared_linear_depth: workgroup<f32, 60>;
+shared_ao: workgroup<f32, 60>;
+
+GTAO_UPSCALE_WORKGROUP_WIDTH: const u32 = 8;
+GTAO_UPSCALE_WORKGROUP_HEIGHT: const u32 = 8;
+GTAO_UPSCALE_WORKGROUP_SIZE: const u32 = 64;
+GTAO_UPSCALE_TILE_WIDTH: const u32 = 6;
+GTAO_UPSCALE_TILE_SIZE: const u32 = 60;
+GTAO_UPSCALE_HALO_X: const u32 = 1;
+GTAO_UPSCALE_HALO_Y: const u32 = 3;
+// Convolving a radius-two Gaussian with the two subpixel phases produces six
+// source rows. The odd output phase uses these weights in reverse order.
+GTAO_UPSCALE_EVEN_VERTICAL_WEIGHTS: const f32[6] = f32[6](
+	0.0136221711,
+	0.1019168489,
+	0.2838059932,
+	0.3630152957,
+	0.1967731776,
+	0.0408665134
+);
+// A 2% relative-depth sigma gives a Gaussian inverse variance of 1,250.
+GTAO_UPSCALE_INVERSE_DEPTH_VARIANCE: const f32 = 1250.0;
+
+clamp_subtract: fn (value: u32, offset: u32) -> u32 {
+	if (value < offset) {
+		return 0;
+	}
+	return value - offset;
+}
+
+clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
+	let maximum: u32 = extent - 1;
+	if (offset > maximum - value) {
+		return maximum;
+	}
+	return value + offset;
+}
+
+linearize_depth: fn (depth: f32) -> f32 {
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return gtao_view.depth_unproject_numerator / (depth + gtao_view.depth_unproject_denominator_offset);
+}
+
+relative_depth_delta: fn (center_linear_depth: f32, sample_linear_depth: f32) -> f32 {
+	return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 0.0001);
+}
+
+// Maps one shared-tile coordinate to its clamped low-resolution texture texel.
+tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, extent: u32) -> u32 {
+	if (tile_coordinate < halo) {
+		return clamp_subtract(origin, halo - tile_coordinate);
+	}
+	return clamp_add(origin, tile_coordinate - halo, extent);
+}
+
+shared_depth_at: fn (coordinate: vec2u) -> f32 {
+	return shared_linear_depth[coordinate.y * GTAO_UPSCALE_TILE_WIDTH + coordinate.x];
+}
+
+shared_ao_at: fn (coordinate: vec2u) -> f32 {
+	return shared_ao[coordinate.y * GTAO_UPSCALE_TILE_WIDTH + coordinate.x];
+}
+
+horizontal_shared_coordinate: fn (
+	base: u32,
+	parity: u32,
+	sample_index: u32
+) -> u32 {
+	if (parity == 0) {
+		if (sample_index == 0) {
+			return base - 1;
+		}
+		return base;
+	}
+	if (sample_index == 0) {
+		return base;
+	}
+	return base + 1;
+}
+
+horizontal_weight: fn (parity: u32, sample_index: u32) -> f32 {
+	if (parity == 0) {
+		if (sample_index == 0) {
+			return 0.25;
+		}
+		return 0.75;
+	}
+	if (sample_index == 0) {
+		return 0.75;
+	}
+	return 0.25;
+}
+
+vertical_shared_coordinate: fn (
+	base: u32,
+	parity: u32,
+	sample_index: u32
+) -> u32 {
+	let center_index: u32 = 3;
+	if (parity == 1) {
+		center_index = 2;
+	}
+	if (sample_index < center_index) {
+		return base - (center_index - sample_index);
+	}
+	return base + sample_index - center_index;
+}
+
+vertical_weight: fn (parity: u32, sample_index: u32) -> f32 {
+	if (parity == 0) {
+		return GTAO_UPSCALE_EVEN_VERTICAL_WEIGHTS[sample_index];
+	}
+	return GTAO_UPSCALE_EVEN_VERTICAL_WEIGHTS[5 - sample_index];
+}
+
+main: fn () -> void {
+	let coordinate: vec2u = thread_id();
+	let source_extent: vec2u = texture_size(ao_source);
+	let workgroup_origin: vec2u = vec2u(
+		coordinate.x - coordinate.x % GTAO_UPSCALE_WORKGROUP_WIDTH,
+		coordinate.y - coordinate.y % GTAO_UPSCALE_WORKGROUP_HEIGHT
+	);
+	let low_resolution_origin: vec2u = workgroup_origin / vec2u(2, 2);
+	let lane: u32 = thread_idx();
+
+	// One 8x8 output group touches only a 6x10 low-resolution footprint.
+	// Load both inputs once, then reuse them across every reconstruction tap.
+	for (let index: u32 = lane; index < GTAO_UPSCALE_TILE_SIZE; index = index + GTAO_UPSCALE_WORKGROUP_SIZE) {
+		let tile_coordinate: vec2u = vec2u(
+			index % GTAO_UPSCALE_TILE_WIDTH,
+			index / GTAO_UPSCALE_TILE_WIDTH
+		);
+		let source_coordinate: vec2u = vec2u(
+			tiled_source_coordinate(
+				low_resolution_origin.x,
+				tile_coordinate.x,
+				GTAO_UPSCALE_HALO_X,
+				source_extent.x
+			),
+			tiled_source_coordinate(
+				low_resolution_origin.y,
+				tile_coordinate.y,
+				GTAO_UPSCALE_HALO_Y,
+				source_extent.y
+			)
+		);
+		shared_linear_depth[index] = fetch(low_resolution_depth, source_coordinate).x;
+		shared_ao[index] = fetch(ao_source, source_coordinate).x;
+	}
+	workgroup_barrier();
+
+	// Partial edge workgroups must participate in the cooperative load before returning.
+	guard_image_bounds(ao_output, coordinate);
+	let device_depth: f32 = fetch(visibility_depth, coordinate).x;
+	let center_linear_depth: f32 = linearize_depth(device_depth);
+	if (center_linear_depth == 0.0) {
+		write(ao_output, coordinate, vec4f(1.0, 0.0, 0.0, 1.0));
+		return;
+	}
+
+	let local_coordinate: vec2u = coordinate - workgroup_origin;
+	let base: vec2u = local_coordinate / vec2u(2, 2) + vec2u(GTAO_UPSCALE_HALO_X, GTAO_UPSCALE_HALO_Y);
+	let parity: vec2u = coordinate % vec2u(2, 2);
+	let filtered_ao: f32 = 0.0;
+	let total_weight: f32 = 0.0;
+
+	// Each tap participates in both vertical denoising and depth-aware
+	// reconstruction, so the upscale does not require a separate blur pass.
+	for (let y_index: u32 = 0; y_index < 6; y_index = y_index + 1) {
+		let source_y: u32 = vertical_shared_coordinate(base.y, parity.y, y_index);
+		let y_weight: f32 = vertical_weight(parity.y, y_index);
+
+		for (let x_index: u32 = 0; x_index < 2; x_index = x_index + 1) {
+			let source_x: u32 = horizontal_shared_coordinate(base.x, parity.x, x_index);
+			let source_coordinate: vec2u = vec2u(source_x, source_y);
+			let sample_linear_depth: f32 = shared_depth_at(source_coordinate);
+			if (sample_linear_depth == 0.0) {
+				continue;
+			}
+
+			let depth_delta: f32 = relative_depth_delta(center_linear_depth, sample_linear_depth);
+			let depth_weight: f32 = exp(
+				0.0 - depth_delta * depth_delta * GTAO_UPSCALE_INVERSE_DEPTH_VARIANCE
+			);
+			let spatial_weight: f32 = y_weight * horizontal_weight(parity.x, x_index);
+			let sample_weight: f32 = spatial_weight * depth_weight;
+			filtered_ao = filtered_ao + shared_ao_at(source_coordinate) * sample_weight;
+			total_weight = total_weight + sample_weight;
+		}
+	}
+
+	// A neutral fallback avoids dark halos when a thin full-resolution surface
+	// has no matching representative in the conservative half-resolution depth.
+	let final_ao: f32 = 1.0;
+	if (total_weight > 0.00001) {
+		final_ao = filtered_ao / total_weight;
+	}
+	write(ao_output, coordinate, vec4f(final_ao, 0.0, 0.0, 1.0));
+}

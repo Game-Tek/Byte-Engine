@@ -1,44 +1,25 @@
-View: struct {
-	view: mat4f,
-	projection: mat4f,
-	view_projection: mat4f,
-	inverse_view: mat4f,
-	inverse_projection: mat4f,
-	inverse_view_projection: mat4f,
-	fov: vec2f,
-	near: f32,
-	far: f32,
-}
-
-Views: struct {
-	views: View[8],
-}
-
-views: descriptor<Views, 0, read>;
-visibility_depth: descriptor<Texture2D, 1033, read>;
+linear_depth: descriptor<Texture2D, 1033, read>;
 ao_source: descriptor<Texture2D, 1034, read>;
 ao_output: descriptor<StorageImage<r8>, 1035, write>;
 
-shared_linear_depth: workgroup<f32, 160>;
-shared_ao: workgroup<f32, 128>;
+shared_linear_depth: workgroup<f32, 120>;
+shared_ao: workgroup<f32, 96>;
 
 GTAO_BLUR_WORKGROUP_WIDTH: const u32 = 8;
 GTAO_BLUR_WORKGROUP_HEIGHT: const u32 = 8;
 GTAO_BLUR_WORKGROUP_SIZE: const u32 = 64;
-GTAO_BLUR_RADIUS: const u32 = 4;
-GTAO_BLUR_DEPTH_TILE_WIDTH: const u32 = 16;
-GTAO_BLUR_DEPTH_TILE_SIZE: const u32 = 160;
-GTAO_BLUR_AO_TILE_WIDTH: const u32 = 16;
-GTAO_BLUR_AO_TILE_SIZE: const u32 = 128;
-GTAO_BLUR_DEPTH_HALO_X: const u32 = 4;
+GTAO_BLUR_RADIUS: const u32 = 2;
+GTAO_BLUR_DEPTH_TILE_WIDTH: const u32 = 12;
+GTAO_BLUR_DEPTH_TILE_SIZE: const u32 = 120;
+GTAO_BLUR_AO_TILE_WIDTH: const u32 = 12;
+GTAO_BLUR_AO_TILE_SIZE: const u32 = 96;
+GTAO_BLUR_DEPTH_HALO_X: const u32 = 2;
 GTAO_BLUR_DEPTH_HALO_Y: const u32 = 1;
-GTAO_BLUR_AO_HALO_X: const u32 = 4;
-GTAO_BLUR_SPATIAL_WEIGHTS: const f32[5] = f32[5](
-	0.2270270270,
-	0.1945945946,
-	0.1216216216,
-	0.0540540541,
-	0.0162162162
+GTAO_BLUR_AO_HALO_X: const u32 = 2;
+GTAO_BLUR_SPATIAL_WEIGHTS: const f32[3] = f32[3](
+	0.4026199469,
+	0.2442013420,
+	0.0544886845
 );
 GTAO_BLUR_BASE_RELATIVE_SIGMA: const f32 = 0.03;
 GTAO_BLUR_MIN_RELATIVE_SIGMA: const f32 = 0.004;
@@ -60,20 +41,6 @@ clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
 	}
 
 	return value + offset;
-}
-
-linear_view_depth: fn (depth: f32, inverse_projection: mat4f) -> f32 {
-	if (depth == 0.0) {
-		return 0.0;
-	}
-	let view_z: f32 = (
-		depth * inverse_projection[2].z
-		+ inverse_projection[3].z
-	) / (
-		depth * inverse_projection[2].w
-		+ inverse_projection[3].w
-	);
-	return max(view_z, 0.0001);
 }
 
 relative_depth_delta: fn (center_linear_depth: f32, sample_linear_depth: f32) -> f32 {
@@ -202,10 +169,9 @@ main: fn () -> void {
 		coord.y - coord.y % GTAO_BLUR_WORKGROUP_HEIGHT
 	);
 	let lane: u32 = thread_idx();
-	let inverse_projection: mat4f = views.views[0].inverse_projection;
 
-	// Linearize each depth texel once while loading the shared tile. Every later
-	// variance and bilateral tap reuses that value without another matrix multiply.
+	// The depth pyramid already stores positive linear depth at the same
+	// half-resolution extent as the raw AO input.
 	for (let index: u32 = lane; index < GTAO_BLUR_DEPTH_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let tile_coordinate: vec2u = vec2u(
 			index % GTAO_BLUR_DEPTH_TILE_WIDTH,
@@ -215,7 +181,7 @@ main: fn () -> void {
 			tiled_source_coordinate(workgroup_origin.x, tile_coordinate.x, GTAO_BLUR_DEPTH_HALO_X, extent.x),
 			tiled_source_coordinate(workgroup_origin.y, tile_coordinate.y, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
 		);
-		shared_linear_depth[index] = linear_view_depth(fetch(visibility_depth, source_coordinate).x, inverse_projection);
+		shared_linear_depth[index] = fetch(linear_depth, source_coordinate).x;
 	}
 	for (let index: u32 = lane; index < GTAO_BLUR_AO_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let tile_coordinate: vec2u = vec2u(

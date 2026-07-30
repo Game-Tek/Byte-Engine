@@ -241,33 +241,24 @@ pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	)
 }
 
+/// Returns the shortest orientation from the engine's forward axis to `direction`.
 pub fn orientation_from_direction(direction: Vector3) -> Quaternion {
-	// normalize input direction
 	let dir = normalize(direction);
-
-	// base forward vector (+Z)
 	let forward = Vector3::new(0.0, 0.0, 1.0);
+	let alignment = dot(forward, dir).clamp(-1.0, 1.0);
 
-	// handle parallel and anti-parallel cases
-	let dot = dot(forward, dir);
-	if dot > 0.9999 {
-		return Quaternion::identity();
-	} else if dot < -0.9999 {
-		// rotate 180 degrees around any perpendicular axis (X is fine if not parallel)
+	// Opposite vectors have no unique rotation axis. Use X so the result stays
+	// deterministic without flattening valid rotations near the forward axis.
+	if alignment <= -1.0 + f32::EPSILON {
 		return Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
 	}
 
-	// rotation axis is perpendicular to both vectors
-	let axis = normalize(cross(forward, dir));
-
-	// rotation angle is arccos of the dot product
-	let angle = dot.acos();
-
-	Quaternion::from_axis_angle(axis, angle)
+	let axis = cross(forward, dir);
+	normalize(Quaternion::new(axis.x, axis.y, axis.z, 1.0 + alignment))
 }
 
+/// Returns the normalized direction produced by rotating the engine's forward axis.
 pub fn direction_from_orientation(orientation: Quaternion) -> Vector3 {
-	// Rotate the base forward vector (0, 0, 1) by the quaternion
 	let forward = Vector3::new(0.0, 0.0, 1.0);
 	let rotated_forward = orientation * forward;
 	normalize(rotated_forward)
@@ -488,6 +479,37 @@ mod tests {
 		assert!(nearly_equal(s[1], 0f32));
 		assert!(nearly_equal(s[2], 0f32));
 		assert!(nearly_equal(s[3], 1f32));
+	}
+
+	#[test]
+	fn orientation_from_near_forward_direction_preserves_small_mouse_motion() {
+		// One logical point from the center of a 1024-point window produces this
+		// yaw through the engine's sphere input mapping.
+		let yaw = (2.0 / 1024.0) * std::f32::consts::PI;
+		let direction = Vec3f::new(yaw.sin(), 0.0, yaw.cos());
+
+		let resolved = super::direction_from_orientation(orientation_from_direction(direction));
+
+		assert_float_eq_with_epsilon!(resolved.x, direction.x, 0.000001);
+		assert_float_eq_with_epsilon!(resolved.y, direction.y, 0.000001);
+		assert_float_eq_with_epsilon!(resolved.z, direction.z, 0.000001);
+	}
+
+	#[test]
+	fn orientation_direction_round_trip_preserves_representative_directions() {
+		for direction in [
+			Vec3f::new(0.0, 0.0, 1.0),
+			Vec3f::new(0.0, 0.0, -1.0),
+			Vec3f::new(1.0, 0.0, 0.0),
+			Vec3f::new(0.0, 1.0, 0.0),
+			super::normalize(Vec3f::new(0.3, -0.4, 0.5)),
+		] {
+			let resolved = super::direction_from_orientation(orientation_from_direction(direction));
+
+			assert_float_eq_with_epsilon!(resolved.x, direction.x, 0.000001);
+			assert_float_eq_with_epsilon!(resolved.y, direction.y, 0.000001);
+			assert_float_eq_with_epsilon!(resolved.z, direction.z, 0.000001);
+		}
 	}
 
 	#[test]

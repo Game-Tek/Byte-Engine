@@ -5,33 +5,6 @@
 //! functions individually; the `window` example demonstrates that narrower
 //! composition.
 
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
-#[cfg(debug_assertions)]
-use resource_management::asset::{
-	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
-	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
-	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
-};
-use tracing::debug_span;
-use utils::Extent;
-
-use super::{setup_pbr_visibility_shading_render_pipeline, GraphicsApplication};
-#[cfg(debug_assertions)]
-use crate::rendering::common_shader_generator::CommonShaderGenerator;
-#[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
-use crate::{
-	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
-	audio::{
-		audio_system::{AudioSystem, DefaultAudioSystem},
-		sample_loader::AudioSampleLoader,
-	},
-	core::listener::Listener as _,
-	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
-	rendering::window::Window,
-};
-
 /// Installs the standard assets, input devices, audio worker, visibility
 /// rendering pipeline, and window.
 ///
@@ -45,9 +18,59 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 		setup_default_resource_and_asset_management(application, generator);
 	}
 	setup_default_input(application);
-	setup_default_audio(application);
-	setup_pbr_visibility_shading_render_pipeline(application, None);
+
+	let mut loading_tasks = build_deferred_tasks_queue();
+
+	setup_default_audio(application, |task| {
+		loading_tasks.push(task);
+	});
+
+	setup_pbr_visibility_shading_render_pipeline(application, None, |task| {
+		loading_tasks.push(task);
+	});
+
 	setup_default_window(application);
+
+	launch_deferred_tasks_thread(application, loading_tasks);
+}
+
+pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {
+	application
+		.threads
+		.push(Thread::new(application.application_events.1.clone(), move |mut e| {
+			let runtime = build_single_threaded_async_runtime();
+
+			// Compio separates task execution from I/O polling. Enter the runtime so
+			// resource futures can access it, then drive both halves until shutdown.
+			runtime.enter(|| {
+				for task in tasks {
+					task(&runtime);
+				}
+
+				loop {
+					if let Ok(Events::Close) = e.try_recv() {
+						return;
+					}
+
+					let has_ready_tasks = runtime.run();
+					let timeout = has_ready_tasks
+						.then_some(std::time::Duration::ZERO)
+						.or(Some(std::time::Duration::from_millis(6)));
+					runtime.poll_with(timeout);
+				}
+			});
+		}));
+}
+
+pub fn build_single_threaded_async_runtime() -> compio::runtime::Runtime {
+	compio::runtime::Runtime::new().unwrap()
+}
+
+pub type DeferredTask = Box<dyn FnOnce(&compio::runtime::Runtime) + Send>;
+pub type DeferredTasks = Vec<DeferredTask>;
+
+pub fn build_deferred_tasks_queue() -> DeferredTasks {
+	Vec::with_capacity(8)
 }
 
 /// Creates the 1920x1080 window used by the default headed setup.
@@ -133,7 +156,10 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
 /// worker, or create an [`crate::audio::graph::AudioGraph`] through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
-pub fn setup_default_audio(application: &mut GraphicsApplication) {
+pub fn setup_default_audio(
+	application: &mut GraphicsApplication,
+	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
+) {
 	let graphs_created_before_setup = application.world.audio_graph_factory_mut().drain_created_before_listener();
 	if !graphs_created_before_setup.is_empty() {
 		log::warn!(
@@ -143,7 +169,10 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 	let mut deletions_listener = application.world.delete_channel().listener();
 	let (mut sample_loader_client, sample_loader) = AudioSampleLoader::new(application.resource_manager.clone());
-	application.tasks.push(application.runtime.spawn(sample_loader.run()));
+
+	spawn_loading_task(Box::new(move |runtime| {
+		runtime.spawn(sample_loader.run()).detach();
+	}));
 
 	application
 		.threads
@@ -213,3 +242,30 @@ impl<T, E: std::fmt::Display> LogResult for Result<T, E> {
 		self
 	}
 }
+
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
+#[cfg(debug_assertions)]
+use resource_management::asset::{
+	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
+	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
+	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
+	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
+};
+use tracing::debug_span;
+use utils::Extent;
+
+use super::{setup_pbr_visibility_shading_render_pipeline, GraphicsApplication};
+#[cfg(debug_assertions)]
+use crate::rendering::common_shader_generator::CommonShaderGenerator;
+#[cfg(debug_assertions)]
+use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
+use crate::{
+	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
+	audio::{
+		audio_system::{AudioSystem, DefaultAudioSystem},
+		sample_loader::AudioSampleLoader,
+	},
+	core::listener::Listener as _,
+	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
+	rendering::window::Window,
+};

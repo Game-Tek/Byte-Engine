@@ -60,12 +60,9 @@ pub struct GraphicsApplication {
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
 	gamepad_device_class_handle: Option<input::device_class::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
-	tasks: SmallVec<[compio::runtime::JoinHandle<()>; 64]>,
 	renderer: Renderer,
 
 	threads: SmallVec<[Thread; 64]>,
-
-	runtime: compio::runtime::Runtime,
 
 	#[cfg(debug_assertions)]
 	ttff: MediaTime,
@@ -166,16 +163,9 @@ impl Application for GraphicsApplication {
 			gamepad_system,
 			gamepad_device_class_handle: None,
 			resource_manager,
-			tasks: SmallVec::new(),
 			renderer,
 
 			threads: SmallVec::new(),
-			runtime: compio::runtime::Runtime::builder()
-				.event_interval(ASYNC_TASK_POLL_BUDGET_PER_TICK)
-				.build()
-				.expect(
-					"Application async runtime could not start. The most likely cause is unavailable platform I/O support.",
-				),
 
 			close: false,
 
@@ -314,11 +304,6 @@ impl GraphicsApplication {
 			}
 		}
 
-		if close {
-			self.close_workers_and_record_stats();
-			return None;
-		}
-
 		let time = Time { elapsed, delta: dt };
 
 		{
@@ -363,12 +348,6 @@ impl GraphicsApplication {
 		}
 
 		{
-			let span = debug_span!("GraphicsApplication::drive_async_runtime");
-			let _enter = span.enter();
-			self.drive_async_runtime();
-		}
-
-		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
 			let frame_allocator = &self.application.frame_allocator;
@@ -402,40 +381,11 @@ impl GraphicsApplication {
 		}
 
 		if close {
-			self.close_workers_and_record_stats();
+			self.close();
 			None
 		} else {
 			Some(result)
 		}
-	}
-
-	/// Advances ready application tasks and polls completed I/O without waiting for new events.
-	fn drive_async_runtime(&self) {
-		self.runtime.enter(|| {
-			self.runtime.poll_with(Some(std::time::Duration::ZERO));
-			self.runtime.run();
-		});
-	}
-
-	/// Cancels application tasks and drives their destructors before renderer resources are released.
-	fn stop_async_tasks(&mut self) {
-		if self.tasks.is_empty() {
-			return;
-		}
-
-		let tasks = std::mem::take(&mut self.tasks);
-		self.runtime.block_on(async move {
-			for task in tasks {
-				let _ = task.cancel().await;
-			}
-		});
-	}
-
-	/// Stops asynchronous tasks and worker threads before recording final debug run stats.
-	fn close_workers_and_record_stats(&mut self) {
-		self.stop_async_tasks();
-		self.stop_worker_threads();
-		self.close();
 	}
 
 	/// Drains application-side lifecycle events, then signals and joins every
@@ -455,6 +405,8 @@ impl GraphicsApplication {
 	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.close = true;
+
+		self.stop_worker_threads();
 
 		#[cfg(debug_assertions)]
 		log::debug!(
@@ -547,15 +499,6 @@ impl GraphicsApplication {
 	}
 }
 
-impl Drop for GraphicsApplication {
-	fn drop(&mut self) {
-		// `tick_with` normally stops tasks explicitly. This fallback also covers
-		// setup errors and callers that drop the application without closing it.
-		self.stop_async_tasks();
-		self.stop_worker_threads();
-	}
-}
-
 impl Parameters for GraphicsApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.application.get_parameter(name)
@@ -638,12 +581,11 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	environment_resource_id: Option<&str>,
+	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
 	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
-	let runtime = &application.runtime;
-	let tasks = &mut application.tasks;
 	let renderer = &mut application.renderer;
 	let transfer_queue_handle = renderer.transfer_queue_handle;
 	let context = renderer.context_mut();
@@ -661,12 +603,17 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 
 	let (resource_manager_client, resource_manager) =
 		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
-	tasks.push(runtime.spawn(resource_manager.run(
-		transfer_queue,
-		transfer_finished_synchronizer,
-		transfer_command_buffer,
-		upload_buffer,
-	)));
+
+	spawn_loading_task(std::boxed::Box::new(move |runtime| {
+		runtime
+			.spawn(resource_manager.run(
+				transfer_queue,
+				transfer_finished_synchronizer,
+				transfer_command_buffer,
+				upload_buffer,
+			))
+			.detach();
+	}));
 
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
@@ -988,7 +935,7 @@ use crate::{
 	input, physics,
 	rendering::{self, renderer::Renderer, window::Window, Camera},
 };
-mod defaults;
+pub mod defaults;
 mod integrations;
 
 pub use defaults::{

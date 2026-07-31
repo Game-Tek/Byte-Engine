@@ -1,8 +1,12 @@
 use std::{
 	alloc::Allocator,
+	hash::Hasher,
 	ops::Deref,
 	path::{Path, PathBuf},
+	time::UNIX_EPOCH,
 };
+
+use gxhash::GxHasher;
 
 use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
 use crate::{
@@ -43,8 +47,113 @@ impl Deref for AssetStorageBytes<'_> {
 	}
 }
 
+/// The `AssetFileVersion` struct captures the metadata or content identity used to compare one source file.
+#[derive(
+	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub(crate) struct AssetFileVersion {
+	size: u64,
+	modified: Option<(u64, u32)>,
+	content_hash: Option<u64>,
+}
+
+impl AssetFileVersion {
+	/// Creates a version from file metadata for inexpensive debug freshness checks.
+	fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+		let modified = metadata
+			.modified()
+			.ok()
+			.and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+			.map(|modified| (modified.as_secs(), modified.subsec_nanos()));
+
+		Self {
+			size: metadata.len(),
+			modified,
+			content_hash: None,
+		}
+	}
+
+	/// Creates a content-backed version for storage backends that do not expose file metadata.
+	fn from_bytes(bytes: &[u8]) -> Self {
+		let mut hasher = GxHasher::with_seed(961961961961961);
+		hasher.write(bytes);
+
+		Self {
+			size: bytes.len() as u64,
+			modified: None,
+			content_hash: Some(hasher.finish()),
+		}
+	}
+}
+
+/// The `AssetVersion` struct identifies the source and optional BEAD sidecar used to bake one asset.
+///
+/// Return this value from [`StorageBackend::version`] when a custom backend can provide cheaper identity metadata.
+#[derive(
+	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub struct AssetVersion {
+	source: AssetFileVersion,
+	sidecar: Option<AssetFileVersion>,
+}
+
+impl AssetVersion {
+	/// Creates a version from local file metadata without reading either file.
+	pub fn from_metadata(source: &std::fs::Metadata, sidecar: Option<&std::fs::Metadata>) -> Self {
+		Self {
+			source: AssetFileVersion::from_metadata(source),
+			sidecar: sidecar.map(AssetFileVersion::from_metadata),
+		}
+	}
+
+	/// Creates a version from source and optional sidecar content.
+	pub fn from_content(source: &[u8], sidecar: Option<&[u8]>) -> Self {
+		Self {
+			source: AssetFileVersion::from_bytes(source),
+			sidecar: sidecar.map(AssetFileVersion::from_bytes),
+		}
+	}
+
+	/// Builds a version from resolved bytes when the backend cannot provide file metadata.
+	fn from_resolved(source: &[u8], sidecar: Option<&BEADType>) -> Result<Self, ()> {
+		let sidecar = sidecar.map(serde_json::to_vec).transpose().map_err(|_| ())?;
+
+		Ok(Self::from_content(source, sidecar.as_deref()))
+	}
+}
+
+/// The `AssetDependency` struct records one source asset and the version used by a baked resource.
+#[derive(
+	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub(crate) struct AssetDependency {
+	id: String,
+	version: AssetVersion,
+}
+
+impl AssetDependency {
+	/// Creates persisted provenance for one resolved source asset.
+	pub(crate) fn new(id: ResourceId<'_>, version: AssetVersion) -> Self {
+		Self {
+			id: id.get_base().as_ref().to_string(),
+			version,
+		}
+	}
+
+	/// Returns the source ID used for a freshness check.
+	pub(crate) fn id(&self) -> &str {
+		&self.id
+	}
+
+	/// Returns the recorded source version.
+	pub(crate) fn version(&self) -> &AssetVersion {
+		&self.version
+	}
+}
+
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
 
+/// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
 pub trait StorageBackend: Send + Sync {
 	/// Reports whether a source directory exists and can be read when the backend exposes paths.
 	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
@@ -59,13 +168,25 @@ pub trait StorageBackend: Send + Sync {
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, None, allocator))
 	}
+
+	/// Returns the source version used to decide whether an existing baked resource is still fresh.
+	///
+	/// Backends with native metadata should override this method to avoid reading source bytes.
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+		Box::pin(async move {
+			let (source, sidecar, _) = self.resolve(url).await?;
+			AssetVersion::from_resolved(&source, sidecar.as_ref())
+		})
+	}
 }
 
+/// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
 	base_path: PathBuf,
 }
 
 impl FileStorageBackend {
+	/// Creates a local source backend rooted at `base_path`.
 	pub fn new(base_path: PathBuf) -> Self {
 		std::fs::create_dir_all(&base_path).expect("Failed to create base path");
 
@@ -86,6 +207,22 @@ impl StorageBackend for FileStorageBackend {
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
 		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
+
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+		future(async move {
+			let source_path = self.base_path.join(url.get_base().as_ref());
+			let sidecar_path = source_path.with_added_extension("bead");
+
+			let source = std::fs::metadata(&source_path).map_err(|_| ())?;
+			let sidecar = match std::fs::metadata(sidecar_path) {
+				Ok(metadata) => Some(metadata),
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+				Err(_) => return Err(()),
+			};
+
+			Ok(AssetVersion::from_metadata(&source, sidecar.as_ref()))
+		})
+	}
 }
 
 #[cfg(test)]
@@ -101,9 +238,10 @@ pub mod tests {
 	use std::{
 		alloc::Allocator,
 		collections::HashMap,
-		fs,
+		fs::{self, FileTimes, OpenOptions},
+		io::Write,
 		sync::{Arc, Mutex},
-		time::{SystemTime, UNIX_EPOCH},
+		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
 	use super::{parse_json, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
@@ -124,6 +262,10 @@ pub mod tests {
 
 		pub fn add_file(&self, name: &'static str, data: &[u8]) {
 			self.0.lock().unwrap().insert(name.to_string(), data.into());
+		}
+
+		pub fn remove_file(&self, name: &str) {
+			self.0.lock().unwrap().remove(name);
 		}
 	}
 
@@ -296,6 +438,42 @@ pub mod tests {
 		assert_eq!(bytes.as_slice(), expected);
 		assert!(spec.is_none());
 		assert_eq!(format, "");
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn file_asset_versions_cover_size_modification_time_and_sidecar_presence() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(&directory).unwrap();
+		let source_path = directory.join("shader.bin");
+		fs::write(&source_path, b"same").unwrap();
+		let storage_backend = FileStorageBackend::new(directory.clone());
+
+		let first = storage_backend
+			.version(ResourceId::new("shader.bin"))
+			.await
+			.expect("source metadata should be available");
+		assert_eq!(first.source.size, 4);
+		assert!(first.sidecar.is_none());
+
+		let mut source = OpenOptions::new().write(true).truncate(true).open(&source_path).unwrap();
+		source.write_all(b"size").unwrap();
+		source
+			.set_times(FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(2)))
+			.unwrap();
+		let modified = storage_backend
+			.version(ResourceId::new("shader.bin"))
+			.await
+			.expect("modified source metadata should be available");
+		assert_ne!(first, modified);
+
+		fs::write(directory.join("shader.bin.bead"), b"{}").unwrap();
+		let with_sidecar = storage_backend
+			.version(ResourceId::new("shader.bin"))
+			.await
+			.expect("sidecar metadata should be available");
+		assert!(with_sidecar.sidecar.is_some());
 
 		fs::remove_dir_all(directory).unwrap();
 	}

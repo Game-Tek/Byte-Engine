@@ -114,8 +114,7 @@ pub mod resource_id;
 pub mod storage_backend;
 
 pub use resource_id::ResourceId;
-pub use storage_backend::FileStorageBackend;
-pub use storage_backend::{AssetStorageBytes, StorageBackend};
+pub use storage_backend::{AssetStorageBytes, AssetVersion, FileStorageBackend, StorageBackend};
 
 use crate::r#async::read;
 use crate::resource::reader::MappedFileBacking;

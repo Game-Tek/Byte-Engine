@@ -6,7 +6,7 @@ icon: Bug
 
 Use on-demand asset processing to shorten your debug development loop.
 
-When a `ResourceManager` has an `AssetManager` installed, a missing resource can be baked from its source asset during `request()`.
+When a `ResourceManager` has an `AssetManager` installed, a missing or stale resource can be baked from its source asset during `request()`.
 Change an asset, run the application, and let Byte Engine produce the resource
 when the application first requests it.
 
@@ -19,8 +19,8 @@ When you request a resource, Byte Engine follows this path:
 
 1. The caller asks the resource manager for a typed resource ID.
 2. The storage backend tries to read the processed resource.
-3. If the resource exists, metadata is deserialized into a typed reference model.
-4. If the resource is missing and an asset manager exists, the asset manager bakes the source asset.
+3. If an asset manager exists, it compares the stored source versions with the current assets.
+4. If the resource is missing or stale, the asset manager bakes the source asset.
 5. The baked resource is stored, read back, and solved into a typed `Reference<T>`.
 6. The caller loads payload bytes when it is ready.
 
@@ -35,8 +35,13 @@ The Redb storage backend writes a `.resource-management-version` marker in the r
 That marker is derived from the resource-management code hash.
 When the signature changes, the backend deletes stale resources so old processed data does not silently survive processor changes.
 
-This conservative behavior gives you a fresh, correct bake instead of an
-unpredictable stale cache.
+Each baked resource also records the source versions used to produce it.
+For local files, a version includes the file size and modification time.
+It covers the source asset, its optional `.bead` file, directly loaded files such as glTF buffers and images, and transitive asset dependencies.
+During a debug request, Byte Engine re-bakes only the resource whose recorded versions changed.
+
+The payload hash remains separate.
+It identifies the baked resource data and does not decide whether a source asset is stale.
 
 ## Allocation shape
 

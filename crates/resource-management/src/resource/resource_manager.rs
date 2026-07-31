@@ -113,28 +113,31 @@ impl ResourceManager {
 	{
 		let storage_backend = self.get_storage_backend();
 
-		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)).await {
-			let (resource, _) = result;
-			resource.into()
-		} else {
+		let reference_model: ReferenceModel<T::Model> = {
 			#[cfg(debug_assertions)]
 			{
-				let Some(asset_manager) = self.asset_manager.get() else {
+				if let Some(asset_manager) = self.asset_manager.get() {
+					asset_manager.bake_if_not_exists(id, storage_backend).await.map_err(|error| {
+						asset_lookup_error(
+							"Failed to load asset. The asset manager could not bake the resource.",
+							id,
+							&error,
+							asset_manager,
+						)
+					})?
+				} else if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
+					resource.into()
+				} else {
 					return Err("Resource does not exist and an asset manager is not available.".to_string());
-				};
-
-				asset_manager.bake_if_not_exists(id, storage_backend).await.map_err(|error| {
-					asset_lookup_error(
-						"Failed to load asset. The asset manager could not bake the resource.",
-						id,
-						&error,
-						asset_manager,
-					)
-				})?
+				}
 			}
 			#[cfg(not(debug_assertions))]
 			{
-				return Err("Resource does not exist in the baked release resource store.".to_string());
+				if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
+					resource.into()
+				} else {
+					return Err("Resource does not exist in the baked release resource store.".to_string());
+				}
 			}
 		};
 
@@ -265,6 +268,37 @@ mod debug_tests {
 		invocations: Arc<AtomicUsize>,
 		started: Mutex<Option<announcement::Announcer<()>>>,
 		release: announcement::Listener<()>,
+	}
+
+	struct VersionedShaderHandler {
+		invocations: Arc<AtomicUsize>,
+	}
+
+	impl AssetHandler for VersionedShaderHandler {
+		fn can_handle(&self, extension: &str) -> bool {
+			extension == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			self.invocations.fetch_add(1, Ordering::SeqCst);
+			let (source, ..) = context.resolve(id).await?;
+			context.store_primary(
+				ProcessedAsset::new(
+					id,
+					Shader {
+						id: id.to_string(),
+						stage: ShaderTypes::Compute,
+						interface: ShaderInterface {
+							workgroup_size: None,
+							bindings: Vec::new(),
+						},
+						artifact: ShaderArtifact::Spirv,
+						source_hash: 0,
+					},
+				),
+				&source,
+			)
+		}
 	}
 
 	impl AssetHandler for CoordinatingShaderHandler {
@@ -402,6 +436,39 @@ mod debug_tests {
 		assert!(first.is_ok());
 		assert!(second.is_ok());
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+	}
+
+	#[r#async::test]
+	async fn debug_resource_requests_rebake_only_after_the_requested_asset_changes() {
+		let invocations = Arc::new(AtomicUsize::new(0));
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("versioned.test", b"first shader");
+		let mut asset_manager = AssetManager::new(asset_storage.clone());
+		asset_manager.add_asset_handler(VersionedShaderHandler {
+			invocations: Arc::clone(&invocations),
+		});
+		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		resource_manager.set_asset_manager(asset_manager);
+
+		let first = resource_manager
+			.request::<Shader>("versioned.test")
+			.await
+			.expect("initial debug request should bake");
+		let unchanged = resource_manager
+			.request::<Shader>("versioned.test")
+			.await
+			.expect("unchanged debug request should reuse the resource");
+		assert_eq!(first.hash(), unchanged.hash());
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		asset_storage.add_file("versioned.test", b"changed shader source");
+		let changed = resource_manager
+			.request::<Shader>("versioned.test")
+			.await
+			.expect("changed debug source should rebake");
+
+		assert_ne!(first.hash(), changed.hash());
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 	}
 }
 

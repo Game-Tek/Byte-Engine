@@ -220,12 +220,17 @@ impl AssetManager {
 		let start_time = std::time::Instant::now();
 
 		// The shared flag enforces the primary-write contract without rereading potentially expensive storage.
-		let primary_stored = Cell::new(false); // TODO: revise this
+		// TODO: replace the flag when storage can confirm the primary write without a second read.
+		let primary_stored = Cell::new(false);
+		// Every resolution during this handler invocation contributes to the provenance attached to stored outputs.
+		let asset_dependencies = Mutex::new(Vec::new());
+		let tracking_storage_backend = TrackingStorageBackend::new(self.storage_backend.as_ref(), &asset_dependencies);
 
 		let context = BakeContext::new(
 			self,
 			resource_storage_backend,
-			self.storage_backend.as_ref(),
+			&tracking_storage_backend,
+			&asset_dependencies,
 			allocator,
 			id,
 			&primary_stored,
@@ -298,7 +303,7 @@ impl AssetManager {
 		Ok(())
 	}
 
-	/// Returns the stored asset, or bakes it when no resource with a matching hash exists.
+	/// Returns the stored asset, or bakes it when it is missing or its recorded source versions changed.
 	pub async fn bake_if_not_exists<'a, M: Model>(
 		&self,
 		id: &str,
@@ -307,7 +312,7 @@ impl AssetManager {
 		self.bake_if_not_exists_in(id, resource_storage_backend, &Global).await
 	}
 
-	/// Bakes an asset with the provided allocator if the resource does not already exist.
+	/// Bakes an asset with the provided allocator when the resource is missing or stale.
 	pub async fn bake_if_not_exists_in<'a, M: Model>(
 		&self,
 		id: &str,
@@ -316,9 +321,18 @@ impl AssetManager {
 	) -> Result<ReferenceModel<M>, LoadMessages> {
 		let id = ResourceId::new(id);
 
-		if resource_storage_backend.read(id).await.is_none() {
-			self.bake_in(id.as_ref(), resource_storage_backend, allocator).await?;
+		if let Some((resource, _)) = resource_storage_backend.read(id).await {
+			if !self.resource_is_stale(&resource).await {
+				return Ok(resource.into());
+			}
+
+			log::info!(
+				"Re-baking stale asset '{}'. One or more source files changed after the stored resource was produced.",
+				id.as_ref()
+			);
 		}
+
+		self.bake_in(id.as_ref(), resource_storage_backend, allocator).await?;
 
 		if let Some(result) = resource_storage_backend.read(id).await {
 			let (resource, _) = result;
@@ -327,6 +341,18 @@ impl AssetManager {
 		}
 
 		Err(LoadMessages::NoAsset)
+	}
+
+	/// Returns whether any source version recorded by a stored resource differs from the current asset backend.
+	async fn resource_is_stale(&self, resource: &crate::SerializableResource) -> bool {
+		for dependency in resource.asset_dependencies() {
+			let current = self.storage_backend.version(ResourceId::new(dependency.id())).await;
+			if current.as_ref().ok() != Some(dependency.version()) {
+				return true;
+			}
+		}
+
+		false
 	}
 }
 
@@ -365,6 +391,42 @@ pub mod tests {
 		fn new() -> TestAssetHandler {
 			TestAssetHandler {}
 		}
+	}
+
+	struct VersionedAssetHandler {
+		invocations: Arc<AtomicUsize>,
+	}
+
+	impl AssetHandler for VersionedAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			self.invocations.fetch_add(1, Ordering::SeqCst);
+			let (source, ..) = context.resolve(id).await?;
+
+			match id.get_base().as_ref() {
+				"external.test" => {
+					context.resolve(ResourceId::new("external.bin")).await?;
+				}
+				"parent.test" => {
+					context.bake_dependency::<TestResource>("child.test").await?;
+				}
+				_ => {}
+			}
+
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source)
+		}
+	}
+
+	fn versioned_asset_manager(storage: TestStorageBackend) -> (AssetManager, Arc<AtomicUsize>) {
+		let invocations = Arc::new(AtomicUsize::new(0));
+		let mut manager = AssetManager::new(storage);
+		manager.add_asset_handler(VersionedAssetHandler {
+			invocations: Arc::clone(&invocations),
+		});
+		(manager, invocations)
 	}
 
 	struct CoordinatingAssetHandler {
@@ -518,6 +580,140 @@ pub mod tests {
 			.get_resource(ResourceId::new("example.test"))
 			.expect("baked resource should be stored");
 		assert_eq!(resource.class, "TestResource");
+	}
+
+	#[r#async::test]
+	async fn lazy_baking_reuses_fresh_assets_and_rebakes_changed_sources_and_sidecars() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("versioned.test", b"first source");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone());
+
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test", &resource_storage)
+			.await
+			.expect("initial source should bake");
+		let first_hash = resource_storage
+			.read(ResourceId::new("versioned.test"))
+			.await
+			.expect("initial resource should be stored")
+			.0
+			.hash();
+
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test", &resource_storage)
+			.await
+			.expect("unchanged source should be reused");
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		asset_storage.add_file("versioned.test", b"changed source bytes");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test", &resource_storage)
+			.await
+			.expect("changed source should rebake");
+		let changed_hash = resource_storage
+			.read(ResourceId::new("versioned.test"))
+			.await
+			.expect("changed resource should replace the prior value")
+			.0
+			.hash();
+		assert_ne!(first_hash, changed_hash);
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+
+		asset_storage.add_file("versioned.test.bead", br#"{ purpose: "first" }"#);
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test", &resource_storage)
+			.await
+			.expect("new sidecar should rebake");
+		asset_storage.add_file("versioned.test.bead", br#"{ purpose: "changed" }"#);
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test", &resource_storage)
+			.await
+			.expect("changed sidecar should rebake");
+
+		let sidecar_rebake_hash = resource_storage
+			.read(ResourceId::new("versioned.test"))
+			.await
+			.expect("sidecar rebake should keep the resource")
+			.0
+			.hash();
+		assert_eq!(sidecar_rebake_hash, changed_hash);
+		assert_eq!(invocations.load(Ordering::SeqCst), 4);
+	}
+
+	#[r#async::test]
+	async fn lazy_baking_tracks_directly_resolved_source_dependencies() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("external.test", b"root");
+		asset_storage.add_file("external.bin", b"first dependency");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone());
+
+		asset_manager
+			.bake_if_not_exists::<TestResource>("external.test", &resource_storage)
+			.await
+			.expect("asset with external source should bake");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("external.test", &resource_storage)
+			.await
+			.expect("unchanged external source should be reused");
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		asset_storage.add_file("external.bin", b"changed dependency");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("external.test", &resource_storage)
+			.await
+			.expect("changed external source should rebake its owner");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+	}
+
+	#[r#async::test]
+	async fn lazy_baking_propagates_transitive_asset_versions_to_parent_resources() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("parent.test", b"parent");
+		asset_storage.add_file("child.test", b"first child");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone());
+
+		asset_manager
+			.bake_if_not_exists::<TestResource>("parent.test", &resource_storage)
+			.await
+			.expect("parent and child should bake");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("parent.test", &resource_storage)
+			.await
+			.expect("unchanged dependency graph should be reused");
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+
+		asset_storage.add_file("child.test", b"changed child");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("parent.test", &resource_storage)
+			.await
+			.expect("changed child should rebake the child and parent");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 4);
+	}
+
+	#[r#async::test]
+	async fn stale_resource_is_not_reused_after_its_source_is_removed() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("removed.test", b"source");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone());
+
+		asset_manager
+			.bake_if_not_exists::<TestResource>("removed.test", &resource_storage)
+			.await
+			.expect("initial source should bake");
+		asset_storage.remove_file("removed.test");
+
+		let result = asset_manager
+			.bake_if_not_exists::<TestResource>("removed.test", &resource_storage)
+			.await;
+
+		assert!(result.is_err());
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 	}
 
 	#[r#async::test]
@@ -752,7 +948,7 @@ use utils::{hash::HashMap, sync::Mutex};
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
-	asset_handler::{AssetHandler, BakeContext},
+	asset_handler::{AssetHandler, BakeContext, TrackingStorageBackend},
 	StorageBackend,
 };
 use crate::{

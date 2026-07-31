@@ -87,11 +87,9 @@ impl Application for GraphicsApplication {
 			.unwrap_or_else(|| "resources".into())
 			.into();
 
-		// Debug applications bake generated materials into their local resource database. Include the engine-side producer
-		// hash so changing its reflected resource interface cannot reuse an incompatible retained shader from an earlier run.
+		// Debug applications can update individual stale assets in their local resource database.
 		#[cfg(debug_assertions)]
-		let resource_storage =
-			RedbStorageBackend::new_with_producer_signature(resources_path, env!("BYTE_ENGINE_RESOURCE_PRODUCER_HASH"));
+		let resource_storage = RedbStorageBackend::new_writable(resources_path);
 		// Release resource directories are prepared by BELD and keep the resource-management signature it writes today.
 		#[cfg(not(debug_assertions))]
 		let resource_storage = RedbStorageBackend::new(resources_path);

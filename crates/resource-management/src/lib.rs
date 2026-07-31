@@ -143,6 +143,8 @@ pub struct ProcessedAsset {
 	id: String,
 	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
+	/// Source versions that must still match before this baked resource can be reused.
+	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
 	/// The resources that this resource depends on.
 	// required_resources: Vec<ProcessedResources>,
 	/// The serialized resource metadata.
@@ -157,10 +159,17 @@ impl ProcessedAsset {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: T::get_class().to_string(),
+			asset_dependencies: Vec::new(),
 			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
 		}
+	}
+
+	/// Attaches the source versions observed while the asset handler produced this resource.
+	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
+		self.asset_dependencies = asset_dependencies;
+		self
 	}
 
 	/// Moves processed metadata into a serializable resource container.
@@ -169,6 +178,7 @@ impl ProcessedAsset {
 			id: self.id,
 			hash,
 			class: self.class,
+			asset_dependencies: self.asset_dependencies,
 			size,
 			resource: self.resource,
 			streams: self.streams,
@@ -180,6 +190,7 @@ impl ProcessedAsset {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: class.to_string(),
+			asset_dependencies: Vec::new(),
 			resource,
 			streams: None,
 			queryable_properties: vec![QueryableProperty {
@@ -203,6 +214,7 @@ impl<'a, T: Resource + ResourceArchive + Clone> From<Reference<T>> for Processed
 		ProcessedAsset {
 			id,
 			class: value.resource.get_class().to_string(),
+			asset_dependencies: Vec::new(),
 			resource: to_vec(&value.resource).unwrap(),
 			streams: None,
 			queryable_properties,
@@ -215,6 +227,7 @@ impl From<SerializableResource> for ProcessedAsset {
 		ProcessedAsset {
 			id: value.id,
 			class: value.class,
+			asset_dependencies: value.asset_dependencies,
 			resource: value.resource.clone(),
 			streams: None,
 			queryable_properties: value.queryable_properties,
@@ -261,6 +274,7 @@ pub struct SerializableResource {
 	hash: u64,
 	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
+	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
 	size: usize,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
@@ -281,6 +295,7 @@ impl SerializableResource {
 			id,
 			hash,
 			class,
+			asset_dependencies: Vec::new(),
 			size,
 			resource,
 			streams,
@@ -298,6 +313,11 @@ impl SerializableResource {
 
 	pub fn hash(&self) -> u64 {
 		self.hash
+	}
+
+	/// Returns the source versions that determine whether this resource needs to be baked again.
+	pub(crate) fn asset_dependencies(&self) -> &[asset::storage_backend::AssetDependency] {
+		&self.asset_dependencies
 	}
 
 	pub fn class(&self) -> &str {

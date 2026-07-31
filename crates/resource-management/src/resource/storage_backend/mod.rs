@@ -208,6 +208,7 @@ pub mod tests {
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
+						asset_dependencies: resource.asset_dependencies,
 						resource: resource.resource,
 						streams: resource.streams,
 						queryable_properties: resource.queryable_properties,
@@ -229,6 +230,7 @@ pub mod tests {
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
+						asset_dependencies: resource.asset_dependencies,
 						resource: resource.resource,
 						streams: resource.streams,
 						queryable_properties: resource.queryable_properties,

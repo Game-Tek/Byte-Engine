@@ -175,6 +175,31 @@ mod tests {
 		);
 	}
 
+	#[test]
+	fn zenith_shadow_views_do_not_displace_vertical_casters() {
+		let camera_view = View::new_perspective(75.0, 1.0, 0.1, 100.0, Vector3::new(0.0, 2.0, 0.0), Vector3::unit_z());
+		let floor_point = Vector4::new(1.25, 0.0, 5.0, 1.0);
+		let caster_point = Vector4::new(1.25, 3.0, 5.0, 1.0);
+
+		for shadow_view in super::make_csm_views(camera_view, -Vector3::unit_y(), 4, 2048) {
+			let floor_clip = shadow_view.view_projection() * floor_point;
+			let caster_clip = shadow_view.view_projection() * caster_point;
+			let floor_xy = [floor_clip.x / floor_clip.w, floor_clip.y / floor_clip.w];
+			let caster_xy = [caster_clip.x / caster_clip.w, caster_clip.y / caster_clip.w];
+
+			assert_float_eq!(
+				floor_xy[0],
+				caster_xy[0],
+				"A zenith light must not displace a vertical caster along shadow-map X"
+			);
+			assert_float_eq!(
+				floor_xy[1],
+				caster_xy[1],
+				"A zenith light must not displace a vertical caster along shadow-map Y"
+			);
+		}
+	}
+
 	/// Verifies that a surface point inside a cascade's camera frustum projects into valid NDC
 	/// range [0,1] for depth and [-1,1] for x/y when transformed by the cascade's light view-projection.
 	/// Simulates shadow rendering and sampling on the CPU to detect projection mismatches.

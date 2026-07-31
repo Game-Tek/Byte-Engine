@@ -23,6 +23,8 @@ pub struct VisibilityPipelineManager {
 	materials_data: std::boxed::Box<[MaterialData; MAX_MATERIALS]>,
 	/// Frame-local material metadata buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
+	/// Compact single-view mesh work shared by shadow cascades and future visibility passes.
+	mesh_dispatch_work: crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkBuffer,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
 	/// Application-owned baked resources used by the fixed visibility shader set.
@@ -94,6 +96,8 @@ impl VisibilityPipelineManager {
 		);
 
 		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"));
+		let mesh_dispatch_work =
+			crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkBuffer::new(context, descriptor_set);
 		let (
 			vertex_positions_buffer,
 			vertex_normals_buffer,
@@ -167,6 +171,7 @@ impl VisibilityPipelineManager {
 		Self {
 			materials_data,
 			materials_data_buffer_handle,
+			mesh_dispatch_work,
 			skinning_pass,
 			shader_resources,
 			skinning_palette_scratch: Vec::new(),
@@ -812,6 +817,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		} else {
 			None
 		};
+		let shadow_mesh_dispatch = if shadow_light_index.is_some() {
+			self.mesh_dispatch_work
+				.write(frame, self.scene.render_info.opaque_instances.as_slice())
+		} else {
+			Default::default()
+		};
 
 		if let Some(sink) = sinks.first() {
 			let main_view = sink.view();
@@ -858,6 +869,7 @@ impl PipelineManager for VisibilityPipelineManager {
 						frame,
 						v,
 						(command_index == 0).then_some(skinning_pass),
+						shadow_mesh_dispatch,
 						skinning_dispatches,
 						&self.scene.render_info.opaque_instances,
 						&self.scene.render_info.transparent_instances,
@@ -1363,12 +1375,73 @@ mod tests {
 
 	use super::{
 		cached_skin_palette_base, reserve_deformed_vertex_range, write_material_texture_indices, Instance, LightData,
-		LightingData, MaterialData, RenderInfo, ShaderMesh, SkinningPaletteCacheEntry, ENVIRONMENT_BINDING, LIT_BINDING,
-		SPECULAR_ENVIRONMENT_BINDING,
+		LightingData, MaterialData, RenderInfo, ShaderMesh, SkinningPaletteCacheEntry, AO_MAP_BINDING, ENVIRONMENT_BINDING,
+		LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
-	use crate::rendering::pipelines::visibility::{MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESH_DATA_BUFFER_STRIDE};
+	use crate::rendering::pipelines::visibility::{
+		INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESHLET_DATA_BINDING,
+		MESH_DATA_BINDING, MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, PRIMITIVE_INDICES_BINDING,
+		SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	};
+
+	/// Verifies every pair of retained descriptor-set ranges stays disjoint.
+	fn assert_descriptor_sets_disjoint(left: &[ghi::ShaderResourceDescriptor], right: &[ghi::ShaderResourceDescriptor]) {
+		for left in left {
+			let left_start = left.slot().index();
+			let left_end = left_start + left.count();
+			for right in right {
+				let right_start = right.slot().index();
+				let right_end = right_start + right.count();
+				assert!(
+					left_end <= right_start || right_end <= left_start,
+					"Retained visibility descriptor ranges overlap. The most likely cause is assigning flat slots {left_start}..{left_end} and {right_start}..{right_end} to different descriptor sets."
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn retained_visibility_descriptor_sets_use_disjoint_flat_ranges() {
+		let base = [
+			VIEWS_DATA_BINDING,
+			MESH_DATA_BINDING,
+			VERTEX_POSITIONS_BINDING,
+			VERTEX_NORMALS_BINDING,
+			SKINNED_VERTICES_BINDING,
+			VERTEX_UV_BINDING,
+			VERTEX_INDICES_BINDING,
+			PRIMITIVE_INDICES_BINDING,
+			MESHLET_DATA_BINDING,
+			TEXTURES_BINDING,
+			MESH_DISPATCH_WORK_BINDING,
+		];
+		let visibility = [
+			MATERIAL_COUNT_BINDING,
+			MATERIAL_OFFSET_BINDING,
+			MATERIAL_OFFSET_SCRATCH_BINDING,
+			MATERIAL_EVALUATION_DISPATCHES_BINDING,
+			MATERIAL_XY_BINDING,
+			TRIANGLE_INDEX_BINDING,
+			INSTANCE_ID_BINDING,
+		];
+		let material = [
+			LIT_BINDING,
+			LIGHTING_DATA_BINDING,
+			MATERIALS_DATA_BINDING,
+			AO_MAP_BINDING,
+			SHADOW_MAP_BINDING,
+			ENVIRONMENT_BINDING,
+			SPECULAR_ENVIRONMENT_BINDING,
+		];
+
+		assert_descriptor_sets_disjoint(&base, &visibility);
+		assert_descriptor_sets_disjoint(&base, &material);
+		assert_descriptor_sets_disjoint(&visibility, &material);
+	}
 
 	#[test]
 	fn environment_bindings_retain_diffuse_and_every_specular_level() {

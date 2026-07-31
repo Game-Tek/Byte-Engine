@@ -835,11 +835,14 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 }
 
 /// Installs the atmosphere sky pass used as a post-scene background.
-pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
+pub fn setup_atmosphere_sky_render_pass(
+	application: &mut GraphicsApplication,
+	settings: crate::rendering::render_passes::sky::AtmosphereSkyRenderPassSettings,
+) {
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
-		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder))
+	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+		Box::new(AtmosphereSkyRenderPass::with_settings(render_pass_builder, settings))
 	});
 }
 

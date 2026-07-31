@@ -8,6 +8,7 @@ use ghi::implementation::Frame;
 use resource_management::{resource::resource_manager::ResourceManager, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent, RGBA};
 
+use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
@@ -77,6 +78,12 @@ const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::AccessPolicies::WRITE,
 );
 const GTAO_DEPTH_PYRAMID_LEVEL_COUNT: usize = 3;
+
+/// Returns the cascade view indices that receive one batched shadow dispatch.
+fn batched_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
+	let has_work = !mesh_dispatch.is_empty();
+	(1..=SHADOW_CASCADE_COUNT as u32).filter(move |_| has_work)
+}
 const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
 
 /// The `FastGtaoViewData` struct provides compact camera reconstruction constants to the GTAO compute passes.
@@ -411,6 +418,7 @@ impl ShadowPass {
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		instances: &'a [Instance],
+		mesh_dispatch: MeshDispatch,
 		shadow_enabled: bool,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
@@ -431,11 +439,12 @@ impl ShadowPass {
 			}
 
 			log::debug!(
-				"Visibility shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}",
+				"Visibility shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
 				SHADOW_CASCADE_COUNT,
 				instances.len(),
 				drawable_instances,
 				meshlet_count,
+				mesh_dispatch.workgroup_count(),
 			);
 			c.start_region(|label| label.write_str("Shadow Map"));
 
@@ -453,19 +462,12 @@ impl ShadowPass {
 			let c = c.bind_raster_pipeline(pipeline);
 			c.bind_descriptor_sets(&[descriptor_set]);
 
-			for cascade in 0..SHADOW_CASCADE_COUNT {
+			for view_index in batched_shadow_view_indices(mesh_dispatch) {
 				c.start_region(|label| label.write_str("Cascade"));
 
-				c.write_push_constant(4, (cascade + 1) as u32);
-
-				for instance in instances {
-					if instance.meshlet_count == 0 {
-						continue;
-					}
-
-					c.write_push_constant(0, instance.shader_mesh_index);
-					c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
-				}
+				c.write_push_constant(0, 0u32);
+				c.write_push_constant(4, view_index);
+				c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
 
 				c.end_region();
 			}
@@ -1196,6 +1198,7 @@ impl VisibilityPipelineRenderPass {
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		skinning_pass: Option<&'a SkinningPass>,
+		shadow_mesh_dispatch: MeshDispatch,
 		skinning_dispatches: &'a [SkinningDispatch],
 		opaque_instances: &'a [Instance],
 		transparent_instances: &'a [Instance],
@@ -1206,7 +1209,9 @@ impl VisibilityPipelineRenderPass {
 		shadow_enabled: bool,
 	) -> impl RenderPassFunction + 'a {
 		// Blend materials have no alpha-aware shadow shader, so only opaque-phase primitives populate the depth map.
-		let shadow_pass = self.shadow_pass.prepare(frame, opaque_instances, shadow_enabled);
+		let shadow_pass = self
+			.shadow_pass
+			.prepare(frame, opaque_instances, shadow_mesh_dispatch, shadow_enabled);
 		let visibility_pass = &self.visibility_pass;
 		// The offset pass consumes and resets every counter before the optional transparent layer runs.
 		let opaque_material_count_pass = self.material_count_pass.prepare(sink, true);
@@ -1285,8 +1290,19 @@ mod tests {
 	use math::Vector3;
 	use utils::Extent;
 
-	use super::{fast_gtao_view_data, gtao_half_resolution_extent, transparent_visibility_layer, Instance};
+	use super::{
+		batched_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent, transparent_visibility_layer, Instance,
+		MeshDispatch,
+	};
 	use crate::rendering::{view::View, Sink};
+
+	#[test]
+	fn batched_shadow_dispatch_issues_exactly_one_draw_per_cascade() {
+		let dispatch = MeshDispatch::with_workgroup_count(19);
+
+		assert_eq!(batched_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
+		assert_eq!(batched_shadow_view_indices(MeshDispatch::default()).count(), 0);
+	}
 
 	#[test]
 	fn transparent_visibility_uses_one_depth_resolved_layer() {

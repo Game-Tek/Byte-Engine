@@ -596,7 +596,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	> = context.build_buffer(
 		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 			.name("Renderer Async Upload Buffer")
-			.device_accesses(ghi::DeviceAccesses::HostOnly),
+			.device_accesses(ghi::DeviceAccesses::HostToDevice),
 	);
 
 	let (resource_manager_client, resource_manager) =

@@ -172,6 +172,8 @@ pub struct CommandBufferRecording<'a> {
 	render_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	blit_debug_region_depth: usize,
+	#[cfg(debug_assertions)]
+	encoder_block_index: usize,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,
@@ -313,6 +315,8 @@ impl<'a> CommandBufferRecording<'a> {
 			render_debug_region_depth: 0,
 			#[cfg(debug_assertions)]
 			blit_debug_region_depth: 0,
+			#[cfg(debug_assertions)]
+			encoder_block_index: 0,
 			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline: None,
@@ -370,6 +374,18 @@ impl<'a> CommandBufferRecording<'a> {
 			}
 			self.blit_debug_region_depth = self.debug_regions.len();
 		}
+	}
+
+	/// Returns the next type-independent encoder label for this command buffer.
+	#[cfg(debug_assertions)]
+	fn next_encoder_block_label(&mut self) -> Retained<NSString> {
+		use std::fmt::Write as _;
+
+		self.encoder_block_index += 1;
+		let mut label = crate::command_buffer::DebugLabelWriter::new();
+		write!(label, "Block {}", self.encoder_block_index)
+			.expect("Invalid encoder block label. The most likely cause is that the debug label writer rejected an integer.");
+		NSString::from_str(label.as_str())
 	}
 
 	/// Ends the active compute encoder and resets state that is native-encoder-local.
@@ -437,7 +453,7 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 			#[cfg(debug_assertions)]
 			if self.device.debug_labels {
-				encoder.setLabel(Some(objc2_foundation::ns_string!("Blit Pass")));
+				encoder.setLabel(Some(&self.next_encoder_block_label()));
 				self.push_active_blit_debug_regions(encoder.as_ref());
 			}
 			self.active_blit_encoder = Some(encoder);
@@ -483,7 +499,7 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 			#[cfg(debug_assertions)]
 			if self.device.debug_labels {
-				encoder.setLabel(Some(objc2_foundation::ns_string!("Compute Pass")));
+				encoder.setLabel(Some(&self.next_encoder_block_label()));
 				self.push_active_compute_debug_regions(encoder.as_ref());
 			}
 			self.active_compute_encoder = Some(encoder);
@@ -1332,7 +1348,7 @@ impl CommandBufferRecording<'_> {
 		);
 		#[cfg(debug_assertions)]
 		if self.device.debug_labels {
-			encoder.setLabel(Some(objc2_foundation::ns_string!("Image Clear")));
+			encoder.setLabel(Some(&self.next_encoder_block_label()));
 			self.push_active_render_debug_regions(encoder.as_ref());
 			for _ in 0..self.render_debug_region_depth {
 				encoder.popDebugGroup();
@@ -1424,7 +1440,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 		#[cfg(debug_assertions)]
 		if self.device.debug_labels {
-			rce.setLabel(Some(objc2_foundation::ns_string!("Render Pass")));
+			rce.setLabel(Some(&self.next_encoder_block_label()));
 			self.push_active_render_debug_regions(rce.as_ref());
 		}
 

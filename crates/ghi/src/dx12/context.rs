@@ -3626,8 +3626,12 @@ impl Device {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn depth_stencil_view_array_range(array_layers: u32, layer: Option<u32>) -> Option<(u32, u32)> {
-		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, layer);
+	pub(crate) fn depth_stencil_view_array_range(
+		array_layers: u32,
+		layer: Option<u32>,
+		layer_count: u32,
+	) -> Option<(u32, u32)> {
+		let descriptor = Self::depth_stencil_view_desc(Formats::Depth32, array_layers, layer, layer_count);
 		if descriptor.ViewDimension != D3D12_DSV_DIMENSION_TEXTURE2DARRAY {
 			return None;
 		}
@@ -5765,9 +5769,10 @@ impl Device {
 		format: Formats,
 		array_layers: u32,
 		layer: Option<u32>,
+		layer_count: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
 		self.materialize_render_target_views(resource, format, array_layers);
-		Self::validate_attachment_layer(array_layers, layer);
+		Self::validate_attachment_layers(array_layers, layer, layer_count);
 		let key = AttachmentViewKey {
 			resource: Self::native_resource_key(resource),
 			format: Self::dxgi_format(format)
@@ -5784,7 +5789,7 @@ impl Device {
 			)
 			.heap
 			.clone();
-		let slot = Self::attachment_descriptor_slot(array_layers, layer);
+		let slot = Self::attachment_descriptor_slot(array_layers, layer, layer_count);
 		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
 		self.retain_descriptor_heap(command_buffer_handle, &view);
 		handle
@@ -5798,9 +5803,10 @@ impl Device {
 		format: Formats,
 		array_layers: u32,
 		layer: Option<u32>,
+		layer_count: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
 		self.materialize_depth_stencil_views(resource, format, array_layers);
-		Self::validate_attachment_layer(array_layers, layer);
+		Self::validate_attachment_layers(array_layers, layer, layer_count);
 		let key = AttachmentViewKey {
 			resource: Self::native_resource_key(resource),
 			format: Self::dxgi_format(format)
@@ -5817,7 +5823,7 @@ impl Device {
 			)
 			.heap
 			.clone();
-		let slot = Self::attachment_descriptor_slot(array_layers, layer);
+		let slot = Self::attachment_descriptor_slot(array_layers, layer, layer_count);
 		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
 		self.retain_descriptor_heap(command_buffer_handle, &view);
 		handle
@@ -5840,8 +5846,8 @@ impl Device {
 		let heap =
 			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, descriptor_count, "render-target view");
 		for slot in 0..descriptor_count {
-			let layer = Self::attachment_descriptor_layer(array_layers, slot);
-			let descriptor = Self::render_target_view_desc(format, array_layers, layer);
+			let (layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
+			let descriptor = Self::render_target_view_desc(format, array_layers, layer, layer_count);
 			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
 			unsafe {
 				self.device.CreateRenderTargetView(resource, Some(&descriptor), handle);
@@ -5868,8 +5874,8 @@ impl Device {
 		let heap =
 			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, descriptor_count, "depth-stencil view");
 		for slot in 0..descriptor_count {
-			let layer = Self::attachment_descriptor_layer(array_layers, slot);
-			let descriptor = Self::depth_stencil_view_desc(format, array_layers, layer);
+			let (layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
+			let descriptor = Self::depth_stencil_view_desc(format, array_layers, layer, layer_count);
 			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
 			unsafe {
 				self.device.CreateDepthStencilView(resource, Some(&descriptor), handle);
@@ -5932,6 +5938,7 @@ impl Device {
 		attachments: &[AttachmentInformation],
 		sequence_index: u8,
 	) {
+		AttachmentInformation::render_pass_layer_count(attachments);
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -5952,12 +5959,15 @@ impl Device {
 				let Some(image) = self.images.get(image_handle.0 as usize) else {
 					continue;
 				};
+				let layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
+				Self::validate_attachment_layers(image.array_layers, attachment.layer, layer_count);
 				depth_resource = Some((
 					image_handle,
 					resource,
 					image.format,
 					image.array_layers,
 					attachment.layer,
+					layer_count,
 					attachment.load,
 					attachment.clear,
 				));
@@ -5972,12 +5982,15 @@ impl Device {
 				.and_then(|image_handle| self.images.get(image_handle.0 as usize))
 				.map(|image| image.array_layers)
 				.unwrap_or(1);
+			let layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
+			Self::validate_attachment_layers(array_layers, attachment.layer, layer_count);
 			target_resources.push(RenderTargetAttachment {
 				image_handle,
 				resource,
 				format,
 				array_layers,
 				layer: attachment.layer,
+				layer_count,
 				load: attachment.load,
 				clear: attachment.clear,
 				swapchain_backbuffer,
@@ -6033,11 +6046,19 @@ impl Device {
 					format,
 					array_layers,
 					layer,
+					layer_count,
 					load,
 					clear,
 					swapchain_backbuffer,
 				} = target;
-				let handle = self.retained_render_target_view(command_buffer_handle, &resource, format, array_layers, layer);
+				let handle = self.retained_render_target_view(
+					command_buffer_handle,
+					&resource,
+					format,
+					array_layers,
+					layer,
+					layer_count,
+				);
 				if swapchain_backbuffer {
 					self.swapchain_backbuffer_bind_count += 1;
 				}
@@ -6090,8 +6111,9 @@ impl Device {
 		}
 
 		let mut depth_handle = None;
-		if let Some((_, resource, format, array_layers, layer, load, clear)) = depth_resource {
-			let handle = self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer);
+		if let Some((_, resource, format, array_layers, layer, layer_count, load, clear)) = depth_resource {
+			let handle =
+				self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer, layer_count);
 			if !load {
 				let depth = Self::clear_depth_value(clear);
 				unsafe {
@@ -9498,9 +9520,14 @@ impl Device {
 		None
 	}
 
-	/// Creates an RTV description that targets either the complete image or one requested array layer.
-	fn render_target_view_desc(format: Formats, array_layers: u32, layer: Option<u32>) -> D3D12_RENDER_TARGET_VIEW_DESC {
-		Self::validate_attachment_layer(array_layers, layer);
+	/// Creates an RTV description for one selected layer or a shader-selected layer prefix.
+	fn render_target_view_desc(
+		format: Formats,
+		array_layers: u32,
+		layer: Option<u32>,
+		layer_count: u32,
+	) -> D3D12_RENDER_TARGET_VIEW_DESC {
+		Self::validate_attachment_layers(array_layers, layer, layer_count);
 		let format = Self::dxgi_format(format).expect(
 			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
 		);
@@ -9516,7 +9543,7 @@ impl Device {
 					Texture2DArray: D3D12_TEX2D_ARRAY_RTV {
 						MipSlice: 0,
 						FirstArraySlice: layer.unwrap_or(0),
-						ArraySize: layer.map_or(array_layers, |_| 1),
+						ArraySize: layer.map_or(layer_count, |_| 1),
 						PlaneSlice: 0,
 					},
 				}
@@ -9531,9 +9558,14 @@ impl Device {
 		}
 	}
 
-	/// Creates a DSV description that targets either the complete image or one requested array layer.
-	fn depth_stencil_view_desc(format: Formats, array_layers: u32, layer: Option<u32>) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
-		Self::validate_attachment_layer(array_layers, layer);
+	/// Creates a DSV description for one selected layer or a shader-selected layer prefix.
+	fn depth_stencil_view_desc(
+		format: Formats,
+		array_layers: u32,
+		layer: Option<u32>,
+		layer_count: u32,
+	) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
+		Self::validate_attachment_layers(array_layers, layer, layer_count);
 		D3D12_DEPTH_STENCIL_VIEW_DESC {
 			Format: Self::dxgi_format(format).expect(
 				"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
@@ -9549,7 +9581,7 @@ impl Device {
 					Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
 						MipSlice: 0,
 						FirstArraySlice: layer.unwrap_or(0),
-						ArraySize: layer.map_or(array_layers, |_| 1),
+						ArraySize: layer.map_or(layer_count, |_| 1),
 					},
 				}
 			} else {
@@ -9568,33 +9600,55 @@ impl Device {
 		);
 	}
 
-	/// Returns the number of descriptors required for a whole-image view and every selectable array layer.
+	/// Rejects layered attachment declarations that exceed the native image view.
+	fn validate_attachment_layers(array_layers: u32, layer: Option<u32>, layer_count: u32) {
+		Self::validate_attachment_layer(array_layers, layer);
+		assert!(
+			layer_count > 0 && layer_count <= array_layers,
+			"Invalid DX12 attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
+		);
+		assert!(
+			layer.is_none() || layer_count == 1,
+			"Invalid layered DX12 attachment. The most likely cause is that the attachment selects both one layer and a layered range."
+		);
+	}
+
+	/// Returns the descriptors required for every layer prefix and every selectable layer.
 	fn attachment_descriptor_count(array_layers: u32) -> u32 {
 		Self::validate_attachment_layer(array_layers, None);
 		if array_layers == 1 {
 			1
 		} else {
-			array_layers.checked_add(1).expect(
+			array_layers.checked_mul(2).expect(
 				"Invalid DX12 attachment layer count. The most likely cause is that the image layer count cannot fit in a descriptor heap.",
 			)
 		}
 	}
 
-	/// Maps an attachment layer to its stable slot in the retained CPU descriptor heap.
-	fn attachment_descriptor_slot(array_layers: u32, layer: Option<u32>) -> u32 {
-		Self::validate_attachment_layer(array_layers, layer);
+	/// Maps one attachment selection to its stable slot in the retained CPU descriptor heap.
+	fn attachment_descriptor_slot(array_layers: u32, layer: Option<u32>, layer_count: u32) -> u32 {
+		Self::validate_attachment_layers(array_layers, layer, layer_count);
+		if array_layers == 1 {
+			return 0;
+		}
 		match layer {
-			Some(layer) if array_layers > 1 => layer + 1,
-			_ => 0,
+			Some(layer) => array_layers + layer,
+			None => layer_count - 1,
 		}
 	}
 
-	/// Maps a retained CPU descriptor slot back to its attachment layer.
-	fn attachment_descriptor_layer(array_layers: u32, slot: u32) -> Option<u32> {
-		if slot == 0 || array_layers == 1 {
-			None
+	/// Maps a retained CPU descriptor slot back to its layer selection.
+	fn attachment_descriptor_layers(array_layers: u32, slot: u32) -> (Option<u32>, u32) {
+		assert!(
+			slot < Self::attachment_descriptor_count(array_layers),
+			"Invalid DX12 attachment descriptor slot. The most likely cause is that attachment materialization exceeded its retained descriptor heap."
+		);
+		if array_layers == 1 {
+			(None, 1)
+		} else if slot < array_layers {
+			(None, slot + 1)
 		} else {
-			Some(slot - 1)
+			(Some(slot - array_layers), 1)
 		}
 	}
 
@@ -9801,6 +9855,7 @@ struct RenderTargetAttachment {
 	format: Formats,
 	array_layers: u32,
 	layer: Option<u32>,
+	layer_count: u32,
 	load: bool,
 	clear: ClearValue,
 	swapchain_backbuffer: bool,

@@ -439,21 +439,22 @@ impl ShadowPass {
 			);
 			c.start_region(|label| label.write_str("Shadow Map"));
 
+			let attachments = [ghi::AttachmentInformation::new(
+				shadow_map,
+				ghi::Layouts::RenderTarget,
+				ghi::ClearValue::Depth(0.0),
+				false,
+				true,
+			)
+			.layers(SHADOW_CASCADE_COUNT as u32)];
+
+			// Render every cascade into one layered depth attachment so independent cascade work shares one native render pass.
+			let c = c.start_render_pass(extent, &attachments);
+			let c = c.bind_raster_pipeline(pipeline);
+			c.bind_descriptor_sets(&[descriptor_set]);
+
 			for cascade in 0..SHADOW_CASCADE_COUNT {
 				c.start_region(|label| label.write_str("Cascade"));
-
-				let attachments = [ghi::AttachmentInformation::new(
-					shadow_map,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Depth(0.0),
-					false,
-					true,
-				)
-				.layer(cascade as u32)];
-
-				let c = c.start_render_pass(extent, &attachments);
-				let c = c.bind_raster_pipeline(pipeline);
-				c.bind_descriptor_sets(&[descriptor_set]);
 
 				c.write_push_constant(4, (cascade + 1) as u32);
 
@@ -466,10 +467,10 @@ impl ShadowPass {
 					c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 				}
 
-				c.end_render_pass();
 				c.end_region();
 			}
 
+			c.end_render_pass();
 			c.end_region();
 		}
 	}

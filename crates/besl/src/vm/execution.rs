@@ -534,6 +534,22 @@ impl ExecutableProgram {
 					})?;
 					*destination = triangle;
 				}
+				Instruction::SetMeshPrimitiveRenderTargetArrayIndex { index, array_index } => {
+					let index = expect_u32(read_register(registers, *index)?)? as usize;
+					let array_index = expect_u32(read_register(registers, *array_index)?)?;
+					let outputs = descriptors.mesh_outputs_mut()?;
+					let count = outputs.render_target_array_indices.len();
+					let destination =
+						outputs
+							.render_target_array_indices
+							.get_mut(index)
+							.ok_or(VmError::MeshOutputIndexOutOfBounds {
+								kind: "primitive",
+								index,
+								count,
+							})?;
+					*destination = array_index;
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)

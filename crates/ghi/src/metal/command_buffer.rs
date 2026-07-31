@@ -56,6 +56,36 @@ fn attachment_texture_view(
 	texture.clone()
 }
 
+/// Validates one attachment's declared layer selection against the native texture.
+fn validate_attachment_layer_selection(
+	layer: Option<u32>,
+	layer_count: Option<std::num::NonZeroU32>,
+	available_layer_count: u32,
+) {
+	if let Some(layer) = layer {
+		assert!(
+			layer < available_layer_count,
+			"Render-pass attachment layer is out of bounds. The most likely cause is that the selected layer does not exist in the target image. layer={layer}, available_layers={available_layer_count}",
+		);
+	}
+	let layer_count = layer_count.map_or(1, std::num::NonZeroU32::get);
+	assert!(
+		layer_count <= available_layer_count,
+		"Render-pass attachment layer count is out of bounds. The most likely cause is that layered rendering requested more layers than the target image provides. requested_layers={layer_count}, available_layers={available_layer_count}",
+	);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::validate_attachment_layer_selection;
+
+	#[test]
+	#[should_panic(expected = "Render-pass attachment layer count is out of bounds")]
+	fn layered_rendering_rejects_a_native_texture_with_too_few_layers() {
+		validate_attachment_layer_selection(None, std::num::NonZeroU32::new(4), 3);
+	}
+}
+
 /// Flushes CPU writes to a managed Metal buffer before a GPU read command uses that range.
 fn flush_managed_buffer_range(buffer: &buffer::Buffer, offset: usize, size: usize) {
 	if utils::storage_mode_from_access(buffer.access) != mtl::MTLStorageMode::Managed {
@@ -1388,12 +1418,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.end_compute_encoder();
 		self.end_blit_encoder();
 
+		let render_target_array_length =
+			graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
+		let layered = attachments.first().is_some_and(|attachment| attachment.layer_count.is_some());
 		let attachments = attachments
 			.iter()
 			.map(|attachment| match attachment.target {
 				ImageOrSwapchain::Image(image) => {
 					let image = self.device.images.resource(self.get_internal_image_handle(image));
 
+					validate_attachment_layer_selection(attachment.layer, attachment.layer_count, image.array_layers);
 					(attachment, image.texture.clone(), image.format, image.array_layers)
 				}
 				ImageOrSwapchain::Swapchain(swapchain) => {
@@ -1403,12 +1437,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 						.find(|(handle, _)| *handle == swapchain)
 						.expect("Swapchain image not found");
 
+					validate_attachment_layer_selection(attachment.layer, attachment.layer_count, 1);
 					(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
 				}
 			})
 			.collect::<SmallVec<[_; 8]>>();
 
 		let rpd = mtl::MTLRenderPassDescriptor::new();
+		if layered {
+			rpd.setRenderTargetArrayLength(render_target_array_length as _);
+		}
 
 		for (i, (attachment, image, format, array_layers)) in attachments
 			.iter()

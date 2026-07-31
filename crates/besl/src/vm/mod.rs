@@ -697,13 +697,14 @@ impl DescriptorBinding<'_> {
 	}
 }
 
-/// The `MeshOutputs` struct captures mesh-stage topology and positions for VM assertions.
+/// The `MeshOutputs` struct captures mesh-stage rasterization outputs for VM assertions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshOutputs {
 	vertex_count: u32,
 	primitive_count: u32,
 	vertex_positions: Vec<[f32; 4]>,
 	triangles: Vec<[u32; 3]>,
+	render_target_array_indices: Vec<u32>,
 }
 
 impl MeshOutputs {
@@ -730,6 +731,11 @@ impl MeshOutputs {
 	/// Returns one captured mesh triangle when the shader wrote that declared slot.
 	pub fn triangle(&self, index: usize) -> Option<[u32; 3]> {
 		self.triangles.get(index).copied()
+	}
+
+	/// Returns the render-target array layer selected for one declared primitive.
+	pub fn render_target_array_index(&self, index: usize) -> Option<u32> {
+		self.render_target_array_indices.get(index).copied()
 	}
 
 	/// Prepares mesh output ranges after validating shader-controlled counts.
@@ -763,6 +769,7 @@ impl MeshOutputs {
 		self.primitive_count = primitive_count;
 		self.vertex_positions.resize(vertex_count as usize, [0.0; 4]);
 		self.triangles.resize(primitive_count as usize, [0; 3]);
+		self.render_target_array_indices.resize(primitive_count as usize, 0);
 		Ok(())
 	}
 
@@ -770,6 +777,7 @@ impl MeshOutputs {
 		// The first lane clears the shared capture once; later workgroup lanes retain earlier lane writes.
 		self.vertex_positions.fill([0.0; 4]);
 		self.triangles.fill([0; 3]);
+		self.render_target_array_indices.fill(0);
 	}
 }
 

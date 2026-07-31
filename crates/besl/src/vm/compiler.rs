@@ -2111,6 +2111,14 @@ impl<'a> Compiler<'a> {
 				self.instructions.push(Instruction::SetMeshTriangle { index, triangle });
 				Ok(())
 			}
+			"set_mesh_primitive_render_target_array_index" => {
+				require_argument_count(arguments, 2)?;
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let array_index = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				self.instructions
+					.push(Instruction::SetMeshPrimitiveRenderTargetArrayIndex { index, array_index });
+				Ok(())
+			}
 			"write" => {
 				require_argument_count(arguments, 3)?;
 

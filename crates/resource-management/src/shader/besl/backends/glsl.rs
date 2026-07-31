@@ -320,6 +320,13 @@ impl Generator {
 				string.push_str("] = ");
 				self.emit_node_string(string, &arguments[1]);
 			}
+			"set_mesh_primitive_render_target_array_index" => {
+				string.push_str("gl_MeshPrimitivesEXT[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].gl_Layer = int(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
 			"image_load" => {
 				string.push_str("imageLoad(");
 				self.emit_node_string(string, &arguments[0]);
@@ -1212,6 +1219,7 @@ mod tests {
 			set_mesh_output_counts(4, 2);
 			set_mesh_vertex_position(0, vec4f(1.0, 2.0, 3.0, 1.0));
 			set_mesh_triangle(0, vec3u(0, 1, 2));
+			set_mesh_primitive_render_target_array_index(0, 3);
 		}
 		"#;
 
@@ -1226,6 +1234,7 @@ mod tests {
 		assert_string_contains!(shader, "SetMeshOutputsEXT(4,2);");
 		assert_string_contains!(shader, "gl_MeshVerticesEXT[0].gl_Position = vec4(1.0,2.0,3.0,1.0);");
 		assert_string_contains!(shader, "gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0,1,2);");
+		assert_string_contains!(shader, "gl_MeshPrimitivesEXT[0].gl_Layer = int(3);");
 	}
 
 	#[test]

@@ -114,6 +114,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		extent: Extent,
 		attachments: &[AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode {
+		AttachmentInformation::render_pass_layer_count(attachments);
 		let sequence_index = self.sequence_index();
 		self.active_extent = Some(extent);
 		self.active_render_target = attachments.iter().find_map(|attachment| match attachment.target {

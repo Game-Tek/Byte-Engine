@@ -161,6 +161,10 @@ pub(super) enum Instruction {
 		index: usize,
 		triangle: usize,
 	},
+	SetMeshPrimitiveRenderTargetArrayIndex {
+		index: usize,
+		array_index: usize,
+	},
 	LoadLocal {
 		register: usize,
 		local: usize,

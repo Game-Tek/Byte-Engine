@@ -2436,7 +2436,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.depth_stencil_view_count(), 1);
 		assert_eq!(device.render_target_view_allocation_count(), 1);
 		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_descriptor_count(), 5);
+		assert_eq!(device.depth_stencil_descriptor_count(), 8);
 
 		for frame_index in 0..1024 {
 			let cascade = frame_index % 4;
@@ -2455,13 +2455,25 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			device.bind_render_targets_native(command_buffer, &attachments, 0);
 		}
 
+		let layered_attachment = [crate::AttachmentInformation::new(
+			depth.0,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::Depth(1.0),
+			true,
+			true,
+		)
+		.layers(4)];
+		device.begin_command_buffer(command_buffer, 0);
+		device.bind_render_targets_native(command_buffer, &layered_attachment, 0);
+
 		assert_eq!(device.render_target_view_count(), 1);
 		assert_eq!(device.depth_stencil_view_count(), 1);
 		assert_eq!(device.render_target_view_allocation_count(), 1);
 		assert_eq!(device.depth_stencil_view_allocation_count(), 1);
-		assert_eq!(device.depth_stencil_descriptor_count(), 5);
-		assert_eq!(Device::depth_stencil_view_array_range(4, None), Some((0, 4)));
-		assert_eq!(Device::depth_stencil_view_array_range(4, Some(2)), Some((2, 1)));
+		assert_eq!(device.depth_stencil_descriptor_count(), 8);
+		assert_eq!(Device::depth_stencil_view_array_range(4, None, 4), Some((0, 4)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, None, 3), Some((0, 3)));
+		assert_eq!(Device::depth_stencil_view_array_range(4, Some(2), 1), Some((2, 1)));
 	}
 
 	#[test]

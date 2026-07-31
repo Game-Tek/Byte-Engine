@@ -685,6 +685,34 @@ impl CommandBufferRecording<'_> {
 			.unwrap_or_else(|| self.get_image(self.get_attachment_image_handle(attachment)).format_)
 	}
 
+	/// Selects the native image view declared by one render-pass attachment.
+	fn get_attachment_image_view(&self, attachment: &graphics_hardware_interface::AttachmentInformation) -> vk::ImageView {
+		let image = self.get_image(self.get_attachment_image_handle(attachment));
+		let image_layer_count = image.layers.map_or(1, |layer_count| layer_count.get());
+		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
+		assert!(
+			requested_layer_count <= image_layer_count,
+			"Invalid Vulkan attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
+		);
+		assert!(
+			attachment.layer.is_none_or(|layer| layer < image_layer_count),
+			"Invalid Vulkan attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
+		);
+		if attachment.layer_count.is_some() {
+			assert!(
+				attachment.layer.is_none(),
+				"Invalid layered Vulkan attachment. The most likely cause is that the attachment selects both one layer and a layered range."
+			);
+			assert!(
+				image.layers.is_some(),
+				"Invalid layered Vulkan attachment image. The most likely cause is that layered rendering targeted a non-array image."
+			);
+			image.full_image_view
+		} else {
+			image.image_views[attachment.layer.unwrap_or(0) as usize]
+		}
+	}
+
 	/// Begins deferred dynamic rendering only after descriptor-backed resources have been transitioned.
 	fn begin_rendering_if_needed(&mut self) {
 		if self.active_rendering {
@@ -703,7 +731,7 @@ impl CommandBufferRecording<'_> {
 			.map(|attachment| {
 				let image = self.get_image(self.get_attachment_image_handle(attachment));
 				let format = self.get_attachment_format(attachment);
-				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
+				let image_view = self.get_attachment_image_view(attachment);
 				if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
 					eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
 				}
@@ -719,10 +747,9 @@ impl CommandBufferRecording<'_> {
 			.iter()
 			.find(|attachment| self.get_attachment_format(attachment) == crate::Formats::Depth32)
 			.map(|attachment| {
-				let image = self.get_image(self.get_attachment_image_handle(attachment));
 				let format = self.get_attachment_format(attachment);
 				vk::RenderingAttachmentInfo::default()
-					.image_view(image.image_views[attachment.layer.unwrap_or(0) as usize])
+					.image_view(self.get_attachment_image_view(attachment))
 					.image_layout(texture_format_and_resource_use_to_image_layout(
 						format,
 						attachment.layout,
@@ -733,11 +760,12 @@ impl CommandBufferRecording<'_> {
 					.clear_value(to_clear_value(attachment.clear))
 			})
 			.unwrap_or_default();
+		let layer_count = graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(&attachments);
 		let rendering_info = vk::RenderingInfoKHR::default()
 			.color_attachments(&color_attachments)
 			.depth_attachment(&depth_attachment)
 			.render_area(render_area)
-			.layer_count(1);
+			.layer_count(layer_count);
 		let viewports = [vk::Viewport {
 			x: 0.0,
 			y: extent.height() as f32,
@@ -1145,6 +1173,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			!self.active_rendering && self.pending_rendering.is_none(),
 			"A Vulkan render pass is already active. The most likely cause is that start_render_pass was called twice without end_render_pass.",
 		);
+		graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
+		for attachment in attachments {
+			self.get_attachment_image_view(attachment);
+		}
 		self.consume_resources(attachments.iter().map(|attachment| Consumption {
 			handle: Handles::Image(self.get_attachment_image_handle(attachment)),
 			stages: crate::Stages::FRAGMENT,

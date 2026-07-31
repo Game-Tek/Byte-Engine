@@ -791,6 +791,7 @@ mod tests {
 		selected_view: Option<(usize, [f32; 16])>,
 		skinned_positions: Option<[[f32; 4]; 3]>,
 		expected_clip_positions: [[f32; 4]; 3],
+		expected_render_target_array_index: Option<u32>,
 	) {
 		let program = crate::rendering::shader_vm_test::compile(program);
 		let (
@@ -878,6 +879,12 @@ mod tests {
 			assert_rgba_close(actual, expected, 0.00001);
 		}
 		assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
+		if let Some(expected_render_target_array_index) = expected_render_target_array_index {
+			assert_eq!(
+				mesh_outputs.render_target_array_index(0),
+				Some(expected_render_target_array_index)
+			);
+		}
 		assert_eq!(
 			read_u32(&out_instance_indices, "out_instance_index", 0),
 			FIXTURE_INSTANCE_INDEX as u32
@@ -896,6 +903,7 @@ mod tests {
 			None,
 			None,
 			[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+			None,
 		);
 	}
 
@@ -903,10 +911,16 @@ mod tests {
 	#[test]
 	fn visibility_mesh_main_reads_skinned_positions() {
 		let skinned_positions = [[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]];
-		assert_triangle_mesh_program(visibility_mesh_program(), None, Some(skinned_positions), skinned_positions);
+		assert_triangle_mesh_program(
+			visibility_mesh_program(),
+			None,
+			Some(skinned_positions),
+			skinned_positions,
+			None,
+		);
 	}
 
-	/// Verifies shadow mesh output geometry uses the selected cascade view rather than view zero.
+	/// Verifies shadow mesh output geometry and render-target layer use the selected cascade view.
 	#[test]
 	fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 		assert_triangle_mesh_program(
@@ -914,6 +928,7 @@ mod tests {
 			Some((3, horizontally_translated_matrix(2.0))),
 			None,
 			[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+			Some(2),
 		);
 	}
 

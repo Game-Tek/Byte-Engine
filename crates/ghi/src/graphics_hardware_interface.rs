@@ -377,9 +377,15 @@ pub struct AttachmentInformation {
 	pub(crate) store: bool,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
+	/// The number of array layers available to shader-selected render-target indices.
+	pub(crate) layer_count: Option<std::num::NonZeroU32>,
 }
 
 impl AttachmentInformation {
+	/// Creates one attachment that targets a single image layer.
+	///
+	/// Call [`Self::layer`] to select one array layer or [`Self::layers`] to let
+	/// the raster shader select among several layers.
 	pub fn new(target: impl Into<ImageOrSwapchain>, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
 		Self {
 			target: target.into(),
@@ -389,12 +395,43 @@ impl AttachmentInformation {
 			load,
 			store,
 			layer: None,
+			layer_count: None,
 		}
 	}
 
+	/// Selects one array layer for every draw in the render pass.
 	pub fn layer(mut self, layer: u32) -> Self {
+		assert!(
+			self.layer_count.is_none(),
+			"Cannot select one attachment layer after enabling layered rendering. The most likely cause is that layer and layers were both called for the same attachment."
+		);
 		self.layer = Some(layer);
 		self
+	}
+
+	/// Lets the raster shader select one of the first `layer_count` array layers.
+	///
+	/// Every attachment in the render pass must declare the same layer count.
+	pub fn layers(mut self, layer_count: u32) -> Self {
+		let layer_count = std::num::NonZeroU32::new(layer_count).expect(
+			"Layered rendering requires at least one attachment layer. The most likely cause is that an empty layer range was passed to AttachmentInformation::layers.",
+		);
+		assert!(
+			self.layer.is_none(),
+			"Cannot enable layered rendering after selecting one attachment layer. The most likely cause is that layer and layers were both called for the same attachment."
+		);
+		self.layer_count = Some(layer_count);
+		self
+	}
+
+	/// Returns the pass-wide layer count after checking that all attachments agree.
+	pub(crate) fn render_pass_layer_count(attachments: &[Self]) -> u32 {
+		let layer_count = attachments.first().and_then(|attachment| attachment.layer_count);
+		assert!(
+			attachments.iter().all(|attachment| attachment.layer_count == layer_count),
+			"Render-pass attachments use different layer counts. The most likely cause is that layered rendering was enabled on only some attachments."
+		);
+		layer_count.map_or(1, std::num::NonZeroU32::get)
 	}
 }
 
@@ -822,6 +859,53 @@ pub(super) mod tests {
 		ShaderTypes, UseCases, Uses, Window,
 	};
 	use crate::{ChannelBitSize, ChannelLayout, Size as _};
+
+	#[test]
+	fn attachment_layer_builders_keep_single_and_layered_rendering_distinct() {
+		let single_layer =
+			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layer(3);
+		assert_eq!(single_layer.layer, Some(3));
+		assert_eq!(single_layer.layer_count, None);
+
+		let layered =
+			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
+				.layers(4);
+		assert_eq!(layered.layer, None);
+		assert_eq!(layered.layer_count.map(std::num::NonZeroU32::get), Some(4));
+		assert_eq!(AttachmentInformation::render_pass_layer_count(&[layered, layered]), 4);
+	}
+
+	#[test]
+	#[should_panic(expected = "Cannot select one attachment layer after enabling layered rendering")]
+	fn attachment_rejects_layer_after_one_layer_layered_rendering() {
+		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
+			.layers(1)
+			.layer(0);
+	}
+
+	#[test]
+	#[should_panic(expected = "Layered rendering requires at least one attachment layer")]
+	fn attachment_rejects_empty_layered_rendering() {
+		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layers(0);
+	}
+
+	#[test]
+	#[should_panic(expected = "Cannot enable layered rendering after selecting one attachment layer")]
+	fn attachment_rejects_layered_rendering_after_layer() {
+		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
+			.layer(0)
+			.layers(1);
+	}
+
+	#[test]
+	#[should_panic(expected = "Render-pass attachments use different layer counts")]
+	fn render_pass_rejects_mixed_attachment_layer_counts() {
+		let target = BaseImageHandle(1);
+		let single = AttachmentInformation::new(target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true);
+		let layered = AttachmentInformation::new(target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layers(4);
+
+		AttachmentInformation::render_pass_layer_count(&[single, layered]);
+	}
 
 	#[test]
 	fn test_formats_encoding() {

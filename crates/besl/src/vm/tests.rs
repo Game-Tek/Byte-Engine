@@ -1922,6 +1922,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 		set_mesh_output_counts(1, 1);
 		set_mesh_vertex_position(0, vec4f(1.0, 2.0, 3.0, 1.0));
 		set_mesh_triangle(0, vec3u(0, 0, 0));
+		set_mesh_primitive_render_target_array_index(0, 3);
 		out_index[0] = 17;
 	}
 	"#;
@@ -1943,6 +1944,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 	assert_eq!(mesh_outputs.primitive_count(), 1);
 	assert_eq!(mesh_outputs.vertex_position(0), Some([1.0, 2.0, 3.0, 1.0]));
 	assert_eq!(mesh_outputs.triangle(0), Some([0, 0, 0]));
+	assert_eq!(mesh_outputs.render_target_array_index(0), Some(3));
 	assert_eq!(
 		output.read_indexed("out_index", 0).expect("Expected indexed output"),
 		Value::U32(17)
@@ -2390,11 +2392,13 @@ fn mesh_output_counts_clear_reused_capture_ranges() {
 	outputs.set_counts(2, 2, 2, 2, false).expect("Expected bounded mesh outputs");
 	outputs.vertex_positions[0] = [1.0, 2.0, 3.0, 1.0];
 	outputs.triangles[0] = [4, 5, 6];
+	outputs.render_target_array_indices[0] = 3;
 
 	outputs.set_counts(2, 2, 2, 2, true).expect("Expected capture reuse");
 
 	assert_eq!(outputs.vertex_positions, vec![[0.0; 4]; 2]);
 	assert_eq!(outputs.triangles, vec![[0; 3]; 2]);
+	assert_eq!(outputs.render_target_array_indices, vec![0; 2]);
 }
 
 #[test]

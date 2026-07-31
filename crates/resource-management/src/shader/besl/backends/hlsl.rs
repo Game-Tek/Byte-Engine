@@ -18,6 +18,7 @@ pub struct Generator {
 	current_local_size: Option<utils::Extent>,
 	current_mesh_maximum_vertices: u32,
 	current_mesh_maximum_primitives: u32,
+	mesh_uses_render_target_array_index: bool,
 	task_payloads: Vec<besl::NodeReference>,
 	mesh_outputs: Vec<besl::NodeReference>,
 	raster_inputs: Vec<besl::NodeReference>,
@@ -56,6 +57,7 @@ impl Generator {
 			current_local_size: None,
 			current_mesh_maximum_vertices: 0,
 			current_mesh_maximum_primitives: 0,
+			mesh_uses_render_target_array_index: false,
 			task_payloads: Vec::new(),
 			mesh_outputs: Vec::new(),
 			raster_inputs: Vec::new(),
@@ -618,6 +620,11 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 
 		self.emit_named_struct_start(string, "PrimitiveOutput");
+		if self.mesh_uses_render_target_array_index {
+			formatting.push_indentation(string, 1);
+			string.push_str("uint32_t render_target_array_index : SV_RenderTargetArrayIndex");
+			formatting.push_statement_end(string);
+		}
 		for output in &self.mesh_outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
@@ -644,6 +651,65 @@ impl Generator {
 			formatting.push_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
+	}
+
+	/// Reports whether one reachable AST branch uses the requested intrinsic.
+	fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Function { statements, .. } => statements
+				.iter()
+				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
+			besl::Nodes::Conditional { condition, statements } => {
+				Self::uses_intrinsic(condition, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
+			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				Self::uses_intrinsic(initializer, intrinsic_name)
+					|| Self::uses_intrinsic(condition, intrinsic_name)
+					|| Self::uses_intrinsic(update, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
+			}
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::IntrinsicCall {
+					intrinsic, arguments, ..
+				} => {
+					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+						|| arguments
+							.iter()
+							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
+				}
+				besl::Expressions::Operator { left, right, .. } => {
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
+				}
+				besl::Expressions::FunctionCall { parameters, .. } => parameters
+					.iter()
+					.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name)),
+				besl::Expressions::Expression { elements } => {
+					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
+				}
+				besl::Expressions::Macro { body, .. } => Self::uses_intrinsic(body, intrinsic_name),
+				besl::Expressions::Member { source, .. } => Self::uses_intrinsic(source, intrinsic_name),
+				besl::Expressions::Return { value } => value
+					.as_ref()
+					.is_some_and(|value| Self::uses_intrinsic(value, intrinsic_name)),
+				besl::Expressions::Accessor { left, right } => {
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
+				}
+				besl::Expressions::VariableDeclaration { .. }
+				| besl::Expressions::Literal { .. }
+				| besl::Expressions::Continue => false,
+			},
+			_ => false,
+		}
 	}
 
 	/// Recovers an indexed mesh-output declaration so HLSL can address its primitive structure field.
@@ -950,6 +1016,12 @@ impl Generator {
 				string.push_str("] = ");
 				self.emit_node_string(string, &arguments[1]);
 			}
+			"set_mesh_primitive_render_target_array_index" => {
+				string.push_str("besl_primitives[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].render_target_array_index = ");
+				self.emit_node_string(string, &arguments[1]);
+			}
 			_ => {
 				for element in elements {
 					self.emit_node_string(string, element);
@@ -1005,6 +1077,9 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		self.mesh_uses_render_target_array_index = order
+			.iter()
+			.any(|node| Self::uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
 		self.task_payloads.clear();
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
@@ -2454,6 +2529,7 @@ mod tests {
 				}
 				if (lane < 1) {
 					set_mesh_triangle(0, vec3u(0, 1, 2));
+					set_mesh_primitive_render_target_array_index(0, 2);
 					out_instance_index[0] = meshlet_index;
 					out_primitive_index[0] = meshlet_index;
 				}
@@ -2471,6 +2547,7 @@ mod tests {
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "struct VertexOutput{float4 position : SV_Position;};");
 		assert_string_contains!(shader, "struct PrimitiveOutput{");
+		assert_string_contains!(shader, "uint32_t render_target_array_index : SV_RenderTargetArrayIndex;");
 		assert_string_contains!(shader, "nointerpolation uint32_t out_instance_index : TEXCOORD0;");
 		assert_string_contains!(shader, "nointerpolation uint32_t out_primitive_index : TEXCOORD1;");
 		assert_string_contains!(shader, "[outputtopology(\"triangle\")][numthreads(32, 1, 1)]");
@@ -2478,6 +2555,7 @@ mod tests {
 		assert_string_contains!(shader, "SetMeshOutputCounts(3,1);");
 		assert_string_contains!(shader, "besl_vertices[lane].position = float4(float(lane),0.0,0.0,1.0)");
 		assert_string_contains!(shader, "besl_triangles[0] = uint3(0,1,2)");
+		assert_string_contains!(shader, "besl_primitives[0].render_target_array_index = 2");
 		assert_string_contains!(shader, "besl_primitives[0].out_instance_index=meshlet_index");
 
 		#[cfg(target_os = "windows")]

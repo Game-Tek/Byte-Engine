@@ -45,7 +45,8 @@ impl<'a> CommandBufferRecording<'a> {
 	) {
 	}
 
-	pub fn start_render_pass(&mut self, _extent: Extent, _attachments: &[AttachmentInformation]) -> &mut Self {
+	pub fn start_render_pass(&mut self, _extent: Extent, attachments: &[AttachmentInformation]) -> &mut Self {
+		AttachmentInformation::render_pass_layer_count(attachments);
 		self
 	}
 

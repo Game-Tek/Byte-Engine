@@ -417,6 +417,11 @@ impl Node {
 				void.clone(),
 			),
 			builtin_intrinsic(
+				"set_mesh_primitive_render_target_array_index",
+				vec![("primitive_index", u32_t.clone()), ("array_index", u32_t.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
 				"image_load",
 				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
 				vec4f32.clone(),
@@ -2304,9 +2309,38 @@ fn resolve_call_target(
 	}
 
 	if let Ok(r#type) = resolve_type(chain, name) {
-		return Ok(r#type);
+		let mismatched_intrinsic_with_known_types =
+			matches!(r#type.borrow().node(), Nodes::Intrinsic { .. }) && parameters.iter().all(expression_has_reliable_type);
+		// Resource expressions do not always expose a value type during linking, so keep the established fallback only when
+		// overload matching lacked enough information. Fully known intrinsic arguments must match their declared types.
+		if !mismatched_intrinsic_with_known_types {
+			return Ok(r#type);
+		}
 	}
 	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
+}
+
+/// Reports whether overload resolution can trust the expression's linked value type.
+fn expression_has_reliable_type(expression: &NodeReference) -> bool {
+	match expression.borrow().node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			expression_has_reliable_type(&elements[0])
+		}
+		Nodes::Expression(
+			Expressions::Literal { .. }
+			| Expressions::VariableDeclaration { .. }
+			| Expressions::FunctionCall { .. }
+			| Expressions::IntrinsicCall { .. },
+		) => true,
+		Nodes::Expression(Expressions::Member { source, .. }) => !matches!(
+			source.borrow().node(),
+			Nodes::Binding { .. } | Nodes::Input { .. } | Nodes::Output { .. }
+		),
+		Nodes::Expression(Expressions::Operator { left, right, .. }) => {
+			expression_has_reliable_type(left) && expression_has_reliable_type(right)
+		}
+		_ => false,
+	}
 }
 
 fn resolve_call_target_in_node(node: &NodeReference, name: &str, parameters: &[NodeReference]) -> Option<NodeReference> {
@@ -2710,6 +2744,21 @@ main: fn () -> void {
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected error");
+	}
+
+	#[test]
+	fn mesh_render_target_array_index_requires_unsigned_indices() {
+		let source = "
+main: fn () -> void {
+	set_mesh_primitive_render_target_array_index(0, 1.0);
+}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let node = parser::parse(&tokens).expect("Failed to parse");
+		assert_eq!(
+			lex(node).expect_err("The mesh primitive and array indices must both be u32"),
+			LexError::FunctionCallParametersDoNotMatchFunctionParameters
+		);
 	}
 
 	#[test]

@@ -36,6 +36,8 @@ struct MeshStageContext {
 	has_resources: bool,
 	has_push_constant: bool,
 	has_task_payload: bool,
+	uses_render_target_array_index: bool,
+	primitive_output_fields: Vec<String>,
 	maximum_vertices: u32,
 	maximum_primitives: u32,
 }
@@ -1113,10 +1115,28 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		let primitive_output_fields = nodes
+			.outputs
+			.iter()
+			.filter_map(|output| {
+				let output = output.borrow();
+				let besl::Nodes::Output {
+					name, count: Some(_), ..
+				} = output.node()
+				else {
+					return None;
+				};
+				Some(Self::mesh_output_field_name(name).to_string())
+			})
+			.collect();
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
+			uses_render_target_array_index: order
+				.iter()
+				.any(|node| Self::uses_intrinsic(node, "set_mesh_primitive_render_target_array_index")),
+			primitive_output_fields,
 			maximum_vertices,
 			maximum_primitives,
 		});
@@ -1177,6 +1197,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 
 		self.emit_named_struct_start(string, "PrimitiveOutput");
+		if self
+			.mesh_stage_context
+			.as_ref()
+			.is_some_and(|context| context.uses_render_target_array_index)
+		{
+			formatting.push_indentation(string, 1);
+			string.push_str("uint render_target_array_index [[render_target_array_index]]");
+			formatting.push_statement_end(string);
+		}
 		for output in outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
@@ -2132,11 +2161,25 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_statement_end(string);
 	}
 
-	fn mesh_output_assignment_parts(
+	/// Extracts one primitive field write so adjacent writes can become one native primitive value.
+	fn mesh_primitive_write_parts(
 		&mut self,
 		statement: &besl::NodeReference,
 	) -> Option<(String, besl::NodeReference, besl::NodeReference)> {
 		let node = statement.borrow();
+		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic, arguments, ..
+		}) = node.node()
+		{
+			let [index, array_index] = arguments.as_slice() else {
+				return None;
+			};
+			if intrinsic.borrow().get_name().as_deref() == Some("set_mesh_primitive_render_target_array_index") {
+				return Some(("render_target_array_index".to_string(), index.clone(), array_index.clone()));
+			}
+			return None;
+		}
+
 		let besl::Nodes::Expression(besl::Expressions::Operator {
 			operator: besl::Operators::Assignment,
 			left,
@@ -2169,11 +2212,18 @@ impl<A: Allocator + Clone> Generator<A> {
 			return None;
 		}
 
-		if name != "out_instance_index" && name != "out_primitive_index" {
-			return None;
-		}
+		Some((Self::mesh_output_field_name(name).to_string(), index.clone(), right.clone()))
+	}
 
-		Some((name.clone(), index.clone(), right.clone()))
+	/// Returns one primitive field's native declaration position for Metal aggregate initialization.
+	fn mesh_primitive_field_order(&self, field: &str) -> usize {
+		if field == "render_target_array_index" {
+			return 0;
+		}
+		self.mesh_stage_context
+			.as_ref()
+			.and_then(|context| context.primitive_output_fields.iter().position(|declared| declared == field))
+			.map_or(usize::MAX, |index| index + 1)
 	}
 
 	fn emit_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
@@ -2181,42 +2231,45 @@ impl<A: Allocator + Clone> Generator<A> {
 		let mut i = 0;
 
 		while i < statements.len() {
-			if self.mesh_stage_context.is_some() && i + 1 < statements.len() {
-				let current = self.mesh_output_assignment_parts(&statements[i]);
-				let next = self.mesh_output_assignment_parts(&statements[i + 1]);
+			if self.mesh_stage_context.is_some() {
+				if let Some((field, index, value)) = self.mesh_primitive_write_parts(&statements[i]) {
+					let mut index_string = String::new();
+					self.emit_node_string(&mut index_string, &index);
+					let mut writes = vec![(field, value)];
+					let mut next = i + 1;
 
-				if let (Some((current_name, current_index, current_value)), Some((next_name, next_index, next_value))) =
-					(current, next)
-				{
-					let mut current_index_string = String::new();
-					self.emit_node_string(&mut current_index_string, &current_index);
-					let mut next_index_string = String::new();
-					self.emit_node_string(&mut next_index_string, &next_index);
-
-					if current_index_string == next_index_string
-						&& current_name != next_name
-						&& ((current_name == "out_instance_index" && next_name == "out_primitive_index")
-							|| (current_name == "out_primitive_index" && next_name == "out_instance_index"))
-					{
-						let (instance_value, primitive_value) = if current_name == "out_instance_index" {
-							(current_value, next_value)
-						} else {
-							(next_value, current_value)
+					while next < statements.len() {
+						let Some((field, next_index, value)) = self.mesh_primitive_write_parts(&statements[next]) else {
+							break;
 						};
-
-						formatting.push_indentation(string, indent);
-
-						string.push_str("out_mesh.set_primitive(");
-						self.emit_node_string(string, &current_index);
-						string.push_str(", PrimitiveOutput{.instance_index = ");
-						self.emit_node_string(string, &instance_value);
-						string.push_str(", .primitive_index = ");
-						self.emit_node_string(string, &primitive_value);
-						string.push_str("})");
-						formatting.push_statement_end(string);
-						i += 2;
-						continue;
+						let mut next_index_string = String::new();
+						self.emit_node_string(&mut next_index_string, &next_index);
+						if next_index_string != index_string || writes.iter().any(|(written, _)| written == &field) {
+							break;
+						}
+						writes.push((field, value));
+						next += 1;
 					}
+					// Metal requires designated initializers to follow the PrimitiveOutput declaration order.
+					writes.sort_by_key(|(field, _)| self.mesh_primitive_field_order(field));
+
+					formatting.push_indentation(string, indent);
+					string.push_str("out_mesh.set_primitive(");
+					self.emit_node_string(string, &index);
+					string.push_str(", PrimitiveOutput{");
+					for (write_index, (field, value)) in writes.iter().enumerate() {
+						if write_index > 0 {
+							string.push_str(", ");
+						}
+						string.push('.');
+						string.push_str(field);
+						string.push_str(" = ");
+						self.emit_node_string(string, value);
+					}
+					string.push_str("})");
+					formatting.push_statement_end(string);
+					i = next;
+					continue;
 				}
 			}
 
@@ -2471,6 +2524,13 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(" * 3 + 2, ");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(".z)");
+			}
+			"set_mesh_primitive_render_target_array_index" => {
+				string.push_str("out_mesh.set_primitive(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", PrimitiveOutput{.render_target_array_index = ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("})");
 			}
 			"image_load" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -3475,8 +3535,9 @@ mod tests {
 			}
 			if (lane < 1) {
 				set_mesh_triangle(0, vec3u(0, 1, 2));
-				out_instance_index[0] = meshlet_index;
 				out_primitive_index[0] = meshlet_index;
+				set_mesh_primitive_render_target_array_index(0, 2);
+				out_instance_index[0] = meshlet_index;
 			}
 		}
 	"#;
@@ -3514,6 +3575,7 @@ mod tests {
 		assert_string_contains!(shader, "// #pragma shader_stage(object)");
 		assert_string_contains!(shader, "// besl-threadgroup-size:32,1,1");
 		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
+		assert_string_contains!(shader, "uint render_target_array_index [[render_target_array_index]];");
 		assert_string_contains!(shader, "[[object, max_total_threadgroups_per_mesh_grid(32)]] void besl_main(");
 		assert_string_contains!(shader, "uint thread_position [[thread_position_in_grid]]");
 		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
@@ -3537,7 +3599,10 @@ mod tests {
 		assert_string_contains!(shader, "uint meshlet_index=payload.visible_meshlets[threadgroup_position];");
 		assert_string_contains!(shader, "out_mesh.set_vertex(");
 		assert_string_contains!(shader, "out_mesh.set_index(");
-		assert_string_contains!(shader, "out_mesh.set_primitive(");
+		assert_string_contains!(
+			shader,
+			"out_mesh.set_primitive(0, PrimitiveOutput{.render_target_array_index = 2, .primitive_index = meshlet_index, .instance_index = meshlet_index})"
+		);
 	}
 
 	#[test]

@@ -228,6 +228,8 @@ pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 		);
 	}
 
+	besl::optimization::optimize(main_function_node);
+
 	let graph = build_graph_in(main_function_node.clone(), allocator.clone());
 
 	let mut ordered = AllocVec::new_in(allocator.clone());
@@ -995,6 +997,7 @@ pub mod tests {
 		let script = r#"
 		main: fn () -> void {
 			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+			albedo;
 		}
 		"#;
 
@@ -1068,13 +1071,12 @@ pub mod tests {
 	pub fn intrinsic() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
-			sample_user(number);
+			sample_user(1.0);
 		}
 		"#;
 
 		use besl::parser::Node;
 
-		let number_literal = Node::literal("number", Node::glsl("1.0", &[], &[]));
 		let sample_function = Node::intrinsic(
 			"sample_user",
 			Node::parameter("num", "f32"),
@@ -1088,7 +1090,7 @@ pub mod tests {
 
 		let mut root = besl::parse(&script).unwrap();
 
-		root.add(vec![sample_function.clone(), number_literal.clone()]);
+		root.add(vec![sample_function]);
 
 		let root = besl::lex(root).unwrap();
 

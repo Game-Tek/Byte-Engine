@@ -8,6 +8,7 @@
 //! for syntax, interfaces, stages, sidecar settings, and supported operations.
 
 pub mod lexer;
+pub mod optimization;
 pub mod parser;
 mod tokenizer;
 pub mod vm;

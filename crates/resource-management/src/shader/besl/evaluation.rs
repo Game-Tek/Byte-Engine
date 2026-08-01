@@ -363,6 +363,8 @@ impl ProgramEvaluation {
 			}
 		}
 
+		besl::optimization::optimize(main_function_node);
+
 		let bindings = collect_bindings(main_function_node)?;
 
 		let opacity = evaluate_opacity(main_function_node);
@@ -1490,6 +1492,39 @@ mod tests {
 		let bindings = evaluation.bindings();
 
 		assert_eq!(bindings.len(), 3);
+	}
+
+	#[test]
+	fn reflection_culls_a_binding_used_only_by_a_dead_local() {
+		let mut root = besl::Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32 type");
+		root.add_child(
+			besl::Node::binding(
+				"values",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("value", f32_type).into()],
+				},
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		let program = besl::compile_to_besl(
+			r#"
+			main: fn() -> void {
+				let ignored: f32 = values.value;
+				return;
+			}
+		"#,
+			Some(root),
+		)
+		.expect("Expected dead binding fixture to link");
+		let main = program.get_main().expect("Expected dead binding fixture main function");
+
+		let evaluation = ProgramEvaluation::from_main(&main).expect("Expected optimized reflection");
+		assert!(evaluation.bindings().is_empty(), "Dead local binding reached reflection");
 	}
 
 	#[test]

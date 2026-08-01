@@ -2663,7 +2663,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "void besl_main(){float3 albedo=float3(1.0,0.0,0.0);}");
+		assert_string_contains!(shader, "void besl_main(){float3 albedo=float3(1.0,0.0,0.0);albedo;}");
 	}
 
 	#[test]
@@ -2672,6 +2672,7 @@ mod tests {
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
 			let texel: vec4f = fetch(texture, coord);
+			texel;
 		}
 		"#;
 
@@ -2706,6 +2707,8 @@ mod tests {
 			guard_image_bounds(image, coord);
 			let texel: u32 = image_load_u32(image, coord);
 			let color: vec4f = image_load(color_image, coord);
+			texel;
+			color;
 		}
 		"#;
 
@@ -2805,6 +2808,9 @@ mod tests {
 			let item_index: u32 = item_data.items[0].counter_index;
 			write(output_image, coord, vec4f(1.0, 1.0, 1.0, 1.0));
 			atomic_store(counter_buffer.count[item_index], 2);
+			extent;
+			noise;
+			projected;
 		}
 		"#;
 
@@ -2987,6 +2993,8 @@ mod tests {
 		main: fn () -> void {
 			let vertex_index: u16 = vertex_indices.vertex_indices[3];
 			let primitive_index: u8 = primitive_indices.primitive_indices[5];
+			vertex_index;
+			primitive_index;
 		}
 		"#;
 		let mut root = besl::Node::root();
@@ -3250,6 +3258,8 @@ mod tests {
 			let texel: vec4f = texture_lod(depth_texture, uv);
 			let projected: vec4f = parameters.inverse_view_projection * texel;
 			let sun: vec4f = parameters.sun_direction;
+			projected;
+			sun;
 		}
 		"#;
 
@@ -3543,6 +3553,7 @@ mod tests {
 		let script = r#"
 		main: fn () -> void {
 			let packed: u32 = 1 << 8 | 2 & 255;
+			packed;
 		}
 		"#;
 
@@ -3586,6 +3597,8 @@ mod tests {
 		main: fn () -> void {
 			let maximum: f32 = max(1.0, 2.0);
 			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+			maximum;
+			clamped;
 		}
 		"#;
 
@@ -3608,6 +3621,7 @@ mod tests {
 
 		main: fn () -> void {
 			let value: f32 = WEIGHTS[1];
+			value;
 		}
 		"#;
 
@@ -3630,6 +3644,7 @@ mod tests {
 		let script = r#"
 		main: fn () -> void {
 			let value: f32 = mix(0.0, 1.0, 0.5);
+			value;
 		}
 		"#;
 

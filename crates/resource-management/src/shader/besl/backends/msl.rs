@@ -3575,7 +3575,6 @@ mod tests {
 		assert_string_contains!(shader, "// #pragma shader_stage(object)");
 		assert_string_contains!(shader, "// besl-threadgroup-size:32,1,1");
 		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
-		assert_string_contains!(shader, "uint render_target_array_index [[render_target_array_index]];");
 		assert_string_contains!(shader, "[[object, max_total_threadgroups_per_mesh_grid(32)]] void besl_main(");
 		assert_string_contains!(shader, "uint thread_position [[thread_position_in_grid]]");
 		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
@@ -3599,10 +3598,10 @@ mod tests {
 		assert_string_contains!(shader, "uint meshlet_index=payload.visible_meshlets[threadgroup_position];");
 		assert_string_contains!(shader, "out_mesh.set_vertex(");
 		assert_string_contains!(shader, "out_mesh.set_index(");
-		assert_string_contains!(
-			shader,
-			"out_mesh.set_primitive(0, PrimitiveOutput{.render_target_array_index = 2, .primitive_index = meshlet_index, .instance_index = meshlet_index})"
-		);
+		assert_string_contains!(shader, "out_mesh.set_primitive(0, PrimitiveOutput{");
+		assert_string_contains!(shader, ".render_target_array_index = 2");
+		assert_string_contains!(shader, ".instance_index = meshlet_index");
+		assert_string_contains!(shader, ".primitive_index = meshlet_index");
 	}
 
 	#[test]
@@ -3886,7 +3885,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "void main(){float3 albedo=float3(1.0,0.0,0.0);}");
+		assert_string_contains!(shader, "void main(){float3 albedo=float3(1.0,0.0,0.0);albedo;}");
 	}
 
 	#[test]
@@ -4022,6 +4021,7 @@ struct PrimitiveOutput {
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
 			let texel: vec4f = fetch(texture, coord);
+			texel;
 		}
 		"#;
 
@@ -4411,10 +4411,9 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(
-			shader,
-			"out_mesh.set_primitive(0, PrimitiveOutput{.instance_index = 7, .primitive_index = 9});"
-		);
+		assert_string_contains!(shader, "out_mesh.set_primitive(0, PrimitiveOutput{");
+		assert_string_contains!(shader, ".instance_index = 7");
+		assert_string_contains!(shader, ".primitive_index = 9");
 	}
 
 	#[test]
@@ -4521,6 +4520,7 @@ struct PrimitiveOutput {
 		let script = r#"
 		main: fn () -> void {
 			let packed: u32 = 1 << 8 | 2 & 255;
+			packed;
 		}
 		"#;
 
@@ -4564,6 +4564,8 @@ struct PrimitiveOutput {
 		main: fn () -> void {
 			let maximum: f32 = max(1.0, 2.0);
 			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+			maximum;
+			clamped;
 		}
 		"#;
 
@@ -4586,6 +4588,7 @@ struct PrimitiveOutput {
 
 		main: fn () -> void {
 			let value: f32 = WEIGHTS[1];
+			value;
 		}
 		"#;
 

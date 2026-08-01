@@ -994,7 +994,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);}");
+		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);albedo;}");
 	}
 
 	#[test]
@@ -1024,6 +1024,36 @@ mod tests {
 			shader,
 			"void used_by_used(){}void used(){used_by_used();}void main(){used();}"
 		);
+	}
+
+	#[test]
+	fn culls_dead_locals_before_glsl_emission() {
+		let root = besl::compile_to_besl(
+			r#"
+			expensive: fn() -> f32 {
+				return 42.0;
+			}
+			main: fn() -> void {
+				let x: f32 = expensive();
+				return;
+			}
+		"#,
+			None,
+		)
+		.expect("Expected dead-local BESL fixture to link");
+		let main = root.get_main().expect("Expected dead-local fixture main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected dead-local GLSL generation");
+
+		assert_string_contains!(shader, "void main(){return;}");
+		assert!(
+			!shader.contains("expensive"),
+			"Dead helper function reached GLSL emission: {shader}"
+		);
+		assert!(!shader.contains("float x"), "Dead local reached GLSL emission: {shader}");
 	}
 
 	#[test]
@@ -1174,6 +1204,7 @@ mod tests {
 
 		main: fn () -> void {
 			let value: f32 = WEIGHTS[1];
+			value;
 		}
 		"#;
 
@@ -1264,6 +1295,7 @@ mod tests {
 		let script = r#"
 		main: fn () -> void {
 			let packed: u32 = 1 << 8 | 2 & 255;
+			packed;
 		}
 		"#;
 
@@ -1314,6 +1346,15 @@ mod tests {
 			let g: f32 = smoothstep(0.0, 1.0, 0.5);
 			let h: f32 = mix(2.0, 4.0, 0.25);
 			let i: vec2f = round(vec2f(1.2, 1.8));
+			a;
+			b;
+			c;
+			d;
+			e;
+			f;
+			g;
+			h;
+			i;
 		}
 		"#;
 
@@ -1342,6 +1383,8 @@ mod tests {
 		main: fn () -> void {
 			let maximum: f32 = max(1.0, 2.0);
 			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+			maximum;
+			clamped;
 		}
 		"#;
 
@@ -1363,6 +1406,7 @@ mod tests {
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
 			let texel: vec4f = fetch(texture, coord);
+			texel;
 		}
 		"#;
 

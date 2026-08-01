@@ -319,30 +319,48 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		);
 	}
 
-	distribution_ggx: fn (n: vec3f, h: vec3f, roughness: f32) -> f32 {
-		let alpha: f32 = roughness * roughness;
-		let alpha_squared: f32 = alpha * alpha;
-		let n_dot_h: f32 = max(dot(n, h), 0.0);
+	distribution_ggx_from_terms: fn (n_dot_h: f32, alpha_squared: f32) -> f32 {
 		let denominator_base: f32 = n_dot_h * n_dot_h * (alpha_squared - 1.0) + 1.0;
 		let denominator: f32 = 3.14159265359 * denominator_base * denominator_base;
 		return alpha_squared / denominator;
 	}
 
+	distribution_ggx: fn (n: vec3f, h: vec3f, roughness: f32) -> f32 {
+		let alpha: f32 = roughness * roughness;
+		let alpha_squared: f32 = alpha * alpha;
+		let n_dot_h: f32 = max(dot(n, h), 0.0);
+		return distribution_ggx_from_terms(n_dot_h, alpha_squared);
+	}
+
+	geometry_schlick_ggx_from_k: fn (n_dot_v: f32, k: f32) -> f32 {
+		return n_dot_v / (n_dot_v * (1.0 - k) + k);
+	}
+
 	geometry_schlick_ggx: fn (n_dot_v: f32, roughness: f32) -> f32 {
 		let adjusted_roughness: f32 = roughness + 1.0;
 		let k: f32 = adjusted_roughness * adjusted_roughness / 8.0;
-		return n_dot_v / (n_dot_v * (1.0 - k) + k);
+		return geometry_schlick_ggx_from_k(n_dot_v, k);
+	}
+
+	geometry_smith_from_terms: fn (n_dot_v: f32, n_dot_l: f32, k: f32) -> f32 {
+		return geometry_schlick_ggx_from_k(n_dot_v, k) * geometry_schlick_ggx_from_k(n_dot_l, k);
 	}
 
 	geometry_smith: fn (n: vec3f, v: vec3f, l: vec3f, roughness: f32) -> f32 {
 		let n_dot_v: f32 = max(dot(n, v), 0.0);
 		let n_dot_l: f32 = max(dot(n, l), 0.0);
-		return geometry_schlick_ggx(n_dot_v, roughness) * geometry_schlick_ggx(n_dot_l, roughness);
+		let adjusted_roughness: f32 = roughness + 1.0;
+		let k: f32 = adjusted_roughness * adjusted_roughness / 8.0;
+		return geometry_smith_from_terms(n_dot_v, n_dot_l, k);
+	}
+
+	fresnel_schlick_from_factor: fn (factor: f32, f0: vec3f) -> vec3f {
+		return f0 + (1.0 - f0) * factor;
 	}
 
 	fresnel_schlick: fn (cos_theta: f32, f0: vec3f) -> vec3f {
 		let factor: f32 = pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
-		return f0 + (1.0 - f0) * factor;
+		return fresnel_schlick_from_factor(factor, f0);
 	}
 
 	fresnel_schlick_roughness: fn (cos_theta: f32, f0: vec3f, roughness: f32) -> vec3f {
@@ -774,12 +792,15 @@ mod tests {
 				let light: vec3f = vec3f(0.0, 0.8660254, 0.5);
 				let f0: vec3f = vec3f(0.04, 0.04, 0.04);
 				results.distribution = distribution_ggx(normal, half_vector, 0.5);
+				results.distribution_from_terms = distribution_ggx_from_terms(1.0, 0.0625);
 				results.distribution_roughness_one = distribution_ggx(normal, view, 1.0);
 				results.geometry = geometry_schlick_ggx(0.5, 0.5);
 				results.geometry_zero = geometry_schlick_ggx(0.0, 0.5);
 				results.geometry_one = geometry_schlick_ggx(1.0, 0.5);
 				results.geometry_smith = geometry_smith(normal, view, light, 0.5);
+				results.geometry_smith_from_terms = geometry_smith_from_terms(0.5, 0.5, 0.28125);
 				results.fresnel = fresnel_schlick(0.5, f0);
+				results.fresnel_from_factor = fresnel_schlick_from_factor(0.03125, f0);
 				results.fresnel_normal = fresnel_schlick(1.0, f0);
 				results.fresnel_grazing = fresnel_schlick(0.0, f0);
 				results.rough_fresnel = fresnel_schlick_roughness(0.5, f0, 0.5);
@@ -788,12 +809,15 @@ mod tests {
 		"#;
 		let members = vec![
 			besl::ParserNode::member("distribution", "f32"),
+			besl::ParserNode::member("distribution_from_terms", "f32"),
 			besl::ParserNode::member("distribution_roughness_one", "f32"),
 			besl::ParserNode::member("geometry", "f32"),
 			besl::ParserNode::member("geometry_zero", "f32"),
 			besl::ParserNode::member("geometry_one", "f32"),
 			besl::ParserNode::member("geometry_smith", "f32"),
+			besl::ParserNode::member("geometry_smith_from_terms", "f32"),
 			besl::ParserNode::member("fresnel", "vec3f"),
+			besl::ParserNode::member("fresnel_from_factor", "vec3f"),
 			besl::ParserNode::member("fresnel_normal", "vec3f"),
 			besl::ParserNode::member("fresnel_grazing", "vec3f"),
 			besl::ParserNode::member("rough_fresnel", "vec3f"),
@@ -805,12 +829,19 @@ mod tests {
 
 		let expected_geometry = 0.5 / (0.5 * (1.0 - 0.28125) + 0.28125);
 		assert_f32_close(read_f32(&results, "distribution"), 16.0 / std::f32::consts::PI, 0.00001);
+		assert_f32_close(
+			read_f32(&results, "distribution_from_terms"),
+			16.0 / std::f32::consts::PI,
+			0.00001,
+		);
 		fixture.assert_f32("distribution_roughness_one", 1.0 / std::f32::consts::PI);
 		assert_f32_close(read_f32(&results, "geometry"), expected_geometry, 0.00001);
 		assert_eq!(read_f32(&results, "geometry_zero"), 0.0);
 		assert_eq!(read_f32(&results, "geometry_one"), 1.0);
 		fixture.assert_f32("geometry_smith", expected_geometry * expected_geometry);
+		fixture.assert_f32("geometry_smith_from_terms", expected_geometry * expected_geometry);
 		assert_floats_close(read_vec3f(&results, "fresnel"), [0.07; 3], 0.00001);
+		assert_floats_close(read_vec3f(&results, "fresnel_from_factor"), [0.07; 3], 0.00001);
 		assert_floats_close(read_vec3f(&results, "fresnel_normal"), [0.04; 3], 0.00001);
 		assert_floats_close(read_vec3f(&results, "fresnel_grazing"), [1.0; 3], 0.00001);
 		assert_floats_close(read_vec3f(&results, "rough_fresnel"), [0.054375; 3], 0.00001);

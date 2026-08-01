@@ -30,6 +30,9 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
+/// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
+/// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `6`.
+/// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `8`.
 ///
 /// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -582,6 +585,15 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
+	let gtao_configuration = application
+		.configuration()
+		.register(crate::rendering::pipelines::visibility::render_pass::GTAO_CONFIGURATION_PREFIX);
+	for parameter_name in ["render.gtao.radius", "render.gtao.samples-per-ray", "render.gtao.radial-rays"] {
+		if let Some(parameter) = application.get_parameter(parameter_name) {
+			application.configuration().update(parameter.name(), parameter.value());
+		}
+	}
+
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
@@ -737,6 +749,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				renderer.context_mut(),
 				resource_manager_client,
 				visibility_shader_resources,
+				gtao_configuration,
 			),
 			light_receiver,
 			light_delete_receiver,

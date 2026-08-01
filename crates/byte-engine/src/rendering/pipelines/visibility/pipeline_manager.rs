@@ -44,6 +44,8 @@ pub struct VisibilityPipelineManager {
 	environment_resource_id: Option<String>,
 	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
 	environment_texture: EnvironmentTexture,
+	gtao_configuration: crate::configuration::ConfigurationPort,
+	gtao_settings: crate::rendering::pipelines::visibility::render_pass::GtaoSettings,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
@@ -57,6 +59,7 @@ impl VisibilityPipelineManager {
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
 		shader_resources: EntityHandle<ResourceManager>,
+		gtao_configuration: crate::configuration::ConfigurationPort,
 	) -> Self {
 		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
@@ -185,6 +188,8 @@ impl VisibilityPipelineManager {
 			loaded_pipelines: HashMap::new(),
 			environment_resource_id: None,
 			environment_texture,
+			gtao_configuration,
+			gtao_settings: Default::default(),
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::new(),
@@ -792,6 +797,35 @@ fn reserve_deformed_vertex_range(cursor: &mut usize, vertex_count: u32) -> u32 {
 	base as u32
 }
 
+impl VisibilityPipelineManager {
+	/// Applies queued GTAO controls before any sink records this frame's commands.
+	fn apply_gtao_configuration(&mut self) {
+		while let Some(update) = self.gtao_configuration.read() {
+			let Some(parameter) = update
+				.parameter()
+				.strip_prefix(crate::rendering::pipelines::visibility::render_pass::GTAO_CONFIGURATION_PREFIX)
+			else {
+				self.gtao_configuration.not_set(
+					update.id(),
+					"GTAO parameter was not set. The most likely cause is that the parameter is outside the `render.gtao.` namespace.",
+				);
+				continue;
+			};
+
+			match self.gtao_settings.with_parameter(parameter, update.value()) {
+				Ok((settings, effective_value)) => {
+					self.gtao_settings = settings;
+					for sink_state in &mut self.scene.sink_states {
+						sink_state.render_pass.set_gtao_settings(settings);
+					}
+					self.gtao_configuration.set(update.id(), effective_value);
+				}
+				Err(reason) => self.gtao_configuration.not_set(update.id(), reason),
+			}
+		}
+	}
+}
+
 impl PipelineManager for VisibilityPipelineManager {
 	fn prepare<'a>(
 		&'a mut self,
@@ -799,6 +833,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
+		self.apply_gtao_configuration();
 		self.adopt_resource_completions(frame);
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
@@ -1088,6 +1123,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			material_offset_buffer,
 			material_offset_scratch_buffer,
 			material_evaluation_dispatches,
+			self.gtao_settings,
 		);
 
 		self.scene.sink_states.push(SinkState {

@@ -8,6 +8,7 @@ use ghi::implementation::Frame;
 use resource_management::{resource::resource_manager::ResourceManager, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent, RGBA};
 
+use crate::configuration::ConfigurationValue;
 use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
@@ -24,6 +25,11 @@ use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
 const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 );
@@ -85,6 +91,123 @@ fn batched_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Ite
 	(1..=SHADOW_CASCADE_COUNT as u32).filter(move |_| has_work)
 }
 const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
+
+pub(crate) const GTAO_CONFIGURATION_PREFIX: &str = "render.gtao.";
+const GTAO_MIN_SAMPLES_PER_RAY: u32 = 1;
+const GTAO_MAX_SAMPLES_PER_RAY: u32 = 32;
+const GTAO_MIN_RADIAL_RAYS: u32 = 2;
+const GTAO_MAX_RADIAL_RAYS: u32 = 32;
+
+/// The `GtaoSettings` struct defines the runtime quality and world-space search controls for GTAO.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GtaoSettings {
+	pub(crate) radius: f32,
+	pub(crate) samples_per_ray: u32,
+	pub(crate) radial_rays: u32,
+}
+
+impl Default for GtaoSettings {
+	fn default() -> Self {
+		Self {
+			radius: 1.0,
+			samples_per_ray: 4,
+			radial_rays: 6,
+		}
+	}
+}
+
+impl GtaoSettings {
+	/// Applies one runtime parameter without changing the settings when validation fails.
+	pub(crate) fn with_parameter(
+		self,
+		parameter: &str,
+		value: &ConfigurationValue,
+	) -> Result<(Self, ConfigurationValue), String> {
+		match parameter {
+			"radius" => {
+				let radius = configuration_float(value).ok_or_else(|| {
+					"GTAO radius was not set. The most likely cause is that the value is not a finite number.".to_string()
+				})?;
+				if radius < 0.0 || radius > f32::MAX as f64 {
+					return Err(
+						"GTAO radius was not set. The most likely cause is that the value is outside the nonnegative f32 range."
+							.to_string(),
+					);
+				}
+				let settings = Self {
+					radius: radius as f32,
+					..self
+				};
+				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
+			}
+			"samples-per-ray" => {
+				let samples_per_ray = configuration_u32(value).ok_or_else(|| {
+					"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number."
+				})?;
+				if !(GTAO_MIN_SAMPLES_PER_RAY..=GTAO_MAX_SAMPLES_PER_RAY).contains(&samples_per_ray) {
+					return Err(format!(
+						"GTAO samples-per-ray was not set. The most likely cause is that the value is outside the supported range {}..={}.",
+						GTAO_MIN_SAMPLES_PER_RAY,
+						GTAO_MAX_SAMPLES_PER_RAY
+					));
+				}
+				let settings = Self { samples_per_ray, ..self };
+				Ok((settings, ConfigurationValue::Integer(i64::from(samples_per_ray))))
+			}
+			"radial-rays" => {
+				let radial_rays = configuration_u32(value).ok_or_else(|| {
+					"GTAO radial-rays was not set. The most likely cause is that the value is not a whole number."
+				})?;
+				if !(GTAO_MIN_RADIAL_RAYS..=GTAO_MAX_RADIAL_RAYS).contains(&radial_rays) || radial_rays % 2 != 0 {
+					return Err(format!(
+						"GTAO radial-rays was not set. The most likely cause is that the value must be an even number in the range {}..={}.",
+						GTAO_MIN_RADIAL_RAYS,
+						GTAO_MAX_RADIAL_RAYS
+					));
+				}
+				let settings = Self { radial_rays, ..self };
+				Ok((settings, ConfigurationValue::Integer(i64::from(radial_rays))))
+			}
+			_ => {
+				Err("GTAO parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
+			}
+		}
+	}
+
+	fn shader_parameters(self) -> GtaoShaderParameters {
+		GtaoShaderParameters {
+			radius: self.radius,
+			samples_per_ray: self.samples_per_ray,
+			radial_rays: self.radial_rays,
+		}
+	}
+}
+
+fn configuration_float(value: &ConfigurationValue) -> Option<f64> {
+	match value {
+		ConfigurationValue::Integer(value) => Some(*value as f64),
+		ConfigurationValue::Float(value) if value.is_finite() => Some(*value),
+		ConfigurationValue::Text(value) => value.parse().ok().filter(|value: &f64| value.is_finite()),
+		ConfigurationValue::Bool(_) | ConfigurationValue::Float(_) => None,
+	}
+}
+
+fn configuration_u32(value: &ConfigurationValue) -> Option<u32> {
+	match value {
+		ConfigurationValue::Integer(value) => (*value).try_into().ok(),
+		ConfigurationValue::Float(value) if value.is_finite() && value.fract() == 0.0 => (*value as i128).try_into().ok(),
+		ConfigurationValue::Text(value) => value.parse().ok(),
+		ConfigurationValue::Bool(_) | ConfigurationValue::Float(_) => None,
+	}
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct GtaoShaderParameters {
+	radius: f32,
+	samples_per_ray: u32,
+	radial_rays: u32,
+}
 
 /// The `FastGtaoViewData` struct provides compact camera reconstruction constants to the GTAO compute passes.
 #[repr(C)]
@@ -678,6 +801,7 @@ impl PixelMappingPass {
 
 /// The `GtaoPass` struct builds a depth-based ambient occlusion term before material evaluation shades the frame.
 pub struct GtaoPass {
+	settings: GtaoSettings,
 	gtao_descriptor_set: ghi::DescriptorSetHandle,
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
 	blur_descriptor_set_x: ghi::DescriptorSetHandle,
@@ -688,6 +812,7 @@ pub struct GtaoPass {
 	upscale_pipeline: ghi::PipelineHandle,
 	ao_map: ghi::BaseImageHandle,
 	view_data: ghi::DynamicBufferHandle<FastGtaoViewData>,
+	gtao_parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
 	depth_pyramid_images: [ghi::DynamicImageHandle; GTAO_DEPTH_PYRAMID_LEVEL_COUNT],
 	raw_ao_map: ghi::DynamicImageHandle,
 	temp_ao_map: ghi::DynamicImageHandle,
@@ -699,6 +824,7 @@ impl GtaoPass {
 		shader_resources: &ResourceManager,
 		depth: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
+		settings: GtaoSettings,
 	) -> Self {
 		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"));
 		let depth_pyramid_descriptor_set = context.create_descriptor_set(Some("GTAO Depth Pyramid Descriptor Set"));
@@ -707,6 +833,11 @@ impl GtaoPass {
 		let view_data = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("GTAO View Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let gtao_parameters = context.build_dynamic_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("GTAO Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let depth_sampler = context.build_sampler(
@@ -775,6 +906,7 @@ impl GtaoPass {
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::buffer(gtao_descriptor_set, GTAO_VIEW_BINDING.slot(), view_data.into()),
+			ghi::DescriptorWrite::buffer(gtao_descriptor_set, GTAO_PARAMETERS_BINDING.slot(), gtao_parameters.into()),
 			ghi::DescriptorWrite::image(
 				gtao_descriptor_set,
 				GTAO_OUTPUT_BINDING.slot(),
@@ -900,6 +1032,7 @@ impl GtaoPass {
 		));
 
 		Self {
+			settings,
 			gtao_descriptor_set,
 			depth_pyramid_descriptor_set,
 			blur_descriptor_set_x,
@@ -910,10 +1043,15 @@ impl GtaoPass {
 			upscale_pipeline,
 			ao_map,
 			view_data,
+			gtao_parameters,
 			depth_pyramid_images,
 			raw_ao_map,
 			temp_ao_map,
 		}
+	}
+
+	fn set_settings(&mut self, settings: GtaoSettings) {
+		self.settings = settings;
 	}
 
 	fn prepare(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
@@ -927,6 +1065,7 @@ impl GtaoPass {
 		let upscale_pipeline = self.upscale_pipeline;
 		let ao_map = self.ao_map;
 		let view_data = self.view_data;
+		let gtao_parameters = self.gtao_parameters;
 		let depth_pyramid_images = self.depth_pyramid_images;
 		let raw_ao_map = self.raw_ao_map;
 		let temp_ao_map = self.temp_ao_map;
@@ -935,6 +1074,8 @@ impl GtaoPass {
 
 		*frame.get_mut_dynamic_buffer_slice(view_data) = fast_gtao_view_data(sink, gtao_extent);
 		frame.sync_buffer(view_data);
+		*frame.get_mut_dynamic_buffer_slice(gtao_parameters) = self.settings.shader_parameters();
+		frame.sync_buffer(gtao_parameters);
 		frame.resize_image(ao_map, extent);
 		frame.resize_image(raw_ao_map.into(), gtao_extent);
 		frame.resize_image(temp_ao_map.into(), gtao_extent);
@@ -1118,6 +1259,10 @@ pub(crate) struct VisibilityPipelineRenderPass {
 }
 
 impl VisibilityPipelineRenderPass {
+	pub(crate) fn set_gtao_settings(&mut self, settings: GtaoSettings) {
+		self.gtao_pass.set_settings(settings);
+	}
+
 	/// Returns the descriptor set that carries material-evaluation-only resources.
 	pub(super) fn material_evaluation_descriptor_set(&self) -> ghi::DescriptorSetHandle {
 		self.material_evaluation_pass.descriptor_set
@@ -1139,6 +1284,7 @@ impl VisibilityPipelineRenderPass {
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+		gtao_settings: GtaoSettings,
 	) -> Self {
 		let shadow_pass = ShadowPass::new(context, shader_resources, base_descriptor_set, shadow_map);
 		let visibility_pass = VisibilityPass::new(
@@ -1167,7 +1313,7 @@ impl VisibilityPipelineRenderPass {
 		);
 		let pixel_mapping_pass =
 			PixelMappingPass::new(context, shader_resources, base_descriptor_set, visibility_descriptor_set);
-		let gtao_pass = GtaoPass::new(context, shader_resources, depth, ao_map);
+		let gtao_pass = GtaoPass::new(context, shader_resources, depth, ao_map, gtao_settings);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches;
 
@@ -1291,9 +1437,10 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		batched_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent, transparent_visibility_layer, Instance,
-		MeshDispatch,
+		batched_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent, transparent_visibility_layer,
+		GtaoSettings, Instance, MeshDispatch,
 	};
+	use crate::configuration::ConfigurationValue;
 	use crate::rendering::{view::View, Sink};
 
 	#[test]
@@ -1302,6 +1449,32 @@ mod tests {
 
 		assert_eq!(batched_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
 		assert_eq!(batched_shadow_view_indices(MeshDispatch::default()).count(), 0);
+	}
+
+	#[test]
+	fn gtao_runtime_parameters_update_quality_controls_without_partial_state() {
+		let defaults = GtaoSettings::default();
+		let (settings, radius) = defaults
+			.with_parameter("radius", &ConfigurationValue::Text("2.5".to_string()))
+			.expect("radius should parse");
+		let (settings, samples) = settings
+			.with_parameter("samples-per-ray", &ConfigurationValue::Integer(12))
+			.expect("sample count should parse");
+		let (settings, rays) = settings
+			.with_parameter("radial-rays", &ConfigurationValue::Integer(16))
+			.expect("ray count should parse");
+
+		assert_eq!(settings.radius, 2.5);
+		assert_eq!(settings.samples_per_ray, 12);
+		assert_eq!(settings.radial_rays, 16);
+		assert_eq!(radius, ConfigurationValue::Float(2.5));
+		assert_eq!(samples, ConfigurationValue::Integer(12));
+		assert_eq!(rays, ConfigurationValue::Integer(16));
+
+		assert!(settings
+			.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
+			.is_err());
+		assert_eq!(settings.radial_rays, 16);
 	}
 
 	#[test]

@@ -10,6 +10,12 @@ FastGTAOView: struct {
 	depth_unproject_denominator_offset: f32,
 }
 
+GTAOParameters: struct {
+	radius: f32,
+	samples_per_ray: u32,
+	radial_rays: u32,
+}
+
 NormalDelta: struct {
 	value: vec3f,
 	valid: bool,
@@ -28,12 +34,12 @@ SampleAddress: struct {
 }
 
 gtao_view: descriptor<FastGTAOView, 0, read>;
+gtao_parameters: descriptor<GTAOParameters, 1, read>;
 linear_depth_0: descriptor<Texture2D, 1033, read>;
 ao_output: descriptor<StorageImage<r8>, 1034, write>;
 linear_depth_1: descriptor<Texture2D, 1035, read>;
 linear_depth_2: descriptor<Texture2D, 1036, read>;
 
-GTAO_RADIUS: const f32 = 1.0;
 GTAO_BIAS: const f32 = 0.05;
 GTAO_STRENGTH: const f32 = 1.0;
 GTAO_MIN_RADIUS_PIXELS: const f32 = 4.0;
@@ -41,10 +47,12 @@ GTAO_MIN_RADIUS_PIXELS: const f32 = 4.0;
 // 64-pixel full-resolution search bound.
 GTAO_MAX_RADIUS_PIXELS: const f32 = 32.0;
 GTAO_MIN_EFFECTIVE_RADIUS_PIXELS: const f32 = 1.0;
+GTAO_MIN_SAMPLES_PER_RAY: const u32 = 1;
+GTAO_MAX_SAMPLES_PER_RAY: const u32 = 32;
+GTAO_MIN_RADIAL_RAYS: const u32 = 2;
+GTAO_MAX_RADIAL_RAYS: const u32 = 32;
 GTAO_PI: const f32 = 3.14159265359;
-GTAO_SQRT_HALF: const f32 = 0.70710678118;
 GTAO_GOLDEN: const f32 = 0.618033988749;
-GTAO_INV_STEPS: const f32 = 0.166666666667;
 // This threshold tests sin squared between the finite-difference tangents.
 // Unlike a world-space area threshold, it is invariant under projection scale.
 GTAO_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
@@ -345,7 +353,7 @@ reconstruct_normal_cached: fn (
 
 compute_radius_data: fn (linear_depth: f32) -> RadiusData {
 	let pixels_per_unit: f32 = gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
-	let ideal_screen_radius: f32 = GTAO_RADIUS * pixels_per_unit;
+	let ideal_screen_radius: f32 = gtao_parameters.radius * pixels_per_unit;
 	let screen_radius: f32 = clamp(
 		ideal_screen_radius,
 		GTAO_MIN_EFFECTIVE_RADIUS_PIXELS,
@@ -366,7 +374,7 @@ maximum_required_mip: fn (linear_depth: f32) -> u32 {
 
 	let pixels_per_unit: f32 = gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
 	let screen_radius: f32 = clamp(
-		GTAO_RADIUS * pixels_per_unit,
+		gtao_parameters.radius * pixels_per_unit,
 		GTAO_MIN_EFFECTIVE_RADIUS_PIXELS,
 		GTAO_MAX_RADIUS_PIXELS
 	);
@@ -572,16 +580,32 @@ main: fn () -> void {
 		return;
 	}
 	let radius: RadiusData = compute_radius_data(center_linear_depth);
+	let samples_per_ray: u32 = gtao_parameters.samples_per_ray;
+	if (samples_per_ray < GTAO_MIN_SAMPLES_PER_RAY) {
+		samples_per_ray = GTAO_MIN_SAMPLES_PER_RAY;
+	}
+	if (samples_per_ray > GTAO_MAX_SAMPLES_PER_RAY) {
+		samples_per_ray = GTAO_MAX_SAMPLES_PER_RAY;
+	}
+	let radial_rays: u32 = gtao_parameters.radial_rays;
+	if (radial_rays < GTAO_MIN_RADIAL_RAYS) {
+		radial_rays = GTAO_MIN_RADIAL_RAYS;
+	}
+	if (radial_rays > GTAO_MAX_RADIAL_RAYS) {
+		radial_rays = GTAO_MAX_RADIAL_RAYS;
+	}
+	let ray_pairs: u32 = radial_rays / 2;
 	let rotation: f32 = interleaved_gradient_noise(pixel) * GTAO_PI;
 	let rotation_trigonometry: vec2f = sincos(rotation);
 	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);
+	let axis_rotation: vec2f = sincos(GTAO_PI / f32(ray_pairs));
 	let total_occlusion: f32 = 0.0;
 
 	// Keep this loop rolled. Unrolling the complete sample set can raise the
 	// backend's register-allocation tier and reduce occupancy.
-	for (let axis_index: u32 = 0; axis_index < 4; axis_index = axis_index + 1) {
+	for (let axis_index: u32 = 0; axis_index < ray_pairs; axis_index = axis_index + 1) {
 		let positive_index: u32 = axis_index;
-		let negative_index: u32 = axis_index + 4;
+		let negative_index: u32 = axis_index + ray_pairs;
 		let positive_noise: f32 = interleaved_gradient_noise(
 			pixel + vec2u(positive_index * 7, positive_index * 13)
 		);
@@ -593,14 +617,14 @@ main: fn () -> void {
 		let previous_positive_key: u32 = INVALID_SAMPLE_KEY;
 		let previous_negative_key: u32 = INVALID_SAMPLE_KEY;
 
-		for (let step: u32 = 1; step <= 6; step = step + 1) {
+		for (let step: u32 = 1; step <= samples_per_ray; step = step + 1) {
 			let step_f: f32 = f32(step);
 			let positive_step_noise: f32 = fract(positive_noise + step_f * GTAO_GOLDEN);
 			let negative_step_noise: f32 = fract(negative_noise + step_f * GTAO_GOLDEN);
 			let positive_ratio: f32 =
-				(step_f - 0.5 + positive_step_noise * 0.5) * GTAO_INV_STEPS;
+				(step_f - 0.5 + positive_step_noise * 0.5) / f32(samples_per_ray);
 			let negative_ratio: f32 =
-				(step_f - 0.5 + negative_step_noise * 0.5) * GTAO_INV_STEPS;
+				(step_f - 0.5 + negative_step_noise * 0.5) / f32(samples_per_ray);
 			let positive_sample: SampleAddress = make_sample_address(
 				pixel,
 				extent,
@@ -667,13 +691,13 @@ main: fn () -> void {
 
 		total_occlusion = total_occlusion + positive_maximum + negative_maximum;
 		axis_direction = vec2f(
-			(axis_direction.x - axis_direction.y) * GTAO_SQRT_HALF,
-			(axis_direction.x + axis_direction.y) * GTAO_SQRT_HALF
+			axis_direction.x * axis_rotation.y - axis_direction.y * axis_rotation.x,
+			axis_direction.x * axis_rotation.x + axis_direction.y * axis_rotation.y
 		);
 	}
 
 	let average_occlusion: f32 = clamp(
-		total_occlusion * 0.125 * GTAO_STRENGTH,
+		total_occlusion / f32(radial_rays) * GTAO_STRENGTH,
 		0.0,
 		1.0
 	);

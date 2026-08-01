@@ -197,6 +197,7 @@ mod tests {
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
 	const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const GTAO_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
 	const MESH_DATA_SLOT: ResourceSlot = ResourceSlot::new(1);
 	const MATERIAL_COUNT_SLOT: ResourceSlot = ResourceSlot::new(1033);
 	const MATERIAL_OFFSET_SLOT: ResourceSlot = ResourceSlot::new(1034);
@@ -371,6 +372,7 @@ mod tests {
 			gtao_program(),
 			&[
 				(0, "gtao_view"),
+				(1, "gtao_parameters"),
 				(1033, "linear_depth_0"),
 				(1034, "ao_output"),
 				(1035, "linear_depth_1"),
@@ -1095,6 +1097,21 @@ mod tests {
 		view
 	}
 
+	/// Creates the default runtime controls used by production GTAO VM fixtures.
+	fn gtao_parameters_data(program: &ExecutableProgram) -> besl::vm::Buffer {
+		let mut parameters = buffer(program, GTAO_PARAMETERS_SLOT);
+		for (member, value) in [
+			("radius", Value::F32(1.0)),
+			("samples_per_ray", Value::U32(4)),
+			("radial_rays", Value::U32(6)),
+		] {
+			parameters.write(member, value).expect(
+				"Failed to initialize GTAO runtime parameters. The most likely cause is a changed production parameter layout.",
+			);
+		}
+		parameters
+	}
+
 	/// Reconstructs the positive fixture distance encoded by one reversed device depth.
 	fn gtao_fixture_linear_depth(depth: f32) -> f32 {
 		if depth == 0.0 {
@@ -1166,6 +1183,7 @@ mod tests {
 		let (linear_depth_1, width_1, height_1) = reduce_nearest_nonzero_depth(&linear_depth, EXTENT, EXTENT);
 		let (linear_depth_2, width_2, height_2) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
 		let mut view = gtao_view_data(program, EXTENT, EXTENT);
+		let mut parameters = gtao_parameters_data(program);
 		let mut depth = texture_2d(EXTENT, EXTENT, &linear_depth);
 		let mut pyramid_1 = texture_2d(width_1, height_1, &linear_depth_1);
 		let mut pyramid_2 = texture_2d(width_2, height_2, &linear_depth_2);
@@ -1188,6 +1206,7 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
@@ -1474,7 +1493,31 @@ mod tests {
 		depth_texels: &[[f32; 4]],
 		coordinate: [u32; 2],
 	) -> [f32; 4] {
+		run_gtao_fixture_with_parameters(program, width, height, depth_texels, coordinate, 1.0, 6, 8)
+	}
+
+	/// Executes GTAO with explicit runtime controls so parameter reads are covered by the VM fixture.
+	fn run_gtao_fixture_with_parameters(
+		program: &ExecutableProgram,
+		width: u32,
+		height: u32,
+		depth_texels: &[[f32; 4]],
+		coordinate: [u32; 2],
+		radius: f32,
+		samples_per_ray: u32,
+		radial_rays: u32,
+	) -> [f32; 4] {
 		let mut view = gtao_view_data(program, width, height);
+		let mut parameters = gtao_parameters_data(program);
+		parameters
+			.write("radius", Value::F32(radius))
+			.expect("GTAO fixture radius should match the production parameter type.");
+		parameters
+			.write("samples_per_ray", Value::U32(samples_per_ray))
+			.expect("GTAO fixture samples should match the production parameter type.");
+		parameters
+			.write("radial_rays", Value::U32(radial_rays))
+			.expect("GTAO fixture rays should match the production parameter type.");
 		let linear_depth_texels = depth_texels
 			.iter()
 			.map(|texel| [gtao_fixture_linear_depth(texel[0]), 0.0, 0.0, 1.0])
@@ -1511,6 +1554,7 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
@@ -1530,6 +1574,7 @@ mod tests {
 		let linear_depth_texels = vec![[gtao_fixture_linear_depth(0.35), 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];
 
 		let mut view = gtao_view_data(program, EXTENT, EXTENT);
+		let mut parameters = gtao_parameters_data(program);
 		let mut depth = texture_2d(EXTENT, EXTENT, &linear_depth_texels);
 		let mut pyramid_1 = texture_2d(65, 65, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 65 * 65]);
 		let mut pyramid_2 = texture_2d(33, 33, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 33 * 33]);
@@ -1548,6 +1593,7 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
@@ -1639,10 +1685,13 @@ mod tests {
 
 		// A recessed center surrounded by nearer depth exercises reconstruction,
 		// normal estimation, and the adaptive bounded AO integral.
-		let mut foreground = [[0.75, 0.0, 0.0, 1.0]; 25];
-		foreground[12] = [0.35, 0.0, 0.0, 1.0];
-		let foreground = run_gtao_fixture(&program, 5, 5, &foreground, [2, 2]);
+		let mut foreground_depth = [[0.75, 0.0, 0.0, 1.0]; 25];
+		foreground_depth[12] = [0.35, 0.0, 0.0, 1.0];
+		let foreground = run_gtao_fixture(&program, 5, 5, &foreground_depth, [2, 2]);
 		assert_rgba_close(foreground, [0.8315444, 0.8315444, 0.8315444, 1.0], 0.00001);
+
+		let disabled = run_gtao_fixture_with_parameters(&program, 5, 5, &foreground_depth, [2, 2], 0.0, 1, 2);
+		assert_rgba_close(disabled, [1.0, 1.0, 1.0, 1.0], 0.00001);
 	}
 
 	/// Verifies flat-floor normals remain valid when their world-space finite differences become very small.

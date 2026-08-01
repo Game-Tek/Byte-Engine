@@ -479,6 +479,14 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return normalize(vec3f(transformed.x, transformed.y, z));
 	}
 
+	decode_material_normal: fn (sample: vec4f) -> vec3f {
+		return unit_vector_from_xy(vec2f(sample.x, sample.y));
+	}
+
+	scale_normal_xy: fn (normal: vec3f, scale: f32) -> vec3f {
+		return vec3f(normal.x * scale, normal.y * scale, normal.z);
+	}
+
 	get_debug_color: fn (i: u32) -> vec4f {
 		let palette_index: u32 = i % 16;
 		if (palette_index == 0) { return vec4f(0.16863, 0.40392, 0.77647, 1.0); }
@@ -893,6 +901,8 @@ mod tests {
 				results.unit_vector = unit_vector_from_xy(vec2f(0.5, 0.5));
 				results.unit_vector_edge = unit_vector_from_xy(vec2f(1.0, 0.5));
 				results.unit_vector_outside = unit_vector_from_xy(vec2f(1.0, 1.0));
+				results.decoded_normal = decode_material_normal(vec4f(1.0, 0.5, 0.0, 1.0));
+				results.scaled_unit_vector = scale_normal_xy(unit_vector_from_xy(vec2f(1.0, 0.5)), 0.5);
 			}
 		"#;
 		let members = vec![
@@ -908,6 +918,8 @@ mod tests {
 			besl::ParserNode::member("unit_vector", "vec3f"),
 			besl::ParserNode::member("unit_vector_edge", "vec3f"),
 			besl::ParserNode::member("unit_vector_outside", "vec3f"),
+			besl::ParserNode::member("decoded_normal", "vec3f"),
+			besl::ParserNode::member("scaled_unit_vector", "vec3f"),
 		];
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
 		fixture.run();
@@ -929,6 +941,8 @@ mod tests {
 			[std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0],
 			0.00001,
 		);
+		assert_floats_close(read_vec3f(&results, "decoded_normal"), [1.0, 0.0, 0.0], 0.00001);
+		assert_floats_close(read_vec3f(&results, "scaled_unit_vector"), [0.5, 0.0, 0.0], 0.00001);
 	}
 
 	/// Verifies direct, fetched, sampled, and neighborhood depth reconstruction through VM textures.

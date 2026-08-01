@@ -445,7 +445,6 @@ impl VisibilityShaderScope {
 				"vec3f",
 			)
 		};
-
 		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
 		let sample_shadow_tap = Node::function(
 			"sample_shadow_tap",
@@ -1656,7 +1655,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 mod tests {
 	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 	use resource_management::pbr::{
-		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfValue,
+		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
+		BrdfValue,
 	};
 	use resource_management::shader::besl::backends::{
 		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
@@ -1999,6 +1999,104 @@ mod tests {
 		assert!(
 			lit_binding.read && lit_binding.write,
 			"Material evaluation lit binding is not read-write. The most likely cause is that transparent source-over access drifted."
+		);
+	}
+
+	/// Verifies native material evaluation emits one bindless sample for a texture shared by several BRDF roles.
+	#[test]
+	fn generated_material_evaluation_reuses_shared_texture_sample() {
+		let mut builder = BrdfMaterialBuilder::new();
+		let texture = builder.texture(BrdfTexture {
+			image_index: 3,
+			texcoord_channel: 0,
+		});
+		let metallic = builder.extract_channel(texture, resource_management::pbr::BrdfChannel::Blue);
+		let roughness = builder.extract_channel(texture, resource_management::pbr::BrdfChannel::Green);
+		let normal = builder.add(BrdfNode::NormalMap {
+			source: texture,
+			scale: 0.5,
+		});
+		let occlusion = builder.add(BrdfNode::Occlusion {
+			source: texture,
+			strength: 0.75,
+		});
+		let emission = builder.add(BrdfNode::Emission { color: texture });
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color: texture,
+			metallic,
+			roughness,
+			normal: Some(normal),
+			occlusion: Some(occlusion),
+			emission: Some(emission),
+		}));
+		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material_program = generate_textured_brdf_program(&material).expect(
+			"Failed to generate the shared-texture material program. The most likely cause is an invalid BRDF material graph.",
+		);
+		let material_metadata = material_metadata! {
+			"variables": [{
+				"name": "gltf_texture_3",
+				"data_type": "Texture2D"
+			}]
+		};
+
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(material_program, &material_metadata);
+		let program = besl::lex(shader).expect(
+			"Failed to link the shared-texture material evaluation pass. The most likely cause is a drifted visibility shader contract.",
+		);
+		let main = program.get_main().expect(
+			"Missing shared-texture material entry point. The most likely cause is that material generation stopped producing an entry point.",
+		);
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
+		let glsl = GLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect(
+				"Failed to emit the shared-texture GLSL material pass. The most likely cause is an invalid visibility shader contract.",
+			);
+		let hlsl = HLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect(
+				"Failed to emit the shared-texture HLSL material pass. The most likely cause is an invalid visibility shader contract.",
+			);
+		let msl = MSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect(
+				"Failed to emit the shared-texture MSL material pass. The most likely cause is an invalid visibility shader contract.",
+			);
+
+		assert_eq!(
+			glsl.match_indices("texture(textures[nonuniformEXT(material.textures[").count(),
+			1,
+			"The generated GLSL material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
+		);
+		assert_eq!(
+			hlsl.match_indices("textures[material.textures[").count(),
+			1,
+			"The generated HLSL material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
+		);
+		assert_eq!(
+			msl.match_indices("resources.textures[material.textures[").count(),
+			1,
+			"The generated material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
+		);
+		assert!(
+			msl.contains("float4 material_texture_sample_0"),
+			"The generated material did not retain its reusable texel local. The most likely cause is that texture-sample lowering stopped emitting the cache binding."
+		);
+		assert_eq!(
+			msl.match_indices("decode_material_normal(material_texture_sample_0)").count(),
+			1,
+			"The scaled normal map decoded the shared texel more than once. The most likely cause is that normal scaling bypassed the reusable helper."
+		);
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&msl,
+			"visibility-shared-material-texture-sample",
+		)
+		.expect(
+			"Failed to compile the shared-texture MSL material pass. The most likely cause is invalid generated Metal source.",
 		);
 	}
 

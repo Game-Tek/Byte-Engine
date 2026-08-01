@@ -252,10 +252,13 @@ impl<'a> Node<'a> {
 		Self::operator("=", left, right)
 	}
 
-	pub fn variable_declaration(name: &'a str, r#type: &'a str) -> Node<'a> {
+	/// Builds a typed local declaration.
+	///
+	/// Generated programs may own their local names, while parsed programs continue to borrow source text.
+	pub fn variable_declaration(name: impl Into<Cow<'a, str>>, r#type: &'a str) -> Node<'a> {
 		Node {
 			node: Nodes::Expression(Expressions::VariableDeclaration {
-				name,
+				name: name.into(),
 				r#type: TypeName::Named(r#type),
 			}),
 		}
@@ -281,7 +284,7 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn let_assignment(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
+	pub fn let_assignment(name: impl Into<Cow<'a, str>>, r#type: &'a str, value: Node<'a>) -> Node<'a> {
 		Self::assignment(Self::variable_declaration(name, r#type), value)
 	}
 
@@ -631,7 +634,7 @@ pub enum Expressions<'a> {
 		right: Box<Node<'a>>,
 	},
 	VariableDeclaration {
-		name: &'a str,
+		name: Cow<'a, str>,
 		r#type: TypeName<'a>,
 	},
 	RawCode {
@@ -1669,7 +1672,7 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			},
 			Atoms::VariableDeclaration { name, r#type } => Node {
 				node: Nodes::Expression(Expressions::VariableDeclaration {
-					name,
+					name: (*name).into(),
 					r#type: r#type.clone(),
 				}),
 			},

@@ -188,15 +188,15 @@ impl VisibilityShaderScope {
 				Node::member("direction", "vec4f"),
 				Node::member("cone_cosines", "vec2f"),
 				Node::member("type", "u32"),
-				Node::member("cascades", "u32[8]"),
-				Node::member("_padding", "u32"),
+				Node::member("shadow_views", "u32[8]"),
+				Node::member("shadow_layer", "u32"),
 			],
 		);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", material_texture_array_type())]);
 
 		let views_binding = Node::binding(
 			"views",
-			Node::buffer("ViewsBuffer", vec![Node::member("views", "View[8]")]),
+			Node::buffer("ViewsBuffer", vec![Node::member("views", "View[9]")]),
 			0,
 			true,
 			false,
@@ -372,6 +372,7 @@ impl VisibilityShaderScope {
 		);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
+		let cone_shadow_map = Node::binding("cone_shadow_map", Node::combined_array_image_sampler(), 1064, true, false);
 		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
 		let environment_specular = Node::binding_array(
 			"environment_specular",
@@ -450,30 +451,19 @@ impl VisibilityShaderScope {
 			"sample_shadow_tap",
 			vec![
 				Node::parameter("shadow_map", "ArrayTexture2D"),
-				Node::parameter("light", "Light"),
 				Node::parameter("world_space_position", "vec3f"),
-				Node::parameter("view_space_position", "vec3f"),
 				Node::parameter("surface_normal", "vec3f"),
 				Node::parameter("offset", "vec2f"),
+				Node::parameter("shadow_view_index", "u32"),
+				Node::parameter("shadow_layer", "u32"),
+				Node::parameter("bias_scale", "f32"),
+				Node::parameter("surface_to_light_direction", "vec3f"),
 			],
 			"f32",
 			vec![Node::raw_code(
 				Some(
 					"
-			float depth_value = abs(view_space_position.z);
-
-			if (light.cascades[0] == 0u) { return 1.0; }
-
-			uint cascade_index = 3;
-
-			for (uint i = 0; i < 4; ++i) {
-				if (depth_value < views.views[light.cascades[i]].far) {
-					cascade_index = i;
-					break;
-				}
-			}
-
-			View view = views.views[light.cascades[cascade_index]];
+			View view = views.views[shadow_view_index];
 
 			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position, 1.0);
 			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
@@ -483,12 +473,10 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
-			// Slope-scaled depth bias tuning per cascade.
-			float cascade_bias_scale = float(cascade_index + 1u);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(surface_to_light_direction)), 0.0);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * cascade_bias_scale;
+			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
+			float constant_bias = 0.00002f * bias_scale;
 			float cascade_range_bias = cascade_depth_range * 0.0000025f;
 			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
 			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
@@ -498,27 +486,14 @@ impl VisibilityShaderScope {
 
 			ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
 			ivec2 shadow_texel = ivec2(clamp(shadow_uv * vec2(shadow_map_extent), vec2(0.0), vec2(shadow_map_extent - 1)));
-			float closest_depth = texelFetch(shadow_map, ivec3(shadow_texel, int(cascade_index)), 0).r;
+			float closest_depth = texelFetch(shadow_map, ivec3(shadow_texel, int(shadow_layer)), 0).r;
 
 			return surface_depth < closest_depth ? 0.0 : 1.0"
 						.into(),
 				),
 				Some(
 					"
-			float depth_value = abs(view_space_position.z);
-
-			if (light.cascades[0] == 0u) { return 1.0; }
-
-			uint cascade_index = 3;
-
-			for (uint i = 0; i < 4; ++i) {
-				if (depth_value < views[light.cascades[i]].far) {
-					cascade_index = i;
-					break;
-				}
-			}
-
-			View view = views[light.cascades[cascade_index]];
+			View view = views[shadow_view_index];
 
 			float4 surface_light_clip_position = mul(view.view_projection, float4(world_space_position, 1.0));
 			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
@@ -528,11 +503,10 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
-			float cascade_bias_scale = float(cascade_index + 1u);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(surface_to_light_direction)), 0.0);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * cascade_bias_scale;
+			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
+			float constant_bias = 0.00002f * bias_scale;
 			float cascade_range_bias = cascade_depth_range * 0.0000025f;
 			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
 			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
@@ -544,27 +518,14 @@ impl VisibilityShaderScope {
 			shadow_map.GetDimensions(shadow_width, shadow_height, shadow_layers);
 			int2 shadow_map_extent = int2(shadow_width, shadow_height);
 			int2 shadow_texel = int2(clamp(shadow_uv * float2(shadow_map_extent), float2(0.0, 0.0), float2(shadow_map_extent - int2(1, 1))));
-			float closest_depth = shadow_map.Load(int4(shadow_texel, int(cascade_index), 0)).x;
+			float closest_depth = shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x;
 
 			return surface_depth < closest_depth ? 0.0 : 1.0"
 						.into(),
 				),
 				Some(
 					"
-			float depth_value = abs(view_space_position.z);
-
-			if (light.cascades[0] == 0u) { return 1.0; }
-
-			uint cascade_index = 3;
-
-			for (uint i = 0; i < 4; ++i) {
-				if (depth_value < resources.views->views[light.cascades[i]].far) {
-					cascade_index = i;
-					break;
-				}
-			}
-
-			View view = resources.views->views[light.cascades[cascade_index]];
+			View view = resources.views->views[shadow_view_index];
 
 			float4 surface_light_clip_position = view.view_projection * float4(world_space_position, 1.0);
 			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
@@ -574,11 +535,10 @@ impl VisibilityShaderScope {
 				0.5f - surface_light_ndc_position.y * 0.5f
 			) + offset;
 
-			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position.xyz)), 0.0);
-			float cascade_bias_scale = float(cascade_index + 1u);
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(surface_to_light_direction)), 0.0);
 			float cascade_depth_range = max(view.far - view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * cascade_bias_scale;
+			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
+			float constant_bias = 0.00002f * bias_scale;
 			float cascade_range_bias = cascade_depth_range * 0.0000025f;
 			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
 			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
@@ -588,7 +548,7 @@ impl VisibilityShaderScope {
 
 			int2 shadow_map_extent = int2(shadow_map.get_width(), shadow_map.get_height());
 			int2 shadow_texel = int2(clamp(shadow_uv * float2(shadow_map_extent), float2(0.0), float2(shadow_map_extent - 1)));
-			float closest_depth = shadow_map.read(uint2(shadow_texel), cascade_index).x;
+			float closest_depth = shadow_map.read(uint2(shadow_texel), shadow_layer).x;
 
 			return surface_depth < closest_depth ? 0.0 : 1.0"
 						.into(),
@@ -609,7 +569,23 @@ impl VisibilityShaderScope {
 			],
 			"f32",
 			vec![Node::raw_code(
-				Some("ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
+				Some("if (light.shadow_views[0] == 0u) { return 1.0; }
+			uint shadow_view_index = light.shadow_views[0];
+			uint shadow_layer = light.shadow_layer;
+			float bias_scale = 1.0f;
+			vec3 surface_to_light_direction = light.position.xyz - world_space_position;
+			if (light.type == 68) {
+				float depth_value = abs(view_space_position.z);
+				uint cascade_index = 3;
+				for (uint i = 0; i < 4; ++i) {
+					if (depth_value < views.views[light.shadow_views[i]].far) { cascade_index = i; break; }
+				}
+				shadow_view_index = light.shadow_views[cascade_index];
+				shadow_layer = cascade_index;
+				bias_scale = float(cascade_index + 1u);
+				surface_to_light_direction = -light.position.xyz;
+			}
+			ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
 			vec2 texel_size = 1.0f / vec2(shadow_map_extent);
 			float occlusion = 0.0f;
 
@@ -634,16 +610,34 @@ impl VisibilityShaderScope {
 				vec2 pcf_offset = (poisson_rotation * poisson_disk[i]) * texel_size * 1.5f;
 				occlusion += sample_shadow_tap(
 					shadow_map,
-					light,
 					world_space_position,
-					view_space_position,
 					surface_normal,
-					pcf_offset
+					pcf_offset,
+					shadow_view_index,
+					shadow_layer,
+					bias_scale,
+					surface_to_light_direction
 				);
 			}
 
 			return occlusion / 8.0f;".into()),
-				Some("uint shadow_width; uint shadow_height; uint shadow_layers;
+				Some("if (light.shadow_views[0] == 0u) { return 1.0; }
+			uint shadow_view_index = light.shadow_views[0];
+			uint shadow_layer = light.shadow_layer;
+			float bias_scale = 1.0f;
+			float3 surface_to_light_direction = light.position.xyz - world_space_position;
+			if (light.type == 68) {
+				float depth_value = abs(view_space_position.z);
+				uint cascade_index = 3;
+				for (uint i = 0; i < 4; ++i) {
+					if (depth_value < views[light.shadow_views[i]].far) { cascade_index = i; break; }
+				}
+				shadow_view_index = light.shadow_views[cascade_index];
+				shadow_layer = cascade_index;
+				bias_scale = float(cascade_index + 1u);
+				surface_to_light_direction = -light.position.xyz;
+			}
+			uint shadow_width; uint shadow_height; uint shadow_layers;
 			shadow_map.GetDimensions(shadow_width, shadow_height, shadow_layers);
 			int2 shadow_map_extent = int2(shadow_width, shadow_height);
 			float2 texel_size = 1.0f / float2(shadow_map_extent);
@@ -670,17 +664,35 @@ impl VisibilityShaderScope {
 				float2 pcf_offset = mul(poisson_rotation, poisson_disk[i]) * texel_size * 1.5f;
 				occlusion += sample_shadow_tap(
 					shadow_map,
-					light,
 					world_space_position,
-					view_space_position,
 					surface_normal,
-					pcf_offset
+					pcf_offset,
+					shadow_view_index,
+					shadow_layer,
+					bias_scale,
+					surface_to_light_direction
 				);
 			}
 
 			return occlusion / 8.0f;".into()),
 				Some(
-					"int2 shadow_map_extent = int2(shadow_map.get_width(), shadow_map.get_height());
+					"if (light.shadow_views[0] == 0u) { return 1.0; }
+			uint shadow_view_index = light.shadow_views[0];
+			uint shadow_layer = light.shadow_layer;
+			float bias_scale = 1.0f;
+			float3 surface_to_light_direction = light.position.xyz - world_space_position;
+			if (light.type == 68) {
+				float depth_value = abs(view_space_position.z);
+				uint cascade_index = 3;
+				for (uint i = 0; i < 4; ++i) {
+					if (depth_value < resources.views->views[light.shadow_views[i]].far) { cascade_index = i; break; }
+				}
+				shadow_view_index = light.shadow_views[cascade_index];
+				shadow_layer = cascade_index;
+				bias_scale = float(cascade_index + 1u);
+				surface_to_light_direction = -light.position.xyz;
+			}
+			int2 shadow_map_extent = int2(shadow_map.get_width(), shadow_map.get_height());
 			float2 texel_size = 1.0f / float2(shadow_map_extent);
 			float occlusion = 0.0f;
 
@@ -705,11 +717,13 @@ impl VisibilityShaderScope {
 			float2 pcf_offset = (poisson_disk[i] * poisson_rotation) * texel_size * 1.5f;
 				occlusion += sample_shadow_tap(
 					shadow_map,
-					light,
 					world_space_position,
-					view_space_position,
 					surface_normal,
 					pcf_offset,
+					shadow_view_index,
+					shadow_layer,
+					bias_scale,
+					surface_to_light_direction,
 					gid,
 					push_constant,
 					resources
@@ -719,86 +733,11 @@ impl VisibilityShaderScope {
 			return occlusion / 8.0f;"
 						.into(),
 				),
-				&["sample_shadow_tap"],
+				&["sample_shadow_tap", "views"],
 				&[],
 			)],
 		);
 
-		let sample_analytical_reflection = Node::function(
-			"sample_analytical_reflection",
-			vec![Node::parameter("direction", "vec3f"), Node::parameter("roughness", "f32")],
-			"vec3f",
-			vec![Node::raw_code(
-				Some(
-					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return vec3(0.04); }
-
-			vec3 dir = direction / direction_length;
-			float sky_factor = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-			vec3 ground_color = vec3(0.025, 0.022, 0.02);
-			vec3 horizon_color = vec3(0.38, 0.42, 0.46);
-			vec3 zenith_color = vec3(0.58, 0.68, 0.9);
-			vec3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
-			vec3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
-
-			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
-			vec3 sun_direction = normalize(vec3(0.35, 0.85, 0.38));
-			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
-			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
-			vec3 sun_color = vec3(1.0, 0.88, 0.62) * sun_lobe * mix(3.0, 0.4, clamp(roughness, 0.0, 1.0));
-
-			return environment_color + sun_color;"
-						.into(),
-				),
-				Some(
-					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return float3(0.04, 0.04, 0.04); }
-
-			float3 dir = direction / direction_length;
-			float sky_factor = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-			float3 ground_color = float3(0.025, 0.022, 0.02);
-			float3 horizon_color = float3(0.38, 0.42, 0.46);
-			float3 zenith_color = float3(0.58, 0.68, 0.9);
-			float3 sky_color = lerp(horizon_color, zenith_color, sky_factor * sky_factor);
-			float3 environment_color = lerp(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
-
-			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
-			float3 sun_direction = normalize(float3(0.35, 0.85, 0.38));
-			float sun_power = lerp(192.0, 8.0, clamp(roughness, 0.0, 1.0));
-			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
-			float3 sun_color = float3(1.0, 0.88, 0.62) * sun_lobe * lerp(3.0, 0.4, clamp(roughness, 0.0, 1.0));
-
-			return environment_color + sun_color;"
-						.into(),
-				),
-				Some(
-					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return float3(0.04); }
-
-			float3 dir = direction / direction_length;
-			float sky_factor = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-			float3 ground_color = float3(0.025, 0.022, 0.02);
-			float3 horizon_color = float3(0.38, 0.42, 0.46);
-			float3 zenith_color = float3(0.58, 0.68, 0.9);
-			float3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
-			float3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
-
-			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
-			float3 sun_direction = normalize(float3(0.35, 0.85, 0.38));
-			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
-			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
-			float3 sun_color = float3(1.0, 0.88, 0.62) * sun_lobe * mix(3.0, 0.4, clamp(roughness, 0.0, 1.0));
-
-			return environment_color + sun_color;"
-						.into(),
-				),
-				&[],
-				&[],
-			)],
-		);
 		let sample_environment_irradiance = Node::function(
 			"sample_environment_irradiance",
 			vec![Node::parameter("direction", "vec3f")],
@@ -806,10 +745,7 @@ impl VisibilityShaderScope {
 			vec![Node::raw_code(
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
-
-			vec3 dir = direction / direction_length;
+			vec3 dir = normalize(direction);
 			vec2 environment_uv = vec2(
 				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -817,16 +753,12 @@ impl VisibilityShaderScope {
 			float environment_half_texel = 0.5 / float(textureSize(environment_irradiance, 0).y);
 			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
 			vec4 environment_sample = textureLod(environment_irradiance, environment_uv, 0.0);
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
 			return environment_sample.rgb;"
 						.into(),
 				),
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
-
-			float3 dir = direction / direction_length;
+			float3 dir = normalize(direction);
 			float2 environment_uv = float2(
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -837,16 +769,12 @@ impl VisibilityShaderScope {
 			float environment_half_texel = 0.5 / float(environment_height);
 			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
 			float4 environment_sample = environment_irradiance.SampleLevel(environment_irradiance_sampler, environment_uv, 0.0);
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
 			return environment_sample.rgb;"
 						.into(),
 				),
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
-
-			float3 dir = direction / direction_length;
+			float3 dir = normalize(direction);
 			float2 environment_uv = float2(
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -854,11 +782,10 @@ impl VisibilityShaderScope {
 			float environment_half_texel = 0.5 / float(resources.environment_irradiance.get_height());
 			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
 			float4 environment_sample = resources.environment_irradiance.sample(resources.environment_irradiance_sampler, environment_uv, level(0.0));
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
 			return environment_sample.rgb;"
 						.into(),
 				),
-				&["environment_irradiance", "sample_analytical_reflection"],
+				&["environment_irradiance"],
 				&[],
 			)],
 		);
@@ -869,10 +796,7 @@ impl VisibilityShaderScope {
 			vec![Node::raw_code(
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			vec3 dir = direction / direction_length;
+			vec3 dir = normalize(direction);
 			vec2 environment_uv = vec2(
 				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -886,16 +810,12 @@ impl VisibilityShaderScope {
 			vec2 upper_uv = vec2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
 			vec4 lower_sample = textureLod(environment_specular[nonuniformEXT(lower_level)], lower_uv, 0.0);
 			vec4 upper_sample = textureLod(environment_specular[nonuniformEXT(upper_level)], upper_uv, 0.0);
-			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
 			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
 						.into(),
 				),
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			float3 dir = direction / direction_length;
+			float3 dir = normalize(direction);
 			float2 environment_uv = float2(
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -917,16 +837,12 @@ impl VisibilityShaderScope {
 			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
 			float4 lower_sample = environment_specular[lower_index].SampleLevel(environment_specular_sampler, lower_uv, 0.0);
 			float4 upper_sample = environment_specular[upper_index].SampleLevel(environment_specular_sampler, upper_uv, 0.0);
-			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
 			return lerp(lower_sample.rgb, upper_sample.rgb, frac(specular_level));"
 						.into(),
 				),
 				Some(
 					"
-			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			float3 dir = direction / direction_length;
+			float3 dir = normalize(direction);
 			float2 environment_uv = float2(
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
@@ -940,11 +856,10 @@ impl VisibilityShaderScope {
 			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
 			float4 lower_sample = resources.environment_specular[lower_level].sample(resources.environment_specular_sampler[lower_level], lower_uv, level(0.0));
 			float4 upper_sample = resources.environment_specular[upper_level].sample(resources.environment_specular_sampler[upper_level], upper_uv, level(0.0));
-			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
 			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
 						.into(),
 				),
-				&["environment_specular", "sample_analytical_reflection"],
+				&["environment_specular"],
 				&[],
 			)],
 		);
@@ -985,12 +900,12 @@ impl VisibilityShaderScope {
 				set2_binding5,
 				set2_binding10,
 				set2_binding11,
+				cone_shadow_map,
 				environment_irradiance,
 				environment_specular,
 				push_constant,
 				sample_function,
 				sample_normal_function,
-				sample_analytical_reflection,
 				sample_environment_irradiance,
 				sample_environment_specular,
 			],
@@ -1414,7 +1329,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
 					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
+					float4 view_space_surface_position = view.view * float4(world_space_vertex_position, 1.0);
+					occlusion_factor = sample_shadow(resources.cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, resources);
+					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
 
@@ -1524,7 +1443,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
 					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
+					vec4 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
+					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal);
+					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
 
@@ -1634,7 +1557,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
 					float cone_cosine = dot(normalize(light.direction.xyz), -L);
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
+					float4 view_space_surface_position = mul(view.view, float4(world_space_vertex_position, 1.0));
+					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal);
+					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
 
@@ -1751,6 +1678,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				&[
 					"lighting_data",
 					"lit_map",
+					"cone_shadow_map",
 					"push_constant",
 					"source_over",
 					"sample_shadow",
@@ -1923,7 +1851,7 @@ mod tests {
 		besl::lex(shader).expect("expected test value");
 	}
 
-	/// Verifies material evaluation with baked environment IBL produces valid BESL.
+	/// Verifies material evaluation samples the bound environment without a procedural fallback.
 	#[test]
 	fn material_evaluation_with_environment_ibl_produces_valid_besl() {
 		let material = material_metadata! {
@@ -1932,8 +1860,14 @@ mod tests {
 		let shader_node =
 			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-		let shader = shader_generator.transform(shader_node, &material);
-		besl::lex(shader).expect("expected test value");
+		let shader = besl::lex(shader_generator.transform(shader_node, &material)).expect("expected test value");
+		let main = shader.get_main().expect("expected material evaluation main");
+		let source = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("expected valid Metal material evaluation source");
+		assert!(!source.contains("sample_analytical_reflection"));
+		assert!(!source.contains("environment_sample.a"));
+		assert!(!source.contains("lower_sample.a"));
 	}
 
 	#[test]
@@ -1965,7 +1899,8 @@ mod tests {
 			assert!(source.contains("cone_attenuation"));
 			assert!(source.contains("light.type == 1"));
 			assert!(source.contains("_light_count_padding"));
-			assert!(source.contains("_padding"));
+			assert!(source.contains("shadow_layer"));
+			assert!(source.contains("cone_shadow_map"));
 		}
 		assert!(glsl.contains("vec4 position"));
 		assert!(glsl.contains("uint32_t type"));
@@ -2102,6 +2037,7 @@ mod tests {
 			(1053, 1),
 			(1054, 1),
 			(1055, 8),
+			(1064, 1),
 		];
 		let cases = [
 			(

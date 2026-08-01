@@ -33,7 +33,7 @@ Meshlet: struct {
 }
 
 Views: struct {
-	views: View[8],
+	views: View[9],
 }
 
 Meshes: struct {
@@ -59,6 +59,7 @@ visible_count: workgroup<atomicu32>;
 push_constant: push_constant {
 	work_item_base: u32,
 	view_index: u32,
+	render_target_array_index: u32,
 }
 
 extend_vec3f: fn(value: vec3f, w: f32) -> vec4f {

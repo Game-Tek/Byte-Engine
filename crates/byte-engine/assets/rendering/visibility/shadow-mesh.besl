@@ -38,7 +38,7 @@ SkinnedVertex: struct {
 }
 
 Views: struct {
-	views: View[8],
+	views: View[9],
 }
 
 Meshes: struct {
@@ -80,6 +80,7 @@ out_primitive_index: output<u32, 1, 126>;
 push_constant: push_constant {
 	work_item_base: u32,
 	view_index: u32,
+	render_target_array_index: u32,
 }
 
 main: fn() -> void {
@@ -129,7 +130,7 @@ main: fn() -> void {
 				u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 2])
 			)
 		);
-		set_mesh_primitive_render_target_array_index(primitive_index, push_constant.view_index - 1);
+		set_mesh_primitive_render_target_array_index(primitive_index, push_constant.render_target_array_index);
 		out_instance_index[primitive_index] = instance_index;
 		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 255);
 	}

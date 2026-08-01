@@ -250,6 +250,8 @@ mod tests {
 				4_500.0,
 				15.0_f32.to_radians(),
 				30.0_f32.to_radians(),
+				0.1,
+				100.0,
 			)
 			.into(),
 		);

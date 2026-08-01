@@ -73,6 +73,8 @@ mod tests {
 			3_200.0,
 			15.0_f32.to_radians(),
 			25.0_f32.to_radians(),
+			0.1,
+			100.0,
 		);
 		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), 2_500.0);
 		let directional = DirectionalLight::new(Vector3::new(-1.0, -2.0, -3.0), 10_000.0);
@@ -96,7 +98,15 @@ mod tests {
 
 	#[test]
 	fn erased_light_conversion_preserves_the_concrete_variant_and_payload() {
-		let cone = ConeLight::new(Vector3::new(0.0, 2.0, 0.0), Vector3::new(0.0, -1.0, 0.0), 4_500.0, 0.25, 0.5);
+		let cone = ConeLight::new(
+			Vector3::new(0.0, 2.0, 0.0),
+			Vector3::new(0.0, -1.0, 0.0),
+			4_500.0,
+			0.25,
+			0.5,
+			0.1,
+			100.0,
+		);
 		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), 6_600.0);
 		let directional = DirectionalLight::new(Vector3::new(0.0, -1.0, 0.0), 5_000.0);
 

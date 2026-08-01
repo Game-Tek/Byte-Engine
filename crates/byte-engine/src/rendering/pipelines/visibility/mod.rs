@@ -151,6 +151,10 @@ const MAX_VERTICES: usize = 65536 * 4;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
+pub(crate) const MAX_CONE_SHADOWS: usize = 4;
+pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
+pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
+pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOWS;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone)]
@@ -907,7 +911,7 @@ mod tests {
 	/// Executes one production mesh main and verifies its complete one-triangle output contract.
 	fn assert_triangle_mesh_program(
 		program: besl::NodeReference,
-		selected_view: Option<(usize, [f32; 16])>,
+		selected_view: Option<(usize, [f32; 16], u32)>,
 		skinned_positions: Option<[[f32; 4]; 3]>,
 		expected_clip_positions: [[f32; 4]; 3],
 		expected_render_target_array_index: Option<u32>,
@@ -947,7 +951,7 @@ mod tests {
 			)
 			.clone();
 		let mut push_constant = besl::vm::Buffer::new(push_constant_layout);
-		if let Some((view_index, view_projection)) = selected_view {
+		if let Some((view_index, view_projection, render_target_array_index)) = selected_view {
 			views
 				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
 				.expect("Failed to initialize the selected mesh view. The most likely cause is a drifted View layout.");
@@ -957,6 +961,11 @@ mod tests {
 			push_constant
 				.write("view_index", Value::U32(view_index as u32))
 				.expect("Failed to initialize the shadow view index. The most likely cause is a drifted push constant layout.");
+			push_constant
+				.write("render_target_array_index", Value::U32(render_target_array_index))
+				.expect(
+					"Failed to initialize the shadow target layer. The most likely cause is a drifted push constant layout.",
+				);
 		} else {
 			push_constant
 				.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
@@ -1055,12 +1064,12 @@ mod tests {
 		);
 	}
 
-	/// Verifies shadow mesh output geometry and render-target layer use the selected cascade view.
+	/// Verifies shadow mesh output keeps the selected view independent from the target texture-array layer.
 	#[test]
 	fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 		assert_triangle_mesh_program(
 			shadow_mesh_program(),
-			Some((3, horizontally_translated_matrix(2.0))),
+			Some((7, horizontally_translated_matrix(2.0), 2)),
 			None,
 			[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
 			Some(2),

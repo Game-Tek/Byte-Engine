@@ -4,7 +4,7 @@ pub struct VisibilitySceneManager {
 	/// Retained global poses keyed by the renderable handle used by this scene.
 	pub(crate) skinning_poses: HashMap<Handle, Vec<Matrix4Columns>>,
 	/// Shared views data buffer used by every visibility sink.
-	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
+	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// Shared base descriptor set used by every visibility pass.
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	/// Per-instance mesh data buffer holding transforms and material indices for this scene.
@@ -49,7 +49,12 @@ impl VisibilitySceneManager {
 	}
 
 	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
-	pub(crate) fn write_light_data(&self, frame: &mut ghi::implementation::Frame, shadow_light_index: Option<usize>) {
+	pub(crate) fn write_light_data(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		directional_shadow_light_index: Option<usize>,
+		cone_shadow_light_indices: &[Option<usize>; MAX_CONE_SHADOWS],
+	) {
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.light_data_buffer);
 		let light_count = self.lights.len().min(MAX_LIGHTS);
 
@@ -64,18 +69,31 @@ impl VisibilitySceneManager {
 		lighting_data.count = light_count as u32;
 
 		for (index, (_, light)) in self.lights.iter().take(light_count).enumerate() {
-			lighting_data.lights[index] = Self::make_light_data(light, shadow_light_index == Some(index));
+			let shadow = if directional_shadow_light_index == Some(index) {
+				LightShadow::Directional
+			} else if let Some(layer) = cone_shadow_light_indices
+				.iter()
+				.position(|light_index| *light_index == Some(index))
+			{
+				LightShadow::Cone {
+					view_index: (CONE_SHADOW_VIEW_OFFSET + layer) as u32,
+					layer: layer as u32,
+				}
+			} else {
+				LightShadow::None
+			};
+			lighting_data.lights[index] = Self::make_light_data(light, shadow);
 		}
 
 		frame.sync_buffer(self.light_data_buffer);
 	}
 
-	fn make_light_data(light: &Lights, casts_shadow: bool) -> LightData {
-		let mut cascades = [0; 8];
+	fn make_light_data(light: &Lights, shadow: LightShadow) -> LightData {
+		let mut shadow_views = [0; 8];
 
-		if casts_shadow {
-			for (index, cascade) in cascades.iter_mut().take(SHADOW_CASCADE_COUNT).enumerate() {
-				*cascade = (index + 1) as u32;
+		if shadow == LightShadow::Directional {
+			for (index, shadow_view) in shadow_views.iter_mut().take(SHADOW_CASCADE_COUNT).enumerate() {
+				*shadow_view = (index + 1) as u32;
 			}
 		}
 
@@ -86,8 +104,14 @@ impl VisibilitySceneManager {
 				direction: light.direction.into(),
 				cone_cosines: [light.inner_angle.cos(), light.outer_angle.cos()],
 				light_type: 1,
-				cascades: [0; 8],
-				_padding: 0,
+				shadow_views: match shadow {
+					LightShadow::Cone { view_index, .. } => [view_index, 0, 0, 0, 0, 0, 0, 0],
+					LightShadow::None | LightShadow::Directional => [0; 8],
+				},
+				shadow_layer: match shadow {
+					LightShadow::Cone { layer, .. } => layer,
+					LightShadow::None | LightShadow::Directional => 0,
+				},
 			},
 			Lights::Direction(light) => LightData {
 				position: light.direction.into(),
@@ -95,8 +119,8 @@ impl VisibilitySceneManager {
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
 				light_type: 68,
-				cascades,
-				_padding: 0,
+				shadow_views,
+				shadow_layer: 0,
 			},
 			Lights::Point(light) => LightData {
 				position: light.position.into(),
@@ -104,11 +128,19 @@ impl VisibilitySceneManager {
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
 				light_type: 0,
-				cascades: [0; 8],
-				_padding: 0,
+				shadow_views: [0; 8],
+				shadow_layer: 0,
 			},
 		}
 	}
+}
+
+/// The `LightShadow` enum identifies the shadow view assignment encoded for one GPU light record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LightShadow {
+	None,
+	Directional,
+	Cone { view_index: u32, layer: u32 },
 }
 
 /// Converts a gameplay matrix into the column-major representation consumed by skin palette evaluation.
@@ -126,7 +158,7 @@ fn matrix4_to_columns(matrix: &Matrix4) -> Matrix4Columns {
 mod tests {
 	use math::{mat::MatNew4 as _, Matrix4, Vector3};
 
-	use super::{matrix4_to_columns, VisibilitySceneManager};
+	use super::{matrix4_to_columns, LightShadow, VisibilitySceneManager};
 	use crate::rendering::lights::{ConeLight, Lights};
 	use crate::rendering::pipelines::visibility::pipeline_manager::{LightData, LightingData, ShaderVec3};
 
@@ -155,15 +187,19 @@ mod tests {
 			4_500.0,
 			20.0_f32.to_radians(),
 			35.0_f32.to_radians(),
+			0.1,
+			50.0,
 		);
-		let light_data = VisibilitySceneManager::make_light_data(&Lights::Cone(light), false);
+		let light_data =
+			VisibilitySceneManager::make_light_data(&Lights::Cone(light), LightShadow::Cone { view_index: 6, layer: 1 });
 
 		assert_eq!(light_data.position, ShaderVec3::from(light.position));
 		assert_eq!(light_data.color, ShaderVec3::from(light.color));
 		assert_eq!(light_data.direction, ShaderVec3::from(light.direction));
 		assert_eq!(light_data.cone_cosines, [light.inner_angle.cos(), light.outer_angle.cos()]);
 		assert_eq!(light_data.light_type, 1);
-		assert_eq!(light_data.cascades, [0; 8]);
+		assert_eq!(light_data.shadow_views, [6, 0, 0, 0, 0, 0, 0, 0]);
+		assert_eq!(light_data.shadow_layer, 1);
 	}
 
 	#[test]
@@ -175,7 +211,8 @@ mod tests {
 		assert_eq!(std::mem::offset_of!(LightData, direction), 32);
 		assert_eq!(std::mem::offset_of!(LightData, cone_cosines), 48);
 		assert_eq!(std::mem::offset_of!(LightData, light_type), 56);
-		assert_eq!(std::mem::offset_of!(LightData, cascades), 60);
+		assert_eq!(std::mem::offset_of!(LightData, shadow_views), 60);
+		assert_eq!(std::mem::offset_of!(LightData, shadow_layer), 92);
 		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
 	}
 }
@@ -197,6 +234,9 @@ use crate::rendering::pipelines::visibility::pipeline_manager::RenderInfo;
 use crate::rendering::pipelines::visibility::pipeline_manager::ShaderViewData;
 use crate::rendering::pipelines::visibility::pipeline_manager::SinkState;
 use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, ShaderVec3};
+use crate::rendering::pipelines::visibility::CONE_SHADOW_VIEW_OFFSET;
+use crate::rendering::pipelines::visibility::MAX_CONE_SHADOWS;
 use crate::rendering::pipelines::visibility::MAX_LIGHTS;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
+use crate::rendering::pipelines::visibility::SHADOW_VIEW_COUNT;
 use crate::rendering::View;

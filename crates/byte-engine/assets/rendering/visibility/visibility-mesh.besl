@@ -38,7 +38,7 @@ SkinnedVertex: struct {
 }
 
 Views: struct {
-	views: View[8],
+	views: View[9],
 }
 
 Meshes: struct {

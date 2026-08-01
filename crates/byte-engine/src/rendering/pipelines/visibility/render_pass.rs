@@ -13,12 +13,12 @@ use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
-	ActiveMaterialMask, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING,
-	MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING,
-	TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
-	VIEWS_DATA_BINDING,
+	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
@@ -85,10 +85,20 @@ const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::
 );
 const GTAO_DEPTH_PYRAMID_LEVEL_COUNT: usize = 3;
 
-/// Returns the cascade view indices that receive one batched shadow dispatch.
-fn batched_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
+/// Returns the directional cascade view indices that receive one batched shadow dispatch.
+fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
 	let has_work = !mesh_dispatch.is_empty();
 	(1..=SHADOW_CASCADE_COUNT as u32).filter(move |_| has_work)
+}
+
+/// Returns the packed cone view and target-layer indices that receive shadow dispatches.
+fn cone_shadow_view_indices(mesh_dispatch: MeshDispatch, cone_shadow_count: usize) -> impl Iterator<Item = (u32, u32)> {
+	let count = if mesh_dispatch.is_empty() {
+		0
+	} else {
+		cone_shadow_count.min(MAX_CONE_SHADOWS)
+	};
+	(0..count).map(|layer| ((CONE_SHADOW_VIEW_OFFSET + layer) as u32, layer as u32))
 }
 const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
 
@@ -485,18 +495,22 @@ fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
 		.then_some(instances)
 }
 
+/// The `ShadowPass` struct owns the shared pipeline and depth targets used by directional and cone shadow rendering.
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	shadow_pass_pipeline: ghi::PipelineHandle,
-	shadow_map: ghi::BaseImageHandle,
+	directional_shadow_map: ghi::BaseImageHandle,
+	cone_shadow_map: ghi::BaseImageHandle,
 }
 
 impl ShadowPass {
+	/// Creates the raster pipeline shared by both layered shadow-map targets.
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
-		shadow_map: ghi::BaseImageHandle,
+		directional_shadow_map: ghi::BaseImageHandle,
+		cone_shadow_map: ghi::BaseImageHandle,
 	) -> Self {
 		let shadow_pass_task_shader = load_visibility_shader(
 			context,
@@ -524,7 +538,7 @@ impl ShadowPass {
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
 		let shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 8)],
+			&[ghi::pipelines::PushConstantRange::new(0, 12)],
 			&vertex_layout,
 			&shadow_pass_shaders,
 			&attachments,
@@ -533,70 +547,94 @@ impl ShadowPass {
 		Self {
 			descriptor_set,
 			shadow_pass_pipeline,
-			shadow_map,
+			directional_shadow_map,
+			cone_shadow_map,
 		}
 	}
 
+	/// Prepares directional cascades and packed cone layers for the current scene geometry.
 	fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		instances: &'a [Instance],
 		mesh_dispatch: MeshDispatch,
-		shadow_enabled: bool,
+		directional_shadow_enabled: bool,
+		cone_shadow_count: usize,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.shadow_pass_pipeline;
-		let shadow_map = self.shadow_map;
-		let extent = Extent::square(SHADOW_MAP_RESOLUTION);
+		let directional_shadow_map = self.directional_shadow_map;
+		let cone_shadow_map = self.cone_shadow_map;
+		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
+		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
-		if shadow_enabled {
-			frame.resize_image(shadow_map, extent);
+		if directional_shadow_enabled {
+			frame.resize_image(directional_shadow_map, directional_extent);
+		}
+		if cone_shadow_count > 0 {
+			frame.resize_image(cone_shadow_map, cone_extent);
 		}
 
 		move |c, _| {
-			if !shadow_enabled {
-				log::debug!("Visibility shadow pass skipped: no directional shadow light");
-				return;
-			}
-
-			log::debug!(
-				"Visibility shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
-				SHADOW_CASCADE_COUNT,
-				instances.len(),
-				drawable_instances,
-				meshlet_count,
-				mesh_dispatch.workgroup_count(),
-			);
-			c.start_region(|label| label.write_str("Shadow Map"));
-
-			let attachments = [ghi::AttachmentInformation::new(
-				shadow_map,
-				ghi::Layouts::RenderTarget,
-				ghi::ClearValue::Depth(0.0),
-				false,
-				true,
-			)
-			.layers(SHADOW_CASCADE_COUNT as u32)];
-
-			// Render every cascade into one layered depth attachment so independent cascade work shares one native render pass.
-			let c = c.start_render_pass(extent, &attachments);
-			let c = c.bind_raster_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
-
-			for view_index in batched_shadow_view_indices(mesh_dispatch) {
-				c.start_region(|label| label.write_str("Cascade"));
-
-				c.write_push_constant(0, 0u32);
-				c.write_push_constant(4, view_index);
-				c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
-
+			if directional_shadow_enabled {
+				log::debug!(
+					"Directional shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
+					SHADOW_CASCADE_COUNT, instances.len(), drawable_instances, meshlet_count, mesh_dispatch.workgroup_count(),
+				);
+				c.start_region(|label| label.write_str("Directional Shadow Map"));
+				let attachments = [ghi::AttachmentInformation::new(
+					directional_shadow_map,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					false,
+					true,
+				)
+				.layers(SHADOW_CASCADE_COUNT as u32)];
+				let c = c.start_render_pass(directional_extent, &attachments);
+				let c = c.bind_raster_pipeline(pipeline);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				for view_index in directional_shadow_view_indices(mesh_dispatch) {
+					c.start_region(|label| label.write_str("Cascade"));
+					c.write_push_constant(0, 0u32);
+					c.write_push_constant(4, view_index);
+					c.write_push_constant(8, view_index - 1);
+					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
+					c.end_region();
+				}
+				c.end_render_pass();
 				c.end_region();
 			}
 
-			c.end_render_pass();
-			c.end_region();
+			if cone_shadow_count > 0 {
+				log::debug!(
+					"Cone shadow pass executing: lights={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
+					cone_shadow_count, instances.len(), drawable_instances, meshlet_count, mesh_dispatch.workgroup_count(),
+				);
+				c.start_region(|label| label.write_str("Cone Shadow Map"));
+				let attachments = [ghi::AttachmentInformation::new(
+					cone_shadow_map,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					false,
+					true,
+				)
+				.layers(MAX_CONE_SHADOWS as u32)];
+				let c = c.start_render_pass(cone_extent, &attachments);
+				let c = c.bind_raster_pipeline(pipeline);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				for (view_index, layer) in cone_shadow_view_indices(mesh_dispatch, cone_shadow_count) {
+					c.start_region(|label| label.write_str("Cone"));
+					c.write_push_constant(0, 0u32);
+					c.write_push_constant(4, view_index);
+					c.write_push_constant(8, layer);
+					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
+					c.end_region();
+				}
+				c.end_render_pass();
+				c.end_region();
+			}
 		}
 	}
 }
@@ -1162,7 +1200,8 @@ impl MaterialEvaluationPass {
 	fn new(
 		lit: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
-		_shadow_map: ghi::BaseImageHandle,
+		_directional_shadow_map: ghi::BaseImageHandle,
+		_cone_shadow_map: ghi::BaseImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -1277,7 +1316,8 @@ impl VisibilityPipelineRenderPass {
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		lit: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
-		shadow_map: ghi::BaseImageHandle,
+		directional_shadow_map: ghi::BaseImageHandle,
+		cone_shadow_map: ghi::BaseImageHandle,
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
@@ -1286,7 +1326,13 @@ impl VisibilityPipelineRenderPass {
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 		gtao_settings: GtaoSettings,
 	) -> Self {
-		let shadow_pass = ShadowPass::new(context, shader_resources, base_descriptor_set, shadow_map);
+		let shadow_pass = ShadowPass::new(
+			context,
+			shader_resources,
+			base_descriptor_set,
+			directional_shadow_map,
+			cone_shadow_map,
+		);
 		let visibility_pass = VisibilityPass::new(
 			context,
 			shader_resources,
@@ -1320,7 +1366,8 @@ impl VisibilityPipelineRenderPass {
 		let material_evaluation_pass = MaterialEvaluationPass::new(
 			lit,
 			ao_map,
-			shadow_map,
+			directional_shadow_map,
+			cone_shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,
@@ -1352,12 +1399,17 @@ impl VisibilityPipelineRenderPass {
 		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		opaque_material_mask: &'a ActiveMaterialMask,
 		transparent_material_mask: &'a ActiveMaterialMask,
-		shadow_enabled: bool,
+		directional_shadow_enabled: bool,
+		cone_shadow_count: usize,
 	) -> impl RenderPassFunction + 'a {
 		// Blend materials have no alpha-aware shadow shader, so only opaque-phase primitives populate the depth map.
-		let shadow_pass = self
-			.shadow_pass
-			.prepare(frame, opaque_instances, shadow_mesh_dispatch, shadow_enabled);
+		let shadow_pass = self.shadow_pass.prepare(
+			frame,
+			opaque_instances,
+			shadow_mesh_dispatch,
+			directional_shadow_enabled,
+			cone_shadow_count,
+		);
 		let visibility_pass = &self.visibility_pass;
 		// The offset pass consumes and resets every counter before the optional transparent layer runs.
 		let opaque_material_count_pass = self.material_count_pass.prepare(sink, true);
@@ -1399,7 +1451,7 @@ impl VisibilityPipelineRenderPass {
 				meshlet_count,
 				opaque_count,
 				transparent_count,
-				shadow_enabled,
+				directional_shadow_enabled || cone_shadow_count > 0,
 			);
 			c.start_region(|label| label.write_str("Visibility Render Model"));
 
@@ -1437,18 +1489,23 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		batched_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent, transparent_visibility_layer,
-		GtaoSettings, Instance, MeshDispatch,
+		cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent,
+		transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
 	};
 	use crate::configuration::ConfigurationValue;
 	use crate::rendering::{view::View, Sink};
 
 	#[test]
-	fn batched_shadow_dispatch_issues_exactly_one_draw_per_cascade() {
+	fn shadow_dispatches_preserve_directional_cascades_and_packed_cone_layers() {
 		let dispatch = MeshDispatch::with_workgroup_count(19);
 
-		assert_eq!(batched_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
-		assert_eq!(batched_shadow_view_indices(MeshDispatch::default()).count(), 0);
+		assert_eq!(directional_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
+		assert_eq!(
+			cone_shadow_view_indices(dispatch, 4).collect::<Vec<_>>(),
+			[(5, 0), (6, 1), (7, 2), (8, 3)]
+		);
+		assert_eq!(directional_shadow_view_indices(MeshDispatch::default()).count(), 0);
+		assert_eq!(cone_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
 	}
 
 	#[test]

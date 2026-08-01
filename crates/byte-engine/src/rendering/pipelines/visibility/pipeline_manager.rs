@@ -23,7 +23,7 @@ pub struct VisibilityPipelineManager {
 	materials_data: std::boxed::Box<[MaterialData; MAX_MATERIALS]>,
 	/// Frame-local material metadata buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
-	/// Compact single-view mesh work shared by shadow cascades and future visibility passes.
+	/// Compact single-view mesh work shared by shadow cascades and visibility phases.
 	mesh_dispatch_work: crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkBuffer,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
@@ -895,12 +895,13 @@ impl PipelineManager for VisibilityPipelineManager {
 				"Cone-light shadow budget exceeded. The most likely cause is that the scene contains more than {MAX_CONE_SHADOWS} cone lights. Extra cone lights remain lit without shadows."
 			);
 		}
-		let shadow_mesh_dispatch = if shadow_lights.directional.is_some() || shadow_lights.cones[0].is_some() {
-			self.mesh_dispatch_work
-				.write(frame, self.scene.render_info.opaque_instances.as_slice())
-		} else {
-			Default::default()
-		};
+		let [opaque_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
+			frame,
+			[
+				self.scene.render_info.opaque_instances.as_slice(),
+				self.scene.render_info.transparent_instances.as_slice(),
+			],
+		);
 
 		if let Some(sink) = sinks.first() {
 			let main_view = sink.view();
@@ -957,7 +958,8 @@ impl PipelineManager for VisibilityPipelineManager {
 						frame,
 						v,
 						(command_index == 0).then_some(skinning_pass),
-						shadow_mesh_dispatch,
+						opaque_mesh_dispatch,
+						transparent_mesh_dispatch,
 						skinning_dispatches,
 						&self.scene.render_info.opaque_instances,
 						&self.scene.render_info.transparent_instances,

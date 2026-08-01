@@ -52,9 +52,10 @@ impl MeshDispatchWorkItem {
 	}
 }
 
-/// The `MeshDispatch` struct carries the native task-workgroup count for one single-view mesh dispatch.
+/// The `MeshDispatch` struct identifies one compact single-view mesh dispatch range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MeshDispatch {
+	work_item_base: u32,
 	workgroup_count: u32,
 }
 
@@ -69,9 +70,17 @@ impl MeshDispatch {
 		self.workgroup_count
 	}
 
+	/// Returns the first compact work item consumed by this dispatch.
+	pub fn work_item_base(self) -> u32 {
+		self.work_item_base
+	}
+
 	#[cfg(test)]
 	pub(super) fn with_workgroup_count(workgroup_count: u32) -> Self {
-		Self { workgroup_count }
+		Self {
+			work_item_base: 0,
+			workgroup_count,
+		}
 	}
 }
 
@@ -83,8 +92,8 @@ pub(crate) struct MeshDispatchWorkBuffer {
 impl MeshDispatchWorkBuffer {
 	/// Creates and binds work storage for the worst-case single-view visibility workload.
 	///
-	/// Call [`Self::write`] during frame preparation, then reuse the returned [`MeshDispatch`]
-	/// for each view that renders the same instance set.
+	/// Call [`Self::write_phases`] during frame preparation, then reuse the returned [`MeshDispatch`]
+	/// values for each view that renders the corresponding instance set.
 	pub fn new(context: &mut ghi::implementation::Context, descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let handle = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -99,16 +108,36 @@ impl MeshDispatchWorkBuffer {
 		Self { handle }
 	}
 
-	/// Rebuilds one compact single-view dispatch without transient allocations.
-	pub fn write(&self, frame: &mut ghi::implementation::Frame, instances: &[Instance]) -> MeshDispatch {
-		let work_items = frame.get_mut_dynamic_buffer_slice(self.handle);
-		let workgroup_count = build_work_items(work_items, instances);
-		frame.sync_buffer(self.handle);
-		MeshDispatch {
-			workgroup_count: u32::try_from(workgroup_count).expect(
-				"Visibility mesh dispatch count exceeds u32. The most likely cause is a work-buffer capacity larger than the native dispatch interface.",
-			),
+	/// Packs several phase-specific instance lists into adjacent work ranges and syncs them once.
+	pub fn write_phases<const N: usize>(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		instance_lists: [&[Instance]; N],
+	) -> [MeshDispatch; N] {
+		let mut dispatches = [MeshDispatch::default(); N];
+		let mut work_item_base = 0usize;
+		{
+			let work_items = frame.get_mut_dynamic_buffer_slice(self.handle);
+			for (dispatch, instances) in dispatches.iter_mut().zip(instance_lists) {
+				let destination = work_items.get_mut(work_item_base..).unwrap_or_else(|| {
+					panic!(
+						"Visibility mesh dispatch work base is out of range. The most likely cause is a phase range exceeding the shared work-buffer capacity."
+					)
+				});
+				let workgroup_count = build_work_items(destination, instances);
+				*dispatch = MeshDispatch {
+					work_item_base: u32::try_from(work_item_base).expect(
+						"Visibility mesh dispatch work base exceeds u32. The most likely cause is a work-buffer capacity larger than the native dispatch interface.",
+					),
+					workgroup_count: u32::try_from(workgroup_count).expect(
+						"Visibility mesh dispatch count exceeds u32. The most likely cause is a work-buffer capacity larger than the native dispatch interface.",
+					),
+				};
+				work_item_base += workgroup_count;
+			}
 		}
+		frame.sync_buffer(self.handle);
+		dispatches
 	}
 }
 

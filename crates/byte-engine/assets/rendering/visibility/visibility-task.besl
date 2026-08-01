@@ -44,15 +44,22 @@ Meshlets: struct {
 	meshlets: Meshlet[4096],
 }
 
+MeshDispatchWork: struct {
+	items: u32[131072],
+}
+
 views: descriptor<Views, 0, read>;
 meshes: descriptor<Meshes, 1, read>;
 meshlets: descriptor<Meshlets, 8, read>;
+mesh_dispatch_work: descriptor<MeshDispatchWork, 1063, read>;
 
-meshlet_indices: task_payload<u32, 32>;
+meshlet_instances: task_payload<u32, 32>;
 visible_count: workgroup<atomicu32>;
 
 push_constant: push_constant {
-	instance_index: u32,
+	work_item_base: u32,
+	view_index: u32,
+	render_target_array_index: u32,
 }
 
 extend_vec3f: fn(value: vec3f, w: f32) -> vec4f {
@@ -145,22 +152,31 @@ meshlet_is_visible: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 }
 
 main: fn() -> void {
-	let mesh: Mesh = meshes.meshes[push_constant.instance_index];
-	let view: View = views.views[0];
-	let meshlet_thread_index: u32 = thread_position();
+	let workgroup_index: u32 = thread_position() / 32;
+	let work: u32 = mesh_dispatch_work.items[push_constant.work_item_base + workgroup_index];
+	let instance_index: u32 = work & 1023;
+	let chunk_index: u32 = (work >> 10) & 127;
+	let mesh: Mesh = meshes.meshes[instance_index];
+	let view: View = views.views[push_constant.view_index];
 	let lane: u32 = thread_idx();
+	let first_meshlet: u32 = chunk_index * 32;
+	let chunk_meshlet_count: u32 = mesh.meshlet_count - first_meshlet;
+	if (chunk_meshlet_count > 32) {
+		chunk_meshlet_count = 32;
+	}
 
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
 	}
 	workgroup_barrier();
 
-	if (meshlet_thread_index < mesh.meshlet_count) {
-		let meshlet_index: u32 = mesh.base_meshlet_index + meshlet_thread_index;
+	if (lane < chunk_meshlet_count) {
+		let meshlet_index: u32 = mesh.base_meshlet_index + first_meshlet + lane;
 		let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
 		if (mesh.skinned_base_vertex_index != 4294967295 || meshlet_is_visible(mesh, meshlet, view)) {
 			let payload_index: u32 = atomic_add(visible_count, 1);
-			meshlet_indices[payload_index] = meshlet_index;
+			// One payload word keeps the meshlet and its owning instance indivisible across emitted mesh grids.
+			meshlet_instances[payload_index] = meshlet_index | (instance_index << 12);
 		}
 	}
 

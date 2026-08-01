@@ -73,18 +73,24 @@ vertex_indices: descriptor<VertexIndices, 6, read>;
 primitive_indices: descriptor<PrimitiveIndices, 7, read>;
 meshlets: descriptor<Meshlets, 8, read>;
 
-meshlet_indices: task_payload<u32, 32>;
+meshlet_instances: task_payload<u32, 32>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
 
 push_constant: push_constant {
-	instance_index: u32,
+	work_item_base: u32,
+	view_index: u32,
+	render_target_array_index: u32,
 }
 
 main: fn() -> void {
-	let mesh: Mesh = meshes.meshes[push_constant.instance_index];
-	let view: View = views.views[0];
-	let meshlet_index: u32 = meshlet_indices[threadgroup_position()];
+	let payload_index: u32 = threadgroup_position();
+	// Decode both indices from the same payload read so a meshlet cannot be paired with another grid's instance.
+	let meshlet_instance: u32 = meshlet_instances[payload_index];
+	let meshlet_index: u32 = meshlet_instance & 4095;
+	let instance_index: u32 = (meshlet_instance >> 12) & 1023;
+	let mesh: Mesh = meshes.meshes[instance_index];
+	let view: View = views.views[push_constant.view_index];
 	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
 	let primitive_index: u32 = thread_idx();
 
@@ -124,7 +130,7 @@ main: fn() -> void {
 				u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 2])
 			)
 		);
-		out_instance_index[primitive_index] = push_constant.instance_index;
+		out_instance_index[primitive_index] = instance_index;
 		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 255);
 	}
 }

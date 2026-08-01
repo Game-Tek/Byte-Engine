@@ -16,9 +16,9 @@ use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
 	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
-	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
@@ -282,11 +282,6 @@ fn load_visibility_shader(
 	loaded.handle
 }
 
-/// Returns the dispatch grid expected by the active mesh shading path.
-fn mesh_dispatch_count(meshlet_count: u32) -> u32 {
-	meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE)
-}
-
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate visibility buffers.
 #[derive(Clone)]
 pub(crate) struct VisibilityPass {
@@ -376,7 +371,7 @@ impl VisibilityPass {
 		];
 
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 4)],
+			&[ghi::pipelines::PushConstantRange::new(0, 12)],
 			&vertex_layout,
 			&visibility_pass_shaders,
 			&pipeline_attachments,
@@ -444,6 +439,7 @@ impl VisibilityPass {
 		c: &mut ghi::implementation::CommandBufferRecording,
 		extent: Extent,
 		instances: &[Instance],
+		mesh_dispatch: MeshDispatch,
 		phase: VisibilityPhase,
 	) {
 		let attachments: &[ghi::AttachmentInformation] = match phase {
@@ -454,13 +450,14 @@ impl VisibilityPass {
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
 		log::debug!(
-			"{} visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}",
+			"{} visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
 			phase.label(),
 			extent.width(),
 			extent.height(),
 			instances.len(),
 			drawable_instances,
 			meshlet_count,
+			mesh_dispatch.workgroup_count(),
 		);
 		c.start_region(|label| {
 			label.write_str(phase.label())?;
@@ -468,18 +465,13 @@ impl VisibilityPass {
 		});
 
 		let c = c.start_render_pass(extent, attachments);
-		if drawable_instances > 0 {
+		if !mesh_dispatch.is_empty() {
 			let c = c.bind_raster_pipeline(self.pipeline);
 			c.bind_descriptor_sets(&[self.descriptor_set]);
-
-			for instance in instances {
-				if instance.meshlet_count == 0 {
-					continue;
-				}
-
-				c.write_push_constant(0, instance.shader_mesh_index);
-				c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
-			}
+			c.write_push_constant(0, mesh_dispatch.work_item_base());
+			c.write_push_constant(4, 0u32);
+			c.write_push_constant(8, 0u32);
+			c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
 		}
 
 		c.end_render_pass();
@@ -597,7 +589,7 @@ impl ShadowPass {
 				c.bind_descriptor_sets(&[descriptor_set]);
 				for view_index in directional_shadow_view_indices(mesh_dispatch) {
 					c.start_region(|label| label.write_str("Cascade"));
-					c.write_push_constant(0, 0u32);
+					c.write_push_constant(0, mesh_dispatch.work_item_base());
 					c.write_push_constant(4, view_index);
 					c.write_push_constant(8, view_index - 1);
 					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
@@ -626,7 +618,7 @@ impl ShadowPass {
 				c.bind_descriptor_sets(&[descriptor_set]);
 				for (view_index, layer) in cone_shadow_view_indices(mesh_dispatch, cone_shadow_count) {
 					c.start_region(|label| label.write_str("Cone"));
-					c.write_push_constant(0, 0u32);
+					c.write_push_constant(0, mesh_dispatch.work_item_base());
 					c.write_push_constant(4, view_index);
 					c.write_push_constant(8, layer);
 					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
@@ -1391,7 +1383,8 @@ impl VisibilityPipelineRenderPass {
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		skinning_pass: Option<&'a SkinningPass>,
-		shadow_mesh_dispatch: MeshDispatch,
+		opaque_mesh_dispatch: MeshDispatch,
+		transparent_mesh_dispatch: MeshDispatch,
 		skinning_dispatches: &'a [SkinningDispatch],
 		opaque_instances: &'a [Instance],
 		transparent_instances: &'a [Instance],
@@ -1406,7 +1399,7 @@ impl VisibilityPipelineRenderPass {
 		let shadow_pass = self.shadow_pass.prepare(
 			frame,
 			opaque_instances,
-			shadow_mesh_dispatch,
+			opaque_mesh_dispatch,
 			directional_shadow_enabled,
 			cone_shadow_count,
 		);
@@ -1461,7 +1454,7 @@ impl VisibilityPipelineRenderPass {
 			shadow_pass(c, t);
 
 			// The opaque layer establishes the depth and color retained by every later transparent primitive.
-			visibility_pass.record(c, extent, opaque_instances, VisibilityPhase::Opaque);
+			visibility_pass.record(c, extent, opaque_instances, opaque_mesh_dispatch, VisibilityPhase::Opaque);
 			opaque_material_count_pass(c, t);
 			material_offset_pass(c, t);
 			pixel_mapping_pass(c, t);
@@ -1471,7 +1464,13 @@ impl VisibilityPipelineRenderPass {
 			// The visibility buffer represents one transparent layer. Resolve every blend primitive
 			// together so normal depth testing selects the nearest surface before source-over evaluation.
 			if let Some(transparent_layer) = transparent_visibility_layer(transparent_instances) {
-				visibility_pass.record(c, extent, transparent_layer, VisibilityPhase::Transparent);
+				visibility_pass.record(
+					c,
+					extent,
+					transparent_layer,
+					transparent_mesh_dispatch,
+					VisibilityPhase::Transparent,
+				);
 				transparent_material_count_pass(c, t);
 				material_offset_pass(c, t);
 				pixel_mapping_pass(c, t);

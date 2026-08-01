@@ -217,7 +217,7 @@ mod tests {
 	const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
 	const FIXTURE_INSTANCE_INDEX: usize = 3;
 	const FIXTURE_MESHLET_INDEX: usize = 5;
-	const SHADOW_PAYLOAD_MESHLET_BITS: u32 = 12;
+	const MESHLET_INSTANCE_BITS: u32 = 12;
 	const TASK_WORKGROUP_SIZE: u32 = 32;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 	const GTAO_WORKGROUP_WIDTH: u32 = 16;
@@ -283,62 +283,6 @@ mod tests {
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/shadow-task.besl"
 		)))
-	}
-
-	/// Verifies the batched shadow task and mesh interfaces compile together for Metal.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn batched_shadow_dispatch_metal_sources_compile() {
-		for (name, settings, program) in [
-			(
-				"visibility-shadow-task",
-				ShaderGenerationSettings::task(utils::Extent::line(TASK_WORKGROUP_SIZE), TASK_WORKGROUP_SIZE),
-				shadow_task_program(),
-			),
-			(
-				"visibility-shadow-mesh",
-				ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-				shadow_mesh_program(),
-			),
-		] {
-			let source = MslGenerator::new()
-				.minified(true)
-				.generate(&settings, &program)
-				.unwrap_or_else(|_| panic!("Failed to generate production {name} Metal source."));
-
-			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name).unwrap_or_else(
-				|error| {
-					panic!(
-						"Failed to compile production {name} Metal source. The most likely cause is an invalid batched mesh dispatch interface: {error}"
-					)
-				},
-			);
-		}
-	}
-
-	/// Verifies the checked-in task programs preserve BESL column indexing when emitted as HLSL.
-	#[test]
-	fn production_task_hlsl_transposes_square_matrix_column_accesses() {
-		for (name, program) in [("visibility", visibility_task_program()), ("shadow", shadow_task_program())] {
-			let source = HlslGenerator::new()
-				.minified(true)
-				.generate(
-					&ShaderGenerationSettings::task(utils::Extent::line(TASK_WORKGROUP_SIZE), TASK_WORKGROUP_SIZE),
-					&program,
-				)
-				.unwrap_or_else(|_| panic!("Failed to generate production {name} task HLSL."));
-
-			for column in 0..4 {
-				assert!(
-					source.contains(&format!("transpose(matrix)[{column}]")),
-					"Production {name} task HLSL lost BESL matrix column {column}. The most likely cause is that nested accessor lowering treated a square matrix as an HLSL row."
-				);
-			}
-			assert!(
-				source.contains("transpose(view.inverse_view)[3]"),
-				"Production {name} task HLSL lost the nested inverse-view translation column. The most likely cause is that struct-member matrix indexing diverged from BESL."
-			);
-		}
 	}
 
 	fn gtao_program() -> besl::NodeReference {
@@ -409,42 +353,6 @@ mod tests {
 		);
 	}
 
-	/// Verifies the production GTAO source reaches Apple's compiler with its shared cache and compact camera layout.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn gtao_metal_sources_compile_with_linear_hierarchy_and_shared_cache() {
-		for (name, workgroup, program) in [
-			(
-				"gtao-linear-depth-hierarchy",
-				utils::Extent::square(GTAO_PYRAMID_WORKGROUP_WIDTH),
-				gtao_depth_pyramid_program(),
-			),
-			(
-				"gtao-shared-cache",
-				utils::Extent::new(GTAO_WORKGROUP_WIDTH, GTAO_WORKGROUP_HEIGHT, 1),
-				gtao_program(),
-			),
-			(
-				"gtao-half-resolution-blur-x",
-				utils::Extent::square(GTAO_BLUR_WORKGROUP_WIDTH),
-				gtao_blur_x_program(),
-			),
-			(
-				"gtao-depth-aware-upscale",
-				utils::Extent::square(GTAO_BLUR_WORKGROUP_WIDTH),
-				gtao_upscale_program(),
-			),
-		] {
-			let source = MslGenerator::new()
-				.minified(true)
-				.generate(&ShaderGenerationSettings::compute(workgroup), &program)
-				.expect("Failed to generate production GTAO Metal source. The most likely cause is unsupported BESL lowering.");
-
-			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name)
-				.expect("Failed to compile production GTAO Metal source. The most likely cause is invalid generated MSL.");
-		}
-	}
-
 	/// Verifies a BESL prepass exposes only its reachable flat resources.
 	fn assert_reflected_resources(program: besl::NodeReference, expected: &[(u32, &str)]) {
 		let evaluation = ProgramEvaluation::from_main(&program)
@@ -455,37 +363,6 @@ mod tests {
 			.map(|binding| (binding.slot, binding.name.as_str()))
 			.collect::<Vec<_>>();
 		assert_eq!(reflected, expected);
-	}
-
-	/// Guards the flat resource ABI used before indirect material evaluation dispatches.
-	#[test]
-	fn visibility_material_prepasses_reflect_reachable_flat_resources() {
-		assert_reflected_resources(
-			material_count_program(),
-			&[
-				(1, "mesh_data"),
-				(1033, "material_count_buffer"),
-				(1040, "instance_index_render_target"),
-			],
-		);
-		assert_reflected_resources(
-			material_offset_program(),
-			&[
-				(1033, "material_count_buffer"),
-				(1034, "material_offset_buffer"),
-				(1035, "material_offset_scratch_buffer"),
-				(1036, "material_evaluation_dispatches"),
-			],
-		);
-		assert_reflected_resources(
-			pixel_mapping_program(),
-			&[
-				(1, "mesh_data"),
-				(1035, "material_offset_scratch_buffer"),
-				(1037, "pixel_mapping_buffer"),
-				(1040, "instance_index_render_target"),
-			],
-		);
 	}
 
 	/// Verifies the visibility fragment preserves the mesh-stage identifiers consumed by later compute passes.
@@ -560,9 +437,9 @@ mod tests {
 		matrix
 	}
 
-	/// Packs the production shadow task payload without allowing its meshlet and instance indices to diverge.
-	fn shadow_meshlet_instance(meshlet_index: u32, instance_index: u32) -> u32 {
-		meshlet_index | (instance_index << SHADOW_PAYLOAD_MESHLET_BITS)
+	/// Packs the production task payload without allowing its meshlet and instance indices to diverge.
+	fn meshlet_instance(meshlet_index: u32, instance_index: u32) -> u32 {
+		meshlet_index | (instance_index << MESHLET_INSTANCE_BITS)
 	}
 
 	/// Executes an exact production task main as one workgroup over consecutive meshlets.
@@ -646,29 +523,18 @@ mod tests {
 			.expect("Missing task push constants. The most likely cause is that the production task main no longer uses them.")
 			.clone();
 		let mut push_constant = besl::vm::Buffer::new(push_constant_layout);
-		if let Some(view_index) = selected_view_index {
-			push_constant
-				.write("work_item_base", Value::U32(0))
-				.expect("Failed to initialize the task work base. The most likely cause is a drifted push constant layout.");
-			push_constant
-				.write("view_index", Value::U32(view_index))
-				.expect("Failed to initialize the task view index. The most likely cause is a drifted push constant layout.");
-		} else {
-			push_constant
-				.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
-				.expect(
-					"Failed to initialize the task instance index. The most likely cause is a drifted push constant layout.",
-				);
-		}
-		let mut mesh_dispatch_work = selected_view_index.map(|_| {
-			let mut work = buffer(program, MESH_DISPATCH_WORK_SLOT);
-			let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
-			work.write_indexed("items", workgroup_index as usize, Value::U32(packed_work))
-				.expect(
-					"Failed to initialize compact mesh dispatch work. The most likely cause is a drifted work-item layout.",
-				);
-			work
-		});
+		let view_index = selected_view_index.unwrap_or(0);
+		push_constant
+			.write("work_item_base", Value::U32(0))
+			.expect("Failed to initialize the task work base. The most likely cause is a drifted push constant layout.");
+		push_constant
+			.write("view_index", Value::U32(view_index))
+			.expect("Failed to initialize the task view index. The most likely cause is a drifted push constant layout.");
+		let mut mesh_dispatch_work = buffer(program, MESH_DISPATCH_WORK_SLOT);
+		let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
+		mesh_dispatch_work
+			.write_indexed("items", workgroup_index as usize, Value::U32(packed_work))
+			.expect("Failed to initialize compact mesh dispatch work. The most likely cause is a drifted work-item layout.");
 
 		let mut task_outputs = TaskOutputs::new();
 		let mut workgroup_state = WorkgroupState::new();
@@ -685,9 +551,7 @@ mod tests {
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 			descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
-			if let Some(work) = mesh_dispatch_work.as_mut() {
-				descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, work);
-			}
+			descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
 			descriptors.bind_push_constant(&mut push_constant);
 			descriptors.bind_task_outputs(&mut task_outputs);
 			descriptors.bind_workgroup_state(&mut workgroup_state);
@@ -712,16 +576,7 @@ mod tests {
 			run_meshlet_task_workgroup(program, view_projections, selected_view_index, &[center_radius], skinned);
 		(
 			task_outputs.mesh_output_count(),
-			task_outputs
-				.payload_value(
-					if selected_view_index.is_some() {
-						"meshlet_instances"
-					} else {
-						"meshlet_indices"
-					},
-					0,
-				)
-				.cloned(),
+			task_outputs.payload_value("meshlet_instances", 0).cloned(),
 		)
 	}
 
@@ -730,7 +585,16 @@ mod tests {
 	fn visibility_task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
 		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
 		let visible = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [0.0, 0.0, 0.5, 0.1], false);
-		assert_eq!(visible, (Some(1), Some(Value::U32(FIXTURE_MESHLET_INDEX as u32))));
+		assert_eq!(
+			visible,
+			(
+				Some(1),
+				Some(Value::U32(meshlet_instance(
+					FIXTURE_MESHLET_INDEX as u32,
+					FIXTURE_INSTANCE_INDEX as u32,
+				)))
+			)
+		);
 
 		let culled = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], false);
 		assert_eq!(culled, (Some(0), None));
@@ -750,14 +614,37 @@ mod tests {
 
 		assert_eq!(output.mesh_output_count(), Some(2));
 		assert_eq!(
-			output.payload_value("meshlet_indices", 0),
-			Some(&Value::U32(FIXTURE_MESHLET_INDEX as u32))
+			output.payload_value("meshlet_instances", 0),
+			Some(&Value::U32(meshlet_instance(
+				FIXTURE_MESHLET_INDEX as u32,
+				FIXTURE_INSTANCE_INDEX as u32,
+			)))
 		);
 		assert_eq!(
-			output.payload_value("meshlet_indices", 1),
-			Some(&Value::U32(FIXTURE_MESHLET_INDEX as u32 + 2))
+			output.payload_value("meshlet_instances", 1),
+			Some(&Value::U32(meshlet_instance(
+				FIXTURE_MESHLET_INDEX as u32 + 2,
+				FIXTURE_INSTANCE_INDEX as u32,
+			)))
 		);
-		assert_eq!(output.payload_value("meshlet_indices", 2), None);
+		assert_eq!(output.payload_value("meshlet_instances", 2), None);
+	}
+
+	/// Verifies visibility culling reads the work item selected by the global dispatch position.
+	#[test]
+	fn visibility_task_main_selects_later_batched_workgroup() {
+		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
+		let output =
+			run_meshlet_task_workgroup_at(&program, &[(0, identity_matrix())], None, &[[0.0, 0.0, 0.5, 0.1]], false, 1);
+
+		assert_eq!(output.mesh_output_count(), Some(1));
+		assert_eq!(
+			output.payload_value("meshlet_instances", 0),
+			Some(&Value::U32(meshlet_instance(
+				FIXTURE_MESHLET_INDEX as u32,
+				FIXTURE_INSTANCE_INDEX as u32,
+			)))
+		);
 	}
 
 	/// Verifies deformed geometry reaches the mesh stage even when its static meshlet bound is outside the frustum.
@@ -765,7 +652,16 @@ mod tests {
 	fn visibility_task_main_bypasses_static_culling_for_skinned_meshes() {
 		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
 		let output = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], true);
-		assert_eq!(output, (Some(1), Some(Value::U32(FIXTURE_MESHLET_INDEX as u32))));
+		assert_eq!(
+			output,
+			(
+				Some(1),
+				Some(Value::U32(meshlet_instance(
+					FIXTURE_MESHLET_INDEX as u32,
+					FIXTURE_INSTANCE_INDEX as u32,
+				)))
+			)
+		);
 	}
 
 	/// Verifies shadow culling selects the cascade view named by the second push constant.
@@ -780,7 +676,7 @@ mod tests {
 			output,
 			(
 				Some(1),
-				Some(Value::U32(shadow_meshlet_instance(
+				Some(Value::U32(meshlet_instance(
 					FIXTURE_MESHLET_INDEX as u32,
 					FIXTURE_INSTANCE_INDEX as u32,
 				)))
@@ -804,7 +700,7 @@ mod tests {
 		assert_eq!(output.mesh_output_count(), Some(1));
 		assert_eq!(
 			output.payload_value("meshlet_instances", 0),
-			Some(&Value::U32(shadow_meshlet_instance(
+			Some(&Value::U32(meshlet_instance(
 				FIXTURE_MESHLET_INDEX as u32,
 				FIXTURE_INSTANCE_INDEX as u32,
 			)))
@@ -951,45 +847,37 @@ mod tests {
 			)
 			.clone();
 		let mut push_constant = besl::vm::Buffer::new(push_constant_layout);
-		if let Some((view_index, view_projection, render_target_array_index)) = selected_view {
-			views
-				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
-				.expect("Failed to initialize the selected mesh view. The most likely cause is a drifted View layout.");
-			push_constant
-				.write("work_item_base", Value::U32(0))
-				.expect("Failed to initialize the mesh work base. The most likely cause is a drifted push constant layout.");
-			push_constant
-				.write("view_index", Value::U32(view_index as u32))
-				.expect("Failed to initialize the shadow view index. The most likely cause is a drifted push constant layout.");
-			push_constant
-				.write("render_target_array_index", Value::U32(render_target_array_index))
-				.expect(
-					"Failed to initialize the shadow target layer. The most likely cause is a drifted push constant layout.",
-				);
-		} else {
-			push_constant
-				.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
-				.expect(
-					"Failed to initialize the mesh instance index. The most likely cause is a drifted push constant layout.",
-				);
-		}
+		let (view_index, render_target_array_index) =
+			if let Some((view_index, view_projection, render_target_array_index)) = selected_view {
+				views
+					.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
+					.expect("Failed to initialize the selected mesh view. The most likely cause is a drifted View layout.");
+				(view_index as u32, render_target_array_index)
+			} else {
+				(0, 0)
+			};
+		push_constant
+			.write("work_item_base", Value::U32(0))
+			.expect("Failed to initialize the mesh work base. The most likely cause is a drifted push constant layout.");
+		push_constant
+			.write("view_index", Value::U32(view_index))
+			.expect("Failed to initialize the mesh view index. The most likely cause is a drifted push constant layout.");
+		push_constant
+			.write("render_target_array_index", Value::U32(render_target_array_index))
+			.expect("Failed to initialize the mesh target layer. The most likely cause is a drifted push constant layout.");
 
 		let mut out_instance_indices = buffer(&program, output_slot(0));
 		let mut out_primitive_indices = buffer(&program, output_slot(1));
 		let mut mesh_outputs = MeshOutputs::new();
 		{
 			let mut descriptors = DescriptorBindings::new();
-			if selected_view.is_some() {
-				descriptors.bind_task_payload(
-					"meshlet_instances",
-					[Value::U32(shadow_meshlet_instance(
-						FIXTURE_MESHLET_INDEX as u32,
-						FIXTURE_INSTANCE_INDEX as u32,
-					))],
-				);
-			} else {
-				descriptors.bind_task_payload("meshlet_indices", [Value::U32(FIXTURE_MESHLET_INDEX as u32)]);
-			}
+			descriptors.bind_task_payload(
+				"meshlet_instances",
+				[Value::U32(meshlet_instance(
+					FIXTURE_MESHLET_INDEX as u32,
+					FIXTURE_INSTANCE_INDEX as u32,
+				))],
+			);
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 			descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);

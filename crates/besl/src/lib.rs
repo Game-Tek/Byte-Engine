@@ -19,8 +19,8 @@ pub use lexer::Node;
 pub use lexer::Nodes;
 pub use lexer::Operators;
 
-pub use crate::lexer::BindingTypes;
 pub use crate::lexer::NodeReference;
+pub use crate::lexer::{BindingTypes, BufferMemoryClass};
 
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;

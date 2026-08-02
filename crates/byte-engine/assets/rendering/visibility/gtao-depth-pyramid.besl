@@ -9,7 +9,7 @@ FastGTAOView: struct {
 	depth_unproject_denominator_offset: f32,
 }
 
-gtao_view: descriptor<FastGTAOView, 0, read>;
+gtao_view: descriptor<FastGTAOView, 0, read, constant>;
 source_depth: descriptor<Texture2D, 1033, read>;
 reduced_depth_1: descriptor<StorageImage<r32f>, 1034, write>;
 reduced_depth_2: descriptor<StorageImage<r32f>, 1035, write>;

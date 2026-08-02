@@ -65,13 +65,13 @@ Meshlets: struct {
 	meshlets: Meshlet[4096],
 }
 
-views: descriptor<Views, 0, read>;
-meshes: descriptor<Meshes, 1, read>;
-vertex_positions: descriptor<VertexPositions, 2, read>;
-skinned_vertices: descriptor<SkinnedVertices, 4, read>;
-vertex_indices: descriptor<VertexIndices, 6, read>;
-primitive_indices: descriptor<PrimitiveIndices, 7, read>;
-meshlets: descriptor<Meshlets, 8, read>;
+views: descriptor<Views, 0, read, constant>;
+meshes: descriptor<Meshes, 1, read, device>;
+vertex_positions: descriptor<VertexPositions, 2, read, device>;
+skinned_vertices: descriptor<SkinnedVertices, 4, read, device>;
+vertex_indices: descriptor<VertexIndices, 6, read, device>;
+primitive_indices: descriptor<PrimitiveIndices, 7, read, device>;
+meshlets: descriptor<Meshlets, 8, read, device>;
 
 meshlet_instances: task_payload<u32, 32>;
 out_instance_index: output<u32, 0, 126>;

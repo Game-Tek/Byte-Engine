@@ -25,6 +25,15 @@ pub struct Generator<A: Allocator + Clone = Global> {
 
 const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 
+/// Selects the Metal address space from the buffer's declared memory class and access mode.
+fn buffer_address_space(memory_class: besl::BufferMemoryClass, write: bool) -> &'static str {
+	match (memory_class, write) {
+		(_, true) => "device",
+		(besl::BufferMemoryClass::Constant, false) => "constant",
+		(besl::BufferMemoryClass::Device, false) => "const device",
+	}
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComputeBindingMode {
 	ArgumentBuffers,
@@ -1307,6 +1316,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			name,
 			read,
 			write,
+			memory_class,
 			r#type,
 			count,
 			..
@@ -1335,7 +1345,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match r#type {
 			besl::BindingTypes::Buffer { .. } => {
-				let address_space = if *write { "device" } else { "constant" };
+				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
 				string.push_str(&format!("_{}* {}", name, name));
@@ -1735,6 +1745,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			slot,
 			read,
 			write,
+			memory_class,
 			r#type,
 			..
 		} = node.node()
@@ -1746,7 +1757,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match r#type {
 			besl::BindingTypes::Buffer { .. } => {
-				let address_space = if *write { "device" } else { "constant" };
+				let address_space = buffer_address_space(*memory_class, *write);
 				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
@@ -2731,6 +2742,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				slot,
 				read,
 				write,
+				memory_class,
 				r#type,
 				count,
 				..
@@ -2754,7 +2766,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 						self.emit_struct_declaration_end(string);
 
-						let address_space = if *write { "device" } else { "constant" };
+						let address_space = buffer_address_space(*memory_class, *write);
 
 						string.push_str(address_space);
 						string.push(' ');
@@ -3291,6 +3303,55 @@ mod tests {
 			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
+	}
+
+	#[test]
+	fn buffer_memory_classes_select_metal_address_spaces() {
+		let source = r#"
+			DispatchValues: struct { value: u32, }
+			Vertices: struct { values: u32[1024], }
+			Counters: struct { values: u32[1024], }
+			dispatch_values: descriptor<DispatchValues, 0, read, constant>;
+			vertices: descriptor<Vertices, 1, read, device>;
+			counters: descriptor<Counters, 2, read_write, device>;
+			main: fn () -> void {
+				let index: u32 = thread_id().x;
+				counters.values[index] = vertices.values[index] + dispatch_values.value;
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected memory-class source to link");
+		let main = root.get_main().expect("Expected memory-class source to define main");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
+
+		let argument_buffer_shader = Generator::new()
+			.minified(true)
+			.generate(&settings, &main)
+			.expect("Expected memory-class source to lower through Metal argument buffers");
+		assert_string_contains!(
+			argument_buffer_shader,
+			"constant _dispatch_values* dispatch_values [[id(0)]];"
+		);
+		assert_string_contains!(argument_buffer_shader, "const device _vertices* vertices [[id(1)]];");
+		assert_string_contains!(argument_buffer_shader, "device _counters* counters [[id(2)]];");
+
+		let bare_resource_shader = Generator::new()
+			.minified(true)
+			.compute_binding_mode(ComputeBindingMode::BareResources)
+			.generate(&settings, &main)
+			.expect("Expected memory-class source to lower through bare Metal resources");
+		assert_string_contains!(
+			bare_resource_shader,
+			"constant _dispatch_values* dispatch_values [[buffer(0)]]"
+		);
+		assert_string_contains!(bare_resource_shader, "const device _vertices* vertices [[buffer(1)]]");
+		assert_string_contains!(bare_resource_shader, "device _counters* counters [[buffer(2)]]");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&argument_buffer_shader,
+			"besl-buffer-memory-classes",
+		)
+		.expect("Expected generated memory-class MSL to compile natively");
 	}
 
 	#[test]
@@ -3913,7 +3974,7 @@ struct PrimitiveOutput {
 	fn vertex_shader_generates_msl_entry_point() {
 		let mut root = besl::parser::Node::root();
 		let camera = besl::parser::Node::r#struct("Camera", vec![besl::parser::Node::member("view_projection", "mat4f")]);
-		let cameras = besl::parser::Node::binding(
+		let cameras = besl::parser::Node::constant_buffer_binding(
 			"cameras",
 			besl::parser::Node::buffer("CamerasBuffer", vec![besl::parser::Node::member("cameras", "Camera[8]")]),
 			0,
@@ -3972,7 +4033,7 @@ struct PrimitiveOutput {
 		let camera =
 			root.add_child(besl::Node::r#struct("Camera", vec![besl::Node::member("view_projection", mat4f).into()]).into());
 		root.add_children(vec![
-			besl::Node::binding(
+			besl::Node::binding_in_memory(
 				"cameras",
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("cameras", camera, 1)],
@@ -3980,6 +4041,7 @@ struct PrimitiveOutput {
 				0,
 				true,
 				false,
+				besl::BufferMemoryClass::Constant,
 			)
 			.into(),
 			besl::Node::input("in_position", vec3f, 0).into(),

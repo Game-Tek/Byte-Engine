@@ -1,4 +1,4 @@
-MaterialCount: struct {
+	MaterialCount: struct {
 	material_count: atomicu32[1024],
 }
 

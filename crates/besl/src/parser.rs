@@ -16,7 +16,7 @@
 //! Use [`crate::parse`] as the entry point. The parser records cross-references by name.
 //! The [`crate::lexer`] module resolves those names later.
 
-use crate::tokenizer;
+use crate::{lexer::BufferMemoryClass, tokenizer};
 
 /// A shared syntax node in a parsed BESL tree.
 pub type NodeReference<'a> = &'a Node<'a>;
@@ -133,7 +133,29 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_with_count(name, r#type, slot, read, write, None)
+		Self::binding_with_count(name, r#type, slot, read, write, None, None)
+	}
+
+	/// Builds a buffer binding whose memory class is independent from its read and write access.
+	pub fn binding_in_memory(
+		name: &'a str,
+		r#type: Node<'a>,
+		slot: u32,
+		read: bool,
+		write: bool,
+		memory_class: BufferMemoryClass,
+	) -> Node<'a> {
+		Self::binding_with_count(name, r#type, slot, read, write, Some(memory_class), None)
+	}
+
+	/// Builds a buffer binding that stores thread-varying data in device memory.
+	pub fn device_buffer_binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
+	}
+
+	/// Builds a buffer binding that stores dispatch-shared values in constant memory.
+	pub fn constant_buffer_binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Constant)
 	}
 
 	fn binding_with_count(
@@ -142,6 +164,7 @@ impl<'a> Node<'a> {
 		slot: u32,
 		read: bool,
 		write: bool,
+		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroUsize>,
 	) -> Node<'a> {
 		Node {
@@ -151,6 +174,7 @@ impl<'a> Node<'a> {
 				slot,
 				read,
 				write,
+				memory_class,
 				count,
 			},
 		}
@@ -160,7 +184,7 @@ impl<'a> Node<'a> {
 		let count = NonZeroUsize::new(count as usize).expect(
 			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
 		);
-		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
+		Self::binding_with_count(name, r#type, slot, read, write, None, Some(count))
 	}
 
 	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
@@ -527,6 +551,7 @@ pub enum Nodes<'a> {
 		slot: u32,
 		read: bool,
 		write: bool,
+		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroUsize>,
 	},
 	/// A flat resource descriptor declared directly in BESL source.
@@ -537,6 +562,7 @@ pub enum Nodes<'a> {
 		slot: u32,
 		read: bool,
 		write: bool,
+		memory_class: Option<&'a str>,
 		count: Option<NonZeroU32>,
 	},
 	/// A constant selected when the application creates a pipeline.
@@ -1052,31 +1078,64 @@ fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> 
 		}
 	};
 
-	let count = if iterator.clone().next().copied() == Some(",") {
+	let (memory_class, count) = if iterator.clone().next().copied() == Some(",") {
 		iterator.next();
-		let count = iterator
+		let memory_class_or_count = iterator
 			.next()
 			.ok_or_else(|| {
 				syntax_error(format!(
-					"Expected a resource count in descriptor {}. The most likely cause is that the fourth descriptor argument is missing.",
-					name
-				))
-			})?
-			.parse::<u32>()
-			.map_err(|_| {
-				syntax_error(format!(
-					"Invalid resource count in descriptor {}. The most likely cause is that the count is not a u32 literal.",
+					"Expected a buffer memory class or resource count in descriptor {}. The most likely cause is that the fourth descriptor argument is missing.",
 					name
 				))
 			})?;
-		Some(NonZeroU32::new(count).ok_or_else(|| {
-			syntax_error(format!(
-				"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
-				name
-			))
-		})?)
+
+		if matches!(*memory_class_or_count, "constant" | "device") {
+			let count = if iterator.clone().next().copied() == Some(",") {
+				iterator.next();
+				let count = iterator
+					.next()
+					.ok_or_else(|| {
+						syntax_error(format!(
+							"Expected a resource count in descriptor {}. The most likely cause is that the fifth descriptor argument is missing.",
+							name
+						))
+					})?
+					.parse::<u32>()
+					.map_err(|_| {
+						syntax_error(format!(
+							"Invalid resource count in descriptor {}. The most likely cause is that the count is not a u32 literal.",
+							name
+						))
+					})?;
+				Some(NonZeroU32::new(count).ok_or_else(|| {
+					syntax_error(format!(
+						"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
+						name
+					))
+				})?)
+			} else {
+				None
+			};
+			(Some(*memory_class_or_count), count)
+		} else {
+			let count = memory_class_or_count.parse::<u32>().map_err(|_| {
+				syntax_error(format!(
+					"Invalid buffer memory class or resource count `{}` in descriptor {}. The most likely cause is that the fourth descriptor argument is neither constant, device, nor a u32 count.",
+					memory_class_or_count, name
+				))
+			})?;
+			(
+				None,
+				Some(NonZeroU32::new(count).ok_or_else(|| {
+					syntax_error(format!(
+						"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
+						name
+					))
+				})?),
+			)
+		}
 	} else {
-		None
+		(None, None)
 	};
 
 	iterator.next_str(">").map_err(|_| {
@@ -1101,6 +1160,7 @@ fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> 
 				slot,
 				read,
 				write,
+				memory_class,
 				count,
 			},
 		},
@@ -2170,6 +2230,44 @@ mod tests {
 			root["textures"].node(),
 			Nodes::Descriptor { resource_type: "Texture2DArray", slot: 20, count: Some(count), .. }
 				if count.get() == 16
+		));
+	}
+
+	#[test]
+	fn parse_buffer_memory_classes_after_descriptor_access() {
+		let tokens = tokenize(
+			r#"
+				view: descriptor<View, 0, read, constant>;
+				vertices: descriptor<Vertices, 1, read, device>;
+				counters: descriptor<Counters, 2, read_write, device, 4>;
+			"#,
+		)
+		.expect("buffer memory class source should tokenize");
+		let root = parse(&tokens).expect("buffer memory class source should parse");
+
+		assert!(matches!(
+			root["view"].node(),
+			Nodes::Descriptor {
+				memory_class: Some("constant"),
+				count: None,
+				..
+			}
+		));
+		assert!(matches!(
+			root["vertices"].node(),
+			Nodes::Descriptor {
+				memory_class: Some("device"),
+				count: None,
+				..
+			}
+		));
+		assert!(matches!(
+			root["counters"].node(),
+			Nodes::Descriptor {
+				memory_class: Some("device"),
+				count: Some(count),
+				..
+			} if count.get() == 4
 		));
 	}
 

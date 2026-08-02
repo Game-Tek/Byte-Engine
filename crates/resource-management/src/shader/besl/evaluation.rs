@@ -499,6 +499,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 			write,
 			r#type,
 			count,
+			..
 		} => {
 			let (kind, buffer_stride) = match r#type {
 				besl::BindingTypes::Buffer { members } => {

@@ -9,7 +9,7 @@ SkyParameters: struct {
 
 transmittance_lut: descriptor<Texture2D, 0, read>;
 sky_view_lut: descriptor<StorageImage<rgba16>, 1, write>;
-parameters: descriptor<SkyParameters, 2, read>;
+parameters: descriptor<SkyParameters, 2, read, constant>;
 
 get_camera_position: fn () -> vec3f {
 	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);

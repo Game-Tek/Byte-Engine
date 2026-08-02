@@ -34,12 +34,12 @@ SkinnedVertices: struct {
 	values: SkinnedVertex[262144],
 }
 
-source_positions: descriptor<SourcePositions, 0, read>;
-source_normals: descriptor<SourceNormals, 1, read>;
-source_joints: descriptor<SourceJoints, 2, read>;
-source_weights: descriptor<SourceWeights, 3, read>;
-matrix_palette: descriptor<MatrixPalette, 4, read>;
-skinned_vertices: descriptor<SkinnedVertices, 5, write>;
+source_positions: descriptor<SourcePositions, 0, read, device>;
+source_normals: descriptor<SourceNormals, 1, read, device>;
+source_joints: descriptor<SourceJoints, 2, read, device>;
+source_weights: descriptor<SourceWeights, 3, read, device>;
+matrix_palette: descriptor<MatrixPalette, 4, read, device>;
+skinned_vertices: descriptor<SkinnedVertices, 5, write, device>;
 
 push_constant: push_constant {
 	source_vertex_base: u32,

@@ -22,9 +22,9 @@ PixelMapping: struct {
 	pixel_mapping: vec2u16[8294400],
 }
 
-mesh_data: descriptor<MeshData, 1, read>;
-material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write>;
-pixel_mapping_buffer: descriptor<PixelMapping, 1037, write>;
+mesh_data: descriptor<MeshData, 1, read, device>;
+material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write, device>;
+pixel_mapping_buffer: descriptor<PixelMapping, 1037, write, device>;
 instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
 
 tile_histogram_keys: workgroup<atomicu32, 32>;

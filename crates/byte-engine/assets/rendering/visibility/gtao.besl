@@ -33,8 +33,8 @@ SampleAddress: struct {
 	key: u32,
 }
 
-gtao_view: descriptor<FastGTAOView, 0, read>;
-gtao_parameters: descriptor<GTAOParameters, 1, read>;
+gtao_view: descriptor<FastGTAOView, 0, read, constant>;
+gtao_parameters: descriptor<GTAOParameters, 1, read, constant>;
 linear_depth_0: descriptor<Texture2D, 1033, read>;
 ao_output: descriptor<StorageImage<r8>, 1034, write>;
 linear_depth_1: descriptor<Texture2D, 1035, read>;

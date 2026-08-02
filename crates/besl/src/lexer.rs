@@ -611,8 +611,21 @@ impl Node {
 		}
 	}
 
+	/// Builds a device-backed binding. Use [`Self::binding_in_memory`] for dispatch-shared constant data.
 	pub fn binding(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
-		Self::binding_with_count(name, r#type, slot, read, write, None)
+		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
+	}
+
+	/// Builds a binding whose memory class is independent from its read and write access.
+	pub fn binding_in_memory(
+		name: &str,
+		r#type: BindingTypes,
+		slot: u32,
+		read: bool,
+		write: bool,
+		memory_class: BufferMemoryClass,
+	) -> Node {
+		Self::binding_with_count(name, r#type, slot, read, write, memory_class, None)
 	}
 
 	fn binding_with_count(
@@ -621,6 +634,7 @@ impl Node {
 		slot: u32,
 		read: bool,
 		write: bool,
+		memory_class: BufferMemoryClass,
 		count: Option<NonZeroU32>,
 	) -> Node {
 		Node {
@@ -630,18 +644,32 @@ impl Node {
 				slot,
 				read,
 				write,
+				memory_class,
 				count,
 			},
 		}
 	}
 
 	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
+		Self::binding_array_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device, count)
+	}
+
+	/// Builds a resource array whose buffer memory class is independent from its read and write access.
+	pub fn binding_array_in_memory(
+		name: &str,
+		r#type: BindingTypes,
+		slot: u32,
+		read: bool,
+		write: bool,
+		memory_class: BufferMemoryClass,
+		count: usize,
+	) -> Node {
 		let count = u32::try_from(count)
 			.expect("Invalid binding array count. The most likely cause is that a resource array exceeds u32::MAX elements.");
 		let count = NonZeroU32::new(count).expect(
 			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
 		);
-		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
+		Self::binding_with_count(name, r#type, slot, read, write, memory_class, Some(count))
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
@@ -853,6 +881,16 @@ pub enum BindingTypes {
 	Image { format: String },
 }
 
+/// The `BufferMemoryClass` enum selects the memory region that best matches a buffer's shader access pattern.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BufferMemoryClass {
+	/// Use constant memory for small values shared by the dispatch or draw.
+	#[default]
+	Constant,
+	/// Use device memory for large data that varies between shader threads.
+	Device,
+}
+
 #[derive(Clone)]
 pub enum Nodes {
 	Null,
@@ -904,6 +942,7 @@ pub enum Nodes {
 		slot: u32,
 		read: bool,
 		write: bool,
+		memory_class: BufferMemoryClass,
 		r#type: BindingTypes,
 		count: Option<NonZeroU32>,
 	},
@@ -1107,13 +1146,14 @@ impl std::fmt::Debug for Node {
 				slot,
 				read,
 				write,
+				memory_class,
 				r#type,
 				count,
 			} => {
 				write!(
 					f,
-					"Binding {{ name: {}, slot: {}, read: {}, write: {}, type: {:?}, count: {:?} }}",
-					name, slot, read, write, r#type, count
+					"Binding {{ name: {}, slot: {}, read: {}, write: {}, memory_class: {:?}, type: {:?}, count: {:?} }}",
+					name, slot, read, write, memory_class, r#type, count
 				)
 			}
 			Nodes::PushConstant { members } => {
@@ -1920,6 +1960,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			slot,
 			read,
 			write,
+			memory_class,
 			count,
 		} => {
 			let r#type = match &r#type.node {
@@ -1942,10 +1983,16 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 				}
 			};
 
+			let memory_class = match memory_class {
+				Some(BufferMemoryClass::Constant) => BufferMemoryClass::Constant,
+				Some(BufferMemoryClass::Device) => BufferMemoryClass::Device,
+				None => BufferMemoryClass::Device,
+			};
+
 			let this = if let Some(count) = count {
-				Node::binding_array(name, r#type, *slot, *read, *write, count.get())
+				Node::binding_array_in_memory(name, r#type, *slot, *read, *write, memory_class, count.get())
 			} else {
-				Node::binding(name, r#type, *slot, *read, *write)
+				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class)
 			};
 
 			this.into()
@@ -1957,16 +2004,43 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			slot,
 			read,
 			write,
+			memory_class,
 			count,
-		} => Node::binding_with_count(
-			name,
-			resolve_descriptor_type(&chain, resource_type, *format)?,
-			*slot,
-			*read,
-			*write,
-			*count,
-		)
-		.into(),
+		} => {
+			let r#type = resolve_descriptor_type(&chain, resource_type, *format)?;
+			let memory_class = match &r#type {
+				BindingTypes::Buffer { .. } => match *memory_class {
+					Some("constant") => BufferMemoryClass::Constant,
+					Some("device") => BufferMemoryClass::Device,
+					Some(class) => {
+						return Err(LexError::Undefined {
+							message: Some(format!(
+								"Invalid buffer memory class `{class}` for descriptor {name}. The most likely cause is that the descriptor does not use constant or device memory."
+							)),
+						});
+					}
+					None => BufferMemoryClass::Device,
+				},
+				_ if memory_class.is_some() => {
+					return Err(LexError::Undefined {
+						message: Some(format!(
+							"Descriptor {name} declares a buffer memory class for a non-buffer resource. The most likely cause is that constant or device was attached to an image or texture descriptor."
+						)),
+					});
+				}
+				_ => BufferMemoryClass::Constant,
+			};
+
+			if *write && matches!(&r#type, BindingTypes::Buffer { .. }) && memory_class == BufferMemoryClass::Constant {
+				return Err(LexError::Undefined {
+					message: Some(format!(
+						"Writable buffer descriptor {name} uses constant memory. The most likely cause is that a writable buffer needs the device memory class."
+					)),
+				});
+			}
+
+			Node::binding_with_count(name, r#type, *slot, *read, *write, memory_class, *count).into()
+		}
 		parser::Nodes::Type { name, members } => {
 			let mut this = Node::r#struct(name, Vec::new());
 
@@ -2460,7 +2534,7 @@ mod tests {
 				value: u32,
 				weight: f32,
 			}
-			data: descriptor<Data, 2, read_write>;
+			data: descriptor<Data, 2, read_write, device>;
 			texture: descriptor<Texture2D, 5, read>;
 			texture_array: descriptor<Texture2DArray, 7, read, 16>;
 			volume: descriptor<Texture3D, 30, read>;
@@ -2479,6 +2553,7 @@ mod tests {
 				slot: 2,
 				read: true,
 				write: true,
+				memory_class: BufferMemoryClass::Device,
 				r#type: BindingTypes::Buffer { members },
 				count: None,
 				..
@@ -2550,6 +2625,20 @@ mod tests {
 				..
 			} if format == "unknown"
 		));
+	}
+
+	#[test]
+	fn source_descriptor_rejects_writable_constant_buffers() {
+		let source = r#"
+			Counters: struct { values: u32[8], }
+			counters: descriptor<Counters, 0, write, constant>;
+			main: fn () -> void { counters.values[0] = 1; }
+		"#;
+
+		assert!(
+			crate::compile_to_besl(source, None).is_err(),
+			"Writable buffers must select the device memory class"
+		);
 	}
 
 	#[test]

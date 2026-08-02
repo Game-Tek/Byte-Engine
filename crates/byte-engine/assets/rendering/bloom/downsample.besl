@@ -5,7 +5,7 @@ BloomParameters: struct {
 
 source_texture: descriptor<Texture2D, 0, read>;
 result_texture: descriptor<StorageImage<rgba16>, 1, write>;
-bloom_parameters: descriptor<BloomParameters, 2, read>;
+bloom_parameters: descriptor<BloomParameters, 2, read, constant>;
 
 main: fn() -> void {
 	let coord: vec2u = thread_id();

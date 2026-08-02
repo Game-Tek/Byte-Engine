@@ -194,49 +194,49 @@ impl VisibilityShaderScope {
 		);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", material_texture_array_type())]);
 
-		let views_binding = Node::binding(
+		let views_binding = Node::constant_buffer_binding(
 			"views",
 			Node::buffer("ViewsBuffer", vec![Node::member("views", "View[9]")]),
 			0,
 			true,
 			false,
 		);
-		let meshes = Node::binding(
+		let meshes = Node::device_buffer_binding(
 			"meshes",
 			Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[1024]")]),
 			1,
 			true,
 			false,
 		);
-		let positions = Node::binding(
+		let positions = Node::device_buffer_binding(
 			"vertex_positions",
 			Node::buffer("Positions", vec![Node::member("positions", vertex_vec3_array_type())]),
 			2,
 			true,
 			false,
 		);
-		let normals = Node::binding(
+		let normals = Node::device_buffer_binding(
 			"vertex_normals",
 			Node::buffer("Normals", vec![Node::member("normals", vertex_vec3_array_type())]),
 			3,
 			true,
 			false,
 		);
-		let skinned_vertices = Node::binding(
+		let skinned_vertices = Node::device_buffer_binding(
 			"skinned_vertices",
 			Node::buffer("SkinnedVertices", vec![Node::member("vertices", skinned_vertex_array_type())]),
 			4,
 			true,
 			false,
 		);
-		let uvs = Node::binding(
+		let uvs = Node::device_buffer_binding(
 			"vertex_uvs",
 			Node::buffer("UVs", vec![Node::member("uvs", vertex_vec2_array_type())]),
 			5,
 			true,
 			false,
 		);
-		let vertex_indices = Node::binding(
+		let vertex_indices = Node::device_buffer_binding(
 			"vertex_indices",
 			Node::buffer(
 				"VertexIndices",
@@ -246,7 +246,7 @@ impl VisibilityShaderScope {
 			true,
 			false,
 		);
-		let primitive_indices = Node::binding(
+		let primitive_indices = Node::device_buffer_binding(
 			"primitive_indices",
 			Node::buffer(
 				"PrimitiveIndices",
@@ -256,7 +256,7 @@ impl VisibilityShaderScope {
 			true,
 			false,
 		);
-		let meshlets = Node::binding(
+		let meshlets = Node::device_buffer_binding(
 			"meshlets",
 			Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", meshlet_array_type())]),
 			8,
@@ -272,21 +272,21 @@ impl VisibilityShaderScope {
 			MAX_BINDLESS_TEXTURES as u32,
 		);
 
-		let material_count = Node::binding(
+		let material_count = Node::device_buffer_binding(
 			"material_count",
 			Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[1024]")]),
 			1033,
 			material_count_read,
 			material_count_write,
 		); // TODO: somehow set read/write properties per shader
-		let material_offset = Node::binding(
+		let material_offset = Node::device_buffer_binding(
 			"material_offset",
 			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[1024]")]),
 			1034,
 			material_offset_read,
 			material_offset_write,
 		);
-		let material_offset_scratch = Node::binding(
+		let material_offset_scratch = Node::device_buffer_binding(
 			"material_offset_scratch",
 			Node::buffer(
 				"MaterialOffsetScratch",
@@ -296,7 +296,7 @@ impl VisibilityShaderScope {
 			material_offset_scratch_read,
 			material_offset_scratch_write,
 		);
-		let material_evaluation_dispatches = Node::binding(
+		let material_evaluation_dispatches = Node::device_buffer_binding(
 			"material_evaluation_dispatches",
 			Node::buffer(
 				"MaterialEvaluationDispatches",
@@ -306,7 +306,7 @@ impl VisibilityShaderScope {
 			material_offset_read,
 			material_offset_write,
 		);
-		let pixel_mapping = Node::binding(
+		let pixel_mapping = Node::device_buffer_binding(
 			"pixel_mapping",
 			Node::buffer(
 				"PixelMapping",
@@ -348,7 +348,7 @@ impl VisibilityShaderScope {
 			"cone_attenuation",
 		);
 		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, true, true);
-		let set2_binding4 = Node::binding(
+		let set2_binding4 = Node::constant_buffer_binding(
 			"lighting_data",
 			Node::buffer(
 				"LightingBuffer",
@@ -363,7 +363,7 @@ impl VisibilityShaderScope {
 			true,
 			false,
 		);
-		let set2_binding5 = Node::binding(
+		let set2_binding5 = Node::device_buffer_binding(
 			"materials",
 			Node::buffer("MaterialBuffer", vec![Node::member("materials", material_array_type())]),
 			1046,

@@ -11,7 +11,7 @@ depth_texture: descriptor<Texture2D, 0, read>;
 main_texture: descriptor<StorageImage<rgba16>, 1, read_write>;
 sky_view_lut: descriptor<Texture2D, 2, read>;
 transmittance_lut: descriptor<Texture2D, 3, read>;
-parameters: descriptor<SkyParameters, 4, read>;
+parameters: descriptor<SkyParameters, 4, read, constant>;
 
 get_camera_position: fn () -> vec3f {
 	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);

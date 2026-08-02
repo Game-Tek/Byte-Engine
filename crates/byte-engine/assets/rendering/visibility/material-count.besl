@@ -18,8 +18,8 @@ MaterialCount: struct {
 	material_count: atomicu32[1024],
 }
 
-mesh_data: descriptor<MeshData, 1, read>;
-material_count_buffer: descriptor<MaterialCount, 1033, read_write>;
+mesh_data: descriptor<MeshData, 1, read, device>;
+material_count_buffer: descriptor<MaterialCount, 1033, read_write, device>;
 instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
 
 tile_histogram_keys: workgroup<atomicu32, 32>;

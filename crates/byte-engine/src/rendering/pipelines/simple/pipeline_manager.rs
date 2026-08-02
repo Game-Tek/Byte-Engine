@@ -310,7 +310,7 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 	let instance = root.add_child(besl::Node::r#struct("Instance", vec![besl::Node::member("transform", mat4f).into()]).into());
 
 	root.add_children(vec![
-		besl::Node::binding(
+		besl::Node::binding_in_memory(
 			"cameras",
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("cameras", camera, 8)],
@@ -318,9 +318,10 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 			0,
 			true,
 			false,
+			besl::BufferMemoryClass::Constant,
 		)
 		.into(),
-		besl::Node::binding(
+		besl::Node::binding_in_memory(
 			"instances",
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("instances", instance, 8)],
@@ -328,6 +329,7 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 			1,
 			true,
 			false,
+			besl::BufferMemoryClass::Device,
 		)
 		.into(),
 		besl::Node::input("in_position", vec3f.clone(), 0).into(),

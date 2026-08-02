@@ -2572,31 +2572,19 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push(')');
 				return;
 			}
-			"sample_environment_level" => {
-				string.push_str("resources.environment_specular[");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("].sample(resources.environment_specular_sampler[");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("], ");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", level(0.0))");
-				return;
-			}
-			"environment_level_size" => {
-				string.push_str("uint2(resources.environment_specular[");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("].get_width(),resources.environment_specular[");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("].get_height())");
-				return;
-			}
 			"texture_lod" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("_sampler, ");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", level(0.0))");
+				string.push_str(", level(");
+				if let Some(lod) = arguments.get(2) {
+					self.emit_node_string(string, lod);
+				} else {
+					string.push_str("0.0");
+				}
+				string.push_str("))");
 				return;
 			}
 			_ => {}

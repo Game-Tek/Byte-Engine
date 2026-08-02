@@ -352,7 +352,7 @@ impl VisibilityPipelineResourceManager {
 		})
 	}
 
-	/// Loads the diffuse and roughness-prefiltered streams, then creates detached single-mip images for render-thread adoption.
+	/// Loads the diffuse and roughness-prefiltered streams, then creates one mipmapped specular image for adoption.
 	async fn load_environment_with_factory(&mut self, id: &str) -> Result<FactoryEnvironment, ()> {
 		let mut reference: Reference<ResourceImage> =
 			self.resource_manager.request(id).await.map_err(|_| {
@@ -383,6 +383,24 @@ impl VisibilityPipelineResourceManager {
 
 		let diffuse_format = resource_image_format_to_ghi(ibl.diffuse_irradiance.format);
 		let specular_format = resource_image_format_to_ghi(ibl.prefiltered_specular.format);
+		let available_specular_mips = resource_management::resources::mips::mip_level_count(
+			ibl.prefiltered_specular.extent[0],
+			ibl.prefiltered_specular.extent[1],
+		)
+		.map_err(|_| {
+			log::error!(
+				"Visibility environment IBL dimensions are invalid for {}. The most likely cause is that the baked specular image has a zero dimension.",
+				id
+			);
+		})?;
+		if available_specular_mips < IBL_SPECULAR_LEVEL_COUNT as u32 {
+			log::error!(
+				"Visibility environment IBL mip chain is unsupported for {}. The most likely cause is that its base extent is too small for {} distinct mip levels.",
+				id,
+				IBL_SPECULAR_LEVEL_COUNT
+			);
+			return Err(());
+		}
 		let diffuse_extent = Extent::from(ibl.diffuse_irradiance.extent);
 		let specular_extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
 			std::array::from_fn(|level| environment_mip_extent(ibl.prefiltered_specular.extent, level as u32));
@@ -458,21 +476,20 @@ impl VisibilityPipelineResourceManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let specular_images = std::array::from_fn(|level| {
-			let name = format!("{id} prefiltered specular {level}");
-			device.build_image(
-				ghi::image::Builder::new(specular_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-					.name(&name)
-					.extent(specular_extents[level])
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-					.use_case(ghi::UseCases::STATIC),
-			)
-		});
-		let sampler = device.build_sampler(default_material_sampler_builder());
+		let specular_name = format!("{id} prefiltered specular");
+		let specular_image = device.build_image(
+			ghi::image::Builder::new(specular_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name(&specular_name)
+				.extent(specular_extents[0])
+				.mip_levels(IBL_SPECULAR_LEVEL_COUNT as u32)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.use_case(ghi::UseCases::STATIC),
+		);
+		let sampler = device.build_sampler(default_material_sampler_builder().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
 
 		Ok(FactoryEnvironment {
 			diffuse_image,
-			specular_images,
+			specular_image,
 			sampler,
 			diffuse_upload,
 			specular_uploads,
@@ -1003,6 +1020,7 @@ impl VisibilityPipelineResourceManagerWorker {
 				upload.source_bytes_per_row,
 				upload.source_bytes_per_image,
 				image,
+				0,
 			)]);
 			completions.push(VisibilityResourceCompletion::TextureUploadReady { index, image, sampler });
 			recorded_work = true;
@@ -1010,11 +1028,11 @@ impl VisibilityPipelineResourceManagerWorker {
 
 		while let Some(upload) = self.pending_environment_uploads.pop_front() {
 			let upload_size = upload
-				.specular
+				.specular_uploads
 				.iter()
 				.try_fold(
 					upload.diffuse.upload.data.len().next_multiple_of(TEXTURE_UPLOAD_ALIGNMENT),
-					|total, image| total.checked_add(image.upload.data.len().next_multiple_of(TEXTURE_UPLOAD_ALIGNMENT)),
+					|total, mip| total.checked_add(mip.data.len().next_multiple_of(TEXTURE_UPLOAD_ALIGNMENT)),
 				)
 				.expect(
 					"Visibility environment upload size overflowed. The most likely cause is malformed IBL stream metadata.",
@@ -1031,14 +1049,16 @@ impl VisibilityPipelineResourceManagerWorker {
 				upload.diffuse.image,
 				&upload.diffuse.upload,
 				TEXTURE_UPLOAD_ALIGNMENT,
+				0,
 			));
-			for image in &upload.specular {
+			for (mip_level, mip) in upload.specular_uploads.iter().enumerate() {
 				copies.push(stage_texture_upload(
 					slice,
 					staging_data_buffer,
-					image.image,
-					&image.upload,
+					upload.specular_image,
+					mip,
 					TEXTURE_UPLOAD_ALIGNMENT,
+					mip_level as u32,
 				));
 			}
 			transfer.copy_buffer_to_images(&copies);
@@ -1046,7 +1066,7 @@ impl VisibilityPipelineResourceManagerWorker {
 			completions.push(VisibilityResourceCompletion::EnvironmentUploadReady {
 				id: upload.id,
 				diffuse_image: upload.diffuse.image,
-				specular_images: upload.specular.map(|image| image.image),
+				specular_image: upload.specular_image,
 				sampler: upload.sampler,
 			});
 			recorded_work = true;
@@ -1135,7 +1155,7 @@ pub(crate) enum VisibilityResourceCompletion {
 	EnvironmentUploadReady {
 		id: String,
 		diffuse_image: ghi::BaseImageHandle,
-		specular_images: [ghi::BaseImageHandle; IBL_SPECULAR_LEVEL_COUNT],
+		specular_image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
 	},
 	Failed {
@@ -1253,7 +1273,7 @@ struct FactoryTexture {
 /// The `FactoryEnvironment` struct keeps one baked IBL set together until the render thread interns its GPU resources.
 pub(crate) struct FactoryEnvironment {
 	diffuse_image: ghi::implementation::factory::Image,
-	specular_images: [ghi::implementation::factory::Image; IBL_SPECULAR_LEVEL_COUNT],
+	specular_image: ghi::implementation::factory::Image,
 	sampler: ghi::implementation::factory::Sampler,
 	diffuse_upload: TextureUpload,
 	specular_uploads: [TextureUpload; IBL_SPECULAR_LEVEL_COUNT],
@@ -1263,22 +1283,9 @@ impl FactoryEnvironment {
 	/// Interns all detached resources while preserving the batch that the transfer worker will publish atomically.
 	pub(crate) fn intern(self, id: String, frame: &mut ghi::implementation::Frame) -> PendingEnvironmentUpload {
 		let diffuse_image = ghi::BaseImageHandle::from(frame.intern_image(self.diffuse_image));
-		let specular_images = self
-			.specular_images
-			.map(|image| ghi::BaseImageHandle::from(frame.intern_image(image)));
+		let specular_image = ghi::BaseImageHandle::from(frame.intern_image(self.specular_image));
 		let sampler = frame.intern_sampler(self.sampler);
-		let mut specular_images = specular_images.into_iter();
-		let mut specular_uploads = self.specular_uploads.into_iter();
-		let specular = std::array::from_fn(|_| {
-			PendingEnvironmentImageUpload {
-			image: specular_images.next().expect(
-				"Visibility environment image count changed. The most likely cause is that the fixed IBL array was consumed inconsistently.",
-			),
-			upload: specular_uploads.next().expect(
-				"Visibility environment upload count changed. The most likely cause is that the fixed IBL array was consumed inconsistently.",
-			),
-		}
-		});
+		let specular_uploads = self.specular_uploads;
 
 		PendingEnvironmentUpload {
 			id,
@@ -1286,7 +1293,8 @@ impl FactoryEnvironment {
 				image: diffuse_image,
 				upload: self.diffuse_upload,
 			},
-			specular,
+			specular_image,
+			specular_uploads,
 			sampler,
 		}
 	}
@@ -1302,7 +1310,8 @@ struct PendingEnvironmentImageUpload {
 pub(crate) struct PendingEnvironmentUpload {
 	id: String,
 	diffuse: PendingEnvironmentImageUpload,
-	specular: [PendingEnvironmentImageUpload; IBL_SPECULAR_LEVEL_COUNT],
+	specular_image: ghi::BaseImageHandle,
+	specular_uploads: [TextureUpload; IBL_SPECULAR_LEVEL_COUNT],
 	sampler: ghi::SamplerHandle,
 }
 
@@ -1717,6 +1726,7 @@ fn stage_texture_upload(
 	image: ghi::BaseImageHandle,
 	upload: &TextureUpload,
 	alignment: usize,
+	mip_level: u32,
 ) -> ghi::BufferImageCopyDescriptor {
 	let (source_offset, source_buffer) = slice.take_with_offset_aligned(upload.data.len(), alignment);
 	source_buffer.copy_from_slice(&upload.data);
@@ -1726,6 +1736,7 @@ fn stage_texture_upload(
 		upload.source_bytes_per_row,
 		upload.source_bytes_per_image,
 		image,
+		mip_level,
 	)
 }
 
@@ -1912,7 +1923,7 @@ mod tests {
 	}
 
 	#[test]
-	fn environment_specular_levels_are_independent_single_mip_images() {
+	fn environment_specular_streams_form_one_gpu_mip_chain() {
 		let extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
 			std::array::from_fn(|level| environment_mip_extent([1024, 512, 1], level as u32));
 

@@ -1612,6 +1612,7 @@ impl Device {
 		texture_view_type: TextureViewTypes,
 		array_layers: u32,
 		layer: Option<u32>,
+		mip_levels: u32,
 	) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 		assert!(
 			layer.is_none() || texture_view_type == TextureViewTypes::Texture2DArray,
@@ -1634,7 +1635,7 @@ impl Device {
 				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 					Texture2D: D3D12_TEX2D_SRV {
 						MostDetailedMip: 0,
-						MipLevels: 1,
+						MipLevels: mip_levels,
 						PlaneSlice: 0,
 						ResourceMinLODClamp: 0.0,
 					},
@@ -1651,7 +1652,7 @@ impl Device {
 			Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 				Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
 					MostDetailedMip: 0,
-					MipLevels: 1,
+					MipLevels: mip_levels,
 					FirstArraySlice: first_array_slice,
 					ArraySize: array_size,
 					PlaneSlice: 0,
@@ -3412,6 +3413,7 @@ impl Device {
 				builder.format,
 				builder.resource_uses,
 				array_layers,
+				builder.mip_levels,
 				optimized_clear_value,
 			)
 		};
@@ -3436,6 +3438,7 @@ impl Device {
 			uses: builder.resource_uses,
 			access: builder.device_accesses,
 			array_layers,
+			mip_levels: builder.mip_levels,
 			resource,
 			data,
 			frame_data,
@@ -3492,13 +3495,14 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let (extent, format, uses, array_layers, optimized_clear_value, dynamic) = {
+		let (extent, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = {
 			let image = self.images.get(image_handle.0 as usize)?;
 			(
 				image.extent,
 				image.format,
 				image.uses,
 				image.array_layers,
+				image.mip_levels,
 				image.optimized_clear_value,
 				image.frame_resources.is_some(),
 			)
@@ -3520,7 +3524,7 @@ impl Device {
 			.is_none();
 
 		if needs_resource {
-			let resource = self.create_image_resource(extent, format, uses, array_layers, optimized_clear_value);
+			let resource = self.create_image_resource(extent, format, uses, array_layers, mip_levels, optimized_clear_value);
 			if let Some(resource) = resource.as_ref() {
 				self.materialize_image_attachment_views(resource, format, uses, array_layers);
 			}
@@ -7251,15 +7255,20 @@ impl Device {
 		let Some(image) = self.images.get(copy.destination_image.0 as usize) else {
 			return;
 		};
+		if copy.destination_mip_level >= image.mip_levels {
+			panic!(
+				"DX12 texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
+			);
+		}
+		let extent = crate::image::mip_extent(image.extent, copy.destination_mip_level);
 		let (Some(destination), Some(format), Some((row_bytes, row_count, _))) = (
 			destination,
 			Self::dxgi_format(image.format),
-			utils::texture_copy_layout(image.format, image.extent),
+			utils::texture_copy_layout(image.format, extent),
 		) else {
 			return;
 		};
 
-		let extent = image.extent;
 		let source_row_pitch = if copy.source_bytes_per_row == 0 {
 			row_bytes
 		} else {
@@ -7286,6 +7295,7 @@ impl Device {
 			&source_bytes,
 			source_row_pitch,
 			source_image_pitch,
+			copy.destination_mip_level,
 		);
 	}
 
@@ -7330,6 +7340,7 @@ impl Device {
 				* utils::texture_copy_layout(image.format, image.extent)
 					.map(|(_, rows, _)| rows)
 					.unwrap_or(0),
+			0,
 		) {
 			self.gpu_uploaded_images.insert(image_handle.0);
 		}
@@ -7407,6 +7418,7 @@ impl Device {
 				* utils::texture_copy_layout(image.format, image.extent)
 					.map(|(_, rows, _)| rows)
 					.unwrap_or(0),
+			0,
 		) {
 			self.gpu_uploaded_images.insert(image_handle.0);
 		}
@@ -7460,6 +7472,7 @@ impl Device {
 		source_bytes: &[u8],
 		source_row_pitch: usize,
 		source_image_pitch: usize,
+		destination_mip_level: u32,
 	) -> bool {
 		let Some((row_bytes, row_count, _)) = utils::texture_copy_layout(self.images[image_handle.0 as usize].format, extent)
 		else {
@@ -7513,7 +7526,9 @@ impl Device {
 		let destination_location = D3D12_TEXTURE_COPY_LOCATION {
 			pResource: std::mem::ManuallyDrop::new(Some(destination)),
 			Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+				SubresourceIndex: destination_mip_level,
+			},
 		};
 
 		unsafe {
@@ -8313,6 +8328,7 @@ impl Device {
 			&source_bytes,
 			extent.width() as usize * bytes_per_pixel,
 			extent.width() as usize * extent.height() as usize * bytes_per_pixel,
+			0,
 		);
 	}
 
@@ -8570,13 +8586,14 @@ impl Device {
 		let format = current.format;
 		let uses = current.uses;
 		let array_layers = current.array_layers;
+		let mip_levels = current.mip_levels;
 		let optimized_clear_value = current.optimized_clear_value;
 		let mut retired_state_keys = SmallVec::<[usize; 4]>::new();
 		retired_state_keys.extend(current.resource.as_ref().map(Self::native_resource_key));
 		if let Some(frame_resources) = current.frame_resources.as_ref() {
 			retired_state_keys.extend(frame_resources.iter().flatten().map(Self::native_resource_key));
 		}
-		let resource = self.create_image_resource(extent, format, uses, array_layers, optimized_clear_value);
+		let resource = self.create_image_resource(extent, format, uses, array_layers, mip_levels, optimized_clear_value);
 		self.invalidate_attachment_views_for_resources(&retired_state_keys);
 		self.invalidate_clear_uav_descriptors_for_resources(&retired_state_keys);
 		if let Some(resource) = resource.as_ref() {
@@ -9023,7 +9040,8 @@ impl Device {
 				}
 				self.image_uav_descriptor_write_count += 1;
 			} else {
-				let desc = Self::descriptor_texture_srv_desc(format, descriptor.texture_view(), array_layers, layer);
+				let desc =
+					Self::descriptor_texture_srv_desc(format, descriptor.texture_view(), array_layers, layer, image.mip_levels);
 				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 				self.image_srv_descriptor_write_count += 1;
 			}
@@ -9415,6 +9433,7 @@ impl Device {
 		format: Formats,
 		uses: Uses,
 		array_layers: u32,
+		mip_levels: u32,
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
 	) -> Option<ID3D12Resource> {
 		let Some(dxgi_format) = Self::dxgi_resource_format(format, uses) else {
@@ -9441,7 +9460,9 @@ impl Device {
 			Width: extent.width().max(1) as u64,
 			Height: extent.height().max(1),
 			DepthOrArraySize: depth_or_array_size,
-			MipLevels: 1,
+			MipLevels: u16::try_from(mip_levels).expect(
+				"Invalid DX12 mip count. The most likely cause is that the image metadata exceeds the native 16-bit limit.",
+			),
 			Format: dxgi_format,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
@@ -9961,6 +9982,7 @@ pub(crate) struct Image {
 	uses: Uses,
 	access: DeviceAccesses,
 	array_layers: u32,
+	mip_levels: u32,
 	resource: Option<ID3D12Resource>,
 	data: Option<Vec<u8>>,
 	frame_data: Option<Vec<Vec<u8>>>,

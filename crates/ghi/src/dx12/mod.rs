@@ -3042,7 +3042,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::copy_buffer_to_images(
 			&mut recording,
-			&[crate::BufferImageCopyDescriptor::new(source.into(), 0, 8, 16, image.0)],
+			&[crate::BufferImageCopyDescriptor::new(source.into(), 0, 8, 16, image.0, 0)],
 		);
 		drop(recording);
 
@@ -3079,7 +3079,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::copy_buffer_to_images(
 			&mut recording,
-			&[crate::BufferImageCopyDescriptor::new(source.into(), 0, 32, 64, image.0)],
+			&[crate::BufferImageCopyDescriptor::new(source.into(), 0, 32, 64, image.0, 0)],
 		);
 		drop(recording);
 

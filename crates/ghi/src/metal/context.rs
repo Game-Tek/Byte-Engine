@@ -294,6 +294,7 @@ impl Context {
 			uses: resource_uses,
 			access: device_accesses,
 			array_layers,
+			mip_levels: 1,
 			staging,
 		}
 	}

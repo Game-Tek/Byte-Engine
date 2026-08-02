@@ -243,6 +243,15 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"texture_lod",
+				vec![
+					("texture", texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("lod", f32_t.clone()),
+				],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
 				vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
 				vec4f32.clone(),
 			),
@@ -2290,7 +2299,9 @@ fn intrinsic_matches_parameters(intrinsic: &NodeReference, parameters: &[NodeRef
 fn expression_matches_type(expression: &NodeReference, expected_type: &NodeReference) -> bool {
 	infer_expression_type(expression)
 		.map(|actual_type| actual_type.borrow().get_name() == expected_type.borrow().get_name())
-		.unwrap_or(false)
+		// Resource bindings do not expose a value type until backend lowering. Their
+		// arity still selects the correct overload, and known value arguments remain checked.
+		.unwrap_or(true)
 }
 
 fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {

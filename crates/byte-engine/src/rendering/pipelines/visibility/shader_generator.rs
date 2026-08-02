@@ -2,10 +2,7 @@ use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
 use besl::{parser::Node, NodeReference};
-use resource_management::{
-	asset::{bema_asset_handler::ProgramGenerator, JsonObject},
-	resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT,
-};
+use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
@@ -634,23 +631,16 @@ sample_environment_specular: fn (direction: vec3f, roughness: f32) -> vec3f {
 		0.5 - asin(clamp(dir.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
 	);
 	let specular_level: f32 = clamp(roughness, 0.0, 1.0) * 7.0;
-	let lower_level: u32 = u32(floor(specular_level));
-	let upper_level: u32 = lower_level + 1;
+	let upper_level: u32 = u32(floor(specular_level)) + 1;
 	if (upper_level > 7) {
 		upper_level = 7;
 	}
-	let lower_extent: vec2u = environment_level_size(lower_level);
-	let upper_extent: vec2u = environment_level_size(upper_level);
-	let lower_half_texel: f32 = 0.5 / f32(lower_extent.y);
-	let upper_half_texel: f32 = 0.5 / f32(upper_extent.y);
-	let lower_uv: vec2f = vec2f(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
-	let upper_uv: vec2f = vec2f(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
-	let lower_sample: vec4f = sample_environment_level(lower_level, lower_uv);
-	let upper_sample: vec4f = sample_environment_level(upper_level, upper_uv);
-	let level_blend: f32 = fract(specular_level);
-	let lower_color: vec3f = vec3f(lower_sample.x, lower_sample.y, lower_sample.z);
-	let upper_color: vec3f = vec3f(upper_sample.x, upper_sample.y, upper_sample.z);
-	return lower_color * (1.0 - level_blend) + upper_color * level_blend;
+	let base_extent: vec2u = texture_size(environment_specular);
+	let upper_level_scale: f32 = pow(2.0, f32(upper_level));
+	let upper_half_texel: f32 = 0.5 * upper_level_scale / f32(base_extent.y);
+	environment_uv.y = clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel);
+	let environment_sample: vec4f = texture_lod(environment_specular, environment_uv, specular_level);
+	return vec3f(environment_sample.x, environment_sample.y, environment_sample.z);
 }
 "#;
 
@@ -941,14 +931,7 @@ impl VisibilityShaderScope {
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
 		let cone_shadow_map = Node::binding("cone_shadow_map", Node::combined_array_image_sampler(), 1064, true, false);
 		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
-		let environment_specular = Node::binding_array(
-			"environment_specular",
-			Node::combined_image_sampler(),
-			1055,
-			true,
-			false,
-			IBL_PREFILTERED_SPECULAR_MIP_COUNT,
-		);
+		let environment_specular = Node::binding("environment_specular", Node::combined_image_sampler(), 1055, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]);
 
@@ -968,19 +951,6 @@ impl VisibilityShaderScope {
 			]),
 			"vec3f",
 		);
-		let sample_environment_level = Node::intrinsic_with_parameters(
-			"sample_environment_level",
-			vec![Node::parameter("level", "u32"), Node::parameter("uv", "vec2f")],
-			Node::sentence(vec![Node::member_expression("environment_specular")]),
-			"vec4f",
-		);
-		let environment_level_size = Node::intrinsic(
-			"environment_level_size",
-			Node::parameter("level", "u32"),
-			Node::sentence(vec![Node::member_expression("environment_specular")]),
-			"vec2u",
-		);
-
 		// Lighting helpers are authored once. Texture operations that differ by API remain typed intrinsics below.
 		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
 		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
@@ -1031,8 +1001,6 @@ impl VisibilityShaderScope {
 				push_constant,
 				sample_function,
 				sample_normal_function,
-				sample_environment_level,
-				environment_level_size,
 				sample_environment_irradiance,
 				sample_environment_specular,
 			],
@@ -1298,8 +1266,10 @@ mod tests {
 		assert!(msl.contains("resources.ao.read(pixel_coordinates).x"));
 		assert!(glsl.contains("texelFetch(shadow_map, ivec3(ivec2(shadow_texel),int(shadow_layer)),0).x"));
 		assert!(hlsl.contains("shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x"));
-		assert!(hlsl.contains(
-			"environment_specular[NonUniformResourceIndex(lower_level)].GetDimensions(lower_extent.x, lower_extent.y)"
+		assert!(hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)"));
+		assert!(glsl.contains("textureLod(environment_specular, environment_uv, specular_level)"));
+		assert!(msl.contains(
+			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, level(specular_level))"
 		));
 		assert!(msl.contains("float3 world_space_vertex_position0"));
 		assert!(!msl.contains("world_space_vertex_positions[3]"));
@@ -1312,6 +1282,15 @@ mod tests {
 		));
 		assert!(msl.contains("float2 offset_shadow_uv"));
 		assert!(msl.contains("shadow_map.read(shadow_texel, shadow_layer).x"));
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&msl,
+			"visibility-mipmapped-environment",
+		)
+		.expect(
+			"Failed to compile the mipmapped-environment MSL material pass. The most likely cause is invalid explicit-LOD Metal source.",
+		);
 	}
 
 	/// Verifies material evaluation with skinned geometry produces valid BESL.

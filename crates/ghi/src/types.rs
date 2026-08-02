@@ -693,6 +693,7 @@ pub struct BufferImageCopyDescriptor {
 	pub source_bytes_per_row: usize,
 	pub source_bytes_per_image: usize,
 	pub destination_image: crate::BaseImageHandle,
+	pub destination_mip_level: u32,
 }
 
 impl BufferImageCopyDescriptor {
@@ -703,6 +704,7 @@ impl BufferImageCopyDescriptor {
 		source_bytes_per_row: usize,
 		source_bytes_per_image: usize,
 		destination_image: crate::BaseImageHandle,
+		destination_mip_level: u32,
 	) -> Self {
 		Self {
 			source_buffer,
@@ -710,6 +712,7 @@ impl BufferImageCopyDescriptor {
 			source_bytes_per_row,
 			source_bytes_per_image,
 			destination_image,
+			destination_mip_level,
 		}
 	}
 }
@@ -788,7 +791,26 @@ impl BufferDescriptor {
 
 #[cfg(test)]
 mod tests {
+	use crate::graphics_hardware_interface::MasterHandle;
+	use crate::BaseImageHandle;
+
 	use super::*;
+
+	#[test]
+	fn buffer_image_copy_preserves_the_destination_mip_level() {
+		let copy = BufferImageCopyDescriptor::new(
+			BaseBufferHandle::new(3),
+			256,
+			512,
+			1024,
+			BaseImageHandle::new(7),
+			4,
+		);
+
+		assert_eq!(copy.source_offset, 256);
+		assert_eq!(copy.destination_image, BaseImageHandle::new(7));
+		assert_eq!(copy.destination_mip_level, 4);
+	}
 
 	#[test]
 	fn bc_layout_uses_ceil_block_counts_and_keeps_small_mips_nonzero() {

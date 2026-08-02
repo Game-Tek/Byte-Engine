@@ -1632,6 +1632,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			let destination_image_handle = self.get_internal_base_image_handle(copy.destination_image);
 			let source_buffer = self.get_buffer(source_buffer_handle);
 			let destination_image = self.get_image(destination_image_handle);
+			assert!(
+				copy.destination_mip_level < destination_image.mip_levels,
+				"Vulkan texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
+			);
+			let destination_extent = crate::image::mip_extent(destination_image.extent, copy.destination_mip_level);
 			let source_row_count = copy.source_bytes_per_image / copy.source_bytes_per_row;
 
 			let regions = [vk::BufferImageCopy2::default()
@@ -1641,12 +1646,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.image_subresource(
 					vk::ImageSubresourceLayers::default()
 						.aspect_mask(vk::ImageAspectFlags::COLOR)
-						.mip_level(0)
+						.mip_level(copy.destination_mip_level)
 						.base_array_layer(0)
 						.layer_count(destination_image.layers.map(|layers| layers.get()).unwrap_or(1)),
 				)
 				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(extent_into_vk_extent(destination_image.extent))];
+				.image_extent(extent_into_vk_extent(destination_extent))];
 
 			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
 				.src_buffer(source_buffer.buffer)

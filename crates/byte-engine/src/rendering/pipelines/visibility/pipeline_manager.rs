@@ -10,7 +10,7 @@ struct SkinningPaletteCacheEntry {
 #[derive(Clone, Copy)]
 struct EnvironmentTexture {
 	diffuse_image: ghi::BaseImageHandle,
-	specular_images: [ghi::BaseImageHandle; IBL_SPECULAR_LEVEL_COUNT],
+	specular_image: ghi::BaseImageHandle,
 	sampler: ghi::SamplerHandle,
 }
 
@@ -328,13 +328,13 @@ impl VisibilityPipelineManager {
 				VisibilityResourceCompletion::EnvironmentUploadReady {
 					id,
 					diffuse_image,
-					specular_images,
+					specular_image,
 					sampler,
 				} => {
 					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
 						self.environment_texture = EnvironmentTexture {
 							diffuse_image,
-							specular_images,
+							specular_image,
 							sampler,
 						};
 						self.write_environment_descriptors(frame);
@@ -378,10 +378,10 @@ impl VisibilityPipelineManager {
 		for sink_state in &self.scene.sink_states {
 			let descriptor_set = sink_state.render_pass.material_evaluation_descriptor_set();
 			frame.write(&[diffuse_environment_descriptor_write(descriptor_set, self.environment_texture)]);
-			frame.write(&specular_environment_descriptor_writes(
+			frame.write(&[specular_environment_descriptor_write(
 				descriptor_set,
 				self.environment_texture,
-			));
+			)]);
 		}
 	}
 
@@ -767,21 +767,18 @@ fn diffuse_environment_descriptor_write(
 	)
 }
 
-/// Builds one descriptor-array write for every prefiltered roughness level.
-fn specular_environment_descriptor_writes(
+/// Builds the mipmapped prefiltered environment write.
+fn specular_environment_descriptor_write(
 	descriptor_set: ghi::DescriptorSetHandle,
 	environment: EnvironmentTexture,
-) -> [ghi::DescriptorWrite; IBL_SPECULAR_LEVEL_COUNT] {
-	std::array::from_fn(|level| {
-		ghi::DescriptorWrite::combined_image_sampler_array(
-			descriptor_set,
-			SPECULAR_ENVIRONMENT_BINDING.slot(),
-			environment.specular_images[level],
-			environment.sampler,
-			ghi::Layouts::Read,
-			level as u32,
-		)
-	})
+) -> ghi::DescriptorWrite {
+	ghi::DescriptorWrite::combined_image_sampler(
+		descriptor_set,
+		SPECULAR_ENVIRONMENT_BINDING.slot(),
+		environment.specular_image,
+		environment.sampler,
+		ghi::Layouts::Read,
+	)
 }
 
 const DEFAULT_ENVIRONMENT_TEXEL: [u8; 4] = [0, 0, 0, u8::MAX];
@@ -814,7 +811,7 @@ fn create_fallback_environment_texture(context: &mut ghi::implementation::Contex
 
 	EnvironmentTexture {
 		diffuse_image: image.into(),
-		specular_images: [image.into(); IBL_SPECULAR_LEVEL_COUNT],
+		specular_image: image.into(),
 		sampler,
 	}
 }
@@ -1167,10 +1164,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			material_evaluation_descriptor_set,
 			self.environment_texture,
 		)]);
-		context.write(&specular_environment_descriptor_writes(
+		context.write(&[specular_environment_descriptor_write(
 			material_evaluation_descriptor_set,
 			self.environment_texture,
-		));
+		)]);
 
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
@@ -1644,11 +1641,11 @@ mod tests {
 	}
 
 	#[test]
-	fn environment_bindings_retain_diffuse_and_every_specular_level() {
+	fn environment_bindings_retain_diffuse_and_mipmapped_specular_images() {
 		assert_eq!(ENVIRONMENT_BINDING.slot().index(), 1054);
 		assert_eq!(ENVIRONMENT_BINDING.count(), 1);
 		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.slot().index(), 1055);
-		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.count(), IBL_SPECULAR_LEVEL_COUNT as u32);
+		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.count(), 1);
 	}
 
 	#[test]
@@ -1912,10 +1909,9 @@ const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDe
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
-const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::new(
+const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1055),
 	ghi::ResourceKind::CombinedImageSampler,
-	IBL_SPECULAR_LEVEL_COUNT as u32,
 	ghi::AccessPolicies::READ,
 );
 use std::borrow::Borrow;

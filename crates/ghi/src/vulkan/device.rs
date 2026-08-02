@@ -1123,7 +1123,7 @@ impl InnerDevice {
 		texture: &vk::Image,
 		format: crate::Formats,
 		usage: vk::ImageUsageFlags,
-		_mip_levels: u32,
+		mip_levels: u32,
 		base_layer: u32,
 		layer_count: Option<NonZeroU32>,
 	) -> vk::ImageView {
@@ -1152,7 +1152,7 @@ impl InnerDevice {
 					vk::ImageAspectFlags::DEPTH
 				},
 				base_mip_level: 0,
-				level_count: 1,
+				level_count: mip_levels,
 				base_array_layer: base_layer,
 				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
 			});

@@ -226,6 +226,7 @@ fn build_texture_descriptor(
 	descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
 	unsafe {
 		descriptor.setArrayLength(array_layers as _);
+		descriptor.setMipmapLevelCount(mip_levels as _);
 	}
 
 	descriptor
@@ -1657,6 +1658,7 @@ pub mod image {
 		pub(crate) uses: Uses,
 		pub(crate) access: DeviceAccesses,
 		pub(crate) array_layers: u32,
+		pub(crate) mip_levels: u32,
 		pub(crate) staging: Option<Vec<u8>>,
 	}
 }

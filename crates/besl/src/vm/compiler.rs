@@ -811,6 +811,11 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"texture_lod" => {
+				if arguments.len() == 3 {
+					return Err(VmError::UnsupportedExpression {
+						message: "Explicit texture LOD requires mipmapped VM texture storage.".to_string(),
+					});
+				}
 				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;

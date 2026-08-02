@@ -24,6 +24,7 @@ pub(crate) struct Image {
 	pub(crate) size: usize,
 	pub(crate) uses: Uses,
 	pub(crate) layers: Option<NonZeroU32>,
+	pub(crate) mip_levels: u32,
 	pub(crate) owns_image: bool,
 }
 

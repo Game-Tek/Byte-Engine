@@ -170,23 +170,6 @@ impl Generator {
 				string.push(')');
 				return;
 			}
-			"sample_environment_level" => {
-				string.push_str("textureLod(environment_specular[nonuniformEXT(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(")],");
-				if !self.minified {
-					string.push(' ');
-				}
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", 0.0)");
-				return;
-			}
-			"environment_level_size" => {
-				string.push_str("uvec2(textureSize(environment_specular[nonuniformEXT(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(")],0))");
-				return;
-			}
 			"texture_lod" => {
 				string.push_str("textureLod(");
 				self.emit_node_string(string, &arguments[0]);
@@ -197,10 +180,16 @@ impl Generator {
 				}
 				self.emit_node_string(string, &arguments[1]);
 				if self.minified {
-					string.push_str(",0.0)");
+					string.push(',');
 				} else {
-					string.push_str(", 0.0)");
+					string.push_str(", ");
 				}
+				if let Some(lod) = arguments.get(2) {
+					self.emit_node_string(string, lod);
+				} else {
+					string.push_str("0.0");
+				}
+				string.push(')');
 				return;
 			}
 			_ => {}

@@ -1622,12 +1622,19 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.device
 				.images
 				.resource(self.get_internal_image_handle(copy.destination_image));
+			assert!(
+				copy.destination_mip_level < destination.mip_levels,
+				"Metal texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image. mip_level={}, mip_levels={}",
+				copy.destination_mip_level,
+				destination.mip_levels
+			);
+			let destination_extent = crate::image::mip_extent(destination.extent, copy.destination_mip_level);
 			let Some((compact_bytes_per_row, row_count, compact_bytes_per_image)) =
-				utils::texture_upload_layout(destination.format, destination.extent)
+				utils::texture_upload_layout(destination.format, destination_extent)
 			else {
 				panic!(
 					"Metal texture copy layout is unsupported. The most likely cause is that the destination format has no upload layout. format={:?}, extent={:?}",
-					destination.format, destination.extent
+					destination.format, destination_extent
 				);
 			};
 			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
@@ -1672,7 +1679,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 			flush_managed_buffer_range(source, copy.source_offset, required_source_bytes - copy.source_offset);
 
-			let mut source_size = utils::texture_copy_size(destination.format, destination.extent);
+			let mut source_size = utils::texture_copy_size(destination.format, destination_extent);
 			source_size.depth = 1;
 			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
@@ -1688,7 +1695,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 						source_size,
 						destination.texture.as_ref(),
 						slice,
-						0,
+						copy.destination_mip_level as _,
 						destination_origin,
 					);
 				}

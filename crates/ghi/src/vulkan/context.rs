@@ -514,6 +514,7 @@ impl Context {
 					None,
 					proxy_extent,
 					proxy_uses,
+					1,
 				);
 			}
 		}
@@ -586,6 +587,7 @@ impl Context {
 						None,
 						extent,
 						proxy_uses,
+						1,
 					);
 				}
 
@@ -904,6 +906,7 @@ impl Context {
 						previous_image.layers,
 						previous_image.extent,
 						previous_image.uses,
+						previous_image.mip_levels,
 					);
 					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
@@ -1381,7 +1384,7 @@ impl Context {
 		let root_image = {
 			let mut image_views = [vk::ImageView::null(); 8];
 
-			image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 0, 0, None);
+			image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None);
 
 			Image {
 				next: None,
@@ -1397,6 +1400,7 @@ impl Context {
 				format_: format,
 				uses,
 				layers: None,
+				mip_levels: 1,
 				owns_image: false,
 			}
 		};
@@ -1505,6 +1509,7 @@ impl Context {
 		allocation_accesses: crate::DeviceAccesses,
 		buffer_accesses: crate::DeviceAccesses,
 		resource_uses: crate::Uses,
+		mip_levels: u32,
 	) -> Buffer {
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -1667,6 +1672,7 @@ impl Context {
 		array_layers: Option<NonZeroU32>,
 		extent: Extent,
 		resource_uses: crate::Uses,
+		mip_levels: u32,
 	) -> Image {
 		let size = extent.width() as usize * extent.height().max(1) as usize * extent.depth().max(1) as usize * format.size();
 
@@ -1685,6 +1691,7 @@ impl Context {
 				format_: format,
 				uses: resource_uses,
 				layers: array_layers,
+				mip_levels,
 				owns_image: true,
 			};
 		}
@@ -1700,7 +1707,7 @@ impl Context {
 		});
 
 		let texture_creation_result =
-			self.create_vulkan_texture(name, extent, format, resource_uses | transfer_uses, 1, array_layers);
+			self.create_vulkan_texture(name, extent, format, resource_uses | transfer_uses, mip_levels, array_layers);
 
 		let uses_cpu_staging = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
 
@@ -1757,7 +1764,7 @@ impl Context {
 						&texture_creation_result.resource,
 						format,
 						image_usage_flags,
-						0,
+						mip_levels,
 						0,
 						Some(layers),
 					)
@@ -1775,7 +1782,7 @@ impl Context {
 						&texture_creation_result.resource,
 						format,
 						image_usage_flags,
-						0,
+						mip_levels,
 						i,
 						NonZeroU32::new(1),
 					);
@@ -1786,7 +1793,7 @@ impl Context {
 					&texture_creation_result.resource,
 					format,
 					image_usage_flags,
-					0,
+					mip_levels,
 					0,
 					None,
 				);
@@ -1811,6 +1818,7 @@ impl Context {
 			format_: format,
 			uses: resource_uses,
 			layers: array_layers,
+			mip_levels,
 			owns_image: true,
 		}
 	}
@@ -1825,10 +1833,20 @@ impl Context {
 		array_layers: Option<NonZeroU32>,
 		extent: Extent,
 		resource_uses: crate::Uses,
+		mip_levels: u32,
 	) -> ImageHandle {
 		let texture_handle = ImageHandle(self.images.len() as u64);
 
-		let image = self.build_image_internal(next, name, format, device_accesses, array_layers, extent, resource_uses);
+		let image = self.build_image_internal(
+			next,
+			name,
+			format,
+			device_accesses,
+			array_layers,
+			extent,
+			resource_uses,
+			mip_levels,
+		);
 
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(texture_handle);
@@ -1930,6 +1948,7 @@ impl Context {
 			image.layers,
 			extent,
 			image.uses,
+			image.mip_levels,
 		);
 
 		self.images[image_handle.0 as usize] = new_image;
@@ -2784,9 +2803,19 @@ impl crate::context::Context for Context {
 				let array_layers = current_image.layers;
 				let extent = current_image.extent;
 				let resource_uses = current_image.uses;
+				let mip_levels = current_image.mip_levels;
 
-				let new_image =
-					self.create_image_internal(next, None, name, format, access, array_layers, extent, resource_uses);
+				let new_image = self.create_image_internal(
+					next,
+					None,
+					name,
+					format,
+					access,
+					array_layers,
+					extent,
+					resource_uses,
+					mip_levels,
+				);
 
 				let current_image = &mut self.images[image_handle.0 as usize];
 				current_image.next = Some(new_image);
@@ -3330,6 +3359,7 @@ impl crate::context::ContextCreate for Context {
 			builder.array_layers,
 			builder.extent,
 			builder.resource_uses,
+			builder.mip_levels,
 		);
 
 		let handle =
@@ -3351,6 +3381,7 @@ impl crate::context::ContextCreate for Context {
 				builder.array_layers,
 				builder.extent,
 				builder.resource_uses,
+				builder.mip_levels,
 			);
 		}
 

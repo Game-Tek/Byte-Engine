@@ -4,6 +4,23 @@ use utils::Extent;
 
 use crate::{ClearValue, DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
+/// Returns the dimensions of one mip while preserving the image dimensionality.
+pub(crate) fn mip_extent(extent: Extent, level: u32) -> Extent {
+	Extent::new(
+		extent.width().checked_shr(level).unwrap_or(0).max(1),
+		if extent.height() == 0 {
+			0
+		} else {
+			extent.height().checked_shr(level).unwrap_or(0).max(1)
+		},
+		if extent.depth() == 0 {
+			0
+		} else {
+			extent.depth().checked_shr(level).unwrap_or(0).max(1)
+		},
+	)
+}
+
 /// The `Builder` struct defines the allocation and usage contract for an image.
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
@@ -108,7 +125,7 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{Builder, ImageHandle};
+	use super::{mip_extent, Builder, ImageHandle};
 	use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
 	#[test]
@@ -151,5 +168,12 @@ mod tests {
 		let handle = ImageHandle::new(9);
 		assert_eq!(handle.index(), 9);
 		assert!(matches!(PrivateHandles::from(handle), PrivateHandles::Image(value) if value == handle));
+	}
+
+	#[test]
+	fn mip_extent_halves_non_power_of_two_dimensions_without_changing_dimensionality() {
+		assert_eq!(mip_extent(Extent::rectangle(17, 9), 0), Extent::rectangle(17, 9));
+		assert_eq!(mip_extent(Extent::rectangle(17, 9), 1), Extent::rectangle(8, 4));
+		assert_eq!(mip_extent(Extent::rectangle(17, 9), 4), Extent::rectangle(1, 1));
 	}
 }

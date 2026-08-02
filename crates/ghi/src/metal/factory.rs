@@ -354,6 +354,7 @@ impl crate::device::Device for Factory {
 				uses: builder.resource_uses,
 				access: builder.device_accesses,
 				array_layers: layers,
+				mip_levels: builder.mip_levels,
 				staging: None,
 			},
 		}

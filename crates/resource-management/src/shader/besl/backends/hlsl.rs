@@ -571,48 +571,6 @@ impl Generator {
 		true
 	}
 
-	fn emit_environment_level_size_assignment(
-		&mut self,
-		string: &mut String,
-		left: &besl::NodeReference,
-		right: &besl::NodeReference,
-	) -> bool {
-		let expression = right.borrow();
-		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
-			intrinsic, arguments, ..
-		}) = expression.node()
-		else {
-			return false;
-		};
-		let intrinsic = intrinsic.borrow();
-		let besl::Nodes::Intrinsic {
-			name: intrinsic_name, ..
-		} = intrinsic.node()
-		else {
-			return false;
-		};
-		if intrinsic_name != "environment_level_size" {
-			return false;
-		}
-
-		let left = left.borrow();
-		let besl::Nodes::Expression(besl::Expressions::VariableDeclaration { name, r#type }) = left.node() else {
-			return false;
-		};
-		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-		string.push(' ');
-		string.push_str(name);
-		string.push(';');
-		string.push_str("environment_specular[NonUniformResourceIndex(");
-		self.emit_node_string(string, &arguments[0]);
-		string.push_str(")].GetDimensions(");
-		string.push_str(name);
-		string.push_str(".x, ");
-		string.push_str(name);
-		string.push_str(".y)");
-		true
-	}
-
 	fn emit_array_initializer(&mut self, string: &mut String, value: &besl::NodeReference) -> bool {
 		let value = value.borrow();
 		let besl::Nodes::Expression(besl::Expressions::FunctionCall { parameters, .. }) = value.node() else {
@@ -910,14 +868,6 @@ impl Generator {
 				string.push_str("unit_vector_from_xy(");
 				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], true);
 				string.push(')');
-				return;
-			}
-			"sample_environment_level" => {
-				string.push_str("environment_specular[NonUniformResourceIndex(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(")].SampleLevel(environment_specular_sampler, ");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", 0.0)");
 				return;
 			}
 			_ => {}
@@ -1436,9 +1386,6 @@ impl Generator {
 					&& self.emit_atomic_compare_exchange_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment
-					&& self.emit_environment_level_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
 				// Root constants use the constant-buffer namespace, while flat resources use t/u/s registers in space 0.
 				if self.minified {

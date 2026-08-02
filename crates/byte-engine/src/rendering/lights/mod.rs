@@ -96,8 +96,6 @@ mod tests {
 			},
 			15.0_f32.to_radians(),
 			25.0_f32.to_radians(),
-			0.1,
-			100.0,
 		)
 		.expect("physical cone light");
 		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
@@ -137,8 +135,6 @@ mod tests {
 			candela(100.0),
 			0.25,
 			0.5,
-			0.1,
-			100.0,
 		)
 		.expect("physical cone light");
 		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");

@@ -741,13 +741,43 @@ fn select_shadow_lights<'a>(lights: impl Iterator<Item = &'a Lights>) -> ShadowL
 	selection
 }
 
+/// The minimum distance from a cone light covered by an automatic shadow view.
+const CONE_SHADOW_NEAR_M: f32 = 0.1;
+/// The smallest incident illuminance worth covering with an automatic cone shadow view.
+const CONE_SHADOW_CUTOFF_LUX: f32 = 0.1;
+
+/// Resolves the clipping range for one cone-light shadow view.
+///
+/// The far distance is where the light's peak illuminance reaches
+/// [`CONE_SHADOW_CUTOFF_LUX`]. Manual endpoints replace their respective automatic values and
+/// are clamped to retain a valid perspective projection.
+fn resolve_cone_shadow_range(light: ConeLight) -> (f32, f32) {
+	let peak_candela = 0.2126 * light.color.x + 0.7152 * light.color.y + 0.0722 * light.color.z;
+	let automatic_far = (peak_candela / CONE_SHADOW_CUTOFF_LUX)
+		.sqrt()
+		.max(CONE_SHADOW_NEAR_M + CONE_SHADOW_NEAR_M);
+	let near = light
+		.shadow_near_override()
+		.filter(|value| value.is_finite())
+		.unwrap_or(CONE_SHADOW_NEAR_M)
+		.max(CONE_SHADOW_NEAR_M);
+	let far = light
+		.shadow_far_override()
+		.filter(|value| value.is_finite())
+		.unwrap_or(automatic_far)
+		.max(near + CONE_SHADOW_NEAR_M);
+
+	(near, far)
+}
+
 /// Builds the perspective view used to cull and render one cone-light shadow layer.
 fn make_cone_shadow_view(light: ConeLight) -> View {
+	let (near, far) = resolve_cone_shadow_range(light);
 	View::new_perspective(
 		(light.outer_angle * 2.0).to_degrees(),
 		1.0,
-		light.shadow_near,
-		light.shadow_far,
+		near,
+		far,
 		light.position,
 		light.direction,
 	)
@@ -1476,11 +1506,11 @@ mod tests {
 	use resource_management::types::AlphaMode;
 
 	use super::{
-		cached_skin_palette_base, make_cone_shadow_view, reserve_deformed_vertex_range, select_shadow_lights,
-		write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh,
-		ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DEFAULT_ENVIRONMENT_TEXEL,
-		ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING,
-		SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, make_cone_shadow_view, reserve_deformed_vertex_range, resolve_cone_shadow_range,
+		select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo,
+		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_CUTOFF_LUX, CONE_SHADOW_MAP_BINDING,
+		CONE_SHADOW_NEAR_M, DEFAULT_ENVIRONMENT_TEXEL, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
+		MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1505,8 +1535,6 @@ mod tests {
 			},
 			15.0_f32.to_radians(),
 			30.0_f32.to_radians(),
-			0.2,
-			50.0,
 		)
 		.expect("physical cone light")
 	}
@@ -1525,8 +1553,6 @@ mod tests {
 					},
 					0.25,
 					std::f32::consts::PI,
-					0.2,
-					50.0,
 				)
 				.expect("physical cone light"),
 			),
@@ -1570,7 +1596,7 @@ mod tests {
 	}
 
 	#[test]
-	fn cone_shadow_view_uses_the_light_projection_and_clip_range() {
+	fn cone_shadow_view_uses_the_light_projection_and_automatic_clip_range() {
 		let light = cone(1.0);
 		let view = make_cone_shadow_view(light);
 		let point = light.position + light.direction * 10.0;
@@ -1578,10 +1604,22 @@ mod tests {
 		let ndc = clip / clip.w;
 
 		assert!((view.y_fov() - 60.0).abs() < 0.0001);
-		assert_eq!(view.near(), light.shadow_near);
-		assert_eq!(view.far(), light.shadow_far);
+		assert_eq!(view.near(), CONE_SHADOW_NEAR_M);
+		assert!((view.far() - (100.0 / CONE_SHADOW_CUTOFF_LUX).sqrt()).abs() < 0.0001);
 		assert!(ndc.x.abs() < 0.0001 && ndc.y.abs() < 0.0001);
 		assert!((0.0..=1.0).contains(&ndc.z));
+	}
+
+	#[test]
+	fn cone_shadow_range_uses_manual_endpoints_and_clamps_invalid_values() {
+		let light = cone(1.0).with_shadow_range(-4.0, f32::NAN);
+		let (near, far) = resolve_cone_shadow_range(light);
+
+		assert_eq!(near, CONE_SHADOW_NEAR_M);
+		assert!((far - (100.0 / CONE_SHADOW_CUTOFF_LUX).sqrt()).abs() < 0.0001);
+
+		let light = cone(1.0).with_shadow_near(50.0).with_shadow_far(20.0);
+		assert_eq!(resolve_cone_shadow_range(light), (50.0, 50.1));
 	}
 
 	/// Verifies every pair of retained descriptor-set ranges stays disjoint.

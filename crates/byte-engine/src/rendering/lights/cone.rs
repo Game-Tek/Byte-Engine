@@ -19,21 +19,23 @@ pub struct ConeLight {
 	pub color: Vector3,
 	pub inner_angle: f32,
 	pub outer_angle: f32,
-	pub shadow_near: f32,
-	pub shadow_far: f32,
+	shadow_near_override: Option<f32>,
+	shadow_far_override: Option<f32>,
 }
 
 impl ConeLight {
 	/// Creates a cone light whose intensity fades smoothly between the inner and outer half angles.
 	///
-	/// `shadow_near` and `shadow_far` bound the light's perspective shadow view. Submit the light
-	/// through [`crate::gameplay::world::DefaultWorld::light_factory_mut`] to make it available to
-	/// the active rendering pipeline.
+	/// The renderer derives the shadow range from the resolved luminous intensity. Use
+	/// [`Self::with_shadow_near`], [`Self::with_shadow_far`], or [`Self::with_shadow_range`] to
+	/// override that range. Submit the light through
+	/// [`crate::gameplay::world::DefaultWorld::light_factory_mut`] to make it available to the
+	/// active rendering pipeline.
 	///
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	/// Invalid directions, angles, or shadow ranges panic because they cannot form a valid cone view.
+	/// Invalid directions or angles panic because they cannot form a valid cone view.
 	pub fn new(
 		position: Vector3,
 		direction: Vector3,
@@ -41,8 +43,6 @@ impl ConeLight {
 		intensity: PhotometricIntensity,
 		inner_angle: f32,
 		outer_angle: f32,
-		shadow_near: f32,
-		shadow_far: f32,
 	) -> Result<Self, PhotometricError> {
 		// Reject directions that would become undefined when normalized during material evaluation.
 		let direction_length_squared = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
@@ -58,11 +58,6 @@ impl ConeLight {
 			outer_angle <= std::f32::consts::PI,
 			"Invalid cone light outer angle. The most likely cause is that the supplied half angle exceeds pi radians."
 		);
-		assert!(
-			shadow_near.is_finite() && shadow_far.is_finite() && shadow_near > 0.0 && shadow_far > shadow_near,
-			"Invalid cone light shadow range. The most likely cause is that the clipping distances are non-finite, nonpositive, or not ordered near before far."
-		);
-
 		let chromaticity = color.resolve()?;
 		let candela = intensity.cone_candela(inner_angle, outer_angle)?;
 		Ok(Self {
@@ -71,9 +66,38 @@ impl ConeLight {
 			color: Vector3::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
 			inner_angle,
 			outer_angle,
-			shadow_near,
-			shadow_far,
+			shadow_near_override: None,
+			shadow_far_override: None,
 		})
+	}
+
+	/// Overrides the renderer-derived near clipping distance for this light's shadow view.
+	pub fn with_shadow_near(mut self, shadow_near: f32) -> Self {
+		self.shadow_near_override = Some(shadow_near);
+		self
+	}
+
+	/// Overrides the renderer-derived far clipping distance for this light's shadow view.
+	pub fn with_shadow_far(mut self, shadow_far: f32) -> Self {
+		self.shadow_far_override = Some(shadow_far);
+		self
+	}
+
+	/// Overrides both renderer-derived clipping distances for this light's shadow view.
+	pub fn with_shadow_range(mut self, shadow_near: f32, shadow_far: f32) -> Self {
+		self.shadow_near_override = Some(shadow_near);
+		self.shadow_far_override = Some(shadow_far);
+		self
+	}
+
+	/// Returns the optional near clipping-distance override for the renderer.
+	pub(crate) fn shadow_near_override(&self) -> Option<f32> {
+		self.shadow_near_override
+	}
+
+	/// Returns the optional far clipping-distance override for the renderer.
+	pub(crate) fn shadow_far_override(&self) -> Option<f32> {
+		self.shadow_far_override
 	}
 
 	/// Returns whether this light's cone fits in one perspective shadow view.
@@ -109,7 +133,7 @@ mod tests {
 	}
 
 	#[test]
-	fn cone_light_preserves_explicit_shadow_range() {
+	fn cone_light_keeps_shadow_range_overrides() {
 		let light = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
@@ -117,29 +141,31 @@ mod tests {
 			intensity(),
 			0.25,
 			0.5,
-			0.2,
-			75.0,
 		)
-		.expect("physical cone light");
+		.expect("physical cone light")
+		.with_shadow_range(0.2, 75.0);
 
-		assert_eq!(light.shadow_near, 0.2);
-		assert_eq!(light.shadow_far, 75.0);
+		assert_eq!(light.shadow_near_override(), Some(0.2));
+		assert_eq!(light.shadow_far_override(), Some(75.0));
 	}
 
 	#[test]
-	#[should_panic(expected = "Invalid cone light shadow range")]
-	fn cone_light_rejects_inverted_shadow_range() {
-		ConeLight::new(
+	fn individual_shadow_range_overrides_replace_only_their_endpoint() {
+		let light = ConeLight::new(
 			Vector3::zero(),
 			Vector3::unit_z(),
 			LightColor::TemperatureKelvin(4_500.0),
 			intensity(),
 			0.25,
 			0.5,
-			10.0,
-			1.0,
 		)
-		.expect("the shadow-range assertion should run before photometric resolution");
+		.expect("physical cone light")
+		.with_shadow_range(0.2, 75.0)
+		.with_shadow_near(0.4)
+		.with_shadow_far(50.0);
+
+		assert_eq!(light.shadow_near_override(), Some(0.4));
+		assert_eq!(light.shadow_far_override(), Some(50.0));
 	}
 
 	#[test]
@@ -151,8 +177,6 @@ mod tests {
 			intensity(),
 			0.25,
 			std::f32::consts::PI,
-			0.1,
-			100.0,
 		)
 		.expect("physical cone light");
 

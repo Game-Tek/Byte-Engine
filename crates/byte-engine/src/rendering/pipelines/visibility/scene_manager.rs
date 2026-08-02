@@ -208,8 +208,6 @@ mod tests {
 			},
 			20.0_f32.to_radians(),
 			35.0_f32.to_radians(),
-			0.1,
-			50.0,
 		)
 		.expect("physical cone light");
 		let light_data =

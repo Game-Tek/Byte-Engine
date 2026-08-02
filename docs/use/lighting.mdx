@@ -182,14 +182,15 @@ let spotlight = ConeLight::new(
     },
     20.0_f32.to_radians(),
     30.0_f32.to_radians(),
-    0.1,
-    50.0,
 )?;
 ```
 
-Cone angles are half angles measured from the light direction. `shadow_near` and `shadow_far`
-control only the cone shadow view; they do not limit lighting attenuation. A cone with an outer
-half angle of 90° or more remains a valid light but cannot use one perspective shadow map.
+Cone angles are half angles measured from the light direction. The renderer automatically uses a
+0.1 m near plane and extends the far plane until peak illumination falls below 0.1 lux. These
+values control only the cone shadow view; they do not limit lighting attenuation. Override either
+endpoint with `with_shadow_near` or `with_shadow_far`, or override both with
+`with_shadow_range`. A cone with an outer half angle of 90° or more remains a valid light but
+cannot use one perspective shadow map.
 
 ## Understand the rendering result
 

@@ -384,6 +384,26 @@ impl Generator {
 			|| name.ends_with(".view")
 	}
 
+	fn emit_visibility_texture_sample(
+		&mut self,
+		string: &mut String,
+		texture_index: &besl::NodeReference,
+		uv: &besl::NodeReference,
+		xy_only: bool,
+	) {
+		string.push_str("textures[");
+		self.emit_node_string(string, texture_index);
+		string.push_str("].SampleLevel(textures_sampler,");
+		if !self.minified {
+			string.push(' ');
+		}
+		self.emit_node_string(string, uv);
+		string.push_str(", 0.0)");
+		if xy_only {
+			string.push_str(".xy");
+		}
+	}
+
 	fn hlsl_array_type(source: &str) -> Option<(&str, &str)> {
 		let (element_type, count) = source.split_once('[')?;
 		Some((element_type, count.trim_end_matches(']')))
@@ -530,8 +550,62 @@ impl Generator {
 		string.push(' ');
 		string.push_str(name);
 		string.push(';');
+		let array_texture = Self::node_type_name(&arguments[0]).as_deref() == Some("ArrayTexture2D");
+		if array_texture {
+			string.push_str("uint ");
+			string.push_str(name);
+			string.push_str("_layers;");
+		}
 		self.emit_node_string(string, &arguments[0]);
 		string.push_str(".GetDimensions(");
+		string.push_str(name);
+		string.push_str(".x, ");
+		string.push_str(name);
+		string.push_str(".y");
+		if array_texture {
+			string.push_str(", ");
+			string.push_str(name);
+			string.push_str("_layers");
+		}
+		string.push(')');
+		true
+	}
+
+	fn emit_environment_level_size_assignment(
+		&mut self,
+		string: &mut String,
+		left: &besl::NodeReference,
+		right: &besl::NodeReference,
+	) -> bool {
+		let expression = right.borrow();
+		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
+			intrinsic, arguments, ..
+		}) = expression.node()
+		else {
+			return false;
+		};
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic {
+			name: intrinsic_name, ..
+		} = intrinsic.node()
+		else {
+			return false;
+		};
+		if intrinsic_name != "environment_level_size" {
+			return false;
+		}
+
+		let left = left.borrow();
+		let besl::Nodes::Expression(besl::Expressions::VariableDeclaration { name, r#type }) = left.node() else {
+			return false;
+		};
+		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+		string.push(' ');
+		string.push_str(name);
+		string.push(';');
+		string.push_str("environment_specular[NonUniformResourceIndex(");
+		self.emit_node_string(string, &arguments[0]);
+		string.push_str(")].GetDimensions(");
 		string.push_str(name);
 		string.push_str(".x, ");
 		string.push_str(name);
@@ -827,6 +901,28 @@ impl Generator {
 			return;
 		};
 
+		match name.as_str() {
+			"sample_material" => {
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
+				return;
+			}
+			"sample_normal" => {
+				string.push_str("unit_vector_from_xy(");
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], true);
+				string.push(')');
+				return;
+			}
+			"sample_environment_level" => {
+				string.push_str("environment_specular[NonUniformResourceIndex(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(")].SampleLevel(environment_specular_sampler, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", 0.0)");
+				return;
+			}
+			_ => {}
+		}
+
 		let has_body = definition
 			.iter()
 			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
@@ -838,8 +934,9 @@ impl Generator {
 		}
 
 		match name.as_str() {
-			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fwidth"
-			| "step" | "radians" | "smoothstep" | "dot" | "cross" | "normalize" | "reflect" | "length" => {
+			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"
+			| "floor" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross" | "normalize" | "reflect"
+			| "length" => {
 				string.push_str(name);
 				string.push('(');
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
@@ -884,8 +981,17 @@ impl Generator {
 			}
 			"fetch" => {
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str(".Load(int3(");
+				if arguments.len() == 3 {
+					string.push_str(".Load(int4(");
+				} else {
+					string.push_str(".Load(int3(");
+				}
 				self.emit_node_string(string, &arguments[1]);
+				if let Some(layer) = arguments.get(2) {
+					string.push_str(", int(");
+					self.emit_node_string(string, layer);
+					string.push(')');
+				}
 				string.push_str(", 0))");
 			}
 			"fetch_u32" => {
@@ -1330,6 +1436,9 @@ impl Generator {
 					&& self.emit_atomic_compare_exchange_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
+			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
+				if *operator == besl::Operators::Assignment
+					&& self.emit_environment_level_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
 				// Root constants use the constant-buffer namespace, while flat resources use t/u/s registers in space 0.
 				if self.minified {

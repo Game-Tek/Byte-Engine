@@ -70,9 +70,9 @@ fn meshlet_array_type() -> &'static str {
 
 /// Parses one reusable BESL helper function from an isolated source scope.
 fn parse_besl_function(source: &'static str, function_name: &str) -> besl::parser::Node<'static> {
-	let mut root = besl::parse(source).unwrap_or_else(|_| {
+	let mut root = besl::parse(source).unwrap_or_else(|error| {
 		panic!(
-			"Failed to parse `{function_name}`. The most likely cause is invalid BESL syntax in the visibility shader module."
+			"Failed to parse `{function_name}`. The most likely cause is invalid BESL syntax in the visibility shader module: {error:?}"
 		)
 	});
 
@@ -83,6 +83,576 @@ fn parse_besl_function(source: &'static str, function_name: &str) -> besl::parse
 		),
 	}
 }
+
+/// Extracts reusable statements from one portable BESL helper function.
+fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<besl::parser::Node<'static>> {
+	let mut function = parse_besl_function(source, function_name);
+	match function.node_mut() {
+		besl::parser::Nodes::Function { statements, .. } => std::mem::take(statements),
+		_ => panic!(
+			"Invalid `{function_name}` helper. The most likely cause is that its BESL source no longer defines a function."
+		),
+	}
+}
+
+fn material_evaluation_prefix_statements() -> Vec<besl::parser::Node<'static>> {
+	parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix")
+}
+
+fn material_evaluation_suffix_statements() -> Vec<besl::parser::Node<'static>> {
+	parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix")
+}
+
+/// Makes material texture context explicit before the parser tree is linked.
+fn add_material_sample_context(node: &mut besl::parser::Node<'_>, texture_slots: &[(&str, u32)]) {
+	match node.node_mut() {
+		besl::parser::Nodes::Function { statements, .. } => {
+			for statement in statements {
+				add_material_sample_context(statement, texture_slots);
+			}
+		}
+		besl::parser::Nodes::Conditional { condition, statements } => {
+			add_material_sample_context(condition, texture_slots);
+			for statement in statements {
+				add_material_sample_context(statement, texture_slots);
+			}
+		}
+		besl::parser::Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => {
+			add_material_sample_context(initializer, texture_slots);
+			add_material_sample_context(condition, texture_slots);
+			add_material_sample_context(update, texture_slots);
+			for statement in statements {
+				add_material_sample_context(statement, texture_slots);
+			}
+		}
+		besl::parser::Nodes::Expression(expression) => add_material_sample_context_to_expression(expression, texture_slots),
+		_ => {}
+	}
+}
+
+/// Recurses through one expression and expands the material sampling shorthand.
+fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expressions<'_>, texture_slots: &[(&str, u32)]) {
+	match expression {
+		besl::parser::Expressions::Call { name, parameters } => {
+			for parameter in parameters.iter_mut() {
+				add_material_sample_context(parameter, texture_slots);
+			}
+			let besl::parser::TypeName::Named(name) = name else {
+				return;
+			};
+			if !matches!(*name, "sample_material" | "sample_normal") || parameters.len() != 1 {
+				return;
+			}
+
+			let slot = parameters.remove(0);
+			let slot = match slot.node() {
+				besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) => texture_slots
+					.iter()
+					.find_map(|(texture_name, index)| (*texture_name == *name).then_some(*index))
+					.map_or(slot, |index| Node::literal_expression(format!("{index}u"))),
+				_ => slot,
+			};
+			let material_textures = Node::accessor(Node::member_expression("material"), Node::member_expression("textures"));
+			// Index access has an expression on its right side. Preserve that shape so
+			// the linked backend AST can distinguish `textures[slot]` from `.field`.
+			parameters.push(Node::accessor(material_textures, Node::sentence(vec![slot])));
+			parameters.push(Node::member_expression("vertex_uv"));
+		}
+		besl::parser::Expressions::Expression(elements) => {
+			for element in elements {
+				add_material_sample_context(element, texture_slots);
+			}
+		}
+		besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {
+			add_material_sample_context(left, texture_slots);
+			add_material_sample_context(right, texture_slots);
+		}
+		besl::parser::Expressions::Return { value } => {
+			if let Some(value) = value {
+				add_material_sample_context(value, texture_slots);
+			}
+		}
+		besl::parser::Expressions::Macro { body, .. } => add_material_sample_context(body, texture_slots),
+		besl::parser::Expressions::Member { .. }
+		| besl::parser::Expressions::Literal { .. }
+		| besl::parser::Expressions::VariableDeclaration { .. }
+		| besl::parser::Expressions::RawCode { .. }
+		| besl::parser::Expressions::Continue => {}
+	}
+}
+
+// These statements are spliced around the material-authored main body. Keeping
+// them in BESL lets each backend derive resource access, packed loads, type names,
+// and matrix multiplication from the linked AST.
+const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
+material_evaluation_prefix: fn () -> void {
+	let invocation: vec2u = thread_id();
+	if (invocation.x >= material_evaluation_dispatches.material_evaluation_dispatches[push_constant.material_id].w) {
+		return;
+	}
+
+	let offset: u32 = material_offset.material_offset[push_constant.material_id];
+	let packed_pixel_coordinates: vec2u16 = pixel_mapping.pixel_mapping[offset + invocation.x];
+	let raw_pixel_coordinates: vec2u = vec2u(
+		u32(packed_pixel_coordinates.x),
+		u32(packed_pixel_coordinates.y)
+	);
+	if (raw_pixel_coordinates.x == 0 || raw_pixel_coordinates.y == 0) {
+		return;
+	}
+	let pixel_coordinates: vec2u = raw_pixel_coordinates - vec2u(1, 1);
+	let image_extent: vec2u = image_size(triangle_index);
+	if (pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) {
+		return;
+	}
+
+	let triangle_meshlet_indices: u32 = image_load_u32(triangle_index, pixel_coordinates);
+	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel_coordinates);
+	let meshlet_triangle_index: u32 = triangle_meshlet_indices & 255;
+	let meshlet_index: u32 = triangle_meshlet_indices >> 8;
+	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+	let mesh: Mesh = meshes.meshes[instance_index];
+	let material: Material = materials.materials[push_constant.material_id];
+
+	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
+	let primitive_index0: u32 = u32(primitive_indices.primitive_indices[primitive_index_base]);
+	let primitive_index1: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 1]);
+	let primitive_index2: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 2]);
+	let vertex_index0: u32 = compute_vertex_index(mesh, meshlet, primitive_index0);
+	let vertex_index1: u32 = compute_vertex_index(mesh, meshlet, primitive_index1);
+	let vertex_index2: u32 = compute_vertex_index(mesh, meshlet, primitive_index2);
+
+	let position0: vec3f = vertex_positions.positions[vertex_index0];
+	let position1: vec3f = vertex_positions.positions[vertex_index1];
+	let position2: vec3f = vertex_positions.positions[vertex_index2];
+	let normal0: vec3f = vertex_normals.normals[vertex_index0];
+	let normal1: vec3f = vertex_normals.normals[vertex_index1];
+	let normal2: vec3f = vertex_normals.normals[vertex_index2];
+	let model_space_vertex_position0: vec4f = vec4f(position0.x, position0.y, position0.z, 1.0);
+	let model_space_vertex_position1: vec4f = vec4f(position1.x, position1.y, position1.z, 1.0);
+	let model_space_vertex_position2: vec4f = vec4f(position2.x, position2.y, position2.z, 1.0);
+	let vertex_normal0: vec4f = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
+	let vertex_normal1: vec4f = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
+	let vertex_normal2: vec4f = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+
+	if (mesh.skinned_base_vertex_index != 4294967295) {
+		let skinned_vertex_index0: u32 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
+		let skinned_vertex_index1: u32 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
+		let skinned_vertex_index2: u32 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
+		model_space_vertex_position0 = skinned_vertices.vertices[skinned_vertex_index0].position;
+		model_space_vertex_position1 = skinned_vertices.vertices[skinned_vertex_index1].position;
+		model_space_vertex_position2 = skinned_vertices.vertices[skinned_vertex_index2].position;
+		vertex_normal0 = skinned_vertices.vertices[skinned_vertex_index0].normal;
+		vertex_normal1 = skinned_vertices.vertices[skinned_vertex_index1].normal;
+		vertex_normal2 = skinned_vertices.vertices[skinned_vertex_index2].normal;
+	}
+
+	let vertex_uv0: vec2f = vertex_uvs.uvs[vertex_index0];
+	let vertex_uv1: vec2f = vertex_uvs.uvs[vertex_index1];
+	let vertex_uv2: vec2f = vertex_uvs.uvs[vertex_index2];
+	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
+	let view: View = views.views[0];
+	let model: mat4x3f = mesh.model;
+	let world_space_vertex_position0: vec3f = model * model_space_vertex_position0;
+	let world_space_vertex_position1: vec3f = model * model_space_vertex_position1;
+	let world_space_vertex_position2: vec3f = model * model_space_vertex_position2;
+	let clip_space_vertex_position0: vec4f = view.view_projection * vec4f(
+		world_space_vertex_position0.x,
+		world_space_vertex_position0.y,
+		world_space_vertex_position0.z,
+		1.0
+	);
+	let clip_space_vertex_position1: vec4f = view.view_projection * vec4f(
+		world_space_vertex_position1.x,
+		world_space_vertex_position1.y,
+		world_space_vertex_position1.z,
+		1.0
+	);
+	let clip_space_vertex_position2: vec4f = view.view_projection * vec4f(
+		world_space_vertex_position2.x,
+		world_space_vertex_position2.y,
+		world_space_vertex_position2.z,
+		1.0
+	);
+	let world_space_vertex_normal0: vec3f = normalize(model * vertex_normal0);
+	let world_space_vertex_normal1: vec3f = normalize(model * vertex_normal1);
+	let world_space_vertex_normal2: vec3f = normalize(model * vertex_normal2);
+
+	let barycentric_deriv: BarycentricDeriv = calculate_full_bary(
+		clip_space_vertex_position0,
+		clip_space_vertex_position1,
+		clip_space_vertex_position2,
+		nc,
+		vec2f(f32(image_extent.x), f32(image_extent.y))
+	);
+	let barycenter: vec3f = barycentric_deriv.lambda;
+	let derivative_x: vec3f = barycentric_deriv.ddx;
+	let derivative_y: vec3f = barycentric_deriv.ddy;
+	let world_space_vertex_position: vec3f = interpolate_vec3f_with_deriv(
+		barycenter,
+		world_space_vertex_position0,
+		world_space_vertex_position1,
+		world_space_vertex_position2
+	);
+	let world_space_vertex_normal: vec3f = normalize(interpolate_vec3f_with_deriv(
+		barycenter,
+		world_space_vertex_normal0,
+		world_space_vertex_normal1,
+		world_space_vertex_normal2
+	));
+	let vertex_uv: vec2f = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
+	let N: vec3f = world_space_vertex_normal;
+	let camera_position: vec3f = view.inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
+	let V: vec3f = normalize(camera_position - world_space_vertex_position);
+	let position_derivative_x: vec3f = interpolate_vec3f_with_deriv(
+		derivative_x,
+		world_space_vertex_position0,
+		world_space_vertex_position1,
+		world_space_vertex_position2
+	);
+	let position_derivative_y: vec3f = interpolate_vec3f_with_deriv(
+		derivative_y,
+		world_space_vertex_position0,
+		world_space_vertex_position1,
+		world_space_vertex_position2
+	);
+	let uv_derivative_x: vec2f = interpolate_vec2f_with_deriv(derivative_x, vertex_uv0, vertex_uv1, vertex_uv2);
+	let uv_derivative_y: vec2f = interpolate_vec2f_with_deriv(derivative_y, vertex_uv0, vertex_uv1, vertex_uv2);
+	let tangent_scale: f32 = 1.0 / (uv_derivative_x.x * uv_derivative_y.y - uv_derivative_y.x * uv_derivative_x.y);
+	let T: vec3f = normalize(
+		tangent_scale * (uv_derivative_y.y * position_derivative_x - uv_derivative_x.y * position_derivative_y)
+	);
+	let B: vec3f = normalize(
+		tangent_scale * ((0.0 - uv_derivative_y.x) * position_derivative_x + uv_derivative_x.x * position_derivative_y)
+	);
+
+	let albedo: vec4f = vec4f(1.0, 0.0, 0.0, 1.0);
+	let normal: vec3f = vec3f(0.0, 0.0, 1.0);
+	let metalness: f32 = 0.0;
+	let roughness: f32 = 0.5;
+	let occlusion: f32 = 1.0;
+	let emission: vec3f = vec3f(0.0, 0.0, 0.0);
+}
+"#;
+
+const MATERIAL_EVALUATION_SUFFIX_SOURCE: &str = r#"
+material_evaluation_suffix: fn () -> void {
+	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
+	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
+	let ao_factor: f32 = 1.0;
+	if (push_constant.blend == 0) {
+		ao_factor = fetch(ao, pixel_coordinates).x;
+	}
+
+	normal = normalize(normal.x * T + normal.y * B + normal.z * N);
+	let albedo_rgb: vec3f = vec3f(albedo.x, albedo.y, albedo.z);
+	let F0: vec3f = vec3f(0.04, 0.04, 0.04) * (1.0 - metalness) + albedo_rgb * metalness;
+	let NdotV: f32 = max(dot(normal, V), 0.0);
+	let roughness_alpha: f32 = roughness * roughness;
+	let roughness_alpha_squared: f32 = roughness_alpha * roughness_alpha;
+	let adjusted_roughness: f32 = roughness + 1.0;
+	let geometry_k: f32 = adjusted_roughness * adjusted_roughness / 8.0;
+	let view_fresnel_factor: f32 = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+	let one_minus_fresnel_n_dot_v: vec3f = vec3f(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(view_fresnel_factor, F0);
+	let light_count: u32 = lighting_data.light_count;
+
+	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
+		let light: Light = lighting_data.lights[light_index];
+		let L: vec3f = vec3f(0.0, 0.0, 0.0);
+		let attenuation: f32 = 1.0;
+		let light_position: vec3f = vec3f(light.position.x, light.position.y, light.position.z);
+		if (light.type == 68) {
+			L = normalize(vec3f(0.0, 0.0, 0.0) - light_position);
+		}
+		if (light.type != 68) {
+			let surface_to_light: vec3f = light_position - world_space_vertex_position;
+			let distance_squared: f32 = dot(surface_to_light, surface_to_light);
+			if (distance_squared <= 0.0) {
+				continue;
+			}
+			L = surface_to_light * inversesqrt(distance_squared);
+			attenuation = 1.0 / distance_squared;
+		}
+
+		let NdotL: f32 = max(dot(normal, L), 0.0);
+		if (NdotL <= 0.0) {
+			continue;
+		}
+
+		let occlusion_factor: f32 = 1.0;
+		let view_space_surface_position: vec3f = view.view * vec4f(
+			world_space_vertex_position.x,
+			world_space_vertex_position.y,
+			world_space_vertex_position.z,
+			1.0
+		);
+		if (light.type == 68) {
+			occlusion_factor = sample_shadow(
+				depth_shadow_map,
+				light,
+				world_space_vertex_position,
+				view_space_surface_position,
+				world_space_vertex_normal,
+				L
+			);
+			if (occlusion_factor == 0.0) {
+				continue;
+			}
+			attenuation = 1.0;
+		}
+		if (light.type != 68) {
+			if (light.type == 1) {
+				let light_direction: vec3f = vec3f(light.direction.x, light.direction.y, light.direction.z);
+				let cone_cosine: f32 = dot(normalize(light_direction), vec3f(0.0, 0.0, 0.0) - L);
+				let cone_factor: f32 = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+				if (cone_factor <= 0.0) {
+					continue;
+				}
+				attenuation = attenuation * cone_factor;
+				occlusion_factor = sample_shadow(
+					cone_shadow_map,
+					light,
+					world_space_vertex_position,
+					view_space_surface_position,
+					world_space_vertex_normal,
+					L
+				);
+				if (occlusion_factor == 0.0) {
+					continue;
+				}
+			}
+		}
+
+		let H: vec3f = normalize(V + L);
+		let light_color: vec3f = vec3f(light.color.x, light.color.y, light.color.z);
+		let radiance: vec3f = light_color * attenuation;
+		let half_view_fresnel_factor: f32 = pow(clamp(1.0 - max(dot(H, V), 0.0), 0.0, 1.0), 5.0);
+		let F: vec3f = fresnel_schlick_from_factor(half_view_fresnel_factor, F0);
+		let NDF: f32 = distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared);
+		let G: f32 = geometry_smith_from_terms(NdotV, NdotL, geometry_k);
+		let local_specular: vec3f = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.000001);
+		let light_fresnel_factor: f32 = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
+		let kD: vec3f = (vec3f(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(light_fresnel_factor, F0))
+			* one_minus_fresnel_n_dot_v
+			* (1.0 - metalness);
+		let local_diffuse: vec3f = kD * albedo_rgb / 3.14159265359;
+		diffuse = diffuse + local_diffuse * radiance * NdotL * occlusion_factor;
+		specular = specular + local_specular * radiance * NdotL * occlusion_factor;
+	}
+
+	let ambient_irradiance: vec3f = sample_environment_irradiance(normal);
+	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;
+	let reflection_direction: vec3f = incident - 2.0 * dot(incident, normal) * normal;
+	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, roughness);
+	let F_ibl: vec3f = fresnel_schlick_roughness(NdotV, F0, roughness);
+	let kD_ibl: vec3f = (vec3f(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
+	let ibl_diffuse: vec3f = kD_ibl * albedo_rgb * ambient_irradiance;
+
+	let c0: vec4f = vec4f(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
+	let c1: vec4f = vec4f(1.0, 0.0425, 1.04, 0.0 - 0.04);
+	let r: vec4f = roughness * c0 + c1;
+	let a004: f32 = min(r.x * r.x, pow(2.0, (0.0 - 9.28) * NdotV)) * r.x + r.y;
+	let env_brdf: vec2f = vec2f(0.0 - 1.04, 1.04) * a004 + vec2f(r.z, r.w);
+	let ibl_specular: vec3f = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
+	let ambient: vec3f = ibl_diffuse + ibl_specular;
+	ao_factor = ao_factor * occlusion;
+	let lit: vec3f = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
+	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
+	if (push_constant.blend != 0) {
+		let source_alpha: f32 = clamp(albedo.w, 0.0, 1.0);
+		let destination_color: vec4f = image_load(lit_map, pixel_coordinates);
+		output_color = source_over(
+			vec4f(lit.x * source_alpha, lit.y * source_alpha, lit.z * source_alpha, source_alpha),
+			destination_color
+		);
+	}
+	write(lit_map, pixel_coordinates, output_color);
+}
+"#;
+
+const SHADOW_TAP_SOURCE: &str = r#"
+sample_shadow_tap: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	offset: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> f32 {
+	let offset_shadow_uv: vec2f = shadow_uv + offset;
+	if (offset_shadow_uv.x < 0.0 || offset_shadow_uv.x > 1.0 || offset_shadow_uv.y < 0.0 || offset_shadow_uv.y > 1.0) {
+		return 1.0;
+	}
+	if (surface_depth < 0.0 || surface_depth > 1.0) {
+		return 1.0;
+	}
+
+	let maximum_texel: vec2u = shadow_map_extent - vec2u(1, 1);
+	let shadow_texel: vec2u = vec2u(
+		u32(clamp(offset_shadow_uv.x * f32(shadow_map_extent.x), 0.0, f32(maximum_texel.x))),
+		u32(clamp(offset_shadow_uv.y * f32(shadow_map_extent.y), 0.0, f32(maximum_texel.y)))
+	);
+	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
+	if (surface_depth < closest_depth) {
+		return 0.0;
+	}
+	return 1.0;
+}
+"#;
+
+const ROTATED_SHADOW_TAP_SOURCE: &str = r#"
+sample_rotated_shadow_tap: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	poisson_offset: vec2f,
+	rotation: vec2f,
+	texel_size: vec2f,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> f32 {
+	let rotated_offset: vec2f = vec2f(
+		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
+		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
+	) * texel_size * 1.5;
+	return sample_shadow_tap(
+		shadow_map,
+		shadow_uv,
+		surface_depth,
+		rotated_offset,
+		shadow_layer,
+		shadow_map_extent
+	);
+}
+"#;
+
+const SHADOW_SOURCE: &str = r#"
+sample_shadow: fn (
+	shadow_map: ArrayTexture2D,
+	light: Light,
+	world_space_position: vec3f,
+	view_space_position: vec3f,
+	surface_normal: vec3f,
+	surface_to_light_direction: vec3f
+) -> f32 {
+	if (light.shadow_views[0] == 0) {
+		return 1.0;
+	}
+
+	let shadow_view_index: u32 = light.shadow_views[0];
+	let shadow_layer: u32 = light.shadow_layer;
+	let bias_scale: f32 = 1.0;
+	if (light.type == 68) {
+		let depth_value: f32 = abs(view_space_position.z);
+		let cascade_index: u32 = 3;
+		if (depth_value < views.views[light.shadow_views[0]].far) {
+			cascade_index = 0;
+		}
+		if (cascade_index == 3 && depth_value < views.views[light.shadow_views[1]].far) {
+			cascade_index = 1;
+		}
+		if (cascade_index == 3 && depth_value < views.views[light.shadow_views[2]].far) {
+			cascade_index = 2;
+		}
+		shadow_view_index = light.shadow_views[cascade_index];
+		shadow_layer = cascade_index;
+		bias_scale = f32(cascade_index + 1);
+	}
+
+	let shadow_view: View = views.views[shadow_view_index];
+	let surface_light_clip_position: vec4f = shadow_view.view_projection * vec4f(
+		world_space_position.x,
+		world_space_position.y,
+		world_space_position.z,
+		1.0
+	);
+	let surface_light_ndc_position: vec3f = vec3f(
+		surface_light_clip_position.x,
+		surface_light_clip_position.y,
+		surface_light_clip_position.z
+	) / surface_light_clip_position.w;
+	let shadow_uv: vec2f = vec2f(
+		surface_light_ndc_position.x * 0.5 + 0.5,
+		0.5 - surface_light_ndc_position.y * 0.5
+	);
+	let normal_alignment: f32 = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
+	let cascade_depth_range: f32 = max(shadow_view.far - shadow_view.near, 0.0001);
+	let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
+	let constant_bias: f32 = 0.00002 * bias_scale;
+	let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
+	let surface_depth_bias: f32 = max(slope_scaled_bias + cascade_range_bias, constant_bias);
+	let surface_depth: f32 = surface_light_ndc_position.z + surface_depth_bias;
+	if (surface_depth < 0.0 || surface_depth > 1.0) {
+		return 1.0;
+	}
+
+	let shadow_map_extent: vec2u = texture_size(shadow_map);
+	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let rotation_noise: f32 = fract(
+		sin(dot(vec2f(world_space_position.x, world_space_position.z) + world_space_position.y, vec2f(12.9898, 78.233))) * 43758.5453
+	);
+	let rotation_angle: f32 = rotation_noise * 6.2831853;
+	let rotation: vec2f = vec2f(cos(rotation_angle), sin(rotation_angle));
+	let occlusion: f32 = 0.0;
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.613392, 0.617481), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.170019, 0.0 - 0.040254), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.299417, 0.791925), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.645680, 0.493210), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.651784, 0.717887), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.421003, 0.027070), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.817194, 0.0 - 0.271096), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.705374, 0.0 - 0.668203), rotation, texel_size, shadow_layer, shadow_map_extent);
+	return occlusion / 8.0;
+}
+"#;
+
+const ENVIRONMENT_IRRADIANCE_SOURCE: &str = r#"
+sample_environment_irradiance: fn (direction: vec3f) -> vec3f {
+	let dir: vec3f = normalize(direction);
+	let environment_uv: vec2f = vec2f(
+		atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+		0.5 - asin(clamp(dir.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
+	);
+	let environment_extent: vec2u = texture_size(environment_irradiance);
+	let environment_half_texel: f32 = 0.5 / f32(environment_extent.y);
+	environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
+	let environment_sample: vec4f = texture_lod(environment_irradiance, environment_uv);
+	return vec3f(environment_sample.x, environment_sample.y, environment_sample.z);
+}
+"#;
+
+const ENVIRONMENT_SPECULAR_SOURCE: &str = r#"
+sample_environment_specular: fn (direction: vec3f, roughness: f32) -> vec3f {
+	let dir: vec3f = normalize(direction);
+	let environment_uv: vec2f = vec2f(
+		atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+		0.5 - asin(clamp(dir.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
+	);
+	let specular_level: f32 = clamp(roughness, 0.0, 1.0) * 7.0;
+	let lower_level: u32 = u32(floor(specular_level));
+	let upper_level: u32 = lower_level + 1;
+	if (upper_level > 7) {
+		upper_level = 7;
+	}
+	let lower_extent: vec2u = environment_level_size(lower_level);
+	let upper_extent: vec2u = environment_level_size(upper_level);
+	let lower_half_texel: f32 = 0.5 / f32(lower_extent.y);
+	let upper_half_texel: f32 = 0.5 / f32(upper_extent.y);
+	let lower_uv: vec2f = vec2f(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
+	let upper_uv: vec2f = vec2f(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
+	let lower_sample: vec4f = sample_environment_level(lower_level, lower_uv);
+	let upper_sample: vec4f = sample_environment_level(upper_level, upper_uv);
+	let level_blend: f32 = fract(specular_level);
+	let lower_color: vec3f = vec3f(lower_sample.x, lower_sample.y, lower_sample.z);
+	let upper_color: vec3f = vec3f(upper_sample.x, upper_sample.y, upper_sample.z);
+	return lower_color * (1.0 - level_blend) + upper_color * level_blend;
+}
+"#;
 
 /// The `VisibilityShaderScope` struct provides material programs with the shared visibility data and lighting contract.
 pub struct VisibilityShaderScope {}
@@ -382,456 +952,41 @@ impl VisibilityShaderScope {
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]);
 
-		let sample_function = Node::intrinsic(
+		let sample_function = Node::intrinsic_with_parameters(
 			"sample_material",
-			Node::parameter("smplr", "u32"),
-			Node::sentence(vec![
-				Node::raw_code(
-					Some("texture(textures[nonuniformEXT(material.textures[".into()),
-					Some("textures[material.textures[".into()),
-					Some("resources.textures[material.textures[".into()),
-					&["textures"],
-					&[],
-				),
-				Node::member_expression("smplr"),
-				Node::raw_code(
-					Some("])], vertex_uv)".into()),
-					Some("]].SampleLevel(textures_sampler, vertex_uv, 0.0)".into()),
-					Some("]].sample(resources.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0))".into()),
-					&["textures"],
-					&[],
-				),
-			]),
+			vec![Node::parameter("texture_index", "u32"), Node::parameter("uv", "vec2f")],
+			Node::sentence(vec![Node::member_expression("textures")]),
 			"vec4f",
 		);
 
-		let sample_normal_function = if true {
-			Node::intrinsic(
-				"sample_normal",
-				Node::parameter("smplr", "u32"),
-				Node::sentence(vec![
-					Node::raw_code(
-						Some("unit_vector_from_xy(texture(textures[nonuniformEXT(material.textures[".into()),
-						Some("unit_vector_from_xy(textures[material.textures[".into()),
-						Some("unit_vector_from_xy(resources.textures[material.textures[".into()),
-						&["textures", "unit_vector_from_xy"],
-						&[],
-					),
-					Node::member_expression("smplr"),
-					Node::raw_code(
-						Some("])], vertex_uv).xy)".into()),
-						Some("]].SampleLevel(textures_sampler, vertex_uv, 0.0).xy)".into()),
-						Some(
-							"]].sample(resources.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0)).xy)".into(),
-						),
-						&["textures", "unit_vector_from_xy"],
-						&[],
-					),
-				]),
-				"vec3f",
-			)
-		} else {
-			Node::intrinsic(
-				"sample_normal",
-				Node::parameter("smplr", "u32"),
-				Node::sentence(vec![
-					Node::glsl("normalize(texture(", &[], &[]),
-					Node::member_expression("smplr"),
-					Node::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", &[], &[]),
-				]),
-				"vec3f",
-			)
-		};
-		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
-		let sample_shadow_tap = Node::function(
-			"sample_shadow_tap",
-			vec![
-				Node::parameter("shadow_map", "ArrayTexture2D"),
-				Node::parameter("shadow_uv", "vec2f"),
-				Node::parameter("surface_depth", "f32"),
-				Node::parameter("offset", "vec2f"),
-				Node::parameter("shadow_layer", "u32"),
-				Node::parameter("shadow_map_extent", "vec2i"),
-			],
-			"f32",
-			vec![Node::raw_code(
-				Some(
-					"
-			vec2 offset_shadow_uv = shadow_uv + offset;
-			if (offset_shadow_uv.x < 0.0 || offset_shadow_uv.x > 1.0 || offset_shadow_uv.y < 0.0 || offset_shadow_uv.y > 1.0) { return 1.0; }
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-
-			ivec2 shadow_texel = ivec2(clamp(offset_shadow_uv * vec2(shadow_map_extent), vec2(0.0), vec2(shadow_map_extent - 1)));
-			float closest_depth = texelFetch(shadow_map, ivec3(shadow_texel, int(shadow_layer)), 0).r;
-
-			return surface_depth < closest_depth ? 0.0 : 1.0"
-						.into(),
-				),
-				Some(
-					"
-			float2 offset_shadow_uv = shadow_uv + offset;
-			if (offset_shadow_uv.x < 0.0 || offset_shadow_uv.x > 1.0 || offset_shadow_uv.y < 0.0 || offset_shadow_uv.y > 1.0) { return 1.0; }
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-
-			int2 shadow_texel = int2(clamp(offset_shadow_uv * float2(shadow_map_extent), float2(0.0, 0.0), float2(shadow_map_extent - int2(1, 1))));
-			float closest_depth = shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x;
-
-			return surface_depth < closest_depth ? 0.0 : 1.0"
-						.into(),
-				),
-				Some(
-					"
-			float2 offset_shadow_uv = shadow_uv + offset;
-			if (offset_shadow_uv.x < 0.0 || offset_shadow_uv.x > 1.0 || offset_shadow_uv.y < 0.0 || offset_shadow_uv.y > 1.0) { return 1.0; }
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-
-			int2 shadow_texel = int2(clamp(offset_shadow_uv * float2(shadow_map_extent), float2(0.0), float2(shadow_map_extent - 1)));
-			float closest_depth = shadow_map.read(uint2(shadow_texel), shadow_layer).x;
-
-			return surface_depth < closest_depth ? 0.0 : 1.0"
-						.into(),
-				),
-				&[],
-				&[],
-			)],
-		);
-
-		let sample_shadow = Node::function(
-			"sample_shadow",
-			vec![
-				Node::parameter("shadow_map", "ArrayTexture2D"),
-				Node::parameter("light", "Light"),
-				Node::parameter("world_space_position", "vec3f"),
-				Node::parameter("view_space_position", "vec3f"),
-				Node::parameter("surface_normal", "vec3f"),
-				Node::parameter("surface_to_light_direction", "vec3f"),
-			],
-			"f32",
-			vec![Node::raw_code(
-				Some("if (light.shadow_views[0] == 0u) { return 1.0; }
-			uint shadow_view_index = light.shadow_views[0];
-			uint shadow_layer = light.shadow_layer;
-			float bias_scale = 1.0f;
-			if (light.type == 68) {
-				float depth_value = abs(view_space_position.z);
-				uint cascade_index = 3;
-				for (uint i = 0; i < 4; ++i) {
-					if (depth_value < views.views[light.shadow_views[i]].far) { cascade_index = i; break; }
-				}
-				shadow_view_index = light.shadow_views[cascade_index];
-				shadow_layer = cascade_index;
-				bias_scale = float(cascade_index + 1u);
-			}
-			View shadow_view = views.views[shadow_view_index];
-			vec4 surface_light_clip_position = shadow_view.view_projection * vec4(world_space_position, 1.0);
-			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
-			vec2 shadow_uv = vec2(
-				surface_light_ndc_position.x * 0.5f + 0.5f,
-				0.5f - surface_light_ndc_position.y * 0.5f
-			);
-			float normal_alignment = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
-			float cascade_depth_range = max(shadow_view.far - shadow_view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * bias_scale;
-			float cascade_range_bias = cascade_depth_range * 0.0000025f;
-			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
-			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-			ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
-			vec2 texel_size = 1.0f / vec2(shadow_map_extent);
-			float occlusion = 0.0f;
-
-			const vec2 poisson_disk[8] = vec2[8](
-				vec2(-0.613392f,  0.617481f),
-				vec2( 0.170019f, -0.040254f),
-				vec2(-0.299417f,  0.791925f),
-				vec2( 0.645680f,  0.493210f),
-				vec2(-0.651784f,  0.717887f),
-				vec2( 0.421003f,  0.027070f),
-				vec2(-0.817194f, -0.271096f),
-				vec2(-0.705374f, -0.668203f)
-			);
-			float rotation_noise = fract(sin(dot(world_space_position.xz + world_space_position.y, vec2(12.9898f, 78.233f))) * 43758.5453f);
-			float rotation_angle = rotation_noise * 6.2831853f;
-			mat2 poisson_rotation = mat2(
-				cos(rotation_angle), -sin(rotation_angle),
-				sin(rotation_angle),  cos(rotation_angle)
-			);
-
-			for (int i = 0; i < 8; ++i) {
-				vec2 pcf_offset = (poisson_rotation * poisson_disk[i]) * texel_size * 1.5f;
-				occlusion += sample_shadow_tap(
-					shadow_map,
-					shadow_uv,
-					surface_depth,
-					pcf_offset,
-					shadow_layer,
-					shadow_map_extent
-				);
-			}
-
-			return occlusion / 8.0f;".into()),
-				Some("if (light.shadow_views[0] == 0u) { return 1.0; }
-			uint shadow_view_index = light.shadow_views[0];
-			uint shadow_layer = light.shadow_layer;
-			float bias_scale = 1.0f;
-			if (light.type == 68) {
-				float depth_value = abs(view_space_position.z);
-				uint cascade_index = 3;
-				for (uint i = 0; i < 4; ++i) {
-					if (depth_value < views[light.shadow_views[i]].far) { cascade_index = i; break; }
-				}
-				shadow_view_index = light.shadow_views[cascade_index];
-				shadow_layer = cascade_index;
-				bias_scale = float(cascade_index + 1u);
-			}
-			View shadow_view = views[shadow_view_index];
-			float4 surface_light_clip_position = mul(shadow_view.view_projection, float4(world_space_position, 1.0));
-			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
-			float2 shadow_uv = float2(
-				surface_light_ndc_position.x * 0.5f + 0.5f,
-				0.5f - surface_light_ndc_position.y * 0.5f
-			);
-			float normal_alignment = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
-			float cascade_depth_range = max(shadow_view.far - shadow_view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * bias_scale;
-			float cascade_range_bias = cascade_depth_range * 0.0000025f;
-			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
-			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-			uint shadow_width; uint shadow_height; uint shadow_layers;
-			shadow_map.GetDimensions(shadow_width, shadow_height, shadow_layers);
-			int2 shadow_map_extent = int2(shadow_width, shadow_height);
-			float2 texel_size = 1.0f / float2(shadow_map_extent);
-			float occlusion = 0.0f;
-
-			static const float2 poisson_disk[8] = {
-				float2(-0.613392f,  0.617481f),
-				float2( 0.170019f, -0.040254f),
-				float2(-0.299417f,  0.791925f),
-				float2( 0.645680f,  0.493210f),
-				float2(-0.651784f,  0.717887f),
-				float2( 0.421003f,  0.027070f),
-				float2(-0.817194f, -0.271096f),
-				float2(-0.705374f, -0.668203f)
-			};
-			float rotation_noise = frac(sin(dot(world_space_position.xz + world_space_position.y, float2(12.9898f, 78.233f))) * 43758.5453f);
-			float rotation_angle = rotation_noise * 6.2831853f;
-			float2x2 poisson_rotation = float2x2(
-				cos(rotation_angle), -sin(rotation_angle),
-				sin(rotation_angle),  cos(rotation_angle)
-			);
-
-			for (int i = 0; i < 8; ++i) {
-				float2 pcf_offset = mul(poisson_rotation, poisson_disk[i]) * texel_size * 1.5f;
-				occlusion += sample_shadow_tap(
-					shadow_map,
-					shadow_uv,
-					surface_depth,
-					pcf_offset,
-					shadow_layer,
-					shadow_map_extent
-				);
-			}
-
-			return occlusion / 8.0f;".into()),
-				Some(
-					"if (light.shadow_views[0] == 0u) { return 1.0; }
-			uint shadow_view_index = light.shadow_views[0];
-			uint shadow_layer = light.shadow_layer;
-			float bias_scale = 1.0f;
-			if (light.type == 68) {
-				float depth_value = abs(view_space_position.z);
-				uint cascade_index = 3;
-				for (uint i = 0; i < 4; ++i) {
-					if (depth_value < resources.views->views[light.shadow_views[i]].far) { cascade_index = i; break; }
-				}
-				shadow_view_index = light.shadow_views[cascade_index];
-				shadow_layer = cascade_index;
-				bias_scale = float(cascade_index + 1u);
-			}
-			View shadow_view = resources.views->views[shadow_view_index];
-			float4 surface_light_clip_position = shadow_view.view_projection * float4(world_space_position, 1.0);
-			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
-			float2 shadow_uv = float2(
-				surface_light_ndc_position.x * 0.5f + 0.5f,
-				0.5f - surface_light_ndc_position.y * 0.5f
-			);
-			float normal_alignment = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
-			float cascade_depth_range = max(shadow_view.far - shadow_view.near, 0.0001f);
-			float slope_scaled_bias = 0.0002f * bias_scale * (1.0f - normal_alignment);
-			float constant_bias = 0.00002f * bias_scale;
-			float cascade_range_bias = cascade_depth_range * 0.0000025f;
-			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
-			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
-			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
-			int2 shadow_map_extent = int2(shadow_map.get_width(), shadow_map.get_height());
-			float2 texel_size = 1.0f / float2(shadow_map_extent);
-			float occlusion = 0.0f;
-
-			const float2 poisson_disk[8] = {
-				float2(-0.613392f,  0.617481f),
-				float2( 0.170019f, -0.040254f),
-				float2(-0.299417f,  0.791925f),
-				float2( 0.645680f,  0.493210f),
-				float2(-0.651784f,  0.717887f),
-				float2( 0.421003f,  0.027070f),
-				float2(-0.817194f, -0.271096f),
-				float2(-0.705374f, -0.668203f)
-			};
-			float rotation_noise = fract(sin(dot(world_space_position.xz + world_space_position.y, float2(12.9898f, 78.233f))) * 43758.5453f);
-			float rotation_angle = rotation_noise * 6.2831853f;
-			float2x2 poisson_rotation = float2x2(
-				float2(cos(rotation_angle), sin(rotation_angle)),
-				float2(-sin(rotation_angle),  cos(rotation_angle))
-			);
-
-			for (int i = 0; i < 8; ++i) {
-				float2 pcf_offset = (poisson_disk[i] * poisson_rotation) * texel_size * 1.5f;
-				occlusion += sample_shadow_tap(
-					shadow_map,
-					shadow_uv,
-					surface_depth,
-					pcf_offset,
-					shadow_layer,
-					shadow_map_extent
-				);
-			}
-
-			return occlusion / 8.0f;"
-						.into(),
-				),
-				&["sample_shadow_tap", "views"],
-				&[],
-			)],
-		);
-
-		let sample_environment_irradiance = Node::function(
-			"sample_environment_irradiance",
-			vec![Node::parameter("direction", "vec3f")],
+		let sample_normal_function = Node::intrinsic_with_parameters(
+			"sample_normal",
+			vec![Node::parameter("texture_index", "u32"), Node::parameter("uv", "vec2f")],
+			Node::sentence(vec![
+				Node::member_expression("textures"),
+				Node::member_expression("unit_vector_from_xy"),
+			]),
 			"vec3f",
-			vec![Node::raw_code(
-				Some(
-					"
-			vec3 dir = normalize(direction);
-			vec2 environment_uv = vec2(
-				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			float environment_half_texel = 0.5 / float(textureSize(environment_irradiance, 0).y);
-			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
-			vec4 environment_sample = textureLod(environment_irradiance, environment_uv, 0.0);
-			return environment_sample.rgb;"
-						.into(),
-				),
-				Some(
-					"
-			float3 dir = normalize(direction);
-			float2 environment_uv = float2(
-				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			uint environment_width = 0u;
-			uint environment_height = 0u;
-			environment_irradiance.GetDimensions(environment_width, environment_height);
-			float environment_half_texel = 0.5 / float(environment_height);
-			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
-			float4 environment_sample = environment_irradiance.SampleLevel(environment_irradiance_sampler, environment_uv, 0.0);
-			return environment_sample.rgb;"
-						.into(),
-				),
-				Some(
-					"
-			float3 dir = normalize(direction);
-			float2 environment_uv = float2(
-				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			float environment_half_texel = 0.5 / float(resources.environment_irradiance.get_height());
-			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
-			float4 environment_sample = resources.environment_irradiance.sample(resources.environment_irradiance_sampler, environment_uv, level(0.0));
-			return environment_sample.rgb;"
-						.into(),
-				),
-				&["environment_irradiance"],
-				&[],
-			)],
 		);
-		let sample_environment_specular = Node::function(
-			"sample_environment_specular",
-			vec![Node::parameter("direction", "vec3f"), Node::parameter("roughness", "f32")],
-			"vec3f",
-			vec![Node::raw_code(
-				Some(
-					"
-			vec3 dir = normalize(direction);
-			vec2 environment_uv = vec2(
-				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
-			uint lower_level = uint(floor(specular_level));
-			uint upper_level = min(lower_level + 1u, 7u);
-			float lower_half_texel = 0.5 / float(textureSize(environment_specular[nonuniformEXT(lower_level)], 0).y);
-			float upper_half_texel = 0.5 / float(textureSize(environment_specular[nonuniformEXT(upper_level)], 0).y);
-			vec2 lower_uv = vec2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
-			vec2 upper_uv = vec2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
-			vec4 lower_sample = textureLod(environment_specular[nonuniformEXT(lower_level)], lower_uv, 0.0);
-			vec4 upper_sample = textureLod(environment_specular[nonuniformEXT(upper_level)], upper_uv, 0.0);
-			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
-						.into(),
-				),
-				Some(
-					"
-			float3 dir = normalize(direction);
-			float2 environment_uv = float2(
-				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
-			uint lower_level = uint(floor(specular_level));
-			uint upper_level = min(lower_level + 1u, 7u);
-			uint lower_index = NonUniformResourceIndex(lower_level);
-			uint upper_index = NonUniformResourceIndex(upper_level);
-			uint lower_width = 0u;
-			uint lower_height = 0u;
-			uint upper_width = 0u;
-			uint upper_height = 0u;
-			environment_specular[lower_index].GetDimensions(lower_width, lower_height);
-			environment_specular[upper_index].GetDimensions(upper_width, upper_height);
-			float lower_half_texel = 0.5 / float(lower_height);
-			float upper_half_texel = 0.5 / float(upper_height);
-			float2 lower_uv = float2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
-			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
-			float4 lower_sample = environment_specular[lower_index].SampleLevel(environment_specular_sampler, lower_uv, 0.0);
-			float4 upper_sample = environment_specular[upper_index].SampleLevel(environment_specular_sampler, upper_uv, 0.0);
-			return lerp(lower_sample.rgb, upper_sample.rgb, frac(specular_level));"
-						.into(),
-				),
-				Some(
-					"
-			float3 dir = normalize(direction);
-			float2 environment_uv = float2(
-				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
-			);
-			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
-			uint lower_level = uint(floor(specular_level));
-			uint upper_level = min(lower_level + 1u, 7u);
-			float lower_half_texel = 0.5 / float(resources.environment_specular[lower_level].get_height());
-			float upper_half_texel = 0.5 / float(resources.environment_specular[upper_level].get_height());
-			float2 lower_uv = float2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
-			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
-			float4 lower_sample = resources.environment_specular[lower_level].sample(resources.environment_specular_sampler[lower_level], lower_uv, level(0.0));
-			float4 upper_sample = resources.environment_specular[upper_level].sample(resources.environment_specular_sampler[upper_level], upper_uv, level(0.0));
-			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
-						.into(),
-				),
-				&["environment_specular"],
-				&[],
-			)],
+		let sample_environment_level = Node::intrinsic_with_parameters(
+			"sample_environment_level",
+			vec![Node::parameter("level", "u32"), Node::parameter("uv", "vec2f")],
+			Node::sentence(vec![Node::member_expression("environment_specular")]),
+			"vec4f",
 		);
+		let environment_level_size = Node::intrinsic(
+			"environment_level_size",
+			Node::parameter("level", "u32"),
+			Node::sentence(vec![Node::member_expression("environment_specular")]),
+			"vec2u",
+		);
+
+		// Lighting helpers are authored once. Texture operations that differ by API remain typed intrinsics below.
+		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
+		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
+		let sample_shadow = parse_besl_function(SHADOW_SOURCE, "sample_shadow");
+		let sample_environment_irradiance = parse_besl_function(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance");
+		let sample_environment_specular = parse_besl_function(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular");
 
 		Node::scope(
 			"Visibility",
@@ -844,6 +999,7 @@ impl VisibilityShaderScope {
 				light_struct,
 				material_struct,
 				sample_shadow_tap,
+				sample_rotated_shadow_tap,
 				sample_shadow,
 				meshes,
 				positions,
@@ -875,6 +1031,8 @@ impl VisibilityShaderScope {
 				push_constant,
 				sample_function,
 				sample_normal_function,
+				sample_environment_level,
+				environment_level_size,
 				sample_environment_irradiance,
 				sample_environment_specular,
 			],
@@ -884,308 +1042,8 @@ impl VisibilityShaderScope {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
-		let a = "if (gl_GlobalInvocationID.x >= material_evaluation_dispatches.material_evaluation_dispatches[push_constant.material_id].w) { return; }
-
-		uint offset = material_offset.material_offset[push_constant.material_id];
-		uvec2 raw_pixel_coordinates = uvec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
-		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
-		ivec2 pixel_coordinates = ivec2(raw_pixel_coordinates) - ivec2(1);
-		ivec2 pixel_mapping_extent = imageSize(triangle_index);
-		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= pixel_mapping_extent.x || pixel_coordinates.y >= pixel_mapping_extent.y) { return; }
-		uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
-		uint instance_index = imageLoad(instance_index_render_target, pixel_coordinates).r;
-		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
-		uint meshlet_index = triangle_meshlet_indices >> 8;
-
-		Meshlet meshlet = meshlets.meshlets[meshlet_index];
-
-		Mesh mesh = meshes.meshes[instance_index];
-
-		Material material = materials.materials[push_constant.material_id];
-
-		uint primitive_index_base = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
-		uint primitive_index0 = primitive_indices.primitive_indices[primitive_index_base];
-		uint primitive_index1 = primitive_indices.primitive_indices[primitive_index_base + 1];
-		uint primitive_index2 = primitive_indices.primitive_indices[primitive_index_base + 2];
-		uint vertex_index0 = compute_vertex_index(mesh, meshlet, primitive_index0);
-		uint vertex_index1 = compute_vertex_index(mesh, meshlet, primitive_index1);
-		uint vertex_index2 = compute_vertex_index(mesh, meshlet, primitive_index2);
-
-		vec4 model_space_vertex_position0 = vec4(vertex_positions.positions[vertex_index0], 1.0);
-		vec4 model_space_vertex_position1 = vec4(vertex_positions.positions[vertex_index1], 1.0);
-		vec4 model_space_vertex_position2 = vec4(vertex_positions.positions[vertex_index2], 1.0);
-		vec4 vertex_normal0 = vec4(vertex_normals.normals[vertex_index0], 0.0);
-		vec4 vertex_normal1 = vec4(vertex_normals.normals[vertex_index1], 0.0);
-		vec4 vertex_normal2 = vec4(vertex_normals.normals[vertex_index2], 0.0);
-
-		// Use scalars for the three triangle vertices so Metal can keep the hot path out of thread-local array storage.
-		if (mesh.skinned_base_vertex_index != 4294967295u) {
-			uint skinned_vertex_index0 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
-			uint skinned_vertex_index1 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
-			uint skinned_vertex_index2 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
-			model_space_vertex_position0 = skinned_vertices.vertices[skinned_vertex_index0].position;
-			model_space_vertex_position1 = skinned_vertices.vertices[skinned_vertex_index1].position;
-			model_space_vertex_position2 = skinned_vertices.vertices[skinned_vertex_index2].position;
-			vertex_normal0 = skinned_vertices.vertices[skinned_vertex_index0].normal;
-			vertex_normal1 = skinned_vertices.vertices[skinned_vertex_index1].normal;
-			vertex_normal2 = skinned_vertices.vertices[skinned_vertex_index2].normal;
-		}
-
-		vec2 vertex_uv0 = vertex_uvs.uvs[vertex_index0];
-		vec2 vertex_uv1 = vertex_uvs.uvs[vertex_index1];
-		vec2 vertex_uv2 = vertex_uvs.uvs[vertex_index2];
-
-		ivec2 image_extent = imageSize(triangle_index);
-		vec2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
-
-		View view = views.views[0];
-
-		mat4x3 model = mesh.model;
-		vec3 world_space_vertex_position0 = model * model_space_vertex_position0;
-		vec3 world_space_vertex_position1 = model * model_space_vertex_position1;
-		vec3 world_space_vertex_position2 = model * model_space_vertex_position2;
-		vec4 clip_space_vertex_position0 = view.view_projection * vec4(world_space_vertex_position0, 1.0);
-		vec4 clip_space_vertex_position1 = view.view_projection * vec4(world_space_vertex_position1, 1.0);
-		vec4 clip_space_vertex_position2 = view.view_projection * vec4(world_space_vertex_position2, 1.0);
-		vec3 world_space_vertex_normal0 = normalize(model * vertex_normal0);
-		vec3 world_space_vertex_normal1 = normalize(model * vertex_normal1);
-		vec3 world_space_vertex_normal2 = normalize(model * vertex_normal2);
-
-		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_position0, clip_space_vertex_position1, clip_space_vertex_position2, nc, vec2(image_extent));
-		vec3 barycenter = barycentric_deriv.lambda;
-		vec3 ddx = barycentric_deriv.ddx;
-		vec3 ddy = barycentric_deriv.ddy;
-
-		vec3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		vec3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_position0.xyz, clip_space_vertex_position1.xyz, clip_space_vertex_position2.xyz);
-		vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normal0, world_space_vertex_normal1, world_space_vertex_normal2));
-		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		vec3 N = world_space_vertex_normal;
-		vec3 camera_position = view.inverse_view * vec4(0.0, 0.0, 0.0, 1.0);
-		vec3 V = normalize(camera_position - world_space_vertex_position);
-
-		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-
-		vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uv0, vertex_uv1, vertex_uv2);
-		vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
-		vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
-		vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-		mat3 TBN = mat3(T, B, N);
-
-		vec4 albedo = vec4(1, 0, 0, 1);
-		vec3 normal = vec3(0, 0, 1);
-		float metalness = 0.0;
-		float roughness = float(0.5);
-		float occlusion = 1.0;
-		vec3 emission = vec3(0.0)"
-			.trim();
-
-		let a_msl = "if (gid.x >= resources.material_evaluation_dispatches->material_evaluation_dispatches[push_constant.material_id].w) { return; }
-
-		uint offset = resources.material_offset->material_offset[push_constant.material_id];
-		uint2 raw_pixel_coordinates = uint2(resources.pixel_mapping->pixel_mapping[offset + gid.x]);
-		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
-		int2 pixel_coordinates = int2(raw_pixel_coordinates) - int2(1, 1);
-		int2 image_extent = int2(resources.triangle_index.get_width(), resources.triangle_index.get_height());
-		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) { return; }
-		uint triangle_meshlet_indices = resources.triangle_index.read(uint2(pixel_coordinates)).x;
-		uint instance_index = resources.instance_index_render_target.read(uint2(pixel_coordinates)).x;
-		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
-		uint meshlet_index = triangle_meshlet_indices >> 8;
-
-		Meshlet meshlet = resources.meshlets->meshlets[meshlet_index];
-
-		Mesh mesh = resources.meshes->meshes[instance_index];
-
-		Material material = resources.materials->materials[push_constant.material_id];
-
-		uint primitive_index_base = (mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3;
-		uint primitive_index0 = resources.primitive_indices->primitive_indices[primitive_index_base];
-		uint primitive_index1 = resources.primitive_indices->primitive_indices[primitive_index_base + 1];
-		uint primitive_index2 = resources.primitive_indices->primitive_indices[primitive_index_base + 2];
-		uint vertex_index0 = compute_vertex_index(mesh, meshlet, primitive_index0, gid, push_constant, resources);
-		uint vertex_index1 = compute_vertex_index(mesh, meshlet, primitive_index1, gid, push_constant, resources);
-		uint vertex_index2 = compute_vertex_index(mesh, meshlet, primitive_index2, gid, push_constant, resources);
-
-		float4 model_space_vertex_position0 = float4(resources.vertex_positions->positions[vertex_index0], 1.0);
-		float4 model_space_vertex_position1 = float4(resources.vertex_positions->positions[vertex_index1], 1.0);
-		float4 model_space_vertex_position2 = float4(resources.vertex_positions->positions[vertex_index2], 1.0);
-		float4 vertex_normal0 = float4(resources.vertex_normals->normals[vertex_index0], 0.0);
-		float4 vertex_normal1 = float4(resources.vertex_normals->normals[vertex_index1], 0.0);
-		float4 vertex_normal2 = float4(resources.vertex_normals->normals[vertex_index2], 0.0);
-
-		// Use scalars for the three triangle vertices so Metal can keep the hot path out of thread-local array storage.
-		if (mesh.skinned_base_vertex_index != 4294967295u) {
-			uint skinned_vertex_index0 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
-			uint skinned_vertex_index1 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
-			uint skinned_vertex_index2 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
-			model_space_vertex_position0 = resources.skinned_vertices->vertices[skinned_vertex_index0].position;
-			model_space_vertex_position1 = resources.skinned_vertices->vertices[skinned_vertex_index1].position;
-			model_space_vertex_position2 = resources.skinned_vertices->vertices[skinned_vertex_index2].position;
-			vertex_normal0 = resources.skinned_vertices->vertices[skinned_vertex_index0].normal;
-			vertex_normal1 = resources.skinned_vertices->vertices[skinned_vertex_index1].normal;
-			vertex_normal2 = resources.skinned_vertices->vertices[skinned_vertex_index2].normal;
-		}
-
-		float2 vertex_uv0 = resources.vertex_uvs->uvs[vertex_index0];
-		float2 vertex_uv1 = resources.vertex_uvs->uvs[vertex_index1];
-		float2 vertex_uv2 = resources.vertex_uvs->uvs[vertex_index2];
-
-		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
-
-		View view = resources.views->views[0];
-
-		float4x3 model = _besl_load_mat4x3(mesh.model);
-		float3 world_space_vertex_position0 = model * model_space_vertex_position0;
-		float3 world_space_vertex_position1 = model * model_space_vertex_position1;
-		float3 world_space_vertex_position2 = model * model_space_vertex_position2;
-		float4 clip_space_vertex_position0 = view.view_projection * float4(world_space_vertex_position0, 1.0);
-		float4 clip_space_vertex_position1 = view.view_projection * float4(world_space_vertex_position1, 1.0);
-		float4 clip_space_vertex_position2 = view.view_projection * float4(world_space_vertex_position2, 1.0);
-		float3 world_space_vertex_normal0 = normalize(model * vertex_normal0);
-		float3 world_space_vertex_normal1 = normalize(model * vertex_normal1);
-		float3 world_space_vertex_normal2 = normalize(model * vertex_normal2);
-
-		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_position0, clip_space_vertex_position1, clip_space_vertex_position2, nc, float2(image_extent));
-		float3 barycenter = barycentric_deriv.lambda;
-		float3 ddx = barycentric_deriv.ddx;
-		float3 ddy = barycentric_deriv.ddy;
-
-		float3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		float3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_position0.xyz, clip_space_vertex_position1.xyz, clip_space_vertex_position2.xyz);
-		float3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normal0, world_space_vertex_normal1, world_space_vertex_normal2));
-		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		float3 N = world_space_vertex_normal;
-		float3 camera_position = _besl_load_mat4x3(view.inverse_view) * float4(0.0, 0.0, 0.0, 1.0);
-		float3 V = normalize(camera_position - world_space_vertex_position);
-
-		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		float3 pos_dy = interpolate_vec3f_with_deriv(ddy, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-
-		float2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uv0, vertex_uv1, vertex_uv2);
-		float2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
-		float3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
-		float3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-		float3x3 TBN = float3x3(T, B, N);
-
-		float4 albedo = float4(1, 0, 0, 1);
-		float3 normal = float3(0, 0, 1);
-		float metalness = 0.0;
-		float roughness = float(0.5);
-		float occlusion = 1.0;
-		float3 emission = float3(0.0, 0.0, 0.0)"
-			.trim();
-
-		let a_hlsl = "if (dispatch_thread_id.x >= material_evaluation_dispatches[push_constant.material_id].w) { return; }
-
-		uint offset = material_offset[push_constant.material_id];
-		uint2 raw_pixel_coordinates = uint2(pixel_mapping[offset + dispatch_thread_id.x]);
-		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
-		int2 pixel_coordinates = int2(raw_pixel_coordinates) - int2(1, 1);
-		uint triangle_width; uint triangle_height;
-		triangle_index.GetDimensions(triangle_width, triangle_height);
-		int2 image_extent = int2(triangle_width, triangle_height);
-		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) { return; }
-		uint triangle_meshlet_indices = triangle_index[pixel_coordinates];
-		uint instance_index = instance_index_render_target[pixel_coordinates];
-		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
-		uint meshlet_index = triangle_meshlet_indices >> 8;
-
-		Meshlet meshlet = meshlets[meshlet_index];
-		Mesh mesh = meshes[instance_index];
-		Material material = materials[push_constant.material_id];
-
-		// DX12 exposes the tightly packed u8 primitive index buffer as 32-bit words.
-		uint primitive_indices_base = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3u;
-		uint primitive_indices_word0 = primitive_indices[primitive_indices_base >> 2u];
-		uint primitive_indices_word1 = primitive_indices[(primitive_indices_base + 1u) >> 2u];
-		uint primitive_indices_word2 = primitive_indices[(primitive_indices_base + 2u) >> 2u];
-		uint primitive_index0 = (primitive_indices_word0 >> ((primitive_indices_base & 3u) * 8u)) & 0xffu;
-		uint primitive_index1 = (primitive_indices_word1 >> (((primitive_indices_base + 1u) & 3u) * 8u)) & 0xffu;
-		uint primitive_index2 = (primitive_indices_word2 >> (((primitive_indices_base + 2u) & 3u) * 8u)) & 0xffu;
-		uint vertex_index0 = compute_vertex_index(mesh, meshlet, primitive_index0);
-		uint vertex_index1 = compute_vertex_index(mesh, meshlet, primitive_index1);
-		uint vertex_index2 = compute_vertex_index(mesh, meshlet, primitive_index2);
-
-		float4 model_space_vertex_position0 = float4(vertex_positions[vertex_index0], 1.0);
-		float4 model_space_vertex_position1 = float4(vertex_positions[vertex_index1], 1.0);
-		float4 model_space_vertex_position2 = float4(vertex_positions[vertex_index2], 1.0);
-		float4 vertex_normal0 = float4(vertex_normals[vertex_index0], 0.0);
-		float4 vertex_normal1 = float4(vertex_normals[vertex_index1], 0.0);
-		float4 vertex_normal2 = float4(vertex_normals[vertex_index2], 0.0);
-
-		// Use scalars for the three triangle vertices so Metal can keep the hot path out of thread-local array storage.
-		if (mesh.skinned_base_vertex_index != 4294967295u) {
-			uint skinned_vertex_index0 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
-			uint skinned_vertex_index1 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
-			uint skinned_vertex_index2 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
-			model_space_vertex_position0 = skinned_vertices[skinned_vertex_index0].position;
-			model_space_vertex_position1 = skinned_vertices[skinned_vertex_index1].position;
-			model_space_vertex_position2 = skinned_vertices[skinned_vertex_index2].position;
-			vertex_normal0 = skinned_vertices[skinned_vertex_index0].normal;
-			vertex_normal1 = skinned_vertices[skinned_vertex_index1].normal;
-			vertex_normal2 = skinned_vertices[skinned_vertex_index2].normal;
-		}
-
-		float2 vertex_uv0 = vertex_uvs[vertex_index0];
-		float2 vertex_uv1 = vertex_uvs[vertex_index1];
-		float2 vertex_uv2 = vertex_uvs[vertex_index2];
-
-		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
-
-		View view = views[0];
-
-		float4x3 model = mesh.model;
-		float3 world_space_vertex_position0 = mul(model_space_vertex_position0, model);
-		float3 world_space_vertex_position1 = mul(model_space_vertex_position1, model);
-		float3 world_space_vertex_position2 = mul(model_space_vertex_position2, model);
-		float4 clip_space_vertex_position0 = mul(view.view_projection, float4(world_space_vertex_position0, 1.0));
-		float4 clip_space_vertex_position1 = mul(view.view_projection, float4(world_space_vertex_position1, 1.0));
-		float4 clip_space_vertex_position2 = mul(view.view_projection, float4(world_space_vertex_position2, 1.0));
-		float3 world_space_vertex_normal0 = normalize(mul(vertex_normal0, model));
-		float3 world_space_vertex_normal1 = normalize(mul(vertex_normal1, model));
-		float3 world_space_vertex_normal2 = normalize(mul(vertex_normal2, model));
-
-		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_position0, clip_space_vertex_position1, clip_space_vertex_position2, nc, float2(image_extent));
-		float3 barycenter = barycentric_deriv.lambda;
-		float3 ddx = barycentric_deriv.ddx;
-		float3 ddy = barycentric_deriv.ddy;
-
-		float3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		float3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_position0.xyz, clip_space_vertex_position1.xyz, clip_space_vertex_position2.xyz);
-		float3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normal0, world_space_vertex_normal1, world_space_vertex_normal2));
-		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		float3 N = world_space_vertex_normal;
-		float3 camera_position = mul(float4(0.0, 0.0, 0.0, 1.0), view.inverse_view);
-		float3 V = normalize(camera_position - world_space_vertex_position);
-
-		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-		float3 pos_dy = interpolate_vec3f_with_deriv(ddy, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
-
-		float2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uv0, vertex_uv1, vertex_uv2);
-		float2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uv0, vertex_uv1, vertex_uv2);
-
-		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
-		float3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
-		float3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-
-		float4 albedo = float4(1, 0, 0, 1);
-		float3 normal = float3(0, 0, 1);
-		float metalness = 0.0;
-		float roughness = float(0.5);
-		float occlusion = 1.0;
-		float3 emission = float3(0.0, 0.0, 0.0)"
-			.trim();
-
 		let mut extra: Vec<Node<'a>> = Vec::new();
+		let mut texture_slots = Vec::new();
 
 		let mut texture_count = 0;
 
@@ -1199,6 +1057,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					extra.push(x);
 				}
 				"Texture2D" => {
+					texture_slots.push((name, texture_count));
 					let slot = format!("{texture_count}u");
 					let slot_node = besl::parser::Node::literal_expression(slot);
 					let x = besl::parser::Node::constant(name, "u32", slot_node);
@@ -1209,436 +1068,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			}
 		}
 
-		let b_msl = "
-		float3 diffuse = float3(0.0, 0.0, 0.0);
-		float3 specular = float3(0.0, 0.0, 0.0);
-
-		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
-		// surface would composite the opaque surface's occlusion over that surface.
-		float ao_factor = push_constant.blend != 0u
-			? 1.0
-			: resources.ao.read(uint2(pixel_coordinates)).r;
-
-		normal = normalize(TBN * normal);
-		float3 F0 = mix(float3(0.04), albedo.xyz, metalness);
-		float NdotV = max(dot(normal, V), 0.0);
-		float roughness_alpha = roughness * roughness;
-		float roughness_alpha_squared = roughness_alpha * roughness_alpha;
-		float adjusted_roughness = roughness + 1.0;
-		float geometry_k = adjusted_roughness * adjusted_roughness / 8.0;
-		float view_fresnel_factor = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-		float3 one_minus_fresnel_n_dot_v = float3(1.0) - fresnel_schlick_from_factor(view_fresnel_factor, F0);
-
-		for (uint i = 0; i < resources.lighting_data->light_count; ++i) {
-			Light light = resources.lighting_data->lights[i];
-
-			float3 L;
-			float attenuation = 1.0;
-
-			if (light.type == 68) {
-				L = normalize(-light.position.xyz);
-			} else {
-				float3 surface_to_light = light.position.xyz - world_space_vertex_position;
-				float distance_squared = dot(surface_to_light, surface_to_light);
-				if (distance_squared <= 0.0) { continue; }
-				L = surface_to_light * rsqrt(distance_squared);
-				attenuation = 1.0 / distance_squared;
-			}
-
-			float NdotL = max(dot(normal, L), 0.0);
-
-			if (NdotL <= 0.0) { continue; }
-
-			float occlusion_factor = 1.0;
-
-			if (light.type == 68) {
-				float3 view_space_surface_position = _besl_load_mat4x3(view.view) * float4(world_space_vertex_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L, gid, push_constant, resources);
-
-				occlusion_factor = c_occlusion_factor;
-
-				if (occlusion_factor == 0.0) { continue; }
-
-				attenuation = 1.0;
-			} else {
-				if (light.type == 1) {
-					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction.xyz), -L);
-					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
-					if (cone_factor <= 0.0) { continue; }
-					attenuation *= cone_factor;
-					float3 view_space_surface_position = _besl_load_mat4x3(view.view) * float4(world_space_vertex_position, 1.0);
-					occlusion_factor = sample_shadow(resources.cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L, gid, push_constant, resources);
-					if (occlusion_factor == 0.0) { continue; }
-				}
-			}
-
-			float3 H = normalize(V + L);
-
-			float3 radiance = light.color.xyz * attenuation;
-
-			float half_view_fresnel_factor = pow(clamp(1.0 - max(dot(H, V), 0.0), 0.0, 1.0), 5.0);
-			float3 F = fresnel_schlick_from_factor(half_view_fresnel_factor, F0);
-			float NDF = distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared);
-			float G = geometry_smith_from_terms(NdotV, NdotL, geometry_k);
-			float3 local_specular = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.000001);
-
-			float light_fresnel_factor = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
-			float3 kD = (float3(1.0) - fresnel_schlick_from_factor(light_fresnel_factor, F0)) * one_minus_fresnel_n_dot_v;
-
-			kD *= 1.0 - metalness;
-
-			float3 local_diffuse = kD * albedo.xyz / PI;
-
-			diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
-			specular += local_specular * radiance * NdotL * occlusion_factor;
-		}
-
-		float3 ambient_irradiance = sample_environment_irradiance(normal, gid, push_constant, resources);
-		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_environment_specular(reflection_direction, roughness, gid, push_constant, resources);
-
-		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
-		float3 kD_ibl = (float3(1.0) - F_ibl) * (1.0 - metalness);
-
-		float3 ibl_diffuse = kD_ibl * albedo.xyz * ambient_irradiance;
-
-		float2 env_brdf = float2(1.0, 0.0);
-		{
-			float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
-			float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
-			float4 r = roughness * c0 + c1;
-			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
-			env_brdf = float2(-1.04, 1.04) * a004 + r.zw;
-		}
-		float3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
-
-		float3 ambient = ibl_diffuse + ibl_specular;
-
-		ao_factor *= occlusion;
-		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
-
-		float4 output_color = float4(lit, 1.0);
-		if (push_constant.blend != 0u) {
-			float source_alpha = clamp(albedo.a, 0.0, 1.0);
-			float4 destination_color = resources.lit_map.read(uint2(pixel_coordinates));
-			output_color = source_over(float4(lit * source_alpha, source_alpha), destination_color);
-		}
-
-		resources.lit_map.write(output_color, uint2(pixel_coordinates))
-		"
-		.trim();
-
-		let b = "
-		vec3 diffuse = vec3(0.0);
-		vec3 specular = vec3(0.0);
-
-		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
-		// surface would composite the opaque surface's occlusion over that surface.
-		float ao_factor = push_constant.blend != 0u
-			? 1.0
-			: texelFetch(ao, pixel_coordinates, 0).r;
-
-		normal = normalize(TBN * normal);
-		vec3 F0 = mix(vec3(0.04), albedo.xyz, metalness);
-		float NdotV = max(dot(normal, V), 0.0);
-		float roughness_alpha = roughness * roughness;
-		float roughness_alpha_squared = roughness_alpha * roughness_alpha;
-		float adjusted_roughness = roughness + 1.0;
-		float geometry_k = adjusted_roughness * adjusted_roughness / 8.0;
-		float view_fresnel_factor = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-		vec3 one_minus_fresnel_n_dot_v = vec3(1.0) - fresnel_schlick_from_factor(view_fresnel_factor, F0);
-
-		for (uint i = 0; i < lighting_data.light_count; ++i) {
-			Light light = lighting_data.lights[i];
-
-			vec3 L;
-			float attenuation = 1.0;
-
-			if (light.type == 68) { // Infinite
-				L = normalize(-light.position.xyz);
-			} else {
-				vec3 surface_to_light = light.position.xyz - world_space_vertex_position;
-				float distance_squared = dot(surface_to_light, surface_to_light);
-				if (distance_squared <= 0.0) { continue; }
-				L = surface_to_light * inversesqrt(distance_squared);
-				attenuation = 1.0 / distance_squared;
-			}
-
-			float NdotL = max(dot(normal, L), 0.0);
-
-			if (NdotL <= 0.0) { continue; }
-
-			float occlusion_factor = 1.0;
-
-			if (light.type == 68) { // Infinite
-				vec3 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
-
-				occlusion_factor = c_occlusion_factor;
-
-				if (occlusion_factor == 0.0) { continue; }
-
-				// attenuation = occlusion_factor;
-				attenuation = 1.0;
-			} else {
-				if (light.type == 1) {
-					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction.xyz), -L);
-					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
-					if (cone_factor <= 0.0) { continue; }
-					attenuation *= cone_factor;
-					vec3 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
-					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
-					if (occlusion_factor == 0.0) { continue; }
-				}
-			}
-
-			vec3 H = normalize(V + L);
-
-			vec3 radiance = light.color.xyz * attenuation;
-
-			float half_view_fresnel_factor = pow(clamp(1.0 - max(dot(H, V), 0.0), 0.0, 1.0), 5.0);
-			vec3 F = fresnel_schlick_from_factor(half_view_fresnel_factor, F0);
-			float NDF = distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared);
-			float G = geometry_smith_from_terms(NdotV, NdotL, geometry_k);
-			vec3 local_specular = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.000001);
-
-			float light_fresnel_factor = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
-			vec3 kD = (vec3(1.0) - fresnel_schlick_from_factor(light_fresnel_factor, F0)) * one_minus_fresnel_n_dot_v;
-
-			kD *= 1.0 - metalness;
-
-			vec3 local_diffuse = kD * albedo.xyz / PI;
-
-			diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
-			specular += local_specular * radiance * NdotL * occlusion_factor;
-		}
-
-		vec3 ambient_irradiance = sample_environment_irradiance(normal);
-		vec3 reflection_direction = reflect(-V, normal);
-		vec3 reflection_radiance = sample_environment_specular(reflection_direction, roughness);
-
-		vec3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
-		vec3 kD_ibl = (vec3(1.0) - F_ibl) * (1.0 - metalness);
-
-		vec3 ibl_diffuse = kD_ibl * albedo.xyz * ambient_irradiance;
-
-		vec2 env_brdf = vec2(1.0, 0.0);
-		{
-			vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
-			vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
-			vec4 r = roughness * c0 + c1;
-			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
-			env_brdf = vec2(-1.04, 1.04) * a004 + r.zw;
-		}
-		vec3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
-
-		vec3 ambient = ibl_diffuse + ibl_specular;
-
-		ao_factor *= occlusion;
-		vec3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
-
-		vec4 output_color = vec4(lit, 1.0);
-		if (push_constant.blend != 0u) {
-			float source_alpha = clamp(albedo.a, 0.0, 1.0);
-			vec4 destination_color = imageLoad(lit_map, pixel_coordinates);
-			output_color = source_over(vec4(lit * source_alpha, source_alpha), destination_color);
-		}
-
-		imageStore(lit_map, pixel_coordinates, output_color)
-		"
-		.trim();
-
-		let b_hlsl = "
-		float3 diffuse = float3(0.0, 0.0, 0.0);
-		float3 specular = float3(0.0, 0.0, 0.0);
-
-		// GTAO belongs to the opaque depth surface. Reusing it for a transparent
-		// surface would composite the opaque surface's occlusion over that surface.
-		float ao_factor = push_constant.blend != 0u
-			? 1.0
-			: ao.Load(int3(pixel_coordinates, 0)).r;
-
-		// Combine the basis explicitly because HLSL matrix constructors treat T, B, and N as rows.
-		normal = normalize(normal.x * T + normal.y * B + normal.z * N);
-		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.xyz, metalness);
-		float NdotV = max(dot(normal, V), 0.0);
-		float roughness_alpha = roughness * roughness;
-		float roughness_alpha_squared = roughness_alpha * roughness_alpha;
-		float adjusted_roughness = roughness + 1.0;
-		float geometry_k = adjusted_roughness * adjusted_roughness / 8.0;
-		float view_fresnel_factor = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-		float3 one_minus_fresnel_n_dot_v = float3(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(view_fresnel_factor, F0);
-
-		for (uint i = 0; i < lighting_data[0].light_count; ++i) {
-			Light light = lighting_data[0].lights[i];
-
-			float3 L;
-			float attenuation = 1.0;
-
-			if (light.type == 68) {
-				L = normalize(-light.position.xyz);
-			} else {
-				float3 surface_to_light = light.position.xyz - world_space_vertex_position;
-				float distance_squared = dot(surface_to_light, surface_to_light);
-				if (distance_squared <= 0.0) { continue; }
-				L = surface_to_light * rsqrt(distance_squared);
-				attenuation = 1.0 / distance_squared;
-			}
-
-			float NdotL = max(dot(normal, L), 0.0);
-
-			if (NdotL <= 0.0) { continue; }
-
-			float occlusion_factor = 1.0;
-
-			if (light.type == 68) {
-				float3 view_space_surface_position = mul(float4(world_space_vertex_position, 1.0), view.view);
-				float c_occlusion_factor = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
-
-				occlusion_factor = c_occlusion_factor;
-
-				if (occlusion_factor == 0.0) { continue; }
-
-				attenuation = 1.0;
-			} else {
-				if (light.type == 1) {
-					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
-					float cone_cosine = dot(normalize(light.direction.xyz), -L);
-					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
-					if (cone_factor <= 0.0) { continue; }
-					attenuation *= cone_factor;
-					float3 view_space_surface_position = mul(float4(world_space_vertex_position, 1.0), view.view);
-					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
-					if (occlusion_factor == 0.0) { continue; }
-				}
-			}
-
-			float3 H = normalize(V + L);
-
-			float3 radiance = light.color.xyz * attenuation;
-
-			float half_view_fresnel_factor = pow(clamp(1.0 - max(dot(H, V), 0.0), 0.0, 1.0), 5.0);
-			float3 F = fresnel_schlick_from_factor(half_view_fresnel_factor, F0);
-			float NDF = distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared);
-			float G = geometry_smith_from_terms(NdotV, NdotL, geometry_k);
-			float3 local_specular = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.000001);
-
-			float light_fresnel_factor = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
-			float3 kD = (float3(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(light_fresnel_factor, F0)) * one_minus_fresnel_n_dot_v;
-
-			kD *= 1.0 - metalness;
-
-			float3 local_diffuse = kD * albedo.xyz / PI;
-
-			diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
-			specular += local_specular * radiance * NdotL * occlusion_factor;
-		}
-
-		float3 ambient_irradiance = sample_environment_irradiance(normal);
-		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_environment_specular(reflection_direction, roughness);
-
-		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
-		float3 kD_ibl = (float3(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
-
-		float3 ibl_diffuse = kD_ibl * albedo.xyz * ambient_irradiance;
-
-		float2 env_brdf = float2(1.0, 0.0);
-		{
-			float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
-			float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
-			float4 r = roughness * c0 + c1;
-			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
-			env_brdf = float2(-1.04, 1.04) * a004 + r.zw;
-		}
-		float3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
-
-		float3 ambient = ibl_diffuse + ibl_specular;
-
-		ao_factor *= occlusion;
-		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
-
-		float4 output_color = float4(lit, 1.0);
-		if (push_constant.blend != 0u) {
-			float source_alpha = clamp(albedo.a, 0.0, 1.0);
-			float4 destination_color = lit_map[pixel_coordinates];
-			output_color = source_over(float4(lit * source_alpha, source_alpha), destination_color);
-		}
-
-		lit_map[pixel_coordinates] = output_color
-		"
-		.trim();
-
 		let m = root.get_mut("main").unwrap();
+		add_material_sample_context(m, &texture_slots);
 
 		if let besl::parser::Nodes::Function { statements, .. } = m.node_mut() {
-			statements.insert(
-				0,
-				besl::parser::Node::raw_code(
-					Some(a.into()),
-					Some(a_hlsl.into()),
-					Some(a_msl.into()),
-					&[
-						"vertex_uvs",
-						"ao",
-						"depth_shadow_map",
-						"push_constant",
-						"material_offset",
-						"material_offset_scratch",
-						"material_evaluation_dispatches",
-						"pixel_mapping",
-						"meshes",
-						"meshlets",
-						"materials",
-						"primitive_indices",
-						"vertex_indices",
-						"vertex_positions",
-						"vertex_normals",
-						"skinned_vertices",
-						"triangle_index",
-						"instance_index_render_target",
-						"views",
-						"make_raster_ndc_from_pixel_coordinates",
-						"calculate_full_bary",
-						"calculate_barycentric_from_position",
-						"interpolate_vec3f_with_deriv",
-						"interpolate_vec2f_with_deriv",
-						"compute_vertex_index",
-					],
-					&[
-						"material",
-						"albedo",
-						"normal",
-						"roughness",
-						"metalness",
-						"occlusion",
-						"emission",
-					],
-				),
-			);
-			statements.push(besl::parser::Node::raw_code(
-				Some(b.into()),
-				Some(b_hlsl.into()),
-				Some(b_msl.into()),
-				&[
-					"lighting_data",
-					"lit_map",
-					"cone_shadow_map",
-					"push_constant",
-					"source_over",
-					"sample_shadow",
-					"sample_environment_irradiance",
-					"sample_environment_specular",
-					"distribution_ggx_from_terms",
-					"geometry_smith_from_terms",
-					"fresnel_schlick_from_factor",
-					"fresnel_schlick_roughness",
-					"cone_attenuation",
-				],
-				&[],
-			));
+			statements.splice(0..0, material_evaluation_prefix_statements());
+			statements.extend(material_evaluation_suffix_statements());
 		}
 
 		root.add(extra);
@@ -1661,6 +1096,51 @@ mod tests {
 	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 	use resource_management::shader::generator::ShaderGenerationSettings;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
+
+	fn parser_expression_contains_raw_code(expression: &besl::parser::Expressions<'_>) -> bool {
+		match expression {
+			besl::parser::Expressions::RawCode { .. } => true,
+			besl::parser::Expressions::Expression(elements)
+			| besl::parser::Expressions::Call {
+				parameters: elements, ..
+			} => elements.iter().any(parser_node_contains_raw_code),
+			besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {
+				parser_node_contains_raw_code(left) || parser_node_contains_raw_code(right)
+			}
+			besl::parser::Expressions::Macro { body, .. } => parser_node_contains_raw_code(body),
+			besl::parser::Expressions::Return { value } => value.as_deref().is_some_and(parser_node_contains_raw_code),
+			besl::parser::Expressions::Member { .. }
+			| besl::parser::Expressions::Literal { .. }
+			| besl::parser::Expressions::VariableDeclaration { .. }
+			| besl::parser::Expressions::Continue => false,
+		}
+	}
+
+	/// Walks generated parser nodes so raw code cannot hide in shared lighting helpers.
+	fn parser_node_contains_raw_code(node: &besl::parser::Node<'_>) -> bool {
+		match node.node() {
+			besl::parser::Nodes::RawCode { .. } => true,
+			besl::parser::Nodes::Scope { children, .. } => children.iter().any(parser_node_contains_raw_code),
+			besl::parser::Nodes::Function { statements, .. } => statements.iter().any(parser_node_contains_raw_code),
+			besl::parser::Nodes::Conditional { condition, statements } => {
+				parser_node_contains_raw_code(condition) || statements.iter().any(parser_node_contains_raw_code)
+			}
+			besl::parser::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				parser_node_contains_raw_code(initializer)
+					|| parser_node_contains_raw_code(condition)
+					|| parser_node_contains_raw_code(update)
+					|| statements.iter().any(parser_node_contains_raw_code)
+			}
+			besl::parser::Nodes::Intrinsic { elements, .. } => elements.iter().any(parser_node_contains_raw_code),
+			besl::parser::Nodes::Expression(expression) => parser_expression_contains_raw_code(expression),
+			_ => false,
+		}
+	}
 
 	use crate::besl;
 
@@ -1780,7 +1260,7 @@ mod tests {
 			);
 
 		assert!(
-			source.contains("normal = normalize(normal.x * T + normal.y * B + normal.z * N);"),
+			source.contains("normal = normalize(((normal.x * T) + (normal.y * B)) + (normal.z * N));"),
 			"HLSL did not combine the tangent basis explicitly. The most likely cause is that the material pass reintroduced a row-versus-column matrix assumption."
 		);
 		assert!(
@@ -1813,10 +1293,14 @@ mod tests {
 		let msl = MSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Failed to emit the MSL material pass. The most likely cause is an invalid visibility shader contract.");
-
-		assert!(glsl.contains("texelFetch(ao, pixel_coordinates, 0).r"));
-		assert!(hlsl.contains("ao.Load(int3(pixel_coordinates, 0)).r"));
-		assert!(msl.contains("resources.ao.read(uint2(pixel_coordinates)).r"));
+		assert!(glsl.contains("texelFetch(ao, ivec2(pixel_coordinates),0).x"));
+		assert!(hlsl.contains("ao.Load(int3(pixel_coordinates, 0)).x"));
+		assert!(msl.contains("resources.ao.read(pixel_coordinates).x"));
+		assert!(glsl.contains("texelFetch(shadow_map, ivec3(ivec2(shadow_texel),int(shadow_layer)),0).x"));
+		assert!(hlsl.contains("shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x"));
+		assert!(hlsl.contains(
+			"environment_specular[NonUniformResourceIndex(lower_level)].GetDimensions(lower_extent.x, lower_extent.y)"
+		));
 		assert!(msl.contains("float3 world_space_vertex_position0"));
 		assert!(!msl.contains("world_space_vertex_positions[3]"));
 		assert!(!msl.contains("primitive_indices[3]"));
@@ -1824,9 +1308,10 @@ mod tests {
 		assert!(msl.contains("distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared)"));
 		assert!(msl.contains("View shadow_view = resources.views->views[shadow_view_index];"));
 		assert!(msl.contains(
-			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 offset, uint shadow_layer, int2 shadow_map_extent)"
+			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 offset, uint shadow_layer, uint2 shadow_map_extent)"
 		));
-		assert!(msl.contains("float2 offset_shadow_uv = shadow_uv + offset;"));
+		assert!(msl.contains("float2 offset_shadow_uv"));
+		assert!(msl.contains("shadow_map.read(shadow_texel, shadow_layer).x"));
 	}
 
 	/// Verifies material evaluation with skinned geometry produces valid BESL.
@@ -1912,6 +1397,23 @@ mod tests {
 		.expect("Failed to compile the MSL cone-light material pass. The most likely cause is invalid generated Metal source.");
 	}
 
+	/// Verifies the generated material pass stays in BESL so backend lowering owns storage and matrix syntax.
+	#[test]
+	fn material_evaluation_contains_no_backend_raw_code() {
+		let material = material_metadata! {
+			"variables": []
+		};
+		let shader_node =
+			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(shader_node, &material);
+
+		assert!(
+			!parser_node_contains_raw_code(&shader),
+			"Material evaluation and its shared lighting helpers must remain portable BESL instead of embedding backend source."
+		);
+	}
+
 	/// Compiles a production-generated trivial material evaluation pass and guards its required semantic resource access.
 	#[test]
 	fn trivial_generated_material_evaluation_pass_links_and_reflects_required_bindings() {
@@ -1960,7 +1462,7 @@ mod tests {
 			);
 		}
 
-		// These strides are the public CPU/GPU storage contract retained by baked shader artifacts.
+		// These strides are the CPU/GPU storage contract reachable from this material variant.
 		for (slot, expected_stride) in [
 			(0, crate::rendering::pipelines::visibility::VIEW_DATA_BUFFER_STRIDE),
 			(1, crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE),
@@ -1972,11 +1474,9 @@ mod tests {
 			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
 			(8, 64),
 			(1034, 4),
-			(1035, 4),
 			(1036, 16),
 			(1037, 4),
 			(1045, 1552),
-			(1046, 64),
 		] {
 			let binding = evaluation
 				.bindings()
@@ -2065,19 +1565,18 @@ mod tests {
 			.expect(
 				"Failed to emit the shared-texture MSL material pass. The most likely cause is an invalid visibility shader contract.",
 			);
-
 		assert_eq!(
-			glsl.match_indices("texture(textures[nonuniformEXT(material.textures[").count(),
+			glsl.match_indices("texture(textures[nonuniformEXT(").count(),
 			1,
 			"The generated GLSL material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
 		);
 		assert_eq!(
-			hlsl.match_indices("textures[material.textures[").count(),
+			hlsl.match_indices("].SampleLevel(textures_sampler,").count(),
 			1,
 			"The generated HLSL material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
 		);
 		assert_eq!(
-			msl.match_indices("resources.textures[material.textures[").count(),
+			msl.match_indices("].sample(resources.textures_sampler[").count(),
 			1,
 			"The generated material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
 		);

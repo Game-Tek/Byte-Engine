@@ -445,8 +445,8 @@ const COMMON_SHADER_SOURCE: &str = r#"
 	}
 
 	make_raster_ndc_from_pixel_coordinates: fn (
-		pixel_coordinates: vec2i,
-		image_extent: vec2i
+		pixel_coordinates: vec2u,
+		image_extent: vec2u
 	) -> vec2f {
 		let normalized: vec2f = vec2f(
 			(f32(pixel_coordinates.x) + 0.5) / f32(image_extent.x),
@@ -896,8 +896,8 @@ mod tests {
 					vec2f(1.0, 0.0),
 					vec2f(0.0, 1.0)
 				);
-				results.raster_ndc = make_raster_ndc_from_pixel_coordinates(vec2i(0, 0), vec2i(4, 2));
-				results.raster_ndc_last = make_raster_ndc_from_pixel_coordinates(vec2i(3, 1), vec2i(4, 2));
+				results.raster_ndc = make_raster_ndc_from_pixel_coordinates(vec2u(0, 0), vec2u(4, 2));
+				results.raster_ndc_last = make_raster_ndc_from_pixel_coordinates(vec2u(3, 1), vec2u(4, 2));
 				results.unit_vector = unit_vector_from_xy(vec2f(0.5, 0.5));
 				results.unit_vector_edge = unit_vector_from_xy(vec2f(1.0, 0.5));
 				results.unit_vector_outside = unit_vector_from_xy(vec2f(1.0, 1.0));

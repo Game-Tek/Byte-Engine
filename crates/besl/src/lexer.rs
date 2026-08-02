@@ -229,7 +229,7 @@ impl Node {
 			mat4x3f32,
 			texture_2d.clone(),
 			texture_3d.clone(),
-			array_texture_2d,
+			array_texture_2d.clone(),
 			atomic_u32.clone(),
 			builtin_intrinsic(
 				"sample",
@@ -249,6 +249,15 @@ impl Node {
 			builtin_intrinsic(
 				"fetch",
 				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"fetch",
+				vec![
+					("texture", array_texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("layer", u32_t.clone()),
+				],
 				vec4f32.clone(),
 			),
 			builtin_intrinsic(
@@ -333,6 +342,9 @@ impl Node {
 			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
 			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("asin", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("atan2", vec![("y", f32_t.clone()), ("x", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("floor", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("sincos", vec![("value", f32_t.clone())], vec2f32.clone()),
 			builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
@@ -452,6 +464,7 @@ impl Node {
 				void.clone(),
 			),
 			builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone()),
+			builtin_intrinsic("texture_size", vec![("texture", array_texture_2d)], vec2u32.clone()),
 			builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone()),
 			builtin_intrinsic(
 				"guard_image_bounds",
@@ -2295,20 +2308,61 @@ fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 		}
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
-		Nodes::Expression(Expressions::Operator { operator, left, right }) => match operator {
-			Operators::Assignment => infer_expression_type(left),
-			Operators::Equality
+		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
+		_ => None,
+	}
+}
+
+/// Infers arithmetic results so overload selection sees the value produced by an expression, not merely its left operand.
+fn infer_operator_result_type(operator: &Operators, left: &NodeReference, right: &NodeReference) -> Option<NodeReference> {
+	if *operator == Operators::Assignment {
+		return infer_expression_type(left);
+	}
+	if matches!(
+		operator,
+		Operators::Equality
 			| Operators::LessThan
 			| Operators::Inequality
 			| Operators::GreaterThan
 			| Operators::LessThanOrEqual
 			| Operators::GreaterThanOrEqual
 			| Operators::LogicalAnd
-			| Operators::LogicalOr => None,
-			_ => infer_expression_type(left).or_else(|| infer_expression_type(right)),
-		},
-		_ => None,
+			| Operators::LogicalOr
+	) {
+		return None;
 	}
+
+	let left_type = infer_expression_type(left);
+	let right_type = infer_expression_type(right);
+	let left_name = left_type
+		.as_ref()
+		.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned));
+	let right_name = right_type
+		.as_ref()
+		.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned));
+
+	if *operator == Operators::Multiply {
+		let product_type = match (left_name.as_deref(), right_name.as_deref()) {
+			(Some("mat4x3f"), Some("vec4f")) => Some("vec3f"),
+			(Some("mat4f"), Some("vec4f")) => Some("vec4f"),
+			_ => None,
+		};
+		if let Some(product_type) = product_type {
+			return Node::root().get_child(product_type);
+		}
+	}
+
+	if left_name == right_name {
+		return left_type.or(right_type);
+	}
+	if left_name.as_deref() == Some("f32") {
+		return right_type.or(left_type);
+	}
+	if right_name.as_deref() == Some("f32") {
+		return left_type.or(right_type);
+	}
+
+	left_type.or(right_type)
 }
 
 fn infer_literal_type(value: &str) -> Option<NodeReference> {
@@ -4084,5 +4138,26 @@ main: fn () -> void {
 				_ => panic!("Expected assignment"),
 			}
 		}
+	}
+
+	/// Verifies matrix products expose their vector result to subsequent intrinsic overload resolution.
+	#[test]
+	fn lex_matrix_vector_and_scalar_vector_expression_results() {
+		let script = r#"
+		main: fn () -> void {
+			let model: mat4x3f = mat4x3f(
+				vec3f(1.0, 0.0, 0.0),
+				vec3f(0.0, 1.0, 0.0),
+				vec3f(0.0, 0.0, 1.0),
+				vec3f(0.0, 0.0, 0.0)
+			);
+			let transformed: vec3f = normalize(model * vec4f(1.0, 2.0, 3.0, 1.0));
+			let scaled: vec3f = normalize(2.0 * transformed);
+		}
+		"#;
+
+		crate::compile_to_besl(script, None).expect(
+			"Failed to resolve matrix-vector arithmetic. The most likely cause is incorrect BESL operator result typing.",
+		);
 	}
 }

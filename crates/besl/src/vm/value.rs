@@ -846,6 +846,8 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		ScalarUnaryOperator::Sin => value.sin(),
 		ScalarUnaryOperator::Cos => value.cos(),
 		ScalarUnaryOperator::Tan => value.tan(),
+		ScalarUnaryOperator::Asin => value.asin(),
+		ScalarUnaryOperator::Floor => value.floor(),
 		ScalarUnaryOperator::Round => value.round(),
 		ScalarUnaryOperator::Fract => value - value.floor(),
 		ScalarUnaryOperator::Radians => value.to_radians(),
@@ -881,6 +883,7 @@ pub(super) fn apply_scalar_binary(operator: ScalarBinaryOperator, left: &Value, 
 			ScalarBinaryOperator::Max => left.max(right),
 			ScalarBinaryOperator::Pow => left.powf(right),
 			ScalarBinaryOperator::Step => f32::from(right >= left),
+			ScalarBinaryOperator::Atan2 => left.atan2(right),
 		}
 	}
 	match (left, right) {

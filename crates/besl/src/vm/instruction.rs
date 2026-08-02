@@ -318,6 +318,8 @@ pub(super) enum ScalarUnaryOperator {
 	Sin,
 	Cos,
 	Tan,
+	Asin,
+	Floor,
 	Round,
 	Fract,
 	Radians,
@@ -338,6 +340,7 @@ pub(super) enum ScalarBinaryOperator {
 	Max,
 	Pow,
 	Step,
+	Atan2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

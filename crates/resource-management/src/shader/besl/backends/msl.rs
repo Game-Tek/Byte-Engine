@@ -491,8 +491,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Member { r#type, .. } | besl::Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
 			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
-				if let besl::Nodes::Member { r#type, .. } = source.borrow().node() {
-					return Some(r#type.clone());
+				match source.borrow().node() {
+					besl::Nodes::Member { r#type, .. } => return Some(r#type.clone()),
+					besl::Nodes::Parameter { .. } | besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
+						return Self::logical_node_type(source);
+					}
+					_ => {}
 				}
 				let source_type = Self::logical_node_type(source)?;
 				let source_type = source_type.borrow();
@@ -2515,47 +2519,26 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
-		string.push_str("resources.textures[material.textures[");
-		self.emit_visibility_texture_slot(string, slot);
-		string.push_str("]].sample(resources.textures_sampler[material.textures[");
-		self.emit_visibility_texture_slot(string, slot);
-		string.push_str("]], vertex_uv, level(0.0))");
+	fn emit_visibility_texture_sample(
+		&mut self,
+		string: &mut String,
+		texture_index: &besl::NodeReference,
+		uv: &besl::NodeReference,
+		xy_only: bool,
+	) {
+		string.push_str("resources.textures[");
+		self.emit_node_string(string, texture_index);
+		string.push_str("].sample(resources.textures_sampler[");
+		self.emit_node_string(string, texture_index);
+		string.push_str("],");
+		if !self.minified {
+			string.push(' ');
+		}
+		self.emit_node_string(string, uv);
+		string.push_str(", level(0.0))");
 		if xy_only {
 			string.push_str(".xy");
 		}
-	}
-
-	fn emit_visibility_texture_slot(&mut self, string: &mut String, slot: &besl::NodeReference) {
-		let slot_borrow = slot.borrow();
-		match slot_borrow.node() {
-			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
-				let source = source.clone();
-				drop(slot_borrow);
-				if self.try_emit_visibility_texture_const_value(string, &source) {
-					return;
-				}
-				self.emit_node_string(string, slot);
-			}
-			_ => {
-				drop(slot_borrow);
-				if self.try_emit_visibility_texture_const_value(string, slot) {
-					return;
-				}
-				self.emit_node_string(string, slot);
-			}
-		}
-	}
-
-	fn try_emit_visibility_texture_const_value(&mut self, string: &mut String, slot: &besl::NodeReference) -> bool {
-		let slot_borrow = slot.borrow();
-		let besl::Nodes::Const { value, .. } = slot_borrow.node() else {
-			return false;
-		};
-		let value = value.clone();
-		drop(slot_borrow);
-		self.emit_node_string(string, &value);
-		true
 	}
 
 	fn emit_intrinsic_call(
@@ -2580,13 +2563,31 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match name.as_str() {
 			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], false);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
 				return;
 			}
 			"sample_normal" => {
 				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], true);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], true);
 				string.push(')');
+				return;
+			}
+			"sample_environment_level" => {
+				string.push_str("resources.environment_specular[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].sample(resources.environment_specular_sampler[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("], ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", level(0.0))");
+				return;
+			}
+			"environment_level_size" => {
+				string.push_str("uint2(resources.environment_specular[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].get_width(),resources.environment_specular[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].get_height())");
 				return;
 			}
 			"texture_lod" => {
@@ -2612,8 +2613,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		match name.as_str() {
-			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "fwidth" | "step" | "smoothstep" | "mix" => {
+			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"
+			| "floor" | "round" | "fract" | "fwidth" | "step" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -2752,6 +2753,14 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
+				if let Some(layer) = arguments.get(2) {
+					if self.minified {
+						string.push(',');
+					} else {
+						string.push_str(", ");
+					}
+					self.emit_node_string(string, layer);
+				}
 				string.push(')');
 			}
 			"texture_size" | "image_size" => {
@@ -3939,9 +3948,11 @@ mod tests {
 					let position: vec3f = model * vec4f(1.0, 2.0, 3.0, 1.0);
 					let local: Transform = Transform(model, 7);
 					local.model = transforms.direct[0];
+					let local_position: vec3f = local.model * vec4f(4.0, 5.0, 6.0, 1.0);
 					transforms.values[1].model = local.model;
 					transforms.direct[1] = transforms.direct[0];
 					position;
+					local_position;
 				}
 			"#,
 			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
@@ -3952,6 +3963,10 @@ mod tests {
 		assert_string_contains!(shader, "_besl_packed_float4x3 direct[2]");
 		assert_string_contains!(shader, "float4x3 model=_besl_load_mat4x3(");
 		assert_string_contains!(shader, "float3 position=(model*float4(1.0,2.0,3.0,1.0));");
+		assert_string_contains!(
+			shader,
+			"float3 local_position=(_besl_load_mat4x3(local.model)*float4(4.0,5.0,6.0,1.0));"
+		);
 		assert!(
 			!shader.contains("mul("),
 			"MSL matrix expressions must use Metal's native multiplication operator."

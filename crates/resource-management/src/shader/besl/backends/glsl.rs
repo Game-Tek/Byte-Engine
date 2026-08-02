@@ -119,45 +119,24 @@ impl Generator {
 		)
 	}
 
-	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
-		string.push_str("texture(textures[nonuniformEXT(material.textures[");
-		self.emit_visibility_texture_slot(string, slot);
-		string.push_str("])], vertex_uv)");
+	fn emit_visibility_texture_sample(
+		&mut self,
+		string: &mut String,
+		texture_index: &besl::NodeReference,
+		uv: &besl::NodeReference,
+		xy_only: bool,
+	) {
+		string.push_str("texture(textures[nonuniformEXT(");
+		self.emit_node_string(string, texture_index);
+		string.push_str(")],");
+		if !self.minified {
+			string.push(' ');
+		}
+		self.emit_node_string(string, uv);
+		string.push(')');
 		if xy_only {
 			string.push_str(".xy");
 		}
-	}
-
-	fn emit_visibility_texture_slot(&mut self, string: &mut String, slot: &besl::NodeReference) {
-		let slot_borrow = slot.borrow();
-		match slot_borrow.node() {
-			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
-				let source = source.clone();
-				drop(slot_borrow);
-				if self.try_emit_visibility_texture_const_value(string, &source) {
-					return;
-				}
-				self.emit_node_string(string, slot);
-			}
-			_ => {
-				drop(slot_borrow);
-				if self.try_emit_visibility_texture_const_value(string, slot) {
-					return;
-				}
-				self.emit_node_string(string, slot);
-			}
-		}
-	}
-
-	fn try_emit_visibility_texture_const_value(&mut self, string: &mut String, slot: &besl::NodeReference) -> bool {
-		let slot_borrow = slot.borrow();
-		let besl::Nodes::Const { value, .. } = slot_borrow.node() else {
-			return false;
-		};
-		let value = value.clone();
-		drop(slot_borrow);
-		self.emit_node_string(string, &value);
-		true
 	}
 
 	fn emit_intrinsic_call(
@@ -182,13 +161,30 @@ impl Generator {
 
 		match name.as_str() {
 			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], false);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
 				return;
 			}
 			"sample_normal" => {
 				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], true);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], true);
 				string.push(')');
+				return;
+			}
+			"sample_environment_level" => {
+				string.push_str("textureLod(environment_specular[nonuniformEXT(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(")],");
+				if !self.minified {
+					string.push(' ');
+				}
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", 0.0)");
+				return;
+			}
+			"environment_level_size" => {
+				string.push_str("uvec2(textureSize(environment_specular[nonuniformEXT(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(")],0))");
 				return;
 			}
 			"texture_lod" => {
@@ -221,8 +217,13 @@ impl Generator {
 		}
 
 		match name.as_str() {
-			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "fwidth" | "step" | "radians" | "inversesqrt" | "smoothstep" | "mix" => {
+			"atan2" => {
+				string.push_str("atan(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "floor"
+			| "round" | "fract" | "fwidth" | "step" | "radians" | "inversesqrt" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -371,9 +372,19 @@ impl Generator {
 				} else {
 					string.push_str(", ");
 				}
-				string.push_str("ivec2(");
+				if arguments.len() == 3 {
+					string.push_str("ivec3(ivec2(");
+				} else {
+					string.push_str("ivec2(");
+				}
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str("),0)");
+				if let Some(layer) = arguments.get(2) {
+					string.push_str("),int(");
+					self.emit_node_string(string, layer);
+					string.push_str(")),0)");
+				} else {
+					string.push_str("),0)");
+				}
 			}
 			"texture_size" => {
 				string.push_str("uvec2(textureSize(");

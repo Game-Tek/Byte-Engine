@@ -1117,8 +1117,8 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract" | "radians" | "inversesqrt" | "log2"
-			| "fwidth" => {
+			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "floor" | "round" | "fract" | "radians"
+			| "inversesqrt" | "log2" | "fwidth" => {
 				require_argument_count(arguments, 1)?;
 
 				let value = self.compile_value_expression(&arguments[0], &return_type, descriptor_layouts)?;
@@ -1132,6 +1132,8 @@ impl<'a> Compiler<'a> {
 						"sin" => ScalarUnaryOperator::Sin,
 						"cos" => ScalarUnaryOperator::Cos,
 						"tan" => ScalarUnaryOperator::Tan,
+						"asin" => ScalarUnaryOperator::Asin,
+						"floor" => ScalarUnaryOperator::Floor,
 						"round" => ScalarUnaryOperator::Round,
 						"fract" => ScalarUnaryOperator::Fract,
 						"radians" => ScalarUnaryOperator::Radians,
@@ -1237,7 +1239,7 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"min" | "max" | "pow" | "step" => {
+			"min" | "max" | "pow" | "step" | "atan2" => {
 				require_argument_count(arguments, 2)?;
 				let argument_type = if name == "step" { ValueType::F32 } else { return_type.clone() };
 				let left = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
@@ -1250,6 +1252,7 @@ impl<'a> Compiler<'a> {
 						"max" => ScalarBinaryOperator::Max,
 						"pow" => ScalarBinaryOperator::Pow,
 						"step" => ScalarBinaryOperator::Step,
+						"atan2" => ScalarBinaryOperator::Atan2,
 						_ => unreachable!("Expected binary intrinsic"),
 					},
 					left,

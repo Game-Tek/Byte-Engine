@@ -1669,6 +1669,9 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 		buff.sin_value = sin(0.0);
 		buff.cos_value = cos(0.0);
 		buff.tan_value = tan(0.0);
+		buff.asin_value = asin(1.0);
+		buff.atan2_value = atan2(1.0, 0.0);
+		buff.floor_value = floor(1.75);
 		buff.fract_value = fract(1.25);
 		buff.radians_value = radians(180.0);
 		buff.inverse_sqrt_value = inversesqrt(4.0);
@@ -1690,6 +1693,9 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 					Node::member("sin_value", f32_type.clone()).into(),
 					Node::member("cos_value", f32_type.clone()).into(),
 					Node::member("tan_value", f32_type.clone()).into(),
+					Node::member("asin_value", f32_type.clone()).into(),
+					Node::member("atan2_value", f32_type.clone()).into(),
+					Node::member("floor_value", f32_type.clone()).into(),
 					Node::member("fract_value", f32_type.clone()).into(),
 					Node::member("radians_value", f32_type.clone()).into(),
 					Node::member("inverse_sqrt_value", f32_type.clone()).into(),
@@ -1709,18 +1715,21 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
-	let values = read_f32s(&buffer, 11);
+	let values = read_f32s(&buffer, 14);
 	assert!((values[0] - 2.5).abs() < 1e-6);
 	assert!((values[1] - 3.0).abs() < 1e-6);
 	assert!((values[2] - std::f32::consts::E).abs() < 1e-5);
 	assert!(values[3].abs() < 1e-6);
 	assert!((values[4] - 1.0).abs() < 1e-6);
 	assert!(values[5].abs() < 1e-6);
-	assert!((values[6] - 0.25).abs() < 1e-6);
-	assert!((values[7] - std::f32::consts::PI).abs() < 1e-6);
-	assert!((values[8] - 0.5).abs() < 1e-6);
-	assert!((values[9] - 0.5).abs() < 1e-6);
-	assert!((values[10] - 2.5).abs() < 1e-6);
+	assert!((values[6] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+	assert!((values[7] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+	assert!((values[8] - 1.0).abs() < 1e-6);
+	assert!((values[9] - 0.25).abs() < 1e-6);
+	assert!((values[10] - std::f32::consts::PI).abs() < 1e-6);
+	assert!((values[11] - 0.5).abs() < 1e-6);
+	assert!((values[12] - 0.5).abs() < 1e-6);
+	assert!((values[13] - 2.5).abs() < 1e-6);
 }
 
 #[test]

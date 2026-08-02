@@ -397,10 +397,17 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn intrinsic(name: &'a str, parameters: Node<'a>, body: Node<'a>, r#return: &'a str) -> Node<'a> {
+		Self::intrinsic_with_parameters(name, vec![parameters], body, r#return)
+	}
+
+	/// Builds an intrinsic whose portable signature has more than one parameter.
+	pub fn intrinsic_with_parameters(name: &'a str, parameters: Vec<Node<'a>>, body: Node<'a>, r#return: &'a str) -> Node<'a> {
+		let mut elements = parameters;
+		elements.push(body);
 		Node {
 			node: Nodes::Intrinsic {
 				name,
-				elements: vec![parameters, body],
+				elements,
 				r#return,
 			},
 		}

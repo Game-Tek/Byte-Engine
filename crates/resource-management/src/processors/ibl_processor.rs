@@ -22,11 +22,18 @@ const MAX_SPECULAR_WIDTH: u32 = 1024;
 const MAX_SPECULAR_HEIGHT: u32 = 512;
 const DIFFUSE_WIDTH: u32 = 32;
 const DIFFUSE_HEIGHT: u32 = 16;
-const DIFFUSE_SAMPLE_COUNT: usize = 256;
-const SPECULAR_SAMPLE_COUNT: usize = 128;
+const DIFFUSE_SAMPLE_COUNT: usize = 1024;
+const SPECULAR_SAMPLE_COUNT: usize = 1024;
 
 type Vector3 = [f32; 3];
 type Radiance = [f32; 3];
+
+/// The `SourceMip` struct provides one transient, solid-angle-filtered source level to the offline IBL integrator.
+struct SourceMip<'a> {
+	width: u32,
+	height: u32,
+	pixels: Vec<Radiance, &'a dyn Allocator>,
+}
 
 /// The `BakedImageIbl` struct carries the parent image and its embedded lighting maps into resource storage.
 pub struct BakedImageIbl<'a> {
@@ -89,6 +96,7 @@ pub fn bake_image_ibl_in<'a>(
 	// Sampling from decoded f32 radiance avoids repeating four half-float conversions for every
 	// bilinear tap during the comparatively expensive convolution loops.
 	let source = decode_source_radiance(source_rgba16f, allocator)?;
+	let source_mips = build_source_mips(source_width, source_height, source, allocator)?;
 	let specular_width = source_width.min(MAX_SPECULAR_WIDTH);
 	let specular_height = source_height.min(MAX_SPECULAR_HEIGHT);
 	let specular_extents = specular_extents(specular_width, specular_height);
@@ -118,10 +126,10 @@ pub fn bake_image_ibl_in<'a>(
 		let level_end = offset.checked_add(level_size).ok_or(IblBakeError::DimensionsTooLarge)?;
 		if level == 0 {
 			if width == source_width && height == source_height {
-				write_sanitized_source(&source, &mut data[offset..level_end]);
+				write_sanitized_source(&source_mips[0].pixels, &mut data[offset..level_end]);
 			} else {
 				resample_environment(
-					&source,
+					&source_mips[0].pixels,
 					source_width,
 					source_height,
 					width,
@@ -131,15 +139,7 @@ pub fn bake_image_ibl_in<'a>(
 			}
 		} else {
 			let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
-			prefilter_specular_level(
-				&source,
-				source_width,
-				source_height,
-				width,
-				height,
-				roughness,
-				&mut data[offset..level_end],
-			);
+			prefilter_specular_level(&source_mips, width, height, roughness, &mut data[offset..level_end]);
 		}
 		streams.push(StreamDescription::new(
 			&ibl_prefiltered_specular_stream_name(level as u32),
@@ -150,14 +150,7 @@ pub fn bake_image_ibl_in<'a>(
 	}
 
 	let diffuse_end = offset.checked_add(diffuse_size).ok_or(IblBakeError::DimensionsTooLarge)?;
-	convolve_diffuse_irradiance(
-		&source,
-		source_width,
-		source_height,
-		DIFFUSE_WIDTH,
-		DIFFUSE_HEIGHT,
-		&mut data[offset..diffuse_end],
-	);
+	convolve_diffuse_irradiance(&source_mips, DIFFUSE_WIDTH, DIFFUSE_HEIGHT, &mut data[offset..diffuse_end]);
 	streams.push(StreamDescription::new(
 		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
 		diffuse_size,
@@ -181,6 +174,69 @@ pub fn bake_image_ibl_in<'a>(
 		streams,
 		data: data.into_boxed_slice(),
 	})
+}
+
+/// Builds an area-preserving lat-long pyramid used to filter each Monte Carlo sample to its spherical footprint.
+fn build_source_mips<'a>(
+	width: u32,
+	height: u32,
+	pixels: Vec<Radiance, &'a dyn Allocator>,
+	allocator: &'a dyn Allocator,
+) -> Result<Vec<SourceMip<'a>, &'a dyn Allocator>, IblBakeError> {
+	let level_count = width.max(height).ilog2() as usize + 1;
+	let mut mips = Vec::new_in(allocator);
+	mips.try_reserve_exact(level_count)
+		.map_err(|_| IblBakeError::AllocationFailed)?;
+	mips.push(SourceMip { width, height, pixels });
+
+	while mips.last().is_some_and(|level| level.width > 1 || level.height > 1) {
+		let source = mips.last().expect("the source pyramid always contains its base level");
+		let destination_width = (source.width / 2).max(1);
+		let destination_height = (source.height / 2).max(1);
+		let pixel_count = (destination_width as usize)
+			.checked_mul(destination_height as usize)
+			.ok_or(IblBakeError::DimensionsTooLarge)?;
+		let mut destination = Vec::new_in(allocator);
+		destination
+			.try_reserve_exact(pixel_count)
+			.map_err(|_| IblBakeError::AllocationFailed)?;
+
+		for y in 0..destination_height {
+			let source_y_begin = y as u64 * source.height as u64 / destination_height as u64;
+			let source_y_end = ((y + 1) as u64 * source.height as u64 / destination_height as u64).max(source_y_begin + 1);
+			for x in 0..destination_width {
+				let source_x_begin = x as u64 * source.width as u64 / destination_width as u64;
+				let source_x_end = ((x + 1) as u64 * source.width as u64 / destination_width as u64).max(source_x_begin + 1);
+				let mut sum = [0.0_f64; 3];
+				let mut total_weight = 0.0_f64;
+
+				for source_y in source_y_begin..source_y_end {
+					let weight = lat_long_row_solid_angle(source.width, source.height, source_y as u32) as f64;
+					for source_x in source_x_begin..source_x_end {
+						let radiance = source.pixels[source_y as usize * source.width as usize + source_x as usize];
+						for channel in 0..3 {
+							sum[channel] += radiance[channel] as f64 * weight;
+						}
+						total_weight += weight;
+					}
+				}
+
+				destination.push([
+					(sum[0] / total_weight) as f32,
+					(sum[1] / total_weight) as f32,
+					(sum[2] / total_weight) as f32,
+				]);
+			}
+		}
+
+		mips.push(SourceMip {
+			width: destination_width,
+			height: destination_height,
+			pixels: destination,
+		});
+	}
+
+	Ok(mips)
 }
 
 fn image_byte_size(width: u32, height: u32) -> Result<usize, IblBakeError> {
@@ -256,9 +312,7 @@ fn resample_environment(
 
 /// Stores irradiance divided by pi, allowing Lambertian shading to multiply this map by albedo directly.
 fn convolve_diffuse_irradiance(
-	source: &[Radiance],
-	source_width: u32,
-	source_height: u32,
+	source_mips: &[SourceMip<'_>],
 	destination_width: u32,
 	destination_height: u32,
 	destination: &mut [u8],
@@ -273,7 +327,8 @@ fn convolve_diffuse_irradiance(
 
 			for &local_direction in &samples {
 				let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
-				let radiance = sample_direction(source, source_width, source_height, direction);
+				let pdf = local_direction[2] / PI;
+				let radiance = sample_filtered_direction(source_mips, direction, pdf, DIFFUSE_SAMPLE_COUNT);
 				for channel in 0..3 {
 					sum[channel] += radiance[channel] as f64;
 				}
@@ -288,9 +343,7 @@ fn convolve_diffuse_irradiance(
 }
 
 fn prefilter_specular_level(
-	source: &[Radiance],
-	source_width: u32,
-	source_height: u32,
+	source_mips: &[SourceMip<'_>],
 	destination_width: u32,
 	destination_height: u32,
 	roughness: f32,
@@ -315,7 +368,9 @@ fn prefilter_specular_level(
 					continue;
 				}
 
-				let radiance = sample_direction(source, source_width, source_height, light);
+				let normal_dot_half = dot(normal, half_vector).max(0.0);
+				let pdf = ggx_light_pdf(normal_dot_half, view_dot_half, roughness);
+				let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
 				let weight = normal_dot_light as f64;
 				for channel in 0..3 {
 					sum[channel] += radiance[channel] as f64 * weight;
@@ -330,12 +385,54 @@ fn prefilter_specular_level(
 					(sum[2] / total_weight) as f32,
 				]
 			} else {
-				sample_direction(source, source_width, source_height, normal)
+				sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, normal)
 			};
 			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
 			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
 		}
 	}
+}
+
+/// Returns the GGX half-vector density transformed into a light-direction density.
+fn ggx_light_pdf(normal_dot_half: f32, view_dot_half: f32, roughness: f32) -> f32 {
+	let alpha = roughness * roughness;
+	let alpha_squared = alpha * alpha;
+	let denominator_term = normal_dot_half * normal_dot_half * (alpha_squared - 1.0) + 1.0;
+	let distribution = alpha_squared / (PI * denominator_term * denominator_term).max(f32::MIN_POSITIVE);
+	(distribution * normal_dot_half / (4.0 * view_dot_half).max(f32::MIN_POSITIVE)).max(f32::MIN_POSITIVE)
+}
+
+/// Filters a directional sample according to the solid angle represented by its Monte Carlo PDF.
+fn sample_filtered_direction(source_mips: &[SourceMip<'_>], direction: Vector3, pdf: f32, sample_count: usize) -> Radiance {
+	let base = &source_mips[0];
+	let sample_solid_angle = 1.0 / (sample_count as f32 * pdf.max(f32::MIN_POSITIVE));
+	let texel_solid_angle = direction_texel_solid_angle(base.width, base.height, direction);
+	let lod = (0.5 * (sample_solid_angle / texel_solid_angle).max(1.0).log2()).clamp(0.0, (source_mips.len() - 1) as f32);
+	let lower_level = lod.floor() as usize;
+	let upper_level = (lower_level + 1).min(source_mips.len() - 1);
+	let blend = lod - lower_level as f32;
+	let lower = sample_mip_direction(&source_mips[lower_level], direction);
+	let upper = sample_mip_direction(&source_mips[upper_level], direction);
+	lerp_radiance(lower, upper, blend)
+}
+
+fn sample_mip_direction(mip: &SourceMip<'_>, direction: Vector3) -> Radiance {
+	sample_direction(&mip.pixels, mip.width, mip.height, direction)
+}
+
+/// Returns the exact spherical area of the base lat-long texel containing a direction.
+fn direction_texel_solid_angle(width: u32, height: u32, direction: Vector3) -> f32 {
+	let direction = normalize(direction);
+	let v = 0.5 - direction[1].clamp(-1.0, 1.0).asin() / PI;
+	let row = (v * height as f32).floor().clamp(0.0, height.saturating_sub(1) as f32) as u32;
+	lat_long_row_solid_angle(width, height, row)
+}
+
+/// Returns one texel's solid angle for a row of an equirectangular image.
+fn lat_long_row_solid_angle(width: u32, height: u32, row: u32) -> f32 {
+	let latitude_top = PI * (0.5 - row as f32 / height as f32);
+	let latitude_bottom = PI * (0.5 - (row + 1) as f32 / height as f32);
+	(TAU / width as f32) * (latitude_top.sin() - latitude_bottom.sin())
 }
 
 fn cosine_hemisphere_samples() -> [Vector3; DIFFUSE_SAMPLE_COUNT] {
@@ -468,14 +565,15 @@ fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
 
 #[cfg(test)]
 mod tests {
-	use std::alloc::Global;
+	use std::alloc::{Allocator, Global};
 
 	use exr::prelude::f16;
 	use utils::Extent;
 
 	use super::{
-		bake_image_ibl_in, image_byte_size, sample_lat_long_uv, IblBakeError, Radiance, BYTES_PER_RGBA16F_PIXEL,
-		DIFFUSE_HEIGHT, DIFFUSE_WIDTH,
+		bake_image_ibl_in, build_source_mips, dot, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
+		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, scale, sub,
+		tangent_to_world, IblBakeError, Radiance, BYTES_PER_RGBA16F_PIXEL, DIFFUSE_HEIGHT, DIFFUSE_WIDTH,
 	};
 	use crate::resources::image::{
 		ibl_prefiltered_specular_stream_name, IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT,
@@ -499,6 +597,64 @@ mod tests {
 			values[channel] = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
 		}
 		values
+	}
+
+	fn allocator_pixels(pixels: Vec<Radiance>) -> Vec<Radiance, &'static dyn Allocator> {
+		let allocator: &'static dyn Allocator = &Global;
+		let mut allocated = Vec::new_in(allocator);
+		allocated.extend(pixels);
+		allocated
+	}
+
+	/// Estimates the same split-sum prefilter integral with a configurable sample count for quality comparisons.
+	fn estimate_specular(
+		source_mips: &[super::SourceMip<'_>],
+		normal: [f32; 3],
+		roughness: f32,
+		sample_count: usize,
+		filtered: bool,
+	) -> Radiance {
+		let view = normal;
+		let (tangent, bitangent) = orthonormal_basis(normal);
+		let mut sum = [0.0_f64; 3];
+		let mut total_weight = 0.0_f64;
+		let alpha = roughness * roughness;
+		let alpha_squared = alpha * alpha;
+
+		for index in 0..sample_count {
+			let [angular_sample, elevation_sample] = hammersley(index, sample_count);
+			let angle = std::f32::consts::TAU * angular_sample;
+			let cos_theta = ((1.0 - elevation_sample) / (1.0 + (alpha_squared - 1.0) * elevation_sample))
+				.max(0.0)
+				.sqrt();
+			let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+			let (sin_angle, cos_angle) = angle.sin_cos();
+			let local_half = [sin_theta * cos_angle, sin_theta * sin_angle, cos_theta];
+			let half = normalize(tangent_to_world(local_half, tangent, bitangent, normal));
+			let view_dot_half = dot(view, half).max(0.0);
+			let light = normalize(sub(scale(half, 2.0 * view_dot_half), view));
+			let normal_dot_light = dot(normal, light).max(0.0);
+			if normal_dot_light <= 0.0 {
+				continue;
+			}
+
+			let radiance = if filtered {
+				let pdf = ggx_light_pdf(dot(normal, half).max(0.0), view_dot_half, roughness);
+				sample_filtered_direction(source_mips, light, pdf, sample_count)
+			} else {
+				sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, light)
+			};
+			for channel in 0..3 {
+				sum[channel] += radiance[channel] as f64 * normal_dot_light as f64;
+			}
+			total_weight += normal_dot_light as f64;
+		}
+
+		[
+			(sum[0] / total_weight) as f32,
+			(sum[1] / total_weight) as f32,
+			(sum[2] / total_weight) as f32,
+		]
 	}
 
 	#[test]
@@ -587,6 +743,56 @@ mod tests {
 
 		assert_eq!(at_zero, [4.0, 0.0, 0.0]);
 		assert_eq!(at_one, at_zero);
+	}
+
+	#[test]
+	fn source_pyramid_preserves_spherical_energy_across_latitudes() {
+		let width = 8;
+		let height = 4;
+		let pixels = (0..height)
+			.flat_map(|y| (0..width).map(move |_| [1.0 + y as f32 * 3.0, 0.0, 0.0]))
+			.collect::<Vec<_>>();
+		let expected = (0..height)
+			.map(|y| (1.0 + y as f32 * 3.0) * lat_long_row_solid_angle(width, height, y) * width as f32)
+			.sum::<f32>()
+			/ (4.0 * std::f32::consts::PI);
+		let mips = build_source_mips(width, height, allocator_pixels(pixels), &Global).unwrap();
+		let last = mips.last().unwrap();
+
+		assert_eq!([last.width, last.height], [1, 1]);
+		assert!((last.pixels[0][0] - expected).abs() < 1.0e-5);
+	}
+
+	#[test]
+	fn filtered_importance_sampling_improves_bright_emitter_accuracy() {
+		let width = 64;
+		let height = 32;
+		let pixels = (0..height)
+			.flat_map(|y| {
+				(0..width).map(move |x| {
+					if (31..=32).contains(&x) && (15..=16).contains(&y) {
+						[1000.0, 1000.0, 1000.0]
+					} else {
+						[0.1, 0.1, 0.1]
+					}
+				})
+			})
+			.collect::<Vec<_>>();
+		let mips = build_source_mips(width, height, allocator_pixels(pixels), &Global).unwrap();
+		let normal = [1.0, 0.0, 0.0];
+		let roughness = 0.45;
+		let reference = estimate_specular(&mips, normal, roughness, 65_536, false)[0];
+		let old = estimate_specular(&mips, normal, roughness, 128, false)[0];
+		let filtered = estimate_specular(&mips, normal, roughness, 1024, true)[0];
+		let old_error = (old - reference).abs();
+		let filtered_error = (filtered - reference).abs();
+
+		assert!(
+			filtered_error < old_error * 0.5,
+			"filtered error {} must be lower than mip-zero error {}; reference={reference}, filtered={filtered}, old={old}",
+			filtered_error,
+			old_error,
+		);
 	}
 
 	#[test]

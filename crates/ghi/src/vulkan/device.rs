@@ -67,11 +67,7 @@ impl InnerDevice {
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required {
-				feature != 0
-			} else {
-				true
-			}
+			if required { feature != 0 } else { true }
 		};
 
 		let mut barycentric_required_features =
@@ -771,8 +767,8 @@ impl InnerDevice {
 
 			if !supported_image_usage.contains(fallback_usage) {
 				panic!(
-							    "Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-						    );
+					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+				);
 			}
 
 			fallback_usage
@@ -1146,7 +1142,7 @@ impl InnerDevice {
 				a: vk::ComponentSwizzle::IDENTITY,
 			})
 			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: if format != crate::Formats::Depth32 {
+				aspect_mask: if !format.is_depth() {
 					vk::ImageAspectFlags::COLOR
 				} else {
 					vk::ImageAspectFlags::DEPTH
@@ -1277,7 +1273,9 @@ fn build_specialization_entries(
 			"vec2f" => 2,
 			"vec3f" => 3,
 			"vec4f" => 4,
-			_ => panic!("Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."),
+			_ => panic!(
+				"Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."
+			),
 		};
 		let offset = data.len() as u32;
 		for i in 0..scalar_count {
@@ -1297,11 +1295,11 @@ fn build_specialization_entries(
 use std::{borrow::Cow, num::NonZeroU32};
 
 use ash::vk::{self, TaggedStructure as _};
-use utils::{hash::HashMap, Extent};
+use utils::{Extent, hash::HashMap};
 
 use super::{
-	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
 	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
+	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
 };
 use crate::{
 	graphics_hardware_interface,

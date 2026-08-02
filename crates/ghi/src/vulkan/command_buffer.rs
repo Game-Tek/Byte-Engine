@@ -1,17 +1,17 @@
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
-use utils::{hash::HashMap, Extent};
+use utils::{Extent, hash::HashMap};
 
 use super::{
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
+	CommandBufferInternal, Consumption, Context, Descriptor, Handles, Image, ImageHandle, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
 		extent_into_vk_extent, texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
 		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
-	CommandBufferInternal, Consumption, Context, Descriptor, Handles, Image, ImageHandle, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
-use crate::{graphics_hardware_interface, FrameKey, HandleLike as _, Size};
+use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
 
 /// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
 pub struct CommandBufferReference<'a> {
@@ -385,9 +385,7 @@ impl CommandBufferRecording<'_> {
 
 		if active_rendering {
 			assert!(
-				planned.image_barriers.is_empty()
-					&& planned.buffer_barriers.is_empty()
-					&& planned.memory_barriers.is_empty(),
+				planned.image_barriers.is_empty() && planned.buffer_barriers.is_empty() && planned.memory_barriers.is_empty(),
 				"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
 			);
 
@@ -656,12 +654,12 @@ impl CommandBufferRecording<'_> {
 			.device
 			.swapchains
 			.iter()
-			.find(|swapchain| swapchain.images[0].0 == handle.0 .0 || swapchain.native_images[0].0 == handle.0 .0)
+			.find(|swapchain| swapchain.images[0].0 == handle.0.0 || swapchain.native_images[0].0 == handle.0.0)
 		{
 			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize];
 		}
 
-		let handles = ImageHandle(handle.0 .0).get_all(&self.device.images);
+		let handles = ImageHandle(handle.0.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
@@ -727,7 +725,7 @@ impl CommandBufferRecording<'_> {
 			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
 		let color_attachments = attachments
 			.iter()
-			.filter(|attachment| self.get_attachment_format(attachment) != crate::Formats::Depth32)
+			.filter(|attachment| !self.get_attachment_format(attachment).is_depth())
 			.map(|attachment| {
 				let image = self.get_image(self.get_attachment_image_handle(attachment));
 				let format = self.get_attachment_format(attachment);
@@ -745,7 +743,7 @@ impl CommandBufferRecording<'_> {
 			.collect::<Vec<_>>();
 		let depth_attachment = attachments
 			.iter()
-			.find(|attachment| self.get_attachment_format(attachment) == crate::Formats::Depth32)
+			.find(|attachment| self.get_attachment_format(attachment).is_depth())
 			.map(|attachment| {
 				let format = self.get_attachment_format(attachment);
 				vk::RenderingAttachmentInfo::default()
@@ -1205,21 +1203,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				instances_buffer,
 				instance_count,
 			} => (
-				vec![vk::AccelerationStructureGeometryKHR::default()
-					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-							.array_of_pointers(false)
-							.data(vk::DeviceOrHostAddressConstKHR {
-								device_address: self.device.get_buffer_address(instances_buffer),
-							}),
-					})
-					.flags(vk::GeometryFlagsKHR::OPAQUE)],
-				vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-					.primitive_count(instance_count)
-					.primitive_offset(0)
-					.first_vertex(0)
-					.transform_offset(0)],
+				vec![
+					vk::AccelerationStructureGeometryKHR::default()
+						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+						.geometry(vk::AccelerationStructureGeometryDataKHR {
+							instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+								.array_of_pointers(false)
+								.data(vk::DeviceOrHostAddressConstKHR {
+									device_address: self.device.get_buffer_address(instances_buffer),
+								}),
+						})
+						.flags(vk::GeometryFlagsKHR::OPAQUE),
+				],
+				vec![
+					vk::AccelerationStructureBuildRangeInfoKHR::default()
+						.primitive_count(instance_count)
+						.primitive_offset(0)
+						.first_vertex(0)
+						.transform_offset(0),
+				],
 			),
 		};
 
@@ -1340,17 +1342,21 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
 
-						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-							.primitive_count(*triangle_count)
-							.primitive_offset(0)
-							.first_vertex(0)
-							.transform_offset(0)];
+						let build_range_info = vec![
+							vk::AccelerationStructureBuildRangeInfoKHR::default()
+								.primitive_count(*triangle_count)
+								.primitive_offset(0)
+								.first_vertex(0)
+								.transform_offset(0),
+						];
 
 						(
-							vec![vk::AccelerationStructureGeometryKHR::default()
-								.flags(vk::GeometryFlagsKHR::OPAQUE)
-								.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-								.geometry(vk::AccelerationStructureGeometryDataKHR { triangles })],
+							vec![
+								vk::AccelerationStructureGeometryKHR::default()
+									.flags(vk::GeometryFlagsKHR::OPAQUE)
+									.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+									.geometry(vk::AccelerationStructureGeometryDataKHR { triangles }),
+							],
 							build_range_info,
 						)
 					}
@@ -1522,7 +1528,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				continue;
 			} // Skip unset textures
 
-			if image.format_ != crate::Formats::Depth32 {
+			if !image.format_.is_depth() {
 				let clear_value = match clear_value {
 					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue {
 						float32: [0.0, 0.0, 0.0, 0.0],
@@ -1816,10 +1822,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let synchronizer = &self.device.synchronizers[synchronizer_handle.0 as usize];
 
 		unsafe {
-			self.device
-				.device
-				.reset_fences(&[synchronizer.fence])
-				.expect("Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.");
+			self.device.device.reset_fences(&[synchronizer.fence]).expect(
+				"Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.",
+			);
 			let vk_queue = command_buffer
 				.vk_queue
 				.lock()

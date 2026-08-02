@@ -155,6 +155,10 @@ pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
 pub(crate) const MAX_CONE_SHADOWS: usize = 4;
 pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
+/// The depth format that halves the memory used by cone-light shadow maps.
+pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
+/// The depth format retained for directional cascades and the camera depth target.
+pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth32;
 pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
 pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOWS;
 

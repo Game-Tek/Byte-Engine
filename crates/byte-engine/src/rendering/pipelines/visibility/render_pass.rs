@@ -13,15 +13,16 @@ use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
-	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	ActiveMaterialMask, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET,
+	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
 	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
+use crate::rendering::{RenderPass, Sink, render_pass::RenderPassReturn};
 
 const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
@@ -151,28 +152,26 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
 			}
 			"samples-per-ray" => {
-				let samples_per_ray = configuration_u32(value).ok_or_else(|| {
-					"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number."
-				})?;
+				let samples_per_ray = configuration_u32(value).ok_or_else(
+					|| "GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number.",
+				)?;
 				if !(GTAO_MIN_SAMPLES_PER_RAY..=GTAO_MAX_SAMPLES_PER_RAY).contains(&samples_per_ray) {
 					return Err(format!(
 						"GTAO samples-per-ray was not set. The most likely cause is that the value is outside the supported range {}..={}.",
-						GTAO_MIN_SAMPLES_PER_RAY,
-						GTAO_MAX_SAMPLES_PER_RAY
+						GTAO_MIN_SAMPLES_PER_RAY, GTAO_MAX_SAMPLES_PER_RAY
 					));
 				}
 				let settings = Self { samples_per_ray, ..self };
 				Ok((settings, ConfigurationValue::Integer(i64::from(samples_per_ray))))
 			}
 			"radial-rays" => {
-				let radial_rays = configuration_u32(value).ok_or_else(|| {
-					"GTAO radial-rays was not set. The most likely cause is that the value is not a whole number."
-				})?;
+				let radial_rays = configuration_u32(value).ok_or_else(
+					|| "GTAO radial-rays was not set. The most likely cause is that the value is not a whole number.",
+				)?;
 				if !(GTAO_MIN_RADIAL_RAYS..=GTAO_MAX_RADIAL_RAYS).contains(&radial_rays) || radial_rays % 2 != 0 {
 					return Err(format!(
 						"GTAO radial-rays was not set. The most likely cause is that the value must be an even number in the range {}..={}.",
-						GTAO_MIN_RADIAL_RAYS,
-						GTAO_MAX_RADIAL_RAYS
+						GTAO_MIN_RADIAL_RAYS, GTAO_MAX_RADIAL_RAYS
 					));
 				}
 				let settings = Self { radial_rays, ..self };
@@ -490,13 +489,14 @@ fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
 /// The `ShadowPass` struct owns the shared pipeline and depth targets used by directional and cone shadow rendering.
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	shadow_pass_pipeline: ghi::PipelineHandle,
+	directional_shadow_pass_pipeline: ghi::PipelineHandle,
+	cone_shadow_pass_pipeline: ghi::PipelineHandle,
 	directional_shadow_map: ghi::BaseImageHandle,
 	cone_shadow_map: ghi::BaseImageHandle,
 }
 
 impl ShadowPass {
-	/// Creates the raster pipeline shared by both layered shadow-map targets.
+	/// Creates raster pipelines that match the directional and cone shadow-map depth formats.
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_resources: &ResourceManager,
@@ -519,7 +519,8 @@ impl ShadowPass {
 			ResourceShaderTypes::Mesh,
 		);
 
-		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32)];
+		let directional_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(DIRECTIONAL_SHADOW_MAP_FORMAT)];
+		let cone_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(CONE_SHADOW_MAP_FORMAT)];
 		let vertex_layout = [
 			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
 			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
@@ -529,16 +530,23 @@ impl ShadowPass {
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_task_shader, ghi::ShaderTypes::Task));
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
-		let shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let directional_shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[ghi::pipelines::PushConstantRange::new(0, 12)],
 			&vertex_layout,
 			&shadow_pass_shaders,
-			&attachments,
+			&directional_attachments,
+		));
+		let cone_shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+			&[ghi::pipelines::PushConstantRange::new(0, 12)],
+			&vertex_layout,
+			&shadow_pass_shaders,
+			&cone_attachments,
 		));
 
 		Self {
 			descriptor_set,
-			shadow_pass_pipeline,
+			directional_shadow_pass_pipeline,
+			cone_shadow_pass_pipeline,
 			directional_shadow_map,
 			cone_shadow_map,
 		}
@@ -554,7 +562,8 @@ impl ShadowPass {
 		cone_shadow_count: usize,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
-		let pipeline = self.shadow_pass_pipeline;
+		let directional_pipeline = self.directional_shadow_pass_pipeline;
+		let cone_pipeline = self.cone_shadow_pass_pipeline;
 		let directional_shadow_map = self.directional_shadow_map;
 		let cone_shadow_map = self.cone_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
@@ -573,7 +582,11 @@ impl ShadowPass {
 			if directional_shadow_enabled {
 				log::debug!(
 					"Directional shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
-					SHADOW_CASCADE_COUNT, instances.len(), drawable_instances, meshlet_count, mesh_dispatch.workgroup_count(),
+					SHADOW_CASCADE_COUNT,
+					instances.len(),
+					drawable_instances,
+					meshlet_count,
+					mesh_dispatch.workgroup_count(),
 				);
 				c.start_region(|label| label.write_str("Directional Shadow Map"));
 				let attachments = [ghi::AttachmentInformation::new(
@@ -585,7 +598,7 @@ impl ShadowPass {
 				)
 				.layers(SHADOW_CASCADE_COUNT as u32)];
 				let c = c.start_render_pass(directional_extent, &attachments);
-				let c = c.bind_raster_pipeline(pipeline);
+				let c = c.bind_raster_pipeline(directional_pipeline);
 				c.bind_descriptor_sets(&[descriptor_set]);
 				for view_index in directional_shadow_view_indices(mesh_dispatch) {
 					c.start_region(|label| label.write_str("Cascade"));
@@ -602,7 +615,11 @@ impl ShadowPass {
 			if cone_shadow_count > 0 {
 				log::debug!(
 					"Cone shadow pass executing: lights={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
-					cone_shadow_count, instances.len(), drawable_instances, meshlet_count, mesh_dispatch.workgroup_count(),
+					cone_shadow_count,
+					instances.len(),
+					drawable_instances,
+					meshlet_count,
+					mesh_dispatch.workgroup_count(),
 				);
 				c.start_region(|label| label.write_str("Cone Shadow Map"));
 				let attachments = [ghi::AttachmentInformation::new(
@@ -614,7 +631,7 @@ impl ShadowPass {
 				)
 				.layers(MAX_CONE_SHADOWS as u32)];
 				let c = c.start_render_pass(cone_extent, &attachments);
-				let c = c.bind_raster_pipeline(pipeline);
+				let c = c.bind_raster_pipeline(cone_pipeline);
 				c.bind_descriptor_sets(&[descriptor_set]);
 				for (view_index, layer) in cone_shadow_view_indices(mesh_dispatch, cone_shadow_count) {
 					c.start_region(|label| label.write_str("Cone"));
@@ -1488,11 +1505,11 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent,
-		transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
+		GtaoSettings, Instance, MeshDispatch, cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data,
+		gtao_half_resolution_extent, transparent_visibility_layer,
 	};
 	use crate::configuration::ConfigurationValue;
-	use crate::rendering::{view::View, Sink};
+	use crate::rendering::{Sink, view::View};
 
 	#[test]
 	fn shadow_dispatches_preserve_directional_cascades_and_packed_cone_layers() {
@@ -1527,9 +1544,11 @@ mod tests {
 		assert_eq!(samples, ConfigurationValue::Integer(12));
 		assert_eq!(rays, ConfigurationValue::Integer(16));
 
-		assert!(settings
-			.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
-			.is_err());
+		assert!(
+			settings
+				.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
+				.is_err()
+		);
 		assert_eq!(settings.radial_rays, 16);
 	}
 
@@ -1550,11 +1569,13 @@ mod tests {
 
 		assert_eq!(layer, instances);
 		assert!(transparent_visibility_layer(&[]).is_none());
-		assert!(transparent_visibility_layer(&[Instance {
-			shader_mesh_index: 13,
-			meshlet_count: 0,
-		}])
-		.is_none());
+		assert!(
+			transparent_visibility_layer(&[Instance {
+				shader_mesh_index: 13,
+				meshlet_count: 0,
+			}])
+			.is_none()
+		);
 	}
 
 	#[test]
@@ -1609,7 +1630,7 @@ mod tests {
 
 	#[test]
 	fn gtao_view_space_reconstruction_z_is_positive() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1715,7 +1736,7 @@ mod tests {
 	/// where depth varies per pixel, and checks for normal sign flips at different distances.
 	#[test]
 	fn gtao_normal_on_floor_plane() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1772,7 +1793,7 @@ mod tests {
 			if hit_z < near || hit_z > far {
 				return None;
 			} // outside clip range
-	 // Project hit point to get depth
+			// Project hit point to get depth
 			let hit_x = p.x * t;
 			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
@@ -1781,11 +1802,7 @@ mod tests {
 		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
 			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
 			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if math::dot(ap, ap) < math::dot(bp, bp) {
-				ap
-			} else {
-				bp
-			}
+			if math::dot(ap, ap) < math::dot(bp, bp) { ap } else { bp }
 		};
 
 		eprintln!("\n--- Floor plane normal reconstruction ---");

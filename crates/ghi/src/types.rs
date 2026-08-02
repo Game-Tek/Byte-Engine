@@ -238,6 +238,8 @@ pub enum Formats {
 	BGRAu8,
 	/// 8 bit sRGB RGBA.
 	BGRAsRGB,
+	/// 16 bit unsigned normalized depth.
+	Depth16,
 	/// 32 bit float depth.
 	Depth32,
 	/// 32 bit unsigned integer.
@@ -279,6 +281,11 @@ pub fn bc_layout(width: u32, height: u32, bytes_per_block: u32) -> BcLayout {
 }
 
 impl Formats {
+	/// Returns whether this format can be used as a depth attachment.
+	pub const fn is_depth(self) -> bool {
+		matches!(self, Self::Depth16 | Self::Depth32)
+	}
+
 	/// Returns the byte size of one compressed block for BC formats.
 	pub fn bc_bytes_per_block(&self) -> Option<u32> {
 		match self {
@@ -332,6 +339,8 @@ impl Formats {
 			| Formats::RGBA16UNORM
 			| Formats::RGBu11u11u10
 			| Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
+
+			Formats::Depth16 => Some(Encodings::UnsignedNormalized),
 
 			Formats::R8SNORM
 			| Formats::R16SNORM
@@ -399,7 +408,8 @@ impl Formats {
 			| Formats::RGBA16F
 			| Formats::RGBA16UNORM
 			| Formats::RGBA16SNORM
-			| Formats::RGBA16sRGB => ChannelBitSize::Bits16,
+			| Formats::RGBA16sRGB
+			| Formats::Depth16 => ChannelBitSize::Bits16,
 
 			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB | Formats::Depth32 | Formats::U32 => {
 				ChannelBitSize::Bits32
@@ -457,7 +467,7 @@ impl Formats {
 
 			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelLayout::BGRA,
 
-			Formats::Depth32 => ChannelLayout::Depth,
+			Formats::Depth16 | Formats::Depth32 => ChannelLayout::Depth,
 
 			Formats::U32 => ChannelLayout::Packed,
 
@@ -484,6 +494,7 @@ impl Size for Formats {
 			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => 8,
 			Formats::RGBu11u11u10 => 4,
 			Formats::BGRAu8 | Formats::BGRAsRGB => 4,
+			Formats::Depth16 => 2,
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,
 			Formats::BC5 | Formats::BC5SNORM => 1,
@@ -791,21 +802,13 @@ impl BufferDescriptor {
 
 #[cfg(test)]
 mod tests {
-	use crate::graphics_hardware_interface::MasterHandle;
-	use crate::BaseImageHandle;
-
 	use super::*;
+	use crate::BaseImageHandle;
+	use crate::graphics_hardware_interface::MasterHandle;
 
 	#[test]
 	fn buffer_image_copy_preserves_the_destination_mip_level() {
-		let copy = BufferImageCopyDescriptor::new(
-			BaseBufferHandle::new(3),
-			256,
-			512,
-			1024,
-			BaseImageHandle::new(7),
-			4,
-		);
+		let copy = BufferImageCopyDescriptor::new(BaseBufferHandle::new(3), 256, 512, 1024, BaseImageHandle::new(7), 4);
 
 		assert_eq!(copy.source_offset, 256);
 		assert_eq!(copy.destination_image, BaseImageHandle::new(7));
@@ -842,6 +845,7 @@ mod tests {
 			(Formats::RGBA8UNORM, 5, 7, (20, 7, 140)),
 			(Formats::RGB16UNORM, 5, 7, (30, 7, 210)),
 			(Formats::RGBu11u11u10, 5, 7, (20, 7, 140)),
+			(Formats::Depth16, 5, 7, (10, 7, 70)),
 			(Formats::Depth32, 5, 7, (20, 7, 140)),
 			(Formats::BC7, 5, 7, (32, 2, 64)),
 			(Formats::RGBA8UNORM, 0, 0, (0, 0, 0)),

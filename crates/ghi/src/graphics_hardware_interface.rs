@@ -5,8 +5,8 @@
 use utils::{Extent, RGBA};
 
 use crate::{
-	descriptors::{self, DescriptorType},
 	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
+	descriptors::{self, DescriptorType},
 };
 
 // HANDLES
@@ -200,7 +200,7 @@ impl<T: Copy> MasterHandle for BufferHandle<T> {
 	}
 
 	fn index(&self) -> u64 {
-		self.0 .0
+		self.0.0
 	}
 }
 
@@ -842,21 +842,21 @@ pub(super) mod tests {
 
 	use super::*;
 	use crate::{
+		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
+		ShaderTypes, UseCases, Uses, Window,
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
 		frame::Frame as _,
-		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
+		pipelines::{self, PushConstantRange, ShaderParameter, VertexElement, raster::AttachmentDescriptor},
 		queue::{FrameRequest, Queue as _, QueueExecution as _},
 		rt::{
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
 		},
 		shader::{CompiledShaderSource, ShaderSource},
-		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
-		ShaderTypes, UseCases, Uses, Window,
 	};
 	use crate::{ChannelBitSize, ChannelLayout, Size as _};
 
@@ -931,6 +931,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGB16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::RGBA8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::RGBA16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::Depth16.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::RGBu11u11u10.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::BGRAu8.encoding(), Some(Encodings::UnsignedNormalized));
 
@@ -1062,6 +1063,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RG16SNORM.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(Formats::RGB16F.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(Formats::RGBA16UNORM.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(Formats::Depth16.channel_bit_size(), ChannelBitSize::Bits16);
 
 		// Test 32-bit formats
 		assert_eq!(Formats::R32F.channel_bit_size(), ChannelBitSize::Bits32);
@@ -1105,6 +1107,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::BGRAsRGB.channel_layout(), ChannelLayout::BGRA);
 
 		// Test depth format
+		assert_eq!(Formats::Depth16.channel_layout(), ChannelLayout::Depth);
 		assert_eq!(Formats::Depth32.channel_layout(), ChannelLayout::Depth);
 
 		// Test packed format
@@ -1148,6 +1151,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGBu11u11u10.size(), 4);
 		assert_eq!(Formats::BGRAu8.size(), 4);
 		assert_eq!(Formats::BGRAsRGB.size(), 4);
+		assert_eq!(Formats::Depth16.size(), 2);
 		assert_eq!(Formats::Depth32.size(), 4);
 		assert_eq!(Formats::U32.size(), 4);
 		assert_eq!(Formats::BC5.size(), 1);
@@ -1184,6 +1188,13 @@ pub(super) mod tests {
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits11_11_10);
 		assert_eq!(format.channel_layout(), ChannelLayout::RGB);
 		assert_eq!(format.size(), 4);
+
+		// For Depth16
+		let format = Formats::Depth16;
+		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(format.channel_layout(), ChannelLayout::Depth);
+		assert_eq!(format.size(), 2);
 
 		// For BGRAu8
 		let format = Formats::BGRAu8;

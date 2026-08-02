@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{graphics_hardware_interface, Size};
+use crate::{Size, graphics_hardware_interface};
 
 pub(super) fn uses_to_vk_usage_flags(usage: crate::Uses) -> vk::BufferUsageFlags {
 	let mut flags = vk::BufferUsageFlags::empty();
@@ -90,7 +90,7 @@ pub(super) fn texture_format_and_resource_use_to_image_layout(
 	match layout {
 		crate::Layouts::Undefined => vk::ImageLayout::UNDEFINED,
 		crate::Layouts::RenderTarget => {
-			if texture_format != crate::Formats::Depth32 {
+			if !texture_format.is_depth() {
 				vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
 			} else {
 				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
@@ -110,7 +110,7 @@ pub(super) fn texture_format_and_resource_use_to_image_layout(
 		},
 		crate::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
 		crate::Layouts::Read => {
-			if texture_format != crate::Formats::Depth32 {
+			if !texture_format.is_depth() {
 				vk::ImageLayout::READ_ONLY_OPTIMAL
 			} else {
 				vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL
@@ -179,6 +179,7 @@ pub(super) fn to_format(format: crate::Formats) -> vk::Format {
 		crate::Formats::RGBu11u11u10 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		crate::Formats::BGRAu8 => vk::Format::B8G8R8A8_UNORM,
 		crate::Formats::BGRAsRGB => vk::Format::B8G8R8A8_SRGB,
+		crate::Formats::Depth16 => vk::Format::D16_UNORM,
 		crate::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		crate::Formats::U32 => vk::Format::R32_UINT,
 		crate::Formats::BC5 => vk::Format::BC5_UNORM_BLOCK,
@@ -236,7 +237,7 @@ pub(super) fn to_pipeline_stage_flags(
 			}
 
 			if let Some(format) = format {
-				if format != crate::Formats::Depth32 {
+				if !format.is_depth() {
 					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
 				} else {
 					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
@@ -245,7 +246,7 @@ pub(super) fn to_pipeline_stage_flags(
 			}
 		} else {
 			if let Some(format) = format {
-				if format != crate::Formats::Depth32 {
+				if !format.is_depth() {
 					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
 				} else {
 					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
@@ -327,7 +328,7 @@ pub(super) fn to_access_flags(
 		}
 		if stages.intersects(crate::Stages::FRAGMENT) {
 			if let Some(format) = format {
-				if format != crate::Formats::Depth32 {
+				if !format.is_depth() {
 					if layout == crate::Layouts::RenderTarget {
 						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_READ
 					} else {
@@ -372,7 +373,7 @@ pub(super) fn to_access_flags(
 		}
 		if stages.intersects(crate::Stages::FRAGMENT) {
 			if let Some(format) = format {
-				if format != crate::Formats::Depth32 {
+				if !format.is_depth() {
 					if layout == crate::Layouts::RenderTarget {
 						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
 					} else {
@@ -438,11 +439,11 @@ pub(super) fn into_vk_image_usage_flags(uses: crate::Uses, format: crate::Format
 		vk::ImageUsageFlags::STORAGE
 	} else {
 		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::RenderTarget) && format != crate::Formats::Depth32 {
+	} | if uses.intersects(crate::Uses::RenderTarget) && !format.is_depth() {
 		vk::ImageUsageFlags::COLOR_ATTACHMENT
 	} else {
 		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::DepthStencil) || format == crate::Formats::Depth32 {
+	} | if uses.intersects(crate::Uses::DepthStencil) || format.is_depth() {
 		vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
 	} else {
 		vk::ImageUsageFlags::empty()
@@ -675,6 +676,9 @@ mod tests {
 		let value =
 			texture_format_and_resource_use_to_image_layout(crate::Formats::Depth32, crate::Layouts::RenderTarget, None);
 		assert_eq!(value, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		let value =
+			texture_format_and_resource_use_to_image_layout(crate::Formats::Depth16, crate::Layouts::RenderTarget, None);
+		assert_eq!(value, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Transfer, None);
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
@@ -785,6 +789,8 @@ mod tests {
 
 		let value = to_format(crate::Formats::Depth32);
 		assert_eq!(value, vk::Format::D32_SFLOAT);
+		let value = to_format(crate::Formats::Depth16);
+		assert_eq!(value, vk::Format::D16_UNORM);
 	}
 
 	#[test]

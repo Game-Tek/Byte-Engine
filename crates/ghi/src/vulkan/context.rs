@@ -203,8 +203,7 @@ impl Context {
 			assert!(
 				!matches!(
 					descriptor_write.descriptor,
-					crate::descriptors::WriteData::StaticSamplers
-						| crate::descriptors::WriteData::CombinedImageSamplerArray
+					crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray
 				),
 				"Unsupported Vulkan descriptor write. The most likely cause is that a removed legacy descriptor constructor is still in use.",
 			);
@@ -310,7 +309,7 @@ impl Context {
 	}
 
 	pub(crate) fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let texture = &self.images[texture_handle.0 .0 as usize];
+		let texture = &self.images[texture_handle.0.0 as usize];
 		let size = texture.size;
 		assert!(
 			texture.staging_buffer.is_some(),
@@ -328,7 +327,7 @@ impl Context {
 	}
 
 	pub(crate) fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle(image_handle.0 .0);
+		let image_handle = ImageHandle(image_handle.0.0);
 		let image = &self.images[image_handle.0 as usize];
 		assert!(
 			image.staging_buffer.is_some(),
@@ -339,7 +338,7 @@ impl Context {
 	}
 
 	pub(crate) fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handles = ImageHandle(image_handle.0 .0).get_all(&self.images);
+		let handles = ImageHandle(image_handle.0.0).get_all(&self.images);
 
 		let handle = handles[0];
 
@@ -722,7 +721,7 @@ impl Context {
 	fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
 		self.swapchains
 			.iter()
-			.any(|swapchain| swapchain.images[0].0 == handle.0 .0 || swapchain.native_images[0].0 == handle.0 .0)
+			.any(|swapchain| swapchain.images[0].0 == handle.0.0 || swapchain.native_images[0].0 == handle.0.0)
 	}
 
 	fn get_swapchain_image_for_sequence(
@@ -733,9 +732,9 @@ impl Context {
 		self.swapchains.iter().find_map(|swapchain| {
 			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
-			if swapchain.images[0].0 == handle.0 .0 {
+			if swapchain.images[0].0 == handle.0.0 {
 				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].0 == handle.0 .0 {
+			} else if swapchain.native_images[0].0 == handle.0.0 {
 				Some(swapchain.native_images[acquired_image_index])
 			} else {
 				None
@@ -755,7 +754,7 @@ impl Context {
 			return handle;
 		}
 
-		self.image_handle_for_sequence(ImageHandle(handle.0 .0), frame_index)
+		self.image_handle_for_sequence(ImageHandle(handle.0.0), frame_index)
 	}
 
 	/// Resolves a frame sequence and offset into a valid per-frame resource index.
@@ -1079,7 +1078,7 @@ impl Context {
 		let pipeline_color_blend_attachments = builder
 			.render_targets
 			.iter()
-			.filter(|a| a.format != crate::Formats::Depth32)
+			.filter(|a| !a.format.is_depth())
 			.map(|attachment| {
 				let blend_state =
 					vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA);
@@ -1108,7 +1107,7 @@ impl Context {
 		let color_attachement_formats: Vec<vk::Format> = builder
 			.render_targets
 			.iter()
-			.filter(|a| a.format != crate::Formats::Depth32)
+			.filter(|a| !a.format.is_depth())
 			.map(|a| to_format(a.format))
 			.collect::<Vec<_>>();
 
@@ -1118,14 +1117,11 @@ impl Context {
 			.attachments(&pipeline_color_blend_attachments)
 			.blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-		let has_depth = builder
-			.render_targets
-			.iter()
-			.any(|attachment| attachment.format == crate::Formats::Depth32);
+		let has_depth = builder.render_targets.iter().find(|attachment| attachment.format.is_depth());
 		let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
 			.color_attachment_formats(&color_attachement_formats)
-			.depth_attachment_format(if has_depth {
-				vk::Format::D32_SFLOAT
+			.depth_attachment_format(if let Some(depth_attachment) = has_depth {
+				to_format(depth_attachment.format)
 			} else {
 				vk::Format::UNDEFINED
 			});
@@ -1280,7 +1276,7 @@ impl Context {
 			array_layer: 0,
 		};
 
-		let texture = self.images.get(texture.0 .0 as usize).expect("No texture with that handle.");
+		let texture = self.images.get(texture.0.0 as usize).expect("No texture with that handle.");
 
 		if true
 		/* TILING_OPTIMAL */
@@ -2382,8 +2378,10 @@ impl Context {
 	) -> vk::ImageViewCreateInfo<'static> {
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
 			crate::TextureViewTypes::Texture2D => {
-				assert!(layer.is_none() && image.layers.is_none() && image.extent.depth().max(1) == 1,
-					"Vulkan 2D descriptor view mismatch. The most likely cause is that a layered or 3D image was written to a Texture2D shader resource.");
+				assert!(
+					layer.is_none() && image.layers.is_none() && image.extent.depth().max(1) == 1,
+					"Vulkan 2D descriptor view mismatch. The most likely cause is that a layered or 3D image was written to a Texture2D shader resource."
+				);
 				(vk::ImageViewType::TYPE_2D, 0, 1)
 			}
 			crate::TextureViewTypes::Texture2DArray => {
@@ -2402,8 +2400,10 @@ impl Context {
 				)
 			}
 			crate::TextureViewTypes::Texture3D => {
-				assert!(layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
-					"Vulkan 3D descriptor view mismatch. The most likely cause is that a 2D image was written to a Texture3D shader resource.");
+				assert!(
+					layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
+					"Vulkan 3D descriptor view mismatch. The most likely cause is that a 2D image was written to a Texture3D shader resource."
+				);
 				(vk::ImageViewType::TYPE_3D, 0, 1)
 			}
 		};
@@ -2413,7 +2413,7 @@ impl Context {
 			.format(image.format)
 			.components(vk::ComponentMapping::default())
 			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: if image.format_ == crate::Formats::Depth32 {
+				aspect_mask: if image.format_.is_depth() {
 					vk::ImageAspectFlags::DEPTH
 				} else {
 					vk::ImageAspectFlags::COLOR
@@ -2492,7 +2492,10 @@ impl Context {
 						graphics_hardware_interface::Ranges::Whole => buffer.size as u64,
 						graphics_hardware_interface::Ranges::Size(size) => size as u64,
 					};
-					assert!(size > 0 && size <= buffer.size as u64, "Invalid Vulkan buffer descriptor range. The most likely cause is that a descriptor exceeds its backing buffer.");
+					assert!(
+						size > 0 && size <= buffer.size as u64,
+						"Invalid Vulkan buffer descriptor range. The most likely cause is that a descriptor exceeds its backing buffer."
+					);
 					address_writes.push((
 						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
 						vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size),
@@ -2616,7 +2619,9 @@ impl Context {
 				self.device
 					.descriptor_heap
 					.write_resource_descriptors(&infos, &destinations)
-					.expect("Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.");
+					.expect(
+						"Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.",
+					);
 			}
 		}
 		if !sampler_writes.is_empty() {
@@ -3815,30 +3820,30 @@ use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
 use utils::hash::{HashSet, HashSetExt};
 use utils::{
-	hash::{HashMap, HashMapExt},
 	Extent,
+	hash::{HashMap, HashMapExt},
 };
 
 use super::{
+	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
+	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
+	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
+	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState,
 	utils::{
 		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
 		uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
-	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MaterializationKey,
-	MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, PipelineResourceDescriptor,
-	ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState,
-	MAX_FRAMES_IN_FLIGHT,
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	graphics_hardware_interface, image, sampler,
+	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, Task, Tasks,
-		MAX_SWAPCHAIN_IMAGES,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
+		Tasks,
 	},
-	window, FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size,
+	window,
 };
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use std::{ptr::NonNull, rc::Rc};
 
-use ::utils::{hash::HashMap, Extent};
+use ::utils::{Extent, hash::HashMap};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
@@ -12,12 +12,12 @@ use smallvec::SmallVec;
 use super::*;
 use crate::metal::swapchain::Swapchain;
 use crate::{
+	HandleLike as _, ImageOrSwapchain, ResourceCollection,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	HandleLike as _, ImageOrSwapchain, ResourceCollection,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -556,7 +556,9 @@ impl<'a> CommandBufferRecording<'a> {
 			.iter()
 			.find(|(swapchain, _)| swapchain.0 == handle.0)
 			.map(|(_, drawable)| drawable.texture())
-			.expect("Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.")
+			.expect(
+				"Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.",
+			)
 	}
 
 	fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
@@ -1054,16 +1056,22 @@ impl CommandBufferRecording<'_> {
 				match (argument_slot, descriptor) {
 					(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
 						let buffer = self.device.buffers.resource(buffer);
-						layout.argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
+						layout
+							.argument_encoder
+							.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
 						let image = self.device.images.resource(image);
-						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+						layout
+							.argument_encoder
+							.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
 						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
 							let image = self.device.images.resource(proxy);
-							layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+							layout
+								.argument_encoder
+								.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 						} else {
 							let texture = self.drawable_texture(handle);
 							layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _);
@@ -1085,15 +1093,14 @@ impl CommandBufferRecording<'_> {
 					) => unsafe {
 						let image = self.device.images.resource(image);
 						let sampler_state = &self.device.samplers[sampler_handle.0 as usize];
-						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
+						layout
+							.argument_encoder
+							.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
 						layout
 							.argument_encoder
 							.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
 					},
-					(
-						DescriptorBindingSlot::AccelerationStructure(slot),
-						Descriptor::AccelerationStructure { handle },
-					) => {
+					(DescriptorBindingSlot::AccelerationStructure(slot), Descriptor::AccelerationStructure { handle }) => {
 						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
 							unsafe {
 								layout
@@ -1197,7 +1204,9 @@ impl CommandBufferRecording<'_> {
 		let compute_pipeline_state = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
 			PipelineState::Compute(Some(compute_pipeline_state)) => compute_pipeline_state.clone(),
 			PipelineState::Compute(None) => {
-				panic!("Metal compute pipeline has no MTLComputePipelineState. The most likely cause is shader creation failed.")
+				panic!(
+					"Metal compute pipeline has no MTLComputePipelineState. The most likely cause is shader creation failed."
+				)
 			}
 			_ => panic!(
 				"Cannot dispatch a non-compute Metal pipeline. The most likely cause is that a raster or ray tracing pipeline handle was passed to bind_compute_pipeline."
@@ -1357,7 +1366,7 @@ impl CommandBufferRecording<'_> {
 		let mut color_index = 0;
 		for (handle, clear_value) in images {
 			let image = self.device.images.resource(*handle);
-			if image.format == crate::Formats::Depth32 {
+			if image.format.is_depth() {
 				let attachment = rpd.depthAttachment();
 				attachment.setTexture(Some(image.texture.as_ref()));
 				attachment.setLoadAction(mtl::MTLLoadAction::Clear);
@@ -1448,10 +1457,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			rpd.setRenderTargetArrayLength(render_target_array_length as _);
 		}
 
-		for (i, (attachment, image, format, array_layers)) in attachments
-			.iter()
-			.filter(|(_, _, format, _)| *format != crate::Formats::Depth32)
-			.enumerate()
+		for (i, (attachment, image, format, array_layers)) in
+			attachments.iter().filter(|(_, _, format, _)| !format.is_depth()).enumerate()
 		{
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
 			let texture_view = attachment_texture_view(image, *format, *array_layers, attachment.layer);
@@ -1462,9 +1469,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			att.setClearColor(utils::clear_color(attachment.clear));
 		}
 
-		if let Some((attachment, image, format, array_layers)) = attachments
-			.iter()
-			.find(|(_, _, format, _)| *format == crate::Formats::Depth32)
+		if let Some((attachment, image, format, array_layers)) = attachments.iter().find(|(_, _, format, _)| format.is_depth())
 		{
 			let att = rpd.depthAttachment();
 			let texture_view = attachment_texture_view(image, *format, *array_layers, attachment.layer);
@@ -1532,7 +1537,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		for (handle, clear_value) in textures {
 			let image_handle = self.get_internal_image_handle(*handle);
 			let image = self.device.images.resource(image_handle);
-			let is_depth = image.format == crate::Formats::Depth32;
+			let is_depth = image.format.is_depth();
 			let compatible = batch.is_empty()
 				|| (batch_extent == Some(image.extent)
 					&& batch_array_layers == image.array_layers

@@ -7,8 +7,8 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
-use ::utils::hash::HashMap;
 use ::utils::Extent;
+use ::utils::hash::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
@@ -19,11 +19,11 @@ use objc2_metal::MTLDevice as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
+use crate::PrivateHandles;
 use crate::buffer::BufferHandle;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 use crate::sampler::SamplerHandle;
-use crate::PrivateHandles;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Descriptor {
@@ -1229,6 +1229,7 @@ mod utils {
 			Formats::RGBu11u11u10 => mtl::MTLPixelFormat::RG11B10Float,
 			Formats::BGRAu8 => mtl::MTLPixelFormat::BGRA8Unorm,
 			Formats::BGRAsRGB => mtl::MTLPixelFormat::BGRA8Unorm_sRGB,
+			Formats::Depth16 => mtl::MTLPixelFormat::Depth16Unorm,
 			Formats::Depth32 => mtl::MTLPixelFormat::Depth32Float,
 			Formats::U32 => mtl::MTLPixelFormat::R32Uint,
 
@@ -1447,6 +1448,11 @@ mod utils {
 			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
 			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
 			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
+		}
+
+		#[test]
+		fn depth16_format_mapping_uses_depth16_unorm() {
+			assert_eq!(to_pixel_format(Formats::Depth16), mtl::MTLPixelFormat::Depth16Unorm);
 		}
 
 		#[test]

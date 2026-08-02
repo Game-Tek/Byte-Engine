@@ -3,17 +3,25 @@
 //! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values and submit them through
 //! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. [`Lights`] is
 //! the erased representation used by the world factory.
+//!
+//! Light positions and photometric reference distances use meters. The renderer resolves authored
+//! units on the CPU and sends scene-referred RGB lux or candela to the GPU.
+//!
+//! Follow the [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
+//! to choose units and submit a light to the active world.
 
 use crate::core::Entity;
 
 pub mod cone;
 pub mod directional;
+mod photometry;
 pub mod point;
 
 pub use cone::ConeLight;
 pub use cone::ConeLight as Cone;
 pub use directional::DirectionalLight;
 pub use directional::DirectionalLight as Directional;
+pub use photometry::{LightColor, PhotometricError, PhotometricIntensity};
 pub use point::PointLight;
 pub use point::PointLight as Point;
 
@@ -63,35 +71,59 @@ mod tests {
 	use math::Vector3;
 
 	use super::*;
-	use crate::{inspector::Inspectable, rendering::cct};
+	use crate::inspector::Inspectable;
+
+	fn white() -> LightColor {
+		LightColor::LinearSrgb(Vector3::new(1.0, 1.0, 1.0))
+	}
+
+	fn candela(value: f32) -> PhotometricIntensity {
+		PhotometricIntensity::LuminousIntensity {
+			candela: value,
+			reference_distance_m: 1.0,
+		}
+	}
 
 	#[test]
 	fn concrete_lights_preserve_spatial_state_temperature_color_and_class() {
 		let cone = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			3_200.0,
+			LightColor::TemperatureKelvin(3_200.0),
+			PhotometricIntensity::LuminousFlux {
+				lumens: 1_000.0,
+				directional_beam_area_m2: 1.0,
+			},
 			15.0_f32.to_radians(),
 			25.0_f32.to_radians(),
 			0.1,
 			100.0,
-		);
-		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), 2_500.0);
-		let directional = DirectionalLight::new(Vector3::new(-1.0, -2.0, -3.0), 10_000.0);
+		)
+		.expect("physical cone light");
+		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
+		let directional = DirectionalLight::new(
+			Vector3::new(-1.0, -2.0, -3.0),
+			white(),
+			PhotometricIntensity::Illuminance {
+				lux: 10_000.0,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.expect("physical directional light");
 
 		assert_eq!(cone.position, Vector3::new(1.0, 2.0, 3.0));
 		assert_eq!(cone.direction, Vector3::new(0.0, -1.0, 0.0));
-		assert_eq!(cone.color, cct::rgb_from_temperature(3_200.0));
+		assert!(cone.color.x > cone.color.z);
 		assert_eq!(cone.class(), LightClasses::Cone);
 		assert!(cone.as_string().contains("ConeLight"));
 
 		assert_eq!(point.position, Vector3::new(1.0, 2.0, 3.0));
-		assert_eq!(point.color, cct::rgb_from_temperature(2_500.0));
+		assert_eq!(point.color, Vector3::new(250.0, 250.0, 250.0));
 		assert_eq!(point.class(), LightClasses::Point);
 		assert!(point.as_string().contains("PointLight"));
 
 		assert_eq!(directional.direction, Vector3::new(-1.0, -2.0, -3.0));
-		assert_eq!(directional.color, cct::rgb_from_temperature(10_000.0));
+		assert_eq!(directional.color, Vector3::new(10_000.0, 10_000.0, 10_000.0));
 		assert_eq!(directional.class(), LightClasses::Directional);
 		assert!(directional.as_string().contains("DirectionalLight"));
 	}
@@ -101,14 +133,24 @@ mod tests {
 		let cone = ConeLight::new(
 			Vector3::new(0.0, 2.0, 0.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			4_500.0,
+			white(),
+			candela(100.0),
 			0.25,
 			0.5,
 			0.1,
 			100.0,
-		);
-		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), 6_600.0);
-		let directional = DirectionalLight::new(Vector3::new(0.0, -1.0, 0.0), 5_000.0);
+		)
+		.expect("physical cone light");
+		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");
+		let directional = DirectionalLight::new(
+			Vector3::new(0.0, -1.0, 0.0),
+			white(),
+			PhotometricIntensity::Illuminance {
+				lux: 5_000.0,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.expect("physical directional light");
 
 		assert!(matches!(Lights::from(cone), Lights::Cone(light) if light == cone));
 		assert!(

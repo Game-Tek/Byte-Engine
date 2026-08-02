@@ -15,7 +15,7 @@ fn main() {
 	);
 
 	// space_handle.spawn(Camera::new().builder());
-	// space_handle.spawn(PointLight::new(Vector3::new(0f32, 0f32, -2f32), 4500f32).builder());
+	// Add a `PointLight` through the world's light factory when this example needs direct lighting.
 
 	app.do_loop();
 }

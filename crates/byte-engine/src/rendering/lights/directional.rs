@@ -1,6 +1,6 @@
 use math::Vector3;
 
-use super::super::cct;
+use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
 	core::{Entity, EntityHandle},
 	inspector::Inspectable,
@@ -16,11 +16,21 @@ pub struct DirectionalLight {
 }
 
 impl DirectionalLight {
-	pub fn new(direction: Vector3, cct: f32) -> Self {
-		Self {
+	/// Creates a directional light whose GPU color is scene illuminance in lux.
+	///
+	/// Submit the returned light through [`crate::gameplay::world::DefaultWorld::light_factory_mut`]
+	/// to make it available to the active rendering pipeline.
+	///
+	/// # Errors
+	///
+	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
+	pub fn new(direction: Vector3, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
+		let chromaticity = color.resolve()?;
+		let lux = intensity.directional_lux()?;
+		Ok(Self {
 			direction,
-			color: cct::rgb_from_temperature(cct),
-		}
+			color: Vector3::new(chromaticity.x * lux, chromaticity.y * lux, chromaticity.z * lux),
+		})
 	}
 }
 

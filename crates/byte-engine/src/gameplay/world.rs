@@ -240,19 +240,33 @@ mod tests {
 		let mut light_listener = world.light_factory().listener();
 
 		let camera_handle = world.camera_factory_mut().create(Camera::new());
-		let light_handle = world
-			.light_factory_mut()
-			.create(PointLight::new(Vector3::new(3.0, 2.0, 1.0), 5_000.0).into());
+		let light_handle = world.light_factory_mut().create(
+			PointLight::new(
+				Vector3::new(3.0, 2.0, 1.0),
+				crate::rendering::lights::LightColor::TemperatureKelvin(5_000.0),
+				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
+					candela: 100.0,
+					reference_distance_m: 1.0,
+				},
+			)
+			.expect("physical point light")
+			.into(),
+		);
 		let cone_handle = world.light_factory_mut().create(
 			ConeLight::new(
 				Vector3::new(0.0, 3.0, 0.0),
 				Vector3::new(0.0, -1.0, 0.0),
-				4_500.0,
+				crate::rendering::lights::LightColor::TemperatureKelvin(4_500.0),
+				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
+					candela: 100.0,
+					reference_distance_m: 1.0,
+				},
 				15.0_f32.to_radians(),
 				30.0_f32.to_radians(),
 				0.1,
 				100.0,
 			)
+			.expect("physical cone light")
 			.into(),
 		);
 

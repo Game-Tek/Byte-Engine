@@ -11,6 +11,8 @@
 //!
 //! See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
 //! for the relationships between render orchestrators, systems, domains, and models.
+//! Follow the [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
+//! to create and submit scene lights with lux, candela, lumens, or nits.
 
 use ::utils::Extent;
 use ghi::context::ContextCreate as _;
@@ -34,9 +36,6 @@ pub mod mesh;
 
 #[doc(hidden)]
 pub mod renderable;
-
-#[doc(hidden)]
-pub mod cct;
 
 #[doc(hidden)]
 pub mod pipeline_manager;
@@ -76,7 +75,9 @@ pub mod utils;
 
 pub use camera::Camera;
 pub use environment::Environment;
-pub use lights::{ConeLight, DirectionalLight, Light, LightClasses, Lights, PointLight};
+pub use lights::{
+	ConeLight, DirectionalLight, Light, LightClasses, LightColor, Lights, PhotometricError, PhotometricIntensity, PointLight,
+};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
 pub use pose::UpdatePose;

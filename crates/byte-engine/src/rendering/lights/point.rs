@@ -1,6 +1,6 @@
 use math::Vector3;
 
-use super::super::cct;
+use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
 	core::{Entity, EntityHandle},
 	inspector::Inspectable,
@@ -16,11 +16,21 @@ pub struct PointLight {
 }
 
 impl PointLight {
-	pub fn new(position: Vector3, cct: f32) -> Self {
-		Self {
+	/// Creates a point light whose GPU color is luminous intensity in candela.
+	///
+	/// Submit the returned light through [`crate::gameplay::world::DefaultWorld::light_factory_mut`]
+	/// to make it available to the active rendering pipeline.
+	///
+	/// # Errors
+	///
+	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
+	pub fn new(position: Vector3, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
+		let chromaticity = color.resolve()?;
+		let candela = intensity.point_candela()?;
+		Ok(Self {
 			position,
-			color: cct::rgb_from_temperature(cct),
-		}
+			color: Vector3::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
+		})
 	}
 }
 

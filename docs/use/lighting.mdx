@@ -1,0 +1,231 @@
+---
+title: Physically based lighting
+description: Create directional, point, and cone lights with physical color and intensity units.
+icon: Sun
+---
+
+Use physical light units when you want lighting that responds predictably to distance, material
+properties, and future camera exposure controls.
+
+Byte Engine provides three analytic light shapes:
+
+| Light | Best intensity unit | Typical use |
+| --- | --- | --- |
+| `DirectionalLight` | Illuminance in lux | Sunlight or another source that is effectively infinitely far away |
+| `PointLight` | Luminous intensity in candela or total flux in lumens | Bare bulbs and other omnidirectional sources |
+| `ConeLight` | Luminous intensity in candela or total flux in lumens | Spotlights, flashlights, and focused fixtures |
+
+One world-space distance unit is one meter. Keep your scene at that scale so inverse-square
+attenuation and distance-based conversions remain meaningful.
+
+## Create a light
+
+Choose a color, choose an intensity, and create the light. Then submit it through
+`DefaultWorld::light_factory_mut` so the active rendering pipeline can use it.
+
+```rust
+use byte_engine::{
+    gameplay::world::DefaultWorld,
+    math::Vector3,
+    rendering::{DirectionalLight, LightColor, PhotometricIntensity},
+};
+
+let mut world = DefaultWorld::new();
+let sunlight = DirectionalLight::new(
+    Vector3::new(0.2, -1.0, 0.3),
+    LightColor::TemperatureKelvin(5_778.0),
+    PhotometricIntensity::Illuminance {
+        lux: 100_000.0,
+        measurement_distance_m: 1.0,
+    },
+)?;
+
+world.light_factory_mut().create(sunlight.into());
+# Ok::<(), byte_engine::rendering::PhotometricError>(())
+```
+
+Light constructors return `PhotometricError` when a color, magnitude, distance, or area is zero,
+negative, or not finite. A Kelvin value must be from 1,000 K through 40,000 K.
+
+## Choose a color
+
+Use `LightColor::TemperatureKelvin` for a blackbody-style illuminant such as daylight, a tungsten
+lamp, or a warm practical light. Byte Engine converts the temperature through CIE chromaticity to
+linear sRGB.
+
+Use `LightColor::LinearSrgb` for an authored color:
+
+```rust
+let color = LightColor::LinearSrgb(Vector3::new(1.0, 0.15, 0.02));
+```
+
+The RGB values describe chromaticity, not brightness. Byte Engine normalizes the color to unit
+photopic luminance. Set brightness with `PhotometricIntensity`; increasing the RGB values alone
+does not make the light brighter. RGB components must be nonnegative and the color must have
+nonzero luminance.
+
+## Choose an intensity
+
+You can use every `PhotometricIntensity` variant with every light shape. Include the reference
+distance or area carried by the variant so Byte Engine can make a deterministic conversion.
+
+### Lux
+
+Lux measures illuminance arriving at a surface. It is the most direct choice for a directional
+light. For a point or cone light, `measurement_distance_m` says where the requested illuminance
+must be reached.
+
+```rust
+let intensity = PhotometricIntensity::Illuminance {
+    lux: 500.0,
+    measurement_distance_m: 2.0,
+};
+```
+
+For local lights, Byte Engine converts lux to candela with `I = E × d²`. A light that produces
+500 lux at 2 meters therefore has an intensity of 2,000 candela. The measurement distance is
+validated but does not change an already directional illuminance field.
+
+### Candela
+
+Candela measures luminous intensity in one direction. It maps directly to point and cone lights.
+For a directional light, `reference_distance_m` defines the plane where the equivalent
+illuminance is measured.
+
+```rust
+let intensity = PhotometricIntensity::LuminousIntensity {
+    candela: 1_200.0,
+    reference_distance_m: 1.0,
+};
+```
+
+A directional light converts this value with `E = I / d²`. Local lights keep the candela value;
+their reference distance is validated but does not change it.
+
+### Lumens
+
+Lumens measure total luminous flux. A point light distributes its lumens uniformly over `4π`
+steradians, so Byte Engine uses `I = Φ / 4π`.
+
+A cone light distributes its lumens through its inner-to-outer soft cone. Byte Engine uses the
+same linear angular falloff on the CPU and GPU:
+
+```text
+cone factor = clamp((cosine − cos(outer)) / (cos(inner) − cos(outer)), 0, 1)
+```
+
+Its effective solid angle is:
+
+```text
+Ω = π × (2 − cos(inner half-angle) − cos(outer half-angle))
+I = Φ / Ω
+```
+
+For a directional light, supply the beam area at the reference plane and Byte Engine uses
+`E = Φ / A`.
+
+```rust
+let intensity = PhotometricIntensity::LuminousFlux {
+    lumens: 1_600.0,
+    directional_beam_area_m2: 4.0,
+};
+```
+
+`directional_beam_area_m2` is required and validated for every light. Point and cone lights do not
+use it because their emission shape already defines how the flux is distributed.
+
+### Nits
+
+Nits, or candela per square meter, measure luminance. Use this option when you know the luminance
+and projected area of the emitting surface.
+
+```rust
+let intensity = PhotometricIntensity::Luminance {
+    nits: 300.0,
+    projected_area_m2: 0.02,
+    reference_distance_m: 2.0,
+};
+```
+
+Point and cone lights use the uniform-emitter approximation `I = L × A`. Directional lights use
+`E = L × A / d²`. Analytic lights do not retain the physical emitter shape after this conversion.
+
+## Create point and cone lights
+
+The following point light emits 800 lumens uniformly:
+
+```rust
+use byte_engine::rendering::{LightColor, PhotometricIntensity, PointLight};
+
+let bulb = PointLight::new(
+    Vector3::new(0.0, 2.4, 0.0),
+    LightColor::TemperatureKelvin(2_700.0),
+    PhotometricIntensity::LuminousFlux {
+        lumens: 800.0,
+        directional_beam_area_m2: 1.0,
+    },
+)?;
+```
+
+The following cone light emits 1,600 lumens through a soft 20° to 30° half-angle range:
+
+```rust
+use byte_engine::rendering::{ConeLight, LightColor, PhotometricIntensity};
+
+let spotlight = ConeLight::new(
+    Vector3::new(0.0, 3.0, 0.0),
+    Vector3::new(0.0, -1.0, 0.0),
+    LightColor::TemperatureKelvin(3_200.0),
+    PhotometricIntensity::LuminousFlux {
+        lumens: 1_600.0,
+        directional_beam_area_m2: 1.0,
+    },
+    20.0_f32.to_radians(),
+    30.0_f32.to_radians(),
+    0.1,
+    50.0,
+)?;
+```
+
+Cone angles are half angles measured from the light direction. `shadow_near` and `shadow_far`
+control only the cone shadow view; they do not limit lighting attenuation. A cone with an outer
+half angle of 90° or more remains a valid light but cannot use one perspective shadow map.
+
+## Understand the rendering result
+
+Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for directional lights
+and RGB candela for point and cone lights. Local lights use inverse-square attenuation, and the PBR
+material evaluation applies diffuse `albedo / π` and specular BRDF terms.
+
+For a local light, the incident RGB quantity at a surface is `candela / distance²`, multiplied by
+the cone factor when applicable. For a directional light, the incident RGB quantity is its lux
+value directly. Shadows and material BRDF terms then reduce or redistribute that incident light;
+they do not change the authored unit conversion.
+
+The current camera does not apply photographic exposure. Bright real-world values can therefore
+look clipped or overly bright through AGX or ACES tone mapping. Keep physical values in your scene
+instead of compensating with arbitrary light scaling. A future camera exposure stage will add
+manual EV100 and exposure compensation before bloom and tone mapping. The planned camera model
+will derive EV100 from aperture `N`, shutter time `t`, and ISO:
+
+```text
+EV100 = log2((N² / t) × (100 / ISO))
+```
+
+This exposure control is not available yet. Do not treat the existing camera `aperture` field as a
+lighting exposure control.
+
+Environment maps and emissive materials do not yet have a unified physical calibration with
+analytic lights. Radiometric units such as watts and watts per square meter are also not supported;
+they require a future spectral-light model.
+
+## Rust API
+
+- [`DirectionalLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.DirectionalLight.html)
+- [`PointLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.PointLight.html)
+- [`ConeLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.ConeLight.html)
+- [`LightColor`](https://docs.rs/byte-engine/latest/byte_engine/rendering/enum.LightColor.html)
+- [`PhotometricIntensity`](https://docs.rs/byte-engine/latest/byte_engine/rendering/enum.PhotometricIntensity.html)
+
+After you create a light, submit it through
+[`DefaultWorld::light_factory_mut`](https://docs.rs/byte-engine/latest/byte_engine/gameplay/world/struct.DefaultWorld.html#method.light_factory_mut).

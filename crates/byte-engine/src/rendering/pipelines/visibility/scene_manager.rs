@@ -173,7 +173,7 @@ mod tests {
 	use math::{mat::MatNew4 as _, Matrix4, Vector3};
 
 	use super::{affine_matrix4x3_from_matrix4, assert_affine_matrix, LightShadow, VisibilitySceneManager};
-	use crate::rendering::lights::{ConeLight, Lights};
+	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::pipeline_manager::{LightData, LightingData, ShaderVec3};
 
 	#[test]
@@ -201,12 +201,17 @@ mod tests {
 		let light = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			4_500.0,
+			crate::rendering::lights::LightColor::TemperatureKelvin(4_500.0),
+			crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
 			20.0_f32.to_radians(),
 			35.0_f32.to_radians(),
 			0.1,
 			50.0,
-		);
+		)
+		.expect("physical cone light");
 		let light_data =
 			VisibilitySceneManager::make_light_data(&Lights::Cone(light), LightShadow::Cone { view_index: 6, layer: 1 });
 
@@ -217,6 +222,37 @@ mod tests {
 		assert_eq!(light_data.light_type, 1);
 		assert_eq!(light_data.shadow_views, [6, 0, 0, 0, 0, 0, 0, 0]);
 		assert_eq!(light_data.shadow_layer, 1);
+	}
+
+	#[test]
+	fn light_data_uploads_directional_lux_and_local_candela_without_unit_tags() {
+		let white = LightColor::LinearSrgb(Vector3::new(1.0, 1.0, 1.0));
+		let directional = DirectionalLight::new(
+			Vector3::new(0.0, -1.0, 0.0),
+			white,
+			PhotometricIntensity::Illuminance {
+				lux: 80_000.0,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.expect("physical directional light");
+		let point = PointLight::new(
+			Vector3::new(1.0, 2.0, 3.0),
+			white,
+			PhotometricIntensity::Illuminance {
+				lux: 25.0,
+				measurement_distance_m: 2.0,
+			},
+		)
+		.expect("physical point light");
+
+		let directional_data = VisibilitySceneManager::make_light_data(&Lights::Direction(directional), LightShadow::None);
+		let point_data = VisibilitySceneManager::make_light_data(&Lights::Point(point), LightShadow::None);
+
+		assert_eq!(directional_data.color, ShaderVec3::from((80_000.0, 80_000.0, 80_000.0)));
+		assert_eq!(point_data.color, ShaderVec3::from((100.0, 100.0, 100.0)));
+		assert_eq!(directional_data.light_type, 68);
+		assert_eq!(point_data.light_type, 0);
 	}
 
 	#[test]

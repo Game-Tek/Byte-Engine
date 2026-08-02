@@ -1266,7 +1266,9 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
-/// The `LightData` struct preserves one 16-byte-aligned light record across shader backends.
+/// The `LightData` struct preserves one 16-byte-aligned, scene-referred light record across shader backends.
+///
+/// `color` stores RGB illuminance in lux for directional lights and RGB luminous intensity in candela for local lights.
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct LightData {
@@ -1484,7 +1486,7 @@ mod tests {
 		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
-	use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, PointLight};
+	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
 	use crate::rendering::pipelines::visibility::{
 		INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
@@ -1499,29 +1501,61 @@ mod tests {
 		ConeLight::new(
 			Vector3::new(position_x, 2.0, 3.0),
 			Vector3::unit_z(),
-			4_500.0,
+			LightColor::TemperatureKelvin(4_500.0),
+			PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
 			15.0_f32.to_radians(),
 			30.0_f32.to_radians(),
 			0.2,
 			50.0,
 		)
+		.expect("physical cone light")
 	}
 
 	#[test]
 	fn shadow_selection_keeps_one_directional_light_and_the_first_four_cones() {
 		let lights = [
-			Lights::Cone(ConeLight::new(
-				Vector3::zero(),
-				Vector3::unit_z(),
-				4_500.0,
-				0.25,
-				std::f32::consts::PI,
-				0.2,
-				50.0,
-			)),
+			Lights::Cone(
+				ConeLight::new(
+					Vector3::zero(),
+					Vector3::unit_z(),
+					LightColor::TemperatureKelvin(4_500.0),
+					PhotometricIntensity::LuminousIntensity {
+						candela: 100.0,
+						reference_distance_m: 1.0,
+					},
+					0.25,
+					std::f32::consts::PI,
+					0.2,
+					50.0,
+				)
+				.expect("physical cone light"),
+			),
 			Lights::Cone(cone(0.0)),
-			Lights::Point(PointLight::new(Vector3::zero(), 4_500.0)),
-			Lights::Direction(DirectionalLight::new(-Vector3::unit_y(), 6_500.0)),
+			Lights::Point(
+				PointLight::new(
+					Vector3::zero(),
+					LightColor::TemperatureKelvin(4_500.0),
+					PhotometricIntensity::LuminousIntensity {
+						candela: 100.0,
+						reference_distance_m: 1.0,
+					},
+				)
+				.expect("physical point light"),
+			),
+			Lights::Direction(
+				DirectionalLight::new(
+					-Vector3::unit_y(),
+					LightColor::TemperatureKelvin(6_500.0),
+					PhotometricIntensity::Illuminance {
+						lux: 100_000.0,
+						measurement_distance_m: 1.0,
+					},
+				)
+				.expect("physical directional light"),
+			),
 			Lights::Cone(cone(1.0)),
 			Lights::Cone(cone(2.0)),
 			Lights::Cone(cone(3.0)),

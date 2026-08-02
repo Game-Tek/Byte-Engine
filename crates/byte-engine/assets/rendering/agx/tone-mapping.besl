@@ -5,6 +5,21 @@ splat3: fn(value: f32) -> vec3f {
 	return vec3f(value, value, value);
 }
 
+linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
+	if (channel <= 0.0031308) {
+		return 12.92 * channel;
+	}
+	return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
+}
+
+linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		linear_srgb_channel_to_srgb(color.x),
+		linear_srgb_channel_to_srgb(color.y),
+		linear_srgb_channel_to_srgb(color.z)
+	);
+}
+
 linear_srgb_to_linear_rec2020: fn(color: vec3f) -> vec3f {
 	let x: f32 = 0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z;
 	let y: f32 = 0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z;
@@ -73,8 +88,10 @@ agx: fn(color: vec3f) -> vec3f {
 	color = agx_outset(color);
 	color = pow(max(splat3(0.0), color), splat3(2.2));
 	color = linear_rec2020_to_linear_srgb(color);
+	color = clamp(color, splat3(0.0), splat3(1.0));
 
-	return clamp(color, splat3(0.0), splat3(1.0));
+	// The swapchain uses a non-sRGB UNORM format, so encode linear output before storing it.
+	return linear_srgb_to_srgb(color);
 }
 
 main: fn() -> void {

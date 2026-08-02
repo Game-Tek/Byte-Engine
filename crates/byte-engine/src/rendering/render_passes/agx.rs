@@ -76,6 +76,7 @@ impl RenderPass for AgxToneMapPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
+	use resource_management::shader::{besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings};
 
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
@@ -94,7 +95,7 @@ mod tests {
 		rgba(&result, [0, 0])
 	}
 
-	/// Verifies reference colors, channel ordering, and bounded output through the VM.
+	/// Verifies display-encoded reference colors, neutral highlights, channel ordering, and bounded output through the VM.
 	#[test]
 	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(TONE_MAPPING_SHADER));
@@ -102,8 +103,13 @@ mod tests {
 		assert_rgba_close(run_agx_vm(&program, [0.0, 0.0, 0.0, 0.25]), [0.0, 0.0, 0.0, 1.0], 1e-6);
 		assert_rgba_close(
 			run_agx_vm(&program, [1.0, 1.0, 1.0, 0.25]),
-			[0.5902294, 0.5901361, 0.5901023, 1.0],
+			[0.7919241, 0.7918683, 0.7918481, 1.0],
 			2e-5,
+		);
+		let highlight = run_agx_vm(&program, [16.0, 16.0, 16.0, 0.0]);
+		assert!(
+			highlight[0] > 0.98 && (highlight[0] - highlight[1]).abs() < 2e-4 && (highlight[1] - highlight[2]).abs() < 2e-4,
+			"Invalid AGX neutral highlight. The most likely cause is missing display encoding or an incorrect color-space transform: {highlight:?}"
 		);
 
 		let warm = run_agx_vm(&program, [1.0, 0.5, 0.25, 0.0]);
@@ -116,5 +122,17 @@ mod tests {
 				.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
 			"Invalid AGX VM output. The most likely cause is unstable tone-mapping arithmetic: {warm:?}"
 		);
+	}
+
+	/// Verifies the production AGX shader, including display encoding, remains valid Metal source.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn agx_tonemap_compiles_to_native_metal() {
+		let main = simple_compute::compile_test_program(TONE_MAPPING_SHADER);
+		let source = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to emit AGX MSL. The most likely cause is an unsupported tone-mapping expression.");
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "agx-tonemap")
+			.expect("Failed to compile AGX MSL. The most likely cause is invalid generated Metal source.");
 	}
 }

@@ -2,7 +2,7 @@ pub struct VisibilitySceneManager {
 	/// Render entities registered in the scene.
 	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Retained global poses keyed by the renderable handle used by this scene.
-	pub(crate) skinning_poses: HashMap<Handle, Vec<Matrix4Columns>>,
+	pub(crate) skinning_poses: HashMap<Handle, Vec<AffineMatrix4x3Columns>>,
 	/// Shared views data buffer used by every visibility sink.
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// Shared base descriptor set used by every visibility pass.
@@ -28,7 +28,10 @@ impl VisibilitySceneManager {
 	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[Matrix4]) {
 		let pose = self.skinning_poses.entry(handle).or_default();
 		pose.clear();
-		pose.extend(global_matrices.iter().map(matrix4_to_columns));
+		pose.extend(global_matrices.iter().map(|matrix| {
+			assert_affine_matrix(matrix);
+			affine_matrix4x3_from_matrix4(matrix)
+		}));
 	}
 
 	/// Removes all scene state owned by the renderable identified by `handle`.
@@ -143,40 +146,54 @@ enum LightShadow {
 	Cone { view_index: u32, layer: u32 },
 }
 
-/// Converts a gameplay matrix into the column-major representation consumed by skin palette evaluation.
-// TODO: isn't this already covered by another function?
-fn matrix4_to_columns(matrix: &Matrix4) -> Matrix4Columns {
+/// Converts an affine gameplay matrix into the compact column-major skin-palette representation.
+fn affine_matrix4x3_from_matrix4(matrix: &Matrix4) -> AffineMatrix4x3Columns {
 	[
-		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)], matrix[(3, 0)]],
-		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)], matrix[(3, 1)]],
-		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)], matrix[(3, 2)]],
-		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)], matrix[(3, 3)]],
+		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)]],
+		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)]],
+		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)]],
+		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]],
 	]
+}
+
+/// Rejects projective pose data before the compact representation would discard it.
+fn assert_affine_matrix(matrix: &Matrix4) {
+	const AFFINE_EPSILON: f32 = 0.00001;
+	assert!(
+		matrix[(3, 0)].abs() <= AFFINE_EPSILON
+			&& matrix[(3, 1)].abs() <= AFFINE_EPSILON
+			&& matrix[(3, 2)].abs() <= AFFINE_EPSILON
+			&& (matrix[(3, 3)] - 1.0).abs() <= AFFINE_EPSILON,
+		"Skinned pose matrix is projective. The most likely cause is sending a view or projection matrix instead of an affine skeleton pose."
+	);
 }
 
 #[cfg(test)]
 mod tests {
 	use math::{mat::MatNew4 as _, Matrix4, Vector3};
 
-	use super::{matrix4_to_columns, LightShadow, VisibilitySceneManager};
+	use super::{affine_matrix4x3_from_matrix4, assert_affine_matrix, LightShadow, VisibilitySceneManager};
 	use crate::rendering::lights::{ConeLight, Lights};
 	use crate::rendering::pipelines::visibility::pipeline_manager::{LightData, LightingData, ShaderVec3};
 
 	#[test]
 	fn pose_write_conversion_preserves_matrix_majorness() {
 		let matrix = Matrix4::new(
-			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 0.0, 0.0, 0.0, 1.0,
 		);
 
 		assert_eq!(
-			matrix4_to_columns(&matrix),
-			[
-				[1.0, 5.0, 9.0, 13.0],
-				[2.0, 6.0, 10.0, 14.0],
-				[3.0, 7.0, 11.0, 15.0],
-				[4.0, 8.0, 12.0, 16.0],
-			]
+			affine_matrix4x3_from_matrix4(&matrix),
+			[[1.0, 5.0, 9.0], [2.0, 6.0, 10.0], [3.0, 7.0, 11.0], [4.0, 8.0, 12.0]]
 		);
+	}
+
+	#[test]
+	#[should_panic(expected = "Skinned pose matrix is projective")]
+	fn compact_pose_rejects_a_projective_matrix() {
+		assert_affine_matrix(&Matrix4::new(
+			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+		));
 	}
 
 	#[test]
@@ -222,7 +239,7 @@ use ghi::DynamicBufferHandle;
 use ghi::Frame as _;
 use log::warn;
 use math::{mat::MatInverse as _, Matrix4};
-use resource_management::resources::skeleton::Matrix4Columns;
+use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use utils::{hash::HashMap, StableVec};
 
 use crate::core::factory::Handle;

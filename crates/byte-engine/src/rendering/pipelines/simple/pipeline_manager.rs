@@ -4,7 +4,7 @@ pub struct PipelineManager {
 	/// Buffer containing all vertex positions for meshes.
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
 	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
-	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
+	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[ShaderMatrix4x3; 1024]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) pipeline: ghi::PipelineHandle,
@@ -49,7 +49,7 @@ impl PipelineManager {
 				workgroup_size: None,
 				bindings: vec![
 					material::Binding::new(0, material::BindingKind::StorageBuffer, 1, Some(64), true, false),
-					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, Some(64), true, false),
+					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, Some(48), true, false),
 				],
 			},
 		);
@@ -171,9 +171,7 @@ impl PipelineManager {
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
-		instance_data_buffer[instace_id.index()] = InstanceShaderData {
-			instance_transform: entity.transform().get_matrix().into(),
-		};
+		instance_data_buffer[instace_id.index()] = entity.transform().get_matrix().into();
 	}
 
 	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix4) {
@@ -183,9 +181,7 @@ impl PipelineManager {
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
-		instance_data_buffer[idx.index()] = InstanceShaderData {
-			instance_transform: transform.into(),
-		};
+		instance_data_buffer[idx.index()] = transform.into();
 	}
 
 	pub fn remove_mesh(&mut self, handle: Handle) {
@@ -301,13 +297,13 @@ main: fn () -> void {
 fn create_simple_vertex_program() -> besl::NodeReference {
 	let mut root = besl::Node::root();
 	let mat4f = root.get_child("mat4f").expect("mat4f type not found in BESL root");
+	let mat4x3f = root.get_child("mat4x3f").expect("mat4x3f type not found in BESL root");
 	let vec3f = root.get_child("vec3f").expect("vec3f type not found in BESL root");
 	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
 	let u32_type = root.get_child("u32").expect("u32 type not found in BESL root");
 
 	let camera = root
 		.add_child(besl::Node::r#struct("Camera", vec![besl::Node::member("view_projection", mat4f.clone()).into()]).into());
-	let instance = root.add_child(besl::Node::r#struct("Instance", vec![besl::Node::member("transform", mat4f).into()]).into());
 
 	root.add_children(vec![
 		besl::Node::binding_in_memory(
@@ -324,7 +320,7 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 		besl::Node::binding_in_memory(
 			"instances",
 			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("instances", instance, 8)],
+				members: vec![besl::Node::array("transforms", mat4x3f, 1024)],
 			},
 			1,
 			true,
@@ -339,7 +335,6 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 		besl::Node::output("out_local_position", vec3f, 1).into(),
 	]);
 
-	// Direct field reads keep the executable VM representation allocation-free while preserving the GPU buffer layout.
 	let root_node = besl::compile_to_besl(SIMPLE_VERTEX_SHADER_BESL, Some(root))
 		.expect("Failed to lex the simple pipeline vertex shader. The most likely cause is invalid BESL syntax.");
 	root_node.get_main().expect(
@@ -350,9 +345,9 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 const SIMPLE_VERTEX_SHADER_BESL: &str = r#"
 main: fn () -> void {
 	let instance_index: u32 = instance_id;
-	position = cameras.cameras[0].view_projection
-		* instances.instances[instance_index].transform
-		* vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+	let transform: mat4x3f = instances.transforms[instance_index];
+	let world_position: vec3f = transform * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+	position = cameras.cameras[0].view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
 	out_instance_index = instance_index;
 	out_local_position = in_position;
 }
@@ -381,12 +376,6 @@ fn create_besl_shader(
 	.expect("Failed to create simple pipeline BESL shader. The most likely cause is an incompatible shader interface.")
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub(super) struct InstanceShaderData {
-	instance_transform: ShaderMatrix4,
-}
-
 use std::{
 	collections::{hash_map::Entry, VecDeque},
 	sync::Arc,
@@ -400,7 +389,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame,
 };
-use math::{Matrix4, ShaderMatrix4};
+use math::{Matrix4, ShaderMatrix4, ShaderMatrix4x3};
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, resources::material, shader::generator::ShaderGenerationSettings,
 	types::ShaderTypes as ResourceShaderTypes,
@@ -438,6 +427,10 @@ use crate::{
 #[cfg(test)]
 mod tests {
 	use besl::vm::{builtin_position_slot, input_slot, output_slot, DescriptorBindings, ResourceSlot, Value};
+	use resource_management::shader::{
+		besl::backends::{hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::ShaderGenerationSettings,
+	};
 
 	use super::{create_simple_fragment_program, create_simple_vertex_program};
 	use crate::rendering::shader_vm_test::{buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at};
@@ -492,12 +485,13 @@ mod tests {
 		cameras
 			.write_indexed_field("cameras", 0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
 			.expect("Failed to seed camera matrix. The most likely cause is a struct buffer layout mismatch.");
-		let translated = [
-			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 1.0,
-		];
 		instances
-			.write_indexed_field("instances", 3, "transform", Value::Mat4F(translated))
-			.expect("Failed to seed instance transform. The most likely cause is a struct buffer layout mismatch.");
+			.write_indexed(
+				"transforms",
+				3,
+				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]),
+			)
+			.expect("Failed to seed instance transform. The most likely cause is a compact transform buffer layout mismatch.");
 		input_position
 			.write("in_position", Value::Vec3F([1.0, 2.0, 3.0]))
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
@@ -520,6 +514,31 @@ mod tests {
 		assert_eq!(output_position.read("position"), Ok(Value::Vec4F([11.0, 22.0, 33.0, 1.0])));
 		assert_eq!(output_instance.read("out_instance_index"), Ok(Value::U32(3)));
 		assert_eq!(output_local.read("out_local_position"), Ok(Value::Vec3F([1.0, 2.0, 3.0])));
+	}
+
+	/// Verifies BESL affine matrices stay compact through backend-specific storage lowering.
+	#[test]
+	fn simple_vertex_uses_backend_packed_affine_matrices() {
+		let main = create_simple_vertex_program();
+		let settings = ShaderGenerationSettings::vertex();
+		let hlsl = HLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Failed to emit HLSL simple vertex shader. The most likely cause is an invalid compact transform layout.");
+		let msl = MSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Failed to emit MSL simple vertex shader. The most likely cause is an invalid compact transform layout.");
+
+		assert!(hlsl.contains("StructuredBuffer<float4x3> instances"));
+		assert!(msl.contains("_besl_packed_float4x3 transforms[1024]"));
+		assert!(
+			!msl.contains("mul("),
+			"Simple vertex MSL must use Metal's native multiplication operator."
+		);
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "simple-vertex").expect(
+			"Failed to compile compact simple-vertex MSL. The most likely cause is incompatible packed transform source.",
+		);
 	}
 
 	/// Verifies palette selection, grid blending, and wrapped instance indices in the VM.

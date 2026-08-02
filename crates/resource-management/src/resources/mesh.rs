@@ -349,8 +349,8 @@ mod tests {
 		resources::{
 			material::VariantModel,
 			skeleton::{
-				identity_matrix4_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
-				SkinPaletteEntry,
+				identity_affine_matrix4x3_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding,
+				SkinJoint, SkinPaletteEntry,
 			},
 		},
 		types::{AlphaMode, IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
@@ -438,7 +438,7 @@ mod tests {
 		let skins = vec![SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Node(0),
-				adjusted_inverse_bind_matrix: identity_matrix4_columns(),
+				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
 			}],
 		}];
 		let primitives = vec![test_primitive(Some(0), true, true)];
@@ -451,7 +451,7 @@ mod tests {
 		let skin = SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Identity,
-				adjusted_inverse_bind_matrix: identity_matrix4_columns(),
+				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
 			}],
 		};
 		assert!(validate_skin_metadata(None, std::slice::from_ref(&skin), &skin_vertex_layout(), &[]).is_err());

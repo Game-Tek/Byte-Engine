@@ -1,10 +1,7 @@
 View: struct {
-	view: mat4f,
-	projection: mat4f,
+	view: mat4x3f,
 	view_projection: mat4f,
-	inverse_view: mat4f,
-	inverse_projection: mat4f,
-	inverse_view_projection: mat4f,
+	inverse_view: mat4x3f,
 	fov: vec2f,
 	near: f32,
 	far: f32,

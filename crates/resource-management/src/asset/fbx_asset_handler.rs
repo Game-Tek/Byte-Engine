@@ -25,7 +25,9 @@ use crate::{
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		material::{MaterialModel, RenderModel, Shader, VariantModel},
-		skeleton::{LocalTransform, Matrix4Columns, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
+		skeleton::{
+			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
+		},
 	},
 	types::{AlphaMode, VertexComponent, VertexSemantics},
 	ProcessedAsset, ReferenceModel,
@@ -974,31 +976,27 @@ fn skin_influences(skin: &ufbx::SkinDeformer, logical_vertex: usize) -> Result<&
 }
 
 /// Converts ufbx's affine column vectors into the serialized four-column matrix representation.
-fn matrix_to_columns(matrix: &ufbx::Matrix) -> Result<Matrix4Columns, FbxImportError> {
+fn matrix_to_columns(matrix: &ufbx::Matrix) -> Result<AffineMatrix4x3Columns, FbxImportError> {
 	Ok([
 		[
 			finite_f32(matrix.m00, "skin matrix")?,
 			finite_f32(matrix.m10, "skin matrix")?,
 			finite_f32(matrix.m20, "skin matrix")?,
-			0.0,
 		],
 		[
 			finite_f32(matrix.m01, "skin matrix")?,
 			finite_f32(matrix.m11, "skin matrix")?,
 			finite_f32(matrix.m21, "skin matrix")?,
-			0.0,
 		],
 		[
 			finite_f32(matrix.m02, "skin matrix")?,
 			finite_f32(matrix.m12, "skin matrix")?,
 			finite_f32(matrix.m22, "skin matrix")?,
-			0.0,
 		],
 		[
 			finite_f32(matrix.m03, "skin matrix")?,
 			finite_f32(matrix.m13, "skin matrix")?,
 			finite_f32(matrix.m23, "skin matrix")?,
-			1.0,
 		],
 	])
 }
@@ -2184,12 +2182,13 @@ mod tests {
 
 		// The palette must match ufbx's evaluated clusters after expressing them in
 		// the flattened vertex basis used by the imported mesh.
-		let mut globals = vec![crate::resources::skeleton::identity_matrix4_columns(); imported_skeleton.model.nodes.len()];
+		let mut globals =
+			vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); imported_skeleton.model.nodes.len()];
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
 			globals[mapped] = matrix_to_columns(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
-		let mut palette = vec![crate::resources::skeleton::identity_matrix4_columns(); binding.len()];
+		let mut palette = vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); binding.len()];
 		binding
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("fixture palette should be complete");
@@ -2270,18 +2269,19 @@ mod tests {
 			SkinJoint::Node(mesh_node_index)
 		);
 
-		let mut globals = vec![crate::resources::skeleton::identity_matrix4_columns(); imported_skeleton.model.nodes.len()];
+		let mut globals =
+			vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); imported_skeleton.model.nodes.len()];
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
 			globals[mapped] = matrix_to_columns(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
-		let mut palette = vec![crate::resources::skeleton::identity_matrix4_columns(); binding.len()];
+		let mut palette = vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); binding.len()];
 		binding
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("fallback palette should be complete");
 		assert_matrix_close(
 			palette[fallback_joint as usize],
-			crate::resources::skeleton::identity_matrix4_columns(),
+			crate::resources::skeleton::identity_affine_matrix4x3_columns(),
 		);
 		// Moving the mesh node after bind must move the fallback palette entry instead of freezing the vertex.
 		globals[mesh_node_index as usize][3][0] += 1.0;
@@ -2661,9 +2661,9 @@ mod tests {
 		}
 	}
 
-	fn assert_matrix_close(actual: [[f32; 4]; 4], expected: [[f32; 4]; 4]) {
+	fn assert_matrix_close(actual: [[f32; 3]; 4], expected: [[f32; 3]; 4]) {
 		for column in 0..4 {
-			assert_vec4_close(actual[column], expected[column]);
+			assert_vec3_close(actual[column], expected[column]);
 		}
 	}
 }

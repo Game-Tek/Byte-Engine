@@ -6,7 +6,8 @@ use ghi::{
 	frame::Frame as _,
 };
 use resource_management::{
-	resource::resource_manager::ResourceManager, resources::skeleton::Matrix4Columns, types::ShaderTypes as ResourceShaderTypes,
+	resource::resource_manager::ResourceManager, resources::skeleton::AffineMatrix4x3Columns,
+	types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::Extent;
 
@@ -43,7 +44,7 @@ pub(crate) const MATRIX_PALETTE_BINDING: ghi::ShaderResourceDescriptor = ghi::Sh
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(64);
+.buffer_stride(48);
 pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(5),
 	ghi::ResourceKind::StorageBuffer,
@@ -114,7 +115,7 @@ impl SkinningDispatch {
 pub(crate) struct SkinningPass {
 	pipeline: ghi::PipelineHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
-	matrix_palette_buffer: ghi::DynamicBufferHandle<[Matrix4Columns; MAX_SKINNING_MATRICES]>,
+	matrix_palette_buffer: ghi::DynamicBufferHandle<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]>,
 	skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
 
@@ -125,7 +126,7 @@ impl SkinningPass {
 		shader_resources: &ResourceManager,
 		sources: SkinningSourceBuffers,
 	) -> Self {
-		let matrix_palette_buffer = context.build_dynamic_buffer::<[Matrix4Columns; MAX_SKINNING_MATRICES]>(
+		let matrix_palette_buffer = context.build_dynamic_buffer::<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Skinning Matrix Palette")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
@@ -180,7 +181,9 @@ impl SkinningPass {
 		}
 	}
 
-	pub(crate) const fn matrix_palette_buffer(&self) -> ghi::DynamicBufferHandle<[Matrix4Columns; MAX_SKINNING_MATRICES]> {
+	pub(crate) const fn matrix_palette_buffer(
+		&self,
+	) -> ghi::DynamicBufferHandle<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]> {
 		self.matrix_palette_buffer
 	}
 
@@ -189,7 +192,7 @@ impl SkinningPass {
 	}
 
 	/// Copies a complete caller-produced palette into the active frame without allocating intermediate storage.
-	pub(crate) fn write_matrix_palette(&self, frame: &mut ghi::implementation::Frame, matrices: &[Matrix4Columns]) {
+	pub(crate) fn write_matrix_palette(&self, frame: &mut ghi::implementation::Frame, matrices: &[AffineMatrix4x3Columns]) {
 		assert!(
 			matrices.len() <= MAX_SKINNING_MATRICES,
 			"Skinning matrix palette exceeds capacity. The most likely cause is that active skins require more than {MAX_SKINNING_MATRICES} matrices."
@@ -227,6 +230,10 @@ impl SkinningPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
+	use resource_management::shader::{
+		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::ShaderGenerationSettings,
+	};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{buffer, compile, push_constant_buffer, run_at};
@@ -248,10 +255,39 @@ mod tests {
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
 		assert_eq!(std::mem::size_of::<[u16; 4]>(), 8);
-		assert_eq!(std::mem::size_of::<Matrix4Columns>(), 64);
+		assert_eq!(std::mem::size_of::<AffineMatrix4x3Columns>(), 48);
+		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
 		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 32);
 		assert_eq!(std::mem::align_of::<SkinnedVertex>(), 16);
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 16);
+	}
+
+	/// Verifies every backend sees a linear 48-byte affine palette, including Metal's packed float columns.
+	#[test]
+	fn skinning_palette_layout_stays_compact_across_backends() {
+		let main = production_skinning_main();
+		let settings = ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE));
+		let glsl = GLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Failed to emit GLSL skinning shader. The most likely cause is an invalid compact palette contract.");
+		let hlsl = HLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Failed to emit HLSL skinning shader. The most likely cause is an invalid compact palette contract.");
+		let msl = MSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Failed to emit MSL skinning shader. The most likely cause is an invalid compact palette contract.");
+
+		assert!(glsl.contains("mat4x3 values[65536]"));
+		assert!(hlsl.contains("StructuredBuffer<float4x3> matrix_palette"));
+		assert!(msl.contains("_besl_packed_float4x3 values[65536]"));
+		assert!(
+			!msl.contains("mul("),
+			"Skinning MSL must use Metal's native multiplication operator."
+		);
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "visibility-skinning")
+			.expect("Failed to compile compact skinning MSL. The most likely cause is incompatible packed palette source.");
 	}
 
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
@@ -320,15 +356,25 @@ mod tests {
 
 	/// Writes one column-major translation matrix into the compact VM palette fixture.
 	fn write_translation_matrix(palette: &mut Buffer, index: usize, translation: [f32; 3]) {
-		for (field, value) in [
-			("column0", [1.0, 0.0, 0.0, 0.0]),
-			("column1", [0.0, 1.0, 0.0, 0.0]),
-			("column2", [0.0, 0.0, 1.0, 0.0]),
-			("column3", [translation[0], translation[1], translation[2], 1.0]),
-		] {
-			palette
-				.write_indexed_field("values", index, field, Value::Vec4F(value))
-				.expect("Failed to write skinning matrix.");
-		}
+		palette
+			.write_indexed(
+				"values",
+				index,
+				Value::Mat4x3F([
+					1.0,
+					0.0,
+					0.0,
+					0.0,
+					1.0,
+					0.0,
+					0.0,
+					0.0,
+					1.0,
+					translation[0],
+					translation[1],
+					translation[2],
+				]),
+			)
+			.expect("Failed to write skinning matrix.");
 	}
 }

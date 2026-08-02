@@ -16,14 +16,16 @@ pub use pipeline_manager::VisibilityPipelineManager;
 
 /* BASE */
 /// Shader binding used to access scene views.
+// Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
+pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = 176;
 pub(crate) const VIEWS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(400);
-// ShaderMesh array stride includes tail padding from the CPU matrix alignment; shader Mesh structs carry matching padding.
-pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = if cfg!(target_os = "macos") { 96 } else { 80 };
+.buffer_stride(VIEW_DATA_BUFFER_STRIDE);
+// ShaderMesh retains an explicit 16-byte record alignment while its affine matrix occupies 48 bytes.
+pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = 80;
 pub(crate) const MESH_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1),
 	ghi::ResourceKind::StorageBuffer,
@@ -430,6 +432,11 @@ mod tests {
 		[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 	}
 
+	/// Returns a column-major affine identity matrix in the BESL VM representation.
+	fn identity_affine_matrix() -> [f32; 12] {
+		[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+	}
+
 	/// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
 	fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 		let mut matrix = identity_matrix();
@@ -478,7 +485,7 @@ mod tests {
 				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
 				.expect("Failed to initialize a task view. The most likely cause is a drifted View layout.");
 			views
-				.write_indexed_field("views", view_index, "inverse_view", Value::Mat4F(identity_matrix()))
+				.write_indexed_field("views", view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
 				.expect("Failed to initialize a task inverse view. The most likely cause is a drifted View layout.");
 		}
 
@@ -721,6 +728,48 @@ mod tests {
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/shadow-mesh.besl"
 		)))
+	}
+
+	/// Compiles the checked-in visibility and shadow stages against the packed Metal affine ABI.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn production_visibility_and_shadow_mesh_stages_compile_with_packed_metal_matrices() {
+		let stages = [
+			(
+				"visibility-task",
+				visibility_task_program(),
+				ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+			),
+			(
+				"shadow-task",
+				shadow_task_program(),
+				ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+			),
+			(
+				"visibility-mesh",
+				visibility_mesh_program(),
+				ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+			),
+			(
+				"shadow-mesh",
+				shadow_mesh_program(),
+				ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+			),
+		];
+
+		for (name, main, settings) in stages {
+			let source = MslGenerator::new()
+				.generate(&settings, &main)
+				.unwrap_or_else(|()| panic!("Failed to lower production {name} BESL to MSL."));
+			assert!(source.contains("_besl_packed_float4x3 model"));
+			assert!(source.contains("_besl_load_mat4x3("));
+			assert!(
+				!source.contains("mul("),
+				"Production {name} MSL must use Metal's native multiplication operator."
+			);
+			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name)
+				.unwrap_or_else(|error| panic!("Failed to compile production {name} MSL: {error}"));
+		}
 	}
 
 	/// Creates one identity-transformed triangle meshlet in the production visibility buffer layouts.

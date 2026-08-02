@@ -156,12 +156,9 @@ impl VisibilityShaderScope {
 		let view_struct = Node::r#struct(
 			"View",
 			vec![
-				Node::member("view", "mat4f"),
-				Node::member("projection", "mat4f"),
+				Node::member("view", "mat4x3f"),
 				Node::member("view_projection", "mat4f"),
-				Node::member("inverse_view", "mat4f"),
-				Node::member("inverse_projection", "mat4f"),
-				Node::member("inverse_view_projection", "mat4f"),
+				Node::member("inverse_view", "mat4x3f"),
 				Node::member("fov", "vec2f"),
 				Node::member("near", "f32"),
 				Node::member("far", "f32"),
@@ -965,7 +962,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
 
 		vec3 N = world_space_vertex_normal;
-		vec3 camera_position = (view.inverse_view * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+		vec3 camera_position = view.inverse_view * vec4(0.0, 0.0, 0.0, 1.0);
 		vec3 V = normalize(camera_position - world_space_vertex_position);
 
 		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
@@ -1042,7 +1039,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		View view = resources.views->views[0];
 
-		float4x3 model = mesh.model;
+		float4x3 model = _besl_load_mat4x3(mesh.model);
 		float3 world_space_vertex_position0 = model * model_space_vertex_position0;
 		float3 world_space_vertex_position1 = model * model_space_vertex_position1;
 		float3 world_space_vertex_position2 = model * model_space_vertex_position2;
@@ -1064,7 +1061,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
 
 		float3 N = world_space_vertex_normal;
-		float3 camera_position = (view.inverse_view * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+		float3 camera_position = _besl_load_mat4x3(view.inverse_view) * float4(0.0, 0.0, 0.0, 1.0);
 		float3 V = normalize(camera_position - world_space_vertex_position);
 
 		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
@@ -1167,7 +1164,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
 
 		float3 N = world_space_vertex_normal;
-		float3 camera_position = mul(view.inverse_view, float4(0.0, 0.0, 0.0, 1.0)).xyz;
+		float3 camera_position = mul(float4(0.0, 0.0, 0.0, 1.0), view.inverse_view);
 		float3 V = normalize(camera_position - world_space_vertex_position);
 
 		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_position0, world_space_vertex_position1, world_space_vertex_position2);
@@ -1255,8 +1252,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float occlusion_factor = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = view.view * float4(world_space_vertex_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L, gid, push_constant, resources);
+				float3 view_space_surface_position = _besl_load_mat4x3(view.view) * float4(world_space_vertex_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L, gid, push_constant, resources);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1270,8 +1267,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
-					float4 view_space_surface_position = view.view * float4(world_space_vertex_position, 1.0);
-					occlusion_factor = sample_shadow(resources.cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L, gid, push_constant, resources);
+					float3 view_space_surface_position = _besl_load_mat4x3(view.view) * float4(world_space_vertex_position, 1.0);
+					occlusion_factor = sample_shadow(resources.cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L, gid, push_constant, resources);
 					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
@@ -1375,8 +1372,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float occlusion_factor = 1.0;
 
 			if (light.type == 68) { // Infinite
-				vec4 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L);
+				vec3 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1391,8 +1388,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
-					vec4 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
-					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L);
+					vec3 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
+					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
 					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
@@ -1497,8 +1494,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float occlusion_factor = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = mul(view.view, float4(world_space_vertex_position, 1.0));
-				float c_occlusion_factor = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L);
+				float3 view_space_surface_position = mul(float4(world_space_vertex_position, 1.0), view.view);
+				float c_occlusion_factor = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1512,8 +1509,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
 					if (cone_factor <= 0.0) { continue; }
 					attenuation *= cone_factor;
-					float4 view_space_surface_position = mul(view.view, float4(world_space_vertex_position, 1.0));
-					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, L);
+					float3 view_space_surface_position = mul(float4(world_space_vertex_position, 1.0), view.view);
+					occlusion_factor = sample_shadow(cone_shadow_map, light, world_space_vertex_position, view_space_surface_position, world_space_vertex_normal, L);
 					if (occlusion_factor == 0.0) { continue; }
 				}
 			}
@@ -1902,6 +1899,10 @@ mod tests {
 		assert!(hlsl.contains("uint32_t type"));
 		assert!(msl.contains("float4 position"));
 		assert!(msl.contains("uint type"));
+		assert!(
+			!msl.contains("mul("),
+			"Metal material evaluation must use the native multiplication operator."
+		);
 
 		#[cfg(target_os = "macos")]
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
@@ -1961,7 +1962,7 @@ mod tests {
 
 		// These strides are the public CPU/GPU storage contract retained by baked shader artifacts.
 		for (slot, expected_stride) in [
-			(0, 400),
+			(0, crate::rendering::pipelines::visibility::VIEW_DATA_BUFFER_STRIDE),
 			(1, crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE),
 			(2, 12),
 			(3, 12),

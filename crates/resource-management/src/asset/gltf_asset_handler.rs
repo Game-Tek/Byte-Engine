@@ -682,13 +682,13 @@ fn mat4_from_columns(matrix: [[f32; 4]; 4]) -> maths_rs::Mat4f {
 	)
 }
 
-/// Converts maths-rs row-major storage back into the resource model's column-major matrix representation.
-fn mat4_to_columns(matrix: maths_rs::Mat4f) -> Matrix4Columns {
+/// Converts an affine maths-rs matrix into the compact column-major resource representation.
+fn affine_matrix4x3_from_matrix4(matrix: maths_rs::Mat4f) -> AffineMatrix4x3Columns {
 	[
-		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)], matrix[(3, 0)]],
-		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)], matrix[(3, 1)]],
-		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)], matrix[(3, 2)]],
-		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)], matrix[(3, 3)]],
+		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)]],
+		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)]],
+		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)]],
+		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]],
 	]
 }
 
@@ -698,6 +698,20 @@ fn validate_finite_matrix(matrix: &maths_rs::Mat4f, context: &'static str) -> Re
 		Ok(())
 	} else {
 		Err(GltfSkeletalImportError::NonFinite(context))
+	}
+}
+
+/// Rejects projective matrices because compact skinning matrices omit their homogeneous row.
+fn validate_affine_matrix(matrix: &maths_rs::Mat4f, context: &'static str) -> Result<(), GltfSkeletalImportError> {
+	const AFFINE_EPSILON: f32 = 0.00001;
+	if matrix[(3, 0)].abs() <= AFFINE_EPSILON
+		&& matrix[(3, 1)].abs() <= AFFINE_EPSILON
+		&& matrix[(3, 2)].abs() <= AFFINE_EPSILON
+		&& (matrix[(3, 3)] - 1.0).abs() <= AFFINE_EPSILON
+	{
+		Ok(())
+	} else {
+		Err(GltfSkeletalImportError::NonAffine(context))
 	}
 }
 
@@ -726,6 +740,7 @@ enum GltfSkeletalImportError {
 	SkinJointOutOfRange,
 	InvalidVertexDirection,
 	NonFinite(&'static str),
+	NonAffine(&'static str),
 }
 
 impl std::fmt::Display for GltfSkeletalImportError {
@@ -754,6 +769,7 @@ impl std::fmt::Display for GltfSkeletalImportError {
 			Self::SkinJointOutOfRange => write!(formatter, "glTF vertex joint is out of range. The most likely cause is a JOINTS value outside the selected skin palette."),
 			Self::InvalidVertexDirection => write!(formatter, "glTF vertex direction is invalid. The most likely cause is a zero-length direction or a singular node transform."),
 			Self::NonFinite(context) => write!(formatter, "glTF numeric data is invalid. The most likely cause is a non-finite {context}."),
+			Self::NonAffine(context) => write!(formatter, "glTF skin transform is projective. The most likely cause is a skin inverse-bind {context} that cannot use the compact affine matrix format."),
 		}
 	}
 }
@@ -1073,7 +1089,12 @@ fn import_gltf_skin_binding(
 			entries.push(SkinPaletteEntry {
 				joint: remap_joint(joint)?,
 				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(
-					identity_matrix4_columns(),
+					[
+						[1.0, 0.0, 0.0, 0.0],
+						[0.0, 1.0, 0.0, 0.0],
+						[0.0, 0.0, 1.0, 0.0],
+						[0.0, 0.0, 0.0, 1.0],
+					],
 					inverse_source_global,
 					handedness,
 				)?,
@@ -1086,17 +1107,19 @@ fn import_gltf_skin_binding(
 
 /// Converts one source inverse bind into the flattened left-handed vertex basis used by the mesh resource.
 fn adjust_gltf_inverse_bind(
-	inverse_bind: Matrix4Columns,
+	inverse_bind: [[f32; 4]; 4],
 	inverse_source_global: maths_rs::Mat4f,
 	handedness: maths_rs::Mat4f,
-) -> Result<Matrix4Columns, GltfSkeletalImportError> {
+) -> Result<AffineMatrix4x3Columns, GltfSkeletalImportError> {
 	let inverse_bind = mat4_from_columns(inverse_bind);
 	validate_finite_matrix(&inverse_bind, "inverse bind matrix")?;
+	validate_affine_matrix(&inverse_bind, "matrix")?;
 	// Vertices are flattened by S*G, so S*IBM*inverse(G)*S keeps
 	// J_lh*adjustedIBM*flattenedVertex equivalent to S*J*IBM*vertex.
 	let adjusted = handedness * inverse_bind * inverse_source_global * handedness;
 	validate_finite_matrix(&adjusted, "adjusted inverse bind matrix")?;
-	Ok(mat4_to_columns(adjusted))
+	validate_affine_matrix(&adjusted, "matrix after coordinate conversion")?;
+	Ok(affine_matrix4x3_from_matrix4(adjusted))
 }
 
 /// Reads both supported glTF influence sets, keeps the strongest four, and normalizes the fixed GPU stream shape.
@@ -1823,8 +1846,8 @@ mod tests {
 		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
 		load_gltf_buffers, material_override, normalize_vertex_layouts, sanitize_material_name,
 		select_unfragmented_gltf_resource, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
-		validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets, GLTFAssetHandler,
-		GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
+		validate_affine_matrix, validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
+		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
@@ -1857,6 +1880,22 @@ mod tests {
 		.expect("JSON5 glTF should parse");
 
 		assert_eq!(gltf.meshes().len(), 0);
+	}
+
+	#[test]
+	fn compact_skin_matrices_allow_rounding_noise_but_reject_projection() {
+		let almost_affine = maths_rs::Mat4f::new(
+			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.000001, 0.0, 0.0, 1.0,
+		);
+		assert_eq!(validate_affine_matrix(&almost_affine, "fixture"), Ok(()));
+
+		let projective = maths_rs::Mat4f::new(
+			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.01, 0.0, 0.0, 1.0,
+		);
+		assert_eq!(
+			validate_affine_matrix(&projective, "fixture"),
+			Err(GltfSkeletalImportError::NonAffine("fixture"))
+		);
 	}
 
 	/// Appends one aligned binary payload and returns the byte range used by its glTF buffer view.
@@ -2803,8 +2842,7 @@ use crate::{
 		image::Image,
 		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
 		skeleton::{
-			identity_matrix4_columns, LocalTransform, Matrix4Columns, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
-			SkinPaletteEntry,
+			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},
 	},
 	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},

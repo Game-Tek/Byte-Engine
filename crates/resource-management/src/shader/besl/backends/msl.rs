@@ -21,6 +21,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	task_stage_context: Option<TaskStageContext>,
 	mesh_stage_context: Option<MeshStageContext>,
 	in_buffer_binding_struct: bool,
+	packed_mat4x3_members: Vec<besl::NodeReference>,
 }
 
 const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -112,6 +113,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			task_stage_context: None,
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
+			packed_mat4x3_members: Vec::new(),
 		}
 	}
 
@@ -347,6 +349,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		Self::validate_reachable_binding_layout(&order)?;
+		self.collect_packed_mat4x3_members(&order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
 				return Ok(source);
@@ -389,6 +392,195 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		Ok(string)
+	}
+
+	/// Finds every logical affine matrix that needs a packed Metal storage representation.
+	fn collect_packed_mat4x3_members(&mut self, order: &[besl::NodeReference]) {
+		self.packed_mat4x3_members.clear();
+		let mut visited_structs = Vec::new();
+		for node in order {
+			let node = node.borrow();
+			let besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} = node.node()
+			else {
+				continue;
+			};
+			for member in members {
+				self.collect_packed_mat4x3_member(member, &mut visited_structs);
+			}
+		}
+	}
+
+	/// Recurses through one buffer member without changing the logical BESL type graph.
+	fn collect_packed_mat4x3_member(&mut self, member: &besl::NodeReference, visited_structs: &mut Vec<besl::NodeReference>) {
+		let member_reference = member.clone();
+		let r#type = {
+			let member = member.borrow();
+			let besl::Nodes::Member { r#type, .. } = member.node() else {
+				return;
+			};
+			if r#type.borrow().get_name() == Some("mat4x3f")
+				&& !self
+					.packed_mat4x3_members
+					.iter()
+					.any(|candidate| candidate == &member_reference)
+			{
+				self.packed_mat4x3_members.push(member_reference);
+			}
+			r#type.clone()
+		};
+
+		if visited_structs.iter().any(|candidate| candidate == &r#type) {
+			return;
+		}
+		let fields = {
+			let r#type = r#type.borrow();
+			let besl::Nodes::Struct { fields, .. } = r#type.node() else {
+				return;
+			};
+			fields.clone()
+		};
+		visited_structs.push(r#type);
+		for field in fields {
+			self.collect_packed_mat4x3_member(&field, visited_structs);
+		}
+	}
+
+	fn is_packed_mat4x3_member(&self, member: &besl::NodeReference) -> bool {
+		self.packed_mat4x3_members.iter().any(|candidate| candidate == member)
+	}
+
+	fn packed_mat4x3_member_count(
+		&self,
+		expression: &besl::NodeReference,
+		parent: Option<&besl::NodeReference>,
+	) -> Option<Option<usize>> {
+		let expression = expression.borrow();
+		let besl::Nodes::Expression(besl::Expressions::Member { name, source }) = expression.node() else {
+			return None;
+		};
+		let member = if self.is_packed_mat4x3_member(source) {
+			source.clone()
+		} else {
+			let parent_type = parent.and_then(Self::logical_node_type)?;
+			let parent_type = parent_type.borrow();
+			let besl::Nodes::Struct { fields, .. } = parent_type.node() else {
+				return None;
+			};
+			fields
+				.iter()
+				.find(|field| {
+					self.is_packed_mat4x3_member(field)
+						&& matches!(field.borrow().node(), besl::Nodes::Member { name: field_name, .. } if field_name == name)
+				})?
+				.clone()
+		};
+		let member = member.borrow();
+		let besl::Nodes::Member { count, .. } = member.node() else {
+			return None;
+		};
+		Some(count.map(|count| count.get()))
+	}
+
+	/// Resolves enough expression types to identify fields of packed storage structs.
+	fn logical_node_type(node: &besl::NodeReference) -> Option<besl::NodeReference> {
+		let node = node.borrow();
+		match node.node() {
+			besl::Nodes::Member { r#type, .. } | besl::Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
+			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
+			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
+				if let besl::Nodes::Member { r#type, .. } = source.borrow().node() {
+					return Some(r#type.clone());
+				}
+				let source_type = Self::logical_node_type(source)?;
+				let source_type = source_type.borrow();
+				let besl::Nodes::Struct { fields, .. } = source_type.node() else {
+					return None;
+				};
+				fields.iter().find_map(|field| match field.borrow().node() {
+					besl::Nodes::Member {
+						name: field_name,
+						r#type,
+						..
+					} if field_name == name => Some(r#type.clone()),
+					_ => None,
+				})
+			}
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
+				if matches!(
+					right.borrow().node(),
+					besl::Nodes::Expression(besl::Expressions::Member { .. })
+				) {
+					Self::logical_node_type(right)
+				} else {
+					Self::logical_node_type(left)
+				}
+			}
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => match function.borrow().node() {
+				besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+				besl::Nodes::Struct { .. } => Some(function.clone()),
+				_ => None,
+			},
+			_ => None,
+		}
+	}
+
+	/// Reports whether one accessor evaluates to a native matrix loaded from packed storage.
+	fn accessor_returns_packed_mat4x3(&self, left: &besl::NodeReference, right: &besl::NodeReference) -> bool {
+		if self.packed_mat4x3_member_count(right, Some(left)) == Some(None) {
+			return true;
+		}
+
+		if matches!(
+			right.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::Member { .. })
+		) {
+			return false;
+		}
+
+		if self
+			.packed_mat4x3_member_count(left, None)
+			.is_some_and(|count| count.is_some())
+		{
+			return true;
+		}
+
+		let left = left.borrow();
+		let besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) = left.node() else {
+			return false;
+		};
+		self.packed_mat4x3_member_count(right, None)
+			.is_some_and(|count| count.is_some())
+	}
+
+	fn expression_is_packed_mat4x3_accessor(&self, node: &besl::NodeReference) -> bool {
+		let node = node.borrow();
+		let besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) = node.node() else {
+			return false;
+		};
+		self.accessor_returns_packed_mat4x3(left, right)
+	}
+
+	/// Emits an accessor path without converting its final packed matrix storage value.
+	fn emit_accessor_expression_raw(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		self.emit_node_string(string, left);
+		if left.borrow().node().is_buffer_binding() {
+			string.push_str("->");
+			self.emit_node_string(string, right);
+		} else if !matches!(
+			right.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::Member { .. })
+		) && left.borrow().node().is_indexable()
+		{
+			string.push('[');
+			self.emit_node_string(string, right);
+			string.push(']');
+		} else {
+			string.push('.');
+			self.emit_node_string(string, right);
+		}
 	}
 
 	fn find_full_source_passthrough(main_function_node: &besl::NodeReference) -> Option<String> {
@@ -1419,6 +1611,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		match source {
 			"vec2f" => "packed_float2",
 			"vec3f" => "packed_float3",
+			"mat4x3f" => "_besl_packed_float4x3",
 			"vec2u16" => "packed_ushort2",
 			"vec4u16" => "packed_ushort4",
 			_ => Self::translate_type(source),
@@ -2687,7 +2880,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					if self.in_buffer_binding_struct && (count.is_some() || matches!(type_name, "vec2u16" | "vec4u16")) {
+					if self.is_packed_mat4x3_member(this_node) {
+						string.push_str(Self::translate_buffer_member_type(type_name));
+					} else if self.in_buffer_binding_struct && (count.is_some() || matches!(type_name, "vec2u16" | "vec4u16")) {
 						string.push_str(Self::translate_buffer_member_type(type_name));
 					} else if type_name.contains('[') {
 						Self::emit_type_name(string, type_name);
@@ -2893,6 +3088,19 @@ impl<A: Allocator + Clone> Generator<A> {
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
+		if !self.packed_mat4x3_members.is_empty() {
+			// MSL has no packed matrix type. Keep native float4x3 values in expressions and
+			// convert only where a logical mat4x3f crosses a buffer-storage boundary.
+			msl_block.push_str(
+				"struct _besl_packed_float4x3 { packed_float3 columns[4]; };\n\
+				 inline float4x3 _besl_load_mat4x3(const thread _besl_packed_float4x3& value) { return float4x3(value.columns[0], value.columns[1], value.columns[2], value.columns[3]); }\n\
+				 inline float4x3 _besl_load_mat4x3(const device _besl_packed_float4x3& value) { return float4x3(value.columns[0], value.columns[1], value.columns[2], value.columns[3]); }\n\
+				 inline float4x3 _besl_load_mat4x3(const constant _besl_packed_float4x3& value) { return float4x3(value.columns[0], value.columns[1], value.columns[2], value.columns[3]); }\n\
+				 inline _besl_packed_float4x3 _besl_pack_mat4x3(float4x3 value) { return _besl_packed_float4x3{packed_float3(value[0]), packed_float3(value[1]), packed_float3(value[2]), packed_float3(value[3])}; }\n\
+				 inline void _besl_store_mat4x3(thread _besl_packed_float4x3& target, float4x3 value) { target = _besl_pack_mat4x3(value); }\n\
+				 inline void _besl_store_mat4x3(device _besl_packed_float4x3& target, float4x3 value) { target.columns[0] = packed_float3(value[0]); target.columns[1] = packed_float3(value[1]); target.columns[2] = packed_float3(value[2]); target.columns[3] = packed_float3(value[3]); }\n",
+			);
+		}
 		if uses_atomic_compare_exchange {
 			// Metal returns compare-exchange success as a bool, so these helpers preserve BESL's previous-value contract.
 			msl_block.push_str(
@@ -3028,7 +3236,10 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	) -> bool {
 		let function_node = function.borrow();
 		let besl::Nodes::Struct {
-			name, template: None, ..
+			name,
+			fields,
+			template: None,
+			..
 		} = function_node.node()
 		else {
 			return false;
@@ -3040,8 +3251,38 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		// Metal user structs are aggregates, so their portable BESL constructors lower to brace initialization.
 		string.push_str(name);
 		string.push('{');
-		self.emit_call_arguments(string, parameters);
+		for (index, parameter) in parameters.iter().enumerate() {
+			if index > 0 {
+				self.emit_separator(string);
+			}
+			if fields.get(index).is_some_and(|field| self.is_packed_mat4x3_member(field)) {
+				string.push_str("_besl_pack_mat4x3(");
+				self.emit_node_string(string, parameter);
+				string.push(')');
+			} else {
+				self.emit_node_string(string, parameter);
+			}
+		}
 		string.push('}');
+		true
+	}
+	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		let besl::Expressions::Operator { operator, left, right } = expression else {
+			return false;
+		};
+		if *operator != besl::Operators::Assignment || !self.expression_is_packed_mat4x3_accessor(left) {
+			return false;
+		}
+
+		let left = left.borrow();
+		let besl::Nodes::Expression(besl::Expressions::Accessor { left, right: target }) = left.node() else {
+			return false;
+		};
+		string.push_str("_besl_store_mat4x3(");
+		self.emit_accessor_expression_raw(string, left, target);
+		self.emit_separator(string);
+		self.emit_node_string(string, right);
+		string.push(')');
 		true
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
@@ -3070,21 +3311,12 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		false
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		self.emit_node_string(string, left);
-		if left.borrow().node().is_buffer_binding() {
-			string.push_str("->");
-			self.emit_node_string(string, right);
-		} else if !matches!(
-			right.borrow().node(),
-			besl::Nodes::Expression(besl::Expressions::Member { .. })
-		) && left.borrow().node().is_indexable()
-		{
-			string.push('[');
-			self.emit_node_string(string, right);
-			string.push(']');
+		if self.accessor_returns_packed_mat4x3(left, right) {
+			string.push_str("_besl_load_mat4x3(");
+			self.emit_accessor_expression_raw(string, left, right);
+			string.push(')');
 		} else {
-			string.push('.');
-			self.emit_node_string(string, right);
+			self.emit_accessor_expression_raw(string, left, right);
 		}
 	}
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference) {
@@ -3686,6 +3918,50 @@ mod tests {
 
 		assert_string_contains!(shader, "matrix[0]");
 		assert_string_contains!(shader, "column[1]");
+	}
+
+	#[test]
+	fn mat4x3_buffer_storage_is_packed_behind_native_matrix_expressions() {
+		let shader = lower_fixture(
+			r#"
+				Transform: struct {
+					model: mat4x3f,
+					tag: u32,
+				}
+				Transforms: struct {
+					values: Transform[2],
+					direct: mat4x3f[2],
+				}
+				transforms: descriptor<Transforms, 0, read_write, device>;
+
+				main: fn() -> void {
+					let model: mat4x3f = transforms.values[0].model;
+					let position: vec3f = model * vec4f(1.0, 2.0, 3.0, 1.0);
+					let local: Transform = Transform(model, 7);
+					local.model = transforms.direct[0];
+					transforms.values[1].model = local.model;
+					transforms.direct[1] = transforms.direct[0];
+					position;
+				}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+
+		assert_string_contains!(shader, "struct _besl_packed_float4x3 { packed_float3 columns[4]; };");
+		assert_string_contains!(shader, "struct Transform{_besl_packed_float4x3 model;uint tag;};");
+		assert_string_contains!(shader, "_besl_packed_float4x3 direct[2]");
+		assert_string_contains!(shader, "float4x3 model=_besl_load_mat4x3(");
+		assert_string_contains!(shader, "float3 position=(model*float4(1.0,2.0,3.0,1.0));");
+		assert!(
+			!shader.contains("mul("),
+			"MSL matrix expressions must use Metal's native multiplication operator."
+		);
+		assert_string_contains!(shader, "Transform local=Transform{_besl_pack_mat4x3(model),7};");
+		assert_string_contains!(shader, "_besl_store_mat4x3(");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-packed-mat4x3")
+			.expect("Expected packed mat4x3 storage lowering to compile natively");
 	}
 
 	#[cfg(target_os = "macos")]

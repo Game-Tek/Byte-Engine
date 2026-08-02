@@ -86,15 +86,8 @@ use maths_rs::mat::{MatNew4, MatTranspose as _};
 pub struct ShaderMatrix4(pub [f32; 16]);
 
 /// The `ShaderMatrix4x3` struct provides the compact affine matrix layout used to send model transforms to the GPU.
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg(target_os = "macos")]
-pub struct ShaderMatrix4x3(pub [f32; 16]);
-
-/// The `ShaderMatrix4x3` struct provides the compact affine matrix layout used to send model transforms to the GPU.
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg(not(target_os = "macos"))]
 pub struct ShaderMatrix4x3(pub [f32; 12]);
 
 impl From<Matrix4> for ShaderMatrix4 {
@@ -119,13 +112,6 @@ impl From<Matrix4> for ShaderMatrix4x3 {
 			value[11], value[12], value[13], value[14], value[15],
 		];
 
-		#[cfg(target_os = "macos")]
-		return Self([
-			value[0], value[1], value[2], 0.0, value[4], value[5], value[6], 0.0, value[8], value[9], value[10], 0.0,
-			value[12], value[13], value[14], 0.0,
-		]);
-
-		#[cfg(not(target_os = "macos"))]
 		Self([
 			value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9], value[10], value[12], value[13],
 			value[14],
@@ -539,17 +525,12 @@ mod tests {
 		);
 		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
 
-		#[cfg(target_os = "macos")]
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 5.0, 9.0, 0.0, 2.0, 6.0, 10.0, 0.0, 3.0, 7.0, 11.0, 0.0, 4.0, 8.0, 12.0, 0.0]
-		);
-
-		#[cfg(not(target_os = "macos"))]
 		assert_eq!(
 			shader_matrix.0,
 			[1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]
 		);
+		assert_eq!(std::mem::size_of::<crate::ShaderMatrix4x3>(), 48);
+		assert_eq!(std::mem::align_of::<crate::ShaderMatrix4x3>(), 4);
 	}
 
 	#[test]
@@ -559,13 +540,6 @@ mod tests {
 		let matrix = crate::Matrix4::from_translation(crate::Vector3::new(10.0, 20.0, 30.0));
 		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
 
-		#[cfg(target_os = "macos")]
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 0.0]
-		);
-
-		#[cfg(not(target_os = "macos"))]
 		assert_eq!(
 			shader_matrix.0,
 			[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]

@@ -283,7 +283,9 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 			"vec4u" | "vec4f" => (16, 16),
 			"mat2f" => (16, 8),
 			"mat3f" => (48, 16),
-			"mat4f" | "mat4x3f" => (64, 16),
+			"mat4f" => (64, 16),
+			// MSL expressions use native float4x3, but buffer storage lowers to four packed_float3 columns.
+			"mat4x3f" => (48, 4),
 			_ => return None,
 		},
 		StorageLayoutTarget::GlslScalar => match type_name {
@@ -1056,8 +1058,8 @@ mod tests {
 	fn storage_buffer_strides_cover_flattened_arrays_and_wrapper_structs() {
 		let script = "main: fn () -> void { positions; indices; lighting; }";
 		let mut root = besl::Node::root();
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let u8_type = root.get_child("u8").expect("Expected u8");
 		let u16_type = root.get_child("u16").expect("Expected u16");
 		let u32_type = root.get_child("u32").expect("Expected u32");
@@ -1237,7 +1239,7 @@ mod tests {
 
 		for (target, expected) in [
 			(StorageLayoutTarget::Hlsl, [(16, 4), (36, 4), (64, 4), (48, 4)]),
-			(StorageLayoutTarget::Msl, [(16, 8), (48, 16), (64, 16), (64, 16)]),
+			(StorageLayoutTarget::Msl, [(16, 8), (48, 16), (64, 16), (48, 4)]),
 			(StorageLayoutTarget::GlslScalar, [(16, 4), (36, 4), (64, 4), (48, 4)]),
 		] {
 			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
@@ -1316,6 +1318,7 @@ mod tests {
 		let f32_type = root.get_child("f32").expect("Expected f32");
 		let u32_type = root.get_child("u32").expect("Expected u32");
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
 		let mat4f = root.get_child("mat4f").expect("Expected mat4f");
 		let mat4x3f = root.get_child("mat4x3f").expect("Expected mat4x3f");
@@ -1324,7 +1327,7 @@ mod tests {
 			besl::Node::r#struct(
 				"Mesh",
 				vec![
-					besl::Node::member("model", mat4x3f).into(),
+					besl::Node::member("model", mat4x3f.clone()).into(),
 					besl::Node::member("material_index", u32_type.clone()).into(),
 					besl::Node::member("base_vertex_index", u32_type.clone()).into(),
 					besl::Node::member("base_primitive_index", u32_type.clone()).into(),
@@ -1341,12 +1344,9 @@ mod tests {
 			besl::Node::r#struct(
 				"View",
 				vec![
-					besl::Node::member("view", mat4f.clone()).into(),
-					besl::Node::member("projection", mat4f.clone()).into(),
+					besl::Node::member("view", mat4x3f.clone()).into(),
 					besl::Node::member("view_projection", mat4f.clone()).into(),
-					besl::Node::member("inverse_view", mat4f.clone()).into(),
-					besl::Node::member("inverse_projection", mat4f.clone()).into(),
-					besl::Node::member("inverse_view_projection", mat4f).into(),
+					besl::Node::member("inverse_view", mat4x3f).into(),
 					besl::Node::member("fov", vec2f.clone()).into(),
 					besl::Node::member("near", f32_type.clone()).into(),
 					besl::Node::member("far", f32_type).into(),
@@ -1394,16 +1394,19 @@ mod tests {
 			besl::Node::array("lights", light, 16),
 		];
 
-		for (target, mesh_stride) in [
-			(StorageLayoutTarget::Hlsl, 80),
-			(StorageLayoutTarget::Msl, 96),
-			(StorageLayoutTarget::GlslScalar, 80),
+		for (target, mesh_stride, view_stride) in [
+			(StorageLayoutTarget::Hlsl, 80, 176),
+			(StorageLayoutTarget::Msl, 80, 176),
+			(StorageLayoutTarget::GlslScalar, 80, 176),
 		] {
 			assert_eq!(
 				reflected_storage_buffer_stride_for_target(&mesh_buffer, target),
 				Ok(mesh_stride)
 			);
-			assert_eq!(reflected_storage_buffer_stride_for_target(&view_buffer, target), Ok(400));
+			assert_eq!(
+				reflected_storage_buffer_stride_for_target(&view_buffer, target),
+				Ok(view_stride)
+			);
 			assert_eq!(reflected_storage_buffer_stride_for_target(&meshlet_buffer, target), Ok(64));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1552));
 		}

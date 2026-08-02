@@ -1215,7 +1215,8 @@ mod tests {
 		resources::{
 			material::VariantModel,
 			skeleton::{
-				identity_matrix4_columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
+				identity_affine_matrix4x3_columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
+				SkinPaletteEntry,
 			},
 		},
 		types::{AlphaMode, VertexComponent},
@@ -1628,7 +1629,7 @@ mod tests {
 		SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint,
-				adjusted_inverse_bind_matrix: identity_matrix4_columns(),
+				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
 			}],
 		}
 	}

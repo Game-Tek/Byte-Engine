@@ -30,7 +30,7 @@ pub struct VisibilityPipelineManager {
 	/// Application-owned baked resources used by the fixed visibility shader set.
 	shader_resources: EntityHandle<ResourceManager>,
 	/// Reused palette upload storage prevents per-frame matrix allocations.
-	skinning_palette_scratch: Vec<Matrix4Columns>,
+	skinning_palette_scratch: Vec<AffineMatrix4x3Columns>,
 	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
 	skinning_palette_cache: Vec<SkinningPaletteCacheEntry>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
@@ -560,7 +560,7 @@ impl VisibilityPipelineManager {
 								);
 							}
 							// Grow only to the scene's high-water mark, then reuse this palette storage on later frames.
-							palette_scratch.resize(palette_end, identity_matrix4_columns());
+							palette_scratch.resize(palette_end, identity_affine_matrix4x3_columns());
 
 							let palette_base = palette_matrix_count as u32;
 							match skinning
@@ -702,11 +702,8 @@ impl VisibilityPipelineManager {
 
 		ShaderViewData {
 			view: view.view().into(),
-			projection: view.projection().into(),
 			view_projection: view_projection.into(),
 			inverse_view: view.view().inverse().into(),
-			inverse_projection: view.projection().inverse().into(),
-			inverse_view_projection: view_projection.inverse().into(),
 			fov: view.fov(),
 			near: view.near(),
 			far: view.far(),
@@ -1261,12 +1258,9 @@ impl From<Vector3> for ShaderVec3 {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view: ShaderMatrix4,
-	pub(crate) projection: ShaderMatrix4,
+	pub(crate) view: ShaderMatrix4x3,
 	pub(crate) view_projection: ShaderMatrix4,
-	pub(crate) inverse_view: ShaderMatrix4,
-	pub(crate) inverse_projection: ShaderMatrix4,
-	pub(crate) inverse_view_projection: ShaderMatrix4,
+	pub(crate) inverse_view: ShaderMatrix4x3,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,
@@ -1485,8 +1479,9 @@ mod tests {
 	use super::{
 		cached_skin_palette_base, make_cone_shadow_view, reserve_deformed_vertex_range, select_shadow_lights,
 		write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh,
-		SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DEFAULT_ENVIRONMENT_TEXEL, ENVIRONMENT_BINDING,
-		LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, DEFAULT_ENVIRONMENT_TEXEL,
+		ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING,
+		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, PointLight};
@@ -1496,7 +1491,7 @@ mod tests {
 		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESHLET_DATA_BINDING,
 		MESH_DATA_BINDING, MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, PRIMITIVE_INDICES_BINDING,
 		SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
@@ -1708,9 +1703,6 @@ mod tests {
 
 	#[test]
 	fn shader_mesh_matches_gpu_buffer_layout() {
-		#[cfg(target_os = "macos")]
-		let (expected_size, expected_material_offset) = (96, 64);
-		#[cfg(not(target_os = "macos"))]
 		let (expected_size, expected_material_offset) = (80, 48);
 
 		assert_eq!(
@@ -1738,6 +1730,31 @@ mod tests {
 			expected_material_offset + 24,
 			"Unexpected Visibility skinned vertex offset. The most likely cause is that the CPU-side mesh fields no longer match the visibility and material shader structs."
 		);
+	}
+
+	#[test]
+	fn shader_view_data_matches_compact_gpu_buffer_layout() {
+		let (expected_size, expected_view_projection_offset, expected_inverse_view_offset, expected_fov_offset) =
+			(176, 48, 112, 160);
+
+		assert_eq!(
+			std::mem::size_of::<ShaderViewData>(),
+			expected_size,
+			"Unexpected compact visibility view size. The most likely cause is that the CPU view record drifted from its shader storage layout."
+		);
+		assert_eq!(std::mem::size_of::<ShaderViewData>() as u32, VIEW_DATA_BUFFER_STRIDE);
+		assert_eq!(std::mem::offset_of!(ShaderViewData, view), 0);
+		assert_eq!(
+			std::mem::offset_of!(ShaderViewData, view_projection),
+			expected_view_projection_offset
+		);
+		assert_eq!(
+			std::mem::offset_of!(ShaderViewData, inverse_view),
+			expected_inverse_view_offset
+		);
+		assert_eq!(std::mem::offset_of!(ShaderViewData, fov), expected_fov_offset);
+		assert_eq!(std::mem::offset_of!(ShaderViewData, near), expected_fov_offset + 8);
+		assert_eq!(std::mem::offset_of!(ShaderViewData, far), expected_fov_offset + 12);
 	}
 
 	/// Ensures instances that share immutable source vertices cannot overwrite each other's deformation output.
@@ -1887,7 +1904,7 @@ use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::resources::skeleton::{identity_matrix4_columns, Matrix4Columns, SkinBinding};
+use resource_management::resources::skeleton::{identity_affine_matrix4x3_columns, AffineMatrix4x3Columns, SkinBinding};
 use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};

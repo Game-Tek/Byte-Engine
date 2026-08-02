@@ -830,6 +830,13 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
+/// Installs the ACES v1 tonemapping pass for post-scene color mapping.
+pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
+	let renderer = &mut application.renderer;
+
+	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AcesToneMapPass::new(render_pass_builder)));
+}
+
 /// Installs the final swapchain blit pass that presents rendered sinks.
 pub fn setup_swapchain_blit_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;

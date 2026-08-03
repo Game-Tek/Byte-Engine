@@ -198,7 +198,9 @@ impl crate::device::Device for Factory {
 			let descriptor = MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
 			if self.settings.debug_labels {
-				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
 			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
@@ -221,7 +223,9 @@ impl crate::device::Device for Factory {
 			let descriptor = MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
 			if self.settings.debug_labels {
-				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
 			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
@@ -285,9 +289,22 @@ impl crate::device::Device for Factory {
 				"Metal compute pipeline creation requires a Metal shader function. The most likely cause is that this compute shader was created from SPIR-V, which this backend does not translate to MSL.",
 			);
 
+			let descriptor = MTLComputePipelineDescriptor::new();
+			#[cfg(debug_assertions)]
+			if self.settings.debug_labels {
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
+			}
+			descriptor.setComputeFunction(Some(&function));
+
 			Some(
 				self.device
-					.newComputePipelineStateWithFunction_error(&function)
+					.newComputePipelineStateWithDescriptor_options_reflection_error(
+						&descriptor,
+						MTLPipelineOption::None,
+						None,
+					)
 					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation."),
 			)
 		};
@@ -378,8 +395,9 @@ impl crate::device::Device for Factory {
 use dispatch2::DispatchData;
 use objc2_foundation::NSString;
 use objc2_metal::{
-	MTLCompareFunction, MTLCompileOptions, MTLDepthStencilDescriptor, MTLDevice, MTLFunction, MTLFunctionConstantValues,
-	MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource as _,
+	MTLCompareFunction, MTLCompileOptions, MTLComputePipelineDescriptor, MTLDepthStencilDescriptor, MTLDevice, MTLFunction,
+	MTLFunctionConstantValues, MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor,
+	MTLResource as _,
 };
 
 use super::*;

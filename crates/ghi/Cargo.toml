@@ -49,4 +49,4 @@ objc2 = { version = "0.6.3", features = ["disable-encoding-assertions"] }
 objc2-foundation = "0.3.2"
 objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation"] }
 objc2-quartz-core = "0.3.2"
-objc2-metal = { version = "0.3.2", features = ["MTLFunctionConstantValues", "MTLDataType", "MTLLibrary", "dispatch2"] }
+objc2-metal = { version = "0.3.2", features = ["MTLComputePipeline", "MTLFunctionConstantValues", "MTLDataType", "MTLLibrary", "dispatch2"] }

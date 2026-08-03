@@ -119,12 +119,10 @@ impl Pipeline {
 		} else {
 			bindings.into()
 		};
-		let handle = render_pass_builder
-			.context()
-			.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&loaded.handle, ghi::ShaderTypes::Compute),
-			));
+		let handle = render_pass_builder.context().create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&loaded.handle, ghi::ShaderTypes::Compute))
+				.name(shader_name),
+		);
 
 		Ok(Self {
 			handle,

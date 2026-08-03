@@ -367,12 +367,15 @@ impl VisibilityPass {
 			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
-		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 12)],
-			&vertex_layout,
-			&visibility_pass_shaders,
-			&pipeline_attachments,
-		));
+		let pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, 12)],
+				&vertex_layout,
+				&visibility_pass_shaders,
+				&pipeline_attachments,
+			)
+			.name("Visibility Pass Mesh Shader"),
+		);
 
 		VisibilityPass {
 			descriptor_set,
@@ -530,18 +533,24 @@ impl ShadowPass {
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_task_shader, ghi::ShaderTypes::Task));
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
-		let directional_shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 12)],
-			&vertex_layout,
-			&shadow_pass_shaders,
-			&directional_attachments,
-		));
-		let cone_shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 12)],
-			&vertex_layout,
-			&shadow_pass_shaders,
-			&cone_attachments,
-		));
+		let directional_shadow_pass_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, 12)],
+				&vertex_layout,
+				&shadow_pass_shaders,
+				&directional_attachments,
+			)
+			.name("Shadow Pass Mesh Shader (Directional)"),
+		);
+		let cone_shadow_pass_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, 12)],
+				&vertex_layout,
+				&shadow_pass_shaders,
+				&cone_attachments,
+			)
+			.name("Shadow Pass Mesh Shader (Cone)"),
+		);
 
 		Self {
 			descriptor_set,
@@ -672,10 +681,13 @@ impl MaterialCountPass {
 			ResourceShaderTypes::Compute,
 		);
 
-		let material_count_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
-		));
+		let material_count_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[],
+				ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
+			)
+			.name("Material Count Pass Compute Shader"),
+		);
 
 		MaterialCountPass {
 			descriptor_set,
@@ -749,10 +761,13 @@ impl MaterialOffsetPass {
 			ResourceShaderTypes::Compute,
 		);
 
-		let material_offset_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
-		));
+		let material_offset_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[],
+				ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
+			)
+			.name("Material Offset Pass Compute Shader"),
+		);
 
 		MaterialOffsetPass {
 			material_offset_buffer,
@@ -810,10 +825,13 @@ impl PixelMappingPass {
 			ResourceShaderTypes::Compute,
 		);
 
-		let pixel_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
-		));
+		let pixel_mapping_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[],
+				ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
+			)
+			.name("Pixel Mapping Pass Compute Shader"),
+		);
 
 		PixelMappingPass {
 			descriptor_set,
@@ -1032,14 +1050,17 @@ impl GtaoPass {
 			ResourceShaderTypes::Compute,
 		);
 
-		let depth_pyramid_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&depth_pyramid_shader, ghi::ShaderTypes::Compute),
-		));
-		let gtao_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
-		));
+		let depth_pyramid_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[],
+				ghi::ShaderParameter::new(&depth_pyramid_shader, ghi::ShaderTypes::Compute),
+			)
+			.name("GTAO Depth Pyramid Compute Shader"),
+		);
+		let gtao_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute))
+				.name("GTAO Pass Compute Shader"),
+		);
 
 		let blur_x_shader = load_visibility_shader(
 			context,
@@ -1056,14 +1077,14 @@ impl GtaoPass {
 			ResourceShaderTypes::Compute,
 		);
 
-		let blur_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute),
-		));
-		let upscale_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&upscale_shader, ghi::ShaderTypes::Compute),
-		));
+		let blur_pipeline_x = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute))
+				.name("GTAO Blur X Compute Shader"),
+		);
+		let upscale_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&upscale_shader, ghi::ShaderTypes::Compute))
+				.name("GTAO Depth-Aware Upscale Compute Shader"),
+		);
 
 		Self {
 			settings,

@@ -1841,12 +1841,9 @@ impl UiRenderPass {
 		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
 			.blend(ghi::pipelines::raster::BlendMode::Alpha)];
 
-		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[],
-			&UI_VERTEX_LAYOUT,
-			&shaders,
-			&attachments,
-		));
+		let pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(&[], &UI_VERTEX_LAYOUT, &shaders, &attachments).name("UI Fragment Shader"),
+		);
 
 		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -1864,12 +1861,10 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&curve_vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&curve_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let curve_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[],
-			&UI_CURVE_VERTEX_LAYOUT,
-			&curve_shaders,
-			&attachments,
-		));
+		let curve_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(&[], &UI_CURVE_VERTEX_LAYOUT, &curve_shaders, &attachments)
+				.name("UI Curve Fragment Shader"),
+		);
 		let curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("UI Curve Vertices")
@@ -1886,12 +1881,10 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&image_vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&image_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let image_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[],
-			&UI_IMAGE_VERTEX_LAYOUT,
-			&image_shaders,
-			&attachments,
-		));
+		let image_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(&[], &UI_IMAGE_VERTEX_LAYOUT, &image_shaders, &attachments)
+				.name("UI Image Fragment Shader"),
+		);
 		let image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("UI Image Vertices")
@@ -1914,8 +1907,9 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&text_vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let text_pipeline =
-			context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(&[], &[], &text_shaders, &attachments));
+		let text_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(&[], &[], &text_shaders, &attachments).name("UI Text Overlay Fragment Shader"),
+		);
 		let text_overlay = context.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
@@ -1927,26 +1921,35 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let blur_downsample_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(
-				0,
-				UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
-			)],
-			ghi::ShaderParameter::new(&blur_downsample_shader.handle, ghi::ShaderTypes::Compute),
-		));
-		let blur_filter_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
-			ghi::ShaderParameter::new(&blur_filter_shader.handle, ghi::ShaderTypes::Compute),
-		));
-		let blur_composite_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[],
-			&UI_VERTEX_LAYOUT,
-			&[
-				ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-				ghi::ShaderParameter::new(&blur_composite_shader.handle, ghi::ShaderTypes::Fragment),
-			],
-			&attachments,
-		));
+		let blur_downsample_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(
+					0,
+					UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
+				)],
+				ghi::ShaderParameter::new(&blur_downsample_shader.handle, ghi::ShaderTypes::Compute),
+			)
+			.name("UI Backdrop Blur Downsample Shader"),
+		);
+		let blur_filter_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
+				ghi::ShaderParameter::new(&blur_filter_shader.handle, ghi::ShaderTypes::Compute),
+			)
+			.name("UI Backdrop Blur Filter Shader"),
+		);
+		let blur_composite_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[],
+				&UI_VERTEX_LAYOUT,
+				&[
+					ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
+					ghi::ShaderParameter::new(&blur_composite_shader.handle, ghi::ShaderTypes::Fragment),
+				],
+				&attachments,
+			)
+			.name("UI Backdrop Blur Composite Shader"),
+		);
 		let blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("UI Backdrop Blur Vertices")

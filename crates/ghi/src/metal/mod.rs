@@ -847,6 +847,8 @@ mod flat_binding_tests {
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
 	#[test]
 	fn retained_material_resources_after_bindless_array_reach_metal() {
+		use objc2_metal::MTLComputePipelineState as _;
+
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 			device::Device as _,
@@ -884,12 +886,13 @@ mod flat_binding_tests {
 			}
 		"#;
 
-		let mut instance = super::Instance::new(crate::device::Features::new())
+		let features = crate::device::Features::new().debug_labels(true);
+		let mut instance = super::Instance::new(features)
 			.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
 		let mut queue_handle = None;
 		let mut context = instance
 			.create_device(
-				crate::device::Features::new(),
+				features,
 				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
 			)
 			.expect("Failed to create a Metal device. The most likely cause is unavailable compute queue support.")
@@ -934,10 +937,25 @@ mod flat_binding_tests {
 				[output_resource, ao_resource, texture_resource, material_resource],
 			)
 			.expect("Failed to create the material binding probe. The most likely cause is invalid Metal test source.");
-		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
-		));
+		let pipeline = context.create_compute_pipeline(
+			crate::pipelines::compute::Builder::new(
+				&[],
+				crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+			)
+			.name("Retained Material Binding Probe Pipeline"),
+		);
+		let PipelineState::Compute(Some(pipeline_state)) = &context
+			.pipelines
+			.last()
+			.expect("Missing Metal compute pipeline. The most likely cause is compute pipeline creation did not retain its native state.")
+			.pipeline
+		else {
+			panic!("Missing Metal compute pipeline state. The most likely cause is invalid compute pipeline creation.");
+		};
+		assert_eq!(
+			pipeline_state.label().map(|label| label.to_string()),
+			Some("Retained Material Binding Probe Pipeline".to_string())
+		);
 
 		let material_index = context.build_buffer::<u32>(
 			crate::buffer::Builder::new(crate::Uses::Storage)

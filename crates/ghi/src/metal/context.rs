@@ -1274,7 +1274,9 @@ impl Context {
 			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
 			if self.settings.debug_labels {
-				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
 			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
@@ -1301,7 +1303,9 @@ impl Context {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
 			if self.settings.debug_labels {
-				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
 			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
@@ -1371,9 +1375,22 @@ impl Context {
 				"Metal compute pipeline creation requires a Metal shader function. The most likely cause is that this compute shader was created from SPIR-V, which this backend does not translate to MSL.",
 			);
 
+			let descriptor = mtl::MTLComputePipelineDescriptor::new();
+			#[cfg(debug_assertions)]
+			if self.settings.debug_labels {
+				if let Some(name) = builder.name {
+					descriptor.setLabel(Some(&NSString::from_str(name)));
+				}
+			}
+			descriptor.setComputeFunction(Some(&function));
+
 			Some(
 				self.device
-					.newComputePipelineStateWithFunction_error(&function)
+					.newComputePipelineStateWithDescriptor_options_reflection_error(
+						&descriptor,
+						mtl::MTLPipelineOption::None,
+						None,
+					)
 					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation."),
 			)
 		};

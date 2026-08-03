@@ -165,13 +165,16 @@ impl SkinningPass {
 			"Visibility skinning shader stage mismatch. The most likely cause is incorrect shader sidecar metadata."
 		);
 		let shader = loaded.handle;
-		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(
-				0,
-				std::mem::size_of::<SkinningDispatch>() as u32,
-			)],
-			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-		));
+		let pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(
+					0,
+					std::mem::size_of::<SkinningDispatch>() as u32,
+				)],
+				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+			)
+			.name("Visibility Skinning Compute Shader"),
+		);
 
 		Self {
 			pipeline,

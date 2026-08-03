@@ -7,6 +7,7 @@ use crate::{
 
 /// The `Builder` struct collects portable raster state before a backend creates its native pipeline.
 pub struct Builder<'a> {
+	pub(crate) name: Option<&'a str>,
 	pub(crate) push_constant_ranges: Cow<'a, [crate::pipelines::PushConstantRange]>,
 	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
@@ -24,6 +25,7 @@ impl<'a> Builder<'a> {
 		render_targets: &'a [AttachmentDescriptor],
 	) -> Self {
 		Self {
+			name: None,
 			push_constant_ranges: Cow::Borrowed(push_constant_ranges),
 			vertex_elements: Cow::Borrowed(vertex_elements),
 			shaders: Cow::Borrowed(shaders),
@@ -32,6 +34,12 @@ impl<'a> Builder<'a> {
 			cull_mode: CullMode::Back,
 			depth_write: true,
 		}
+	}
+
+	/// Names this pipeline for graphics debuggers.
+	pub fn name(mut self, name: &'a str) -> Self {
+		self.name = Some(name);
+		self
 	}
 
 	pub fn face_winding(mut self, face_winding: FaceWinding) -> Self {
@@ -127,6 +135,7 @@ mod tests {
 	fn builder_defaults_to_clockwise_backface_culling() {
 		let builder = Builder::new(&[], &[], &[], &[]);
 
+		assert_eq!(builder.name, None);
 		assert!(matches!(builder.face_winding, FaceWinding::Clockwise));
 		assert!(matches!(builder.cull_mode, CullMode::Back));
 	}
@@ -143,5 +152,12 @@ mod tests {
 		let builder = Builder::new(&[], &[], &[], &[]).depth_write(false);
 
 		assert!(!builder.depth_write);
+	}
+
+	#[test]
+	fn builder_can_set_a_name() {
+		let builder = Builder::new(&[], &[], &[], &[]).name("Test Raster Pipeline");
+
+		assert_eq!(builder.name, Some("Test Raster Pipeline"));
 	}
 }

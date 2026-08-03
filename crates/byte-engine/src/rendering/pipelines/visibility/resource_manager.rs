@@ -1348,13 +1348,18 @@ impl PendingMaterialPipeline {
 			})
 			.ok()?;
 
-		Some(
-			frame.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-				&self.request.push_constant_ranges,
-				ghi::ShaderParameter::new(&shader_handle, shader.stage)
-					.with_specialization_map(&self.request.specialization_map_entries),
-			)),
-		)
+		let pipeline_builder = ghi::pipelines::compute::Builder::new(
+			&self.request.push_constant_ranges,
+			ghi::ShaderParameter::new(&shader_handle, shader.stage)
+				.with_specialization_map(&self.request.specialization_map_entries),
+		);
+		let pipeline_builder = if let Some(name) = shader.name.as_deref() {
+			pipeline_builder.name(name)
+		} else {
+			pipeline_builder
+		};
+
+		Some(frame.create_compute_pipeline(pipeline_builder))
 	}
 }
 
@@ -1482,11 +1487,18 @@ impl VisibilityPipelineResourceManager {
 			)
 		})?;
 
-		Ok(device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let pipeline_builder = ghi::pipelines::compute::Builder::new(
 			&request.push_constant_ranges,
 			ghi::ShaderParameter::new(&shader_handle, shader.stage)
 				.with_specialization_map(&request.specialization_map_entries),
-		)))
+		);
+		let pipeline_builder = if let Some(name) = shader.name.as_deref() {
+			pipeline_builder.name(name)
+		} else {
+			pipeline_builder
+		};
+
+		Ok(device.create_compute_pipeline(pipeline_builder))
 	}
 
 	fn queue_compute_pipeline(&mut self, request: ComputePipelineRequest) {

@@ -67,18 +67,21 @@ impl PipelineManager {
 			},
 		);
 
-		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[ghi::pipelines::PushConstantRange::new(0, 4)],
-			&VERTEX_LAYOUT,
-			&[
-				ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-				ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
-			],
-			&[
-				ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::RGBA16UNORM),
-				ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
-			],
-		));
+		let pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, 4)],
+				&VERTEX_LAYOUT,
+				&[
+					ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
+					ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
+				],
+				&[
+					ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::RGBA16UNORM),
+					ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
+				],
+			)
+			.name("Vertex Shader"),
+		);
 
 		Self {
 			vertex_positions_buffer,

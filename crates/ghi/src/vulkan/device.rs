@@ -67,7 +67,11 @@ impl InnerDevice {
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required { feature != 0 } else { true }
+			if required {
+				feature != 0
+			} else {
+				true
+			}
 		};
 
 		let mut barycentric_required_features =
@@ -286,7 +290,9 @@ impl InnerDevice {
 		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut subgroup_device_properties) };
 		let required_subgroup_operations = vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT;
 		if !subgroup_properties.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
-			|| !subgroup_properties.supported_operations.contains(required_subgroup_operations)
+			|| !subgroup_properties
+				.supported_operations
+				.contains(required_subgroup_operations)
 			|| subgroup_properties.subgroup_size == 0
 			|| subgroup_properties.subgroup_size > 128
 		{
@@ -1309,11 +1315,11 @@ fn build_specialization_entries(
 use std::{borrow::Cow, num::NonZeroU32};
 
 use ash::vk::{self, TaggedStructure as _};
-use utils::{Extent, hash::HashMap};
+use utils::{hash::HashMap, Extent};
 
 use super::{
-	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
 	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
+	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
 };
 use crate::{
 	graphics_hardware_interface,

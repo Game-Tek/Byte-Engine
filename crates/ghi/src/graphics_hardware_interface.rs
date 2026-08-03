@@ -5,8 +5,8 @@
 use utils::{Extent, RGBA};
 
 use crate::{
-	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
 	descriptors::{self, DescriptorType},
+	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
 };
 
 // HANDLES
@@ -200,7 +200,7 @@ impl<T: Copy> MasterHandle for BufferHandle<T> {
 	}
 
 	fn index(&self) -> u64 {
-		self.0.0
+		self.0 .0
 	}
 }
 
@@ -842,21 +842,21 @@ pub(super) mod tests {
 
 	use super::*;
 	use crate::{
-		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
-		ShaderTypes, UseCases, Uses, Window,
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
 		frame::Frame as _,
-		pipelines::{self, PushConstantRange, ShaderParameter, VertexElement, raster::AttachmentDescriptor},
+		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
 		queue::{FrameRequest, Queue as _, QueueExecution as _},
 		rt::{
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
 		},
 		shader::{CompiledShaderSource, ShaderSource},
+		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
+		ShaderTypes, UseCases, Uses, Window,
 	};
 	use crate::{ChannelBitSize, ChannelLayout, Size as _};
 

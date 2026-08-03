@@ -41,6 +41,22 @@ impl<'a, T: Resource + 'a> Serialize for Reference<T> {
 }
 
 impl<'a, T: Resource + 'a> Reference<T> {
+	/// Creates an in-memory resource reference without deferred binary payload data.
+	///
+	/// Use this for resources constructed directly by an application or test. The
+	/// resulting reference cannot load binary data because it has no reader.
+	/// Next, pass it to APIs that consume only [`Self::resource`].
+	pub fn in_memory(id: impl Into<String>, resource: T) -> Self {
+		Self {
+			id: id.into(),
+			hash: 0,
+			size: 0,
+			resource,
+			reader: None,
+			streams: None,
+		}
+	}
+
 	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: MultiResourceReader) -> Self {
 		Reference {
 			id: model.id,
@@ -259,6 +275,15 @@ mod tests {
 		assert_eq!(cloned.resource, original.resource);
 		assert!(cloned.streams.is_none());
 		assert!(original.streams.is_none());
+	}
+
+	#[test]
+	fn in_memory_reference_retains_metadata_without_a_binary_reader() {
+		let reference = Reference::in_memory("generated.resource", DefaultLoadResource);
+
+		assert_eq!(reference.id(), "generated.resource");
+		assert_eq!(reference.hash(), 0);
+		assert_eq!(reference.size, 0);
 	}
 
 	#[crate::r#async::test]

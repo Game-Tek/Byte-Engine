@@ -309,7 +309,7 @@ impl Context {
 	}
 
 	pub(crate) fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let texture = &self.images[texture_handle.0.0 as usize];
+		let texture = &self.images[texture_handle.0 .0 as usize];
 		let size = texture.size;
 		assert!(
 			texture.staging_buffer.is_some(),
@@ -327,7 +327,7 @@ impl Context {
 	}
 
 	pub(crate) fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle(image_handle.0.0);
+		let image_handle = ImageHandle(image_handle.0 .0);
 		let image = &self.images[image_handle.0 as usize];
 		assert!(
 			image.staging_buffer.is_some(),
@@ -338,7 +338,7 @@ impl Context {
 	}
 
 	pub(crate) fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handles = ImageHandle(image_handle.0.0).get_all(&self.images);
+		let handles = ImageHandle(image_handle.0 .0).get_all(&self.images);
 
 		let handle = handles[0];
 
@@ -721,7 +721,7 @@ impl Context {
 	fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
 		self.swapchains
 			.iter()
-			.any(|swapchain| swapchain.images[0].0 == handle.0.0 || swapchain.native_images[0].0 == handle.0.0)
+			.any(|swapchain| swapchain.images[0].0 == handle.0 .0 || swapchain.native_images[0].0 == handle.0 .0)
 	}
 
 	fn get_swapchain_image_for_sequence(
@@ -732,9 +732,9 @@ impl Context {
 		self.swapchains.iter().find_map(|swapchain| {
 			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
-			if swapchain.images[0].0 == handle.0.0 {
+			if swapchain.images[0].0 == handle.0 .0 {
 				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].0 == handle.0.0 {
+			} else if swapchain.native_images[0].0 == handle.0 .0 {
 				Some(swapchain.native_images[acquired_image_index])
 			} else {
 				None
@@ -754,7 +754,7 @@ impl Context {
 			return handle;
 		}
 
-		self.image_handle_for_sequence(ImageHandle(handle.0.0), frame_index)
+		self.image_handle_for_sequence(ImageHandle(handle.0 .0), frame_index)
 	}
 
 	/// Resolves a frame sequence and offset into a valid per-frame resource index.
@@ -1276,7 +1276,7 @@ impl Context {
 			array_layer: 0,
 		};
 
-		let texture = self.images.get(texture.0.0 as usize).expect("No texture with that handle.");
+		let texture = self.images.get(texture.0 .0 as usize).expect("No texture with that handle.");
 
 		if true
 		/* TILING_OPTIMAL */
@@ -3820,30 +3820,30 @@ use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
 use utils::hash::{HashSet, HashSetExt};
 use utils::{
-	Extent,
 	hash::{HashMap, HashMapExt},
+	Extent,
 };
 
 use super::{
-	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
-	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
-	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
-	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState,
 	utils::{
 		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
 		uses_to_vk_usage_flags,
 	},
+	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
+	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MaterializationKey,
+	MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, PipelineResourceDescriptor,
+	ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState,
+	MAX_FRAMES_IN_FLIGHT,
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
+	graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
-		Tasks,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, Task, Tasks,
+		MAX_SWAPCHAIN_IMAGES,
 	},
-	window,
+	window, FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size,
 };
 
 #[cfg(test)]

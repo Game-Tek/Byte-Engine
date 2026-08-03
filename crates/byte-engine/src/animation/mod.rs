@@ -6,6 +6,7 @@
 //! [`crate::rendering::UpdatePose`].
 
 pub mod blend;
+pub mod graph;
 pub mod inertialization;
 mod math;
 pub mod root_motion;

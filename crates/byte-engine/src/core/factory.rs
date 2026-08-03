@@ -69,6 +69,18 @@ impl<T: Clone> Factory<T> {
 		Handle(id)
 	}
 
+	/// Creates multiple entities in a single statically-sized batch.
+	///
+	/// Returns an array of [`Handle`]s corresponding to the created entities.
+	/// May be more efficient than calling [`Self::create`] multiple times.
+	pub fn create_array<const N: usize>(&mut self, data: [T; N]) -> [Handle; N] {
+		let mut handles = [Handle(0); N];
+		for (i, d) in data.into_iter().enumerate() {
+			handles[i] = self.create(d);
+		}
+		handles
+	}
+
 	/// Publishes a value with an existing stable handle.
 	///
 	/// Use this after [`Self::create`] when another system-specific representation

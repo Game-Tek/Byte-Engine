@@ -1514,22 +1514,22 @@ mod tests {
 	use resource_management::types::AlphaMode;
 
 	use super::{
-		AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING,
-		CONE_SHADOW_NEAR_M, DEFAULT_ENVIRONMENT_TEXEL, ENVIRONMENT_BINDING, Instance, LIGHTING_DATA_BINDING, LIT_BINDING,
-		LightData, LightingData, MATERIALS_DATA_BINDING, MaterialData, RenderInfo, SHADOW_MAP_BINDING,
-		SPECULAR_ENVIRONMENT_BINDING, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, cached_skin_palette_base,
-		make_cone_shadow_view, reserve_deformed_vertex_range, resolve_cone_shadow_range, select_shadow_lights,
-		write_material_texture_indices,
+		cached_skin_palette_base, make_cone_shadow_view, reserve_deformed_vertex_range, resolve_cone_shadow_range,
+		select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo,
+		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
+		CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_ENVIRONMENT_TEXEL,
+		ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING,
+		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
 	use crate::rendering::pipelines::visibility::{
 		INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MESH_DATA_BINDING,
-		MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESHLET_DATA_BINDING,
+		MESH_DATA_BINDING, MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, PRIMITIVE_INDICES_BINDING,
 		SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEW_DATA_BUFFER_STRIDE, VIEWS_DATA_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
@@ -1631,7 +1631,10 @@ mod tests {
 		assert!((far - original_far / 1.5).abs() < 0.0001);
 
 		let light = cone(1.0).with_shadow_near(50.0).with_shadow_far(20.0);
-		assert_eq!(resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE), (50.0, 50.1));
+		assert_eq!(
+			resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE),
+			(50.0, 50.1)
+		);
 	}
 
 	#[test]
@@ -1734,19 +1737,15 @@ mod tests {
 
 		assert!(!write_material_texture_indices(&mut material_data, [Some(7), None, Some(11)]));
 		assert_eq!(material_data.textures[..3], [7, u32::MAX, 11]);
-		assert!(
-			material_data.textures[3..]
-				.iter()
-				.all(|texture_index| *texture_index == u32::MAX)
-		);
+		assert!(material_data.textures[3..]
+			.iter()
+			.all(|texture_index| *texture_index == u32::MAX));
 
 		assert!(!write_material_texture_indices(&mut material_data, [Some(3)]));
 		assert_eq!(material_data.textures[0], 3);
-		assert!(
-			material_data.textures[1..]
-				.iter()
-				.all(|texture_index| *texture_index == u32::MAX)
-		);
+		assert!(material_data.textures[1..]
+			.iter()
+			.all(|texture_index| *texture_index == u32::MAX));
 	}
 
 	#[test]
@@ -1981,7 +1980,7 @@ const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderR
 );
 use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::collections::{HashSet, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashSet};
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -1994,25 +1993,25 @@ use ghi::command_buffer::{
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use log::{error, warn};
-use math::{ShaderMatrix4, ShaderMatrix4x3, Vector3, mat::MatInverse as _};
-use resource_management::Reference;
+use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding, identity_affine_matrix4x3_columns};
+use resource_management::resources::skeleton::{identity_affine_matrix4x3_columns, AffineMatrix4x3Columns, SkinBinding};
 use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::types::{AlphaMode, IndexStreamTypes, IntegralTypes, ShaderTypes};
+use resource_management::Reference;
 use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Rc, RwLock};
-use utils::{Box, Extent, RGBA, StableVec};
+use utils::{Box, Extent, StableVec, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::core::{Entity, EntityHandle, factory::Handle};
+use crate::core::{factory::Handle, Entity, EntityHandle};
 use crate::ghi;
 use crate::rendering::lights::{ConeLight, DirectionalLight, Light, Lights, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
@@ -2020,29 +2019,28 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
-	IBL_SPECULAR_LEVEL_COUNT, MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey,
-	VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
+	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
+	VisibilityResourceCompletion, IBL_SPECULAR_LEVEL_COUNT,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{
-	MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPass, SkinningSourceBuffers,
+	SkinningDispatch, SkinningPass, SkinningSourceBuffers, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
 };
 use crate::rendering::pipelines::visibility::{
-	ActiveMaterialMask, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING,
-	MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS,
-	MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT, SKINNED_VERTICES_BINDING,
-	ShaderMeshletData, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	ActiveMaterialMask, ShaderMeshletData, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS,
+	MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT, SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
+	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::view::View;
 use crate::rendering::{
-	Environment, RenderableMesh, Sink, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
-	mesh, world_render_domain,
+	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
+	Environment, RenderableMesh, Sink,
 };
 use crate::resource_management::{self};
 use crate::space::Transformable as _;

@@ -1,6 +1,6 @@
 use std::{ptr::NonNull, rc::Rc};
 
-use ::utils::{Extent, hash::HashMap};
+use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
@@ -12,12 +12,12 @@ use smallvec::SmallVec;
 use super::*;
 use crate::metal::swapchain::Swapchain;
 use crate::{
-	HandleLike as _, ImageOrSwapchain, ResourceCollection,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
+	HandleLike as _, ImageOrSwapchain, ResourceCollection,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;

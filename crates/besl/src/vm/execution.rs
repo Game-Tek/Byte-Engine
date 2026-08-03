@@ -172,16 +172,19 @@ impl ExecutableProgram {
 	) -> Result<bool, VmError> {
 		let mut resumed = false;
 		for subgroup in subgroups {
-			let Some((first_lane, expected_instruction)) = subgroup.iter().find_map(|lane_index| match lanes[*lane_index].status {
-				WorkgroupLaneStatus::SubgroupCollective(instruction_index) => Some((*lane_index, instruction_index)),
-				_ => None,
-			}) else {
+			let Some((first_lane, expected_instruction)) =
+				subgroup.iter().find_map(|lane_index| match lanes[*lane_index].status {
+					WorkgroupLaneStatus::SubgroupCollective(instruction_index) => Some((*lane_index, instruction_index)),
+					_ => None,
+				})
+			else {
 				continue;
 			};
 
 			for lane_index in subgroup {
 				match lanes[*lane_index].status {
-					WorkgroupLaneStatus::SubgroupCollective(found_instruction) if found_instruction == expected_instruction => {}
+					WorkgroupLaneStatus::SubgroupCollective(found_instruction) if found_instruction == expected_instruction => {
+					}
 					WorkgroupLaneStatus::SubgroupCollective(found_instruction) => {
 						return Err(VmError::DivergentSubgroupCollective {
 							lane: *lane_index,
@@ -583,11 +586,7 @@ impl ExecutableProgram {
 					let mask = expect_vec4u(read_register(registers, *mask)?)?;
 					registers[*register] = Some(Value::U32(mask.into_iter().map(u32::count_ones).sum()));
 				}
-				Instruction::SubgroupBallotAndNot {
-					register,
-					mask,
-					removed,
-				} => {
+				Instruction::SubgroupBallotAndNot { register, mask, removed } => {
 					let mask = expect_vec4u(read_register(registers, *mask)?)?;
 					let removed = expect_vec4u(read_register(registers, *removed)?)?;
 					registers[*register] = Some(Value::Vec4U(std::array::from_fn(|index| mask[index] & !removed[index])));

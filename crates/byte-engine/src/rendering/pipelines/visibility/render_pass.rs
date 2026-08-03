@@ -14,15 +14,14 @@ use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET,
-	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS,
+	MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
+	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{RenderPass, Sink, render_pass::RenderPassReturn};
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
 const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
@@ -152,9 +151,9 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
 			}
 			"samples-per-ray" => {
-				let samples_per_ray = configuration_u32(value).ok_or_else(
-					|| "GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number.",
-				)?;
+				let samples_per_ray = configuration_u32(value).ok_or_else(|| {
+					"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number."
+				})?;
 				if !(GTAO_MIN_SAMPLES_PER_RAY..=GTAO_MAX_SAMPLES_PER_RAY).contains(&samples_per_ray) {
 					return Err(format!(
 						"GTAO samples-per-ray was not set. The most likely cause is that the value is outside the supported range {}..={}.",
@@ -165,9 +164,9 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Integer(i64::from(samples_per_ray))))
 			}
 			"radial-rays" => {
-				let radial_rays = configuration_u32(value).ok_or_else(
-					|| "GTAO radial-rays was not set. The most likely cause is that the value is not a whole number.",
-				)?;
+				let radial_rays = configuration_u32(value).ok_or_else(|| {
+					"GTAO radial-rays was not set. The most likely cause is that the value is not a whole number."
+				})?;
 				if !(GTAO_MIN_RADIAL_RAYS..=GTAO_MAX_RADIAL_RAYS).contains(&radial_rays) || radial_rays % 2 != 0 {
 					return Err(format!(
 						"GTAO radial-rays was not set. The most likely cause is that the value must be an even number in the range {}..={}.",
@@ -519,7 +518,9 @@ impl ShadowPass {
 			ResourceShaderTypes::Mesh,
 		);
 
-		let directional_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(DIRECTIONAL_SHADOW_MAP_FORMAT)];
+		let directional_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(
+			DIRECTIONAL_SHADOW_MAP_FORMAT,
+		)];
 		let cone_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(CONE_SHADOW_MAP_FORMAT)];
 		let vertex_layout = [
 			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
@@ -1505,11 +1506,11 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		GtaoSettings, Instance, MeshDispatch, cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data,
-		gtao_half_resolution_extent, transparent_visibility_layer,
+		cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent,
+		transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
 	};
 	use crate::configuration::ConfigurationValue;
-	use crate::rendering::{Sink, view::View};
+	use crate::rendering::{view::View, Sink};
 
 	#[test]
 	fn shadow_dispatches_preserve_directional_cascades_and_packed_cone_layers() {
@@ -1544,11 +1545,9 @@ mod tests {
 		assert_eq!(samples, ConfigurationValue::Integer(12));
 		assert_eq!(rays, ConfigurationValue::Integer(16));
 
-		assert!(
-			settings
-				.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
-				.is_err()
-		);
+		assert!(settings
+			.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
+			.is_err());
 		assert_eq!(settings.radial_rays, 16);
 	}
 
@@ -1569,13 +1568,11 @@ mod tests {
 
 		assert_eq!(layer, instances);
 		assert!(transparent_visibility_layer(&[]).is_none());
-		assert!(
-			transparent_visibility_layer(&[Instance {
-				shader_mesh_index: 13,
-				meshlet_count: 0,
-			}])
-			.is_none()
-		);
+		assert!(transparent_visibility_layer(&[Instance {
+			shader_mesh_index: 13,
+			meshlet_count: 0,
+		}])
+		.is_none());
 	}
 
 	#[test]
@@ -1630,7 +1627,7 @@ mod tests {
 
 	#[test]
 	fn gtao_view_space_reconstruction_z_is_positive() {
-		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
+		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1736,7 +1733,7 @@ mod tests {
 	/// where depth varies per pixel, and checks for normal sign flips at different distances.
 	#[test]
 	fn gtao_normal_on_floor_plane() {
-		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
+		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1793,7 +1790,7 @@ mod tests {
 			if hit_z < near || hit_z > far {
 				return None;
 			} // outside clip range
-			// Project hit point to get depth
+	 // Project hit point to get depth
 			let hit_x = p.x * t;
 			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
@@ -1802,7 +1799,11 @@ mod tests {
 		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
 			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
 			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if math::dot(ap, ap) < math::dot(bp, bp) { ap } else { bp }
+			if math::dot(ap, ap) < math::dot(bp, bp) {
+				ap
+			} else {
+				bp
+			}
 		};
 
 		eprintln!("\n--- Floor plane normal reconstruction ---");

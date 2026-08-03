@@ -103,9 +103,11 @@ impl Generator {
 			"subgroup_ballot_and_not",
 			"subgroup_broadcast_u32",
 		];
-		order
-			.iter()
-			.any(|node| SUBGROUP_INTRINSICS.iter().any(|intrinsic| Self::uses_intrinsic(node, intrinsic)))
+		order.iter().any(|node| {
+			SUBGROUP_INTRINSICS
+				.iter()
+				.any(|intrinsic| Self::uses_intrinsic(node, intrinsic))
+		})
 	}
 }
 

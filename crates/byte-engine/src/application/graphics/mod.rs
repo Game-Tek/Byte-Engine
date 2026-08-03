@@ -498,6 +498,15 @@ impl GraphicsApplication {
 	pub fn resource_manager(&self) -> &ResourceManager {
 		&self.resource_manager
 	}
+
+	/// Returns shared ownership of the resource manager for application-owned async systems.
+	///
+	/// Use this handle when constructing loaders such as
+	/// [`crate::animation::graph::AnimationPool`]. Next, spawn the returned
+	/// worker on the application's chosen async runtime.
+	pub fn resource_manager_handle(&self) -> EntityHandle<ResourceManager> {
+		self.resource_manager.clone()
+	}
 }
 
 impl Parameters for GraphicsApplication {
@@ -834,7 +843,8 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AcesToneMapPass::new(render_pass_builder)));
+	renderer
+		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AcesToneMapPass::new(render_pass_builder)));
 }
 
 /// Installs the final swapchain blit pass that presents rendered sinks.

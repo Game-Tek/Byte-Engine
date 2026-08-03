@@ -200,9 +200,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			"subgroup_ballot_and_not",
 			"subgroup_broadcast_u32",
 		];
-		order
-			.iter()
-			.any(|node| SUBGROUP_INTRINSICS.iter().any(|intrinsic| Self::uses_intrinsic(node, intrinsic)))
+		order.iter().any(|node| {
+			SUBGROUP_INTRINSICS
+				.iter()
+				.any(|intrinsic| Self::uses_intrinsic(node, intrinsic))
+		})
 	}
 
 	/// Detects whether a function's reachable AST needs backend resource parameters.
@@ -3945,11 +3947,8 @@ mod tests {
 
 	#[test]
 	fn subgroup_intrinsics_are_limited_to_compute_stages() {
-		let root = besl::compile_to_besl(
-			"main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }",
-			None,
-		)
-		.expect("Expected subgroup stage fixture source to link");
+		let root = besl::compile_to_besl("main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }", None)
+			.expect("Expected subgroup stage fixture source to link");
 		let main = root.get_main().expect("Expected subgroup stage fixture main function");
 		assert!(
 			Generator::new().generate(&ShaderGenerationSettings::vertex(), &main).is_err(),

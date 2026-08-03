@@ -1350,11 +1350,8 @@ impl<'a> Compiler<'a> {
 				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
 				let removed = self.compile_value_expression(&arguments[1], &ValueType::Vec4U, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBallotAndNot {
-					register,
-					mask,
-					removed,
-				});
+				self.instructions
+					.push(Instruction::SubgroupBallotAndNot { register, mask, removed });
 				Ok(register)
 			}
 			"subgroup_broadcast_u32" => {

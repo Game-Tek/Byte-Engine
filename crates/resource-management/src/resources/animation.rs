@@ -138,6 +138,104 @@ pub struct Animation {
 	pub tracks: Vec<NodeTrack>,
 }
 
+impl Animation {
+	/// Estimates the heap storage retained while this clip is resident in an animation pool.
+	///
+	/// The estimate includes decoded curve, string, and skeleton storage owned by
+	/// this resource. It deliberately excludes allocator bookkeeping and mapped
+	/// reader internals, which are not part of the current animation payload.
+	/// Use this value with a pool byte budget instead of [`Reference::size`],
+	/// because imported animation clips currently store their curves as resource
+	/// metadata rather than binary payload bytes.
+	pub fn estimated_resident_bytes(&self) -> usize {
+		let track_bytes = self
+			.tracks
+			.iter()
+			.map(estimated_track_bytes)
+			.fold(0usize, usize::saturating_add);
+		let skeleton = self.skeleton.resource();
+		// `Animation` already contains the `Reference<Skeleton>` and `Skeleton`
+		// headers. Count only the allocations they own here.
+		let skeleton_bytes = self
+			.skeleton
+			.id
+			.capacity()
+			.saturating_add(
+				skeleton
+					.nodes
+					.capacity()
+					.saturating_mul(std::mem::size_of::<crate::resources::skeleton::SkeletonNode>()),
+			)
+			.saturating_add(
+				skeleton
+					.nodes
+					.iter()
+					.filter_map(|node| node.name.as_ref())
+					.map(|name| name.capacity())
+					.fold(0usize, usize::saturating_add),
+			);
+
+		std::mem::size_of::<Self>()
+			.saturating_add(self.name.as_ref().map_or(0, String::capacity))
+			.saturating_add(self.tracks.capacity().saturating_mul(std::mem::size_of::<NodeTrack>()))
+			.saturating_add(track_bytes)
+			.saturating_add(skeleton_bytes)
+	}
+}
+
+/// Counts curve allocations beyond the [`NodeTrack`] storage counted by its parent vector.
+fn estimated_track_bytes(track: &NodeTrack) -> usize {
+	track
+		.translation
+		.as_ref()
+		.map(estimated_vector3_curve_bytes)
+		.unwrap_or(0)
+		.saturating_add(track.rotation.as_ref().map(estimated_quaternion_curve_bytes).unwrap_or(0))
+		.saturating_add(track.scale.as_ref().map(estimated_vector3_curve_bytes).unwrap_or(0))
+}
+
+/// Counts heap-backed fields of one translation or scale curve.
+fn estimated_vector3_curve_bytes(curve: &Vector3Curve) -> usize {
+	match curve {
+		Vector3Curve::Step { times, values } | Vector3Curve::Linear { times, values } => times
+			.capacity()
+			.saturating_mul(std::mem::size_of::<f32>())
+			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>())),
+		Vector3Curve::CubicSpline {
+			times,
+			values,
+			in_tangents,
+			out_tangents,
+		} => times
+			.capacity()
+			.saturating_mul(std::mem::size_of::<f32>())
+			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>()))
+			.saturating_add(in_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>()))
+			.saturating_add(out_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>())),
+	}
+}
+
+/// Counts heap-backed fields of one rotation curve.
+fn estimated_quaternion_curve_bytes(curve: &QuaternionCurve) -> usize {
+	match curve {
+		QuaternionCurve::Step { times, values } | QuaternionCurve::Linear { times, values } => times
+			.capacity()
+			.saturating_mul(std::mem::size_of::<f32>())
+			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>())),
+		QuaternionCurve::CubicSpline {
+			times,
+			values,
+			in_tangents,
+			out_tangents,
+		} => times
+			.capacity()
+			.saturating_mul(std::mem::size_of::<f32>())
+			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>()))
+			.saturating_add(in_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>()))
+			.saturating_add(out_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>())),
+	}
+}
+
 /// The `AnimationModel` struct preserves a serializable pose-oriented clip and its skeleton dependency.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct AnimationModel {

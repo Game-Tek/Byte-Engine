@@ -2232,9 +2232,9 @@ fn compute_subgroup_collectives_reject_divergent_lanes() {
 		ExecutionConfig::new(32).with_thread_idx(1).with_subgroup_size(32),
 	];
 	let mut descriptors = DescriptorBindings::new();
-	let error = executable
-		.run_workgroup(&mut descriptors, &configs)
-		.expect_err("Divergent subgroup collective was accepted. The most likely cause is missing subgroup rendezvous validation.");
+	let error = executable.run_workgroup(&mut descriptors, &configs).expect_err(
+		"Divergent subgroup collective was accepted. The most likely cause is missing subgroup rendezvous validation.",
+	);
 
 	assert!(matches!(
 		error,

@@ -789,7 +789,9 @@ mod tests {
 		assert!(source.contains("_besl_subgroup_ballot("));
 		assert!(source.contains("_besl_subgroup_broadcast_u32("));
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "visibility-material-count")
-			.expect("Failed to compile production Material Count MSL. The most likely cause is invalid Metal subgroup lowering.");
+			.expect(
+				"Failed to compile production Material Count MSL. The most likely cause is invalid Metal subgroup lowering.",
+			);
 	}
 
 	/// Compiles the production Pixel Mapping shader so its established-key fast path stays valid on Metal.
@@ -1548,7 +1550,9 @@ mod tests {
 		let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
 		mesh_data
 			.write_indexed_field("meshes", 0, "material_index", Value::U32(7))
-			.expect("Failed to initialize the coherent Material Count mesh. The most likely cause is a drifted Mesh buffer layout.");
+			.expect(
+				"Failed to initialize the coherent Material Count mesh. The most likely cause is a drifted Mesh buffer layout.",
+			);
 		let mut instance_indices = Texture::new(8, 8)
 			.expect("Failed to create the coherent Material Count fixture. The most likely cause is an invalid test extent.");
 		for lane in 0..MATERIAL_COUNT_WORKGROUP_SIZE {
@@ -1560,7 +1564,9 @@ mod tests {
 					],
 					0,
 				)
-				.expect("Failed to initialize a coherent Material Count texel. The most likely cause is an invalid coordinate.");
+				.expect(
+					"Failed to initialize a coherent Material Count texel. The most likely cause is an invalid coordinate.",
+				);
 		}
 
 		let mut material_counts = buffer(&program, MATERIAL_COUNT_SLOT);
@@ -1582,7 +1588,10 @@ mod tests {
 			);
 		}
 
-		assert_eq!(read_u32(&material_counts, "material_count", 7), MATERIAL_COUNT_WORKGROUP_SIZE as u32);
+		assert_eq!(
+			read_u32(&material_counts, "material_count", 7),
+			MATERIAL_COUNT_WORKGROUP_SIZE as u32
+		);
 	}
 
 	/// Executes the standard GTAO shader with one deterministic depth fixture.

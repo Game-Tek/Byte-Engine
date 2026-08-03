@@ -483,8 +483,8 @@ impl InputManager {
 				let default_value = match action.r#type {
 					Types::Boolean => Value::Bool(false),
 					Types::Float => Value::Float(0f32),
-					Types::Vector2 => Value::Vector2(Vector2 { x: 0f32, y: 0f32 }),
-					Types::Vector3 => Value::Vector3(Vector3 {
+					Types::Vector2 => Value::Vector2(Axis2 { x: 0f32, y: 0f32 }),
+					Types::Vector3 => Value::Vector3(Axis3 {
 						x: 0f32,
 						y: 0f32,
 						z: 0f32,
@@ -585,10 +585,10 @@ mod tests {
 		let device_class_handle = input_manager.register_device_class("Headset");
 
 		let source_description = TriggerDescription::new(
-			Vector3::new(0f32, 1.80f32, 0f32),
-			Vector3::new(0f32, 0f32, 0f32),
-			Vector3::min_value(),
-			Vector3::max_value(),
+			Axis3::new(0f32, 1.80f32, 0f32),
+			Axis3::new(0f32, 0f32, 0f32),
+			Axis3::min_value(),
+			Axis3::max_value(),
 		);
 
 		let _position_input_source = input_manager.register_trigger(&device_class_handle, "Position", source_description);
@@ -679,10 +679,10 @@ mod tests {
 		register_keyboard_device_class(&mut input_manager);
 
 		let stick_source_description = TriggerDescription::new(
-			Vector2::zero(),
-			Vector2::zero(),
-			Vector2 { x: -1.0, y: -1.0 },
-			Vector2 { x: 1.0, y: 1.0 },
+			Axis2::zero(),
+			Axis2::zero(),
+			Axis2 { x: -1.0, y: -1.0 },
+			Axis2 { x: 1.0, y: 1.0 },
 		);
 
 		let _gamepad_left_stick_input_source =
@@ -801,13 +801,13 @@ mod tests {
 			Types::Vector2,
 			&[
 				ActionBindingDescription::new("Keyboard.Up")
-					.mapped(ValueMapping::new(Function::Boolean, Vector2::new(0f32, 1f32))),
+					.mapped(ValueMapping::new(Function::Boolean, Axis2::new(0f32, 1f32))),
 				ActionBindingDescription::new("Keyboard.Down")
-					.mapped(ValueMapping::new(Function::Boolean, Vector2::new(0f32, -1f32))),
+					.mapped(ValueMapping::new(Function::Boolean, Axis2::new(0f32, -1f32))),
 				ActionBindingDescription::new("Keyboard.Left")
-					.mapped(ValueMapping::new(Function::Boolean, Vector2::new(-1f32, 0f32))),
+					.mapped(ValueMapping::new(Function::Boolean, Axis2::new(-1f32, 0f32))),
 				ActionBindingDescription::new("Keyboard.Right")
-					.mapped(ValueMapping::new(Function::Boolean, Vector2::new(1f32, 0f32))),
+					.mapped(ValueMapping::new(Function::Boolean, Axis2::new(1f32, 0f32))),
 			],
 		);
 
@@ -816,7 +816,7 @@ mod tests {
 
 		assert_eq!(
 			input_manager.get_action_state(seat, action, device).value,
-			Value::Vector2(Vector2::new(0f32, 0f32))
+			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
@@ -826,7 +826,7 @@ mod tests {
 
 		assert_eq!(
 			input_manager.get_action_state(seat, action, device).value,
-			Value::Vector2(Vector2::new(1f32 / 2f32.sqrt(), 1f32 / 2f32.sqrt()))
+			Value::Vector2(Axis2::new(1f32 / 2f32.sqrt(), 1f32 / 2f32.sqrt()))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
@@ -836,7 +836,7 @@ mod tests {
 
 		assert_eq!(
 			input_manager.get_action_state(seat, action, device).value,
-			Value::Vector2(Vector2::new(0f32, 0f32))
+			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Left"), true.into());
@@ -846,7 +846,7 @@ mod tests {
 
 		assert_eq!(
 			input_manager.get_action_state(seat, action, device).value,
-			Value::Vector2(Vector2::new(0f32, 0f32))
+			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 	}
 
@@ -1001,8 +1001,8 @@ mod tests {
 			&mut input_manager,
 			device,
 			handle,
-			Vector2 { x: 0f32, y: 0f32 },
-			Vector2 { x: 1f32, y: 1f32 },
+			Axis2 { x: 0f32, y: 0f32 },
+			Axis2 { x: 1f32, y: 1f32 },
 			true,
 		);
 	}
@@ -1017,12 +1017,12 @@ mod tests {
 			&mut input_manager,
 			device,
 			handle,
-			Vector3 {
+			Axis3 {
 				x: 0f32,
 				y: 1.8f32,
 				z: 0f32,
 			},
-			Vector3 {
+			Axis3 {
 				x: 1f32,
 				y: 1f32,
 				z: 1f32,
@@ -1135,8 +1135,8 @@ mod tests {
 			handle,
 			"MoveForward",
 			"Keyboard.Up",
-			Vector2::zero(),
-			Vector2::new(0f32, 1f32),
+			Axis2::zero(),
+			Axis2::new(0f32, 1f32),
 		);
 	}
 
@@ -1152,8 +1152,8 @@ mod tests {
 			handle,
 			"MoveForward",
 			"Keyboard.Up",
-			Vector3::zero(),
-			Vector3::new(0f32, 0f32, 1f32),
+			Axis3::zero(),
+			Axis3::new(0f32, 0f32, 1f32),
 		);
 	}
 
@@ -1373,7 +1373,6 @@ mod tests {
 use std::{collections::HashMap, default};
 
 use log::warn;
-use math::{Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
@@ -1388,6 +1387,7 @@ use super::{
 	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
 	Value,
 };
+use super::{Axis2, Axis3};
 use crate::{
 	core::{
 		channel::{Channel as _, DefaultChannel},

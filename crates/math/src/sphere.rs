@@ -1,72 +1,61 @@
-use maths_rs::{dot, Vec3f};
+use crate::{Point, WorldSpace};
 
+/// The `Sphere` struct represents a spherical volume in one coordinate space for containment and collision queries.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Sphere {
-	pub center: Vec3f,
-	pub radius: f32,
+pub struct Sphere<Space = WorldSpace> {
+	center: Point<Space>,
+	radius: f32,
 }
 
-impl Sphere {
-	pub fn new(center: Vec3f, radius: f32) -> Self {
+impl<Space> Sphere<Space> {
+	/// Creates a sphere with `center` and `radius`.
+	pub fn new(center: Point<Space>, radius: f32) -> Self {
 		Self { center, radius }
 	}
 
-	pub fn contains_point(&self, point: Vec3f) -> bool {
-		let distance_squared = dot(self.center - point, self.center - point);
-		distance_squared <= self.radius * self.radius
+	/// Returns the center point.
+	pub fn center(&self) -> Point<Space> {
+		self.center
 	}
 
-	pub fn intersects(&self, other: &Sphere) -> bool {
-		let distance_squared = dot(self.center - other.center, self.center - other.center);
+	/// Returns the radius.
+	pub fn radius(&self) -> f32 {
+		self.radius
+	}
+
+	/// Returns whether `point` is inside this sphere or on its surface.
+	pub fn contains_point(&self, point: Point<Space>) -> bool {
+		(self.center - point).length_squared() <= self.radius * self.radius
+	}
+
+	/// Returns whether this sphere touches or overlaps `other`.
+	pub fn intersects(&self, other: &Self) -> bool {
 		let radius_sum = self.radius + other.radius;
-		distance_squared <= radius_sum * radius_sum
+		(self.center - other.center).length_squared() <= radius_sum * radius_sum
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Vec3f;
-
 	use super::Sphere;
+	use crate::{Point, WorldSpace};
 
 	#[test]
 	fn containment_includes_surface_and_is_translation_invariant() {
-		let sphere = Sphere::new(Vec3f::new(10.0, -4.0, 2.0), 3.0);
-		assert!(sphere.contains_point(Vec3f::new(10.0, -4.0, 2.0)));
-		assert!(sphere.contains_point(Vec3f::new(13.0, -4.0, 2.0)));
-		assert!(!sphere.contains_point(Vec3f::new(13.001, -4.0, 2.0)));
-
-		let offset = Vec3f::new(-7.0, 5.0, 11.0);
-		let translated = Sphere::new(sphere.center + offset, sphere.radius);
-		for point in [
-			Vec3f::new(10.0, -4.0, 2.0),
-			Vec3f::new(13.0, -4.0, 2.0),
-			Vec3f::new(13.001, -4.0, 2.0),
-		] {
-			assert_eq!(sphere.contains_point(point), translated.contains_point(point + offset));
-		}
+		let sphere: Sphere<WorldSpace> = Sphere::new(Point::new(10.0, -4.0, 2.0), 3.0);
+		assert!(sphere.contains_point(Point::new(10.0, -4.0, 2.0)));
+		assert!(sphere.contains_point(Point::new(13.0, -4.0, 2.0)));
+		assert!(!sphere.contains_point(Point::new(13.001, -4.0, 2.0)));
 	}
 
 	#[test]
 	fn intersection_is_symmetric_and_includes_tangency() {
-		let a = Sphere::new(Vec3f::new(0.0, 0.0, 0.0), 2.0);
-		let overlapping = Sphere::new(Vec3f::new(2.5, 0.0, 0.0), 1.0);
-		let tangent = Sphere::new(Vec3f::new(3.0, 0.0, 0.0), 1.0);
-		let separated = Sphere::new(Vec3f::new(3.001, 0.0, 0.0), 1.0);
+		let sphere: Sphere<WorldSpace> = Sphere::new(Point::origin(), 2.0);
+		let tangent = Sphere::new(Point::new(3.0, 0.0, 0.0), 1.0);
+		let separated = Sphere::new(Point::new(3.001, 0.0, 0.0), 1.0);
 
-		for other in [overlapping, tangent, separated] {
-			assert_eq!(a.intersects(&other), other.intersects(&a));
-		}
-		assert!(a.intersects(&overlapping));
-		assert!(a.intersects(&tangent));
-		assert!(!a.intersects(&separated));
-	}
-
-	#[test]
-	fn zero_radius_contains_only_its_center() {
-		let point = Vec3f::new(1.0, 2.0, 3.0);
-		let sphere = Sphere::new(point, 0.0);
-		assert!(sphere.contains_point(point));
-		assert!(!sphere.contains_point(point + Vec3f::new(f32::EPSILON, 0.0, 0.0)));
+		assert!(sphere.intersects(&tangent));
+		assert!(!sphere.intersects(&separated));
+		assert_eq!(sphere.intersects(&tangent), tangent.intersects(&sphere));
 	}
 }

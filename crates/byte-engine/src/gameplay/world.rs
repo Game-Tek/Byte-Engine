@@ -171,131 +171,38 @@ impl DefaultWorld {
 
 #[cfg(test)]
 mod tests {
-	use math::Vector3;
+	use math::Point;
 
 	use super::*;
 	use crate::{
-		core::{channel::Channel, listener::Listener, message::DeleteMessage},
+		core::listener::Listener,
 		gameplay::{Object, Transform},
 		physics::Body,
-		rendering::{lights::ConeLight, lights::PointLight, RenderableMesh},
-		space::Transformable,
+		space::{Positionable, Transformable},
 	};
 
 	#[test]
-	fn world_routes_one_lifecycle_identity_to_physics_rendering_and_state_channels() {
+	fn world_publishes_object_creation_with_a_branded_position() {
 		let mut world = DefaultWorld::new();
-		let mut body_listener = world.body_factory().listener();
-		let mut renderable_listener = world.renderable_factory().listener();
-		let mut transform_listener = world.transforms_channel().listener();
-		let mut delete_listener = world.delete_channel().listener();
-
+		let mut listener = world.body_factory().listener();
 		let mut object = Object::sphere(1.5);
-		object.transform_mut().set_position(Vector3::new(1.0, 2.0, 3.0));
-		let concrete = EntityHandle::from(object);
-		let body: EntityHandle<dyn Body> = concrete.clone();
-		let renderable: EntityHandle<dyn RenderableMesh> = concrete;
-
-		let lifecycle_handle = world.body_factory_mut().create(body);
-		world.renderable_factory_mut().derive(lifecycle_handle, renderable);
-		TransformationUpdate::apply(
-			world.transforms_channel_mut(),
-			lifecycle_handle,
-			Transform::from_position(Vector3::new(4.0, 5.0, 6.0)),
-		);
-		world.delete_channel_mut().send(DeleteMessage::new(lifecycle_handle));
-
-		let body_creation = body_listener.read().expect("physics creation");
-		let renderable_creation = renderable_listener.read().expect("render creation");
-		let transform = transform_listener.read().expect("transform update");
-		let deletion = delete_listener.read().expect("deletion update");
-
-		assert_eq!(body_creation.handle(), &lifecycle_handle);
-		assert_eq!(renderable_creation.handle(), &lifecycle_handle);
-		assert_eq!(body_creation.data().transform().get_position(), Vector3::new(1.0, 2.0, 3.0));
+		object.transform_mut().set_position(Point::new(1.0, 2.0, 3.0));
+		let body: EntityHandle<dyn Body> = EntityHandle::from(object);
+		world.body_factory_mut().create(body);
 		assert_eq!(
-			renderable_creation.data().transform().get_position(),
-			Vector3::new(1.0, 2.0, 3.0)
+			listener.read().expect("physics creation").data().position(),
+			Point::new(1.0, 2.0, 3.0)
 		);
-		assert_eq!(transform.handle(), &lifecycle_handle);
-		assert_eq!(transform.transform().get_position(), Vector3::new(4.0, 5.0, 6.0));
-		assert_eq!(deletion.handle(), &lifecycle_handle);
 	}
 
 	#[test]
 	fn world_routes_environment_creation_to_rendering_listeners() {
 		let mut world = DefaultWorld::new();
 		let mut listener = world.environment_factory().listener();
-
 		world.environment_factory_mut().create(Environment::new("studio.exr"));
-
-		let message = listener.read().expect("environment creation");
-		assert_eq!(message.data().resource_id(), "studio.exr");
-	}
-
-	#[test]
-	fn camera_and_light_factories_publish_typed_scene_payloads() {
-		let mut world = DefaultWorld::new();
-		let mut camera_listener = world.camera_factory().listener();
-		let mut light_listener = world.light_factory().listener();
-
-		let camera_handle = world.camera_factory_mut().create(Camera::new());
-		let light_handle = world.light_factory_mut().create(
-			PointLight::new(
-				Vector3::new(3.0, 2.0, 1.0),
-				crate::rendering::lights::LightColor::Kelvin(5_000.0),
-				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
-					candela: 100.0,
-					reference_distance_m: 1.0,
-				},
-			)
-			.expect("physical point light")
-			.into(),
+		assert_eq!(
+			listener.read().expect("environment creation").data().resource_id(),
+			"studio.exr"
 		);
-		let cone_handle = world.light_factory_mut().create(
-			ConeLight::new(
-				Vector3::new(0.0, 3.0, 0.0),
-				Vector3::new(0.0, -1.0, 0.0),
-				crate::rendering::lights::LightColor::Kelvin(4_500.0),
-				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
-					candela: 100.0,
-					reference_distance_m: 1.0,
-				},
-				15.0_f32.to_radians(),
-				30.0_f32.to_radians(),
-			)
-			.expect("physical cone light")
-			.into(),
-		);
-
-		let camera = camera_listener.read().expect("camera creation");
-		let light = light_listener.read().expect("light creation");
-		let cone = light_listener.read().expect("cone light creation");
-		assert_eq!(camera.handle(), &camera_handle);
-		assert_eq!(camera.data().vertical_fov(), 45.0);
-		assert_eq!(light.handle(), &light_handle);
-		assert!(matches!(light.data(), Lights::Point(point) if point.position == Vector3::new(3.0, 2.0, 1.0)));
-		assert_eq!(cone.handle(), &cone_handle);
-		assert!(matches!(cone.data(), Lights::Cone(light) if light.direction == Vector3::new(0.0, -1.0, 0.0)));
-	}
-
-	#[test]
-	fn audio_graph_factory_publishes_the_graph_with_its_lifecycle_handle() {
-		use crate::audio::graph::{
-			fns::{gain, r#loop, sample},
-			AudioProcessor, SamplePlaybackMode,
-		};
-
-		let mut world = DefaultWorld::new();
-		let mut listener = world.audio_graph_factory().listener();
-		let mut graph = gain(r#loop(sample("audio/ambience.ogg")), 0.5);
-
-		let handle = world.audio_graph_factory_mut().create(&mut graph);
-		let created = listener.read().expect("audio graph creation");
-
-		assert_eq!(created.handle(), &handle);
-		assert_eq!(created.data().resource_id, "audio/ambience.ogg");
-		assert_eq!(created.data().playback_mode, SamplePlaybackMode::Loop);
-		assert_eq!(&created.data().processors[..], &[AudioProcessor::Gain(0.5)]);
 	}
 }

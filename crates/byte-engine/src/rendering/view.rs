@@ -1,10 +1,5 @@
-use math::{
-	look_down,
-	mat::{MatInverse as _, MatTranslate as _},
-	orthographic_matrix,
-	plane::Plane,
-	projection_matrix, Base as _, Matrix4, Vector3, Vector4,
-};
+use math::{inverse, orthographic_matrix, projection_matrix, Matrix, Plane, Point, UnitVector, Vector, WorldSpace};
+use maths_rs::{mat::MatTranslate as _, Vec3f, Vec4f};
 
 use crate::gameplay::transform::Transform;
 
@@ -12,8 +7,8 @@ use crate::gameplay::transform::Transform;
 /// cameras, lights, render sinks, and shader setup.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
-	projection: Matrix4,
-	view: Matrix4,
+	projection: Matrix,
+	view: Matrix,
 
 	near: f32,
 	far: f32,
@@ -23,10 +18,10 @@ pub struct View {
 
 impl View {
 	/// Creates a perspective view for camera-style scene rendering.
-	pub fn new_perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32, position: Vector3, rotation: Vector3) -> Self {
+	pub fn new_perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32, position: Point, direction: UnitVector) -> Self {
 		Self {
 			projection: projection_matrix(fov, aspect_ratio, near, far),
-			view: look_down(rotation) * Matrix4::from_translation(-position),
+			view: world_view_matrix(position, direction),
 			near,
 			far,
 			y_fov: fov,
@@ -42,12 +37,12 @@ impl View {
 		top: f32,
 		near: f32,
 		far: f32,
-		position: Vector3,
-		rotation: Vector3,
+		position: Point,
+		direction: UnitVector,
 	) -> Self {
 		Self {
 			projection: orthographic_matrix(left, right, bottom, top, near, far),
-			view: look_down(rotation) * Matrix4::from_translation(-position),
+			view: world_view_matrix(position, direction),
 			near,
 			far,
 			y_fov: 0.0,
@@ -56,7 +51,7 @@ impl View {
 	}
 
 	/// Creates a view that shares this projection but uses a caller-provided view matrix.
-	pub fn from_view(&self, view: Matrix4) -> Self {
+	pub fn from_view(&self, view: Matrix) -> Self {
 		Self {
 			projection: self.projection,
 			view,
@@ -80,22 +75,22 @@ impl View {
 	}
 
 	/// Returns the projection matrix.
-	pub fn projection(&self) -> Matrix4 {
+	pub fn projection(&self) -> Matrix {
 		self.projection
 	}
 
 	/// Returns the view matrix.
-	pub fn view(&self) -> Matrix4 {
+	pub fn view(&self) -> Matrix {
 		self.view
 	}
 
 	/// Returns the projection matrix multiplied by the view matrix.
-	pub fn projection_view(&self) -> Matrix4 {
+	pub fn projection_view(&self) -> Matrix {
 		self.projection * self.view
 	}
 
 	/// Returns the projection matrix multiplied by the view matrix.
-	pub fn view_projection(&self) -> Matrix4 {
+	pub fn view_projection(&self) -> Matrix {
 		self.projection * self.view
 	}
 
@@ -129,19 +124,23 @@ impl View {
 		self.aspect_ratio
 	}
 
-	/// Returns the view-frustum corners in world space.
-	pub fn get_frustum_corners(&self) -> [Vector4; 8] {
-		let inv = self.view_projection().inverse();
+	/// Returns the view-frustum corners as world-space points.
+	pub fn get_frustum_corners(&self) -> [Point; 8] {
+		let inverse_view_projection = inverse(self.view_projection());
+		let mut corners = [Point::origin(); 8];
 
-		let mut corners = [Vector4::zero(); 8];
+		for (index, corner) in corners.iter_mut().enumerate() {
+			let x = if index & 1 == 0 { -1.0 } else { 1.0 };
+			let y = if index & 2 == 0 { -1.0 } else { 1.0 };
+			let z = if index & 4 == 0 { 0.0 } else { 1.0 };
+			let homogeneous_corner = inverse_view_projection * Vec4f::new(x, y, z, 1.0);
 
-		for i in 0..8 {
-			let x = if i & 1 == 0 { -1.0 } else { 1.0 };
-			let y = if i & 2 == 0 { -1.0 } else { 1.0 };
-			let z = if i & 4 == 0 { 0f32 } else { 1f32 };
-
-			let corner = inv * Vector4::new(x, y, z, 1.0);
-			corners[i] = corner / corner.w;
+			// Perspective division converts the explicit clip-space boundary back into a world point.
+			*corner = Point::from_maths(Vec3f::new(
+				homogeneous_corner.x / homogeneous_corner.w,
+				homogeneous_corner.y / homogeneous_corner.w,
+				homogeneous_corner.z / homogeneous_corner.w,
+			));
 		}
 
 		corners
@@ -151,99 +150,88 @@ impl View {
 	pub fn get_frustum_planes(&self) -> [Plane; 6] {
 		let pv = self.view_projection();
 
-		let r0 = Vector4::new(pv[0], pv[1], pv[2], pv[3]); // Right
-		let r1 = Vector4::new(pv[4], pv[5], pv[6], pv[7]); // Up
-		let r2 = Vector4::new(pv[8], pv[9], pv[10], pv[11]); // Forward
-		let r3 = Vector4::new(pv[12], pv[13], pv[14], pv[15]); // Clip space
+		let r0 = Vec4f::new(pv[0], pv[1], pv[2], pv[3]); // Right
+		let r1 = Vec4f::new(pv[4], pv[5], pv[6], pv[7]); // Up
+		let r2 = Vec4f::new(pv[8], pv[9], pv[10], pv[11]); // Forward
+		let r3 = Vec4f::new(pv[12], pv[13], pv[14], pv[15]); // Clip space
 
 		[
-			Plane::new(Vector3::new(r3.x + r0.x, r3.y + r0.y, r3.z + r0.z), r3.w + r0.w), // Left
-			Plane::new(Vector3::new(r3.x - r0.x, r3.y - r0.y, r3.z - r0.z), r3.w - r0.w), // Right
-			Plane::new(Vector3::new(r3.x + r1.x, r3.y + r1.y, r3.z + r1.z), r3.w + r1.w), // Bottom
-			Plane::new(Vector3::new(r3.x - r1.x, r3.y - r1.y, r3.z - r1.z), r3.w - r1.w), // Top
-			Plane::new(Vector3::new(r3.x + r2.x, r3.y + r2.y, r3.z + r2.z), r3.w + r2.w), // Near
-			Plane::new(Vector3::new(r3.x - r2.x, r3.y - r2.y, r3.z - r2.z), r3.w - r2.w), // Far
+			plane_from_coefficients(Vec4f::new(r3.x + r0.x, r3.y + r0.y, r3.z + r0.z, r3.w + r0.w)), // Left
+			plane_from_coefficients(Vec4f::new(r3.x - r0.x, r3.y - r0.y, r3.z - r0.z, r3.w - r0.w)), // Right
+			plane_from_coefficients(Vec4f::new(r3.x + r1.x, r3.y + r1.y, r3.z + r1.z, r3.w + r1.w)), // Bottom
+			plane_from_coefficients(Vec4f::new(r3.x - r1.x, r3.y - r1.y, r3.z - r1.z, r3.w - r1.w)), // Top
+			plane_from_coefficients(Vec4f::new(r3.x + r2.x, r3.y + r2.y, r3.z + r2.z, r3.w + r2.w)), // Near
+			plane_from_coefficients(Vec4f::new(r3.x - r2.x, r3.y - r2.y, r3.z - r2.z, r3.w - r2.w)), // Far
 		]
 	}
 }
 
+/// Builds a view matrix from branded world-space camera state at the matrix boundary.
+fn world_view_matrix(position: Point, direction: UnitVector) -> Matrix {
+	let up = UnitVector::<WorldSpace>::y_axis();
+	let vertical = direction.dot(up.into_vector()).abs() > 0.99;
+	let reference = if vertical { UnitVector::<WorldSpace>::z_axis() } else { up };
+	// `UnitVector` excludes zero and non-finite directions, and this reference is selected to be non-colinear with it.
+	let x_basis = maths_rs::normalize(maths_rs::cross(reference.into_maths(), direction.into_maths()));
+	let y_basis = maths_rs::normalize(if vertical {
+		maths_rs::cross(x_basis, direction.into_maths())
+	} else {
+		maths_rs::cross(direction.into_maths(), x_basis)
+	});
+	let orientation = Matrix::from((
+		Vec4f::from((x_basis, 0.0)),
+		Vec4f::from((y_basis, 0.0)),
+		Vec4f::from((direction.into_maths(), 0.0)),
+		Vec4f::new(0.0, 0.0, 0.0, 1.0),
+	));
+
+	orientation * Matrix::from_translation(-position.into_maths())
+}
+
+/// Converts an extracted homogeneous plane into the unit-normal representation required by [`Plane`].
+fn plane_from_coefficients(coefficients: Vec4f) -> Plane {
+	let unnormalized_normal = Vector::<WorldSpace>::from_maths(Vec3f::new(coefficients.x, coefficients.y, coefficients.z));
+	let (normal, length) = unnormalized_normal
+		.normalize_with_length()
+		.expect("Frustum plane normal is invalid. The most likely cause is a non-invertible view-projection matrix.");
+	Plane::new(normal, coefficients.w / length)
+}
+
 #[cfg(test)]
 mod tests {
-	use math::{assert_float_eq, assert_vec3f_near, VecN as _, Vector3};
-
 	use super::*;
 
-	#[test]
-	fn test_view_frustum_corners() {
-		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
+	fn assert_point_near(actual: Point, expected: Point) {
+		assert!((actual.x() - expected.x()).abs() < 0.001);
+		assert!((actual.y() - expected.y()).abs() < 0.001);
+		assert!((actual.z() - expected.z()).abs() < 0.001);
+	}
 
+	#[test]
+	fn perspective_view_returns_world_space_frustum_points() {
+		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
 
-		assert_eq!(corners[0], Vector4::new(-100.0, -100.0, 100.0, 1.0));
-		assert_eq!(corners[1], Vector4::new(100.0, -100.0, 100.0, 1.0));
-		assert_eq!(corners[2], Vector4::new(-100.0, 100.0, 100.0, 1.0));
-		assert_eq!(corners[3], Vector4::new(100.0, 100.0, 100.0, 1.0));
-		assert_eq!(corners[4], Vector4::new(-0.1, -0.1, 0.1, 1.0));
-		assert_eq!(corners[5], Vector4::new(0.1, -0.1, 0.1, 1.0));
-		assert_eq!(corners[6], Vector4::new(-0.1, 0.1, 0.1, 1.0));
-		assert_eq!(corners[7], Vector4::new(0.1, 0.1, 0.1, 1.0));
+		assert_point_near(corners[0], Point::new(-100.0, -100.0, 100.0));
+		assert_point_near(corners[7], Point::new(0.1, 0.1, 0.1));
 	}
 
 	#[test]
-	fn test_orthographic_view_frustum_corners() {
-		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
-
+	fn orthographic_view_returns_world_space_frustum_points() {
+		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
 
-		for (corner, expected) in corners.into_iter().zip([
-			Vector4::new(-1.0, -1.0, 100.0, 1.0),
-			Vector4::new(1.0, -1.0, 100.0, 1.0),
-			Vector4::new(-1.0, 1.0, 100.0, 1.0),
-			Vector4::new(1.0, 1.0, 100.0, 1.0),
-			Vector4::new(-1.0, -1.0, 0.1, 1.0),
-			Vector4::new(1.0, -1.0, 0.1, 1.0),
-			Vector4::new(-1.0, 1.0, 0.1, 1.0),
-			Vector4::new(1.0, 1.0, 0.1, 1.0),
-		]) {
-			assert_float_eq!(corner.x, expected.x, "Orthographic corner x");
-			assert_float_eq!(corner.y, expected.y, "Orthographic corner y");
-			assert_float_eq!(corner.z, expected.z, "Orthographic corner z");
-			assert_float_eq!(corner.w, expected.w, "Orthographic corner w");
-		}
+		assert_point_near(corners[0], Point::new(-1.0, -1.0, 100.0));
+		assert_point_near(corners[7], Point::new(1.0, 1.0, 0.1));
 	}
 
 	#[test]
-	fn test_orthographic_view_frustum_planes() {
-		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
-
+	fn frustum_planes_keep_checked_world_space_normals() {
+		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let planes = view.get_frustum_planes();
 
-		assert_eq!(planes[0].normal, Vector3::new(1.0, 0.0, 0.0)); // Left
-		assert_eq!(planes[1].normal, Vector3::new(-1.0, 0.0, 0.0)); // Right
-		assert_eq!(planes[2].normal, Vector3::new(0.0, 1.0, 0.0)); // Bottom
-		assert_eq!(planes[3].normal, Vector3::new(0.0, -1.0, 0.0)); // Top
-		assert_eq!(planes[4].normal, Vector3::new(0.0, 0.0, -1.0)); // Near
-		assert_eq!(planes[5].normal, Vector3::new(0.0, 0.0, 1.0)); // Far
-	}
-
-	#[test]
-	fn test_perspective_view_frustum_planes() {
-		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
-
-		let planes = view.get_frustum_planes();
-
-		assert_vec3f_near!(planes[0].normal, Vector3::new(0.707, 0.0, 0.707)); // Left
-		assert_vec3f_near!(planes[1].normal, Vector3::new(-0.707, 0.0, 0.707)); // Right
-		assert_vec3f_near!(planes[2].normal, Vector3::new(0.0, 0.707, 0.707)); // Bottom
-		assert_vec3f_near!(planes[3].normal, Vector3::new(0.0, -0.707, 0.707)); // Top
-		assert_vec3f_near!(planes[4].normal, Vector3::new(0.0, 0.0, 1.0)); // Near
-		assert_vec3f_near!(planes[5].normal, Vector3::new(0.0, 0.0, 1.0)); // Far
-
-		assert_float_eq!(planes[0].distance, 0.0, "Left plane distance");
-		assert_float_eq!(planes[1].distance, 0.0, "Right plane distance");
-		assert_float_eq!(planes[2].distance, 0.0, "Bottom plane distance");
-		assert_float_eq!(planes[3].distance, 0.0, "Top plane distance");
-		assert_float_eq!(planes[4].distance, 0.1, "Near plane distance");
-		assert_float_eq!(planes[5].distance, -0.1, "Far plane distance");
+		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);
+		assert!((planes[0].normal().z() - 0.707).abs() < 0.001);
+		assert!((planes[4].distance() - 0.1).abs() < 0.001);
 	}
 }

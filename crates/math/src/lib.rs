@@ -1,97 +1,106 @@
-pub mod cube;
+//! Branded, allocation-free three-dimensional geometry for Byte-Engine.
+//!
+//! Use [`Point`] for locations, [`Vector`] for displacements, and [`UnitVector`] for normals and directions. Space brands prevent accidental operations across coordinate systems; game domains define their own brands and use them as the `Space` parameter.
+
+mod geometry;
+
+pub mod aabb;
+pub mod collision;
 pub mod plane;
 pub mod ray;
 pub mod sphere;
 
-pub mod collision;
+pub use aabb::AABB;
+pub use geometry::{NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace};
+use maths_rs::mat::{MatNew4, MatTranspose as _};
+pub use maths_rs::{Mat4f as Matrix, Quatf as Quaternion};
+pub use plane::Plane;
+pub use ray::Ray;
+pub use sphere::Sphere;
 
-pub use maths_rs::cross;
-pub use maths_rs::dot;
-pub use maths_rs::length;
-pub use maths_rs::mag as magnitude;
-pub use maths_rs::mag2 as magnitude_squared;
-pub use maths_rs::mat;
-pub use maths_rs::normalize;
-pub use maths_rs::num::Base;
-pub use maths_rs::num::Number;
-pub use maths_rs::vec::Magnitude;
-pub use maths_rs::vec::VecN;
-pub use maths_rs::Mat3f as Matrix3;
-pub use maths_rs::Mat4f as Matrix4;
-pub use maths_rs::Quatf as Quaternion;
-pub use maths_rs::Vec2f as Vector2;
-pub use maths_rs::Vec3f as Vector3;
-pub use maths_rs::Vec4f as Vector4;
-
-#[macro_use]
-pub mod macros {
-	#[macro_export]
-	macro_rules! assert_float_eq_with_epsilon {
-		($left:expr, $right:expr, $epsilon:expr) => {
-			match (&$left, &$right) {
-				(left_val, right_val) => {
-					if ((*left_val as f64) - (*right_val as f64)).abs() > $epsilon as f64 {
-						panic!(
-							"assertion failed: `(left == right)`\n  left: `{:?}`,\n right: `{:?}`",
-							*left_val, *right_val
-						)
-					}
+/// Asserts that two floating-point values differ by no more than an explicit epsilon.
+///
+/// The expressions are evaluated once. The assertion fails for non-finite values so tests do not silently accept `NaN`.
+#[macro_export]
+macro_rules! assert_float_eq_with_epsilon {
+	($left:expr, $right:expr, $epsilon:expr $(,)?) => {
+		match (&$left, &$right, &$epsilon) {
+			(left, right, epsilon) => {
+				let difference = (*left as f64 - *right as f64).abs();
+				let epsilon = *epsilon as f64;
+				if !difference.is_finite() || !epsilon.is_finite() || epsilon < 0.0 || difference > epsilon {
+					panic!(
+						"assertion failed: values are not within epsilon\n  left: `{:?}`,\n right: `{:?}`,\n difference: `{difference:?}`,\n epsilon: `{epsilon:?}`",
+						*left, *right,
+					);
 				}
 			}
-		};
-		($left:expr, $right:expr, $epsilon:expr, $($arg:tt)+) => {
-			match (&$left, &$right) {
-				(left_val, right_val) => {
-					if ((*left_val as f64) - (*right_val as f64)).abs() > $epsilon as f64 {
-						panic!(
-							"assertion failed: `(left == right)`\n  left: `{:?}`,\n right: `{:?}`\n{}",
-							*left_val, *right_val, format_args!($($arg)+)
-						)
-					}
+		}
+	};
+	($left:expr, $right:expr, $epsilon:expr, $($arg:tt)+) => {
+		match (&$left, &$right, &$epsilon) {
+			(left, right, epsilon) => {
+				let difference = (*left as f64 - *right as f64).abs();
+				let epsilon = *epsilon as f64;
+				if !difference.is_finite() || !epsilon.is_finite() || epsilon < 0.0 || difference > epsilon {
+					panic!(
+						"assertion failed: values are not within epsilon\n  left: `{:?}`,\n right: `{:?}`,\n difference: `{difference:?}`,\n epsilon: `{epsilon:?}`\n{}",
+						*left, *right, format_args!($($arg)+),
+					);
 				}
 			}
-		};
-	}
-
-	#[macro_export]
-	macro_rules! assert_float_eq {
-		($left:expr, $right:expr) => {
-			$crate::assert_float_eq_with_epsilon!($left, $right, 0.001)
-		};
-		($left:expr, $right:expr, $($arg:tt)+) => {
-			$crate::assert_float_eq_with_epsilon!($left, $right, 0.001, $($arg)+)
-		};
-	}
-
-	#[macro_export]
-	macro_rules! assert_vec3f_near {
-		($left:expr, $right:expr) => {
-			$crate::assert_float_eq!($left.x, $right.x);
-			$crate::assert_float_eq!($left.y, $right.y);
-			$crate::assert_float_eq!($left.z, $right.z);
-		};
-		($left:expr, $right:expr, $($arg:tt)+) => {
-			$crate::assert_float_eq!($left.x, $right.x, $($arg)+);
-			$crate::assert_float_eq!($left.y, $right.y, $($arg)+);
-			$crate::assert_float_eq!($left.z, $right.z, $($arg)+);
-		};
-	}
+		}
+	};
 }
 
-use maths_rs::mat::{MatNew4, MatTranspose as _};
+/// Asserts that two floating-point values differ by no more than `0.001`.
+#[macro_export]
+macro_rules! assert_float_eq {
+	($left:expr, $right:expr $(,)?) => {
+		$crate::assert_float_eq_with_epsilon!($left, $right, 0.001)
+	};
+	($left:expr, $right:expr, $($arg:tt)+) => {
+		$crate::assert_float_eq_with_epsilon!($left, $right, 0.001, $($arg)+)
+	};
+}
 
-/// The `ShaderMatrix4` struct provides the 4-by-4 matrix layout that graphics backends expect from CPU data.
+/// Asserts that two branded geometry values have near-equal x, y, and z components.
+///
+/// The values can be [`Point`], [`Vector`], or [`UnitVector`] values in the same space.
+#[macro_export]
+macro_rules! assert_geometry_near {
+	($left:expr, $right:expr $(,)?) => {
+		match (&$left, &$right) {
+			(left, right) => {
+				$crate::assert_float_eq!(left.x(), right.x(), "x component differs");
+				$crate::assert_float_eq!(left.y(), right.y(), "y component differs");
+				$crate::assert_float_eq!(left.z(), right.z(), "z component differs");
+			}
+		}
+	};
+	($left:expr, $right:expr, $($arg:tt)+) => {
+		match (&$left, &$right) {
+			(left, right) => {
+				$crate::assert_float_eq!(left.x(), right.x(), $($arg)+);
+				$crate::assert_float_eq!(left.y(), right.y(), $($arg)+);
+				$crate::assert_float_eq!(left.z(), right.z(), $($arg)+);
+			}
+		}
+	};
+}
+
+/// The `ShaderMatrix` struct provides the aligned matrix layout graphics backends use for GPU uploads.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ShaderMatrix4(pub [f32; 16]);
+pub struct ShaderMatrix(pub [f32; 16]);
 
-/// The `ShaderMatrix4x3` struct provides the compact affine matrix layout used to send model transforms to the GPU.
+/// The `AffineShaderMatrix` struct provides the compact affine matrix layout for GPU transform uploads.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ShaderMatrix4x3(pub [f32; 12]);
+pub struct AffineShaderMatrix(pub [f32; 12]);
 
-impl From<Matrix4> for ShaderMatrix4 {
-	fn from(mut value: Matrix4) -> Self {
+impl From<Matrix> for ShaderMatrix {
+	fn from(mut value: Matrix) -> Self {
 		#[cfg(target_os = "macos")]
 		{
 			value = value.transpose();
@@ -104,14 +113,9 @@ impl From<Matrix4> for ShaderMatrix4 {
 	}
 }
 
-impl From<Matrix4> for ShaderMatrix4x3 {
-	fn from(mut value: Matrix4) -> Self {
+impl From<Matrix> for AffineShaderMatrix {
+	fn from(mut value: Matrix) -> Self {
 		value = value.transpose();
-		let value = [
-			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
-			value[11], value[12], value[13], value[14], value[15],
-		];
-
 		Self([
 			value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9], value[10], value[12], value[13],
 			value[14],
@@ -119,95 +123,42 @@ impl From<Matrix4> for ShaderMatrix4x3 {
 	}
 }
 
-/// Converts a camera-relative movement command to a direction on the horizontal plane.
-pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
-	Vector3::new(direction.x, 0.0, direction.z) * command.z + Vector3::new(direction.z, 0.0, -direction.x) * command.x
+/// Converts a camera-relative movement command into a horizontal world-space displacement.
+pub fn plane_navigation<Space>(direction: UnitVector<Space>, command: Vector<Space>) -> Vector<Space> {
+	Vector::new(direction.x(), 0.0, direction.z()) * command.z() + Vector::new(direction.z(), 0.0, -direction.x()) * command.x()
 }
 
-/// Returns a left-handed perspective projection matrix with a depth range from 0 to 1.
-///
-/// # Arguments
-///
-/// * `fov` - The full vertical field of view, in degrees.
-/// * `aspect_ratio` - The width-to-height ratio of the viewport.
-/// * `near_plane` - The distance to the near clipping plane.
-/// * `far_plane` - The distance to the far clipping plane.
-pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let h = 1f32 / (fov / 2f32).to_radians().tan();
-	let w = h / aspect_ratio;
+/// Returns whether two directions are nearly parallel or anti-parallel.
+pub fn are_colinear<Space>(first: UnitVector<Space>, second: UnitVector<Space>) -> bool {
+	first.dot(second.into_vector()).abs() > 0.99
+}
 
-	let far_minus_near = far_plane - near_plane;
+/// Returns an orthonormal transform whose forward basis follows `normal`.
+pub fn from_normal<Space>(normal: UnitVector<Space>) -> Matrix {
+	let up = UnitVector::y_axis();
+	let reference = if are_colinear(normal, up) { UnitVector::z_axis() } else { up };
+	// `UnitVector` values are finite and unit length; the non-colinear reference makes both cross products nonzero.
+	let x_basis = maths_rs::normalize(maths_rs::cross(normal.into_maths(), reference.into_maths()));
+	let y_basis = maths_rs::normalize(maths_rs::cross(normal.into_maths(), x_basis));
 
-	let a = -near_plane / far_minus_near;
-	let b = (near_plane * far_plane) / far_minus_near;
-
-	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((w, 0f32, 0f32, 0f32)),
-		maths_rs::Vec4f::from((0f32, h, 0f32, 0f32)),
-		maths_rs::Vec4f::from((0f32, 0f32, a, b)),
-		maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+	Matrix::from((
+		maths_rs::Vec4f::from((x_basis, 0.0)),
+		maths_rs::Vec4f::from((y_basis, 0.0)),
+		maths_rs::Vec4f::from((normal.into_maths(), 0.0)),
+		maths_rs::Vec4f::from((0.0, 0.0, 0.0, 1.0)),
 	))
 }
 
-pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let far_minus_near = far_plane - near_plane;
-	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((2f32 / width, 0f32, 0f32, 0f32)),
-		maths_rs::Vec4f::from((0f32, 2f32 / height, 0f32, 0f32)),
-		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
-		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-	))
-}
-
-pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let far_minus_near = far_plane - near_plane;
-	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((2f32 / (right - left), 0f32, 0f32, -(right + left) / (right - left))),
-		maths_rs::Vec4f::from((0f32, 2f32 / (top - bottom), 0f32, -(top + bottom) / (top - bottom))),
-		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
-		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-	))
-}
-
-pub fn are_colinear(a: crate::Vector3, b: crate::Vector3) -> bool {
-	maths_rs::dot(a, b).abs() > 0.99f32
-}
-
-pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
-	let x_basis;
-	let y_basis;
-	let z_basis = normal;
-
-	if are_colinear(normal, Vector3::new(0f32, 1f32, 0f32)) {
-		x_basis = maths_rs::normalize(maths_rs::cross(
-			maths_rs::normalize(normal),
-			crate::Vector3::new(0f32, 0f32, 1f32),
-		));
-		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
-	} else {
-		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
-		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
-	}
-
-	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((x_basis, 0f32)),
-		maths_rs::Vec4f::from((y_basis, 0f32)),
-		maths_rs::Vec4f::from((z_basis, 0f32)),
-		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-	))
-}
-
-pub use from_normal as look_down;
-
-pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
+/// Builds a rotation matrix around a checked axis.
+pub fn from_rotation<Space>(axis: UnitVector<Space>, theta: f32) -> Matrix {
 	let c = theta.cos();
 	let s = -theta.sin();
 	let one_minus_c = 1.0 - c;
-	let x = axis.x;
-	let y = axis.y;
-	let z = axis.z;
+	let x = axis.x();
+	let y = axis.y();
+	let z = axis.z();
 
-	maths_rs::Mat4f::new(
+	Matrix::new(
 		c + x * x * one_minus_c,
 		x * y * one_minus_c - z * s,
 		x * z * one_minus_c + y * s,
@@ -227,322 +178,154 @@ pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	)
 }
 
-/// Returns the shortest orientation from the engine's forward axis to `direction`.
-pub fn orientation_from_direction(direction: Vector3) -> Quaternion {
-	let dir = normalize(direction);
-	let forward = Vector3::new(0.0, 0.0, 1.0);
-	let alignment = dot(forward, dir).clamp(-1.0, 1.0);
+/// Returns the shortest orientation from the engine forward axis to `direction`.
+pub fn orientation_from_direction<Space>(direction: UnitVector<Space>) -> Quaternion {
+	let forward = UnitVector::z_axis();
+	let alignment = forward.dot(direction.into_vector()).clamp(-1.0, 1.0);
 
-	// Opposite vectors have no unique rotation axis. Use X so the result stays
-	// deterministic without flattening valid rotations near the forward axis.
+	// Opposite directions have no unique rotation axis, so use x for deterministic output.
 	if alignment <= -1.0 + f32::EPSILON {
-		return Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
+		return Quaternion::from_axis_angle(UnitVector::<Space>::x_axis().into_maths(), std::f32::consts::PI);
 	}
 
-	let axis = cross(forward, dir);
-	normalize(Quaternion::new(axis.x, axis.y, axis.z, 1.0 + alignment))
+	let axis = forward.cross(direction.into_vector());
+	maths_rs::normalize(Quaternion::new(axis.x(), axis.y(), axis.z(), 1.0 + alignment))
 }
 
-/// Returns the normalized direction produced by rotating the engine's forward axis.
-pub fn direction_from_orientation(orientation: Quaternion) -> Vector3 {
-	let forward = Vector3::new(0.0, 0.0, 1.0);
-	let rotated_forward = orientation * forward;
-	normalize(rotated_forward)
+/// Returns the checked direction produced by rotating the engine forward axis.
+///
+/// The method returns [`NormalizationError`] if `orientation` produces a non-finite direction.
+pub fn direction_from_orientation(orientation: Quaternion) -> Result<UnitVector, NormalizationError> {
+	let rotated_forward = orientation * UnitVector::<WorldSpace>::z_axis().into_maths();
+	Vector::from_maths(rotated_forward).normalize()
 }
 
-/// Returns the inverse of a left-handed, row-major 4-by-4 matrix.
-pub fn inverse(m: maths_rs::Mat4f) -> maths_rs::Mat4f {
-	let mut inv = maths_rs::Mat4f::default();
+/// Returns a left-handed perspective projection matrix with a zero-to-one depth range.
+pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> Matrix {
+	let h = 1.0 / (fov * 0.5).to_radians().tan();
+	let w = h / aspect_ratio;
+	let range = far_plane - near_plane;
+	let a = -near_plane / range;
+	let b = near_plane * far_plane / range;
 
-	inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11]
-		- m[13] * m[7] * m[10];
-	inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11]
-		+ m[12] * m[7] * m[10];
-	inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11]
-		- m[12] * m[7] * m[9];
-	inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10]
-		+ m[12] * m[6] * m[9];
-	inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11]
-		+ m[13] * m[3] * m[10];
-	inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11]
-		- m[12] * m[3] * m[10];
-	inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11]
-		+ m[12] * m[3] * m[9];
-	inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10]
-		- m[12] * m[2] * m[9];
-	inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7]
-		- m[13] * m[3] * m[6];
-	inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7]
-		+ m[12] * m[3] * m[6];
-	inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7]
-		- m[12] * m[3] * m[5];
-	inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6]
-		+ m[12] * m[2] * m[5];
-	inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7]
-		+ m[9] * m[3] * m[6];
-	inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7]
-		- m[8] * m[3] * m[6];
-	inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7]
-		+ m[8] * m[3] * m[5];
-	inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6]
-		- m[8] * m[2] * m[5];
+	Matrix::from((
+		maths_rs::Vec4f::from((w, 0.0, 0.0, 0.0)),
+		maths_rs::Vec4f::from((0.0, h, 0.0, 0.0)),
+		maths_rs::Vec4f::from((0.0, 0.0, a, b)),
+		maths_rs::Vec4f::from((0.0, 0.0, 1.0, 0.0)),
+	))
+}
 
-	let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+/// Returns an orthographic projection matrix centered on the origin.
+pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> Matrix {
+	let range = far_plane - near_plane;
+	Matrix::from((
+		maths_rs::Vec4f::from((2.0 / width, 0.0, 0.0, 0.0)),
+		maths_rs::Vec4f::from((0.0, 2.0 / height, 0.0, 0.0)),
+		maths_rs::Vec4f::from((0.0, 0.0, -1.0 / range, far_plane / range)),
+		maths_rs::Vec4f::from((0.0, 0.0, 0.0, 1.0)),
+	))
+}
 
-	if det == 0f32 {
-		panic!("Matrix is not invertible");
-	}
+/// Returns an orthographic projection matrix for the supplied extents.
+pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> Matrix {
+	let range = far_plane - near_plane;
+	Matrix::from((
+		maths_rs::Vec4f::from((2.0 / (right - left), 0.0, 0.0, -(right + left) / (right - left))),
+		maths_rs::Vec4f::from((0.0, 2.0 / (top - bottom), 0.0, -(top + bottom) / (top - bottom))),
+		maths_rs::Vec4f::from((0.0, 0.0, -1.0 / range, far_plane / range)),
+		maths_rs::Vec4f::from((0.0, 0.0, 0.0, 1.0)),
+	))
+}
 
-	let det = 1.0 / det;
+/// Returns the inverse of `matrix`.
+pub fn inverse(matrix: Matrix) -> Matrix {
+	use maths_rs::mat::MatInverse as _;
 
-	for i in 0..16 {
-		inv[i] *= det;
-	}
-
-	inv
+	matrix.inverse()
 }
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Vec3f;
+	use super::*;
 
 	#[test]
-	fn test_float_equality() {
-		let result = 2.0 + 2.0;
-		assert_float_eq!(result, 4.0);
+	fn float_assertions_accept_near_values_and_reject_nan() {
+		crate::assert_float_eq!(2.0 + 2.0, 4.0);
+		crate::assert_geometry_near!(
+			Vector::<WorldSpace>::new(1.0, 2.0, 3.0),
+			Vector::<WorldSpace>::new(1.0, 2.0, 3.00005)
+		);
+
+		let result = std::panic::catch_unwind(|| crate::assert_float_eq!(f32::NAN, 0.0));
+		assert!(result.is_err());
 	}
 
 	#[test]
-	#[should_panic(expected = "assertion failed")]
-	fn test_float_inequality() {
-		let result = 2.0 + 2.0;
-		assert_float_eq!(result, 5.0);
-	}
+	fn from_normal_builds_a_right_handed_orthonormal_basis() {
+		for normal in [
+			UnitVector::<WorldSpace>::z_axis(),
+			UnitVector::<WorldSpace>::y_axis(),
+			UnitVector::<WorldSpace>::x_axis(),
+			-UnitVector::<WorldSpace>::x_axis(),
+		] {
+			let basis = from_normal(normal);
+			let x = Vector::<WorldSpace>::new(basis[0], basis[1], basis[2]);
+			let y = Vector::<WorldSpace>::new(basis[4], basis[5], basis[6]);
+			let z = Vector::<WorldSpace>::new(basis[8], basis[9], basis[10]);
 
-	#[test]
-	fn test_vec3f_near() {
-		let vec1 = Vec3f::new(1.0, 2.0, 3.0);
-		let vec2 = Vec3f::new(1.0, 2.0, 3.00005);
-		assert_vec3f_near!(vec1, vec2);
-	}
-
-	use maths_rs::mat::{MatInverse, MatNew4};
-
-	use crate::orientation_from_direction;
-
-	#[test]
-	fn test_from_normal() {
-		let value = super::from_normal(crate::Vector3::new(0f32, 0f32, 1f32));
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
-
-		let value = super::from_normal(crate::Vector3::new(0f32, 1f32, 0f32));
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, -1f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
-
-		let value = super::from_normal(crate::Vector3::new(1f32, 0f32, 0f32));
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((0f32, 0f32, -1f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
-
-		let value = super::from_normal(crate::Vector3::new(-1f32, 0f32, 0f32));
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((-1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
-	}
-
-	#[test]
-	fn test_from_normal_preserves_handedness_for_vertical_vectors() {
-		for normal in [crate::Vector3::new(0.0, 1.0, 0.0), crate::Vector3::new(0.0, -1.0, 0.0)] {
-			let basis = super::from_normal(normal);
-			let x = crate::Vector3::new(basis[0], basis[1], basis[2]);
-			let y = crate::Vector3::new(basis[4], basis[5], basis[6]);
-			let z = crate::Vector3::new(basis[8], basis[9], basis[10]);
-
-			assert!(maths_rs::dot(maths_rs::cross(x, y), z) > 0.0);
+			crate::assert_float_eq_with_epsilon!(x.length(), 1.0, 0.0001);
+			crate::assert_float_eq_with_epsilon!(y.length(), 1.0, 0.0001);
+			crate::assert_float_eq_with_epsilon!(z.length(), 1.0, 0.0001);
+			crate::assert_float_eq_with_epsilon!(x.dot(y), 0.0, 0.0001);
+			crate::assert_float_eq_with_epsilon!(x.cross(y).dot(z), 1.0, 0.0001);
+			crate::assert_geometry_near!(z, normal.into_vector());
 		}
 	}
 
 	#[test]
-	fn test_inverse_matrix() {
-		let value = maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		));
-		let value = super::inverse(value);
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
+	fn inverse_preserves_identity_and_inverts_a_scale_matrix() {
+		let identity = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+		assert_eq!(inverse(identity), identity);
 
-		let value = maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 2f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 3f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		));
-		let value = super::inverse(value);
-		assert_eq!(
-			value,
-			maths_rs::Mat4f::from((
-				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0.5f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 1f32 / 3f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-			))
-		);
-
-		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;
-
-		let value = maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 2f32, 3f32, 4f32)),
-			maths_rs::Vec4f::from((5f32, 1f32, 6f32, 7f32)),
-			maths_rs::Vec4f::from((8f32, 9f32, 1f32, 10f32)),
-			maths_rs::Vec4f::from((11f32, 12f32, 13f32, 1f32)),
-		));
-		let value = value.inverse();
-
-		assert!(nearly_equal(value[0], -212f32 / 507.0f32));
-		assert!(nearly_equal(value[1], 55f32 / 338f32));
-		assert!(nearly_equal(value[2], 157f32 / 3042f32));
-		assert!(nearly_equal(value[3], 53f32 / 3042f32));
-		assert!(nearly_equal(value[4], 103f32 / 507f32));
-		assert!(nearly_equal(value[5], -61f32 / 338f32));
-		assert!(nearly_equal(value[6], 127f32 / 3042f32));
-		assert!(nearly_equal(value[7], 101f32 / 3042f32));
-		assert!(nearly_equal(value[8], 79f32 / 507f32));
-		assert!(nearly_equal(value[9], 9f32 / 338f32));
-		assert!(nearly_equal(value[10], -257f32 / 3042f32));
-		assert!(nearly_equal(value[11], 107f32 / 3042f32));
-		assert!(nearly_equal(value[12], 23f32 / 169f32));
-		assert!(nearly_equal(value[13], 5f32 / 169f32));
-		assert!(nearly_equal(value[14], 5f32 / 169f32));
-		assert!(nearly_equal(value[15], -8f32 / 169f32));
+		let scale = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+		let inverse_scale = inverse(scale);
+		crate::assert_float_eq_with_epsilon!(inverse_scale[0], 1.0, 0.0001);
+		crate::assert_float_eq_with_epsilon!(inverse_scale[5], 0.5, 0.0001);
+		crate::assert_float_eq_with_epsilon!(inverse_scale[10], 1.0 / 3.0, 0.0001);
 	}
 
 	#[test]
-	fn test_orientation_from_direction() {
-		let dir = maths_rs::Vec3f::from((0f32, 0f32, 1f32));
-		let quaternion = orientation_from_direction(dir);
-		let s = quaternion.as_slice();
-
-		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;
-
-		assert!(nearly_equal(s[0], 0f32));
-		assert!(nearly_equal(s[1], 0f32));
-		assert!(nearly_equal(s[2], 0f32));
-		assert!(nearly_equal(s[3], 1f32));
+	fn orientation_round_trip_preserves_representative_checked_directions() {
+		for direction in [
+			UnitVector::<WorldSpace>::z_axis(),
+			-UnitVector::<WorldSpace>::z_axis(),
+			UnitVector::<WorldSpace>::x_axis(),
+			UnitVector::<WorldSpace>::y_axis(),
+			Vector::<WorldSpace>::new(0.3, -0.4, 0.5).normalize().unwrap(),
+		] {
+			let resolved = direction_from_orientation(orientation_from_direction(direction)).unwrap();
+			crate::assert_geometry_near!(resolved, direction, "orientation round trip must preserve direction");
+		}
 	}
 
 	#[test]
 	fn orientation_from_near_forward_direction_preserves_small_mouse_motion() {
-		// One logical point from the center of a 1024-point window produces this
-		// yaw through the engine's sphere input mapping.
 		let yaw = (2.0 / 1024.0) * std::f32::consts::PI;
-		let direction = Vec3f::new(yaw.sin(), 0.0, yaw.cos());
+		let direction = Vector::<WorldSpace>::new(yaw.sin(), 0.0, yaw.cos()).normalize().unwrap();
+		let resolved = direction_from_orientation(orientation_from_direction(direction)).unwrap();
 
-		let resolved = super::direction_from_orientation(orientation_from_direction(direction));
-
-		assert_float_eq_with_epsilon!(resolved.x, direction.x, 0.000001);
-		assert_float_eq_with_epsilon!(resolved.y, direction.y, 0.000001);
-		assert_float_eq_with_epsilon!(resolved.z, direction.z, 0.000001);
+		crate::assert_geometry_near!(resolved, direction, "near-forward rotations must retain small input changes");
 	}
 
 	#[test]
-	fn orientation_direction_round_trip_preserves_representative_directions() {
-		for direction in [
-			Vec3f::new(0.0, 0.0, 1.0),
-			Vec3f::new(0.0, 0.0, -1.0),
-			Vec3f::new(1.0, 0.0, 0.0),
-			Vec3f::new(0.0, 1.0, 0.0),
-			super::normalize(Vec3f::new(0.3, -0.4, 0.5)),
-		] {
-			let resolved = super::direction_from_orientation(orientation_from_direction(direction));
-
-			assert_float_eq_with_epsilon!(resolved.x, direction.x, 0.000001);
-			assert_float_eq_with_epsilon!(resolved.y, direction.y, 0.000001);
-			assert_float_eq_with_epsilon!(resolved.z, direction.z, 0.000001);
-		}
-	}
-
-	#[test]
-	fn shader_matrix4_matches_platform_upload_layout() {
-		let matrix = crate::Matrix4::new(
+	fn shader_matrix_layouts_are_stable() {
+		let matrix = Matrix::new(
 			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
 		);
-		let shader_matrix = crate::ShaderMatrix4::from(matrix);
+		let affine = AffineShaderMatrix::from(matrix);
 
-		#[cfg(target_os = "macos")]
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 5.0, 9.0, 13.0, 2.0, 6.0, 10.0, 14.0, 3.0, 7.0, 11.0, 15.0, 4.0, 8.0, 12.0, 16.0]
-		);
-
-		#[cfg(not(target_os = "macos"))]
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
-		);
-	}
-
-	#[test]
-	fn shader_matrix4x3_preserves_affine_upload_layout() {
-		let matrix = crate::Matrix4::new(
-			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
-		);
-		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
-
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]
-		);
-		assert_eq!(std::mem::size_of::<crate::ShaderMatrix4x3>(), 48);
-		assert_eq!(std::mem::align_of::<crate::ShaderMatrix4x3>(), 4);
-	}
-
-	#[test]
-	fn shader_matrix4x3_uploads_translation_in_fourth_column() {
-		use crate::mat::MatTranslate as _;
-
-		let matrix = crate::Matrix4::from_translation(crate::Vector3::new(10.0, 20.0, 30.0));
-		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
-
-		assert_eq!(
-			shader_matrix.0,
-			[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]
-		);
+		assert_eq!(affine.0, [1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]);
+		assert_eq!(std::mem::size_of::<AffineShaderMatrix>(), 48);
 	}
 }

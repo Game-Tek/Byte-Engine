@@ -1,4 +1,4 @@
-use math::{mat::MatNew4 as _, Matrix4};
+use math::Matrix;
 use resource_management::resources::{
 	animation::{Animation, QuaternionCurve, Vector3Curve},
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
@@ -40,7 +40,7 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 pub fn write_global_pose(
 	skeleton: &Skeleton,
 	local_pose: &[LocalTransform],
-	output: &mut Vec<Matrix4>,
+	output: &mut Vec<Matrix>,
 ) -> Result<(), PoseError> {
 	if local_pose.len() != skeleton.nodes.len() {
 		return Err(PoseError::LocalPoseLength {
@@ -71,7 +71,7 @@ pub fn sample_pose(
 	time: f32,
 	source_locals: &mut Vec<LocalTransform>,
 	target_locals: &mut Vec<LocalTransform>,
-	output: &mut Vec<Matrix4>,
+	output: &mut Vec<Matrix>,
 ) {
 	sample_local_pose(animation, time, source_locals);
 
@@ -83,7 +83,7 @@ pub fn sample_pose(
 }
 
 /// Converts a blendable local transform into the matrix convention used by render pose updates.
-fn local_matrix(local: LocalTransform) -> Matrix4 {
+fn local_matrix(local: LocalTransform) -> Matrix {
 	let [x, y, z, w] = local.rotation;
 	let [sx, sy, sz] = local.scale;
 	let [tx, ty, tz] = local.translation;
@@ -108,7 +108,7 @@ fn local_matrix(local: LocalTransform) -> Matrix4 {
 		],
 		[tx, ty, tz, 1.0],
 	];
-	Matrix4::new(
+	Matrix::from((
 		columns[0][0],
 		columns[1][0],
 		columns[2][0],
@@ -125,7 +125,7 @@ fn local_matrix(local: LocalTransform) -> Matrix4 {
 		columns[1][3],
 		columns[2][3],
 		columns[3][3],
-	)
+	))
 }
 
 /// Samples every validated translation or scale interpolation form.

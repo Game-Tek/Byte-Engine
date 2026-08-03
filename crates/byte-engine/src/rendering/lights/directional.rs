@@ -1,4 +1,5 @@
-use math::Vector3;
+use math::UnitVector;
+use maths_rs::Vec3f;
 
 use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
@@ -11,8 +12,8 @@ use crate::{
 /// source, such as the sun.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalLight {
-	pub direction: Vector3,
-	pub color: Vector3,
+	pub direction: UnitVector,
+	pub color: Vec3f,
 }
 
 impl DirectionalLight {
@@ -24,12 +25,12 @@ impl DirectionalLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	pub fn new(direction: Vector3, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
+	pub fn new(direction: UnitVector, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
 		let chromaticity = color.resolve()?;
 		let lux = intensity.directional_lux()?;
 		Ok(Self {
 			direction,
-			color: Vector3::new(chromaticity.x * lux, chromaticity.y * lux, chromaticity.z * lux),
+			color: Vec3f::new(chromaticity.x * lux, chromaticity.y * lux, chromaticity.z * lux),
 		})
 	}
 }

@@ -1396,5 +1396,5 @@ use crate::{
 		window::{self, Window},
 		Camera, Sink, View,
 	},
-	space::{Orientable as _, Positionable as _},
+	space::Orientable as _,
 };

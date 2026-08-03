@@ -245,6 +245,7 @@ dependencies = [
  "hidapi",
  "kanal",
  "log",
+ "maths-rs",
  "mid",
  "oxhttp",
  "rustfft",

@@ -51,7 +51,7 @@ pub struct VisibilityPipelineManager {
 
 impl VisibilityPipelineManager {
 	/// Retains a renderable's global skeleton pose for palette generation during frame preparation.
-	pub fn update_pose(&mut self, handle: Handle, global_matrices: &[math::Matrix4]) {
+	pub fn update_pose(&mut self, handle: Handle, global_matrices: &[math::Matrix]) {
 		self.scene.write_skinned_pose(handle, global_matrices);
 	}
 
@@ -703,7 +703,7 @@ impl VisibilityPipelineManager {
 		ShaderViewData {
 			view: view.view().into(),
 			view_projection: view_projection.into(),
-			inverse_view: view.view().inverse().into(),
+			inverse_view: math::inverse(view.view()).into(),
 			fov: view.fov(),
 			near: view.near(),
 			far: view.far(),
@@ -714,7 +714,7 @@ impl VisibilityPipelineManager {
 /// The `ShadowLightSelection` struct retains the bounded directional and cone shadow work for one frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct ShadowLightSelection {
-	directional: Option<(usize, Vector3)>,
+	directional: Option<(usize, UnitVector)>,
 	cones: [Option<(usize, ConeLight)>; MAX_CONE_SHADOWS],
 	cone_count: usize,
 }
@@ -1240,7 +1240,7 @@ impl PipelineManager for VisibilityPipelineManager {
 #[repr(C, align(16))]
 #[derive(Copy, Clone)]
 pub struct ShaderMesh {
-	model: ShaderMatrix4x3,
+	model: AffineShaderMatrix,
 	material_index: u32,
 	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
 	/// Also, the position into the vertex indices buffer this instance's data starts
@@ -1284,8 +1284,8 @@ impl From<(f32, f32, f32)> for ShaderVec3 {
 	}
 }
 
-impl From<Vector3> for ShaderVec3 {
-	fn from(value: Vector3) -> Self {
+impl From<maths_rs::Vec3f> for ShaderVec3 {
+	fn from(value: maths_rs::Vec3f) -> Self {
 		Self::new(value.x, value.y, value.z)
 	}
 }
@@ -1293,9 +1293,9 @@ impl From<Vector3> for ShaderVec3 {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view: ShaderMatrix4x3,
-	pub(crate) view_projection: ShaderMatrix4,
-	pub(crate) inverse_view: ShaderMatrix4x3,
+	pub(crate) view: AffineShaderMatrix,
+	pub(crate) view_projection: ShaderMatrix,
+	pub(crate) inverse_view: AffineShaderMatrix,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,
@@ -1509,7 +1509,8 @@ pub struct MeshPrimitive {
 mod tests {
 	use std::sync::Arc;
 
-	use math::{Base as _, VecN as _, Vector3, Vector4};
+	use math::{Point, UnitVector};
+	use maths_rs::Vec4f;
 	use resource_management::resources::skeleton::SkinBinding;
 	use resource_management::types::AlphaMode;
 
@@ -1535,8 +1536,8 @@ mod tests {
 	/// Creates one compact shadow-capable cone for selection and projection tests.
 	fn cone(position_x: f32) -> ConeLight {
 		ConeLight::new(
-			Vector3::new(position_x, 2.0, 3.0),
-			Vector3::unit_z(),
+			Point::new(position_x, 2.0, 3.0),
+			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
@@ -1553,8 +1554,8 @@ mod tests {
 		let lights = [
 			Lights::Cone(
 				ConeLight::new(
-					Vector3::zero(),
-					Vector3::unit_z(),
+					Point::origin(),
+					UnitVector::z_axis(),
 					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
@@ -1568,7 +1569,7 @@ mod tests {
 			Lights::Cone(cone(0.0)),
 			Lights::Point(
 				PointLight::new(
-					Vector3::zero(),
+					Point::origin(),
 					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
@@ -1579,7 +1580,7 @@ mod tests {
 			),
 			Lights::Direction(
 				DirectionalLight::new(
-					-Vector3::unit_y(),
+					-UnitVector::y_axis(),
 					LightColor::Kelvin(6_500.0),
 					PhotometricIntensity::Illuminance {
 						lux: 100_000.0,
@@ -1609,7 +1610,8 @@ mod tests {
 		let light = cone(1.0);
 		let view = make_cone_shadow_view(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
 		let point = light.position + light.direction * 10.0;
-		let clip = view.view_projection() * Vector4::new(point.x, point.y, point.z, 1.0);
+		let point = point.into_maths();
+		let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
 		let ndc = clip / clip.w;
 		let original_far = (100.0 / 0.1_f32).sqrt();
 
@@ -1993,7 +1995,7 @@ use ghi::command_buffer::{
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use log::{error, warn};
-use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
+use math::{AffineShaderMatrix, Matrix, ShaderMatrix, UnitVector};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;

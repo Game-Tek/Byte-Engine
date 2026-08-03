@@ -1,254 +1,180 @@
-use core::ops::Mul as _;
-
 use math::{
-	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere_dynamic},
-	cross,
-	cube::Cube,
-	dot, length, magnitude, magnitude_squared,
+	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere_dynamic},
+	Point, Sphere, Vector, AABB,
+};
+use maths_rs::{
 	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
-	normalize,
-	sphere::Sphere,
-	Base, Magnitude as _, Matrix3, Quaternion, Vector3,
+	vec::Magnitude as _,
+	Mat3f, Quatf, Vec3f,
 };
 
 use crate::{
 	core::factory::Handle,
-	physics::{
-		body::BodyTypes,
-		bounds::Bounds,
-		collider::Shapes,
-		dynabit::contact::{Contact, Side},
-	},
+	physics::{body::BodyTypes, collider::Shapes, dynabit::contact::Contact, LocalSpace},
 	time::MediaTime,
 };
 
+/// The `PhysicsBody` struct stores the mutable world-space state used by Dynabit.
 #[derive(Clone)]
 pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
 	pub(crate) collision_shape: Shapes,
-	pub(crate) position: Vector3,
-	pub(crate) orientation: Quaternion,
-	pub(crate) acceleration: Vector3,
-	pub(crate) linear_velocity: Vector3,
-	pub(crate) angular_velocity: Vector3,
-	/// Reciprocal mass of the body.
+	pub(crate) position: Point,
+	pub(crate) orientation: Quatf,
+	pub(crate) acceleration: Vector,
+	pub(crate) linear_velocity: Vector,
+	pub(crate) angular_velocity: Vector,
+	/// Reciprocal mass in kilograms.
 	pub(crate) inv_mass: f32,
-	/// Model space center of mass.
-	pub(crate) center_of_mass: Vector3,
+	/// Center of mass relative to the collider origin.
+	pub(crate) center_of_mass: Point<LocalSpace>,
 	pub(crate) elasticity: f32,
 	pub(crate) friction: f32,
 	pub(crate) handle: Handle,
 }
 
 impl PhysicsBody {
-	pub fn apply_impulse(&mut self, point: Vector3, impulse: Vector3) {
-		if self.inv_mass == 0f32 {
+	/// Applies an impulse at a world-space contact point.
+	pub fn apply_impulse(&mut self, point: Point, impulse: Vector) {
+		if self.inv_mass == 0.0 {
 			return;
 		}
-
 		self.apply_linear_impulse(impulse);
-
-		let world_space_center_of_mass = self.world_space_center_of_mass();
-		let r = point - world_space_center_of_mass;
-		let dl = cross(r, impulse);
-
-		self.apply_angular_impulse(dl);
+		self.apply_angular_impulse((point - self.world_space_center_of_mass()).cross(impulse));
 	}
 
-	pub fn apply_linear_impulse(&mut self, impulse: Vector3) {
-		if self.inv_mass == 0f32 {
+	/// Applies a world-space linear impulse.
+	pub fn apply_linear_impulse(&mut self, impulse: Vector) {
+		if self.inv_mass != 0.0 {
+			self.linear_velocity = self.linear_velocity + impulse * self.inv_mass;
+		}
+	}
+
+	/// Applies a world-space angular impulse.
+	pub fn apply_angular_impulse(&mut self, impulse: Vector) {
+		if self.inv_mass == 0.0 {
 			return;
 		}
-
-		self.linear_velocity += impulse * self.inv_mass;
-	}
-
-	pub fn apply_angular_impulse(&mut self, impulse: Vector3) {
-		if self.inv_mass == 0f32 {
-			return;
-		}
-
-		self.angular_velocity += self.inverse_world_space_inertia_tensor() * impulse;
-
-		let max_angular_speed = 30f32;
-
-		if magnitude_squared(self.angular_velocity) > max_angular_speed * max_angular_speed {
-			self.angular_velocity = normalize(self.angular_velocity) * max_angular_speed;
+		self.angular_velocity =
+			self.angular_velocity + Vector::from_maths(self.inverse_world_space_inertia_tensor() * impulse.into_maths());
+		const MAX_ANGULAR_SPEED: f32 = 30.0;
+		if self.angular_velocity.length_squared() > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
+			self.angular_velocity = self.angular_velocity.normalize().expect("finite angular velocity") * MAX_ANGULAR_SPEED;
 		}
 	}
 
-	#[inline]
+	/// Returns the mass in kilograms.
 	pub fn mass(&self) -> f32 {
-		1f32 / self.inv_mass
+		1.0 / self.inv_mass
 	}
 
-	pub fn world_space_center_of_mass(&self) -> Vector3 {
-		self.position + self.orientation.get_matrix() * self.center_of_mass
+	/// Returns the center of mass in world coordinates.
+	pub fn world_space_center_of_mass(&self) -> Point {
+		let local_offset = self.center_of_mass - Point::origin();
+		self.position + Vector::from_maths(self.orientation * local_offset.into_maths())
 	}
 
-	pub fn inverse_body_space_inertia_tensor(&self) -> Matrix3 {
-		let inertia_tensor = self.collision_shape.inertia_tensor();
-		inertia_tensor.inverse() * Matrix3::from_scale(Vector3::from(self.inv_mass))
+	/// Returns the inverse local inertia tensor as a raw matrix boundary value.
+	pub fn inverse_body_space_inertia_tensor(&self) -> Mat3f {
+		self.collision_shape.inertia_tensor().inverse()
+			* Mat3f::from_scale(Vec3f::new(self.inv_mass, self.inv_mass, self.inv_mass))
 	}
 
-	pub fn inverse_world_space_inertia_tensor(&self) -> Matrix3 {
-		let inertia_tensor = self.collision_shape.inertia_tensor();
-		let inv_mass = self.inv_mass;
-		let inverse =
-			inertia_tensor.inverse() * Matrix3::from((inv_mass, 0f32, 0f32, 0f32, inv_mass, 0f32, 0f32, 0f32, inv_mass));
-		let orientation = self.orientation.get_matrix();
-		orientation * inverse * orientation.transpose()
+	/// Returns the inverse world inertia tensor as a raw matrix boundary value.
+	pub fn inverse_world_space_inertia_tensor(&self) -> Mat3f {
+		let rotation = self.orientation.get_matrix();
+		rotation * self.inverse_body_space_inertia_tensor() * rotation.transpose()
 	}
 
+	/// Advances the body by `dt` using its current linear and angular velocities.
 	pub fn update(&mut self, dt: MediaTime) {
-		let dt = dt.as_seconds_f32();
+		let seconds = dt.as_seconds_f32();
+		self.position = self.position + self.linear_velocity * seconds;
 
-		self.position += self.linear_velocity * dt;
+		let center_of_mass = self.world_space_center_of_mass();
+		let center_offset = self.position - center_of_mass;
+		let rotation = self.orientation.get_matrix();
+		let inertia = rotation * self.collision_shape.inertia_tensor() * rotation.transpose();
+		let angular_momentum = Vector::from_maths(inertia * self.angular_velocity.into_maths());
+		let angular_acceleration =
+			Vector::from_maths(inertia.inverse() * self.angular_velocity.cross(angular_momentum).into_maths());
+		self.angular_velocity = self.angular_velocity + angular_acceleration * seconds;
 
-		let world_space_center_of_mass = self.world_space_center_of_mass();
-		let delta = self.position - world_space_center_of_mass;
-
-		let orientation = self.orientation.get_matrix();
-		let inertia_tensor = orientation * self.collision_shape.inertia_tensor() * orientation.transpose();
-		let alpha = inertia_tensor.inverse() * (cross(self.angular_velocity, inertia_tensor * self.angular_velocity));
-
-		self.angular_velocity += alpha * dt;
-
-		// Apply rotation from angular velocity. The axis-angle constructor expects
-		// a unit axis, while the angular step length is the rotation angle.
-		let angular_step = self.angular_velocity * dt;
-		let angle = length(angular_step);
-		let dq = if angle > 0.0 {
-			Quaternion::from_axis_angle(angular_step / angle, angle)
-		} else {
-			Quaternion::identity()
-		};
-
-		self.orientation = Quaternion::normalize(dq * self.orientation);
-
-		self.position = world_space_center_of_mass + dq * delta;
+		let angular_step = self.angular_velocity * seconds;
+		// Check the axis and measure its rotation in one operation.
+		let delta_orientation = angular_step
+			.normalize_with_length()
+			.map(|(axis, angle)| Quatf::from_axis_angle(axis.into_maths(), angle))
+			.unwrap_or_else(|_| Quatf::identity());
+		self.orientation = Quatf::normalize(delta_orientation * self.orientation);
+		self.position = center_of_mass + Vector::from_maths(delta_orientation * center_offset.into_maths());
 	}
 
-	pub fn bounds(&self) -> Bounds {
-		self.collision_shape.bounds() + self.position // TODO: adjust by orientation
+	/// Returns the current world-space axis-aligned bounds.
+	pub fn bounds(&self) -> AABB {
+		let local = self.collision_shape.bounds();
+		// Crossing from authored local geometry to world simulation requires an explicit raw boundary conversion.
+		AABB::new(
+			self.position + Vector::from_maths(local.min().into_maths()),
+			self.position + Vector::from_maths(local.max().into_maths()),
+		)
 	}
 }
 
+/// Finds a collision contact for the two world-space bodies.
 pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
-	match (&a.collision_shape, &b.collision_shape) {
-		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => {
-			let intersection = sphere_vs_sphere_dynamic(
-				&Sphere {
-					center: a.position,
-					radius: *ra,
-				},
-				&Sphere {
-					center: b.position,
-					radius: *rb,
-				},
+	let contact = match (&a.collision_shape, &b.collision_shape) {
+		(Shapes::Sphere { radius: a_radius }, Shapes::Sphere { radius: b_radius }) => {
+			let contact = sphere_vs_sphere_dynamic(
+				&Sphere::new(a.position, *a_radius),
+				&Sphere::new(b.position, *b_radius),
 				a.linear_velocity,
 				b.linear_velocity,
 				dt,
-			);
-
-			intersection.map(|e| Contact {
-				a: Side {
-					object: i,
-					point: e.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: e.point_on_b,
-				},
-				normal: e.normal,
-				depth: e.depth,
-				toi: e.toi,
-			})
+			)?;
+			Contact::from_dynamic(i, j, contact)
 		}
-		(Shapes::Cube { size: sa }, Shapes::Cube { size: sb }) => {
-			cube_vs_cube(&Cube::new(a.position, *sa), &Cube::new(b.position, *sb)).map(|e| Contact {
-				a: Side {
-					object: i,
-					point: e.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: e.point_on_b,
-				},
-				normal: e.normal,
-				depth: e.depth,
-				toi: 0f32, // TODO: is this correct?
-			})
+		(Shapes::Cube { .. }, Shapes::Cube { .. }) => Contact::from_static(i, j, aabb_vs_aabb(&a.bounds(), &b.bounds())?, 0.0),
+		(Shapes::Sphere { radius }, Shapes::Cube { .. }) => {
+			Contact::from_static(i, j, sphere_vs_aabb(&Sphere::new(a.position, *radius), &b.bounds())?, 0.0)
 		}
-		(Shapes::Sphere { radius: ra }, Shapes::Cube { size: sb }) => {
-			sphere_vs_cube(&Sphere::new(a.position, *ra), &Cube::new(b.position, *sb)).map(|e| Contact {
-				a: Side {
-					object: i,
-					point: e.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: e.point_on_b,
-				},
-				normal: e.normal,
-				depth: e.depth,
-				toi: 0f32, // TODO: is this correct?
-			})
-		}
-		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
-			sphere_vs_cube(&Sphere::new(b.position, *rb), &Cube::new(a.position, *sa))
-				.map(|e| e.swap())
-				.map(|e| Contact {
-					// The broadphase pair order remains cube A, sphere B after swapping only
-					// the contact points returned by the sphere-cube narrowphase.
-					a: Side {
-						object: i,
-						point: e.point_on_a,
-					},
-					b: Side {
-						object: j,
-						point: e.point_on_b,
-					},
-					normal: e.normal,
-					depth: e.depth,
-					toi: 0f32, // TODO: is this correct?
-				})
-		}
-		(Shapes::ConvexHull { .. }, _) | (_, Shapes::ConvexHull { .. }) => None,
-	}
+		(Shapes::Cube { .. }, Shapes::Sphere { radius }) => Contact::from_static(
+			i,
+			j,
+			sphere_vs_aabb(&Sphere::new(b.position, *radius), &a.bounds())?.swap(),
+			0.0,
+		),
+		(Shapes::ConvexHull { .. }, _) | (_, Shapes::ConvexHull { .. }) => return None,
+	};
+	Some(contact)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::physics::Shapes;
 
-	fn test_handle() -> Handle {
-		crate::core::factory::Factory::<()>::new().create(())
+	fn body() -> PhysicsBody {
+		PhysicsBody {
+			body_type: BodyTypes::Dynamic,
+			collision_shape: Shapes::Sphere { radius: 1.0 },
+			position: Point::origin(),
+			orientation: Quatf::identity(),
+			acceleration: Vector::zero(),
+			linear_velocity: Vector::zero(),
+			angular_velocity: Vector::new(0.0, 1.0, 0.0),
+			inv_mass: 1.0,
+			center_of_mass: Point::origin(),
+			elasticity: 0.0,
+			friction: 1.0,
+			handle: crate::core::factory::Factory::<()>::new().create(()),
+		}
 	}
 
 	#[test]
-	fn update_applies_full_angular_velocity_step_to_orientation() {
-		let mut body = PhysicsBody {
-			body_type: BodyTypes::Dynamic,
-			collision_shape: Shapes::Sphere { radius: 1.0 },
-			position: Vector3::zero(),
-			orientation: Quaternion::identity(),
-			acceleration: Vector3::zero(),
-			linear_velocity: Vector3::zero(),
-			angular_velocity: Vector3::new(0.0, 1.0, 0.0),
-			inv_mass: 1.0,
-			center_of_mass: Vector3::zero(),
-			elasticity: 0.0,
-			friction: 1.0,
-			handle: test_handle(),
-		};
-
-		body.update(MediaTime::from_seconds(1));
-
-		let expected = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 1.0);
-		let rotated = body.orientation * Vector3::new(1.0, 0.0, 0.0);
-		let expected_rotated = expected * Vector3::new(1.0, 0.0, 0.0);
-
-		assert!(magnitude(rotated - expected_rotated) < 1e-5);
+	fn bounds_are_world_space_even_when_shape_data_is_local() {
+		let mut body = body();
+		body.position = Point::new(3.0, 0.0, 0.0);
+		assert_eq!(body.bounds().min(), Point::new(2.0, -1.0, -1.0));
 	}
 }

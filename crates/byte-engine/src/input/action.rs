@@ -63,13 +63,13 @@ impl InputValue for f32 {
 	}
 }
 
-impl InputValue for Vector2 {
+impl InputValue for Axis2 {
 	fn get_type() -> Types {
 		Types::Vector2
 	}
 }
 
-impl InputValue for Vector3 {
+impl InputValue for Axis3 {
 	fn get_type() -> Types {
 		Types::Vector3
 	}
@@ -144,11 +144,11 @@ pub struct TriggerMapping {
 /// [`crate::input::InputManager`].
 pub struct ActionHandle(pub(super) u32);
 
-use math::{Quaternion, Vector2, Vector3};
+use math::Quaternion;
 use smallvec::SmallVec;
 use utils::RGBA;
 
 use super::TriggerHandle;
-use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
+use super::{input_manager::TriggerReference, Axis2, Axis3, Function, TickPolicy, Types, Value};
 use crate::core::{Entity, EntityHandle};
 use crate::input::ValueMapping;

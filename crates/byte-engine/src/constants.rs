@@ -1,12 +1,18 @@
 //! Common directions in the engine's default coordinate system.
 
-use math::Vector3;
+use math::UnitVector;
 
-/// Points right along the positive x-axis.
-pub const RIGHT: Vector3 = Vector3 { x: 1.0, y: 0.0, z: 0.0 };
+/// Returns the direction that points right along the positive x-axis.
+pub fn right() -> UnitVector {
+	UnitVector::x_axis()
+}
 
-/// Points up along the positive y-axis.
-pub const UP: Vector3 = Vector3 { x: 0.0, y: 1.0, z: 0.0 };
+/// Returns the direction that points up along the positive y-axis.
+pub fn up() -> UnitVector {
+	UnitVector::y_axis()
+}
 
-/// Points forward along the positive z-axis.
-pub const FORWARD: Vector3 = Vector3 { x: 0.0, y: 0.0, z: 1.0 };
+/// Returns the direction that points forward along the positive z-axis.
+pub fn forward() -> UnitVector {
+	UnitVector::z_axis()
+}

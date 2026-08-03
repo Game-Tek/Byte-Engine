@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use math::{normalize, Vector3};
+use maths_rs::Vec3f;
 
 use crate::{
 	core::{Entity, EntityHandle},
@@ -34,7 +34,8 @@ impl MeshSource {
 		MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
 	}
 
-	pub fn r#box(size: Vector3) -> Self {
+	/// Creates a generated box from unbranded mesh-space half extents.
+	pub fn r#box(size: Vec3f) -> Self {
 		MeshSource::Generated(Arc::new(BoxMeshGenerator::from_size(size)))
 	}
 }

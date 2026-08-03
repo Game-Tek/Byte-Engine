@@ -66,24 +66,24 @@ impl Default for TriggerDescription<RGBA> {
 	}
 }
 
-impl Default for TriggerDescription<Vector2> {
+impl Default for TriggerDescription<Axis2> {
 	fn default() -> Self {
 		TriggerDescription::new(
-			Vector2::new(0f32, 0f32),
-			Vector2::new(0f32, 0f32),
-			Vector2::new(-1f32, -1f32),
-			Vector2::new(1f32, 1f32),
+			Axis2::new(0f32, 0f32),
+			Axis2::new(0f32, 0f32),
+			Axis2::new(-1f32, -1f32),
+			Axis2::new(1f32, 1f32),
 		)
 	}
 }
 
-impl Default for TriggerDescription<Vector3> {
+impl Default for TriggerDescription<Axis3> {
 	fn default() -> Self {
 		TriggerDescription::new(
-			Vector3::new(0f32, 0f32, 0f32),
-			Vector3::new(0f32, 0f32, 0f32),
-			Vector3::new(-1f32, -1f32, -1f32),
-			Vector3::new(1f32, 1f32, 1f32),
+			Axis3::new(0f32, 0f32, 0f32),
+			Axis3::new(0f32, 0f32, 0f32),
+			Axis3::new(-1f32, -1f32, -1f32),
+			Axis3::new(1f32, 1f32, 1f32),
 		)
 	}
 }
@@ -104,7 +104,7 @@ impl Default for TriggerDescription<Quaternion> {
 /// [`crate::input::InputManager`].
 pub struct TriggerHandle(pub(super) u32);
 
-use math::{Quaternion, Vector2, Vector3};
+use math::Quaternion;
 use utils::RGBA;
 
-use super::{action::InputValue, device_class::DeviceClassHandle, Types, Value};
+use super::{action::InputValue, device_class::DeviceClassHandle, Axis2, Axis3, Types, Value};

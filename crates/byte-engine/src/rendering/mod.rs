@@ -17,8 +17,6 @@
 use ::utils::Extent;
 use ghi::context::ContextCreate as _;
 
-use crate::space::Positionable as _;
-
 #[doc(hidden)]
 pub mod common_shader_generator;
 

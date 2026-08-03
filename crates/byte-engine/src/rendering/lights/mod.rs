@@ -68,13 +68,14 @@ impl From<DirectionalLight> for Lights {
 
 #[cfg(test)]
 mod tests {
-	use math::Vector3;
+	use math::{Point, UnitVector, Vector};
+	use maths_rs::Vec3f;
 
 	use super::*;
 	use crate::inspector::Inspectable;
 
 	fn white() -> LightColor {
-		LightColor::LinearSrgb(Vector3::new(1.0, 1.0, 1.0))
+		LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0))
 	}
 
 	fn candela(value: f32) -> PhotometricIntensity {
@@ -87,8 +88,8 @@ mod tests {
 	#[test]
 	fn concrete_lights_preserve_spatial_state_temperature_color_and_class() {
 		let cone = ConeLight::new(
-			Vector3::new(1.0, 2.0, 3.0),
-			Vector3::new(0.0, -1.0, 0.0),
+			Point::new(1.0, 2.0, 3.0),
+			-UnitVector::y_axis(),
 			LightColor::Kelvin(3_200.0),
 			PhotometricIntensity::LuminousFlux {
 				lumens: 1_000.0,
@@ -98,9 +99,9 @@ mod tests {
 			25.0_f32.to_radians(),
 		)
 		.expect("physical cone light");
-		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
+		let point = PointLight::new(Point::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
 		let directional = DirectionalLight::new(
-			Vector3::new(-1.0, -2.0, -3.0),
+			Vector::new(-1.0, -2.0, -3.0).normalize().expect("nonzero direction"),
 			white(),
 			PhotometricIntensity::Illuminance {
 				lux: 10_000.0,
@@ -109,19 +110,22 @@ mod tests {
 		)
 		.expect("physical directional light");
 
-		assert_eq!(cone.position, Vector3::new(1.0, 2.0, 3.0));
-		assert_eq!(cone.direction, Vector3::new(0.0, -1.0, 0.0));
+		assert_eq!(cone.position, Point::new(1.0, 2.0, 3.0));
+		assert_eq!(cone.direction, -UnitVector::y_axis());
 		assert!(cone.color.x > cone.color.z);
 		assert_eq!(cone.class(), LightClasses::Cone);
 		assert!(cone.as_string().contains("ConeLight"));
 
-		assert_eq!(point.position, Vector3::new(1.0, 2.0, 3.0));
-		assert_eq!(point.color, Vector3::new(250.0, 250.0, 250.0));
+		assert_eq!(point.position, Point::new(1.0, 2.0, 3.0));
+		assert_eq!(point.color, Vec3f::new(250.0, 250.0, 250.0));
 		assert_eq!(point.class(), LightClasses::Point);
 		assert!(point.as_string().contains("PointLight"));
 
-		assert_eq!(directional.direction, Vector3::new(-1.0, -2.0, -3.0));
-		assert_eq!(directional.color, Vector3::new(10_000.0, 10_000.0, 10_000.0));
+		assert_eq!(
+			directional.direction,
+			Vector::new(-1.0, -2.0, -3.0).normalize().expect("nonzero direction")
+		);
+		assert_eq!(directional.color, Vec3f::new(10_000.0, 10_000.0, 10_000.0));
 		assert_eq!(directional.class(), LightClasses::Directional);
 		assert!(directional.as_string().contains("DirectionalLight"));
 	}
@@ -129,17 +133,17 @@ mod tests {
 	#[test]
 	fn erased_light_conversion_preserves_the_concrete_variant_and_payload() {
 		let cone = ConeLight::new(
-			Vector3::new(0.0, 2.0, 0.0),
-			Vector3::new(0.0, -1.0, 0.0),
+			Point::new(0.0, 2.0, 0.0),
+			-UnitVector::y_axis(),
 			white(),
 			candela(100.0),
 			0.25,
 			0.5,
 		)
 		.expect("physical cone light");
-		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");
+		let point = PointLight::new(Point::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");
 		let directional = DirectionalLight::new(
-			Vector3::new(0.0, -1.0, 0.0),
+			-UnitVector::y_axis(),
 			white(),
 			PhotometricIntensity::Illuminance {
 				lux: 5_000.0,

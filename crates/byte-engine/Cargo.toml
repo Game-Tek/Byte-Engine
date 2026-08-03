@@ -34,6 +34,7 @@ ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.1.0", optiona
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0", optional = true }
 resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1" }
 math = { package = "byte-engine-math", path = "../math", version = "0.1.0" }
+maths-rs = "1.0.0"
 betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.1", optional = true }
 
 dual_quaternion = "0.3.0"

@@ -7,7 +7,7 @@ pub enum LightColor {
 	/// Uses a blackbody-style color temperature from 1,000 K through 40,000 K.
 	Kelvin(f32),
 	/// Uses a nonnegative linear-sRGB chromaticity with nonzero luminance.
-	LinearSrgb(Vector3),
+	LinearSrgb(maths_rs::Vec3f),
 }
 
 impl LightColor {
@@ -18,7 +18,7 @@ impl LightColor {
 
 	/// Creates a `LinearSrgb` color from RGB components. See [`LightColor::LinearSrgb`].
 	pub fn linear_srgb(r: f32, g: f32, b: f32) -> Self {
-		Self::LinearSrgb(Vector3::new(r, g, b))
+		Self::LinearSrgb(maths_rs::Vec3f::new(r, g, b))
 	}
 }
 
@@ -76,22 +76,35 @@ pub enum PhotometricIntensity {
 impl PhotometricIntensity {
 	/// Creates an illuminance intensity from a lux value, with a default measurement distance of 1 meter.
 	pub fn illuminance(lux: f32) -> Self {
-		Self::Illuminance { lux, measurement_distance_m: 1.0 }
+		Self::Illuminance {
+			lux,
+			measurement_distance_m: 1.0,
+		}
 	}
 
 	/// Creates a luminous intensity from a candela value, with a default reference distance of 1 meter.
 	pub fn luminous_intensity(candela: f32) -> Self {
-		Self::LuminousIntensity { candela, reference_distance_m: 1.0 }
+		Self::LuminousIntensity {
+			candela,
+			reference_distance_m: 1.0,
+		}
 	}
 
 	/// Creates a luminous flux from a lumens value, with a default directional beam area of 1 square meter.
 	pub fn luminous_flux(lumens: f32) -> Self {
-		Self::LuminousFlux { lumens, directional_beam_area_m2: 1.0 }
+		Self::LuminousFlux {
+			lumens,
+			directional_beam_area_m2: 1.0,
+		}
 	}
 
 	/// Creates a luminance from a nits value, with a default projected area and reference distance of 1 square meter and 1 meter.
 	pub fn luminance(nits: f32) -> Self {
-		Self::Luminance { nits, projected_area_m2: 1.0, reference_distance_m: 1.0 }
+		Self::Luminance {
+			nits,
+			projected_area_m2: 1.0,
+			reference_distance_m: 1.0,
+		}
 	}
 }
 
@@ -114,7 +127,7 @@ impl LightColor {
 	///
 	/// Returns [`PhotometricError`] when the color has a negative or non-finite component, has zero luminance,
 	/// or contains a temperature outside the supported range.
-	pub fn resolve(self) -> Result<Vector3, PhotometricError> {
+	pub fn resolve(self) -> Result<maths_rs::Vec3f, PhotometricError> {
 		let rgb = match self {
 			Self::LinearSrgb(rgb) => rgb,
 			Self::Kelvin(temperature) => linear_srgb_from_temperature(temperature)?,
@@ -218,7 +231,7 @@ impl PhotometricIntensity {
 }
 
 /// Converts a blackbody color temperature through CIE xyY and XYZ into linear sRGB.
-fn linear_srgb_from_temperature(temperature: f32) -> Result<Vector3, PhotometricError> {
+fn linear_srgb_from_temperature(temperature: f32) -> Result<maths_rs::Vec3f, PhotometricError> {
 	if !temperature.is_finite() || !(1_000.0..=40_000.0).contains(&temperature) {
 		return Err(PhotometricError("the color temperature is outside 1000 K to 40000 K"));
 	}
@@ -237,20 +250,20 @@ fn linear_srgb_from_temperature(temperature: f32) -> Result<Vector3, Photometric
 	};
 	let xyz_x = x / y;
 	let xyz_z = (1.0 - x - y) / y;
-	Ok(Vector3::new(
+	Ok(maths_rs::Vec3f::new(
 		(3.240_454_2 * xyz_x - 1.537_138_5 - 0.498_531_4 * xyz_z).max(0.0) as f32,
 		(-0.969_266 * xyz_x + 1.876_010_8 + 0.041_556 * xyz_z).max(0.0) as f32,
 		(0.055_643_4 * xyz_x - 0.204_025_9 + 1.057_225_2 * xyz_z).max(0.0) as f32,
 	))
 }
 
-fn normalize_luminance(rgb: Vector3) -> Result<Vector3, PhotometricError> {
+fn normalize_luminance(rgb: maths_rs::Vec3f) -> Result<maths_rs::Vec3f, PhotometricError> {
 	if !rgb.x.is_finite() || !rgb.y.is_finite() || !rgb.z.is_finite() || rgb.x < 0.0 || rgb.y < 0.0 || rgb.z < 0.0 {
 		return Err(PhotometricError("the light color has a negative or non-finite component"));
 	}
 	let luminance = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
 	let luminance = positive(luminance, "the light color has zero luminance")?;
-	Ok(Vector3::new(rgb.x / luminance, rgb.y / luminance, rgb.z / luminance))
+	Ok(maths_rs::Vec3f::new(rgb.x / luminance, rgb.y / luminance, rgb.z / luminance))
 }
 
 fn positive(value: f32, cause: &'static str) -> Result<f32, PhotometricError> {
@@ -263,7 +276,7 @@ fn positive(value: f32, cause: &'static str) -> Result<f32, PhotometricError> {
 
 #[cfg(test)]
 mod tests {
-	use math::Vector3;
+	use maths_rs::Vec3f;
 
 	use super::{LightColor, PhotometricIntensity};
 
@@ -280,7 +293,7 @@ mod tests {
 			LightColor::Kelvin(1_500.0),
 			LightColor::Kelvin(6_500.0),
 			LightColor::Kelvin(15_000.0),
-			LightColor::LinearSrgb(Vector3::new(0.2, 0.5, 1.0)),
+			LightColor::LinearSrgb(Vec3f::new(0.2, 0.5, 1.0)),
 		] {
 			let rgb = color.resolve().expect("valid light chromaticity");
 			assert_near(0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z, 1.0);
@@ -359,7 +372,7 @@ mod tests {
 
 	#[test]
 	fn invalid_photometric_inputs_return_actionable_errors() {
-		let error = LightColor::LinearSrgb(Vector3::new(0.0, 0.0, 0.0))
+		let error = LightColor::LinearSrgb(Vec3f::new(0.0, 0.0, 0.0))
 			.resolve()
 			.expect_err("black has no chromaticity");
 		assert!(error.to_string().contains("most likely cause"));
@@ -375,5 +388,3 @@ mod tests {
 }
 
 use std::fmt;
-
-use math::Vector3;

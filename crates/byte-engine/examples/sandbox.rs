@@ -14,7 +14,7 @@ fn main() {
 		],
 	);
 
-	// space_handle.spawn(Cube::new(Vector3::new(0.5f32, 0.5f32, 0.5f32)).builder());
+	// Create local collider extents with `Vector::<physics::LocalSpace>::new` when adding a sandbox body.
 
 	app.do_loop();
 }

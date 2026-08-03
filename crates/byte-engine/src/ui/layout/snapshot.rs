@@ -1,14 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
-use math::{Base as _, Vector2};
-
 use super::{
 	element::Id,
 	engine::EngineState,
 	flow::{Location, Size},
 	LayoutElement,
 };
-use crate::ui::intersection::MouseClickAcceleration;
+use crate::ui::{intersection::MouseClickAcceleration, UiPoint, UiVector};
 
 /// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
 pub struct Snapshot<'a> {
@@ -37,7 +35,7 @@ impl Snapshot<'_> {
 		let _ = self.set_cursor(None);
 	}
 
-	pub fn move_cursor(&mut self, axis: Vector2) -> Option<Id> {
+	pub fn move_cursor(&mut self, axis: UiVector) -> Option<Id> {
 		if axis.x.abs() < SPATIAL_CURSOR_DEADZONE && axis.y.abs() < SPATIAL_CURSOR_DEADZONE {
 			return self.cursor;
 		}
@@ -77,12 +75,13 @@ impl Snapshot<'_> {
 		self.move_cursor_in_direction(direction)
 	}
 
-	pub fn click(&mut self, mouse_pos: Vector2) -> Option<Id> {
+	pub fn click(&mut self, mouse_pos: UiPoint) -> Option<Id> {
 		let size = self.size;
 
-		let mouse_pos = (mouse_pos + 1f32) * 0.5;
-		let mouse_pos = mouse_pos * Vector2::new(size.x(), size.y());
-		let mouse_pos = Vector2::new(mouse_pos.x, size.y() - mouse_pos.y);
+		// Window input is normalized around the origin, while hit testing uses a top-left UI origin.
+		let mouse_x = (mouse_pos.x + 1.0) * 0.5 * size.x();
+		let mouse_y = (mouse_pos.y + 1.0) * 0.5 * size.y();
+		let mouse_pos = UiPoint::new(mouse_x, size.y() - mouse_y);
 
 		let id = self
 			.acceleration
@@ -147,7 +146,7 @@ impl Snapshot<'_> {
 			bottom = bottom.max(frame.bottom);
 		}
 
-		NavigationFrame::from_point(Vector2::new(right * 0.5, bottom * 0.5))
+		NavigationFrame::from_point(UiPoint::new(right * 0.5, bottom * 0.5))
 	}
 
 	fn element(&self, id: Id) -> Option<&LayoutElement> {
@@ -198,7 +197,7 @@ struct NavigationFrame {
 	right: f32,
 	top: f32,
 	bottom: f32,
-	center: Vector2,
+	center: UiPoint,
 	depth: u32,
 }
 
@@ -214,12 +213,12 @@ impl NavigationFrame {
 			right,
 			top,
 			bottom,
-			center: Vector2::new((left + right) * 0.5, (top + bottom) * 0.5),
+			center: UiPoint::new((left + right) * 0.5, (top + bottom) * 0.5),
 			depth: element.position.z(),
 		}
 	}
 
-	fn from_point(point: Vector2) -> Self {
+	fn from_point(point: UiPoint) -> Self {
 		Self {
 			left: point.x,
 			right: point.x,

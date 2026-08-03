@@ -21,10 +21,9 @@ use byte_engine::{
 	core::{channel::Channel as _, EntityHandle},
 	gameplay::{Object, Transform, TransformationUpdate},
 	rendering::{window::Window, Camera, UpdatePose},
-	space::Positionable,
 	MediaTime,
 };
-use math::Vector3;
+use math::{Point, Vector};
 use resource_management::resources::mesh::Mesh;
 use utils::Extent;
 
@@ -119,7 +118,7 @@ fn main() {
 
 	let animated_handle = create_scene(&mut app);
 	let mut player = None;
-	let mut root_position = Vector3::new(0.0, 0.0, 0.0);
+	let mut root_position = Point::origin();
 
 	while app
 		.tick_with(|app, time| {
@@ -159,11 +158,12 @@ fn main() {
 			// only translation; turning clips should also compose `root_motion.rotation`
 			// with the object's orientation using the application's transform convention.
 			let root_motion = pose.root_motion();
-			root_position += Vector3::new(
-				root_motion.translation[0],
-				root_motion.translation[1],
-				root_motion.translation[2],
-			);
+			root_position = root_position
+				+ Vector::new(
+					root_motion.translation[0],
+					root_motion.translation[1],
+					root_motion.translation[2],
+				);
 
 			let world = app.world_mut();
 			world.transforms_channel_mut().send(TransformationUpdate::new(
@@ -183,8 +183,12 @@ fn main() {
 /// Creates the renderer-facing objects that receive root-motion and pose updates.
 fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Handle {
 	let mut camera = Camera::new();
-	camera.set_position(Vector3::new(0.0, 1.5, 5.0));
-	camera.set_direction(Vector3::new(0.0, -0.15, -1.0));
+	camera.set_position(Point::new(0.0, 1.5, 5.0));
+	camera.set_direction(
+		Vector::new(0.0, -0.15, -1.0)
+			.normalize()
+			.expect("camera direction is non-zero"),
+	);
 	let camera = app.world_mut().camera_factory_mut().create(camera);
 
 	let mut window = Window::new("Animation Graph", Extent::rectangle(1280, 720));
@@ -193,9 +197,9 @@ fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Ha
 
 	let object = Object::new(
 		MODEL_RESOURCE,
-		Transform::from_position(Vector3::new(0.0, 0.0, 0.0)),
+		Transform::from_position(Point::origin()),
 		byte_engine::physics::BodyTypes::Static,
-		Vector3::new(0.0, 0.0, 0.0),
+		Vector::zero(),
 	);
 	let renderable = app.world_mut().renderable_factory_mut().create(EntityHandle::from(object));
 	renderable

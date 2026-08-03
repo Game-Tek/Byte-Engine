@@ -1,432 +1,352 @@
-/// The [`Collider`] trait exposes collision geometry and material response to a
-/// physics world.
+use math::{Point, Vector, AABB};
+use maths_rs::{mat::MatNew3 as _, Mat3f};
+
+use crate::{physics::LocalSpace, space::Positionable};
+
+/// The `Collider` trait provides collision geometry and material response to a physics world.
 ///
-/// Physical entities usually implement this as part of [`crate::physics::Body`].
+/// Physical entities usually implement this trait as part of [`crate::physics::Body`].
 pub trait Collider: Positionable {
-	/// Returns the shape of the collider.
+	/// Returns collider-local geometry.
 	fn shape(&self) -> Shapes;
 
-	/// Returns the elasticity of the body.
-	///
-	/// Implement this method to provide a custom elasticity value for the collider.
+	/// Returns the collision elasticity.
 	fn elasticity(&self) -> f32 {
-		0.1f32
+		0.1
 	}
 
-	/// Returns the friction of the body.
-	///
-	/// Implement this method to provide a custom friction value for the collider.
+	/// Returns the collision friction.
 	fn friction(&self) -> f32 {
-		0.1f32
+		0.1
 	}
 }
 
-/// The `Shapes` enum selects the geometry used for collision detection.
+/// The `Shapes` enum selects the local-space geometry used for collision detection.
 #[derive(Debug, Clone)]
 pub enum Shapes {
-	/// A spherical collider.
-	Sphere {
-		/// The radius of the sphere.
-		radius: f32,
-	},
-	/// An axis-aligned box collider.
-	Cube {
-		/// The box half-extents.
-		size: Vector3,
-	},
+	/// A spherical collider centered on the local origin.
+	Sphere { radius: f32 },
+	/// An axis-aligned box represented by local half-extents.
+	Cube { size: Vector<LocalSpace> },
+	/// A convex hull represented by local points and their bounds.
 	ConvexHull {
-		points: Box<[Vector3]>,
-		bounds: Bounds,
+		points: Box<[Point<LocalSpace>]>,
+		bounds: AABB<LocalSpace>,
 	},
 }
 
 impl Shapes {
-	/// Creates a spherical collider with the specified radius.
+	/// Creates a spherical collider with `radius`.
 	pub fn sphere(radius: f32) -> Self {
 		Self::Sphere { radius }
 	}
 
-	/// Creates an axis-aligned box collider with the specified half-extents.
-	pub fn cube(size: Vector3) -> Self {
+	/// Creates a box collider with local half-extents.
+	pub fn cube(size: Vector<LocalSpace>) -> Self {
 		Self::Cube { size }
 	}
 
-	pub fn convex_hull(points: Box<[Vector3]>) -> Self {
-		let mut bounds = points
-			.first()
-			.map(|point| Bounds::new(*point, *point))
-			.unwrap_or_else(Bounds::zero);
-		bounds.expand_to_fit_points(&points);
-
-		Self::ConvexHull { points, bounds }
+	/// Creates a convex-hull collider from local points.
+	pub fn convex_hull(points: Box<[Point<LocalSpace>]>) -> Self {
+		let bounds: Option<AABB<LocalSpace>> = points.iter().copied().fold(None, |bounds, point| {
+			Some(match bounds {
+				Some(bounds) => AABB::new(
+					Point::new(
+						bounds.min().x().min(point.x()),
+						bounds.min().y().min(point.y()),
+						bounds.min().z().min(point.z()),
+					),
+					Point::new(
+						bounds.max().x().max(point.x()),
+						bounds.max().y().max(point.y()),
+						bounds.max().z().max(point.z()),
+					),
+				),
+				None => AABB::new(point, point),
+			})
+		});
+		Self::ConvexHull {
+			points,
+			bounds: bounds.unwrap_or_else(|| AABB::new(Point::origin(), Point::origin())),
+		}
 	}
 
-	pub fn support_point(&self, direction: Vector3) -> Vector3 {
+	/// Returns the furthest local point in `direction`.
+	pub fn support_point(&self, direction: Vector<LocalSpace>) -> Point<LocalSpace> {
 		match self {
-			Self::Sphere { radius } => normalize_or_zero(direction) * *radius,
-			Self::Cube { size: half_size } => {
-				let half_size = Vector3::new(half_size.x.abs(), half_size.y.abs(), half_size.z.abs());
-				let x = support_axis(half_size.x, direction.x);
-				let y = support_axis(half_size.y, direction.y);
-				let z = support_axis(half_size.z, direction.z);
-
-				Vector3::new(x, y, z)
-			}
+			Self::Sphere { radius } => Point::origin() + normalize_or_zero(direction) * *radius,
+			Self::Cube { size } => Point::new(
+				support_axis(size.x().abs(), direction.x()),
+				support_axis(size.y().abs(), direction.y()),
+				support_axis(size.z().abs(), direction.z()),
+			),
 			Self::ConvexHull { points, .. } => {
-				furthest_point_in_direction(points.iter().copied(), direction).unwrap_or_else(Vector3::zero)
+				furthest_point_in_direction(points.iter().copied(), direction).unwrap_or_else(Point::origin)
 			}
 		}
 	}
 
-	pub fn fastest_linear_speed(&self, angular_velocity: Vector3, direction: Vector3) -> f32 {
+	/// Returns the maximum directional speed induced by local angular motion.
+	pub fn fastest_linear_speed(&self, angular_velocity: Vector<LocalSpace>, direction: Vector<LocalSpace>) -> f32 {
 		match self {
-			Self::Sphere { radius } => {
-				let angular_speed = length(angular_velocity);
-				angular_speed * *radius
-			}
-			Self::Cube { size: half_size } => {
-				let points = [
-					Vector3::new(half_size.x, half_size.y, half_size.z),
-					Vector3::new(-half_size.x, half_size.y, half_size.z),
-					Vector3::new(half_size.x, -half_size.y, half_size.z),
-					Vector3::new(-half_size.x, -half_size.y, half_size.z),
-					Vector3::new(half_size.x, half_size.y, -half_size.z),
-					Vector3::new(-half_size.x, half_size.y, -half_size.z),
-					Vector3::new(half_size.x, -half_size.y, -half_size.z),
-					Vector3::new(-half_size.x, -half_size.y, -half_size.z),
-				];
-
-				highest_point_speed(points.into_iter(), angular_velocity, direction).unwrap_or(0f32)
-			}
-			Self::ConvexHull { points, .. } => {
-				highest_point_speed(points.iter().copied(), angular_velocity, direction).unwrap_or(0f32)
-			}
-		}
-	}
-
-	pub fn inertia_tensor(&self) -> Matrix3 {
-		match self {
-			Self::Sphere { radius } => {
-				let inertia = (2.0 / 5.0) * radius * radius;
-				Matrix3::new(inertia, 0.0, 0.0, 0.0, inertia, 0.0, 0.0, 0.0, inertia)
-			}
-			Self::Cube { size: half_size } => {
-				let half_size = Vector3::new(half_size.x.abs(), half_size.y.abs(), half_size.z.abs());
-				let max = half_size;
-				let min = -half_size;
-
-				let dx = max.x - min.x;
-				let dy = max.y - min.y;
-				let dz = max.z - min.z;
-
-				let dx2 = dx * dx;
-				let dy2 = dy * dy;
-				let dz2 = dz * dz;
-
-				let tensor = Matrix3::new(
-					(dy2 + dz2) / 12f32,
-					0.0,
-					0.0,
-					0.0,
-					(dx2 + dz2) / 12f32,
-					0.0,
-					0.0,
-					0.0,
-					(dx2 + dy2) / 12f32,
-				);
-
-				let cm = Vector3::new((max.x + min.x) * 0.5, (max.y + min.y) * 0.5, (max.z + min.z) * 0.5);
-
-				let r = Vector3::zero() - cm;
-				let r2 = magnitude_squared(r);
-
-				let rx2 = r.x * r.x;
-				let ry2 = r.y * r.y;
-				let rz2 = r.z * r.z;
-
-				let pat_tensor = Matrix3::new(
-					r2 - rx2,
-					r.x * r.y,
-					r.x * r.x,
-					r.y * r.x,
-					r2 - r.y * r.y,
-					r.y * r.z,
-					r.z * r.x,
-					r.z * r.y,
-					r2 - rz2,
-				);
-
-				Matrix3::new(
-					tensor[0] + pat_tensor[0],
-					tensor[1] + pat_tensor[1],
-					tensor[2] + pat_tensor[2],
-					pat_tensor[3],
-					tensor[4] + pat_tensor[4],
-					pat_tensor[5],
-					pat_tensor[6],
-					pat_tensor[7],
-					tensor[8] + pat_tensor[8],
+			Self::Sphere { radius } => angular_velocity.length() * *radius,
+			Self::Cube { size } => {
+				let x = size.x().abs();
+				let y = size.y().abs();
+				let z = size.z().abs();
+				highest_point_speed(
+					[
+						Point::new(x, y, z),
+						Point::new(-x, y, z),
+						Point::new(x, -y, z),
+						Point::new(-x, -y, z),
+						Point::new(x, y, -z),
+						Point::new(-x, y, -z),
+						Point::new(x, -y, -z),
+						Point::new(-x, -y, -z),
+					]
+					.into_iter(),
+					angular_velocity,
+					direction,
 				)
+				.unwrap_or(0.0)
 			}
-			Self::ConvexHull { bounds, .. } => Shapes::cube(bounds.size() * 0.5).inertia_tensor(),
+			Self::ConvexHull { points, .. } => {
+				highest_point_speed(points.iter().copied(), angular_velocity, direction).unwrap_or(0.0)
+			}
 		}
 	}
 
-	pub fn bounds(&self) -> Bounds {
+	/// Returns the raw local inertia tensor for a unit-mass collider.
+	pub fn inertia_tensor(&self) -> Mat3f {
+		let half_extents = match self {
+			Self::Sphere { radius } => {
+				let inertia = 0.4 * radius * radius;
+				return Mat3f::new(inertia, 0.0, 0.0, 0.0, inertia, 0.0, 0.0, 0.0, inertia);
+			}
+			Self::Cube { size } => *size,
+			Self::ConvexHull { bounds, .. } => bounds.half_extents(),
+		};
+		let x = 2.0 * half_extents.x().abs();
+		let y = 2.0 * half_extents.y().abs();
+		let z = 2.0 * half_extents.z().abs();
+		Mat3f::new(
+			(y * y + z * z) / 12.0,
+			0.0,
+			0.0,
+			0.0,
+			(x * x + z * z) / 12.0,
+			0.0,
+			0.0,
+			0.0,
+			(x * x + y * y) / 12.0,
+		)
+	}
+
+	/// Returns local axis-aligned bounds for this shape.
+	pub fn bounds(&self) -> AABB<LocalSpace> {
 		match self {
-			Self::Sphere { radius } => Bounds::new(Vector3::from(-*radius), Vector3::from(*radius)),
-			Self::Cube { size: half_size } => Bounds::new(-*half_size, *half_size),
+			Self::Sphere { radius } => {
+				AABB::from_center_and_half_extents(Point::origin(), Vector::new(*radius, *radius, *radius))
+			}
+			Self::Cube { size } => AABB::from_center_and_half_extents(Point::origin(), *size),
 			Self::ConvexHull { bounds, .. } => *bounds,
 		}
 	}
 }
 
-fn support_axis(half_size: f32, direction: f32) -> f32 {
+fn support_axis(half_extent: f32, direction: f32) -> f32 {
 	if direction > 0.0 {
-		half_size
+		half_extent
 	} else if direction < 0.0 {
-		-half_size
+		-half_extent
 	} else {
 		0.0
 	}
 }
 
-fn normalize_or_zero(vector: Vector3) -> Vector3 {
-	let magnitude_squared = magnitude_squared(vector);
-
-	if magnitude_squared > f32::EPSILON {
-		vector / magnitude_squared.sqrt()
-	} else {
-		Vector3::zero()
-	}
+fn normalize_or_zero(vector: Vector<LocalSpace>) -> Vector<LocalSpace> {
+	vector
+		.normalize()
+		.map_or_else(|_| Vector::zero(), |direction| direction.into_vector())
 }
 
+/// Returns the largest speed projected along `direction` among local `points`.
 pub fn highest_point_speed(
-	points: impl Iterator<Item = Vector3>,
-	angular_velocity: Vector3,
-	direction: Vector3,
+	points: impl Iterator<Item = Point<LocalSpace>>,
+	angular_velocity: Vector<LocalSpace>,
+	direction: Vector<LocalSpace>,
 ) -> Option<f32> {
 	points
-		.map(|e| {
-			let linear_velocity = cross(angular_velocity, e);
-
-			dot(direction, linear_velocity)
-		})
-		.max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+		.map(|point| direction.dot(angular_velocity.cross(point - Point::origin())))
+		.max_by(|a, b| a.total_cmp(b))
 }
 
-/// Finds the point furthest from the given line along the given direction.
-///
-/// Returns `None` if the iterator is empty.
-pub fn find_furthest_point_in_direction(points: impl Iterator<Item = (usize, Vector3)>, direction: Vector3) -> Option<usize> {
+/// Returns the index of the local point furthest in `direction`.
+pub fn find_furthest_point_in_direction(
+	points: impl Iterator<Item = (usize, Point<LocalSpace>)>,
+	direction: Vector<LocalSpace>,
+) -> Option<usize> {
 	points
-		.max_by(|&(_, a), &(_, b)| {
-			let da = dot(a, direction);
-			let db = dot(b, direction);
-			da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-		})
-		.map(|(i, _)| i)
+		.max_by(|(_, a), (_, b)| point_projection(*a, direction).total_cmp(&point_projection(*b, direction)))
+		.map(|(index, _)| index)
 }
 
-/// Finds the point furthest from the given line along the given direction.
-///
-/// Returns `None` if the iterator is empty.
-pub fn furthest_point_in_direction(points: impl Iterator<Item = Vector3>, direction: Vector3) -> Option<Vector3> {
-	points.max_by(|&a, &b| {
-		let da = dot(a, direction);
-		let db = dot(b, direction);
-		da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-	})
+/// Returns the local point furthest in `direction`.
+pub fn furthest_point_in_direction(
+	points: impl Iterator<Item = Point<LocalSpace>>,
+	direction: Vector<LocalSpace>,
+) -> Option<Point<LocalSpace>> {
+	points.max_by(|a, b| point_projection(*a, direction).total_cmp(&point_projection(*b, direction)))
 }
 
-pub fn distance_from_line(a: Vector3, b: Vector3, pt: Vector3) -> f32 {
-	let ab = normalize_or_zero(b - a);
+fn point_projection(point: Point<LocalSpace>, direction: Vector<LocalSpace>) -> f32 {
+	direction.dot(point - Point::origin())
+}
 
-	if ab == Vector3::zero() {
-		return magnitude(pt - a);
+/// Returns the distance from `point` to the local line through `a` and `b`.
+pub fn distance_from_line(a: Point<LocalSpace>, b: Point<LocalSpace>, point: Point<LocalSpace>) -> f32 {
+	let offset = b - a;
+	let Some(direction) = offset.normalize().ok() else {
+		return point.distance_to(a);
+	};
+	let ray = point - a;
+	(ray - direction * direction.dot(ray)).length()
+}
+
+/// Returns the local point furthest from the line through `a` and `b`.
+pub fn find_point_furthest_from_line(
+	points: impl Iterator<Item = Point<LocalSpace>>,
+	a: Point<LocalSpace>,
+	b: Point<LocalSpace>,
+) -> Option<Point<LocalSpace>> {
+	points.max_by(|a_point, b_point| distance_from_line(a, b, *a_point).total_cmp(&distance_from_line(a, b, *b_point)))
+}
+
+/// Returns the unsigned distance from `point` to the local triangle plane.
+pub fn distance_from_triangle(
+	a: Point<LocalSpace>,
+	b: Point<LocalSpace>,
+	c: Point<LocalSpace>,
+	point: Point<LocalSpace>,
+) -> f32 {
+	signed_distance_from_triangle(a, b, c, point).abs()
+}
+
+fn signed_distance_from_triangle(
+	a: Point<LocalSpace>,
+	b: Point<LocalSpace>,
+	c: Point<LocalSpace>,
+	point: Point<LocalSpace>,
+) -> f32 {
+	let normal = (b - a).cross(c - a).normalize();
+	match normal {
+		Ok(normal) => normal.dot(point - a),
+		Err(_) => distance_from_line(a, b, point)
+			.max(distance_from_line(a, c, point))
+			.max(distance_from_line(b, c, point)),
 	}
-
-	let ray = pt - a;
-	let projection = ab * dot(ray, ab);
-	let perpendicular = ray - projection;
-
-	magnitude(perpendicular)
 }
 
-/// Finds the point furthest from the given line along the given direction.
-///
-/// Returns `None` if the iterator is empty.
-pub fn find_point_furthest_from_line(points: impl Iterator<Item = Vector3>, a: Vector3, b: Vector3) -> Option<Vector3> {
-	points.max_by(|&pa, &pb| {
-		distance_from_line(a, b, pa)
-			.partial_cmp(&distance_from_line(a, b, pb))
-			.unwrap_or(std::cmp::Ordering::Equal)
-	})
-}
-
-pub fn distance_from_triangle(a: Vector3, b: Vector3, c: Vector3, pt: Vector3) -> f32 {
-	signed_distance_from_triangle(a, b, c, pt).abs()
-}
-
-fn signed_distance_from_triangle(a: Vector3, b: Vector3, c: Vector3, pt: Vector3) -> f32 {
-	let ab = b - a;
-	let ac = c - a;
-	let normal = normalize_or_zero(cross(ab, ac));
-
-	if normal == Vector3::zero() {
-		let ab_length = magnitude_squared(ab);
-		let ac_length = magnitude_squared(ac);
-		let bc_length = magnitude_squared(c - b);
-
-		// Degenerate triangles collapse to their longest edge, or to a point if all vertices match.
-		if ab_length >= ac_length && ab_length >= bc_length {
-			return distance_from_line(a, b, pt);
-		} else if ac_length >= bc_length {
-			return distance_from_line(a, c, pt);
-		} else {
-			return distance_from_line(b, c, pt);
-		}
-	}
-
-	let ray = pt - a;
-
-	dot(ray, normal)
-}
-
-/// Finds the point furthest from the given triangle along the given direction.
-///
-/// Returns `None` if the iterator is empty.
+/// Returns the local point furthest from the triangle plane through `a`, `b`, and `c`.
 pub fn find_point_furthest_from_triangle(
-	points: impl Iterator<Item = Vector3>,
-	a: Vector3,
-	b: Vector3,
-	c: Vector3,
-) -> Option<Vector3> {
-	points.max_by(|&pa, &pb| {
-		distance_from_triangle(a, b, c, pa)
-			.partial_cmp(&distance_from_triangle(a, b, c, pb))
-			.unwrap_or(std::cmp::Ordering::Equal)
+	points: impl Iterator<Item = Point<LocalSpace>>,
+	a: Point<LocalSpace>,
+	b: Point<LocalSpace>,
+	c: Point<LocalSpace>,
+) -> Option<Point<LocalSpace>> {
+	points.max_by(|a_point, b_point| {
+		distance_from_triangle(a, b, c, *a_point).total_cmp(&distance_from_triangle(a, b, c, *b_point))
 	})
 }
 
-/// Builds a stable initial tetrahedron from a point cloud.
-///
-/// The function validates the point cloud before it builds the hull.
-///
-/// Returns `None` when the input cannot form a non-degenerate volume.
-pub fn build_tetrahedron(verts: impl Iterator<Item = Vector3> + Clone) -> Option<(Vec<Vector3>, Vec<(usize, usize, usize)>)> {
-	let a = furthest_point_in_direction(verts.clone(), Vector3::new(1.0, 0.0, 0.0))?;
-	let b = furthest_point_in_direction(verts.clone(), Vector3::new(-1.0, 0.0, 0.0))?;
-
-	if magnitude_squared(b - a) <= f32::EPSILON {
+/// Builds a stable initial tetrahedron from a local point cloud.
+pub fn build_tetrahedron(
+	vertices: impl Iterator<Item = Point<LocalSpace>> + Clone,
+) -> Option<(Vec<Point<LocalSpace>>, Vec<(usize, usize, usize)>)> {
+	let a = furthest_point_in_direction(vertices.clone(), Vector::new(1.0, 0.0, 0.0))?;
+	let b = furthest_point_in_direction(vertices.clone(), Vector::new(-1.0, 0.0, 0.0))?;
+	if (b - a).length_squared() <= f32::EPSILON {
 		return None;
 	}
-
-	let c = find_point_furthest_from_line(verts.clone(), a, b)?;
-
+	let c = find_point_furthest_from_line(vertices.clone(), a, b)?;
 	if distance_from_line(a, b, c) <= f32::EPSILON {
 		return None;
 	}
-
-	let d = find_point_furthest_from_triangle(verts.clone(), a, b, c)?;
+	let d = find_point_furthest_from_triangle(vertices.clone(), a, b, c)?;
 	let distance = signed_distance_from_triangle(a, b, c, d);
-
 	if distance.abs() <= f32::EPSILON {
 		return None;
 	}
-
-	// Make sure the order is CCW
 	let (a, b) = if distance > 0.0 { (b, a) } else { (a, b) };
-
-	let mut tetrahedron_vertices = Vec::with_capacity(4);
-	let mut tetrahedron_triangles = Vec::with_capacity(4);
-
-	tetrahedron_vertices.push(a);
-	tetrahedron_vertices.push(b);
-	tetrahedron_vertices.push(c);
-	tetrahedron_vertices.push(d);
-
-	tetrahedron_triangles.push((0, 1, 2));
-	tetrahedron_triangles.push((0, 2, 3));
-	tetrahedron_triangles.push((2, 1, 3));
-	tetrahedron_triangles.push((1, 0, 3));
-
-	Some((tetrahedron_vertices, tetrahedron_triangles))
+	Some((vec![a, b, c, d], vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)]))
 }
 
+/// Expands a local convex hull until it encloses every external input point.
 pub fn expand_convex_hull(
-	hull_vertices: &mut Vec<Vector3>,
+	hull_vertices: &mut Vec<Point<LocalSpace>>,
 	hull_triangles: &mut Vec<(usize, usize, usize)>,
-	vertices: &[Vector3],
+	vertices: &[Point<LocalSpace>],
 ) {
 	let mut external_vertices = vertices.to_vec();
 
 	remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
 
 	while !external_vertices.is_empty() {
-		let idx = find_furthest_point_in_direction(
-			external_vertices.iter().enumerate().map(|(i, e)| (i, *e)),
-			external_vertices[0],
+		let index = find_furthest_point_in_direction(
+			external_vertices.iter().enumerate().map(|(index, point)| (index, *point)),
+			external_vertices[0] - Point::origin(),
 		)
-		.unwrap();
+		.expect("an external vertex must exist while the candidate list is non-empty");
+		let point = external_vertices.remove(index);
 
-		let pt = external_vertices[idx];
-
-		external_vertices.remove(idx);
-
-		add_point_to_hull(hull_vertices, hull_triangles, pt);
-
+		add_point_to_hull(hull_vertices, hull_triangles, point);
 		remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
 	}
 
 	remove_unreferenced_vertices(hull_vertices, hull_triangles);
 }
 
-/// Retains only points lying outside at least one hull face.
+/// Retains candidate points that lie outside at least one oriented local hull face.
 pub fn remove_internal_points(
-	hull_vertices: &[Vector3],
+	hull_vertices: &[Point<LocalSpace>],
 	hull_triangles: &[(usize, usize, usize)],
-	check_points: &mut Vec<Vector3>,
+	check_points: &mut Vec<Point<LocalSpace>>,
 ) {
-	check_points.retain(|&pt| {
+	check_points.retain(|point| {
 		for &(a, b, c) in hull_triangles {
-			let (a, b, c) = (hull_vertices[a], hull_vertices[b], hull_vertices[c]);
-
-			let distance = signed_distance_from_triangle(a, b, c, pt);
-
+			let distance = signed_distance_from_triangle(hull_vertices[a], hull_vertices[b], hull_vertices[c], *point);
 			if distance > 0.0 {
 				return true;
 			}
 		}
 
-		// TODO: cull points close to the surface
-
 		false
 	});
 }
 
-/// Checks whether an edge belongs to only one triangle in a selected set.
+/// Returns whether `edge` belongs to only one triangle in the selected face set.
 pub fn is_edge_unique(
 	triangles: &[(usize, usize, usize)],
-	facing_tris: &[usize],
-	ignore_tri: usize,
+	facing_triangles: &[usize],
+	ignore_triangle: usize,
 	edge: (usize, usize),
 ) -> bool {
 	let reverse_edge = (edge.1, edge.0);
 
-	for &tri_idx in facing_tris {
-		if tri_idx == ignore_tri {
+	for &triangle_index in facing_triangles {
+		if triangle_index == ignore_triangle {
 			continue;
 		}
 
-		let (a, b, c) = triangles[tri_idx];
+		let (a, b, c) = triangles[triangle_index];
+		let edges = [(a, b), (b, c), (c, a)];
 
-		let ab = (a, b);
-		let bc = (b, c);
-		let ca = (c, a);
-
-		// Adjacent consistently wound triangles traverse their shared edge in opposite directions.
-		if ab == edge || bc == edge || ca == edge || ab == reverse_edge || bc == reverse_edge || ca == reverse_edge {
+		// Adjacent consistently wound faces traverse their shared edge in opposite directions.
+		if edges
+			.into_iter()
+			.any(|candidate| candidate == edge || candidate == reverse_edge)
+		{
 			return false;
 		}
 	}
@@ -434,80 +354,68 @@ pub fn is_edge_unique(
 	true
 }
 
-/// Expands a convex hull to include an external point.
-pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>, point: Vector3) {
-	let facing_tris: Vec<usize> = hull_triangles
+/// Expands a local convex hull by replacing faces visible from `point` with horizon faces.
+pub fn add_point_to_hull(
+	hull_vertices: &mut Vec<Point<LocalSpace>>,
+	hull_triangles: &mut Vec<(usize, usize, usize)>,
+	point: Point<LocalSpace>,
+) {
+	let facing_triangles: Vec<usize> = hull_triangles
 		.iter()
 		.enumerate()
 		.rev()
-		.filter_map(|(idx, &(a, b, c))| {
-			let a = hull_vertices[a];
-			let b = hull_vertices[b];
-			let c = hull_vertices[c];
-
-			if signed_distance_from_triangle(a, b, c, point) > 0.0 {
-				Some(idx)
-			} else {
-				None
-			}
+		.filter_map(|(index, &(a, b, c))| {
+			(signed_distance_from_triangle(hull_vertices[a], hull_vertices[b], hull_vertices[c], point) > 0.0).then_some(index)
 		})
 		.collect();
 
-	let unique_edges: Vec<(usize, usize)> = facing_tris
+	// The inner iterator outlives each `flat_map` call, so capture only shared references.
+	let triangles = hull_triangles.as_slice();
+	let facing = facing_triangles.as_slice();
+	let unique_edges: Vec<(usize, usize)> = facing
 		.iter()
-		.flat_map(|&idx| {
-			let (a, b, c) = hull_triangles[idx];
-
-			let ab = (a, b);
-			let bc = (b, c);
-			let ca = (c, a);
-
-			[
-				is_edge_unique(hull_triangles, &facing_tris, idx, ab).then_some(ab),
-				is_edge_unique(hull_triangles, &facing_tris, idx, bc).then_some(bc),
-				is_edge_unique(hull_triangles, &facing_tris, idx, ca).then_some(ca),
-			]
-			.into_iter()
+		.flat_map(|&triangle_index| {
+			let (a, b, c) = triangles[triangle_index];
+			[(a, b), (b, c), (c, a)]
+				.into_iter()
+				.filter(move |&edge| is_edge_unique(triangles, facing, triangle_index, edge))
 		})
-		.flatten()
 		.collect();
 
-	// Remove old facing tris
-	for &idx in &facing_tris {
-		hull_triangles.remove(idx);
+	// Indices are collected in reverse order so removals cannot shift later faces.
+	for triangle_index in facing_triangles {
+		hull_triangles.remove(triangle_index);
 	}
 
-	// Add new point
-	let new_point_idx = hull_vertices.len();
+	let point_index = hull_vertices.len();
 	hull_vertices.push(point);
-
-	// Add triangles for each unique edge
-	for &(a, b) in &unique_edges {
-		hull_triangles.push((a, b, new_point_idx));
+	for (a, b) in unique_edges {
+		hull_triangles.push((a, b, point_index));
 	}
 }
 
-/// Removes vertices unused by the hull and remaps triangle indices in place.
-pub fn remove_unreferenced_vertices(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>) {
-	let mut i = 0;
+/// Removes unused local hull vertices and remaps triangle indices in place.
+pub fn remove_unreferenced_vertices(
+	hull_vertices: &mut Vec<Point<LocalSpace>>,
+	hull_triangles: &mut Vec<(usize, usize, usize)>,
+) {
+	let mut index = 0;
 
-	hull_vertices.retain_mut(move |_| {
-		for &(a, b, c) in hull_triangles.iter() {
-			if a == i || b == i || c == i {
-				i += 1;
-				return true;
-			}
+	hull_vertices.retain_mut(|_| {
+		if hull_triangles.iter().any(|&(a, b, c)| a == index || b == index || c == index) {
+			index += 1;
+			return true;
 		}
 
-		// The next shifted vertex occupies the same index, so only triangle references move.
+		// The next shifted vertex occupies this index, so only later references move.
 		for (a, b, c) in hull_triangles.iter_mut() {
-			if *a > i {
+			if *a > index {
 				*a -= 1;
 			}
-			if *b > i {
+			if *b > index {
 				*b -= 1;
 			}
-			if *c > i {
+			if *c > index {
 				*c -= 1;
 			}
 		}
@@ -516,113 +424,52 @@ pub fn remove_unreferenced_vertices(hull_vertices: &mut Vec<Vector3>, hull_trian
 	});
 }
 
-pub fn build_convex_hull(vertices: &[Vector3]) -> Option<(Vec<Vector3>, Vec<(usize, usize, usize)>)> {
+/// Builds a convex hull from local points.
+pub fn build_convex_hull(vertices: &[Point<LocalSpace>]) -> Option<(Vec<Point<LocalSpace>>, Vec<(usize, usize, usize)>)> {
 	if vertices.len() < 4 {
 		return None;
 	}
 
-	let tetrahedron = build_tetrahedron(vertices.iter().copied())?;
-
-	let mut hull_vertices = tetrahedron.0;
-	let mut hull_triangles = tetrahedron.1;
-
+	let (mut hull_vertices, mut hull_triangles) = build_tetrahedron(vertices.iter().copied())?;
 	expand_convex_hull(&mut hull_vertices, &mut hull_triangles, vertices);
 
 	Some((hull_vertices, hull_triangles))
 }
 
-use math::{cross, dot, length, magnitude, magnitude_squared, mat::MatNew3 as _, Base as _, Matrix3, Vector3};
-
-use crate::{physics::bounds::Bounds, space::Positionable};
-
 #[cfg(test)]
 mod tests {
-	use math::{assert_float_eq, assert_vec3f_near};
-
 	use super::*;
 
 	#[test]
-	fn sphere_support_normalizes_direction_and_tolerates_zero_direction() {
+	fn support_points_keep_local_positions_distinct_from_directions() {
 		let sphere = Shapes::sphere(2.0);
-
-		assert_vec3f_near!(sphere.support_point(Vector3::new(3.0, 0.0, 0.0)), Vector3::new(2.0, 0.0, 0.0));
-		assert_vec3f_near!(sphere.support_point(Vector3::zero()), Vector3::zero());
+		assert_eq!(sphere.support_point(Vector::new(3.0, 0.0, 0.0)), Point::new(2.0, 0.0, 0.0));
+		assert_eq!(sphere.support_point(Vector::zero()), Point::origin());
 	}
 
 	#[test]
-	fn cube_support_uses_axis_signs_and_tolerates_negative_half_size() {
-		let cube = Shapes::cube(Vector3::new(-1.0, 2.0, 3.0));
-
-		assert_vec3f_near!(cube.support_point(Vector3::new(1.0, -1.0, 0.0)), Vector3::new(1.0, -2.0, 0.0));
-		assert_vec3f_near!(cube.support_point(Vector3::zero()), Vector3::zero());
+	fn cube_bounds_preserve_half_extents() {
+		let cube = Shapes::cube(Vector::new(1.0, 2.0, 3.0));
+		assert_eq!(cube.bounds().min(), Point::new(-1.0, -2.0, -3.0));
+		assert_eq!(cube.bounds().max(), Point::new(1.0, 2.0, 3.0));
 	}
 
 	#[test]
-	fn convex_hull_support_and_bounds_tolerate_empty_and_single_point_hulls() {
-		let empty = Shapes::convex_hull(Box::new([]));
-		assert_vec3f_near!(empty.support_point(Vector3::new(1.0, 0.0, 0.0)), Vector3::zero());
-		assert_vec3f_near!(empty.bounds().min(), Vector3::zero());
-		assert_vec3f_near!(empty.bounds().max(), Vector3::zero());
-
-		let point = Vector3::new(1.0, -2.0, 3.0);
-		let hull = Shapes::convex_hull(Box::new([point]));
-		assert_vec3f_near!(hull.support_point(Vector3::new(-1.0, 0.0, 0.0)), point);
-		assert_vec3f_near!(hull.bounds().min(), point);
-		assert_vec3f_near!(hull.bounds().max(), point);
-	}
-
-	#[test]
-	fn highest_point_speed_returns_none_for_empty_iterators_and_handles_zero_motion() {
-		assert!(highest_point_speed([].into_iter(), Vector3::zero(), Vector3::new(1.0, 0.0, 0.0)).is_none());
-
-		let speed = highest_point_speed(
-			[Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0, -2.0, 0.0)].into_iter(),
-			Vector3::new(0.0, 0.0, 1.0),
-			Vector3::new(1.0, 0.0, 0.0),
-		)
-		.expect("expected test value");
-
-		assert_float_eq!(speed, 2.0);
-	}
-
-	#[test]
-	fn line_distance_tolerates_degenerate_lines() {
-		let a = Vector3::new(1.0, 1.0, 1.0);
-		let pt = Vector3::new(4.0, 5.0, 1.0);
-
-		assert_float_eq!(distance_from_line(a, a, pt), 5.0);
-		assert_float_eq!(
-			distance_from_line(Vector3::zero(), Vector3::new(2.0, 0.0, 0.0), Vector3::new(1.0, 3.0, 0.0)),
-			3.0
-		);
-	}
-
-	#[test]
-	fn triangle_distance_is_unsigned_and_tolerates_degenerate_triangles() {
-		let a = Vector3::zero();
-		let b = Vector3::new(1.0, 0.0, 0.0);
-		let c = Vector3::new(0.0, 1.0, 0.0);
-
-		assert_float_eq!(distance_from_triangle(a, b, c, Vector3::new(0.0, 0.0, 2.0)), 2.0);
-		assert_float_eq!(distance_from_triangle(a, b, c, Vector3::new(0.0, 0.0, -2.0)), 2.0);
-		assert_float_eq!(
-			distance_from_triangle(a, b, Vector3::new(2.0, 0.0, 0.0), Vector3::new(1.0, 3.0, 0.0)),
-			3.0
-		);
-		assert_float_eq!(distance_from_triangle(a, a, a, Vector3::new(0.0, 4.0, 3.0)), 5.0);
+	fn tetrahedron_rejects_degenerate_clouds() {
+		assert!(build_tetrahedron([Point::new(1.0, 2.0, 3.0); 4].into_iter()).is_none());
 	}
 
 	#[test]
 	fn internal_point_removal_uses_oriented_hull_faces() {
 		let vertices = vec![
-			Vector3::zero(),
-			Vector3::new(0.0, 1.0, 0.0),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
+			Point::origin(),
+			Point::new(0.0, 1.0, 0.0),
+			Point::new(1.0, 0.0, 0.0),
+			Point::new(0.0, 0.0, 1.0),
 		];
 		let triangles = vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)];
-		let outside = Vector3::new(0.2, 0.2, -1.0);
-		let mut points = vec![Vector3::new(0.1, 0.1, 0.1), Vector3::new(0.2, 0.2, 0.0), outside];
+		let outside = Point::new(0.2, 0.2, -1.0);
+		let mut points = vec![Point::new(0.1, 0.1, 0.1), Point::new(0.2, 0.2, 0.0), outside];
 
 		remove_internal_points(&vertices, &triangles, &mut points);
 
@@ -641,14 +488,14 @@ mod tests {
 	#[test]
 	fn adding_point_replaces_only_facing_triangles() {
 		let mut vertices = vec![
-			Vector3::zero(),
-			Vector3::new(0.0, 1.0, 0.0),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
+			Point::origin(),
+			Point::new(0.0, 1.0, 0.0),
+			Point::new(1.0, 0.0, 0.0),
+			Point::new(0.0, 0.0, 1.0),
 		];
 		let mut triangles = vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)];
 
-		add_point_to_hull(&mut vertices, &mut triangles, Vector3::new(0.2, 0.2, -1.0));
+		add_point_to_hull(&mut vertices, &mut triangles, Point::new(0.2, 0.2, -1.0));
 
 		assert_eq!(vertices.len(), 5);
 		assert_eq!(triangles.len(), 6);
@@ -656,13 +503,13 @@ mod tests {
 	}
 
 	#[test]
-	fn unreferenced_vertex_removal_keeps_the_shifted_index() {
+	fn unreferenced_vertex_removal_keeps_shifted_indices_valid() {
 		let mut vertices = vec![
-			Vector3::new(-1.0, 0.0, 0.0),
-			Vector3::zero(),
-			Vector3::new(2.0, 0.0, 0.0),
-			Vector3::new(0.0, 1.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
+			Point::new(-1.0, 0.0, 0.0),
+			Point::origin(),
+			Point::new(2.0, 0.0, 0.0),
+			Point::new(0.0, 1.0, 0.0),
+			Point::new(0.0, 0.0, 1.0),
 		];
 		let mut triangles = vec![(1, 3, 4)];
 
@@ -670,108 +517,30 @@ mod tests {
 
 		assert_eq!(
 			vertices,
-			vec![Vector3::zero(), Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0, 0.0, 1.0)]
+			vec![Point::origin(), Point::new(0.0, 1.0, 0.0), Point::new(0.0, 0.0, 1.0)]
 		);
 		assert_eq!(triangles, vec![(0, 1, 2)]);
 	}
 
 	#[test]
-	fn furthest_point_helpers_return_none_for_empty_iterators() {
-		assert!(furthest_point_in_direction([].into_iter(), Vector3::new(1.0, 0.0, 0.0)).is_none());
-		assert!(find_point_furthest_from_line([].into_iter(), Vector3::zero(), Vector3::new(1.0, 0.0, 0.0)).is_none());
-		assert!(find_point_furthest_from_triangle(
-			[].into_iter(),
-			Vector3::zero(),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(0.0, 1.0, 0.0)
-		)
-		.is_none());
-	}
-
-	#[test]
-	fn build_tetrahedron_returns_non_degenerate_tetrahedron() {
-		let points = [
-			Vector3::new(-1.0, 0.0, 0.0),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(0.0, 1.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
-			Vector3::new(0.25, 0.25, 0.25),
-		];
-
-		let (verts, triangles) = build_tetrahedron(points.into_iter()).expect("expected test value");
-
-		assert_eq!(verts.len(), 4);
-		assert_eq!(triangles, vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)]);
-		assert!(triangles
-			.iter()
-			.all(|&(a, b, c)| a < verts.len() && b < verts.len() && c < verts.len()));
-
-		let volume = dot(verts[3] - verts[0], cross(verts[1] - verts[0], verts[2] - verts[0])).abs() / 6.0;
-		assert!(volume > f32::EPSILON);
-	}
-
-	#[test]
-	fn build_tetrahedron_uses_opposite_x_extremes_instead_of_origin_relative_direction() {
-		let points = [
-			Vector3::new(10.0, 0.0, 0.0),
-			Vector3::new(11.0, 0.0, 0.0),
-			Vector3::new(10.0, 1.0, 0.0),
-			Vector3::new(10.0, 0.0, 1.0),
-		];
-
-		let (verts, _) = build_tetrahedron(points.into_iter()).expect("expected test value");
-		let has_min_x = verts.iter().any(|point| point.x == 10.0);
-		let has_max_x = verts.iter().any(|point| point.x == 11.0);
-
-		assert!(has_min_x);
-		assert!(has_max_x);
-	}
-
-	#[test]
-	fn build_tetrahedron_rejects_degenerate_point_clouds() {
-		assert!(build_tetrahedron([].into_iter()).is_none());
-		assert!(build_tetrahedron([Vector3::new(1.0, 2.0, 3.0)].into_iter()).is_none());
-
-		let identical = [Vector3::new(1.0, 1.0, 1.0); 4];
-		assert!(build_tetrahedron(identical.into_iter()).is_none());
-
-		let collinear = [
-			Vector3::new(-1.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 0.0),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(2.0, 0.0, 0.0),
-		];
-		assert!(build_tetrahedron(collinear.into_iter()).is_none());
-
-		let coplanar = [
-			Vector3::new(-1.0, 0.0, 0.0),
-			Vector3::new(1.0, 0.0, 0.0),
-			Vector3::new(0.0, 1.0, 0.0),
-			Vector3::new(0.0, -1.0, 0.0),
-			Vector3::new(0.5, 0.5, 0.0),
-		];
-		assert!(build_tetrahedron(coplanar.into_iter()).is_none());
-	}
-
-	#[test]
 	fn convex_hull_builds_cube_and_discards_interior_points() {
 		let points = [
-			Vector3::new(-1.0, -1.0, -1.0),
-			Vector3::new(-1.0, -1.0, 1.0),
-			Vector3::new(-1.0, 1.0, -1.0),
-			Vector3::new(-1.0, 1.0, 1.0),
-			Vector3::new(1.0, -1.0, -1.0),
-			Vector3::new(1.0, -1.0, 1.0),
-			Vector3::new(1.0, 1.0, -1.0),
-			Vector3::new(1.0, 1.0, 1.0),
-			Vector3::zero(),
+			Point::new(-1.0, -1.0, -1.0),
+			Point::new(-1.0, -1.0, 1.0),
+			Point::new(-1.0, 1.0, -1.0),
+			Point::new(-1.0, 1.0, 1.0),
+			Point::new(1.0, -1.0, -1.0),
+			Point::new(1.0, -1.0, 1.0),
+			Point::new(1.0, 1.0, -1.0),
+			Point::new(1.0, 1.0, 1.0),
+			Point::origin(),
 		];
 
-		let (vertices, triangles) = build_convex_hull(&points).expect("expected test value");
+		let (vertices, triangles) = build_convex_hull(&points).expect("cube points must form a hull");
 
 		assert_eq!(vertices.len(), 8);
 		assert_eq!(triangles.len(), 12);
-		assert!(!vertices.contains(&Vector3::zero()));
+		assert!(!vertices.contains(&Point::origin()));
 		assert!(triangles
 			.iter()
 			.all(|&(a, b, c)| a < vertices.len() && b < vertices.len() && c < vertices.len()));

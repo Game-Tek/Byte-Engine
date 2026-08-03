@@ -1,9 +1,8 @@
 //! Physics contracts and the built-in Dynabit simulation.
 //!
 //! Implement [`Body`] and [`Collider`] on world entities that participate in
-//! simulation. Most headed applications use [`dynabit::World`] indirectly
-//! through the default world, which forwards body creation, transform updates,
-//! and deletion messages.
+//! simulation. Collider geometry uses [`LocalSpace`], while simulated positions,
+//! velocities, and contacts remain in the engine world space.
 
 #[doc(hidden)]
 pub mod body;
@@ -12,18 +11,19 @@ pub mod bounds;
 #[doc(hidden)]
 pub mod collider;
 #[doc(hidden)]
-pub mod intersection;
-
-#[doc(hidden)]
 pub mod dynabit;
+#[doc(hidden)]
+pub mod intersection;
 #[doc(hidden)]
 pub mod world;
 
-pub use body::Body;
-pub use body::BodyTypes;
+/// The `LocalSpace` struct brands coordinates stored relative to a collider's origin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LocalSpace;
+
+pub use body::{Body, BodyTypes};
 pub use bounds::Bounds;
-pub use collider::Collider;
-pub use collider::Shapes;
+pub use collider::{Collider, Shapes};
 pub use dynabit::body::PhysicsBody;
 pub use dynabit::contact::{Contact, Pair, Side};
 pub use dynabit::World as DynabitWorld;

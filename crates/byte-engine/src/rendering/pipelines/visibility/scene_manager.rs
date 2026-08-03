@@ -25,7 +25,7 @@ impl VisibilitySceneManager {
 	///
 	/// Rewriting an existing pose reuses its allocation when the skeleton size is unchanged. A
 	/// pose remains active until it is replaced or the corresponding renderable is removed.
-	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[Matrix4]) {
+	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[Matrix]) {
 		let pose = self.skinning_poses.entry(handle).or_default();
 		pose.clear();
 		pose.extend(global_matrices.iter().map(|matrix| {
@@ -102,9 +102,9 @@ impl VisibilitySceneManager {
 
 		match light {
 			Lights::Cone(light) => LightData {
-				position: light.position.into(),
+				position: light.position.into_maths().into(),
 				color: light.color.into(),
-				direction: light.direction.into(),
+				direction: light.direction.into_maths().into(),
 				cone_cosines: [light.inner_angle.cos(), light.outer_angle.cos()],
 				light_type: 1,
 				shadow_views: match shadow {
@@ -117,7 +117,7 @@ impl VisibilitySceneManager {
 				},
 			},
 			Lights::Direction(light) => LightData {
-				position: light.direction.into(),
+				position: light.direction.into_maths().into(),
 				color: light.color.into(),
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
@@ -126,7 +126,7 @@ impl VisibilitySceneManager {
 				shadow_layer: 0,
 			},
 			Lights::Point(light) => LightData {
-				position: light.position.into(),
+				position: light.position.into_maths().into(),
 				color: light.color.into(),
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
@@ -147,7 +147,7 @@ enum LightShadow {
 }
 
 /// Converts an affine gameplay matrix into the compact column-major skin-palette representation.
-fn affine_matrix4x3_from_matrix4(matrix: &Matrix4) -> AffineMatrix4x3Columns {
+fn affine_matrix4x3_from_matrix4(matrix: &Matrix) -> AffineMatrix4x3Columns {
 	[
 		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)]],
 		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)]],
@@ -157,7 +157,7 @@ fn affine_matrix4x3_from_matrix4(matrix: &Matrix4) -> AffineMatrix4x3Columns {
 }
 
 /// Rejects projective pose data before the compact representation would discard it.
-fn assert_affine_matrix(matrix: &Matrix4) {
+fn assert_affine_matrix(matrix: &Matrix) {
 	const AFFINE_EPSILON: f32 = 0.00001;
 	assert!(
 		matrix[(3, 0)].abs() <= AFFINE_EPSILON
@@ -170,7 +170,8 @@ fn assert_affine_matrix(matrix: &Matrix4) {
 
 #[cfg(test)]
 mod tests {
-	use math::{mat::MatNew4 as _, Matrix4, Vector3};
+	use math::{Matrix, Point, UnitVector};
+	use maths_rs::{mat::MatNew4 as _, Vec3f};
 
 	use super::{affine_matrix4x3_from_matrix4, assert_affine_matrix, LightShadow, VisibilitySceneManager};
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -178,7 +179,7 @@ mod tests {
 
 	#[test]
 	fn pose_write_conversion_preserves_matrix_majorness() {
-		let matrix = Matrix4::new(
+		let matrix = Matrix::new(
 			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 0.0, 0.0, 0.0, 1.0,
 		);
 
@@ -191,7 +192,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "Skinned pose matrix is projective")]
 	fn compact_pose_rejects_a_projective_matrix() {
-		assert_affine_matrix(&Matrix4::new(
+		assert_affine_matrix(&Matrix::new(
 			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		));
 	}
@@ -199,8 +200,8 @@ mod tests {
 	#[test]
 	fn cone_light_data_preserves_direction_and_soft_cutoffs() {
 		let light = ConeLight::new(
-			Vector3::new(1.0, 2.0, 3.0),
-			Vector3::new(0.0, -1.0, 0.0),
+			Point::new(1.0, 2.0, 3.0),
+			-UnitVector::y_axis(),
 			crate::rendering::lights::LightColor::Kelvin(4_500.0),
 			crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
@@ -213,9 +214,9 @@ mod tests {
 		let light_data =
 			VisibilitySceneManager::make_light_data(&Lights::Cone(light), LightShadow::Cone { view_index: 6, layer: 1 });
 
-		assert_eq!(light_data.position, ShaderVec3::from(light.position));
+		assert_eq!(light_data.position, ShaderVec3::from(light.position.into_maths()));
 		assert_eq!(light_data.color, ShaderVec3::from(light.color));
-		assert_eq!(light_data.direction, ShaderVec3::from(light.direction));
+		assert_eq!(light_data.direction, ShaderVec3::from(light.direction.into_maths()));
 		assert_eq!(light_data.cone_cosines, [light.inner_angle.cos(), light.outer_angle.cos()]);
 		assert_eq!(light_data.light_type, 1);
 		assert_eq!(light_data.shadow_views, [6, 0, 0, 0, 0, 0, 0, 0]);
@@ -224,9 +225,9 @@ mod tests {
 
 	#[test]
 	fn light_data_uploads_directional_lux_and_local_candela_without_unit_tags() {
-		let white = LightColor::LinearSrgb(Vector3::new(1.0, 1.0, 1.0));
+		let white = LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0));
 		let directional = DirectionalLight::new(
-			Vector3::new(0.0, -1.0, 0.0),
+			-UnitVector::y_axis(),
 			white,
 			PhotometricIntensity::Illuminance {
 				lux: 80_000.0,
@@ -235,7 +236,7 @@ mod tests {
 		)
 		.expect("physical directional light");
 		let point = PointLight::new(
-			Vector3::new(1.0, 2.0, 3.0),
+			Point::new(1.0, 2.0, 3.0),
 			white,
 			PhotometricIntensity::Illuminance {
 				lux: 25.0,
@@ -272,7 +273,7 @@ use ghi::DescriptorSetHandle;
 use ghi::DynamicBufferHandle;
 use ghi::Frame as _;
 use log::warn;
-use math::{mat::MatInverse as _, Matrix4};
+use math::Matrix;
 use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use utils::{hash::HashMap, StableVec};
 

@@ -10,16 +10,8 @@
 pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let mouse_device_class_handle = input_manager.register_device_class("Mouse");
 
-	input_manager.register_trigger(
-		&mouse_device_class_handle,
-		"Position",
-		TriggerDescription::<Vector2>::default(),
-	);
-	input_manager.register_trigger(
-		&mouse_device_class_handle,
-		"Movement",
-		TriggerDescription::<Vector2>::default(),
-	);
+	input_manager.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Axis2>::default());
+	input_manager.register_trigger(&mouse_device_class_handle, "Movement", TriggerDescription::<Axis2>::default());
 	input_manager.register_trigger(
 		&mouse_device_class_handle,
 		"LeftButton",
@@ -89,12 +81,12 @@ pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> Device
 	input_manager.register_trigger(
 		&gamepad_device_class_handle,
 		"LeftStick",
-		TriggerDescription::<Vector2>::default(),
+		TriggerDescription::<Axis2>::default(),
 	);
 	input_manager.register_trigger(
 		&gamepad_device_class_handle,
 		"RightStick",
-		TriggerDescription::<Vector2>::default(),
+		TriggerDescription::<Axis2>::default(),
 	);
 
 	input_manager.register_trigger(
@@ -159,6 +151,5 @@ pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> Device
 	gamepad_device_class_handle
 }
 
-use math::Vector2;
-
+use super::Axis2;
 use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, InputManager};

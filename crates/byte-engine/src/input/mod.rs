@@ -17,6 +17,7 @@ use super::utils::RGBA;
 use crate::core::factory::Handle;
 
 mod action_evaluator;
+mod axis;
 pub(crate) mod gamepad;
 #[doc(hidden)]
 pub mod input_manager;
@@ -37,13 +38,12 @@ pub mod utils;
 pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
+pub use axis::{Axis2, Axis3};
 pub use device::DeviceHandle;
 pub use input_manager::InputActionError;
 pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
 use math::Quaternion;
-use math::Vector2;
-use math::Vector3;
 pub use seat::SeatHandle;
 
 use self::action::InputValue;
@@ -60,9 +60,9 @@ pub enum Types {
 	Float,
 	/// An integer value.
 	Int,
-	/// A 2D point value.
+	/// A two-channel input value.
 	Vector2,
-	/// A 3D point value.
+	/// A three-channel input value.
 	Vector3,
 	/// A quaternion.
 	Quaternion,
@@ -84,10 +84,10 @@ pub enum Value {
 	Int(i32),
 	/// An RGBA color value.
 	Rgba(RGBA),
-	/// A 2D point value.
-	Vector2(Vector2),
-	/// A 3D point value.
-	Vector3(Vector3),
+	/// A two-channel input value.
+	Vector2(Axis2),
+	/// A 3D input value.
+	Vector3(Axis3),
 	/// A quaternion.
 	Quaternion(Quaternion),
 }
@@ -122,14 +122,14 @@ impl From<RGBA> for Value {
 	}
 }
 
-impl From<Vector2> for Value {
-	fn from(val: Vector2) -> Self {
+impl From<Axis2> for Value {
+	fn from(val: Axis2) -> Self {
 		Value::Vector2(val)
 	}
 }
 
-impl From<Vector3> for Value {
-	fn from(val: Vector3) -> Self {
+impl From<Axis3> for Value {
+	fn from(val: Axis3) -> Self {
 		Value::Vector3(val)
 	}
 }
@@ -182,8 +182,8 @@ impl Types {
 			Types::Float => Value::Float(0.0),
 			Types::Int => Value::Int(0),
 			Types::Rgba => Value::Rgba(RGBA::new(0.0, 0.0, 0.0, 1.0)),
-			Types::Vector2 => Value::Vector2(Vector2::new(0.0, 0.0)),
-			Types::Vector3 => Value::Vector3(Vector3::new(0.0, 0.0, 0.0)),
+			Types::Vector2 => Value::Vector2(Axis2::zero()),
+			Types::Vector3 => Value::Vector3(Axis3::zero()),
 			Types::Quaternion => Value::Quaternion(Quaternion::identity()),
 		}
 	}
@@ -235,8 +235,8 @@ impl Extract<bool> for Value {
 	}
 }
 
-impl Extract<Vector2> for Value {
-	fn extract(&self) -> Vector2 {
+impl Extract<Axis2> for Value {
+	fn extract(&self) -> Axis2 {
 		match self {
 			Value::Vector2(value) => *value,
 			_ => panic!("Wrong type"),
@@ -244,8 +244,8 @@ impl Extract<Vector2> for Value {
 	}
 }
 
-impl Extract<Vector3> for Value {
-	fn extract(&self) -> Vector3 {
+impl Extract<Axis3> for Value {
+	fn extract(&self) -> Axis3 {
 		match self {
 			Value::Vector3(value) => *value,
 			_ => panic!("Wrong type"),
@@ -292,14 +292,14 @@ impl From<bool> for ValueMapping {
 	}
 }
 
-impl From<Vector2> for ValueMapping {
-	fn from(val: Vector2) -> Self {
+impl From<Axis2> for ValueMapping {
+	fn from(val: Axis2) -> Self {
 		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl From<Vector3> for ValueMapping {
-	fn from(val: Vector3) -> Self {
+impl From<Axis3> for ValueMapping {
+	fn from(val: Axis3) -> Self {
 		ValueMapping::new(Function::Linear, val)
 	}
 }

@@ -7,7 +7,6 @@ mod retained_tree;
 pub mod snapshot;
 mod visual_transform;
 
-use math::{Base as _, Vector2};
 use utils::{Box, RGBA};
 
 use super::{
@@ -577,7 +576,6 @@ impl From<f32> for Sizing {
 
 #[cfg(test)]
 mod tests {
-	use math::{Base as _, Vector2};
 
 	use super::super::{
 		components::container::Container,

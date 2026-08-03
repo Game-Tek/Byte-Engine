@@ -1,8 +1,7 @@
 #[derive(Clone, Debug)]
-/// The `Camera` struct provides scene-owned view settings to render sinks and
-/// inspection tools.
+/// The `Camera` struct provides scene-owned world-space view settings to render sinks and inspection tools.
 pub struct Camera {
-	position: Vector3,
+	position: Point,
 	orientation: Quaternion,
 	fov: f32,
 	aspect_ratio: f32,
@@ -11,10 +10,10 @@ pub struct Camera {
 }
 
 impl Camera {
-	/// Creates a camera with a centered position and default perspective settings.
+	/// Creates a camera with a world-origin position and default perspective settings.
 	pub fn new() -> Self {
 		Self {
-			position: Vector3::new(0.0, 0.0, 0.0),
+			position: Point::origin(),
 			orientation: Quaternion::identity(),
 			fov: 45.0,
 			aspect_ratio: 1.0,
@@ -43,30 +42,31 @@ impl Camera {
 		self.focus_distance
 	}
 
-	/// Builds the camera with the provided position.
-	pub fn with_position(mut self, position: Vector3) -> Self {
+	/// Returns the camera's world-space position.
+	pub fn position(&self) -> Point {
+		self.position
+	}
+
+	/// Builds the camera with the provided world-space position.
+	pub fn with_position(mut self, position: Point) -> Self {
 		self.set_position(position);
 		self
 	}
 
 	/// Sets the world-space position of the camera.
-	pub fn set_position(&mut self, position: Vector3) {
+	pub fn set_position(&mut self, position: Point) {
 		self.position = position;
 	}
 
-	/// Sets the world-space direction used to build render views from this camera.
-	/// A zero vector leaves the current orientation unchanged.
-	pub fn with_direction(mut self, direction: Vector3) -> Self {
+	/// Builds the camera with the provided checked world-space direction.
+	pub fn with_direction(mut self, direction: UnitVector) -> Self {
 		self.set_direction(direction);
 		self
 	}
 
-	/// Sets the world-space direction used to build render views from this camera.
-	/// A zero vector leaves the current orientation unchanged.
-	pub fn set_direction(&mut self, direction: Vector3) {
-		if magnitude_squared(direction) > f32::EPSILON {
-			self.orientation = orientation_from_direction(direction);
-		}
+	/// Sets the checked world-space direction used to build render views from this camera.
+	pub fn set_direction(&mut self, direction: UnitVector) {
+		self.orientation = orientation_from_direction(direction);
 	}
 
 	/// Sets the vertical field of view used by perspective rendering.
@@ -80,19 +80,11 @@ impl Camera {
 		self.fov = fov;
 	}
 
-	/// Returns the world-space direction used when creating a [`crate::rendering::View`].
-	pub fn direction(&self) -> Vector3 {
-		self.orientation * FORWARD
-	}
-}
-
-impl Positionable for Camera {
-	fn position(&self) -> Vector3 {
-		self.position
-	}
-
-	fn set_position(&mut self, position: Vector3) {
-		self.position = position;
+	/// Returns the checked world-space direction used when creating a [`crate::rendering::View`].
+	pub fn direction(&self) -> UnitVector {
+		direction_from_orientation(self.orientation).expect(
+			"Camera orientation produced an invalid direction. The most likely cause is a non-finite camera orientation.",
+		)
 	}
 }
 
@@ -134,16 +126,14 @@ impl Default for Camera {
 
 #[cfg(test)]
 mod tests {
-	use math::{assert_vec3f_near, normalize};
-
 	use super::*;
 
 	#[test]
 	fn defaults_form_a_valid_forward_facing_perspective_camera() {
 		let camera = Camera::new();
 
-		assert_vec3f_near!(camera.position(), Vector3::new(0.0, 0.0, 0.0));
-		assert_vec3f_near!(camera.direction(), FORWARD);
+		assert_eq!(camera.position(), Point::origin());
+		assert_eq!(camera.direction(), UnitVector::z_axis());
 		assert_eq!(camera.vertical_fov(), 45.0);
 		assert_eq!(camera.aspect_ratio(), 1.0);
 		assert_eq!(camera.aperture(), 0.0);
@@ -151,33 +141,28 @@ mod tests {
 	}
 
 	#[test]
-	fn set_direction_rotates_forward_to_the_normalized_requested_direction() {
-		let requested = Vector3::new(2.0, -3.0, -4.0);
+	fn set_direction_rotates_forward_to_the_requested_checked_direction() {
+		let requested = Vector::new(2.0, -3.0, -4.0).normalize().expect("nonzero direction");
 
 		let camera = Camera::new().with_direction(requested);
+		let actual = camera.direction();
 
-		assert_vec3f_near!(camera.direction(), normalize(requested));
-	}
-
-	#[test]
-	fn zero_direction_does_not_destroy_an_existing_orientation() {
-		let mut camera = Camera::new().with_direction(Vector3::new(1.0, 0.0, 0.0));
-
-		let direction = camera.direction();
-
-		camera.set_direction(Vector3::new(0.0, 0.0, 0.0));
-
-		assert_vec3f_near!(camera.direction(), direction);
+		assert!((actual.x() - requested.x()).abs() < 0.000_001);
+		assert!((actual.y() - requested.y()).abs() < 0.000_001);
+		assert!((actual.z() - requested.z()).abs() < 0.000_001);
 	}
 
 	#[test]
 	fn position_orientation_and_inspector_updates_share_camera_state() {
 		let mut camera = Camera::new();
-		camera.set_position(Vector3::new(1.0, 2.0, 3.0));
-		camera.set_orientation(Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 0.5));
+		camera.set_position(Point::new(1.0, 2.0, 3.0));
+		camera.set_orientation(Quaternion::from_axis_angle(
+			UnitVector::<math::WorldSpace>::y_axis().into_maths(),
+			0.5,
+		));
 		camera.set("fov", "72.5").expect("numeric field of view");
 
-		assert_vec3f_near!(camera.position(), Vector3::new(1.0, 2.0, 3.0));
+		assert_eq!(camera.position(), Point::new(1.0, 2.0, 3.0));
 		assert_eq!(camera.vertical_fov(), 72.5);
 		assert!(camera.as_string().contains("72.5"));
 
@@ -191,10 +176,8 @@ mod tests {
 	}
 }
 
-use math::{magnitude_squared, orientation_from_direction, Quaternion, Vector3};
+use math::{direction_from_orientation, orientation_from_direction, Point, Quaternion, UnitVector, Vector};
 
-use crate::constants::FORWARD;
 use crate::core::{Entity, EntityHandle};
 use crate::inspector::Inspectable;
 use crate::space::orientable::Orientable;
-use crate::space::{Positionable, Transformable};

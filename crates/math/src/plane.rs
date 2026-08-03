@@ -1,225 +1,136 @@
-use maths_rs::{cross, dot, length, normalize, Vec3f};
+use crate::{Point, Sphere, UnitVector, WorldSpace};
 
-use crate::sphere::Sphere;
-
-/// The `Plane` struct provides a plane for 3D distance and half-space tests.
+/// The `Plane` struct represents a validated half-space for distance, frustum, and collision queries.
 ///
-/// The plane uses the equation `N.x*x + N.y*y + N.z*z + D = 0`. The `normal`
-/// field stores `N`, and `distance` stores `D`. Use a unit normal when results
-/// must use world-space distance units.
-#[derive(Clone, Copy, Debug)]
-pub struct Plane {
-	pub normal: Vec3f,
-	pub distance: f32,
+/// Its [`UnitVector`] normal keeps signed-distance results in coordinate-space units. Create a plane with [`Self::new`] when you already have a checked normal, or use [`Self::from_points`] to validate a plane from geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Plane<Space = WorldSpace> {
+	normal: UnitVector<Space>,
+	distance: f32,
 }
 
-impl Plane {
-	/// Creates a plane from a normal vector and the equation constant `D`.
-	pub fn new(normal: Vec3f, distance: f32) -> Self {
-		let length = length(normal);
-		let normal = normal / length; // Normalize the normal vector
-		let distance = distance / length; // Adjust distance accordingly
+impl<Space> Plane<Space> {
+	/// Creates a plane from a checked unit normal and the equation constant `distance`.
+	///
+	/// The plane equation is `normal · point + distance = 0`. The [`UnitVector`] parameter prevents non-unit normals from producing incorrectly scaled distances. Use [`Self::from_point_and_normal`] when you have a point on the plane.
+	pub fn new(normal: UnitVector<Space>, distance: f32) -> Self {
 		Self { normal, distance }
 	}
 
-	/// Creates a plane through three noncollinear points.
-	///
-	/// The returned plane has a unit normal and contains each input point.
-	pub fn from_points(p1: Vec3f, p2: Vec3f, p3: Vec3f) -> Self {
-		let v1 = p2 - p1;
-		let v2 = p3 - p1;
-		let normal = normalize(cross(v1, v2));
-		let distance = -dot(normal, p1);
-		Self { normal, distance }
+	/// Creates a plane that contains `point` and uses `normal` as its positive side.
+	pub fn from_point_and_normal(point: Point<Space>, normal: UnitVector<Space>) -> Self {
+		let distance = -normal.dot(point - Point::origin());
+		Self::new(normal, distance)
 	}
 
-	/// Returns the signed distance from a point to this plane.
+	/// Creates a plane through three non-collinear points.
 	///
-	/// A positive value is on the normal side, a negative value is on the opposite
-	/// side, and zero is on the plane. The result uses world-space distance units
-	/// when the plane has a unit normal.
-	pub fn signed_distance_to_point(&self, point: Vec3f) -> f32 {
-		dot(self.normal, point) + self.distance
+	/// The point winding determines the normal direction. The method returns [`crate::NormalizationError`] when the cross product has no direction, which happens when the points are coincident or collinear.
+	pub fn from_points(
+		first: Point<Space>,
+		second: Point<Space>,
+		third: Point<Space>,
+	) -> Result<Self, crate::NormalizationError> {
+		let normal = (second - first).cross(third - first).normalize()?;
+		Ok(Self::from_point_and_normal(first, normal))
 	}
 
-	/// Returns whether any part of a sphere is in this plane's positive half-space.
-	pub fn is_sphere_in_half_space(&self, sphere: &Sphere) -> bool {
-		let dist_to_center = self.signed_distance_to_point(sphere.center);
-		dist_to_center >= -sphere.radius
+	/// Returns the unit normal that defines this plane's positive half-space.
+	pub fn normal(&self) -> UnitVector<Space> {
+		self.normal
+	}
+
+	/// Returns the equation constant in `normal · point + distance = 0`.
+	pub fn distance(&self) -> f32 {
+		self.distance
+	}
+
+	/// Returns the signed world-space distance from `point` to this plane.
+	pub fn signed_distance_to_point(&self, point: Point<Space>) -> f32 {
+		self.normal.dot(point - Point::origin()) + self.distance
+	}
+
+	/// Returns whether any part of `sphere` is in this plane's positive half-space.
+	pub fn is_sphere_in_half_space(&self, sphere: &Sphere<Space>) -> bool {
+		self.signed_distance_to_point(sphere.center()) >= -sphere.radius()
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::{assert_float_eq, assert_vec3f_near};
+	use super::Plane;
+	use crate::{assert_float_eq, assert_float_eq_with_epsilon, assert_geometry_near, Point, UnitVector, Vector, WorldSpace};
 
 	#[test]
-	fn test_plane_new_and_signed_distance() {
-		let normal = normalize(Vec3f::new(1.0, 2.0, -2.0)); // Normal vector (1/3, 2/3, -2/3)
-		let distance_d = -5.0;
-		let plane = Plane::new(normal, distance_d);
+	fn checked_normals_keep_signed_distances_in_coordinate_space_units() {
+		let normal: UnitVector<WorldSpace> = Vector::new(1.0, 2.0, -2.0).normalize().unwrap();
+		let plane = Plane::new(normal, -5.0);
+		let point_on_plane = Point::origin() + normal * 5.0;
 
-		// Point on the plane: P such that N.P + D = 0 => N.P = -D.
-		// A simple choice for P is -D * N (if N is unit vector)
-		let point_on_plane = normal * (-distance_d);
-		assert_float_eq!(
-			plane.signed_distance_to_point(point_on_plane),
-			0.0,
-			"Point on plane should have zero distance"
-		);
-
-		let point_positive_side = point_on_plane + normal * 3.0; // 3 units along normal
-		assert_float_eq!(
-			plane.signed_distance_to_point(point_positive_side),
-			3.0,
-			"Point on positive side distance check"
-		);
-
-		let point_negative_side = point_on_plane - normal * 4.0; // 4 units against normal
-		assert_float_eq!(
-			plane.signed_distance_to_point(point_negative_side),
-			-4.0,
-			"Point on negative side distance check"
-		);
+		assert_float_eq!(plane.signed_distance_to_point(point_on_plane), 0.0);
+		assert_float_eq!(plane.signed_distance_to_point(point_on_plane + normal * 3.0), 3.0);
+		assert_float_eq!(plane.signed_distance_to_point(point_on_plane - normal * 4.0), -4.0);
 	}
 
 	#[test]
-	fn test_from_points_origin_xy_plane() {
-		let p1 = Vec3f::new(0.0, 0.0, 0.0);
-		let p2 = Vec3f::new(2.0, 0.0, 0.0);
-		let p3 = Vec3f::new(0.0, 3.0, 0.0);
-		let plane = Plane::from_points(p1, p2, p3);
-
-		// v1 = p2-p1 = (2,0,0), v2 = p3-p1 = (0,3,0)
-		// cross(v1,v2) = (0,0,6). normalize -> (0,0,1)
-		let expected_normal = Vec3f::new(0.0, 0.0, 1.0);
-		// distance = -dot(normal, p1) = -dot((0,0,1), (0,0,0)) = 0
-		let expected_distance_d = 0.0;
-
-		assert_vec3f_near!(plane.normal, expected_normal, "Normal for XY plane");
-		assert_float_eq!(plane.distance, expected_distance_d, "Distance D for XY plane");
-
-		assert_float_eq!(plane.signed_distance_to_point(p1), 0.0, "p1 on XY plane");
-		assert_float_eq!(plane.signed_distance_to_point(p2), 0.0, "p2 on XY plane");
-		assert_float_eq!(plane.signed_distance_to_point(p3), 0.0, "p3 on XY plane");
-
-		let test_point_on_plane = Vec3f::new(5.0, -5.0, 0.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_on_plane),
-			0.0,
-			"Another point on XY plane"
-		);
-		let test_point_off_plane_pos = Vec3f::new(0.0, 0.0, 1.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_pos),
-			1.0,
-			"Point on positive side of XY plane"
-		);
-		let test_point_off_plane_neg = Vec3f::new(0.0, 0.0, -2.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_neg),
-			-2.0,
-			"Point on negative side of XY plane"
-		);
+	fn points_define_a_unit_normal_with_winding() {
+		let plane: Plane<WorldSpace> =
+			Plane::from_points(Point::origin(), Point::new(2.0, 0.0, 0.0), Point::new(0.0, 3.0, 0.0)).unwrap();
+		assert_eq!(plane.normal(), UnitVector::z_axis());
+		assert_eq!(plane.signed_distance_to_point(Point::new(0.0, 0.0, 0.0)), 0.0);
 	}
 
 	#[test]
-	fn test_from_points_offset_plane_x_equals_constant() {
-		// Plane x = -2
-		let p1 = Vec3f::new(-2.0, 0.0, 0.0);
-		let p2 = Vec3f::new(-2.0, 1.0, 0.0); // p2-p1 = (0,1,0)
-		let p3 = Vec3f::new(-2.0, 0.0, 1.0); // p3-p1 = (0,0,1)
-		let plane = Plane::from_points(p1, p2, p3);
+	fn offset_and_general_planes_contain_every_defining_point() {
+		let offset = Plane::<WorldSpace>::from_points(
+			Point::new(-2.0, 0.0, 0.0),
+			Point::new(-2.0, 1.0, 0.0),
+			Point::new(-2.0, 0.0, 1.0),
+		)
+		.unwrap();
+		assert_eq!(offset.normal(), UnitVector::x_axis());
+		assert_eq!(offset.distance(), 2.0);
+		assert_float_eq!(offset.signed_distance_to_point(Point::new(-1.0, 0.0, 0.0)), 1.0);
+		assert_float_eq!(offset.signed_distance_to_point(Point::new(-3.0, 0.0, 0.0)), -1.0);
 
-		// cross((0,1,0), (0,0,1)) = (1,0,0). normalize -> (1,0,0)
-		let expected_normal = Vec3f::new(1.0, 0.0, 0.0);
-		// distance = -dot((1,0,0), (-2,0,0)) = -(-2) = 2.0
-		let expected_distance_d = 2.0;
-
-		assert_vec3f_near!(plane.normal, expected_normal, "Normal for x=-2 plane");
-		assert_float_eq!(plane.distance, expected_distance_d, "Distance D for x=-2 plane");
-
-		assert_float_eq!(plane.signed_distance_to_point(p1), 0.0, "p1 on x=-2 plane");
-		assert_float_eq!(plane.signed_distance_to_point(p2), 0.0, "p2 on x=-2 plane");
-		assert_float_eq!(plane.signed_distance_to_point(p3), 0.0, "p3 on x=-2 plane");
-
-		let test_point_on_plane = Vec3f::new(-2.0, 5.0, 5.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_on_plane),
-			0.0,
-			"Another point on x=-2 plane"
-		);
-		// N.P + D = (1,0,0).(-1,0,0) + 2 = -1 + 2 = 1
-		let test_point_off_plane_pos = Vec3f::new(-1.0, 0.0, 0.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_pos),
-			1.0,
-			"Point on positive side of x=-2 plane (x=-1)"
-		);
-		// N.P + D = (1,0,0).(-3,0,0) + 2 = -3 + 2 = -1
-		let test_point_off_plane_neg = Vec3f::new(-3.0, 0.0, 0.0);
-		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_neg),
-			-1.0,
-			"Point on negative side of x=-2 plane (x=-3)"
-		);
-	}
-
-	#[test]
-	fn test_from_points_general_case_properties() {
-		let p1 = Vec3f::new(1.0, 2.0, 3.0);
-		let p2 = Vec3f::new(4.0, -1.0, 5.0);
-		let p3 = Vec3f::new(-2.0, 4.0, -3.0); // Ensure non-collinear
-		let plane = Plane::from_points(p1, p2, p3);
-
-		// Check if the normal is a unit vector
-		assert_float_eq!(dot(plane.normal, plane.normal), 1.0, "Normal vector should be unit length");
-
-		// Check if all three defining points lie on the generated plane
-		assert_float_eq!(plane.signed_distance_to_point(p1), 0.0, "p1 should be on the generated plane");
-		assert_float_eq!(plane.signed_distance_to_point(p2), 0.0, "p2 should be on the generated plane");
-		assert_float_eq!(plane.signed_distance_to_point(p3), 0.0, "p3 should be on the generated plane");
-	}
-
-	#[test]
-	fn test_from_points_winding_order() {
-		let p1 = Vec3f::new(1.0, 0.0, 0.0);
-		let p2 = Vec3f::new(0.0, 1.0, 0.0);
-		let p3 = Vec3f::new(0.0, 0.0, 1.0);
-
-		let plane1 = Plane::from_points(p1, p2, p3); // (p2-p1) x (p3-p1)
-		let plane2 = Plane::from_points(p1, p3, p2); // (p3-p1) x (p2-p1)
-
-		// Normals should be opposite
-		assert_vec3f_near!(plane1.normal, plane2.normal * -1.0, "Normals should be opposite");
-		// Distances D should be opposite (since D = -N.p1)
-		assert_float_eq!(plane1.distance, -plane2.distance, "Distances D should be opposite");
-
-		// Both planes must still contain all three points (distance = 0)
-		for p_idx in [p1, p2, p3].iter().enumerate() {
-			assert_float_eq!(
-				plane1.signed_distance_to_point(*p_idx.1),
-				0.0,
-				"Point p{} on plane1",
-				p_idx.0 + 1
-			);
-			assert_float_eq!(
-				plane2.signed_distance_to_point(*p_idx.1),
-				0.0,
-				"Point p{} on plane2",
-				p_idx.0 + 1
-			);
+		let points: [Point<WorldSpace>; 3] = [
+			Point::new(1.0, 2.0, 3.0),
+			Point::new(4.0, -1.0, 5.0),
+			Point::new(-2.0, 4.0, -3.0),
+		];
+		let general = Plane::from_points(points[0], points[1], points[2]).unwrap();
+		assert_float_eq_with_epsilon!(general.normal().into_vector().length_squared(), 1.0, 0.0001);
+		for point in points {
+			assert_float_eq_with_epsilon!(general.signed_distance_to_point(point), 0.0, 0.0001);
 		}
+	}
 
-		// For any other point, signed distances should be opposite
-		let test_point = Vec3f::new(5.0, 5.0, 5.0);
-		let dist1 = plane1.signed_distance_to_point(test_point);
-		let dist2 = plane2.signed_distance_to_point(test_point);
+	#[test]
+	fn reversed_winding_reverses_the_half_space() {
+		let first = Point::<WorldSpace>::new(1.0, 0.0, 0.0);
+		let second = Point::new(0.0, 1.0, 0.0);
+		let third = Point::new(0.0, 0.0, 1.0);
+		let forward = Plane::from_points(first, second, third).unwrap();
+		let reversed = Plane::from_points(first, third, second).unwrap();
+
+		assert_geometry_near!(forward.normal(), -reversed.normal());
+		assert_float_eq!(forward.distance(), -reversed.distance());
+		for point in [first, second, third] {
+			assert_float_eq!(forward.signed_distance_to_point(point), 0.0);
+			assert_float_eq!(reversed.signed_distance_to_point(point), 0.0);
+		}
+		let test_point = Point::new(5.0, 5.0, 5.0);
 		assert_float_eq!(
-			dist1,
-			-dist2,
-			"Signed distances to a test point should be opposite for reversed winding"
+			forward.signed_distance_to_point(test_point),
+			-reversed.signed_distance_to_point(test_point)
+		);
+	}
+
+	#[test]
+	fn collinear_points_are_rejected() {
+		assert_eq!(
+			Plane::<WorldSpace>::from_points(Point::origin(), Point::new(1.0, 0.0, 0.0), Point::new(2.0, 0.0, 0.0)),
+			Err(crate::NormalizationError::ZeroLength)
 		);
 	}
 }

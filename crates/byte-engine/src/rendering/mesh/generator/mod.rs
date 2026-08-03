@@ -3,7 +3,7 @@ pub mod sphere;
 
 use std::borrow::Cow;
 
-use math::{Vector3, Vector4};
+use maths_rs::{Vec3f, Vec4f};
 pub use r#box::BoxMeshGenerator;
 pub use sphere::SphereMeshGenerator;
 
@@ -22,13 +22,13 @@ pub trait MeshGenerator: Send + Sync {
 	fn indices(&self) -> Cow<'_, [u32]>;
 
 	/// Returns the tangents of the vertices.
-	fn tangents(&self) -> Cow<'_, [Vector3]>;
+	fn tangents(&self) -> Cow<'_, [Vec3f]>;
 
 	/// Returns the bitangents of the vertices.
-	fn bitangents(&self) -> Cow<'_, [Vector3]>;
+	fn bitangents(&self) -> Cow<'_, [Vec3f]>;
 
 	/// Returns the colors of the vertices.
-	fn colors(&self) -> Option<Cow<'_, [Vector4]>> {
+	fn colors(&self) -> Option<Cow<'_, [Vec4f]>> {
 		None
 	}
 

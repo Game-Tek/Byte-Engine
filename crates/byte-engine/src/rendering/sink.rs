@@ -1,4 +1,4 @@
-use math::Matrix4;
+use math::Matrix;
 use utils::Extent;
 
 use crate::rendering::view::View;
@@ -31,7 +31,7 @@ impl Sink {
 	}
 
 	/// Returns the combined projection and view matrix for shader setup.
-	pub fn view_projection(&self) -> Matrix4 {
+	pub fn view_projection(&self) -> Matrix {
 		self.view.view_projection()
 	}
 
@@ -43,20 +43,13 @@ impl Sink {
 
 #[cfg(test)]
 mod tests {
-	use math::Vector3;
+	use math::{Point, UnitVector};
 
 	use super::*;
 
 	#[test]
 	fn sink_keeps_view_extent_index_and_derived_matrix_consistent() {
-		let view = View::new_perspective(
-			60.0,
-			16.0 / 9.0,
-			0.1,
-			500.0,
-			Vector3::new(0.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
-		);
+		let view = View::new_perspective(60.0, 16.0 / 9.0, 0.1, 500.0, Point::origin(), UnitVector::z_axis());
 		let extent = Extent::rectangle(1_920, 1_080);
 		let sink = Sink::new(view, extent, 3);
 

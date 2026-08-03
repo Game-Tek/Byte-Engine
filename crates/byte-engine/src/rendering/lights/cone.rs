@@ -1,4 +1,5 @@
-use math::Vector3;
+use math::{Point, UnitVector};
+use maths_rs::Vec3f;
 
 use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
@@ -14,9 +15,9 @@ use crate::{
 /// measured in radians from `direction`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConeLight {
-	pub position: Vector3,
-	pub direction: Vector3,
-	pub color: Vector3,
+	pub position: Point,
+	pub direction: UnitVector,
+	pub color: Vec3f,
 	pub inner_angle: f32,
 	pub outer_angle: f32,
 	shadow_near_override: Option<f32>,
@@ -35,21 +36,15 @@ impl ConeLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	/// Invalid directions or angles panic because they cannot form a valid cone view.
+	/// Invalid angles panic because they cannot form a valid cone view; `UnitVector` has already validated the direction.
 	pub fn new(
-		position: Vector3,
-		direction: Vector3,
+		position: Point,
+		direction: UnitVector,
 		color: LightColor,
 		intensity: PhotometricIntensity,
 		inner_angle: f32,
 		outer_angle: f32,
 	) -> Result<Self, PhotometricError> {
-		// Reject directions that would become undefined when normalized during material evaluation.
-		let direction_length_squared = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-		assert!(
-			direction_length_squared.is_finite() && direction_length_squared > f32::EPSILON,
-			"Invalid cone light direction. The most likely cause is that the direction is zero or contains a non-finite component."
-		);
 		assert!(
 			inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= 0.0 && inner_angle < outer_angle,
 			"Invalid cone light angles. The most likely cause is that the angles are not finite or the inner angle is not smaller than the outer angle."
@@ -63,7 +58,7 @@ impl ConeLight {
 		Ok(Self {
 			position,
 			direction,
-			color: Vector3::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
+			color: Vec3f::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
 			inner_angle,
 			outer_angle,
 			shadow_near_override: None,
@@ -120,7 +115,7 @@ impl Inspectable for ConeLight {
 
 #[cfg(test)]
 mod tests {
-	use math::{Base as _, VecN as _, Vector3};
+	use math::{Point, UnitVector};
 
 	use super::ConeLight;
 	use crate::rendering::lights::{LightColor, PhotometricIntensity};
@@ -135,8 +130,8 @@ mod tests {
 	#[test]
 	fn cone_light_keeps_shadow_range_overrides() {
 		let light = ConeLight::new(
-			Vector3::new(1.0, 2.0, 3.0),
-			Vector3::new(0.0, -1.0, 0.0),
+			Point::new(1.0, 2.0, 3.0),
+			-UnitVector::y_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,
@@ -152,8 +147,8 @@ mod tests {
 	#[test]
 	fn individual_shadow_range_overrides_replace_only_their_endpoint() {
 		let light = ConeLight::new(
-			Vector3::zero(),
-			Vector3::unit_z(),
+			Point::origin(),
+			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,
@@ -171,8 +166,8 @@ mod tests {
 	#[test]
 	fn cone_light_wider_than_a_perspective_view_remains_valid_but_unshadowed() {
 		let light = ConeLight::new(
-			Vector3::zero(),
-			Vector3::unit_z(),
+			Point::origin(),
+			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,

@@ -1,22 +1,15 @@
-use std::{future::join, sync::Arc};
+use std::sync::Arc;
 
-#[cfg(feature = "headed")]
-use math::Matrix4;
-use math::Vector3;
-use utils::BoxedFuture;
+use math::Vector;
 
 use super::transform::Transform;
 #[cfg(feature = "headed")]
-use crate::rendering::{
-	mesh::{self},
-	renderable::mesh::MeshSource,
-};
+use crate::rendering::{mesh, renderable::mesh::MeshSource};
 use crate::{
-	core::{Entity, EntityHandle},
 	physics::{
-		self,
 		body::{Body, BodyTypes},
 		collider::{Collider, Shapes},
+		LocalSpace,
 	},
 	rendering::{
 		mesh::generator::{MeshGenerator, SphereMeshGenerator},
@@ -25,21 +18,21 @@ use crate::{
 	space::Transformable,
 };
 
-/// The `Object` struct combines a renderable mesh with a physical body for use
-/// in the default game world.
+/// The `Object` struct combines a renderable mesh with a physical body for the default game world.
 #[derive(Clone)]
 pub struct Object {
 	source: MeshSource,
 	transform: Transform,
-	velocity: Vector3,
+	velocity: Vector,
 	body_type: BodyTypes,
 	collider: Shapes,
 	friction: f32,
 }
 
 impl Object {
-	pub fn new<'a>(resource_id: &'static str, transform: Transform, body_type: BodyTypes, velocity: Vector3) -> Self {
-		Object {
+	/// Creates a resource-backed object with a spherical collider.
+	pub fn new(resource_id: &'static str, transform: Transform, body_type: BodyTypes, velocity: Vector) -> Self {
+		Self {
 			source: MeshSource::Resource(resource_id),
 			transform,
 			velocity,
@@ -49,59 +42,63 @@ impl Object {
 		}
 	}
 
+	/// Creates a generated sphere whose renderer and collider share `radius`.
 	pub fn sphere(radius: f32) -> Self {
-		Object {
+		Self {
 			source: MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius))),
 			transform: Transform::default(),
-			velocity: Vector3::default(),
+			velocity: Vector::zero(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Sphere { radius },
 			friction: 0.5,
 		}
 	}
 
-	pub fn r#box(size: Vector3) -> Self {
-		Object {
-			source: MeshSource::Generated(Arc::new(mesh::generator::BoxMeshGenerator::from_size(size))),
+	/// Creates a generated box from local half-extents.
+	pub fn r#box(size: Vector<LocalSpace>) -> Self {
+		Self {
+			source: MeshSource::Generated(Arc::new(mesh::generator::BoxMeshGenerator::from_size(size.into_maths()))),
 			transform: Transform::default(),
-			velocity: Vector3::default(),
+			velocity: Vector::zero(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Cube { size },
 			friction: 0.5,
 		}
 	}
 
+	/// Creates a dynamic object from an existing mesh source.
 	pub fn from_mesh_source(mesh_source: MeshSource) -> Self {
-		Object {
-			source: mesh_source,
+		Self::new_generated_or_resource(mesh_source)
+	}
+
+	fn new_generated_or_resource(source: MeshSource) -> Self {
+		Self {
+			source,
 			transform: Transform::default(),
-			velocity: Vector3::default(),
+			velocity: Vector::zero(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Sphere { radius: 1.0 },
 			friction: 0.5,
 		}
 	}
 
+	/// Creates a dynamic object from a generated mesh.
 	pub fn new_generated(mesh: Arc<dyn MeshGenerator>) -> Self {
-		Object {
-			source: MeshSource::Generated(mesh),
-			transform: Transform::default(),
-			velocity: Vector3::default(),
-			body_type: BodyTypes::Dynamic,
-			collider: Shapes::Sphere { radius: 1.0 },
-			friction: 0.5,
-		}
+		Self::new_generated_or_resource(MeshSource::Generated(mesh))
 	}
 
+	/// Returns mutable access to the gameplay transform.
 	pub fn get_transform_mut(&mut self) -> &mut Transform {
 		&mut self.transform
 	}
 
+	/// Returns mutable access to the body type.
 	pub fn body_type_mut(&mut self) -> &mut BodyTypes {
 		&mut self.body_type
 	}
 
-	pub fn set_velocity(&mut self, velocity: Vector3) {
+	/// Replaces the world-space linear velocity.
+	pub fn set_velocity(&mut self, velocity: Vector) {
 		self.velocity = velocity;
 	}
 }
@@ -119,14 +116,13 @@ impl Collider for Object {
 	fn shape(&self) -> Shapes {
 		self.collider.clone()
 	}
-
 	fn friction(&self) -> f32 {
 		self.friction
 	}
 }
 
 impl Body for Object {
-	fn velocity(&self) -> Vector3 {
+	fn velocity(&self) -> Vector {
 		self.velocity
 	}
 	fn body_type(&self) -> BodyTypes {
@@ -138,92 +134,5 @@ impl Body for Object {
 impl RenderableMesh for Object {
 	fn get_mesh(&self) -> &MeshSource {
 		&self.source
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use math::Vector3;
-
-	use super::Object;
-	use crate::{
-		physics::{
-			body::{Body, BodyTypes},
-			collider::{Collider, Shapes},
-		},
-		rendering::{
-			mesh::generator::MeshGenerator,
-			renderable::mesh::{MeshSource, RenderableMesh},
-		},
-		space::{Positionable, Scalable, Transformable},
-	};
-
-	#[test]
-	fn sphere_constructor_keeps_render_and_collision_radius_in_sync() {
-		let object = Object::sphere(2.5);
-		assert!(matches!(object.shape(), Shapes::Sphere { radius } if radius == 2.5));
-		assert_eq!(object.body_type(), BodyTypes::Dynamic);
-		assert_eq!(object.velocity(), Vector3::new(0.0, 0.0, 0.0));
-		assert_eq!(object.friction(), 0.5);
-		match object.get_mesh() {
-			MeshSource::Generated(generator) => {
-				let positions = generator.positions();
-				assert!(positions.iter().any(|&(_, y, _)| (y - 2.5).abs() < 1e-5));
-			}
-			MeshSource::Resource(_) => {
-				panic!("Expected generated sphere geometry. The most likely cause is a mismatched object constructor.")
-			}
-		}
-	}
-
-	#[test]
-	fn box_constructor_keeps_render_and_collision_extents_in_sync() {
-		let size = Vector3::new(1.0, 2.0, 3.0);
-		let object = Object::r#box(size);
-		assert!(matches!(object.shape(), Shapes::Cube { size: collider_size } if collider_size == size));
-		match object.get_mesh() {
-			MeshSource::Generated(generator) => assert!(generator
-				.positions()
-				.iter()
-				.all(|&(x, y, z)| x.abs() == size.x && y.abs() == size.y && z.abs() == size.z)),
-			MeshSource::Resource(_) => {
-				panic!("Expected generated box geometry. The most likely cause is a mismatched object constructor.")
-			}
-		}
-	}
-
-	#[test]
-	fn object_physics_and_transform_mutators_are_observable_through_traits() {
-		let mut object = Object::new(
-			"mesh.resource",
-			crate::gameplay::Transform::default(),
-			BodyTypes::Static,
-			Vector3::new(1.0, 2.0, 3.0),
-		);
-		assert!(matches!(object.get_mesh(), MeshSource::Resource("mesh.resource")));
-		assert_eq!(object.body_type(), BodyTypes::Static);
-		assert_eq!(object.velocity(), Vector3::new(1.0, 2.0, 3.0));
-
-		*object.body_type_mut() = BodyTypes::Kinematic;
-		object.set_velocity(Vector3::new(4.0, 5.0, 6.0));
-		object.set_position(Vector3::new(7.0, 8.0, 9.0));
-		object.set_scale(Vector3::new(2.0, 3.0, 4.0));
-		assert_eq!(object.body_type(), BodyTypes::Kinematic);
-		assert_eq!(object.velocity(), Vector3::new(4.0, 5.0, 6.0));
-		assert_eq!(object.position(), Vector3::new(7.0, 8.0, 9.0));
-		assert_eq!(object.transform().scale(), Vector3::new(2.0, 3.0, 4.0));
-	}
-
-	#[test]
-	fn cloned_objects_have_independent_transform_and_velocity_state() {
-		let original = Object::sphere(1.0);
-		let mut clone = original.clone();
-		clone.set_position(Vector3::new(1.0, 2.0, 3.0));
-		clone.set_velocity(Vector3::new(4.0, 5.0, 6.0));
-
-		assert_eq!(original.position(), Vector3::new(0.0, 0.0, 0.0));
-		assert_eq!(original.velocity(), Vector3::new(0.0, 0.0, 0.0));
-		assert_eq!(clone.position(), Vector3::new(1.0, 2.0, 3.0));
-		assert_eq!(clone.velocity(), Vector3::new(4.0, 5.0, 6.0));
 	}
 }

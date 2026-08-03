@@ -25,6 +25,7 @@ pub(crate) mod font;
 pub mod intersection;
 #[doc(hidden)]
 pub mod layout;
+mod point;
 #[doc(hidden)]
 pub mod primitive;
 #[doc(hidden)]
@@ -56,6 +57,7 @@ pub use layout::{
 	engine::{Engine, EvaluationContext, PointerState, Render, Runtime, UiEvent, UiKeyEvent, UiTextEditEvent},
 	Depth, Geometry, Position, Sizing,
 };
+pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};
 pub use render_pass::UiRenderPass;
 pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, MixModes};

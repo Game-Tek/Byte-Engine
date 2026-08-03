@@ -83,20 +83,20 @@ fn resolve_vector2(
 	record: &Record,
 	values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
 	frame_allocator: &bumpalo::Bump,
-) -> Option<Vector2> {
+) -> Option<Axis2> {
 	match record.value {
 		Value::Bool(_) => {
 			let value = active_boolean_mappings(action, record, values, frame_allocator).iter().fold(
-				Vector2::zero(),
+				Axis2::zero(),
 				|sum, (mapping, _)| match mapping.mapping {
 					Value::Vector2(value) => sum + value,
 					_ => sum,
 				},
 			);
-			Some(if value == Vector2::zero() { value } else { normalize(value) })
+			Some(value.normalized())
 		}
 		Value::Vector2(value) => Some(value),
-		Value::Vector3(value) => Some(Vector2 { x: value.x, y: value.y }),
+		Value::Vector3(value) => Some(Axis2::new(value.x, value.y)),
 		_ => unsupported_conversion(),
 	}
 }
@@ -107,37 +107,29 @@ fn resolve_vector3(
 	record: &Record,
 	values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
 	frame_allocator: &bumpalo::Bump,
-) -> Option<Vector3> {
+) -> Option<Axis3> {
 	match record.value {
 		Value::Bool(_) => {
 			let value = active_boolean_mappings(action, record, values, frame_allocator).iter().fold(
-				Vector3::zero(),
+				Axis3::zero(),
 				|sum, (mapping, _)| match mapping.mapping {
 					Value::Vector3(value) => sum + value,
 					_ => sum,
 				},
 			);
-			Some(if value == Vector3::zero() { value } else { normalize(value) })
+			Some(value.normalized())
 		}
 		Value::Vector2(value) => match mapping.function {
 			Some(Function::Sphere) => {
 				let x_angle = value.x * PI;
 				let y_angle = value.y * PI * 0.5;
-				let direction = Vector3 {
-					x: x_angle.sin() * y_angle.cos(),
-					y: y_angle.sin(),
-					z: x_angle.cos() * y_angle.cos(),
-				};
+				let direction = Axis3::new(x_angle.sin() * y_angle.cos(), y_angle.sin(), x_angle.cos() * y_angle.cos());
 				let Value::Vector3(transformation) = mapping.mapping else {
 					return unsupported_conversion();
 				};
 				Some(direction * transformation)
 			}
-			None => Some(Vector3 {
-				x: value.x,
-				y: value.y,
-				z: 0.0,
-			}),
+			None => Some(Axis3::new(value.x, value.y, 0.0)),
 			_ => unsupported_conversion(),
 		},
 		Value::Vector3(value) => Some(value),
@@ -194,10 +186,10 @@ fn unsupported_conversion<T>() -> Option<T> {
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-use math::{normalize, Base, Vector2, Vector3};
 use smallvec::SmallVec;
 
 use super::action::TriggerMapping;
 use super::records::Record;
 use super::{ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types, Value};
+use super::{Axis2, Axis3};
 use crate::core::factory::Handle;

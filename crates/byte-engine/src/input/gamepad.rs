@@ -12,8 +12,8 @@ use std::{
 
 use hidapi::{HidApi, HidDevice};
 use log::{debug, warn};
-use math::Vector2;
 
+use super::Axis2;
 use super::{input_manager::TriggerReference, DeviceHandle, Value};
 
 const STICK_EPSILON: f32 = 0.001;
@@ -55,8 +55,8 @@ const BUTTON_TRIGGERS: &[(u32, &str)] = &[
 
 #[derive(Clone, Copy, Debug)]
 struct GamepadState {
-	left_stick: Vector2,
-	right_stick: Vector2,
+	left_stick: Axis2,
+	right_stick: Axis2,
 	left_trigger: f32,
 	right_trigger: f32,
 	buttons: u32,
@@ -65,8 +65,8 @@ struct GamepadState {
 impl Default for GamepadState {
 	fn default() -> Self {
 		Self {
-			left_stick: Vector2::new(0.0, 0.0),
-			right_stick: Vector2::new(0.0, 0.0),
+			left_stick: Axis2::new(0.0, 0.0),
+			right_stick: Axis2::new(0.0, 0.0),
 			left_trigger: 0.0,
 			right_trigger: 0.0,
 			buttons: 0,
@@ -471,8 +471,8 @@ fn parse_dualshock4(report: &[u8]) -> Option<GamepadState> {
 		return None;
 	}
 
-	let left_stick = Vector2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = Vector2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
+	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
+	let right_stick = Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
 
 	let buttons = report[4];
 	let buttons2 = report[5];
@@ -560,11 +560,11 @@ fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 		return None;
 	}
 
-	let left_stick = Vector2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
+	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
 	let right_stick = if report.len() >= 7 {
-		Vector2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]))
+		Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]))
 	} else {
-		Vector2::new(0.0, 0.0)
+		Axis2::new(0.0, 0.0)
 	};
 
 	let (hat, raw_buttons) = if report.len() >= 7 {
@@ -647,8 +647,8 @@ fn parse_dualsense(report: &[u8]) -> Option<GamepadState> {
 		return None;
 	}
 
-	let left_stick = Vector2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = Vector2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
+	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
+	let right_stick = Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
 
 	let buttons = report[4];
 	let buttons2 = report[5];
@@ -734,12 +734,12 @@ fn parse_xbox(report: &[u8]) -> Option<GamepadState> {
 	let left_trigger = normalize_trigger_u8(report[4]);
 	let right_trigger = normalize_trigger_u8(report[5]);
 
-	let left_stick = Vector2::new(
+	let left_stick = Axis2::new(
 		normalize_axis_i16(i16::from_le_bytes([report[6], report[7]])),
 		-normalize_axis_i16(i16::from_le_bytes([report[8], report[9]])),
 	);
 
-	let right_stick = Vector2::new(
+	let right_stick = Axis2::new(
 		normalize_axis_i16(i16::from_le_bytes([report[10], report[11]])),
 		-normalize_axis_i16(i16::from_le_bytes([report[12], report[13]])),
 	);
@@ -895,8 +895,8 @@ mod tests {
 				| BUTTON_DPAD_RIGHT;
 
 		let raw = parse_dualshock4(&payload).expect("valid raw DualShock report");
-		assert_eq!(raw.left_stick, Vector2::new(-1.0, -1.0));
-		assert_eq!(raw.right_stick, Vector2::new(1.0, 1.0));
+		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
+		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
 		assert_eq!(raw.left_trigger, 0.0);
 		assert_eq!(raw.right_trigger, 1.0);
 		assert_eq!(raw.buttons, expected_buttons);
@@ -924,8 +924,8 @@ mod tests {
 		payload[12..14].copy_from_slice(&i16::MIN.to_le_bytes());
 
 		let raw = parse_xbox(&payload).expect("valid Xbox report");
-		assert_eq!(raw.left_stick, Vector2::new(-1.0, -1.0));
-		assert_eq!(raw.right_stick, Vector2::new(1.0, 1.0));
+		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
+		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
 		assert_eq!(raw.left_trigger, 0.0);
 		assert_eq!(raw.right_trigger, 1.0);
 		assert_eq!(
@@ -943,8 +943,8 @@ mod tests {
 		// and bit 14 is the active-low X input used by AppleUserHIDDevice.
 		let released_x = [0, 255, 128, 128, 0x11, 0x40, 0];
 		let state = parse_generic_joystick(&released_x).expect("valid generic report");
-		assert_eq!(state.left_stick, Vector2::new(-1.0, -1.0));
-		assert_eq!(state.right_stick, Vector2::new(0.0, 0.0));
+		assert_eq!(state.left_stick, Axis2::new(-1.0, -1.0));
+		assert_eq!(state.right_stick, Axis2::new(0.0, 0.0));
 		assert_eq!(state.buttons, BUTTON_A | BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT);
 
 		let mut pressed_x = released_x;
@@ -982,7 +982,7 @@ mod tests {
 		assert_eq!(previous.buttons, BUTTON_A);
 
 		let noise = GamepadState {
-			left_stick: Vector2::new(STICK_EPSILON, 0.0),
+			left_stick: Axis2::new(STICK_EPSILON, 0.0),
 			left_trigger: TRIGGER_EPSILON,
 			buttons: BUTTON_A,
 			..GamepadState::default()
@@ -990,8 +990,8 @@ mod tests {
 		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, noise).is_empty());
 
 		let changed = GamepadState {
-			left_stick: Vector2::new(0.5, -0.25),
-			right_stick: Vector2::new(-0.75, 1.0),
+			left_stick: Axis2::new(0.5, -0.25),
+			right_stick: Axis2::new(-0.75, 1.0),
 			left_trigger: 0.25,
 			right_trigger: 1.0,
 			buttons: BUTTON_B,

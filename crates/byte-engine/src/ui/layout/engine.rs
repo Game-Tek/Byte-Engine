@@ -11,10 +11,10 @@
 pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,
 	state: Rc<RefCell<EngineState>>,
-	cursor_position: Vector2,
+	cursor_position: UiPoint,
 	is_clicking: bool,
 	clicks: Vec<bool>,
-	scrolls: Vec<Vector2>,
+	scrolls: Vec<UiVector>,
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
 	text_edits: VecDeque<TextEdit>,
@@ -48,14 +48,14 @@ pub(super) struct EngineState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerState {
-	pub position: Vector2,
+	pub position: UiPoint,
 	pub pressed: bool,
 }
 
 impl Default for PointerState {
 	fn default() -> Self {
 		Self {
-			position: Vector2::zero(),
+			position: UiPoint::zero(),
 			pressed: false,
 		}
 	}
@@ -850,7 +850,7 @@ impl<C: 'static> Engine<C> {
 		Self {
 			viewports: Vec::new(),
 			state: Rc::new(RefCell::new(EngineState::new())),
-			cursor_position: Vector2::zero(),
+			cursor_position: UiPoint::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
 			scrolls: Vec::new(),
@@ -968,7 +968,7 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	fn route_scroll_event(&mut self, target: Id, delta: Vector2) {
+	fn route_scroll_event(&mut self, target: Id, delta: UiVector) {
 		let runtime = Rc::clone(&self.runtime);
 		let tree = Rc::clone(&runtime.borrow().tree);
 		let tree = tree.borrow();
@@ -1156,7 +1156,7 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	pub fn set_cursor_position(&mut self, v: Vector2) {
+	pub fn set_cursor_position(&mut self, v: UiPoint) {
 		self.cursor_position = v;
 	}
 
@@ -1177,7 +1177,7 @@ impl<C: 'static> Engine<C> {
 		self.clicks.push(v);
 	}
 
-	pub fn update_scroll_state(&mut self, delta: Vector2) {
+	pub fn update_scroll_state(&mut self, delta: UiVector) {
 		self.scrolls.push(delta);
 	}
 
@@ -1606,7 +1606,7 @@ impl ElementHandle for VirtualViewport {
 pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
-	pub delta: Option<Vector2>,
+	pub delta: Option<UiVector>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1701,7 +1701,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::zero());
+		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -1715,7 +1715,7 @@ mod tests {
 		let observed_for_task = Arc::clone(&observed);
 		let mut engine = Engine::new();
 
-		engine.set_cursor_position(Vector2::new(0.25, -0.5));
+		engine.set_cursor_position(UiPoint::new(0.25, -0.5));
 		engine.update_click_state(true);
 		engine.mount(move |ctx| {
 			let observed = Arc::clone(&observed_for_task);
@@ -1729,7 +1729,7 @@ mod tests {
 		assert_eq!(
 			*observed.lock().expect("expected test value"),
 			Some(PointerState {
-				position: Vector2::new(0.25, -0.5),
+				position: UiPoint::new(0.25, -0.5),
 				pressed: true,
 			})
 		);
@@ -1751,10 +1751,10 @@ mod tests {
 			})
 		});
 
-		engine.set_cursor_position(Vector2::new(-1.0, -1.0));
+		engine.set_cursor_position(UiPoint::new(-1.0, -1.0));
 		engine.update_click_state(false);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.75, 0.5));
+		engine.set_cursor_position(UiPoint::new(0.75, 0.5));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -1762,11 +1762,11 @@ mod tests {
 			*observed.lock().expect("expected test value"),
 			vec![
 				PointerState {
-					position: Vector2::new(-1.0, -1.0),
+					position: UiPoint::new(-1.0, -1.0),
 					pressed: false,
 				},
 				PointerState {
-					position: Vector2::new(0.75, 0.5),
+					position: UiPoint::new(0.75, 0.5),
 					pressed: true,
 				},
 			]
@@ -1791,11 +1791,11 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::zero());
-		engine.update_scroll_state(Vector2::new(0.0, -1.0));
+		engine.set_cursor_position(UiPoint::zero());
+		engine.update_scroll_state(UiVector::new(0.0, -1.0));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().expect("expected test value"), Some(Vector2::new(0.0, -1.0)));
+		assert_eq!(*received.lock().expect("expected test value"), Some(UiVector::new(0.0, -1.0)));
 	}
 
 	#[test]
@@ -2032,7 +2032,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -2068,7 +2068,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -2165,7 +2165,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -2531,7 +2531,7 @@ mod tests {
 		assert_eq!(first.elements.len(), 2);
 		assert_eq!(*result.lock().expect("expected test value"), None);
 
-		engine.set_cursor_position(Vector2::zero());
+		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -2561,7 +2561,7 @@ mod tests {
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(first.elements.len(), 2);
 
-		engine.set_cursor_position(Vector2::zero());
+		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let during_close = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(during_close.elements.len(), 2);
@@ -2718,7 +2718,7 @@ mod tests {
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(first.elements.len(), 2);
 
-		engine.set_cursor_position(Vector2::zero());
+		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -3325,7 +3325,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.0, 0.0));
+		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -3352,7 +3352,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::new(0.0, 0.0));
+		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -3678,7 +3678,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.set_cursor_position(Vector2::zero());
+		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
@@ -3699,7 +3699,6 @@ use std::{
 	task::{Context as TaskContext, Poll, Wake, Waker},
 };
 
-use math::{Base as _, Vector2};
 use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
 
 use super::{
@@ -3719,5 +3718,5 @@ use crate::ui::{
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, EdgeFeather, Layer as _, LayerKind},
-	Container, Depth, Text, Transform,
+	Container, Depth, Text, Transform, UiPoint, UiVector,
 };

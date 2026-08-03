@@ -7,7 +7,7 @@ pub mod render_pass;
 #[doc(hidden)]
 pub mod shader_generator;
 
-use math::ShaderMatrix4;
+use math::ShaderMatrix;
 pub use pipeline_manager::PipelineManager;
 pub use pipeline_manager::PipelineManager as SimplePipelineManager;
 pub use render_pass::RenderPass;
@@ -18,5 +18,5 @@ pub use render_pass::RenderPass as SimpleRenderPass;
 /// with generated shader code.
 #[derive(Debug, Clone, Copy)]
 pub struct CameraShaderData {
-	vp: ShaderMatrix4,
+	vp: ShaderMatrix,
 }

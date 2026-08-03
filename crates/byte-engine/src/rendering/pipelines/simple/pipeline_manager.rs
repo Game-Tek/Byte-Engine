@@ -4,7 +4,7 @@ pub struct PipelineManager {
 	/// Buffer containing all vertex positions for meshes.
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
 	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
-	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[ShaderMatrix4x3; 1024]>,
+	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[AffineShaderMatrix; 1024]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) pipeline: ghi::PipelineHandle,
@@ -174,7 +174,7 @@ impl PipelineManager {
 		instance_data_buffer[instace_id.index()] = entity.transform().get_matrix().into();
 	}
 
-	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix4) {
+	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix) {
 		let Some(idx) = self.mesh_buffers_stats.get_instance_id(handle) else {
 			return;
 		};
@@ -389,7 +389,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame,
 };
-use math::{Matrix4, ShaderMatrix4, ShaderMatrix4x3};
+use math::{AffineShaderMatrix, Matrix, ShaderMatrix};
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, resources::material, shader::generator::ShaderGenerationSettings,
 	types::ShaderTypes as ResourceShaderTypes,

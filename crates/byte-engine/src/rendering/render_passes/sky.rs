@@ -3,7 +3,8 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
-use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
+use math::{inverse, Point, ShaderMatrix, UnitVector};
+use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
@@ -33,7 +34,7 @@ fn should_rebuild_sky_view(transmittance_valid: bool, cached_camera_height: Opti
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
 #[derive(Clone, Copy, Debug)]
 pub struct AtmosphereSkyRenderPassSettings {
-	pub sun_direction: Vector3,
+	pub sun_direction: UnitVector,
 	pub sun_intensity: f32,
 	pub sun_angular_radius: f32,
 	pub ground_radius: f32,
@@ -43,13 +44,15 @@ pub struct AtmosphereSkyRenderPassSettings {
 	pub mie_anisotropy: f32,
 	pub ozone_strength: f32,
 	pub skip_below_horizon: bool,
-	pub planet_center: Vector3,
+	pub planet_center: Point,
 }
 
 impl Default for AtmosphereSkyRenderPassSettings {
 	fn default() -> Self {
 		Self {
-			sun_direction: Vector3::new(0.35, 0.85, 0.4),
+			sun_direction: math::Vector::new(0.35, 0.85, 0.4)
+				.normalize()
+				.expect("default sun direction is nonzero"),
 			sun_intensity: 22.0,
 			sun_angular_radius: 0.004675,
 			ground_radius: 6_360_000.0,
@@ -59,7 +62,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			mie_anisotropy: 0.76,
 			ozone_strength: 1.0,
 			skip_below_horizon: true,
-			planet_center: Vector3::new(0.0, -6_360_000.0, 0.0),
+			planet_center: Point::new(0.0, -6_360_000.0, 0.0),
 		}
 	}
 }
@@ -67,7 +70,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SkyShaderData {
-	inverse_view_projection: ShaderMatrix4,
+	inverse_view_projection: ShaderMatrix,
 	camera_position: [f32; 4],
 	sun_direction: [f32; 4],
 	planet_center: [f32; 4],
@@ -209,14 +212,15 @@ impl AtmosphereSkyRenderPass {
 	/// Updates per-view sky constants from the active camera before dispatch.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> f32 {
 		let view = sink.view();
-		let inverse_view_projection = view.view_projection().inverse();
-		let inverse_view = view.view().inverse();
-		let camera_position = inverse_view * Vector4::new(0.0, 0.0, 0.0, 1.0);
-		let sun_direction = math::normalize(self.settings.sun_direction);
+		let inverse_view_projection = inverse(view.view_projection());
+		let inverse_view = inverse(view.view());
+		let camera_position = inverse_view * Vec4f::new(0.0, 0.0, 0.0, 1.0);
+		let sun_direction = self.settings.sun_direction;
+		let planet_center = self.settings.planet_center.into_maths();
 		let planet_center = [
-			camera_position.x + self.settings.planet_center.x,
-			self.settings.planet_center.y,
-			camera_position.z + self.settings.planet_center.z,
+			planet_center.x,
+			planet_center.y,
+			planet_center.z,
 			self.settings.sun_angular_radius,
 		];
 		let parameters = frame.get_mut_dynamic_buffer_slice(self.parameters);
@@ -229,7 +233,12 @@ impl AtmosphereSkyRenderPass {
 			camera_position.z,
 			settings.sun_intensity,
 		];
-		parameters.sun_direction = [sun_direction.x, sun_direction.y, sun_direction.z, settings.mie_anisotropy];
+		parameters.sun_direction = [
+			sun_direction.x(),
+			sun_direction.y(),
+			sun_direction.z(),
+			settings.mie_anisotropy,
+		];
 		parameters.planet_center = planet_center;
 		parameters.atmosphere = [
 			settings.ground_radius,
@@ -302,7 +311,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
-	use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
+	use math::{inverse, Point, ShaderMatrix, UnitVector};
 
 	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
@@ -314,30 +323,28 @@ mod tests {
 	/// Builds the production sky parameter layout with deterministic default atmosphere values.
 	fn default_parameters(program: &besl::vm::ExecutableProgram, parameter_slot: ResourceSlot) -> Buffer {
 		let settings = super::AtmosphereSkyRenderPassSettings::default();
-		let view = crate::rendering::View::new_perspective(
-			60.0,
-			1.0,
-			0.1,
-			100.0,
-			Vector3::new(0.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
-		);
-		let inverse_view_projection = ShaderMatrix4::from(view.view_projection().inverse()).0;
-		let sun_direction = math::normalize(settings.sun_direction);
+		let view = crate::rendering::View::new_perspective(60.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let inverse_view_projection = ShaderMatrix::from(inverse(view.view_projection())).0;
+		let sun_direction = settings.sun_direction;
 		let mut parameters = buffer(program, parameter_slot);
 		// Mirror the production upload field-for-field so every LUT test validates the real buffer contract.
 		for (name, value) in [
 			("camera_position", [0.0, 0.0, 0.0, settings.sun_intensity]),
 			(
 				"sun_direction",
-				[sun_direction.x, sun_direction.y, sun_direction.z, settings.mie_anisotropy],
+				[
+					sun_direction.x(),
+					sun_direction.y(),
+					sun_direction.z(),
+					settings.mie_anisotropy,
+				],
 			),
 			(
 				"planet_center",
 				[
-					settings.planet_center.x,
-					settings.planet_center.y,
-					settings.planet_center.z,
+					settings.planet_center.x(),
+					settings.planet_center.y(),
+					settings.planet_center.z(),
 					settings.sun_angular_radius,
 				],
 			),

@@ -4,10 +4,11 @@ use std::{
 	sync::Arc,
 };
 
-use math::{cross, normalize, Vector3, Vector4};
+use maths_rs::{cross, normalize, Vec3f, Vec4f};
 
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
+/// The `SphereMeshGenerator` struct provides unbranded mesh-space streams for a UV sphere.
 pub struct SphereMeshGenerator {
 	radius: f32,
 	segments: u32,
@@ -22,39 +23,32 @@ impl Default for SphereMeshGenerator {
 }
 
 impl SphereMeshGenerator {
+	/// Creates a unit-radius sphere mesh generator.
 	pub fn new() -> Self {
-		SphereMeshGenerator::from_radius(1.0)
+		Self::from_radius(1.0)
 	}
 
+	/// Creates a sphere mesh generator with the supplied mesh-space radius.
 	pub fn from_radius(radius: f32) -> Self {
 		let segments = 8;
 		let rings = 8;
-
-		let mut vertices = Vec::new();
-
+		let mut vertex_positions = Vec::with_capacity(((rings + 1) * (segments + 1)) as usize);
 		for ring in 0..=rings {
 			let theta = std::f32::consts::PI * ring as f32 / rings as f32;
-			let sin_theta = theta.sin();
-			let cos_theta = theta.cos();
-
 			for segment in 0..=segments {
 				let phi = 2.0 * std::f32::consts::PI * segment as f32 / segments as f32;
-				let sin_phi = phi.sin();
-				let cos_phi = phi.cos();
-
-				let x = radius * sin_theta * cos_phi;
-				let y = radius * cos_theta;
-				let z = radius * sin_theta * sin_phi;
-
-				vertices.push((x, y, z));
+				vertex_positions.push((
+					radius * theta.sin() * phi.cos(),
+					radius * theta.cos(),
+					radius * theta.sin() * phi.sin(),
+				));
 			}
 		}
-
-		SphereMeshGenerator {
+		Self {
 			radius,
 			segments,
 			rings,
-			vertex_positions: vertices,
+			vertex_positions,
 		}
 	}
 }
@@ -65,25 +59,21 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn indices(&self) -> Cow<'_, [u32]> {
-		let segments = self.segments;
-		let rings = self.rings;
-		let mut indices = Vec::new();
-
-		for ring in 0..rings {
-			for segment in 0..segments {
-				let i = ring * (segments + 1) + segment;
-				let j = (ring + 1) * (segments + 1) + segment;
-
-				indices.push(i);
-				indices.push(i + 1);
-				indices.push(j);
-
-				indices.push(j);
-				indices.push(i + 1);
-				indices.push(j + 1);
+		let mut indices = Vec::with_capacity((self.rings * self.segments * 6) as usize);
+		for ring in 0..self.rings {
+			for segment in 0..self.segments {
+				let top_left = ring * (self.segments + 1) + segment;
+				let bottom_left = (ring + 1) * (self.segments + 1) + segment;
+				indices.extend_from_slice(&[
+					top_left,
+					top_left + 1,
+					bottom_left,
+					bottom_left,
+					top_left + 1,
+					bottom_left + 1,
+				]);
 			}
 		}
-
 		Cow::Owned(indices)
 	}
 
@@ -92,113 +82,77 @@ impl MeshGenerator for SphereMeshGenerator {
 			self.vertex_positions
 				.iter()
 				.map(|&(x, y, z)| {
-					let normal = normalize(Vector3::new(x, y, z));
+					let normal = normalize(Vec3f::new(x, y, z));
 					(normal.x, normal.y, normal.z)
 				})
 				.collect(),
 		)
 	}
 
-	fn tangents(&self) -> Cow<'_, [Vector3]> {
-		let segments = self.segments;
-		let rings = self.rings;
-		let mut tangents = Vec::new();
-
-		for ring in 0..=rings {
-			for segment in 0..=segments {
-				let phi = 2.0 * std::f32::consts::PI * segment as f32 / segments as f32;
-				let sin_phi = phi.sin();
-				let cos_phi = phi.cos();
-
-				// Tangent is perpendicular to the radial direction in the XZ plane
-				let tangent = Vector3::new(-sin_phi, 0.0, cos_phi);
-				tangents.push(tangent);
-			}
-		}
-
-		Cow::Owned(tangents)
+	fn tangents(&self) -> Cow<'_, [Vec3f]> {
+		Cow::Owned(
+			(0..=self.rings)
+				.flat_map(|_| {
+					(0..=self.segments).map(|segment| {
+						let phi = 2.0 * std::f32::consts::PI * segment as f32 / self.segments as f32;
+						Vec3f::new(-phi.sin(), 0.0, phi.cos())
+					})
+				})
+				.collect(),
+		)
 	}
 
-	fn bitangents(&self) -> Cow<'_, [Vector3]> {
-		let mut bitangents = Vec::with_capacity(((self.rings + 1) * (self.segments + 1)) as usize);
-
-		for ring in 0..=self.rings {
-			let theta = std::f32::consts::PI * ring as f32 / self.rings as f32;
-			let normal_y = theta.cos();
-			let radial = theta.sin();
-
-			for segment in 0..=self.segments {
-				let phi = 2.0 * std::f32::consts::PI * segment as f32 / self.segments as f32;
-				let normal = Vector3::new(radial * phi.cos(), normal_y, radial * phi.sin());
-				let tangent = Vector3::new(-phi.sin(), 0.0, phi.cos());
-
-				// Keep the generated tangent frame right-handed: tangent x bitangent = normal.
-				bitangents.push(cross(normal, tangent));
-			}
-		}
-
-		Cow::Owned(bitangents)
+	fn bitangents(&self) -> Cow<'_, [Vec3f]> {
+		Cow::Owned(
+			(0..=self.rings)
+				.flat_map(|ring| {
+					let theta = std::f32::consts::PI * ring as f32 / self.rings as f32;
+					(0..=self.segments).map(move |segment| {
+						let phi = 2.0 * std::f32::consts::PI * segment as f32 / self.segments as f32;
+						cross(
+							Vec3f::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin()),
+							Vec3f::new(-phi.sin(), 0.0, phi.cos()),
+						)
+					})
+				})
+				.collect(),
+		)
 	}
 
-	fn colors(&self) -> Option<Cow<'_, [Vector4]>> {
+	fn colors(&self) -> Option<Cow<'_, [Vec4f]>> {
 		None
 	}
 
 	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> {
-		let segments = self.segments;
-		let rings = self.rings;
 		debug_assert!(
-			segments > 0 && rings > 0,
+			self.segments > 0 && self.rings > 0,
 			"Sphere topology is empty. The most likely cause is constructing a generator with zero segments or rings."
 		);
 		debug_assert!(
-			rings
+			self.rings
 				.checked_add(1)
-				.zip(segments.checked_add(1))
+				.zip(self.segments.checked_add(1))
 				.and_then(|(rings, segments)| rings.checked_mul(segments))
 				.is_some_and(|vertex_count| vertex_count <= u8::MAX as u32 + 1),
 			"Sphere meshlet index exceeds u8. The most likely cause is increasing sphere tessellation without widening meshlet indices."
 		);
-		let mut indices = Vec::new();
-
-		for ring in 0..rings {
-			for segment in 0..segments {
-				let i = (ring * (segments + 1) + segment) as u8;
-				let j = ((ring + 1) * (segments + 1) + segment) as u8;
-
-				indices.push(i);
-				indices.push(i + 1);
-				indices.push(j);
-
-				indices.push(j);
-				indices.push(i + 1);
-				indices.push(j + 1);
-			}
-		}
-
-		Some(Cow::Owned(indices))
+		Some(Cow::Owned(self.indices().iter().map(|index| *index as u8).collect()))
 	}
 
 	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
-		let segments = self.segments;
-		let rings = self.rings;
-		let mut uvs = Vec::new();
-
-		for ring in 0..=rings {
-			let v = ring as f32 / rings as f32;
-
-			for segment in 0..=segments {
-				let u = segment as f32 / segments as f32;
-				uvs.push((u, v));
-			}
-		}
-
-		Cow::Owned(uvs)
+		Cow::Owned(
+			(0..=self.rings)
+				.flat_map(|ring| {
+					(0..=self.segments)
+						.map(move |segment| (segment as f32 / self.segments as f32, ring as f32 / self.rings as f32))
+				})
+				.collect(),
+		)
 	}
 
 	fn hash(&self) -> u64 {
 		let mut hasher = std::hash::DefaultHasher::new();
-		(self.radius.to_bits()).hash(&mut hasher);
+		self.radius.to_bits().hash(&mut hasher);
 		self.rings.hash(&mut hasher);
 		self.segments.hash(&mut hasher);
 		hasher.finish()
@@ -206,60 +160,50 @@ impl MeshGenerator for SphereMeshGenerator {
 }
 
 impl From<SphereMeshGenerator> for Arc<dyn MeshGenerator> {
-	fn from(val: SphereMeshGenerator) -> Self {
-		Arc::new(val)
+	fn from(value: SphereMeshGenerator) -> Self {
+		Arc::new(value)
 	}
 }
 
 impl From<SphereMeshGenerator> for MeshSource {
-	fn from(val: SphereMeshGenerator) -> Self {
-		Into::<Arc<dyn MeshGenerator>>::into(val).into()
+	fn from(value: SphereMeshGenerator) -> Self {
+		Into::<Arc<dyn MeshGenerator>>::into(value).into()
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use math::{cross, dot, length, Vector3};
+	use maths_rs::{cross, dot, length, Vec3f};
 
 	use super::SphereMeshGenerator;
 	use crate::rendering::mesh::generator::MeshGenerator;
 
-	fn vector(tuple: (f32, f32, f32)) -> Vector3 {
-		Vector3::new(tuple.0, tuple.1, tuple.2)
+	fn vector(value: (f32, f32, f32)) -> Vec3f {
+		Vec3f::new(value.0, value.1, value.2)
 	}
 
 	#[test]
 	fn generated_sphere_has_consistent_stream_lengths_and_valid_indices() {
 		let sphere = SphereMeshGenerator::from_radius(2.0);
 		let positions = sphere.positions();
-		let normals = sphere.normals();
-		let tangents = sphere.tangents();
-		let bitangents = sphere.bitangents();
-		let uvs = sphere.uvs();
-		let indices = sphere.indices();
-
 		assert_eq!(positions.len(), 81);
-		assert_eq!(normals.len(), positions.len());
-		assert_eq!(tangents.len(), positions.len());
-		assert_eq!(bitangents.len(), positions.len());
-		assert_eq!(uvs.len(), positions.len());
-		assert_eq!(indices.len(), 8 * 8 * 6);
-		assert!(indices.iter().all(|index| (*index as usize) < positions.len()));
+		assert_eq!(sphere.normals().len(), positions.len());
+		assert_eq!(sphere.tangents().len(), positions.len());
+		assert_eq!(sphere.bitangents().len(), positions.len());
+		assert_eq!(sphere.uvs().len(), positions.len());
+		assert_eq!(sphere.indices().len(), 8 * 8 * 6);
+		assert!(sphere.indices().iter().all(|index| (*index as usize) < positions.len()));
 	}
 
 	#[test]
-	fn every_vertex_lies_on_radius_and_has_a_right_handed_orthonormal_frame() {
+	fn every_vertex_has_a_right_handed_orthonormal_frame() {
 		let sphere = SphereMeshGenerator::from_radius(2.5);
-		let positions = sphere.positions();
-		let normals = sphere.normals();
-		let tangents = sphere.tangents();
-		let bitangents = sphere.bitangents();
-
-		for (((position, normal), tangent), bitangent) in positions
+		for (((position, normal), tangent), bitangent) in sphere
+			.positions()
 			.iter()
-			.zip(normals.iter())
-			.zip(tangents.iter())
-			.zip(bitangents.iter())
+			.zip(sphere.normals().iter())
+			.zip(sphere.tangents().iter())
+			.zip(sphere.bitangents().iter())
 		{
 			let position = vector(*position);
 			let normal = vector(*normal);
@@ -285,14 +229,12 @@ mod tests {
 			let last = first + 8;
 			assert_eq!(uvs[first], (0.0, row as f32 / 8.0));
 			assert_eq!(uvs[last], (1.0, row as f32 / 8.0));
-			let first_position = vector(positions[first]);
-			let last_position = vector(positions[last]);
-			assert!(length(first_position - last_position) < 1e-4);
+			assert!(length(vector(positions[first]) - vector(positions[last])) < 1e-4);
 		}
 	}
 
 	#[test]
-	fn meshlet_indices_match_the_primary_topology_without_truncation() {
+	fn meshlet_indices_match_primary_topology_without_truncation() {
 		let sphere = SphereMeshGenerator::new();
 		let indices = sphere.indices();
 		let meshlet_indices = sphere.meshlet_indices().expect("sphere meshlet topology");

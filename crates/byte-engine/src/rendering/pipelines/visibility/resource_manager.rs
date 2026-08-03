@@ -2012,7 +2012,6 @@ use ghi::{
 	},
 	Size as _,
 };
-use math::Vector3;
 use resource_management::resource::reader::ResourceReaderBacking;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resource::{ReadTargets, ReadTargetsMut};

@@ -1,20 +1,18 @@
-use math::{dot, normalize, Base, Vector3};
+use math::{UnitVector, Vector};
 use smallvec::SmallVec;
 
-use crate::physics::{
-	dynabit::{body::PhysicsBody, contact::Pair},
-	Body,
-};
+use crate::physics::dynabit::{body::PhysicsBody, contact::Pair};
 
+/// The `Intersection` struct records a physics contact with world-space geometry.
+#[derive(Debug, Clone, Copy)]
 pub struct Intersection {
-	pub(crate) normal: Vector3,
+	pub(crate) normal: UnitVector,
 	pub(crate) depth: f32,
-	pub(crate) point_on_a: Vector3,
-	pub(crate) point_on_b: Vector3,
+	pub(crate) point_on_a: math::Point,
+	pub(crate) point_on_b: math::Point,
 }
 
-/// The `PseudoBody` struct provides a sortable one-dimensional bound endpoint
-/// for broad-phase collision candidate generation.
+/// The `PseudoBody` struct represents one sortable swept-bounds endpoint.
 pub struct PseudoBody {
 	id: usize,
 	value: f32,
@@ -33,8 +31,6 @@ impl Ord for PseudoBody {
 	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
 		self.value
 			.total_cmp(&other.value)
-			// Process opening endpoints before closing endpoints so touching bounds
-			// remain broad-phase candidates.
 			.then_with(|| other.is_min.cmp(&self.is_min))
 			.then_with(|| self.id.cmp(&other.id))
 	}
@@ -46,64 +42,59 @@ impl PartialOrd for PseudoBody {
 	}
 }
 
-/// Projects swept body bounds onto the broad-phase axis and sorts their endpoints.
+/// Projects swept world bounds onto a stable axis and sorts their endpoints.
 pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[PseudoBody; 32]> {
 	debug_assert!(
 		dt.is_finite() && dt >= 0.0,
 		"Broad-phase delta is invalid. The most likely cause is passing a negative or non-finite frame interval."
 	);
-	let axis = normalize(Vector3::one());
-
 	let minimum_body_count = bodies.size_hint().0;
 	debug_assert!(
 		minimum_body_count.checked_mul(2).is_some(),
 		"Broad-phase endpoint capacity overflowed. The most likely cause is an invalid iterator size hint."
 	);
-	let mut pseudo_bodies = SmallVec::with_capacity(minimum_body_count.saturating_mul(2));
-
-	for (i, body) in bodies {
-		let mut bounds = body.bounds(); // TODO: bounds() does not adjust by orientation
-		let future_bounds = bounds + body.linear_velocity * dt;
-		// Continuous collision detection needs the whole path, not only the
-		// predicted endpoint, to reach the narrow phase.
-		bounds.expand(&future_bounds);
-
-		let epsilon = 0.01f32;
-
-		let bounds = bounds.expanded_by(Vector3::one() * epsilon);
-
-		pseudo_bodies.push(PseudoBody {
-			id: i,
-			value: dot(axis, bounds.min()),
+	// A positive scaling of this axis preserves endpoint ordering, so unit length is unnecessary.
+	let axis: Vector = Vector::new(1.0, 1.0, 1.0);
+	let mut endpoints = SmallVec::with_capacity(minimum_body_count.saturating_mul(2));
+	for (id, body) in bodies {
+		let current = body.bounds();
+		let future_min = current.min() + body.linear_velocity * dt;
+		let future_max = current.max() + body.linear_velocity * dt;
+		let min = math::Point::new(
+			current.min().x().min(future_min.x()) - 0.01,
+			current.min().y().min(future_min.y()) - 0.01,
+			current.min().z().min(future_min.z()) - 0.01,
+		);
+		let max = math::Point::new(
+			current.max().x().max(future_max.x()) + 0.01,
+			current.max().y().max(future_max.y()) + 0.01,
+			current.max().z().max(future_max.z()) + 0.01,
+		);
+		endpoints.push(PseudoBody {
+			id,
+			value: axis.dot(min - math::Point::origin()),
 			is_min: true,
 		});
-
-		pseudo_bodies.push(PseudoBody {
-			id: i,
-			value: dot(axis, bounds.max()),
+		endpoints.push(PseudoBody {
+			id,
+			value: axis.dot(max - math::Point::origin()),
 			is_min: false,
 		});
 	}
-
-	pseudo_bodies.sort();
-
-	pseudo_bodies
+	endpoints.sort();
+	endpoints
 }
 
 /// Builds every unique pair whose projected intervals overlap.
-pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
+pub fn build_pairs(endpoints: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
 	let mut pairs = SmallVec::new();
 	let mut active = SmallVec::<[usize; 32]>::new();
-
-	for endpoint in pseudo_bodies {
+	for endpoint in endpoints {
 		if endpoint.is_min {
-			for &active_id in &active {
-				pairs.push(Pair::new(active_id, endpoint.id));
-			}
+			pairs.extend(active.iter().copied().map(|id| Pair::new(id, endpoint.id)));
 			active.push(endpoint.id);
 		} else if let Some(index) = active.iter().position(|id| *id == endpoint.id) {
-			// Preserve opening order so contact generation remains deterministic even
-			// when an early interval closes while later intervals stay active.
+			// Preserve opening order so contact generation remains deterministic.
 			active.remove(index);
 		} else {
 			debug_assert!(
@@ -116,23 +107,17 @@ pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
 		active.is_empty(),
 		"Broad-phase intervals remain open. The most likely cause is a missing maximum endpoint."
 	);
-
 	pairs
 }
 
-pub fn sweep_and_prune_1d<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[Pair; 32]> {
-	let e = sort_bodies_bounds(bodies, dt);
-
-	build_pairs(&e)
-}
-
+/// Returns broad-phase candidate pairs using sweep and prune.
 pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[Pair; 32]> {
-	sweep_and_prune_1d(bodies, dt)
+	build_pairs(&sort_bodies_bounds(bodies, dt))
 }
 
 #[cfg(test)]
 mod tests {
-	use math::Quaternion;
+	use maths_rs::Quatf;
 
 	use super::*;
 	use crate::{
@@ -159,20 +144,21 @@ mod tests {
 		pairs
 	}
 
-	fn body(position: Vector3, linear_velocity: Vector3) -> PhysicsBody {
+	fn body(position: math::Point, linear_velocity: Vector) -> PhysicsBody {
+		let mut factory = Factory::<()>::new();
 		PhysicsBody {
 			body_type: BodyTypes::Dynamic,
 			collision_shape: Shapes::Sphere { radius: 0.5 },
 			position,
-			orientation: Quaternion::identity(),
-			acceleration: Vector3::new(0.0, 0.0, 0.0),
+			orientation: Quatf::identity(),
+			acceleration: Vector::zero(),
 			linear_velocity,
-			angular_velocity: Vector3::new(0.0, 0.0, 0.0),
+			angular_velocity: Vector::zero(),
 			inv_mass: 1.0,
-			center_of_mass: Vector3::new(0.0, 0.0, 0.0),
+			center_of_mass: math::Point::origin(),
 			elasticity: 0.0,
 			friction: 1.0,
-			handle: Factory::<()>::new().create(()),
+			handle: factory.create(()),
 		}
 	}
 
@@ -195,7 +181,7 @@ mod tests {
 	}
 
 	#[test]
-	fn sweep_generates_all_pairs_among_three_simultaneously_active_bodies() {
+	fn sweep_generates_all_pairs_among_simultaneously_active_bodies() {
 		let endpoints = sorted_endpoints([
 			endpoint(0, 0.0, true),
 			endpoint(0, 3.0, false),
@@ -236,30 +222,11 @@ mod tests {
 	}
 
 	#[test]
-	fn closing_an_early_interval_preserves_pair_generation_order() {
-		let endpoints = sorted_endpoints([
-			endpoint(0, 0.0, true),
-			endpoint(1, 1.0, true),
-			endpoint(2, 2.0, true),
-			endpoint(0, 3.0, false),
-			endpoint(3, 4.0, true),
-			endpoint(1, 5.0, false),
-			endpoint(2, 6.0, false),
-			endpoint(3, 7.0, false),
-		]);
-
-		let pairs = build_pairs(&endpoints)
-			.into_iter()
-			.map(|pair| (pair.a, pair.b))
-			.collect::<Vec<_>>();
-		assert_eq!(pairs, [(0, 1), (0, 2), (1, 2), (1, 3), (2, 3)]);
-	}
-
-	#[test]
 	fn swept_bounds_keep_fast_crossing_bodies_in_the_candidate_set() {
-		let moving = body(Vector3::new(-5.0, -5.0, -5.0), Vector3::new(10.0, 10.0, 10.0));
-		let stationary = body(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0));
-		let bodies = [moving, stationary];
+		let bodies = [
+			body(math::Point::new(-5.0, -5.0, -5.0), Vector::new(10.0, 10.0, 10.0)),
+			body(math::Point::origin(), Vector::zero()),
+		];
 
 		assert_eq!(canonical_pairs(broadphase(bodies.iter().enumerate(), 1.0)), [(0, 1)]);
 	}

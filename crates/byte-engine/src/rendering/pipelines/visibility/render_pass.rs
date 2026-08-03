@@ -1502,7 +1502,8 @@ impl VisibilityPipelineRenderPass {
 
 #[cfg(test)]
 mod tests {
-	use math::Vector3;
+	use math::{inverse, Point, UnitVector};
+	use maths_rs::{cross, dot, length, Vec3f, Vec4f};
 	use utils::Extent;
 
 	use super::{
@@ -1577,16 +1578,14 @@ mod tests {
 
 	#[test]
 	fn fast_gtao_view_reconstructs_pixel_rays_and_reversed_depth() {
-		use math::Vector4;
-
 		let extent = Extent::rectangle(1920, 1080);
 		let view = View::new_perspective(
 			60.0,
 			extent.width() as f32 / extent.height() as f32,
 			0.1,
 			100.0,
-			Vector3::new(0.0, 0.0, 0.0),
-			Vector3::new(0.0, 0.0, 1.0),
+			Point::origin(),
+			UnitVector::z_axis(),
 		);
 		let sink = Sink::new(view, extent, 0);
 		let gtao_extent = gtao_half_resolution_extent(extent);
@@ -1595,7 +1594,7 @@ mod tests {
 		assert_eq!(std::mem::size_of_val(&constants), 32);
 
 		for z in [0.1f32, 0.5, 1.0, 10.0, 100.0] {
-			let clip = projection * Vector4::new(0.0, 0.0, z, 1.0);
+			let clip = projection * Vec4f::new(0.0, 0.0, z, 1.0);
 			let depth = clip.z / clip.w;
 			let reconstructed = constants.depth_unproject_numerator / (depth + constants.depth_unproject_denominator_offset);
 			assert!(
@@ -1627,8 +1626,6 @@ mod tests {
 
 	#[test]
 	fn gtao_view_space_reconstruction_z_is_positive() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
-
 		let near = 0.1f32;
 		let far = 100.0f32;
 		let fov = 45.0f32;
@@ -1637,25 +1634,25 @@ mod tests {
 		let extent_y = 1080i32;
 
 		let proj = math::projection_matrix(fov, aspect, near, far);
-		let inv_proj = proj.inverse();
+		let inv_proj = inverse(proj);
 
 		// Simulate what the GTAO shader does: reconstruct positions for center + neighbors
 		// at various depths, compute the normal, and check its direction
 
-		let reconstruct = |px: i32, py: i32, depth: f32| -> Vector3 {
+		let reconstruct = |px: i32, py: i32, depth: f32| -> Vec3f {
 			let uv_x = (px as f32 + 0.5) / extent_x as f32;
 			let uv_y = (py as f32 + 0.5) / extent_y as f32;
 			let ndc_x = uv_x * 2.0 - 1.0;
 			let ndc_y = 1.0 - uv_y * 2.0;
-			let clip = Vector4::new(ndc_x, ndc_y, depth, 1.0);
+			let clip = Vec4f::new(ndc_x, ndc_y, depth, 1.0);
 			let view = inv_proj * clip;
 			let w = view.w;
-			Vector3::new(view.x / w, view.y / w, view.z / w)
+			Vec3f::new(view.x / w, view.y / w, view.z / w)
 		};
 
 		// Project a known view-space point to get its depth
 		let project_to_depth = |vx: f32, vy: f32, vz: f32| -> f32 {
-			let clip = proj * Vector4::new(vx, vy, vz, 1.0);
+			let clip = proj * Vec4f::new(vx, vy, vz, 1.0);
 			clip.z / clip.w // ndc depth
 		};
 
@@ -1672,36 +1669,28 @@ mod tests {
 			let bottom = reconstruct(center_px, center_py + 1, depth);
 
 			// min_diff for horizontal: pick shorter of (right - center) or (center - left)
-			let ap_h = Vector3::new(right.x - center.x, right.y - center.y, right.z - center.z);
-			let bp_h = Vector3::new(center.x - left.x, center.y - left.y, center.z - left.z);
-			let h_diff = if math::dot(ap_h, ap_h) < math::dot(bp_h, bp_h) {
-				ap_h
-			} else {
-				bp_h
-			};
+			let ap_h = Vec3f::new(right.x - center.x, right.y - center.y, right.z - center.z);
+			let bp_h = Vec3f::new(center.x - left.x, center.y - left.y, center.z - left.z);
+			let h_diff = if dot(ap_h, ap_h) < dot(bp_h, bp_h) { ap_h } else { bp_h };
 
 			// min_diff for vertical: pick shorter of (top - center) or (center - bottom)
-			let ap_v = Vector3::new(top.x - center.x, top.y - center.y, top.z - center.z);
-			let bp_v = Vector3::new(center.x - bottom.x, center.y - bottom.y, center.z - bottom.z);
-			let v_diff = if math::dot(ap_v, ap_v) < math::dot(bp_v, bp_v) {
-				ap_v
-			} else {
-				bp_v
-			};
+			let ap_v = Vec3f::new(top.x - center.x, top.y - center.y, top.z - center.z);
+			let bp_v = Vec3f::new(center.x - bottom.x, center.y - bottom.y, center.z - bottom.z);
+			let v_diff = if dot(ap_v, ap_v) < dot(bp_v, bp_v) { ap_v } else { bp_v };
 
-			let normal = math::cross(h_diff, v_diff);
-			let normal_len = math::length(normal);
+			let normal = cross(h_diff, v_diff);
+			let normal_len = length(normal);
 			let normal = if normal_len > 1e-8 {
-				Vector3::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
+				Vec3f::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
 			} else {
-				Vector3::new(0.0, 0.0, 1.0)
+				Vec3f::new(0.0, 0.0, 1.0)
 			};
 
 			// The shader enforces camera-facing: if dot(normal, center_position) > 0, flip.
 			// In view space the camera is at origin, so center_position IS the view direction to the point.
 			let dot_n_p = normal.x * center.x + normal.y * center.y + normal.z * center.z;
 			let normal = if dot_n_p > 0.0 {
-				Vector3::new(-normal.x, -normal.y, -normal.z)
+				Vec3f::new(-normal.x, -normal.y, -normal.z)
 			} else {
 				normal
 			};
@@ -1733,8 +1722,6 @@ mod tests {
 	/// where depth varies per pixel, and checks for normal sign flips at different distances.
 	#[test]
 	fn gtao_normal_on_floor_plane() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
-
 		let near = 0.1f32;
 		let far = 100.0f32;
 		let fov = 45.0f32;
@@ -1743,20 +1730,20 @@ mod tests {
 		let extent_y = 1080i32;
 
 		let proj = math::projection_matrix(fov, aspect, near, far);
-		let inv_proj = proj.inverse();
+		let inv_proj = inverse(proj);
 
-		let reconstruct = |px: i32, py: i32, depth: f32| -> Vector3 {
+		let reconstruct = |px: i32, py: i32, depth: f32| -> Vec3f {
 			let uv_x = (px as f32 + 0.5) / extent_x as f32;
 			let uv_y = (py as f32 + 0.5) / extent_y as f32;
 			let ndc_x = uv_x * 2.0 - 1.0;
 			let ndc_y = 1.0 - uv_y * 2.0;
-			let clip = Vector4::new(ndc_x, ndc_y, depth, 1.0);
+			let clip = Vec4f::new(ndc_x, ndc_y, depth, 1.0);
 			let view = inv_proj * clip;
-			Vector3::new(view.x / view.w, view.y / view.w, view.z / view.w)
+			Vec3f::new(view.x / view.w, view.y / view.w, view.z / view.w)
 		};
 
 		let project = |vx: f32, vy: f32, vz: f32| -> (f32, f32, f32) {
-			let clip = proj * Vector4::new(vx, vy, vz, 1.0);
+			let clip = proj * Vec4f::new(vx, vy, vz, 1.0);
 			let ndc_x = clip.x / clip.w;
 			let ndc_y = clip.y / clip.w;
 			let depth = clip.z / clip.w;
@@ -1792,14 +1779,14 @@ mod tests {
 			} // outside clip range
 	 // Project hit point to get depth
 			let hit_x = p.x * t;
-			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
+			let clip = proj * Vec4f::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
 		};
 
-		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
-			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
-			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if math::dot(ap, ap) < math::dot(bp, bp) {
+		let min_diff = |p: Vec3f, a: Vec3f, b: Vec3f| -> Vec3f {
+			let ap = Vec3f::new(a.x - p.x, a.y - p.y, a.z - p.z);
+			let bp = Vec3f::new(p.x - b.x, p.y - b.y, p.z - b.z);
+			if dot(ap, ap) < dot(bp, bp) {
 				ap
 			} else {
 				bp
@@ -1840,18 +1827,18 @@ mod tests {
 			let h_diff = min_diff(center, right, left);
 			let v_diff = min_diff(center, top, bottom);
 
-			let normal = math::cross(h_diff, v_diff);
-			let normal_len = math::length(normal);
+			let normal = cross(h_diff, v_diff);
+			let normal_len = length(normal);
 			let normal = if normal_len > 1e-8 {
-				Vector3::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
+				Vec3f::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
 			} else {
-				Vector3::new(0.0, 0.0, 1.0)
+				Vec3f::new(0.0, 0.0, 1.0)
 			};
 
 			// Apply camera-facing check (same as shader)
 			let dot_n_p = normal.x * center.x + normal.y * center.y + normal.z * center.z;
 			let normal = if dot_n_p > 0.0 {
-				Vector3::new(-normal.x, -normal.y, -normal.z)
+				Vec3f::new(-normal.x, -normal.y, -normal.z)
 			} else {
 				normal
 			};

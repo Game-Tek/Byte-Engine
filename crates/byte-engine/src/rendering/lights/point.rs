@@ -1,4 +1,5 @@
-use math::Vector3;
+use math::Point;
+use maths_rs::Vec3f;
 
 use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
@@ -11,8 +12,8 @@ use crate::{
 /// source, such as a light bulb.
 #[derive(Debug, Clone, Copy)]
 pub struct PointLight {
-	pub position: Vector3,
-	pub color: Vector3,
+	pub position: Point,
+	pub color: Vec3f,
 }
 
 impl PointLight {
@@ -24,12 +25,12 @@ impl PointLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	pub fn new(position: Vector3, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
+	pub fn new(position: Point, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
 		let chromaticity = color.resolve()?;
 		let candela = intensity.point_candela()?;
 		Ok(Self {
 			position,
-			color: Vector3::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
+			color: Vec3f::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
 		})
 	}
 }

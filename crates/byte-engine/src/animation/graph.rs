@@ -28,7 +28,7 @@
 
 use std::{collections::VecDeque, fmt, num::NonZeroUsize, ops::Deref, sync::Arc};
 
-use math::Matrix4;
+use math::Matrix;
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{
@@ -815,7 +815,7 @@ impl Deref for PlayerTargetSkeleton<'_> {
 /// The `AnimationGraphPose` struct borrows the latest player pose and frame root motion.
 pub struct AnimationGraphPose<'a> {
 	local_pose: &'a [LocalTransform],
-	global_pose: &'a [Matrix4],
+	global_pose: &'a [Matrix],
 	root_motion: RootMotionDelta,
 }
 
@@ -826,7 +826,7 @@ impl<'a> AnimationGraphPose<'a> {
 	}
 
 	/// Returns renderer-facing global skeleton matrices.
-	pub fn global_pose(&self) -> &'a [Matrix4] {
+	pub fn global_pose(&self) -> &'a [Matrix] {
 		self.global_pose
 	}
 
@@ -858,7 +858,7 @@ pub struct AnimationGraphPlayer<'graph, 'target, I> {
 	loop_start: Vec<LocalTransform>,
 	loop_end: Vec<LocalTransform>,
 	local_pose: Vec<LocalTransform>,
-	global_pose: Vec<Matrix4>,
+	global_pose: Vec<Matrix>,
 	inertializer: PoseInertializer,
 }
 

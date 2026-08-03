@@ -12,7 +12,6 @@ use std::{
 
 #[cfg(feature = "dmx")]
 use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll};
-use math::Vector2;
 #[cfg(feature = "dmx")]
 use utils::RGBA;
 
@@ -148,13 +147,13 @@ pub fn process_default_window_input(
 			seat,
 			mouse,
 			input::input_manager::TriggerReference::Name("Mouse.Position"),
-			input::Value::Vector2(Vector2::new(x, y)),
+			input::Value::Vector2(input::Axis2::new(x, y)),
 		),
 		ghi::window::Events::MouseMove { dx, dy, .. } => (
 			seat,
 			mouse,
 			input::input_manager::TriggerReference::Name("Mouse.Movement"),
-			input::Value::Vector2(Vector2::new(dx, dy)),
+			input::Value::Vector2(input::Axis2::new(dx, dy)),
 		),
 		ghi::window::Events::Scroll { dy, .. } => (
 			seat,
@@ -226,7 +225,7 @@ mod tests {
 			result.2,
 			input::input_manager::TriggerReference::Name("Mouse.Movement")
 		));
-		assert_eq!(result.3, input::Value::Vector2(Vector2::new(0.25, -0.5)));
+		assert_eq!(result.3, input::Value::Vector2(input::Axis2::new(0.25, -0.5)));
 	}
 
 	#[test]

@@ -5,25 +5,13 @@
 //! rendering and physics without giving those systems ownership of gameplay
 //! objects.
 
-use std::{
-	cell::{Cell, RefCell},
-	rc::Rc,
-	sync::atomic::{AtomicU32, Ordering},
-};
-
-use crate::core::{
-	channel::{Channel as _, DefaultChannel},
-	listener::{DefaultListener, Listener},
-	message::Message,
-};
-
-#[derive(Clone)]
 /// The `Factory` struct creates values with stable handles and preserves setup-time
 /// messages for the first system listener.
 ///
 /// Register each consuming system with [`Self::listener`] before calling
 /// [`Self::create`]. Use [`Self::derive`] when another representation must keep
 /// the same logical handle.
+#[derive(Clone)]
 pub struct Factory<T: Clone + ?Sized> {
 	channel: DefaultChannel<CreateMessage<T>>,
 	created_before_listener: Rc<RefCell<Vec<CreateMessage<T>>>>,
@@ -209,3 +197,15 @@ mod tests {
 		assert_eq!(message.data(), &7);
 	}
 }
+
+use std::{
+	cell::{Cell, RefCell},
+	rc::Rc,
+	sync::atomic::{AtomicU32, Ordering},
+};
+
+use crate::core::{
+	channel::{Channel as _, DefaultChannel},
+	listener::{DefaultListener, Listener},
+	message::Message,
+};

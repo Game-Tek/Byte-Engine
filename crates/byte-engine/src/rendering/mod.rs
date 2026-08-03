@@ -166,7 +166,7 @@ pub fn create_shader_from_source(
 
 /// Builds a perspective [`View`] from a scene camera and render target extent.
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {
-	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.get_direction(), camera.get_fov());
+	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.direction(), camera.vertical_fov());
 	debug_assert!(
 		extent.width() > 0 && extent.height() > 0,
 		"Perspective extent is empty. The most likely cause is building a camera view before the render target is sized."

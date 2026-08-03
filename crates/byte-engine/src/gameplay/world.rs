@@ -272,7 +272,7 @@ mod tests {
 		let light = light_listener.read().expect("light creation");
 		let cone = light_listener.read().expect("cone light creation");
 		assert_eq!(camera.handle(), &camera_handle);
-		assert_eq!(camera.data().get_fov(), 45.0);
+		assert_eq!(camera.data().vertical_fov(), 45.0);
 		assert_eq!(light.handle(), &light_handle);
 		assert!(matches!(light.data(), Lights::Point(point) if point.position == Vector3::new(3.0, 2.0, 1.0)));
 		assert_eq!(cone.handle(), &cone_handle);

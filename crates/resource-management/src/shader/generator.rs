@@ -310,13 +310,17 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "vec4u16"
 			| "vec2u" | "vec3u"
 			| "vec4u" | "vec2i"
+			| "vec2f16"
+			| "vec3f16"
+			| "vec4f16"
 			| "vec2f" | "vec3f"
 			| "vec4f" | "mat2f"
 			| "mat3f" | "mat4f"
 			| "mat4x3f"
-			| "f32" | "u8"
-			| "u16" | "u32"
-			| "i32" | "Texture2D"
+			| "f16" | "f32"
+			| "u8" | "u16"
+			| "u32" | "i32"
+			| "Texture2D"
 			| "Texture3D"
 			| "ArrayTexture2D"
 			| "VertexOutput"
@@ -374,6 +378,57 @@ impl Settings {
 	pub fn name(mut self, name: String) -> Self {
 		self.name = name;
 		self
+	}
+}
+
+fn type_uses_f16(r#type: &besl::NodeReference) -> bool {
+	matches!(r#type.borrow().get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+}
+
+/// Reports whether a node resolves to a value that uses f16 components.
+fn expression_uses_f16(node: &besl::NodeReference) -> bool {
+	match node.borrow().node() {
+		besl::Nodes::Member { r#type, .. }
+		| besl::Nodes::Parameter { r#type, .. }
+		| besl::Nodes::Input { format: r#type, .. }
+		| besl::Nodes::Output { format: r#type, .. }
+		| besl::Nodes::TaskPayload { format: r#type, .. }
+		| besl::Nodes::Workgroup { format: r#type, .. }
+		| besl::Nodes::Specialization { r#type, .. }
+		| besl::Nodes::Const { r#type, .. }
+		| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => type_uses_f16(r#type),
+		besl::Nodes::Struct { name, .. } => matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"),
+		besl::Nodes::Function { return_type, .. }
+		| besl::Nodes::Intrinsic {
+			r#return: return_type, ..
+		} => type_uses_f16(return_type),
+		besl::Nodes::Expression(expression) => match expression {
+			besl::Expressions::Member { source, .. } => expression_uses_f16(source),
+			besl::Expressions::FunctionCall { function, .. } => expression_uses_f16(function),
+			besl::Expressions::IntrinsicCall { intrinsic, .. } => expression_uses_f16(intrinsic),
+			besl::Expressions::Operator { operator, left, right } => {
+				if *operator == besl::Operators::Assignment {
+					expression_uses_f16(left)
+				} else {
+					expression_uses_f16(left) || expression_uses_f16(right)
+				}
+			}
+			besl::Expressions::Expression { elements } if elements.len() == 1 => expression_uses_f16(&elements[0]),
+			besl::Expressions::Accessor { left, right } => expression_uses_f16(left) || expression_uses_f16(right),
+			_ => false,
+		},
+		_ => false,
+	}
+}
+
+/// Reports whether a node contains one numeric literal that can require explicit narrowing.
+fn is_numeric_literal(node: &besl::NodeReference) -> bool {
+	match node.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Literal { value }) => value.parse::<f32>().is_ok(),
+		besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
+			is_numeric_literal(&elements[0])
+		}
+		_ => false,
 	}
 }
 
@@ -557,7 +612,22 @@ pub(crate) trait NodeEmitter {
 		let formatting = ShaderFormatting::new(self.minified());
 		match expression {
 			besl::Expressions::Operator { operator, left, right } => {
-				self.emit_wrapped_expression(string, left);
+				let left_uses_f16 = expression_uses_f16(left);
+				let right_uses_f16 = expression_uses_f16(right);
+				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
+					if as_f16 && is_numeric_literal(value) {
+						// GLSL does not implicitly narrow float literals to float16_t.
+						Self::emit_type_name(string, "f16");
+						string.push('(');
+						emitter.emit_node(string, value);
+						string.push(')');
+					} else {
+						emitter.emit_wrapped_expression(string, value);
+					}
+				};
+
+				let left_needs_f16 = *operator != besl::Operators::Assignment && right_uses_f16;
+				emit_value(self, string, left, left_needs_f16);
 				let operator = operator_token(operator);
 				if self.minified() {
 					string.push_str(operator)
@@ -566,7 +636,7 @@ pub(crate) trait NodeEmitter {
 					string.push_str(operator);
 					string.push(' ');
 				}
-				self.emit_wrapped_expression(string, right);
+				emit_value(self, string, right, left_uses_f16);
 			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
@@ -850,6 +920,29 @@ pub mod tests {
 		main
 	}
 
+	/// Builds a flattened vec2f16 array binding used to verify native-width backend storage strides.
+	pub fn vec2f16_array_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.values[1]; }";
+		let mut root_node = besl::Node::root();
+		let vec2f16_type = root_node.get_child("vec2f16").expect("Expected vec2f16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", vec2f16_type, 2)],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2f16 array shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
 	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
 	pub fn mixed_vec4u16_binding() -> besl::NodeReference {
 		let script = "main: fn () -> void { buff.value; buff.tail; }";
@@ -873,6 +966,60 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected mixed vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds mixed f16 storage members used to verify native backend type and packing mappings.
+	pub fn mixed_f16_storage_binding() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> void {
+			let uv32: vec2f = vec2f(0.25, 0.75);
+			let uv16: vec2f16 = vec2f16(uv32);
+			let sampled_uv: vec2f = vec2f(uv16);
+			let weight16: f16 = f16(0.5);
+			let weight32: f32 = f32(weight16);
+			let literal: f16 = 0.25;
+			let doubled: f16 = weight16 * 2.0;
+			let scaled_uv: vec2f16 = uv16 * 2.0;
+			let buffer_uv: vec2f16 = buff.uv;
+			let buffer_scaled_uv: vec2f16 = buffer_uv * 2.0;
+			buff.scalar;
+			buff.uv;
+			buff.normal;
+			buff.color;
+			sampled_uv;
+			weight32;
+			literal;
+			doubled;
+			scaled_uv;
+			buffer_scaled_uv;
+		}
+		"#;
+		let mut root_node = besl::Node::root();
+		let f16_type = root_node.get_child("f16").expect("Expected f16 type");
+		let vec2f16_type = root_node.get_child("vec2f16").expect("Expected vec2f16 type");
+		let vec3f16_type = root_node.get_child("vec3f16").expect("Expected vec3f16 type");
+		let vec4f16_type = root_node.get_child("vec4f16").expect("Expected vec4f16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![
+						besl::Node::member("scalar", f16_type).into(),
+						besl::Node::member("uv", vec2f16_type).into(),
+						besl::Node::member("normal", vec3f16_type).into(),
+						besl::Node::member("color", vec4f16_type).into(),
+					],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected f16 storage shader to compile");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 		main
 	}

@@ -318,6 +318,7 @@ impl Generator {
 			"vec2u16" | "vec4u16" => "u16",
 			"vec2i" => "i32",
 			"vec2u" | "vec3u" | "vec4u" => "u32",
+			"vec2f16" | "vec3f16" | "vec4f16" => "f16",
 			"vec2f" | "vec3f" | "vec4f" => "f32",
 			_ => type_name,
 		}
@@ -932,6 +933,21 @@ impl Generator {
 				});
 				string.push(')');
 			}
+			"f16" => {
+				string.push_str("float16_t(");
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+				string.push_str(Self::translate_type(name));
+				string.push('(');
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
 			"u32" => {
 				string.push_str("uint(");
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
@@ -1358,6 +1374,9 @@ impl Generator {
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",
+			"vec2f16" => "float16_t2",
+			"vec3f16" => "float16_t3",
+			"vec4f16" => "float16_t4",
 			"vec2f" => "float2",
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
@@ -1371,6 +1390,7 @@ impl Generator {
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
 			"mat4x3f" => "float4x3",
+			"f16" => "float16_t",
 			"f32" => "float",
 			"u8" => "uint",
 			"u16" => "uint",
@@ -2318,6 +2338,44 @@ mod tests {
 
 		assert_string_contains!(shader, "RWStructuredBuffer<uint16_t2> buff : register(u0, space0);");
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<uint2> buff");
+	}
+
+	#[test]
+	fn vec2f16_array_uses_the_native_four_byte_hlsl_vector_type() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::vec2f16_array_binding(),
+			)
+			.expect("Expected vec2f16 HLSL generation");
+
+		assert_string_contains!(shader, "RWStructuredBuffer<float16_t2> buff : register(u0, space0);");
+		assert_string_does_not_contain!(shader, "RWStructuredBuffer<float2> buff");
+	}
+
+	#[test]
+	fn f16_storage_types_use_native_hlsl_types() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::mixed_f16_storage_binding(),
+			)
+			.expect("Expected f16 HLSL generation");
+
+		assert_string_contains!(shader, "float16_t scalar;");
+		assert_string_contains!(shader, "float16_t2 uv;");
+		assert_string_contains!(shader, "float16_t3 normal;");
+		assert_string_contains!(shader, "float16_t4 color;");
+		assert_string_contains!(shader, "float16_t2(uv32)");
+		assert_string_contains!(shader, "float2(uv16)");
+		assert_string_contains!(shader, "float16_t(0.5)");
+		assert_string_contains!(shader, "float(weight16)");
+		assert_string_contains!(shader, "float16_t literal=float16_t(0.25);");
+		assert_string_contains!(shader, "weight16*float16_t(2.0)");
+		assert_string_contains!(shader, "uv16*float16_t(2.0)");
+		assert_string_does_not_contain!(shader, "struct vec2f16");
 	}
 
 	#[test]

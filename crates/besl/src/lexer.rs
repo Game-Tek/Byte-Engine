@@ -149,6 +149,7 @@ impl Node {
 		let u16_t = primitive_type("u16");
 		let u32_t = primitive_type("u32");
 		let i32_t = primitive_type("i32");
+		let f16_t = primitive_type("f16");
 		let f32_t = primitive_type("f32");
 
 		let vec2u16 = record_type("vec2u16", [("x", u16_t.clone()), ("y", u16_t.clone())]);
@@ -163,7 +164,9 @@ impl Node {
 		);
 		let vec2u32 = record_type("vec2u", [("x", u32_t.clone()), ("y", u32_t.clone())]);
 		let vec2i32 = record_type("vec2i", [("x", i32_t.clone()), ("y", i32_t.clone())]);
+		let vec2f16 = record_type("vec2f16", [("x", f16_t.clone()), ("y", f16_t.clone())]);
 		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
+		let vec3f16 = record_type("vec3f16", [("x", f16_t.clone()), ("y", f16_t.clone()), ("z", f16_t.clone())]);
 		let vec3f32 = record_type("vec3f", [("x", f32_t.clone()), ("y", f32_t.clone()), ("z", f32_t.clone())]);
 		let vec3u32 = record_type("vec3u", [("x", u32_t.clone()), ("y", u32_t.clone()), ("z", u32_t.clone())]);
 		let vec4u32 = record_type(
@@ -173,6 +176,15 @@ impl Node {
 				("y", u32_t.clone()),
 				("z", u32_t.clone()),
 				("w", u32_t.clone()),
+			],
+		);
+		let vec4f16 = record_type(
+			"vec4f16",
+			[
+				("x", f16_t.clone()),
+				("y", f16_t.clone()),
+				("z", f16_t.clone()),
+				("w", f16_t.clone()),
 			],
 		);
 		let vec4f32 = record_type(
@@ -215,15 +227,19 @@ impl Node {
 			u16_t.clone(),
 			u32_t.clone(),
 			i32_t.clone(),
+			f16_t.clone(),
 			f32_t.clone(),
 			vec2u16,
 			vec4u16,
 			vec2u32.clone(),
 			vec2i32.clone(),
+			vec2f16.clone(),
 			vec2f32.clone(),
 			vec3u32.clone(),
+			vec3f16.clone(),
 			vec3f32.clone(),
 			vec4u32.clone(),
+			vec4f16.clone(),
 			vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
@@ -398,12 +414,23 @@ impl Node {
 			builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("f16", vec![("value", f32_t.clone())], f16_t.clone()),
+			builtin_intrinsic("f16", vec![("value", u32_t.clone())], f16_t.clone()),
+			builtin_intrinsic("f16", vec![("value", i32_t.clone())], f16_t.clone()),
+			builtin_intrinsic("f32", vec![("value", f16_t.clone())], f32_t.clone()),
 			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("f32", vec![("value", i32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("vec2f16", vec![("value", vec2f32.clone())], vec2f16.clone()),
+			builtin_intrinsic("vec3f16", vec![("value", vec3f32.clone())], vec3f16.clone()),
+			builtin_intrinsic("vec4f16", vec![("value", vec4f32.clone())], vec4f16.clone()),
+			builtin_intrinsic("vec2f", vec![("value", vec2f16.clone())], vec2f32.clone()),
+			builtin_intrinsic("vec3f", vec![("value", vec3f16.clone())], vec3f32.clone()),
+			builtin_intrinsic("vec4f", vec![("value", vec4f16.clone())], vec4f32.clone()),
 			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", i32_t)], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", f16_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"smoothstep",

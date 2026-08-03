@@ -1192,11 +1192,42 @@ impl<'a> Compiler<'a> {
 
 				let source_type = self.infer_expression_type(&arguments[0], &ValueType::U32, descriptor_layouts)?;
 				let operator = match source_type {
+					ValueType::F16 => ScalarUnaryOperator::FromF16ToF32,
 					ValueType::U32 => ScalarUnaryOperator::FromU32ToF32,
 					ValueType::I32 => ScalarUnaryOperator::FromI32ToF32,
 					ref other => {
 						return Err(VmError::TypeMismatch {
-							expected: "u32 or i32".to_string(),
+							expected: "f16, u32, or i32".to_string(),
+							found: other.name().to_string(),
+						});
+					}
+				};
+				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator,
+					value,
+				});
+				Ok(register)
+			}
+			"f16" => {
+				require_argument_count(arguments, 1)?;
+				if expected_type != &ValueType::F16 {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::F16.name().to_string(),
+					});
+				}
+
+				let source_type = self.infer_expression_type(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let operator = match source_type {
+					ValueType::F32 => ScalarUnaryOperator::FromF32ToF16,
+					ValueType::U32 => ScalarUnaryOperator::FromU32ToF16,
+					ValueType::I32 => ScalarUnaryOperator::FromI32ToF16,
+					ref other => {
+						return Err(VmError::TypeMismatch {
+							expected: "f32, u32, or i32".to_string(),
 							found: other.name().to_string(),
 						});
 					}
@@ -1227,10 +1258,11 @@ impl<'a> Compiler<'a> {
 					ValueType::U8 => ScalarUnaryOperator::FromU8ToU32,
 					ValueType::U16 => ScalarUnaryOperator::FromU16ToU32,
 					ValueType::I32 => ScalarUnaryOperator::FromI32ToU32,
+					ValueType::F16 => ScalarUnaryOperator::FromF16ToU32,
 					ValueType::F32 => ScalarUnaryOperator::FromF32ToU32,
 					ref other => {
 						return Err(VmError::TypeMismatch {
-							expected: "u8, u16, i32, or f32".to_string(),
+							expected: "u8, u16, i32, f16, or f32".to_string(),
 							found: other.name().to_string(),
 						});
 					}
@@ -1241,6 +1273,33 @@ impl<'a> Compiler<'a> {
 					register,
 					operator,
 					value,
+				});
+				Ok(register)
+			}
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+				require_argument_count(arguments, 1)?;
+				let (source_type, target_type) = match name.as_str() {
+					"vec2f" => (ValueType::Vec2F16, ValueType::Vec2F),
+					"vec3f" => (ValueType::Vec3F16, ValueType::Vec3F),
+					"vec4f" => (ValueType::Vec4F16, ValueType::Vec4F),
+					"vec2f16" => (ValueType::Vec2F, ValueType::Vec2F16),
+					"vec3f16" => (ValueType::Vec3F, ValueType::Vec3F16),
+					"vec4f16" => (ValueType::Vec4F, ValueType::Vec4F16),
+					_ => unreachable!("Only registered float-vector casts reach this branch"),
+				};
+				if expected_type != &target_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: target_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				// Constructors perform the precision conversion without adding a dedicated VM instruction.
+				self.instructions.push(Instruction::Construct {
+					register,
+					value_type: target_type,
+					components: vec![value],
 				});
 				Ok(register)
 			}
@@ -1482,13 +1541,22 @@ impl<'a> Compiler<'a> {
 				message: format!("`{}` is not a flattenable vector constructor", constructor_type.name()),
 			})?;
 			let packed_u16 = constructor_type == ValueType::Vec2U16 || constructor_type == ValueType::Vec4U16;
+			let packed_f16 = matches!(constructor_type, ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16);
 			for parameter in parameters {
 				// Packed u16 constructors accept ordinary u32 coordinate arithmetic and
-				// apply the shader backend's narrowing conversion per component.
-				let parameter_hint = if packed_u16 { ValueType::U32 } else { scalar_type.clone() };
+				// f16 constructors accept f32 arithmetic, then narrow each component.
+				let parameter_hint = if packed_u16 {
+					ValueType::U32
+				} else if packed_f16 {
+					ValueType::F32
+				} else {
+					scalar_type.clone()
+				};
 				let parameter_type = self.infer_expression_type(parameter, &parameter_hint, descriptor_layouts)?;
 				let parameter_scalar = vector_scalar_type(&parameter_type).unwrap_or_else(|| parameter_type.clone());
-				let compatible = parameter_scalar == scalar_type || packed_u16 && parameter_scalar == ValueType::U32;
+				let compatible = parameter_scalar == scalar_type
+					|| packed_u16 && parameter_scalar == ValueType::U32
+					|| packed_f16 && parameter_scalar == ValueType::F32;
 				if !compatible {
 					return Err(VmError::TypeMismatch {
 						expected: scalar_type.name().to_string(),
@@ -1528,7 +1596,11 @@ impl<'a> Compiler<'a> {
 				// Decimal and scientific notation remain floating-point when comparisons
 				// do not otherwise provide an operand type.
 				if value.contains(['.', 'e', 'E']) || supports_scalar_broadcast(expected_type) {
-					Ok(ValueType::F32)
+					if expected_type == &ValueType::F16 || vector_scalar_type(expected_type) == Some(ValueType::F16) {
+						Ok(ValueType::F16)
+					} else {
+						Ok(ValueType::F32)
+					}
 				} else {
 					Ok(expected_type.clone())
 				}
@@ -2666,6 +2738,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"u16" => Ok(ValueType::U16),
 		"u32" => Ok(ValueType::U32),
 		"i32" => Ok(ValueType::I32),
+		"f16" => Ok(ValueType::F16),
 		"f32" => Ok(ValueType::F32),
 		"atomicu32" => Ok(ValueType::U32),
 		"vec2u16" => Ok(ValueType::Vec2U16),
@@ -2674,6 +2747,9 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"vec2u" => Ok(ValueType::Vec2U),
 		"vec3u" => Ok(ValueType::Vec3U),
 		"vec4u" => Ok(ValueType::Vec4U),
+		"vec2f16" => Ok(ValueType::Vec2F16),
+		"vec3f16" => Ok(ValueType::Vec3F16),
+		"vec4f16" => Ok(ValueType::Vec4F16),
 		"vec2f" => Ok(ValueType::Vec2F),
 		"vec3f" => Ok(ValueType::Vec3F),
 		"vec4f" => Ok(ValueType::Vec4F),
@@ -2899,11 +2975,13 @@ fn aggregate_member(value_type: &ValueType, member_name: &str) -> Result<(usize,
 			.ok_or_else(|| VmError::UnknownBufferMember {
 				member: member_name.to_string(),
 			}),
-		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec2F => {
+		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec2F16 | ValueType::Vec2F => {
 			vector_member(value_type, member_name, 2)
 		}
-		ValueType::Vec3U | ValueType::Vec3F => vector_member(value_type, member_name, 3),
-		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F => vector_member(value_type, member_name, 4),
+		ValueType::Vec3U | ValueType::Vec3F16 | ValueType::Vec3F => vector_member(value_type, member_name, 3),
+		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F => {
+			vector_member(value_type, member_name, 4)
+		}
 		ValueType::Mat4F => matrix_member(member_name, ValueType::Vec4F),
 		ValueType::Mat4x3F => matrix_member(member_name, ValueType::Vec3F),
 		_ => Err(VmError::UnsupportedExpression {

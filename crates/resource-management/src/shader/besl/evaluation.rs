@@ -206,7 +206,11 @@ fn reflected_storage_member_type_layout(
 ) -> Result<StorageLayout, String> {
 	let packed_msl_vector = target == StorageLayoutTarget::Msl
 		&& direct_binding_member
-		&& (array_member || matches!(r#type.borrow().get_name(), Some("vec2u16" | "vec4u16")));
+		&& (array_member
+			|| matches!(
+				r#type.borrow().get_name(),
+				Some("vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16")
+			));
 	reflected_storage_type_layout(r#type, target, packed_msl_vector, visiting)
 }
 
@@ -250,11 +254,15 @@ fn reflected_storage_type_layout(
 fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed_msl_vector: bool) -> Option<StorageLayout> {
 	let (size, alignment) = match target {
 		StorageLayoutTarget::Hlsl => match type_name {
-			// HLSL lowers narrow scalar values to 32-bit uint values. Its
+			// HLSL lowers narrow integer scalar values to 32-bit uint values. Its
 			// structured-buffer vectors and row-major matrices use scalar alignment.
 			"bool" | "u8" | "u16" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"f16" => (2, 2),
 			"vec2u16" => (4, 2),
 			"vec4u16" => (8, 2),
+			"vec2f16" => (4, 2),
+			"vec3f16" => (6, 2),
+			"vec4f16" => (8, 2),
 			"vec2i" | "vec2u" | "vec2f" => (8, 4),
 			"vec3u" | "vec3f" => (12, 4),
 			"vec4u" | "vec4f" => (16, 4),
@@ -266,10 +274,19 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 		},
 		StorageLayoutTarget::Msl => match type_name {
 			"bool" | "u8" => (1, 1),
-			"u16" => (2, 2),
+			"u16" | "f16" => (2, 2),
 			"u32" | "atomicu32" | "i32" | "f32" => (4, 4),
 			"vec2u16" => (4, if packed_msl_vector { 2 } else { 4 }),
 			"vec4u16" => (8, if packed_msl_vector { 2 } else { 8 }),
+			"vec2f16" => (4, if packed_msl_vector { 2 } else { 4 }),
+			"vec3f16" => {
+				if packed_msl_vector {
+					(6, 2)
+				} else {
+					(8, 8)
+				}
+			}
+			"vec4f16" => (8, if packed_msl_vector { 2 } else { 8 }),
 			"vec2f" => (8, if packed_msl_vector { 4 } else { 8 }),
 			"vec2i" | "vec2u" => (8, 8),
 			"vec3f" => {
@@ -290,10 +307,13 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 		},
 		StorageLayoutTarget::GlslScalar => match type_name {
 			"u8" => (1, 1),
-			"u16" => (2, 2),
+			"u16" | "f16" => (2, 2),
 			"bool" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
 			"vec2u16" => (4, 2),
 			"vec4u16" => (8, 2),
+			"vec2f16" => (4, 2),
+			"vec3f16" => (6, 2),
+			"vec4f16" => (8, 2),
 			"vec2i" | "vec2u" | "vec2f" => (8, 4),
 			"vec3u" | "vec3f" => (12, 4),
 			"vec4u" | "vec4f" => (16, 4),
@@ -1151,8 +1171,12 @@ mod tests {
 			("u8", 4, 4),
 			("u16", 4, 4),
 			("u32", 4, 4),
+			("f16", 2, 2),
 			("vec2u16", 4, 2),
 			("vec4u16", 8, 2),
+			("vec2f16", 4, 2),
+			("vec3f16", 6, 2),
+			("vec4f16", 8, 2),
 			("vec3f", 12, 4),
 		] {
 			assert_builtin_layout(&root, StorageLayoutTarget::Hlsl, type_name, StorageLayout { size, alignment });
@@ -1162,8 +1186,12 @@ mod tests {
 			("u8", 1, 1),
 			("u16", 2, 2),
 			("u32", 4, 4),
+			("f16", 2, 2),
 			("vec2u16", 4, 4),
 			("vec4u16", 8, 8),
+			("vec2f16", 4, 4),
+			("vec3f16", 8, 8),
+			("vec4f16", 8, 8),
 			("vec3f", 16, 16),
 		] {
 			assert_builtin_layout(&root, StorageLayoutTarget::Msl, type_name, StorageLayout { size, alignment });
@@ -1173,8 +1201,12 @@ mod tests {
 			("u8", 1, 1),
 			("u16", 2, 2),
 			("u32", 4, 4),
+			("f16", 2, 2),
 			("vec2u16", 4, 2),
 			("vec4u16", 8, 2),
+			("vec2f16", 4, 2),
+			("vec3f16", 6, 2),
+			("vec4f16", 8, 2),
 			("vec3f", 12, 4),
 		] {
 			assert_builtin_layout(
@@ -1183,6 +1215,38 @@ mod tests {
 				type_name,
 				StorageLayout { size, alignment },
 			);
+		}
+	}
+
+	#[test]
+	fn direct_f16_storage_members_preserve_the_packed_vm_layout() {
+		let root = besl::Node::root();
+		let members = vec![
+			besl::Node::member("scalar", root.get_child("f16").expect("Expected f16")).into(),
+			besl::Node::member("uv", root.get_child("vec2f16").expect("Expected vec2f16")).into(),
+			besl::Node::member("normal", root.get_child("vec3f16").expect("Expected vec3f16")).into(),
+			besl::Node::member("color", root.get_child("vec4f16").expect("Expected vec4f16")).into(),
+		];
+
+		for target in [
+			StorageLayoutTarget::Hlsl,
+			StorageLayoutTarget::Msl,
+			StorageLayoutTarget::GlslScalar,
+		] {
+			assert_eq!(reflected_storage_buffer_stride_for_target(&members, target), Ok(20));
+		}
+
+		let uv_array = vec![besl::Node::array(
+			"uvs",
+			root.get_child("vec2f16").expect("Expected vec2f16"),
+			2,
+		)];
+		for target in [
+			StorageLayoutTarget::Hlsl,
+			StorageLayoutTarget::Msl,
+			StorageLayoutTarget::GlslScalar,
+		] {
+			assert_eq!(reflected_storage_buffer_stride_for_target(&uv_array, target), Ok(4));
 		}
 	}
 

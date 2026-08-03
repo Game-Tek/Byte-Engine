@@ -108,6 +108,35 @@ output.color = material.color;
 let first: u32 = indices[0];
 ```
 
+### Half-precision floats
+
+Use `f16`, `vec2f16`, `vec3f16`, and `vec4f16` when a value can tolerate
+16-bit floating-point precision. These types help reduce tightly packed buffer
+storage and can reduce native shader register use. Arithmetic between matching
+half-precision values stays half precision.
+
+Use explicit casts when values move between precisions:
+
+```rust
+let uv32: vec2f = vec2f(0.25, 0.75);
+let uv16: vec2f16 = vec2f16(uv32);
+let sampled_uv: vec2f = vec2f(uv16);
+let weight16: f16 = f16(0.5);
+let weight32: f32 = f32(weight16);
+```
+
+Texture intrinsics use `vec2f` coordinates. Keep UV calculations in `vec2f16`
+when appropriate, then convert at the sampling boundary:
+
+```rust
+let color: vec4f = sample(albedo, vec2f(uv16));
+```
+
+Generated GLSL requires `GL_EXT_shader_explicit_arithmetic_types_float16` when
+these types are used. Choose `f16` only for targets that support native
+16-bit floating-point arithmetic and for values that do not need `f32`
+precision.
+
 ## Control program flow
 
 Use `if`, `for`, `return`, and `continue` to control program flow.

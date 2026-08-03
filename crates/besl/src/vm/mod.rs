@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+pub use half::f16;
+
 use crate::lexer::{BindingTypes, Expressions, NodeReference, Nodes, Operators};
 
 mod compiler;
@@ -85,6 +87,7 @@ pub enum ValueType {
 	U16,
 	U32,
 	I32,
+	F16,
 	F32,
 	Vec2U16,
 	Vec4U16,
@@ -92,6 +95,9 @@ pub enum ValueType {
 	Vec3U,
 	Vec2U,
 	Vec4U,
+	Vec2F16,
+	Vec3F16,
+	Vec4F16,
 	Vec2F,
 	Vec3F,
 	Vec4F,
@@ -113,6 +119,7 @@ impl ValueType {
 			ValueType::Bool => 1,
 			ValueType::U8 => 1,
 			ValueType::U16 => 2,
+			ValueType::F16 => 2,
 			ValueType::U32 | ValueType::I32 | ValueType::F32 => 4,
 			ValueType::Vec2U16 => 4,
 			ValueType::Vec4U16 => 8,
@@ -120,6 +127,9 @@ impl ValueType {
 			ValueType::Vec2U | ValueType::Vec2F => 8,
 			ValueType::Vec3U => 12,
 			ValueType::Vec4U | ValueType::Vec4F => 16,
+			ValueType::Vec2F16 => 4,
+			ValueType::Vec3F16 => 6,
+			ValueType::Vec4F16 => 8,
 			ValueType::Vec3F => 12,
 			ValueType::Mat4F => 64,
 			ValueType::Mat4x3F => 48,
@@ -135,6 +145,7 @@ impl ValueType {
 			ValueType::U16 => "u16",
 			ValueType::U32 => "u32",
 			ValueType::I32 => "i32",
+			ValueType::F16 => "f16",
 			ValueType::F32 => "f32",
 			ValueType::Vec2U16 => "vec2u16",
 			ValueType::Vec4U16 => "vec4u16",
@@ -142,6 +153,9 @@ impl ValueType {
 			ValueType::Vec3U => "vec3u",
 			ValueType::Vec2U => "vec2u",
 			ValueType::Vec4U => "vec4u",
+			ValueType::Vec2F16 => "vec2f16",
+			ValueType::Vec3F16 => "vec3f16",
+			ValueType::Vec4F16 => "vec4f16",
 			ValueType::Vec2F => "vec2f",
 			ValueType::Vec3F => "vec3f",
 			ValueType::Vec4F => "vec4f",
@@ -362,6 +376,17 @@ impl Buffer {
 		}
 	}
 
+	/// Reads an `f16` member from the buffer layout by name.
+	pub fn read_f16(&self, member_name: &str) -> Result<f16, VmError> {
+		match self.read(member_name)? {
+			Value::F16(value) => Ok(value),
+			value => Err(VmError::TypeMismatch {
+				expected: "f16".to_string(),
+				found: value.value_type().name().to_string(),
+			}),
+		}
+	}
+
 	fn read_value(&self, offset: usize, value_type: &ValueType) -> Result<Value, VmError> {
 		let bytes = self.read_bytes(offset, value_type.size())?;
 
@@ -371,6 +396,9 @@ impl Buffer {
 			ValueType::U16 => Value::U16(u16::from_ne_bytes(bytes.try_into().expect("Invalid u16 byte count"))),
 			ValueType::U32 => Value::U32(u32::from_ne_bytes(bytes.try_into().expect("Invalid u32 byte count"))),
 			ValueType::I32 => Value::I32(i32::from_ne_bytes(bytes.try_into().expect("Invalid i32 byte count"))),
+			ValueType::F16 => Value::F16(f16::from_bits(u16::from_ne_bytes(
+				bytes.try_into().expect("Invalid f16 byte count"),
+			))),
 			ValueType::F32 => Value::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
 			ValueType::Vec2U16 => Value::Vec2U16(read_u16_array::<2>(bytes)?),
 			ValueType::Vec4U16 => Value::Vec4U16(read_u16_array::<4>(bytes)?),
@@ -378,6 +406,9 @@ impl Buffer {
 			ValueType::Vec2U => Value::Vec2U(read_u32_array::<2>(bytes)?),
 			ValueType::Vec3U => Value::Vec3U(read_u32_array::<3>(bytes)?),
 			ValueType::Vec4U => Value::Vec4U(read_u32_array::<4>(bytes)?),
+			ValueType::Vec2F16 => Value::Vec2F16(read_f16_array::<2>(bytes)?),
+			ValueType::Vec3F16 => Value::Vec3F16(read_f16_array::<3>(bytes)?),
+			ValueType::Vec4F16 => Value::Vec4F16(read_f16_array::<4>(bytes)?),
 			ValueType::Vec2F => Value::Vec2F(read_f32_array::<2>(bytes)?),
 			ValueType::Vec3F => Value::Vec3F(read_f32_array::<3>(bytes)?),
 			ValueType::Vec4F => Value::Vec4F(read_f32_array::<4>(bytes)?),
@@ -417,6 +448,7 @@ impl Buffer {
 			Value::U16(value) => self.write_bytes(offset, &value.to_ne_bytes()),
 			Value::U32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
 			Value::I32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			Value::F16(value) => self.write_bytes(offset, &value.to_bits().to_ne_bytes()),
 			Value::F32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
 			Value::Vec2U16(value) => write_u16_slice(self, offset, value),
 			Value::Vec4U16(value) => write_u16_slice(self, offset, value),
@@ -424,6 +456,9 @@ impl Buffer {
 			Value::Vec2U(value) => write_u32_slice(self, offset, value),
 			Value::Vec3U(value) => write_u32_slice(self, offset, value),
 			Value::Vec4U(value) => write_u32_slice(self, offset, value),
+			Value::Vec2F16(value) => write_f16_slice(self, offset, value),
+			Value::Vec3F16(value) => write_f16_slice(self, offset, value),
+			Value::Vec4F16(value) => write_f16_slice(self, offset, value),
 			Value::Vec2F(value) => write_f32_slice(self, offset, value),
 			Value::Vec3F(value) => write_f32_slice(self, offset, value),
 			Value::Vec4F(value) => write_f32_slice(self, offset, value),
@@ -1401,6 +1436,7 @@ pub enum Value {
 	U16(u16),
 	U32(u32),
 	I32(i32),
+	F16(f16),
 	F32(f32),
 	Vec2U16([u16; 2]),
 	Vec4U16([u16; 4]),
@@ -1408,6 +1444,9 @@ pub enum Value {
 	Vec2U([u32; 2]),
 	Vec3U([u32; 3]),
 	Vec4U([u32; 4]),
+	Vec2F16([f16; 2]),
+	Vec3F16([f16; 3]),
+	Vec4F16([f16; 4]),
 	Vec2F([f32; 2]),
 	Vec3F([f32; 3]),
 	Vec4F([f32; 4]),
@@ -1425,6 +1464,7 @@ impl Value {
 			Value::U16(_) => ValueType::U16,
 			Value::U32(_) => ValueType::U32,
 			Value::I32(_) => ValueType::I32,
+			Value::F16(_) => ValueType::F16,
 			Value::F32(_) => ValueType::F32,
 			Value::Vec2U16(_) => ValueType::Vec2U16,
 			Value::Vec4U16(_) => ValueType::Vec4U16,
@@ -1432,6 +1472,9 @@ impl Value {
 			Value::Vec2U(_) => ValueType::Vec2U,
 			Value::Vec3U(_) => ValueType::Vec3U,
 			Value::Vec4U(_) => ValueType::Vec4U,
+			Value::Vec2F16(_) => ValueType::Vec2F16,
+			Value::Vec3F16(_) => ValueType::Vec3F16,
+			Value::Vec4F16(_) => ValueType::Vec4F16,
 			Value::Vec2F(_) => ValueType::Vec2F,
 			Value::Vec3F(_) => ValueType::Vec3F,
 			Value::Vec4F(_) => ValueType::Vec4F,

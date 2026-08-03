@@ -432,6 +432,75 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 }
 
 #[test]
+fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values() {
+	let script = r#"
+	main: fn () -> void {
+		let left: vec2f16 = vec2f16(1.25, 2.0);
+		let right: vec2f16 = vec2f16(0.5, 0.25);
+		let source: vec2f = vec2f(3.5, 4.25);
+		buff.value = left + right * 2.0;
+		buff.narrowed = vec2f16(source);
+		buff.widened = vec2f(buff.narrowed);
+		buff.component = buff.value.y;
+		buff.as_f32 = f32(buff.component);
+		buff.as_u32 = u32(f16(7.8));
+		let literal: f16 = 0.25;
+		buff.literal = literal;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let f16_type = root.get_child("f16").expect("Expected f16 type");
+	let f32_type = root.get_child("f32").expect("Expected f32 type");
+	let u32_type = root.get_child("u32").expect("Expected u32 type");
+	let vec2f16_type = root.get_child("vec2f16").expect("Expected vec2f16 type");
+	let vec2f_type = root.get_child("vec2f").expect("Expected vec2f type");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("value", vec2f16_type.clone()).into(),
+					Node::member("narrowed", vec2f16_type).into(),
+					Node::member("widened", vec2f_type).into(),
+					Node::member("component", f16_type.clone()).into(),
+					Node::member("as_f32", f32_type).into(),
+					Node::member("as_u32", u32_type).into(),
+					Node::member("literal", f16_type).into(),
+				],
+			},
+			31,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(31);
+	let layout = executable.buffer_layout(slot).expect("Expected f16 buffer layout");
+	assert_eq!(layout.member("value").unwrap().value_type().size(), 4);
+	assert_eq!(layout.member("component").unwrap().value_type().size(), 2);
+	assert_eq!(layout.member("component").unwrap().offset(), 16);
+	let mut buffer = Buffer::new(layout.clone());
+
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	let half = |value| super::f16::from_f32(value);
+	assert_eq!(buffer.read("value").unwrap(), Value::Vec2F16([half(2.25), half(2.5)]));
+	assert_eq!(buffer.read("narrowed").unwrap(), Value::Vec2F16([half(3.5), half(4.25)]));
+	assert_eq!(buffer.read("widened").unwrap(), Value::Vec2F([3.5, 4.25]));
+	assert_eq!(buffer.read_f16("component").unwrap(), half(2.5));
+	assert_eq!(buffer.read_f32("as_f32").unwrap(), 2.5);
+	assert_eq!(buffer.read("as_u32").unwrap(), Value::U32(7));
+	assert_eq!(buffer.read_f16("literal").unwrap(), half(0.25));
+	assert_eq!(
+		u16::from_ne_bytes(buffer.bytes()[16..18].try_into().expect("Expected f16 component bytes")),
+		half(2.5).to_bits()
+	);
+}
+
+#[test]
 fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
 	let script = r#"
 	main: fn () -> void {

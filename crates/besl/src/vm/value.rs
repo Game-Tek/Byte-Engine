@@ -30,6 +30,13 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 			value: value.to_string(),
 			value_type: value_type.name().to_string(),
 		})?,
+		ValueType::F16 => value
+			.parse::<f32>()
+			.map(|value| Value::F16(f16::from_f32(value)))
+			.map_err(|_| VmError::InvalidLiteral {
+				value: value.to_string(),
+				value_type: value_type.name().to_string(),
+			})?,
 		ValueType::Vec2U16 | ValueType::Vec4U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
@@ -40,7 +47,10 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 			value: value.to_string(),
 			value_type: value_type.name().to_string(),
 		})?,
-		ValueType::Vec2F
+		ValueType::Vec2F16
+		| ValueType::Vec3F16
+		| ValueType::Vec4F16
+		| ValueType::Vec2F
 		| ValueType::Vec3F
 		| ValueType::Vec4F
 		| ValueType::Mat4F
@@ -67,6 +77,9 @@ pub(super) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 		ValueType::Vec2U => Ok(Value::Vec2U(extract_u32_components::<2>(components)?)),
 		ValueType::Vec3U => Ok(Value::Vec3U(extract_u32_components::<3>(components)?)),
 		ValueType::Vec4U => Ok(Value::Vec4U(extract_u32_components::<4>(components)?)),
+		ValueType::Vec2F16 => Ok(Value::Vec2F16(extract_f16_components::<2>(components)?)),
+		ValueType::Vec3F16 => Ok(Value::Vec3F16(extract_f16_components::<3>(components)?)),
+		ValueType::Vec4F16 => Ok(Value::Vec4F16(extract_f16_components::<4>(components)?)),
 		ValueType::Vec2F => Ok(Value::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(Value::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(Value::Vec4F(extract_f32_components::<4>(components)?)),
@@ -99,31 +112,116 @@ pub(super) fn extract_f32_components<const N: usize>(components: &[Value]) -> Re
 	let mut values = [0.0; N];
 	let mut index = 0;
 	for component in components {
-		let slice: &[f32] = match component {
-			Value::F32(value) => std::slice::from_ref(value),
-			Value::Vec2F(value) => value,
-			Value::Vec3F(value) => value,
-			Value::Vec4F(value) => value,
-			Value::Mat4F(value) => value,
-			Value::Mat4x3F(value) => value,
+		let component_count = match component {
+			Value::F16(_) | Value::F32(_) => 1,
+			Value::Vec2F16(value) => value.len(),
+			Value::Vec3F16(value) => value.len(),
+			Value::Vec4F16(value) => value.len(),
+			Value::Vec2F(value) => value.len(),
+			Value::Vec3F(value) => value.len(),
+			Value::Vec4F(value) => value.len(),
+			Value::Mat4F(value) => value.len(),
+			Value::Mat4x3F(value) => value.len(),
 			_ => {
 				return Err(VmError::TypeMismatch {
-					expected: ValueType::F32.name().to_string(),
+					expected: "f16 or f32".to_string(),
 					found: component.value_type().name().to_string(),
 				});
 			}
 		};
-		if index + slice.len() > N {
+		if index + component_count > N {
 			return Err(VmError::UnsupportedExpression {
 				message: format!("Constructor provides more than {} f32 components", N),
 			});
 		}
-		values[index..index + slice.len()].copy_from_slice(slice);
-		index += slice.len();
+		match component {
+			Value::F16(value) => values[index] = value.to_f32(),
+			Value::F32(value) => values[index] = *value,
+			Value::Vec2F16(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = source.to_f32();
+				}
+			}
+			Value::Vec3F16(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = source.to_f32();
+				}
+			}
+			Value::Vec4F16(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = source.to_f32();
+				}
+			}
+			Value::Vec2F(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Vec3F(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Vec4F(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Mat4F(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Mat4x3F(value) => values[index..index + value.len()].copy_from_slice(value),
+			_ => unreachable!("Float constructor components are validated before conversion"),
+		}
+		index += component_count;
 	}
 	if index != N {
 		return Err(VmError::UnsupportedExpression {
 			message: format!("Constructor expected {} f32 components, but found {}", N, index),
+		});
+	}
+
+	Ok(values)
+}
+
+pub(super) fn extract_f16_components<const N: usize>(components: &[Value]) -> Result<[f16; N], VmError> {
+	let mut values = [f16::from_f32(0.0); N];
+	let mut index = 0;
+	for component in components {
+		let component_count = match component {
+			Value::F16(_) | Value::F32(_) => 1,
+			Value::Vec2F16(value) => value.len(),
+			Value::Vec3F16(value) => value.len(),
+			Value::Vec4F16(value) => value.len(),
+			Value::Vec2F(value) => value.len(),
+			Value::Vec3F(value) => value.len(),
+			Value::Vec4F(value) => value.len(),
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: "f16 or f32".to_string(),
+					found: component.value_type().name().to_string(),
+				});
+			}
+		};
+		if index + component_count > N {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Constructor provides more than {} f16 components", N),
+			});
+		}
+		match component {
+			Value::F16(value) => values[index] = *value,
+			Value::F32(value) => values[index] = f16::from_f32(*value),
+			Value::Vec2F16(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Vec3F16(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Vec4F16(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::Vec2F(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = f16::from_f32(*source);
+				}
+			}
+			Value::Vec3F(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = f16::from_f32(*source);
+				}
+			}
+			Value::Vec4F(value) => {
+				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+					*destination = f16::from_f32(*source);
+				}
+			}
+			_ => unreachable!("Float constructor components are validated before conversion"),
+		}
+		index += component_count;
+	}
+	if index != N {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Constructor expected {} f16 components, but found {}", N, index),
 		});
 	}
 
@@ -268,6 +366,20 @@ pub(super) fn extract_i32_components<const N: usize>(components: &[Value]) -> Re
 	Ok(values)
 }
 
+pub(super) fn read_f16_array<const N: usize>(bytes: &[u8]) -> Result<[f16; N], VmError> {
+	if bytes.len() != N * 2 {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected {} bytes for {} f16 values, but found {}", N * 2, N, bytes.len()),
+		});
+	}
+
+	let mut values = [f16::from_f32(0.0); N];
+	for (index, chunk) in bytes.chunks_exact(2).enumerate() {
+		values[index] = f16::from_bits(u16::from_ne_bytes(chunk.try_into().expect("Invalid f16 byte count")));
+	}
+	Ok(values)
+}
+
 pub(super) fn read_f32_array<const N: usize>(bytes: &[u8]) -> Result<[f32; N], VmError> {
 	if bytes.len() != N * 4 {
 		return Err(VmError::UnsupportedExpression {
@@ -320,6 +432,13 @@ pub(super) fn read_i32_array<const N: usize>(bytes: &[u8]) -> Result<[i32; N], V
 		values[index] = i32::from_ne_bytes(chunk.try_into().expect("Invalid i32 byte count"));
 	}
 	Ok(values)
+}
+
+pub(super) fn write_f16_slice(buffer: &mut Buffer, offset: usize, values: &[f16]) -> Result<(), VmError> {
+	for (index, value) in values.iter().enumerate() {
+		buffer.write_bytes(offset + index * 2, &value.to_bits().to_ne_bytes())?;
+	}
+	Ok(())
 }
 
 pub(super) fn write_f32_slice(buffer: &mut Buffer, offset: usize, values: &[f32]) -> Result<(), VmError> {
@@ -412,10 +531,10 @@ pub(super) fn binary_result_type(
 	if left == right {
 		return Ok(left.clone());
 	}
-	if supports_scalar_broadcast(left) && right == &ValueType::F32 {
+	if supports_scalar_broadcast(left) && vector_scalar_type(left).as_ref() == Some(right) {
 		return Ok(left.clone());
 	}
-	if left == &ValueType::F32 && supports_scalar_broadcast(right) {
+	if supports_scalar_broadcast(right) && vector_scalar_type(right).as_ref() == Some(left) {
 		return Ok(right.clone());
 	}
 	Err(VmError::TypeMismatch {
@@ -439,7 +558,14 @@ pub(super) fn comparison_operator(operator: &Operators) -> Option<ComparisonOper
 pub(super) fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
 	matches!(
 		value_type,
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F | ValueType::Mat4x3F
+		ValueType::Vec2F16
+			| ValueType::Vec3F16
+			| ValueType::Vec4F16
+			| ValueType::Vec2F
+			| ValueType::Vec3F
+			| ValueType::Vec4F
+			| ValueType::Mat4F
+			| ValueType::Mat4x3F
 	)
 }
 
@@ -472,6 +598,7 @@ pub(super) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		(Value::U16(left), Value::U16(right)) => apply_integer_arithmetic(*left, *right, operator).map(Value::U16),
 		(Value::U32(left), Value::U32(right)) => apply_integer_arithmetic(*left, *right, operator).map(Value::U32),
 		(Value::I32(left), Value::I32(right)) => apply_integer_arithmetic(*left, *right, operator).map(Value::I32),
+		(Value::F16(left), Value::F16(right)) => apply_f16_arithmetic(*left, *right, operator).map(Value::F16),
 		(Value::F32(left), Value::F32(right)) => apply_float_arithmetic(*left, *right, operator).map(Value::F32),
 		(Value::Vec2U16(left), Value::Vec2U16(right)) => {
 			apply_integer_array_arithmetic::<u16, 2>(*left, *right, operator).map(Value::Vec2U16)
@@ -491,6 +618,15 @@ pub(super) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		(Value::Vec4U(left), Value::Vec4U(right)) => {
 			apply_integer_array_arithmetic::<u32, 4>(*left, *right, operator).map(Value::Vec4U)
 		}
+		(Value::Vec2F16(left), Value::Vec2F16(right)) => {
+			apply_f16_array_arithmetic::<2>(*left, *right, operator).map(Value::Vec2F16)
+		}
+		(Value::Vec3F16(left), Value::Vec3F16(right)) => {
+			apply_f16_array_arithmetic::<3>(*left, *right, operator).map(Value::Vec3F16)
+		}
+		(Value::Vec4F16(left), Value::Vec4F16(right)) => {
+			apply_f16_array_arithmetic::<4>(*left, *right, operator).map(Value::Vec4F16)
+		}
 		(Value::Vec2F(left), Value::Vec2F(right)) => {
 			apply_float_array_arithmetic::<2>(*left, *right, operator).map(Value::Vec2F)
 		}
@@ -506,6 +642,15 @@ pub(super) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		(Value::Mat4x3F(left), Value::Mat4x3F(right)) => {
 			apply_float_array_arithmetic::<12>(*left, *right, operator).map(Value::Mat4x3F)
 		}
+		(Value::Vec2F16(left), Value::F16(right)) => {
+			apply_f16_scalar_broadcast::<2>(*left, *right, operator).map(Value::Vec2F16)
+		}
+		(Value::Vec3F16(left), Value::F16(right)) => {
+			apply_f16_scalar_broadcast::<3>(*left, *right, operator).map(Value::Vec3F16)
+		}
+		(Value::Vec4F16(left), Value::F16(right)) => {
+			apply_f16_scalar_broadcast::<4>(*left, *right, operator).map(Value::Vec4F16)
+		}
 		(Value::Vec2F(left), Value::F32(right)) => apply_float_scalar_broadcast::<2>(*left, *right, operator).map(Value::Vec2F),
 		(Value::Vec3F(left), Value::F32(right)) => apply_float_scalar_broadcast::<3>(*left, *right, operator).map(Value::Vec3F),
 		(Value::Vec4F(left), Value::F32(right)) => apply_float_scalar_broadcast::<4>(*left, *right, operator).map(Value::Vec4F),
@@ -514,6 +659,15 @@ pub(super) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		}
 		(Value::Mat4x3F(left), Value::F32(right)) => {
 			apply_float_scalar_broadcast::<12>(*left, *right, operator).map(Value::Mat4x3F)
+		}
+		(Value::F16(left), Value::Vec2F16(right)) => {
+			apply_scalar_f16_broadcast::<2>(*left, *right, operator).map(Value::Vec2F16)
+		}
+		(Value::F16(left), Value::Vec3F16(right)) => {
+			apply_scalar_f16_broadcast::<3>(*left, *right, operator).map(Value::Vec3F16)
+		}
+		(Value::F16(left), Value::Vec4F16(right)) => {
+			apply_scalar_f16_broadcast::<4>(*left, *right, operator).map(Value::Vec4F16)
 		}
 		(Value::F32(left), Value::Vec2F(right)) => apply_scalar_float_broadcast::<2>(*left, *right, operator).map(Value::Vec2F),
 		(Value::F32(left), Value::Vec3F(right)) => apply_scalar_float_broadcast::<3>(*left, *right, operator).map(Value::Vec3F),
@@ -559,6 +713,14 @@ pub(super) fn apply_comparison(operator: ComparisonOperator, left: &Value, right
 			ComparisonOperator::LessThanOrEqual => left <= right,
 			ComparisonOperator::GreaterThanOrEqual => left >= right,
 		})),
+		(Value::F16(left), Value::F16(right)) => Ok(Value::Bool(match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			ComparisonOperator::LessThan => left < right,
+			ComparisonOperator::GreaterThan => left > right,
+			ComparisonOperator::LessThanOrEqual => left <= right,
+			ComparisonOperator::GreaterThanOrEqual => left >= right,
+		})),
 		(Value::F32(left), Value::F32(right)) => Ok(Value::Bool(match operator {
 			ComparisonOperator::Equal => left == right,
 			ComparisonOperator::NotEqual => left != right,
@@ -579,9 +741,10 @@ pub(super) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 		Value::Bool(value) => Ok(!*value),
 		Value::U32(value) => Ok(*value == 0),
 		Value::I32(value) => Ok(*value == 0),
+		Value::F16(value) => Ok(*value == f16::from_f32(0.0)),
 		Value::F32(value) => Ok(*value == 0.0),
 		value => Err(VmError::TypeMismatch {
-			expected: "u32, i32, or f32".to_string(),
+			expected: "u32, i32, f16, or f32".to_string(),
 			found: value.value_type().name().to_string(),
 		}),
 	}
@@ -658,6 +821,64 @@ fn apply_integer_array_arithmetic<T: VmInteger, const N: usize>(
 	let mut values = [T::default(); N];
 	for index in 0..N {
 		values[index] = apply_integer_arithmetic(left[index], right[index], operator)?;
+	}
+	Ok(values)
+}
+
+fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> Result<f16, VmError> {
+	let value = match operator {
+		ArithmeticOperator::Add => left.to_f32() + right.to_f32(),
+		ArithmeticOperator::Subtract => left.to_f32() - right.to_f32(),
+		ArithmeticOperator::Multiply => left.to_f32() * right.to_f32(),
+		ArithmeticOperator::Divide => left.to_f32() / right.to_f32(),
+		ArithmeticOperator::Modulo => left.to_f32() % right.to_f32(),
+		ArithmeticOperator::ShiftLeft
+		| ArithmeticOperator::ShiftRight
+		| ArithmeticOperator::BitwiseAnd
+		| ArithmeticOperator::BitwiseOr
+		| ArithmeticOperator::LogicalAnd
+		| ArithmeticOperator::LogicalOr => {
+			return Err(VmError::TypeMismatch {
+				expected: "integer operands".to_string(),
+				found: ValueType::F16.name().to_string(),
+			});
+		}
+	};
+	Ok(f16::from_f32(value))
+}
+
+fn apply_f16_array_arithmetic<const N: usize>(
+	left: [f16; N],
+	right: [f16; N],
+	operator: ArithmeticOperator,
+) -> Result<[f16; N], VmError> {
+	let mut values = [f16::from_f32(0.0); N];
+	for index in 0..N {
+		values[index] = apply_f16_arithmetic(left[index], right[index], operator)?;
+	}
+	Ok(values)
+}
+
+fn apply_f16_scalar_broadcast<const N: usize>(
+	left: [f16; N],
+	right: f16,
+	operator: ArithmeticOperator,
+) -> Result<[f16; N], VmError> {
+	let mut values = [f16::from_f32(0.0); N];
+	for index in 0..N {
+		values[index] = apply_f16_arithmetic(left[index], right, operator)?;
+	}
+	Ok(values)
+}
+
+fn apply_scalar_f16_broadcast<const N: usize>(
+	left: f16,
+	right: [f16; N],
+	operator: ArithmeticOperator,
+) -> Result<[f16; N], VmError> {
+	let mut values = [f16::from_f32(0.0); N];
+	for index in 0..N {
+		values[index] = apply_f16_arithmetic(left, right[index], operator)?;
 	}
 	Ok(values)
 }
@@ -777,6 +998,16 @@ pub(super) fn apply_reflect(incident: &Value, normal: &Value) -> Result<Value, V
 
 pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -> Result<Value, VmError> {
 	match operator {
+		ScalarUnaryOperator::FromF16ToF32 => {
+			let Value::F16(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::F16.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::F32(value.to_f32()));
+		}
 		ScalarUnaryOperator::FromU32ToF32 => {
 			let Value::U32(value) = value else {
 				return Err(VmError::TypeMismatch {
@@ -797,6 +1028,36 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 
 			return Ok(Value::F32(*value as f32));
 		}
+		ScalarUnaryOperator::FromF32ToF16 => {
+			let Value::F32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::F32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::F16(f16::from_f32(*value)));
+		}
+		ScalarUnaryOperator::FromU32ToF16 => {
+			let Value::U32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::F16(f16::from_f32(*value as f32)));
+		}
+		ScalarUnaryOperator::FromI32ToF16 => {
+			let Value::I32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::I32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::F16(f16::from_f32(*value as f32)));
+		}
 		ScalarUnaryOperator::FromF32ToU32 => {
 			let Value::F32(value) = value else {
 				return Err(VmError::TypeMismatch {
@@ -806,6 +1067,16 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			};
 
 			return Ok(Value::U32(*value as u32));
+		}
+		ScalarUnaryOperator::FromF16ToU32 => {
+			let Value::F16(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::F16.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::U32(value.to_f32() as u32));
 		}
 		ScalarUnaryOperator::FromU8ToU32 => {
 			let Value::U8(value) = value else {
@@ -854,9 +1125,14 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		ScalarUnaryOperator::InverseSqrt => 1.0 / value.sqrt(),
 		ScalarUnaryOperator::Log2 => value.log2(),
 		ScalarUnaryOperator::Fwidth => 0.0,
-		ScalarUnaryOperator::FromU32ToF32
+		ScalarUnaryOperator::FromF16ToF32
+		| ScalarUnaryOperator::FromU32ToF32
 		| ScalarUnaryOperator::FromI32ToF32
+		| ScalarUnaryOperator::FromF32ToF16
+		| ScalarUnaryOperator::FromU32ToF16
+		| ScalarUnaryOperator::FromI32ToF16
 		| ScalarUnaryOperator::FromF32ToU32
+		| ScalarUnaryOperator::FromF16ToU32
 		| ScalarUnaryOperator::FromU8ToU32
 		| ScalarUnaryOperator::FromU16ToU32
 		| ScalarUnaryOperator::FromI32ToU32 => unreachable!("conversion operators return early"),
@@ -865,12 +1141,16 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 
 pub(super) fn map_float_value(value: &Value, map: impl Fn(f32) -> f32) -> Result<Value, VmError> {
 	match value {
+		Value::F16(value) => Ok(Value::F16(f16::from_f32(map(value.to_f32())))),
 		Value::F32(value) => Ok(Value::F32(map(*value))),
+		Value::Vec2F16(value) => Ok(Value::Vec2F16(value.map(|value| f16::from_f32(map(value.to_f32()))))),
+		Value::Vec3F16(value) => Ok(Value::Vec3F16(value.map(|value| f16::from_f32(map(value.to_f32()))))),
+		Value::Vec4F16(value) => Ok(Value::Vec4F16(value.map(|value| f16::from_f32(map(value.to_f32()))))),
 		Value::Vec2F(value) => Ok(Value::Vec2F(value.map(&map))),
 		Value::Vec3F(value) => Ok(Value::Vec3F(value.map(&map))),
 		Value::Vec4F(value) => Ok(Value::Vec4F(value.map(&map))),
 		value => Err(VmError::TypeMismatch {
-			expected: "f32 or float vector".to_string(),
+			expected: "f16, f32, or float vector".to_string(),
 			found: value.value_type().name().to_string(),
 		}),
 	}
@@ -887,7 +1167,17 @@ pub(super) fn apply_scalar_binary(operator: ScalarBinaryOperator, left: &Value, 
 		}
 	}
 	match (left, right) {
+		(Value::F16(left), Value::F16(right)) => Ok(Value::F16(f16::from_f32(apply(operator, left.to_f32(), right.to_f32())))),
 		(Value::F32(left), Value::F32(right)) => Ok(Value::F32(apply(operator, *left, *right))),
+		(Value::Vec2F16(left), Value::Vec2F16(right)) => Ok(Value::Vec2F16(std::array::from_fn(|index| {
+			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
+		}))),
+		(Value::Vec3F16(left), Value::Vec3F16(right)) => Ok(Value::Vec3F16(std::array::from_fn(|index| {
+			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
+		}))),
+		(Value::Vec4F16(left), Value::Vec4F16(right)) => Ok(Value::Vec4F16(std::array::from_fn(|index| {
+			f16::from_f32(apply(operator, left[index].to_f32(), right[index].to_f32()))
+		}))),
 		(Value::Vec2F(left), Value::Vec2F(right)) => Ok(Value::Vec2F(std::array::from_fn(|index| {
 			apply(operator, left[index], right[index])
 		}))),
@@ -922,7 +1212,43 @@ pub(super) fn apply_scalar_ternary(
 		}
 	}
 	match (first, second, third) {
+		(Value::F16(first), Value::F16(second), Value::F16(third)) => Ok(Value::F16(f16::from_f32(apply(
+			operator,
+			first.to_f32(),
+			second.to_f32(),
+			third.to_f32(),
+		)))),
 		(Value::F32(first), Value::F32(second), Value::F32(third)) => Ok(Value::F32(apply(operator, *first, *second, *third))),
+		(Value::Vec2F16(first), Value::Vec2F16(second), Value::Vec2F16(third)) => {
+			Ok(Value::Vec2F16(std::array::from_fn(|index| {
+				f16::from_f32(apply(
+					operator,
+					first[index].to_f32(),
+					second[index].to_f32(),
+					third[index].to_f32(),
+				))
+			})))
+		}
+		(Value::Vec3F16(first), Value::Vec3F16(second), Value::Vec3F16(third)) => {
+			Ok(Value::Vec3F16(std::array::from_fn(|index| {
+				f16::from_f32(apply(
+					operator,
+					first[index].to_f32(),
+					second[index].to_f32(),
+					third[index].to_f32(),
+				))
+			})))
+		}
+		(Value::Vec4F16(first), Value::Vec4F16(second), Value::Vec4F16(third)) => {
+			Ok(Value::Vec4F16(std::array::from_fn(|index| {
+				f16::from_f32(apply(
+					operator,
+					first[index].to_f32(),
+					second[index].to_f32(),
+					third[index].to_f32(),
+				))
+			})))
+		}
 		(Value::Vec2F(first), Value::Vec2F(second), Value::Vec2F(third)) => Ok(Value::Vec2F(std::array::from_fn(|index| {
 			apply(operator, first[index], second[index], third[index])
 		}))),
@@ -947,6 +1273,9 @@ pub(super) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec2U(value) => value.get(index).copied().map(Value::U32),
 		Value::Vec3U(value) => value.get(index).copied().map(Value::U32),
 		Value::Vec4U(value) => value.get(index).copied().map(Value::U32),
+		Value::Vec2F16(value) => value.get(index).copied().map(Value::F16),
+		Value::Vec3F16(value) => value.get(index).copied().map(Value::F16),
+		Value::Vec4F16(value) => value.get(index).copied().map(Value::F16),
 		Value::Vec2F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec3F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
@@ -977,6 +1306,7 @@ pub(super) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 		ValueType::Vec4U16 => Some(ValueType::U16),
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
+		ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16 => Some(ValueType::F16),
 		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),
 		_ => None,
 	}

@@ -1633,8 +1633,11 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	fn translate_buffer_member_type(source: &str) -> &str {
 		// Metal storage buffers need packed vectors when the CPU data is tightly packed.
-		// Float vectors retain the existing array-only policy, while u16 vectors must also stay packed inside mixed structs.
+		// Float vectors retain the existing array-only policy, while 16-bit vectors stay packed inside mixed structs.
 		match source {
+			"vec2f16" => "packed_half2",
+			"vec3f16" => "packed_half3",
+			"vec4f16" => "packed_half4",
 			"vec2f" => "packed_float2",
 			"vec3f" => "packed_float3",
 			"mat4x3f" => "_besl_packed_float4x3",
@@ -2516,6 +2519,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			"void" => "void",
 			"bool" => "bool",
 			"atomicu32" => "atomic_uint",
+			"vec2f16" => "half2",
+			"vec3f16" => "half3",
+			"vec4f16" => "half4",
 			"vec2f" => "float2",
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
@@ -2529,6 +2535,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
 			"mat4x3f" => "float4x3",
+			"f16" => "half",
 			"f32" => "float",
 			"u8" => "uchar",
 			"u16" => "ushort",
@@ -2661,6 +2668,17 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			"f32" => {
 				string.push_str("float(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"f16" => {
+				string.push_str("half(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+				string.push_str(Self::translate_type(name));
+				string.push('(');
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -2931,7 +2949,9 @@ impl<A: Allocator + Clone> Generator<A> {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					if self.is_packed_mat4x3_member(this_node) {
 						string.push_str(Self::translate_buffer_member_type(type_name));
-					} else if self.in_buffer_binding_struct && (count.is_some() || matches!(type_name, "vec2u16" | "vec4u16")) {
+					} else if self.in_buffer_binding_struct
+						&& (count.is_some() || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16"))
+					{
 						string.push_str(Self::translate_buffer_member_type(type_name));
 					} else if type_name.contains('[') {
 						Self::emit_type_name(string, type_name);
@@ -3552,6 +3572,47 @@ mod tests {
 
 		assert_string_contains!(vec2_array, "struct _buff{packed_ushort2 values[2];};");
 		assert_string_contains!(mixed_vec4, "struct _buff{packed_ushort4 value;ushort tail;};");
+	}
+
+	#[test]
+	fn vec2f16_arrays_use_packed_msl_storage() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::vec2f16_array_binding(),
+			)
+			.expect("Expected vec2f16 MSL generation");
+
+		assert_string_contains!(shader, "struct _buff{packed_half2 values[2];};");
+	}
+
+	#[test]
+	fn f16_storage_vectors_use_packed_msl_types() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::mixed_f16_storage_binding(),
+			)
+			.expect("Expected f16 MSL generation");
+
+		assert_string_contains!(
+			shader,
+			"struct _buff{half scalar;packed_half2 uv;packed_half3 normal;packed_half4 color;};"
+		);
+		assert_string_contains!(shader, "half2(uv32)");
+		assert_string_contains!(shader, "float2(uv16)");
+		assert_string_contains!(shader, "half(0.5)");
+		assert_string_contains!(shader, "float(weight16)");
+		assert_string_contains!(shader, "half literal=half(0.25);");
+		assert_string_contains!(shader, "weight16*half(2.0)");
+		assert_string_contains!(shader, "uv16*half(2.0)");
+		assert!(!shader.contains("struct vec2f16"));
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-f16-storage")
+			.expect("Expected native f16 MSL source to compile");
 	}
 
 	#[test]

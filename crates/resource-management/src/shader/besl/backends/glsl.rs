@@ -109,6 +109,17 @@ impl Generator {
 				.any(|intrinsic| Self::uses_intrinsic(node, intrinsic))
 		})
 	}
+
+	/// Reports whether reachable code requires native 16-bit floating-point arithmetic.
+	fn uses_f16_types(order: &[besl::NodeReference]) -> bool {
+		const F16_TYPES: [&str; 4] = ["f16", "vec2f16", "vec3f16", "vec4f16"];
+		order
+			.iter()
+			.any(|node| matches!(node.borrow().node(), besl::Nodes::Struct { name, .. } if F16_TYPES.contains(&name.as_str())))
+			|| order
+				.iter()
+				.any(|node| F16_TYPES.iter().any(|name| Self::uses_intrinsic(node, name)))
+	}
 }
 
 impl Generator {
@@ -140,11 +151,17 @@ impl Generator {
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		let uses_f16_types = Self::uses_f16_types(&order);
 		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
 			return Err(());
 		}
 
-		self.generate_glsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics);
+		self.generate_glsl_header_block(
+			&mut string,
+			shader_compilation_settings,
+			uses_subgroup_intrinsics,
+			uses_f16_types,
+		);
 
 		for node in order {
 			self.emit_node_string(&mut string, &node);
@@ -158,6 +175,9 @@ impl Generator {
 		match source {
 			"void" => "void",
 			"atomicu32" => "uint32_t",
+			"vec2f16" => "f16vec2",
+			"vec3f16" => "f16vec3",
+			"vec4f16" => "f16vec4",
 			"vec2f" => "vec2",
 			"vec2u" => "uvec2",
 			"vec2i" => "ivec2",
@@ -171,6 +191,7 @@ impl Generator {
 			"mat3f" => "mat3",
 			"mat4f" => "mat4",
 			"mat4x3f" => "mat4x3",
+			"f16" => "float16_t",
 			"f32" => "float",
 			"u8" => "uint8_t",
 			"u16" => "uint16_t",
@@ -317,6 +338,17 @@ impl Generator {
 			}
 			"f32" => {
 				string.push_str("float(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"f16" => {
+				string.push_str("float16_t(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+				string.push_str(Self::translate_type(name));
+				string.push('(');
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -835,6 +867,7 @@ impl Generator {
 		glsl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
 		uses_subgroup_intrinsics: bool,
+		uses_f16_types: bool,
 	) {
 		let glsl_version = &compilation_settings.glsl.version;
 
@@ -856,6 +889,9 @@ impl Generator {
 
 		glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
 		glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types:require\n");
+		if uses_f16_types {
+			glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_float16:require\n");
+		}
 		glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier:require\n");
 		glsl_block.push_str("#extension GL_EXT_scalar_block_layout:require\n");
 		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
@@ -974,6 +1010,7 @@ mod tests {
 		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
 		assert_string_contains!(shader, "layout(set=0,binding=2) uniform sampler2D texture;");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
+		assert!(!shader.contains("GL_EXT_shader_explicit_arithmetic_types_float16"));
 
 		// Assert that main is the last element in the shader string, which means that the bindings are before it.
 		shader.ends_with("void main(){buff;image;texture;}");
@@ -1061,6 +1098,20 @@ mod tests {
 
 		assert_string_contains!(shader, "u16vec4 value;");
 		assert!(!shader.contains("struct vec4u16"));
+	}
+
+	#[test]
+	fn vec2f16_arrays_use_native_glsl_vector_storage() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::vec2f16_array_binding(),
+			)
+			.expect("Expected vec2f16 GLSL generation");
+
+		assert_string_contains!(shader, "f16vec2 values[2];");
+		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 	}
 
 	#[test]
@@ -1545,6 +1596,31 @@ mod tests {
 
 		assert_string_contains!(shader, "max(1.0,2.0)");
 		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
+	}
+
+	#[test]
+	fn f16_storage_types_enable_native_glsl_arithmetic() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::mixed_f16_storage_binding(),
+			)
+			.expect("Expected f16 GLSL generation");
+
+		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
+		assert_string_contains!(shader, "float16_t scalar;");
+		assert_string_contains!(shader, "f16vec2 uv;");
+		assert_string_contains!(shader, "f16vec3 normal;");
+		assert_string_contains!(shader, "f16vec4 color;");
+		assert_string_contains!(shader, "f16vec2(uv32)");
+		assert_string_contains!(shader, "vec2(uv16)");
+		assert_string_contains!(shader, "float16_t(0.5)");
+		assert_string_contains!(shader, "float(weight16)");
+		assert_string_contains!(shader, "float16_t literal=float16_t(0.25);");
+		assert_string_contains!(shader, "weight16*float16_t(2.0)");
+		assert_string_contains!(shader, "uv16*float16_t(2.0)");
+		assert!(!shader.contains("struct vec2f16"));
 	}
 
 	#[test]

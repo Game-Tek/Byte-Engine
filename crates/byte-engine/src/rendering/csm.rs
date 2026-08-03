@@ -70,10 +70,13 @@ fn frustum_center(corners: &[Point; 8]) -> Point {
 fn stabilize_cascade_radius(center: Point, camera_frustum_corners: &[Point; 8], shadow_map_resolution: u32) -> f32 {
 	let base_radius = camera_frustum_corners
 		.iter()
-		.map(|corner| (*corner - center).length_squared())
-		.max_by(|left, right| left.partial_cmp(right).expect("Frustum corner distance must be finite"))
+		.map(|corner| *corner - center)
+		.max_by(|left, right| {
+			left.partial_cmp_magnitude(*right)
+				.expect("Frustum corner distance must be finite")
+		})
 		.expect("A cascade frustum must have corners")
-		.sqrt();
+		.length();
 
 	if shadow_map_resolution == 0 {
 		return (base_radius * 16.0).ceil() / 16.0;

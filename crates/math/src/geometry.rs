@@ -1,4 +1,5 @@
 use std::{
+	cmp::Ordering,
 	fmt,
 	marker::PhantomData,
 	ops::{Add, Div, Mul, Neg, Sub},
@@ -223,6 +224,18 @@ impl<Space, State> Vector<Space, State> {
 	/// Returns the vector length.
 	pub fn length(self) -> f32 {
 		self.length_squared().sqrt()
+	}
+
+	/// Compares this vector's magnitude with `other` without calculating a square root.
+	///
+	/// Returns [`None`] when either vector has a non-finite component. Finite inputs are
+	/// compared with scaled squared magnitudes, so the comparison remains valid even when
+	/// [`Self::length_squared`] would overflow or underflow.
+	pub fn partial_cmp_magnitude<OtherState>(self, other: Vector<Space, OtherState>) -> Option<Ordering> {
+		let left = scaled_magnitude_squared(self.value)?;
+		let right = scaled_magnitude_squared(other.value)?;
+
+		left.partial_cmp(&right)
 	}
 
 	/// Returns the scalar projection of this vector onto `other`.
@@ -486,6 +499,25 @@ pub(crate) fn dot_values(left: Vec3f, right: Vec3f) -> f32 {
 	left.x * right.x + left.y * right.y + left.z * right.z
 }
 
+// `f64` can represent the square of every finite `f32`, including subnormal values.
+// Scaling first keeps the component sum bounded and avoids the `f32` overflow and underflow
+// that make `Vector::length_squared` unsuitable for magnitude comparisons.
+fn scaled_magnitude_squared(value: Vec3f) -> Option<f64> {
+	if !value.x.is_finite() || !value.y.is_finite() || !value.z.is_finite() {
+		return None;
+	}
+
+	let scale = value.x.abs().max(value.y.abs()).max(value.z.abs()) as f64;
+	if scale == 0.0 {
+		return Some(0.0);
+	}
+
+	let x = value.x as f64 / scale;
+	let y = value.y as f64 / scale;
+	let z = value.z as f64 / scale;
+	Some(scale * scale * (x * x + y * y + z * z))
+}
+
 pub(crate) fn cross_values(left: Vec3f, right: Vec3f) -> Vec3f {
 	Vec3f::new(
 		left.y * right.z - left.z * right.y,
@@ -540,5 +572,56 @@ mod tests {
 
 		assert_eq!(tiny, UnitVector::x_axis());
 		assert!((large.into_vector().length_squared() - 1.0).abs() < 0.0001);
+	}
+
+	#[test]
+	fn magnitude_comparison_orders_normal_vectors_and_accepts_any_state() {
+		struct Checked;
+
+		let shorter = Vector::<LocalSpace>::new(3.0, 4.0, 0.0);
+		let longer = Vector::<LocalSpace, Checked> {
+			value: Vec3f::new(6.0, 8.0, 0.0),
+			space: PhantomData,
+		};
+
+		assert_eq!(shorter.partial_cmp_magnitude(longer), Some(Ordering::Less));
+		assert_eq!(longer.partial_cmp_magnitude(shorter), Some(Ordering::Greater));
+	}
+
+	#[test]
+	fn magnitude_comparison_recognizes_equal_and_zero_magnitudes() {
+		let first = Vector::<WorldSpace>::new(3.0, 4.0, 0.0);
+		let equal = Vector::<WorldSpace>::new(-4.0, 3.0, 0.0);
+		let zero = Vector::<WorldSpace>::zero();
+
+		assert_eq!(first.partial_cmp_magnitude(equal), Some(Ordering::Equal));
+		assert_eq!(zero.partial_cmp_magnitude(Vector::zero()), Some(Ordering::Equal));
+		assert_eq!(zero.partial_cmp_magnitude(first), Some(Ordering::Less));
+		assert_eq!(first.partial_cmp_magnitude(zero), Some(Ordering::Greater));
+	}
+
+	#[test]
+	fn magnitude_comparison_handles_finite_values_that_break_raw_squared_lengths() {
+		let large = Vector::<WorldSpace>::new(f32::MAX, 0.0, 0.0);
+		let smaller_large = Vector::<WorldSpace>::new(f32::MAX / 2.0, 0.0, 0.0);
+		let tiny = Vector::<WorldSpace>::new(f32::from_bits(1), 0.0, 0.0);
+		let larger_tiny = Vector::<WorldSpace>::new(f32::from_bits(2), 0.0, 0.0);
+
+		assert!(large.length_squared().is_infinite());
+		assert!(smaller_large.length_squared().is_infinite());
+		assert_eq!(large.partial_cmp_magnitude(smaller_large), Some(Ordering::Greater));
+
+		assert_eq!(tiny.length_squared(), 0.0);
+		assert_eq!(larger_tiny.length_squared(), 0.0);
+		assert_eq!(tiny.partial_cmp_magnitude(larger_tiny), Some(Ordering::Less));
+	}
+
+	#[test]
+	fn magnitude_comparison_rejects_non_finite_components() {
+		let finite = Vector::<WorldSpace>::new(1.0, 0.0, 0.0);
+
+		assert_eq!(finite.partial_cmp_magnitude(Vector::new(f32::NAN, 0.0, 0.0)), None);
+		assert_eq!(Vector::new(f32::INFINITY, 0.0, 0.0).partial_cmp_magnitude(finite), None);
+		assert_eq!(Vector::new(0.0, f32::NEG_INFINITY, 0.0).partial_cmp_magnitude(finite), None);
 	}
 }

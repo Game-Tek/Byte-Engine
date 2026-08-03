@@ -186,11 +186,13 @@ let spotlight = ConeLight::new(
 ```
 
 Cone angles are half angles measured from the light direction. The renderer automatically uses a
-0.1 m near plane and extends the far plane until peak illumination falls below 0.1 lux. These
-values control only the cone shadow view; they do not limit lighting attenuation. Override either
-endpoint with `with_shadow_near` or `with_shadow_far`, or override both with
-`with_shadow_range`. A cone with an outer half angle of 90° or more remains a valid light but
-cannot use one perspective shadow map.
+0.1 m near plane and a neutral exposure scale of 1. It extends the far plane until peak
+exposure-weighted illumination falls below 0.225 lux, making the automatic range 1.5 times shorter
+than the former 0.1 lux policy. These values control only the cone shadow view; they do not limit
+lighting attenuation. Future camera exposure will replace the neutral scale. Override either
+endpoint with `with_shadow_near` or `with_shadow_far`, or override both with `with_shadow_range`.
+A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
+shadow map.
 
 ## Understand the rendering result
 

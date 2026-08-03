@@ -395,7 +395,9 @@ material_evaluation_suffix: fn () -> void {
 				world_space_vertex_position,
 				view_space_surface_position,
 				world_space_vertex_normal,
-				L
+				L,
+				vec3f(0.0, 0.0, 0.0),
+				vec3f(0.0, 0.0, 0.0)
 			);
 			if (occlusion_factor == 0.0) {
 				continue;
@@ -417,7 +419,9 @@ material_evaluation_suffix: fn () -> void {
 					world_space_vertex_position,
 					view_space_surface_position,
 					world_space_vertex_normal,
-					L
+					L,
+					position_derivative_x,
+					position_derivative_y
 				);
 				if (occlusion_factor == 0.0) {
 					continue;
@@ -472,11 +476,64 @@ material_evaluation_suffix: fn () -> void {
 }
 "#;
 
+// Computes the projected receiver plane so cone PCF compares each texel against the depth at that texel's center.
+// Returning no correction for a degenerate projection keeps the existing bias as a safe fallback.
+const SHADOW_RECEIVER_PLANE_SOURCE: &str = r#"
+shadow_receiver_plane_depth_gradient: fn (
+	shadow_view_projection: mat4f,
+	surface_light_clip_position: vec4f,
+	surface_light_ndc_position: vec3f,
+	world_space_position_derivative_x: vec3f,
+	world_space_position_derivative_y: vec3f
+) -> vec2f {
+	let light_clip_derivative_x: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_x.x,
+		world_space_position_derivative_x.y,
+		world_space_position_derivative_x.z,
+		0.0
+	);
+	let light_clip_derivative_y: vec4f = shadow_view_projection * vec4f(
+		world_space_position_derivative_y.x,
+		world_space_position_derivative_y.y,
+		world_space_position_derivative_y.z,
+		0.0
+	);
+	let light_ndc_derivative_x: vec3f = (
+		vec3f(light_clip_derivative_x.x, light_clip_derivative_x.y, light_clip_derivative_x.z)
+		- surface_light_ndc_position * light_clip_derivative_x.w
+	) / surface_light_clip_position.w;
+	let light_ndc_derivative_y: vec3f = (
+		vec3f(light_clip_derivative_y.x, light_clip_derivative_y.y, light_clip_derivative_y.z)
+		- surface_light_ndc_position * light_clip_derivative_y.w
+	) / surface_light_clip_position.w;
+	let shadow_uv_derivative_x: vec2f = vec2f(
+		light_ndc_derivative_x.x * 0.5,
+		0.0 - light_ndc_derivative_x.y * 0.5
+	);
+	let shadow_uv_derivative_y: vec2f = vec2f(
+		light_ndc_derivative_y.x * 0.5,
+		0.0 - light_ndc_derivative_y.y * 0.5
+	);
+	let shadow_uv_determinant: f32 = shadow_uv_derivative_x.x * shadow_uv_derivative_y.y
+		- shadow_uv_derivative_y.x * shadow_uv_derivative_x.y;
+	if (abs(shadow_uv_determinant) <= 0.0000000001) {
+		return vec2f(0.0, 0.0);
+	}
+	return vec2f(
+		(light_ndc_derivative_x.z * shadow_uv_derivative_y.y
+			- light_ndc_derivative_y.z * shadow_uv_derivative_x.y) / shadow_uv_determinant,
+		(shadow_uv_derivative_x.x * light_ndc_derivative_y.z
+			- shadow_uv_derivative_y.x * light_ndc_derivative_x.z) / shadow_uv_determinant
+	);
+}
+"#;
+
 const SHADOW_TAP_SOURCE: &str = r#"
 sample_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_uv: vec2f,
 	surface_depth: f32,
+	receiver_plane_depth_gradient: vec2f,
 	offset: vec2f,
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
@@ -494,8 +551,14 @@ sample_shadow_tap: fn (
 		u32(clamp(offset_shadow_uv.x * f32(shadow_map_extent.x), 0.0, f32(maximum_texel.x))),
 		u32(clamp(offset_shadow_uv.y * f32(shadow_map_extent.y), 0.0, f32(maximum_texel.y)))
 	);
+	let texel_center_uv: vec2f = (vec2f(f32(shadow_texel.x), f32(shadow_texel.y)) + vec2f(0.5, 0.5))
+		/ vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let tap_surface_depth: f32 = surface_depth + dot(receiver_plane_depth_gradient, texel_center_uv - shadow_uv);
+	if (tap_surface_depth < 0.0 || tap_surface_depth > 1.0) {
+		return 1.0;
+	}
 	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-	if (surface_depth < closest_depth) {
+	if (tap_surface_depth < closest_depth) {
 		return 0.0;
 	}
 	return 1.0;
@@ -507,6 +570,7 @@ sample_rotated_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_uv: vec2f,
 	surface_depth: f32,
+	receiver_plane_depth_gradient: vec2f,
 	poisson_offset: vec2f,
 	rotation: vec2f,
 	texel_size: vec2f,
@@ -521,6 +585,7 @@ sample_rotated_shadow_tap: fn (
 		shadow_map,
 		shadow_uv,
 		surface_depth,
+		receiver_plane_depth_gradient,
 		rotated_offset,
 		shadow_layer,
 		shadow_map_extent
@@ -528,6 +593,7 @@ sample_rotated_shadow_tap: fn (
 }
 "#;
 
+// Cone maps use two positive Depth16Unorm steps as a reverse-Z comparison margin after receiver-plane correction.
 const SHADOW_SOURCE: &str = r#"
 sample_shadow: fn (
 	shadow_map: ArrayTexture2D,
@@ -535,7 +601,9 @@ sample_shadow: fn (
 	world_space_position: vec3f,
 	view_space_position: vec3f,
 	surface_normal: vec3f,
-	surface_to_light_direction: vec3f
+	surface_to_light_direction: vec3f,
+	world_space_position_derivative_x: vec3f,
+	world_space_position_derivative_y: vec3f
 ) -> f32 {
 	if (light.shadow_views[0] == 0) {
 		return 1.0;
@@ -577,12 +645,25 @@ sample_shadow: fn (
 		surface_light_ndc_position.x * 0.5 + 0.5,
 		0.5 - surface_light_ndc_position.y * 0.5
 	);
-	let normal_alignment: f32 = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
-	let cascade_depth_range: f32 = max(shadow_view.far - shadow_view.near, 0.0001);
-	let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
-	let constant_bias: f32 = 0.00002 * bias_scale;
-	let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
-	let surface_depth_bias: f32 = max(slope_scaled_bias + cascade_range_bias, constant_bias);
+	let receiver_plane_depth_gradient: vec2f = vec2f(0.0, 0.0);
+	let surface_depth_bias: f32 = 2.0 / 65535.0;
+	if (light.type == 68) {
+		let normal_alignment: f32 = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
+		let cascade_depth_range: f32 = max(shadow_view.far - shadow_view.near, 0.0001);
+		let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
+		let constant_bias: f32 = 0.00002 * bias_scale;
+		let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
+		surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
+	}
+	if (light.type == 1) {
+		receiver_plane_depth_gradient = shadow_receiver_plane_depth_gradient(
+			shadow_view.view_projection,
+			surface_light_clip_position,
+			surface_light_ndc_position,
+			world_space_position_derivative_x,
+			world_space_position_derivative_y
+		);
+	}
 	let surface_depth: f32 = surface_light_ndc_position.z + surface_depth_bias;
 	if (surface_depth < 0.0 || surface_depth > 1.0) {
 		return 1.0;
@@ -596,14 +677,14 @@ sample_shadow: fn (
 	let rotation_angle: f32 = rotation_noise * 6.2831853;
 	let rotation: vec2f = vec2f(cos(rotation_angle), sin(rotation_angle));
 	let occlusion: f32 = 0.0;
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.613392, 0.617481), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.170019, 0.0 - 0.040254), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.299417, 0.791925), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.645680, 0.493210), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.651784, 0.717887), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.421003, 0.027070), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.817194, 0.0 - 0.271096), rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0 - 0.705374, 0.0 - 0.668203), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.613392, 0.617481), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.170019, 0.0 - 0.040254), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.299417, 0.791925), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.645680, 0.493210), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.651784, 0.717887), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.421003, 0.027070), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.817194, 0.0 - 0.271096), rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.705374, 0.0 - 0.668203), rotation, texel_size, shadow_layer, shadow_map_extent);
 	return occlusion / 8.0;
 }
 "#;
@@ -952,6 +1033,8 @@ impl VisibilityShaderScope {
 			"vec3f",
 		);
 		// Lighting helpers are authored once. Texture operations that differ by API remain typed intrinsics below.
+		let shadow_receiver_plane_depth_gradient =
+			parse_besl_function(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient");
 		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
 		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
 		let sample_shadow = parse_besl_function(SHADOW_SOURCE, "sample_shadow");
@@ -968,6 +1051,7 @@ impl VisibilityShaderScope {
 				meshlet_struct,
 				light_struct,
 				material_struct,
+				shadow_receiver_plane_depth_gradient,
 				sample_shadow_tap,
 				sample_rotated_shadow_tap,
 				sample_shadow,
@@ -1053,6 +1137,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
 	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 	use resource_management::pbr::{
 		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
@@ -1064,6 +1149,8 @@ mod tests {
 	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 	use resource_management::shader::generator::ShaderGenerationSettings;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
+
+	use crate::rendering::shader_vm_test::{buffer, compile, run_at};
 
 	fn parser_expression_contains_raw_code(expression: &besl::parser::Expressions<'_>) -> bool {
 		match expression {
@@ -1237,6 +1324,100 @@ mod tests {
 		);
 	}
 
+	/// Verifies cone PCF evaluates its receiver plane at each fetched shadow texel center.
+	#[test]
+	fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				let identity: mat4f = mat4f(
+					vec4f(1.0, 0.0, 0.0, 0.0),
+					vec4f(0.0, 1.0, 0.0, 0.0),
+					vec4f(0.0, 0.0, 1.0, 0.0),
+					vec4f(0.0, 0.0, 0.0, 1.0)
+				);
+				let surface_light_clip_position: vec4f = vec4f(0.1, 0.0 - 0.2, 0.5, 1.0);
+				let surface_light_ndc_position: vec3f = vec3f(0.1, 0.0 - 0.2, 0.5);
+				let receiver_plane_depth_gradient: vec2f = shadow_receiver_plane_depth_gradient(
+					identity,
+					surface_light_clip_position,
+					surface_light_ndc_position,
+					vec3f(0.2, 0.0, 0.3),
+					vec3f(0.0, 0.0 - 0.4, 0.0 - 0.2)
+				);
+				results.gradient = receiver_plane_depth_gradient;
+				results.corrected_depth = 0.5 + dot(
+					receiver_plane_depth_gradient,
+					vec2f(0.6, 0.8) - vec2f(0.55, 0.6)
+				);
+				results.degenerate = shadow_receiver_plane_depth_gradient(
+					identity,
+					surface_light_clip_position,
+					surface_light_ndc_position,
+					vec3f(0.0, 0.0, 0.0),
+					vec3f(0.0, 0.0, 0.0)
+				);
+			}
+		"#;
+		let mut root = besl::parse(source).expect(
+			"Failed to parse the cone-shadow receiver-plane VM test. The most likely cause is invalid BESL test syntax.",
+		);
+		root.add(vec![
+			super::parse_besl_function(super::SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"ConeShadowReceiverPlaneResults",
+					vec![
+						besl::ParserNode::member("gradient", "vec2f"),
+						besl::ParserNode::member("corrected_depth", "f32"),
+						besl::ParserNode::member("degenerate", "vec2f"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let program = besl::lex(root).expect(
+			"Failed to lex the cone-shadow receiver-plane VM test. The most likely cause is an unresolved portable shadow helper.",
+		);
+		let executable = compile(program);
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		let Value::Vec2F(gradient) = results.read("gradient").expect("Missing receiver-plane gradient.") else {
+			panic!("Unexpected receiver-plane gradient type. The most likely cause is a VM output-layout regression.");
+		};
+		let Value::F32(corrected_depth) = results.read("corrected_depth").expect("Missing corrected receiver depth.") else {
+			panic!("Unexpected corrected receiver-depth type. The most likely cause is a VM output-layout regression.");
+		};
+		let Value::Vec2F(degenerate) = results
+			.read("degenerate")
+			.expect("Missing degenerate receiver-plane gradient.")
+		else {
+			panic!(
+				"Unexpected degenerate receiver-plane gradient type. The most likely cause is a VM output-layout regression."
+			);
+		};
+
+		assert!(
+			(gradient[0] - 3.0).abs() <= 0.00001 && (gradient[1] + 1.0).abs() <= 0.00001,
+			"Unexpected cone receiver-plane gradient: {gradient:?}. The most likely cause is incorrect projected-depth derivative math."
+		);
+		assert!(
+			(corrected_depth - 0.45).abs() <= 0.00001,
+			"Unexpected cone receiver depth at a shadow texel center: {corrected_depth}. The most likely cause is incorrect receiver-plane tap correction."
+		);
+		assert_eq!(
+			degenerate,
+			[0.0, 0.0],
+			"A degenerate shadow projection must retain the base depth bias. The most likely cause is a missing receiver-plane fallback."
+		);
+	}
+
 	/// Verifies material evaluation keeps per-pixel and per-light terms out of the repeated PCF tap path.
 	#[test]
 	fn material_evaluation_hoists_shared_terms_and_uses_direct_ao_reads() {
@@ -1278,9 +1459,12 @@ mod tests {
 		assert!(msl.contains("distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared)"));
 		assert!(msl.contains("View shadow_view = resources.views->views[shadow_view_index];"));
 		assert!(msl.contains(
-			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 offset, uint shadow_layer, uint2 shadow_map_extent)"
+			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 receiver_plane_depth_gradient, float2 offset, uint shadow_layer, uint2 shadow_map_extent)"
 		));
+		assert!(msl.contains("float2 shadow_receiver_plane_depth_gradient("));
 		assert!(msl.contains("float2 offset_shadow_uv"));
+		assert!(msl.contains("float2 texel_center_uv"));
+		assert!(msl.contains("float tap_surface_depth"));
 		assert!(msl.contains("shadow_map.read(shadow_texel, shadow_layer).x"));
 
 		#[cfg(target_os = "macos")]

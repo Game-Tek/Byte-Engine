@@ -776,6 +776,22 @@ mod tests {
 		}
 	}
 
+	/// Compiles the production Material Count shader so subgroup lowering stays valid on Metal.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn production_material_count_stage_compiles_with_metal_subgroups() {
+		let source = MslGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::square(MATERIAL_COUNT_WORKGROUP_WIDTH)),
+				&material_count_program(),
+			)
+			.expect("Failed to lower production Material Count BESL to MSL. The most likely cause is invalid subgroup source.");
+		assert!(source.contains("_besl_subgroup_ballot("));
+		assert!(source.contains("_besl_subgroup_broadcast_u32("));
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "visibility-material-count")
+			.expect("Failed to compile production Material Count MSL. The most likely cause is invalid Metal subgroup lowering.");
+	}
+
 	/// Creates one identity-transformed triangle meshlet in the production visibility buffer layouts.
 	fn mesh_triangle_buffers(
 		program: &ExecutableProgram,
@@ -1433,6 +1449,50 @@ mod tests {
 				"Unexpected count for material {material_index}. The most likely cause is a dropped or duplicated tile-histogram entry."
 			);
 		}
+	}
+
+	/// Verifies subgroup aggregation retains every pixel in a coherent Material Count tile.
+	#[test]
+	fn material_count_subgroup_aggregation_counts_a_coherent_tile_once_per_partition() {
+		let program = crate::rendering::shader_vm_test::compile(material_count_program());
+		let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+		mesh_data
+			.write_indexed_field("meshes", 0, "material_index", Value::U32(7))
+			.expect("Failed to initialize the coherent Material Count mesh. The most likely cause is a drifted Mesh buffer layout.");
+		let mut instance_indices = Texture::new(8, 8)
+			.expect("Failed to create the coherent Material Count fixture. The most likely cause is an invalid test extent.");
+		for lane in 0..MATERIAL_COUNT_WORKGROUP_SIZE {
+			instance_indices
+				.write_u32(
+					[
+						(lane % MATERIAL_COUNT_WORKGROUP_WIDTH as usize) as u32,
+						(lane / MATERIAL_COUNT_WORKGROUP_WIDTH as usize) as u32,
+					],
+					0,
+				)
+				.expect("Failed to initialize a coherent Material Count texel. The most likely cause is an invalid coordinate.");
+		}
+
+		let mut material_counts = buffer(&program, MATERIAL_COUNT_SLOT);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; MATERIAL_COUNT_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % MATERIAL_COUNT_WORKGROUP_WIDTH, lane / MATERIAL_COUNT_WORKGROUP_WIDTH])
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Coherent Material Count execution failed. The most likely cause is broken subgroup aggregation or tile-histogram flushing.",
+			);
+		}
+
+		assert_eq!(read_u32(&material_counts, "material_count", 7), MATERIAL_COUNT_WORKGROUP_SIZE as u32);
 	}
 
 	/// Executes the standard GTAO shader with one deterministic depth fixture.

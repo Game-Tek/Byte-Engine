@@ -281,6 +281,20 @@ impl InnerDevice {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
+		let mut subgroup_properties = vk::PhysicalDeviceSubgroupProperties::default();
+		let mut subgroup_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut subgroup_properties);
+		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut subgroup_device_properties) };
+		let required_subgroup_operations = vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT;
+		if !subgroup_properties.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
+			|| !subgroup_properties.supported_operations.contains(required_subgroup_operations)
+			|| subgroup_properties.subgroup_size == 0
+			|| subgroup_properties.subgroup_size > 128
+		{
+			return Err(
+				"Vulkan compute subgroups with ballot support are unavailable. The most likely cause is that the selected GPU or driver does not support the required Material Count subgroup operations.",
+			);
+		}
+
 		// Build all requested queue family indices
 		let queue_family_indices = queues
 			.iter()

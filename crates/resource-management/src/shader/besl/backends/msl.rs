@@ -190,6 +190,21 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
+	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
+		const SUBGROUP_INTRINSICS: [&str; 6] = [
+			"subgroup_ballot",
+			"subgroup_ballot_any",
+			"subgroup_ballot_find_lsb",
+			"subgroup_ballot_count",
+			"subgroup_ballot_and_not",
+			"subgroup_broadcast_u32",
+		];
+		order
+			.iter()
+			.any(|node| SUBGROUP_INTRINSICS.iter().any(|intrinsic| Self::uses_intrinsic(node, intrinsic)))
+	}
+
 	/// Detects whether a function's reachable AST needs backend resource parameters.
 	fn function_requires_resource_context(&self, function_node: &besl::NodeReference, include_push_constant: bool) -> bool {
 		fn node_requires_resource_context<A: Allocator + Clone>(
@@ -348,6 +363,10 @@ impl<A: Allocator + Clone> Generator<A> {
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
+			return Err(());
+		}
 		Self::validate_reachable_binding_layout(&order)?;
 		self.collect_packed_mat4x3_members(&order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
@@ -365,6 +384,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			shader_compilation_settings,
 			uses_atomic_compare_exchange,
 			uses_sincos,
+			uses_subgroup_intrinsics,
 		);
 
 		match shader_compilation_settings.stage {
@@ -2683,6 +2703,36 @@ impl<A: Allocator + Clone> Generator<A> {
 			"threadgroup_position" => {
 				string.push_str("threadgroup_position");
 			}
+			"subgroup_ballot" => {
+				string.push_str("_besl_subgroup_ballot(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_any" => {
+				string.push_str("_besl_subgroup_ballot_any(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_find_lsb" => {
+				string.push_str("_besl_subgroup_ballot_find_lsb(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_count" => {
+				string.push_str("_besl_subgroup_ballot_count(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_and_not" => {
+				string.push_str("_besl_subgroup_ballot_and_not(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_broadcast_u32" => {
+				string.push_str("_besl_subgroup_broadcast_u32(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"workgroup_barrier" => {
 				string.push_str("threadgroup_barrier(mem_flags::mem_threadgroup)");
 			}
@@ -3082,6 +3132,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		compilation_settings: &ShaderGenerationSettings,
 		uses_atomic_compare_exchange: bool,
 		uses_sincos: bool,
+		uses_subgroup_intrinsics: bool,
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
@@ -3125,6 +3176,17 @@ impl<A: Allocator + Clone> Generator<A> {
 				 \tfloat sine = sincos(value, cosine);\n\
 				 \treturn float2(sine, cosine);\n\
 				 }\n",
+			);
+		}
+		if uses_subgroup_intrinsics {
+			// Metal exposes ballot bits through simd_vote; unused high words preserve BESL's fixed 128-bit mask shape.
+			msl_block.push_str(
+				"inline uint4 _besl_subgroup_ballot(bool predicate) { ulong vote = ulong(simd_vote::vote_t(simd_ballot(predicate))); return uint4(uint(vote), uint(vote >> 32), 0u, 0u); }\n\
+				 inline bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask != uint4(0u, 0u, 0u, 0u)); }\n\
+				 inline uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return ctz(mask.x); } if (mask.y != 0u) { return 32u + ctz(mask.y); } if (mask.z != 0u) { return 64u + ctz(mask.z); } if (mask.w != 0u) { return 96u + ctz(mask.w); } return 0xffffffffu; }\n\
+				 inline uint _besl_subgroup_ballot_count(uint4 mask) { return popcount(mask.x) + popcount(mask.y) + popcount(mask.z) + popcount(mask.w); }\n\
+				 inline uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
+				 inline uint _besl_subgroup_broadcast_u32(uint value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n",
 			);
 		}
 
@@ -3856,6 +3918,46 @@ mod tests {
 	}
 
 	#[test]
+	fn compute_subgroup_intrinsics_lower_to_metal_simdgroup_operations() {
+		let shader = lower_fixture(
+			r#"
+			scratch: workgroup<u32, 1>;
+
+			main: fn () -> void {
+				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+				let leader: u32 = subgroup_ballot_find_lsb(mask);
+				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+				let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
+				if (subgroup_ballot_any(remaining)) {
+					scratch[0] = subgroup_ballot_count(remaining);
+				}
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(32)),
+		);
+
+		assert_string_contains!(shader, "simd_ballot(predicate)");
+		assert_string_contains!(shader, "simd_broadcast(value, ushort(source_lane))");
+		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
+		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
+		assert_string_contains!(shader, "threadgroup uint scratch[1]");
+	}
+
+	#[test]
+	fn subgroup_intrinsics_are_limited_to_compute_stages() {
+		let root = besl::compile_to_besl(
+			"main: fn () -> void { let mask: vec4u = subgroup_ballot(true); mask; }",
+			None,
+		)
+		.expect("Expected subgroup stage fixture source to link");
+		let main = root.get_main().expect("Expected subgroup stage fixture main function");
+		assert!(
+			Generator::new().generate(&ShaderGenerationSettings::vertex(), &main).is_err(),
+			"Subgroup intrinsics must not lower outside compute stages"
+		);
+	}
+
+	#[test]
 	fn task_stage_lowers_workgroup_storage_payload_and_mesh_dispatch() {
 		let shader = lower_fixture(
 			TASK_PAYLOAD_FIXTURE_SOURCE,
@@ -3995,6 +4097,29 @@ mod tests {
 
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-workgroup-fixture")
 			.expect("Expected generated compute workgroup MSL to compile natively");
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn generated_compute_subgroup_stage_compiles_with_metal() {
+		let shader = lower_fixture(
+			r#"
+			scratch: workgroup<u32, 1>;
+
+			main: fn () -> void {
+				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+				let leader: u32 = subgroup_ballot_find_lsb(mask);
+				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+				if (subgroup_ballot_any(mask)) {
+					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0)));
+				}
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(32)),
+		);
+
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-subgroup-fixture")
+			.expect("Expected generated compute subgroup MSL to compile natively");
 	}
 
 	#[test]

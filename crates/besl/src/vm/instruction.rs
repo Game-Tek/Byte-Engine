@@ -102,6 +102,32 @@ pub(super) enum Instruction {
 	ThreadgroupPosition {
 		register: usize,
 	},
+	SubgroupBallot {
+		register: usize,
+		predicate: usize,
+	},
+	SubgroupBallotAny {
+		register: usize,
+		mask: usize,
+	},
+	SubgroupBallotFindLsb {
+		register: usize,
+		mask: usize,
+	},
+	SubgroupBallotCount {
+		register: usize,
+		mask: usize,
+	},
+	SubgroupBallotAndNot {
+		register: usize,
+		mask: usize,
+		removed: usize,
+	},
+	SubgroupBroadcastU32 {
+		register: usize,
+		value: usize,
+		source_lane: usize,
+	},
 	LoadTaskPayload {
 		register: usize,
 		name: String,

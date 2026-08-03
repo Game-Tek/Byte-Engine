@@ -1317,6 +1317,58 @@ impl<'a> Compiler<'a> {
 				self.instructions.push(Instruction::ThreadgroupPosition { register });
 				Ok(register)
 			}
+			"subgroup_ballot" => {
+				require_argument_count(arguments, 1)?;
+				let predicate = self.compile_value_expression(&arguments[0], &ValueType::Bool, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBallot { register, predicate });
+				Ok(register)
+			}
+			"subgroup_ballot_any" => {
+				require_argument_count(arguments, 1)?;
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBallotAny { register, mask });
+				Ok(register)
+			}
+			"subgroup_ballot_find_lsb" => {
+				require_argument_count(arguments, 1)?;
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBallotFindLsb { register, mask });
+				Ok(register)
+			}
+			"subgroup_ballot_count" => {
+				require_argument_count(arguments, 1)?;
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBallotCount { register, mask });
+				Ok(register)
+			}
+			"subgroup_ballot_and_not" => {
+				require_argument_count(arguments, 2)?;
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
+				let removed = self.compile_value_expression(&arguments[1], &ValueType::Vec4U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBallotAndNot {
+					register,
+					mask,
+					removed,
+				});
+				Ok(register)
+			}
+			"subgroup_broadcast_u32" => {
+				require_argument_count(arguments, 2)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBroadcastU32 {
+					register,
+					value,
+					source_lane,
+				});
+				Ok(register)
+			}
 			_ => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported intrinsic `{}`", name),
 			}),

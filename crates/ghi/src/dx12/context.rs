@@ -107,6 +107,7 @@ pub struct Device {
 
 impl Device {
 	const NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE: &str = "DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.";
+	const WAVE_OPS_UNAVAILABLE: &str = "DX12 wave operations are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12 WaveOps support required by Material Count.";
 
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
@@ -118,6 +119,9 @@ impl Device {
 		let device = device.ok_or(
 			"Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.",
 		)?;
+		if !Self::query_wave_ops_support(&device) {
+			return Err(Self::WAVE_OPS_UNAVAILABLE);
+		}
 		let info_queue = if settings.validation {
 			device.cast::<ID3D12InfoQueue>().ok()
 		} else {
@@ -3946,6 +3950,22 @@ impl Device {
 			)
 		};
 		result.is_ok() && options.Native16BitShaderOpsSupported.as_bool()
+	}
+
+	/// Checks the Wave-op guarantee required by portable BESL subgroup lowering.
+	fn query_wave_ops_support(device: &ID3D12Device) -> bool {
+		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+		let result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_D3D12_OPTIONS1,
+				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS1>() as u32,
+			)
+		};
+		result.is_ok()
+			&& options.WaveOps.as_bool()
+			&& options.WaveLaneCountMin > 0
+			&& options.WaveLaneCountMax <= 128
 	}
 
 	/// Reports the cached native 16-bit shader capability for backend policy decisions.
@@ -10534,8 +10554,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
 	D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
 	D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY, D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE,
-	D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5, D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS,
+	D3D12_FEATURE_D3D12_OPTIONS1, D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS1, D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS,
 	D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MAXIMUM_ANISOTROPIC,
 	D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_GLOBAL_ROOT_SIGNATURE,
 	D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE,

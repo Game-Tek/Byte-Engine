@@ -1014,6 +1014,26 @@ pub(super) fn expect_vec2u(value: Value) -> Result<[u32; 2], VmError> {
 	Ok(value)
 }
 
+pub(super) fn expect_vec4u(value: Value) -> Result<[u32; 4], VmError> {
+	let Value::Vec4U(value) = value else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::Vec4U.name().to_string(),
+			found: value.value_type().name().to_string(),
+		});
+	};
+	Ok(value)
+}
+
+pub(super) fn expect_bool(value: Value) -> Result<bool, VmError> {
+	let Value::Bool(value) = value else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::Bool.name().to_string(),
+			found: value.value_type().name().to_string(),
+		});
+	};
+	Ok(value)
+}
+
 pub(super) fn expect_u32(value: Value) -> Result<u32, VmError> {
 	let Value::U32(value) = value else {
 		return Err(VmError::TypeMismatch {

@@ -87,6 +87,27 @@ pub enum VmError {
 		expected_instruction: usize,
 		found_instruction: Option<usize>,
 	},
+	InvalidSubgroupSize {
+		size: u32,
+	},
+	MismatchedSubgroupSize {
+		expected: u32,
+		found: u32,
+	},
+	DivergentSubgroupCollective {
+		lane: usize,
+		expected_instruction: usize,
+		found_instruction: Option<usize>,
+	},
+	DivergentSubgroupBroadcastLane {
+		lane: usize,
+		expected: u32,
+		found: u32,
+	},
+	SubgroupBroadcastLaneOutOfRange {
+		source_lane: u32,
+		subgroup_size: u32,
+	},
 	MissingSpecialization {
 		name: String,
 	},
@@ -288,6 +309,39 @@ impl std::fmt::Display for VmError {
 					"Divergent workgroup barrier in lane {lane}: expected instruction {expected_instruction} but the lane completed. The most likely cause is that task control flow skipped a barrier reached by peer invocations."
 				),
 			},
+			VmError::InvalidSubgroupSize { size } => write!(
+				f,
+				"Invalid subgroup size {size}. The most likely cause is that the VM configuration requested zero or more than 128 subgroup lanes."
+			),
+			VmError::MismatchedSubgroupSize { expected, found } => write!(
+				f,
+				"Mismatched subgroup size {found}; expected {expected}. The most likely cause is that workgroup invocations were configured with different subgroup widths."
+			),
+			VmError::DivergentSubgroupCollective {
+				lane,
+				expected_instruction,
+				found_instruction,
+			} => match found_instruction {
+				Some(found_instruction) => write!(
+					f,
+					"Divergent subgroup collective in lane {lane}: expected instruction {expected_instruction} but found {found_instruction}. The most likely cause is that subgroup lanes reached different collective operations in the same synchronization phase."
+				),
+				None => write!(
+					f,
+					"Divergent subgroup collective in lane {lane}: expected instruction {expected_instruction} but the lane completed. The most likely cause is that subgroup control flow skipped a collective reached by peer lanes."
+				),
+			},
+			VmError::DivergentSubgroupBroadcastLane { lane, expected, found } => write!(
+				f,
+				"Divergent subgroup broadcast lane in lane {lane}: expected source {expected} but found {found}. The most likely cause is that subgroup lanes selected different broadcast sources."
+			),
+			VmError::SubgroupBroadcastLaneOutOfRange {
+				source_lane,
+				subgroup_size,
+			} => write!(
+				f,
+				"Subgroup broadcast source lane {source_lane} is outside subgroup size {subgroup_size}. The most likely cause is that the shader selected a lane that is not active in this subgroup."
+			),
 			VmError::MissingSpecialization { name } => write!(
 				f,
 				"Missing specialization `{}`. The most likely cause is that the host did not provide a value for a specialization used by the BESL program.",

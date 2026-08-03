@@ -2165,6 +2165,88 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 }
 
 #[test]
+fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			values: u32[64],
+		}
+		result: descriptor<Result, 43, read_write>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			let active: vec4u = subgroup_ballot((lane & 3) != 0);
+			let leader: u32 = subgroup_ballot_find_lsb(active);
+			let leader_lane: u32 = subgroup_broadcast_u32(lane, leader);
+			let removed: vec4u = subgroup_ballot((lane & 7) == 1);
+			let remaining: vec4u = subgroup_ballot_and_not(active, removed);
+
+			if (subgroup_ballot_any(remaining)) {
+				result.values[lane] = leader_lane + subgroup_ballot_count(remaining);
+			}
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(43));
+	let configs = (0..64)
+		.map(|lane| ExecutionConfig::new(512).with_thread_idx(lane).with_subgroup_size(32))
+		.collect::<Vec<_>>();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(43), &mut result);
+		executable
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("Subgroup mask execution failed. The most likely cause is broken per-subgroup collective scheduling.");
+	}
+
+	for lane in 0..32 {
+		assert_eq!(
+			result.read_indexed("values", lane).expect("Expected first subgroup result"),
+			Value::U32(21)
+		);
+	}
+	for lane in 32..64 {
+		assert_eq!(
+			result.read_indexed("values", lane).expect("Expected second subgroup result"),
+			Value::U32(53)
+		);
+	}
+}
+
+#[test]
+fn compute_subgroup_collectives_reject_divergent_lanes() {
+	let executable = compile_test_program(
+		r#"
+		main: fn () -> void {
+			if (thread_idx() == 0) {
+				let mask: vec4u = subgroup_ballot(true);
+				mask;
+			}
+		}
+		"#,
+		None,
+	);
+	let configs = [
+		ExecutionConfig::new(32).with_thread_idx(0).with_subgroup_size(32),
+		ExecutionConfig::new(32).with_thread_idx(1).with_subgroup_size(32),
+	];
+	let mut descriptors = DescriptorBindings::new();
+	let error = executable
+		.run_workgroup(&mut descriptors, &configs)
+		.expect_err("Divergent subgroup collective was accepted. The most likely cause is missing subgroup rendezvous validation.");
+
+	assert!(matches!(
+		error,
+		VmError::DivergentSubgroupCollective {
+			lane: 1,
+			found_instruction: None,
+			..
+		}
+	));
+}
+
+#[test]
 fn task_workgroup_reuse_clears_shared_storage() {
 	let executable = compile_test_program(
 		r#"

@@ -33,6 +33,80 @@ impl Generator {
 		self.minified = minified;
 		self
 	}
+
+	/// Reports whether one reachable AST branch uses the requested intrinsic.
+	fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Function { statements, .. } => statements
+				.iter()
+				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
+			besl::Nodes::Conditional { condition, statements } => {
+				Self::uses_intrinsic(condition, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
+			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				Self::uses_intrinsic(initializer, intrinsic_name)
+					|| Self::uses_intrinsic(condition, intrinsic_name)
+					|| Self::uses_intrinsic(update, intrinsic_name)
+					|| statements
+						.iter()
+						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
+			}
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::IntrinsicCall {
+					intrinsic, arguments, ..
+				} => {
+					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+						|| arguments
+							.iter()
+							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
+				}
+				besl::Expressions::Operator { left, right, .. } => {
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
+				}
+				besl::Expressions::FunctionCall { parameters, .. } => parameters
+					.iter()
+					.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name)),
+				besl::Expressions::Expression { elements } => {
+					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
+				}
+				besl::Expressions::Macro { body, .. } => Self::uses_intrinsic(body, intrinsic_name),
+				besl::Expressions::Member { source, .. } => Self::uses_intrinsic(source, intrinsic_name),
+				besl::Expressions::Return { value } => value
+					.as_ref()
+					.is_some_and(|value| Self::uses_intrinsic(value, intrinsic_name)),
+				besl::Expressions::Accessor { left, right } => {
+					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
+				}
+				besl::Expressions::VariableDeclaration { .. }
+				| besl::Expressions::Literal { .. }
+				| besl::Expressions::Continue => false,
+			},
+			_ => false,
+		}
+	}
+
+	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
+	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
+		const SUBGROUP_INTRINSICS: [&str; 6] = [
+			"subgroup_ballot",
+			"subgroup_ballot_any",
+			"subgroup_ballot_find_lsb",
+			"subgroup_ballot_count",
+			"subgroup_ballot_and_not",
+			"subgroup_broadcast_u32",
+		];
+		order
+			.iter()
+			.any(|node| SUBGROUP_INTRINSICS.iter().any(|intrinsic| Self::uses_intrinsic(node, intrinsic)))
+	}
 }
 
 impl Generator {
@@ -63,8 +137,12 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
+			return Err(());
+		}
 
-		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
+		self.generate_glsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics);
 
 		for node in order {
 			self.emit_node_string(&mut string, &node);
@@ -289,6 +367,38 @@ impl Generator {
 			}
 			"threadgroup_position" => {
 				string.push_str("uint(gl_WorkGroupID.x)");
+			}
+			"subgroup_ballot" => {
+				string.push_str("subgroupBallot(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_any" => {
+				string.push_str("any(notEqual(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", uvec4(0u)))");
+			}
+			"subgroup_ballot_find_lsb" => {
+				string.push_str("subgroupBallotFindLSB(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_count" => {
+				string.push_str("subgroupBallotBitCount(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_and_not" => {
+				string.push('(');
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(" & ~");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
+			"subgroup_broadcast_u32" => {
+				string.push_str("subgroupBroadcast(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
 			}
 			"workgroup_barrier" => {
 				string.push_str("barrier()");
@@ -718,7 +828,12 @@ impl Generator {
 		}
 	}
 
-	fn generate_glsl_header_block(&self, glsl_block: &mut String, compilation_settings: &ShaderGenerationSettings) {
+	fn generate_glsl_header_block(
+		&self,
+		glsl_block: &mut String,
+		compilation_settings: &ShaderGenerationSettings,
+		uses_subgroup_intrinsics: bool,
+	) {
 		let glsl_version = &compilation_settings.glsl.version;
 
 		glsl_block.push_str(&format!("#version {glsl_version} core\n"));
@@ -746,11 +861,9 @@ impl Generator {
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
 
 		match compilation_settings.stage {
-			Stages::Compute { .. } => {
-				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:enable\n");
-				glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic:enable\n");
-				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:enable\n");
-				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:enable\n");
+			Stages::Compute { .. } if uses_subgroup_intrinsics => {
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:require\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:require\n");
 			}
 			Stages::Mesh {
 				maximum_vertices,
@@ -862,6 +975,38 @@ mod tests {
 
 		// Assert that main is the last element in the shader string, which means that the bindings are before it.
 		shader.ends_with("void main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn compute_subgroup_intrinsics_require_and_lower_to_glsl_subgroup_operations() {
+		let root = besl::compile_to_besl(
+			r#"
+			main: fn () -> void {
+				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+				let leader: u32 = subgroup_ballot_find_lsb(mask);
+				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+				let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
+				if (subgroup_ballot_any(remaining)) {
+					let count: u32 = subgroup_ballot_count(remaining);
+					count;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected subgroup fixture source to link");
+		let main = root.get_main().expect("Expected subgroup fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(32)), &main)
+			.expect("Expected subgroup fixture to lower to GLSL");
+
+		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_basic:require");
+		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_ballot:require");
+		assert_string_contains!(shader, "subgroupBallot(uint(gl_LocalInvocationIndex)<4)");
+		assert_string_contains!(shader, "subgroupBroadcast(uint(gl_LocalInvocationIndex),leader)");
+		assert_string_contains!(shader, "subgroupBallotFindLSB(mask)");
+		assert_string_contains!(shader, "subgroupBallotBitCount(remaining)");
 	}
 
 	#[test]

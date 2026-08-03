@@ -1152,6 +1152,7 @@ pub struct ExecutionConfig {
 	thread_idx: u32,
 	thread_position: u32,
 	threadgroup_position: u32,
+	subgroup_size: u32,
 }
 
 impl Default for ExecutionConfig {
@@ -1166,6 +1167,7 @@ impl Default for ExecutionConfig {
 			thread_idx: 0,
 			thread_position: 0,
 			threadgroup_position: 0,
+			subgroup_size: 32,
 		}
 	}
 }
@@ -1224,6 +1226,11 @@ impl ExecutionConfig {
 		self.threadgroup_position
 	}
 
+	/// Returns the number of active lanes that participate in this invocation's subgroup collectives.
+	pub const fn subgroup_size(&self) -> u32 {
+		self.subgroup_size
+	}
+
 	/// Selects an explicit nested function-call limit for this invocation.
 	pub fn with_call_depth_limit(mut self, limit: usize) -> Self {
 		self.call_depth_limit = limit;
@@ -1269,6 +1276,12 @@ impl ExecutionConfig {
 	/// Selects the mesh workgroup position visible to the shader.
 	pub fn with_threadgroup_position(mut self, position: u32) -> Self {
 		self.threadgroup_position = position;
+		self
+	}
+
+	/// Selects the subgroup width used by VM collective execution.
+	pub fn with_subgroup_size(mut self, subgroup_size: u32) -> Self {
+		self.subgroup_size = subgroup_size;
 		self
 	}
 }

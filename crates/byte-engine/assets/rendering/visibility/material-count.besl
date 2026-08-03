@@ -31,7 +31,6 @@ INVALID_MATERIAL_INDEX: const u32 = 4294967295;
 main: fn () -> void {
 	let coord: vec2u = thread_id();
 	let extent: vec2u = image_size(instance_index_render_target);
-	let lane: u32 = thread_idx();
 	let material_index: u32 = INVALID_MATERIAL_INDEX;
 
 	if (coord.x < extent.x) {
@@ -44,44 +43,70 @@ main: fn () -> void {
 		}
 	}
 
-	if (lane < MATERIAL_COUNT_TILE_CAPACITY) {
-		atomic_store(tile_histogram_keys[lane], INVALID_MATERIAL_INDEX);
-		atomic_store(tile_histogram_counts[lane], 0);
+	if (thread_idx() < MATERIAL_COUNT_TILE_CAPACITY) {
+		atomic_store(tile_histogram_keys[thread_idx()], INVALID_MATERIAL_INDEX);
+		atomic_store(tile_histogram_counts[thread_idx()], 0);
 	}
 	workgroup_barrier();
 
-	// Every lane claims or increments one bounded tile slot. A full table falls back without losing pixels.
-	if (material_index < 1024) {
-		let inserted: bool = false;
+	// A subgroup elects one leader per material, so matching pixels update the tile histogram together.
+	let remaining: vec4u = subgroup_ballot(material_index < 1024);
+	for (
+		let has_remaining: bool = subgroup_ballot_any(remaining);
+		has_remaining;
+		has_remaining = subgroup_ballot_any(remaining)
+	) {
+		let leader_lane: u32 = subgroup_ballot_find_lsb(remaining);
+		let leader_thread_index: u32 = subgroup_broadcast_u32(thread_idx(), leader_lane);
+		let leader_material_index: u32 = subgroup_broadcast_u32(material_index, leader_lane);
+		let matching: vec4u = subgroup_ballot(material_index == leader_material_index);
+		let matching_count: u32 = subgroup_ballot_count(matching);
 
-		for (let probe: u32 = 0; probe < MATERIAL_COUNT_TILE_CAPACITY; probe = probe + 1) {
-			if (inserted == false) {
-				let slot: u32 = (material_index + probe) % MATERIAL_COUNT_TILE_CAPACITY;
-				let previous_key: u32 = atomic_compare_exchange(
-					tile_histogram_keys[slot],
-					INVALID_MATERIAL_INDEX,
-					material_index
-				);
+		if (thread_idx() == leader_thread_index) {
+			let claimed_slot: u32 = INVALID_MATERIAL_INDEX;
+			for (
+				let probe: u32 = 0;
+				probe < MATERIAL_COUNT_TILE_CAPACITY && claimed_slot == INVALID_MATERIAL_INDEX;
+				probe = probe + 1
+			) {
+				let slot: u32 = (leader_material_index + probe) & 31;
+				let key: u32 = atomic_load(tile_histogram_keys[slot]);
 
-				if (previous_key == INVALID_MATERIAL_INDEX || previous_key == material_index) {
-					atomic_add(tile_histogram_counts[slot], 1);
-					inserted = true;
+				// Most later leaders hit an established key and avoid a contended compare-exchange.
+				if (key == leader_material_index) {
+					atomic_add(tile_histogram_counts[slot], matching_count);
+					claimed_slot = slot;
 				}
+				if (key == INVALID_MATERIAL_INDEX) {
+					let previous_key: u32 = atomic_compare_exchange(
+						tile_histogram_keys[slot],
+						INVALID_MATERIAL_INDEX,
+						leader_material_index
+					);
+
+					if (previous_key == INVALID_MATERIAL_INDEX || previous_key == leader_material_index) {
+						atomic_add(tile_histogram_counts[slot], matching_count);
+						claimed_slot = slot;
+					}
+				}
+			}
+
+			if (claimed_slot == INVALID_MATERIAL_INDEX) {
+				// A full tile hash falls back once per subgroup material partition, not once per pixel.
+				atomic_add(material_count_buffer.material_count[leader_material_index], matching_count);
 			}
 		}
 
-		if (inserted == false) {
-			atomic_add(material_count_buffer.material_count[material_index], 1);
-		}
+		remaining = subgroup_ballot_and_not(remaining, matching);
 	}
 	workgroup_barrier();
 
 	// Distinct occupied slots flush independently after the tile histogram is complete.
-	if (lane < MATERIAL_COUNT_TILE_CAPACITY) {
-		let key: u32 = atomic_load(tile_histogram_keys[lane]);
+	if (thread_idx() < MATERIAL_COUNT_TILE_CAPACITY) {
+		let key: u32 = atomic_load(tile_histogram_keys[thread_idx()]);
 
 		if (key < 1024) {
-			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[lane]));
+			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[thread_idx()]));
 		}
 	}
 }

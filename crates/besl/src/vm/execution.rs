@@ -3,14 +3,15 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-enum BarrierBehavior {
+enum CollectiveBehavior {
 	Ignore,
 	Suspend,
 	Reject,
 }
 
 enum FrameOutcome {
-	Barrier(usize),
+	WorkgroupBarrier(usize),
+	SubgroupCollective(usize),
 	Complete(Option<Value>),
 }
 
@@ -26,6 +27,30 @@ struct ExecutionFrame {
 struct WorkgroupLane<'a> {
 	frame: ExecutionFrame,
 	state: ExecutionState<'a>,
+	status: WorkgroupLaneStatus,
+}
+
+/// The `WorkgroupLaneStatus` enum records where a VM invocation stopped between scheduler rounds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkgroupLaneStatus {
+	Running,
+	WorkgroupBarrier(usize),
+	SubgroupCollective(usize),
+	Complete,
+}
+
+/// Groups configured VM lanes by their workgroup-local subgroup index.
+fn subgroup_lane_groups(configs: &[ExecutionConfig], subgroup_size: u32) -> Vec<Vec<usize>> {
+	let mut groups: Vec<(u32, Vec<usize>)> = Vec::new();
+	for (lane_index, config) in configs.iter().enumerate() {
+		let subgroup_index = config.thread_idx() / subgroup_size;
+		if let Some((_, lanes)) = groups.iter_mut().find(|(index, _)| *index == subgroup_index) {
+			lanes.push(lane_index);
+		} else {
+			groups.push((subgroup_index, vec![lane_index]));
+		}
+	}
+	groups.into_iter().map(|(_, lanes)| lanes).collect()
 }
 
 impl ExecutableProgram {
@@ -36,8 +61,8 @@ impl ExecutableProgram {
 
 	/// Executes `main` with explicit execution limits and shader invocation coordinates.
 	///
-	/// Each call represents one invocation. Workgroup barriers preserve local
-	/// instruction order but do not schedule or wait for peer invocations.
+	/// Each call represents one invocation. Workgroup and subgroup collectives
+	/// preserve local instruction order but do not schedule or wait for peers.
 	pub fn run_main_with_config(
 		&self,
 		descriptors: &mut DescriptorBindings<'_>,
@@ -46,11 +71,11 @@ impl ExecutableProgram {
 		let mut state = ExecutionState::new(config);
 		state.enter_call()?;
 		let mut frame = self.create_frame(self.main_function, &[])?;
-		let outcome = self.execute_frame(&mut frame, descriptors, &mut state, BarrierBehavior::Ignore);
+		let outcome = self.execute_frame(&mut frame, descriptors, &mut state, CollectiveBehavior::Ignore);
 		state.leave_call();
 		let FrameOutcome::Complete(return_value) = outcome? else {
 			unreachable!(
-				"Unexpected suspended main frame. The most likely cause is that ignored workgroup barriers returned a scheduler-visible outcome."
+				"Unexpected suspended main frame. The most likely cause is that ignored shader collectives returned a scheduler-visible outcome."
 			)
 		};
 		if return_value.is_some() {
@@ -61,18 +86,30 @@ impl ExecutableProgram {
 		Ok(())
 	}
 
-	/// Executes every invocation in one task or compute workgroup with synchronized barriers and shared bound state.
+	/// Executes every invocation in one task or compute workgroup with synchronized collectives and shared bound state.
 	///
-	/// Configurations run in slice order between barriers. This ordering makes
+	/// Configurations run in slice order between collectives. This ordering makes
 	/// atomic compaction deterministic for VM assertions. The scheduler rejects
-	/// barriers in nested helper functions because only the `main` frame participates
+	/// collectives in nested helper functions because only the `main` frame participates
 	/// in the rendezvous. Bind shared storage with
 	/// [`DescriptorBindings::bind_workgroup_state`] before calling this method.
 	pub fn run_workgroup(&self, descriptors: &mut DescriptorBindings<'_>, configs: &[ExecutionConfig]) -> Result<(), VmError> {
-		descriptors.begin_workgroup();
 		if configs.is_empty() {
 			return Ok(());
 		}
+		let subgroup_size = configs[0].subgroup_size();
+		if subgroup_size == 0 || subgroup_size > 128 {
+			return Err(VmError::InvalidSubgroupSize { size: subgroup_size });
+		}
+		if let Some(config) = configs.iter().find(|config| config.subgroup_size() != subgroup_size) {
+			return Err(VmError::MismatchedSubgroupSize {
+				expected: subgroup_size,
+				found: config.subgroup_size(),
+			});
+		}
+		let subgroups = subgroup_lane_groups(configs, subgroup_size);
+
+		descriptors.begin_workgroup();
 		let mut lanes = configs
 			.iter()
 			.map(|config| {
@@ -81,30 +118,22 @@ impl ExecutableProgram {
 				Ok(WorkgroupLane {
 					frame: self.create_frame(self.main_function, &[])?,
 					state,
+					status: WorkgroupLaneStatus::Running,
 				})
 			})
 			.collect::<Result<Vec<_>, VmError>>()?;
 
 		loop {
-			let mut expected_barrier = None;
-			let mut barrier_count = 0;
-			let mut completion_count = 0;
-			let mut first_completed_lane = None;
-			for (lane_index, lane) in lanes.iter_mut().enumerate() {
-				match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, BarrierBehavior::Suspend)? {
-					FrameOutcome::Barrier(instruction_index) => {
-						if let Some(expected) = expected_barrier {
-							if expected != instruction_index {
-								return Err(VmError::DivergentWorkgroupBarrier {
-									lane: lane_index,
-									expected_instruction: expected,
-									found_instruction: Some(instruction_index),
-								});
-							}
-						} else {
-							expected_barrier = Some(instruction_index);
-						}
-						barrier_count += 1;
+			for lane in &mut lanes {
+				if lane.status != WorkgroupLaneStatus::Running {
+					continue;
+				}
+				match self.execute_frame(&mut lane.frame, descriptors, &mut lane.state, CollectiveBehavior::Suspend)? {
+					FrameOutcome::WorkgroupBarrier(instruction_index) => {
+						lane.status = WorkgroupLaneStatus::WorkgroupBarrier(instruction_index);
+					}
+					FrameOutcome::SubgroupCollective(instruction_index) => {
+						lane.status = WorkgroupLaneStatus::SubgroupCollective(instruction_index);
 					}
 					FrameOutcome::Complete(return_value) => {
 						lane.state.leave_call();
@@ -113,47 +142,214 @@ impl ExecutableProgram {
 								message: "Main functions must not return a value".to_string(),
 							});
 						}
-						first_completed_lane.get_or_insert(lane_index);
-						completion_count += 1;
+						lane.status = WorkgroupLaneStatus::Complete;
 					}
 				}
 			}
 
-			if barrier_count == lanes.len() {
+			if self.resume_ready_subgroups(&mut lanes, &subgroups, subgroup_size)? {
 				continue;
 			}
-			if completion_count == lanes.len() {
+			if self.resume_workgroup_barrier(&mut lanes)? {
+				continue;
+			}
+			if lanes.iter().all(|lane| lane.status == WorkgroupLaneStatus::Complete) {
 				return Ok(());
 			}
-			let (Some(divergent_lane), Some(expected_instruction)) = (first_completed_lane, expected_barrier) else {
-				unreachable!(
-					"Invalid workgroup phase accounting. The most likely cause is that a lane outcome was not counted as either a barrier or completion."
-				)
-			};
-			return Err(VmError::DivergentWorkgroupBarrier {
-				lane: divergent_lane,
-				expected_instruction,
-				found_instruction: None,
+
+			return Err(VmError::UnsupportedStatement {
+				message: "Workgroup execution stalled without a resolvable collective".to_string(),
 			});
 		}
 	}
 
-	/// Executes one nested function while sharing invocation limits and selecting how its barriers participate.
+	/// Resumes every subgroup whose active lanes reached the same collective instruction.
+	fn resume_ready_subgroups(
+		&self,
+		lanes: &mut [WorkgroupLane<'_>],
+		subgroups: &[Vec<usize>],
+		subgroup_size: u32,
+	) -> Result<bool, VmError> {
+		let mut resumed = false;
+		for subgroup in subgroups {
+			let Some((first_lane, expected_instruction)) = subgroup.iter().find_map(|lane_index| match lanes[*lane_index].status {
+				WorkgroupLaneStatus::SubgroupCollective(instruction_index) => Some((*lane_index, instruction_index)),
+				_ => None,
+			}) else {
+				continue;
+			};
+
+			for lane_index in subgroup {
+				match lanes[*lane_index].status {
+					WorkgroupLaneStatus::SubgroupCollective(found_instruction) if found_instruction == expected_instruction => {}
+					WorkgroupLaneStatus::SubgroupCollective(found_instruction) => {
+						return Err(VmError::DivergentSubgroupCollective {
+							lane: *lane_index,
+							expected_instruction,
+							found_instruction: Some(found_instruction),
+						});
+					}
+					WorkgroupLaneStatus::Complete | WorkgroupLaneStatus::Running | WorkgroupLaneStatus::WorkgroupBarrier(_) => {
+						return Err(VmError::DivergentSubgroupCollective {
+							lane: *lane_index,
+							expected_instruction,
+							found_instruction: None,
+						});
+					}
+				}
+			}
+
+			self.resume_subgroup_collective(lanes, subgroup, first_lane, expected_instruction, subgroup_size)?;
+			resumed = true;
+		}
+		Ok(resumed)
+	}
+
+	/// Resolves one collective after every active lane in its subgroup reached it.
+	fn resume_subgroup_collective(
+		&self,
+		lanes: &mut [WorkgroupLane<'_>],
+		subgroup: &[usize],
+		first_lane: usize,
+		instruction_index: usize,
+		subgroup_size: u32,
+	) -> Result<(), VmError> {
+		let function_index = lanes[first_lane].frame.function_index;
+		let instruction = self
+			.functions
+			.get(function_index)
+			.and_then(|function| function.instructions.get(instruction_index))
+			.cloned()
+			.ok_or_else(|| VmError::UnsupportedExpression {
+				message: format!("Unknown subgroup collective instruction {instruction_index}"),
+			})?;
+
+		for lane_index in subgroup {
+			if lanes[*lane_index].frame.function_index != function_index
+				|| lanes[*lane_index].frame.instruction_index != instruction_index
+			{
+				return Err(VmError::DivergentSubgroupCollective {
+					lane: *lane_index,
+					expected_instruction: instruction_index,
+					found_instruction: Some(lanes[*lane_index].frame.instruction_index),
+				});
+			}
+		}
+
+		match instruction {
+			Instruction::SubgroupBallot { register, predicate } => {
+				let mut mask = [0; 4];
+				for lane_index in subgroup {
+					let predicate = expect_bool(read_register(&lanes[*lane_index].frame.registers, predicate)?)?;
+					if predicate {
+						let local_lane = lanes[*lane_index].state.config.thread_idx() % subgroup_size;
+						mask[(local_lane / 32) as usize] |= 1 << (local_lane % 32);
+					}
+				}
+				for lane_index in subgroup {
+					lanes[*lane_index].frame.registers[register] = Some(Value::Vec4U(mask));
+				}
+			}
+			Instruction::SubgroupBroadcastU32 {
+				register,
+				value,
+				source_lane,
+			} => {
+				let expected_source_lane = expect_u32(read_register(&lanes[first_lane].frame.registers, source_lane)?)?;
+				for lane_index in subgroup {
+					let found_source_lane = expect_u32(read_register(&lanes[*lane_index].frame.registers, source_lane)?)?;
+					if found_source_lane != expected_source_lane {
+						return Err(VmError::DivergentSubgroupBroadcastLane {
+							lane: *lane_index,
+							expected: expected_source_lane,
+							found: found_source_lane,
+						});
+					}
+				}
+				if expected_source_lane >= subgroup_size {
+					return Err(VmError::SubgroupBroadcastLaneOutOfRange {
+						source_lane: expected_source_lane,
+						subgroup_size,
+					});
+				}
+				let source = subgroup
+					.iter()
+					.copied()
+					.find(|lane_index| lanes[*lane_index].state.config.thread_idx() % subgroup_size == expected_source_lane)
+					.ok_or(VmError::SubgroupBroadcastLaneOutOfRange {
+						source_lane: expected_source_lane,
+						subgroup_size,
+					})?;
+				let value = expect_u32(read_register(&lanes[source].frame.registers, value)?)?;
+				for lane_index in subgroup {
+					lanes[*lane_index].frame.registers[register] = Some(Value::U32(value));
+				}
+			}
+			_ => {
+				return Err(VmError::UnsupportedStatement {
+					message: "Expected a subgroup collective instruction".to_string(),
+				});
+			}
+		}
+
+		for lane_index in subgroup {
+			lanes[*lane_index].frame.instruction_index += 1;
+			lanes[*lane_index].status = WorkgroupLaneStatus::Running;
+		}
+		Ok(())
+	}
+
+	/// Resumes a workgroup only when every invocation reached the same barrier.
+	fn resume_workgroup_barrier(&self, lanes: &mut [WorkgroupLane<'_>]) -> Result<bool, VmError> {
+		let Some(expected_instruction) = lanes.iter().find_map(|lane| match lane.status {
+			WorkgroupLaneStatus::WorkgroupBarrier(instruction_index) => Some(instruction_index),
+			_ => None,
+		}) else {
+			return Ok(false);
+		};
+
+		for (lane_index, lane) in lanes.iter().enumerate() {
+			match lane.status {
+				WorkgroupLaneStatus::WorkgroupBarrier(found_instruction) if found_instruction == expected_instruction => {}
+				WorkgroupLaneStatus::WorkgroupBarrier(found_instruction) => {
+					return Err(VmError::DivergentWorkgroupBarrier {
+						lane: lane_index,
+						expected_instruction,
+						found_instruction: Some(found_instruction),
+					});
+				}
+				WorkgroupLaneStatus::Complete | WorkgroupLaneStatus::Running | WorkgroupLaneStatus::SubgroupCollective(_) => {
+					return Err(VmError::DivergentWorkgroupBarrier {
+						lane: lane_index,
+						expected_instruction,
+						found_instruction: None,
+					});
+				}
+			}
+		}
+
+		for lane in lanes {
+			lane.status = WorkgroupLaneStatus::Running;
+		}
+		Ok(true)
+	}
+
+	/// Executes one nested function while sharing invocation limits and selecting how its collectives participate.
 	fn execute_function(
 		&self,
 		function_index: usize,
 		arguments: &[Value],
 		descriptors: &mut DescriptorBindings<'_>,
 		state: &mut ExecutionState<'_>,
-		barrier_behavior: BarrierBehavior,
+		collective_behavior: CollectiveBehavior,
 	) -> Result<Option<Value>, VmError> {
 		state.enter_call()?;
 		let result = (|| {
 			let mut frame = self.create_frame(function_index, arguments)?;
-			match self.execute_frame(&mut frame, descriptors, state, barrier_behavior)? {
+			match self.execute_frame(&mut frame, descriptors, state, collective_behavior)? {
 				FrameOutcome::Complete(value) => Ok(value),
-				FrameOutcome::Barrier(_) => unreachable!(
-					"Unexpected nested barrier suspension. The most likely cause is that nested execution stopped rejecting workgroup barriers."
+				FrameOutcome::WorkgroupBarrier(_) | FrameOutcome::SubgroupCollective(_) => unreachable!(
+					"Unexpected nested collective suspension. The most likely cause is that nested execution stopped rejecting shader collectives."
 				),
 			}
 		})();
@@ -187,13 +383,13 @@ impl ExecutableProgram {
 		})
 	}
 
-	/// Runs one function frame until it returns or reaches a scheduler-visible workgroup barrier.
+	/// Runs one function frame until it returns or reaches a scheduler-visible collective.
 	fn execute_frame(
 		&self,
 		frame: &mut ExecutionFrame,
 		descriptors: &mut DescriptorBindings<'_>,
 		state: &mut ExecutionState<'_>,
-		barrier_behavior: BarrierBehavior,
+		collective_behavior: CollectiveBehavior,
 	) -> Result<FrameOutcome, VmError> {
 		let function = self
 			.functions
@@ -355,6 +551,63 @@ impl ExecutableProgram {
 				Instruction::ThreadgroupPosition { register } => {
 					registers[*register] = Some(Value::U32(state.config.threadgroup_position()));
 				}
+				Instruction::SubgroupBallot { register, predicate } => match collective_behavior {
+					CollectiveBehavior::Ignore => {
+						let predicate = expect_bool(read_register(registers, *predicate)?)?;
+						registers[*register] = Some(Value::Vec4U([predicate as u32, 0, 0, 0]));
+					}
+					CollectiveBehavior::Suspend => {
+						return Ok(FrameOutcome::SubgroupCollective(frame.instruction_index));
+					}
+					CollectiveBehavior::Reject => {
+						return Err(VmError::UnsupportedStatement {
+							message: "Subgroup collectives inside called functions cannot participate in workgroup rendezvous"
+								.to_string(),
+						});
+					}
+				},
+				Instruction::SubgroupBallotAny { register, mask } => {
+					let mask = expect_vec4u(read_register(registers, *mask)?)?;
+					registers[*register] = Some(Value::Bool(mask.into_iter().any(|word| word != 0)));
+				}
+				Instruction::SubgroupBallotFindLsb { register, mask } => {
+					let mask = expect_vec4u(read_register(registers, *mask)?)?;
+					let first_lane = mask
+						.into_iter()
+						.enumerate()
+						.find_map(|(word_index, word)| (word != 0).then(|| word_index as u32 * 32 + word.trailing_zeros()))
+						.unwrap_or(u32::MAX);
+					registers[*register] = Some(Value::U32(first_lane));
+				}
+				Instruction::SubgroupBallotCount { register, mask } => {
+					let mask = expect_vec4u(read_register(registers, *mask)?)?;
+					registers[*register] = Some(Value::U32(mask.into_iter().map(u32::count_ones).sum()));
+				}
+				Instruction::SubgroupBallotAndNot {
+					register,
+					mask,
+					removed,
+				} => {
+					let mask = expect_vec4u(read_register(registers, *mask)?)?;
+					let removed = expect_vec4u(read_register(registers, *removed)?)?;
+					registers[*register] = Some(Value::Vec4U(std::array::from_fn(|index| mask[index] & !removed[index])));
+				}
+				Instruction::SubgroupBroadcastU32 { .. } => match collective_behavior {
+					CollectiveBehavior::Ignore => {
+						return Err(VmError::UnsupportedStatement {
+							message: "Subgroup broadcasts require run_workgroup so the VM can supply peer lanes".to_string(),
+						});
+					}
+					CollectiveBehavior::Suspend => {
+						return Ok(FrameOutcome::SubgroupCollective(frame.instruction_index));
+					}
+					CollectiveBehavior::Reject => {
+						return Err(VmError::UnsupportedStatement {
+							message: "Subgroup collectives inside called functions cannot participate in workgroup rendezvous"
+								.to_string(),
+						});
+					}
+				},
 				Instruction::LoadTaskPayload {
 					register,
 					name,
@@ -455,16 +708,16 @@ impl ExecutableProgram {
 						.atomic_compare_exchange_u32(name, index, *count, expected, desired)?;
 					registers[*register] = Some(Value::U32(previous));
 				}
-				Instruction::WorkgroupBarrier => match barrier_behavior {
-					BarrierBehavior::Ignore => {
+				Instruction::WorkgroupBarrier => match collective_behavior {
+					CollectiveBehavior::Ignore => {
 						// A single invocation has no peers to await, so ordinary execution preserves program order.
 					}
-					BarrierBehavior::Suspend => {
+					CollectiveBehavior::Suspend => {
 						let barrier_instruction = frame.instruction_index;
 						frame.instruction_index += 1;
-						return Ok(FrameOutcome::Barrier(barrier_instruction));
+						return Ok(FrameOutcome::WorkgroupBarrier(barrier_instruction));
 					}
-					BarrierBehavior::Reject => {
+					CollectiveBehavior::Reject => {
 						return Err(VmError::UnsupportedStatement {
 							message: "Workgroup barriers inside called functions cannot participate in workgroup rendezvous"
 								.to_string(),
@@ -778,11 +1031,11 @@ impl ExecutableProgram {
 						.map(|argument| read_register(registers, *argument))
 						.collect::<Result<Vec<_>, _>>()?;
 					// Scheduled task lanes cannot preserve a nested call stack across a rendezvous; ordinary invocations may ignore it.
-					let nested_barrier_behavior = match barrier_behavior {
-						BarrierBehavior::Ignore => BarrierBehavior::Ignore,
-						BarrierBehavior::Suspend | BarrierBehavior::Reject => BarrierBehavior::Reject,
+					let nested_collective_behavior = match collective_behavior {
+						CollectiveBehavior::Ignore => CollectiveBehavior::Ignore,
+						CollectiveBehavior::Suspend | CollectiveBehavior::Reject => CollectiveBehavior::Reject,
 					};
-					let value = self.execute_function(*function, &arguments, descriptors, state, nested_barrier_behavior)?;
+					let value = self.execute_function(*function, &arguments, descriptors, state, nested_collective_behavior)?;
 					if let Some(register) = register {
 						registers[*register] = value;
 					}

@@ -744,6 +744,21 @@ impl Generator {
 		}
 	}
 
+	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
+	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
+		const SUBGROUP_INTRINSICS: [&str; 6] = [
+			"subgroup_ballot",
+			"subgroup_ballot_any",
+			"subgroup_ballot_find_lsb",
+			"subgroup_ballot_count",
+			"subgroup_ballot_and_not",
+			"subgroup_broadcast_u32",
+		];
+		order
+			.iter()
+			.any(|node| SUBGROUP_INTRINSICS.iter().any(|intrinsic| Self::uses_intrinsic(node, intrinsic)))
+	}
+
 	/// Recovers an indexed mesh-output declaration so HLSL can address its primitive structure field.
 	fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<String> {
 		let left = left.borrow();
@@ -1031,6 +1046,36 @@ impl Generator {
 			"threadgroup_position" => {
 				string.push_str("group_id.x");
 			}
+			"subgroup_ballot" => {
+				string.push_str("WaveActiveBallot(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_any" => {
+				string.push_str("_besl_subgroup_ballot_any(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_find_lsb" => {
+				string.push_str("_besl_subgroup_ballot_find_lsb(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_count" => {
+				string.push_str("_besl_subgroup_ballot_count(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_ballot_and_not" => {
+				string.push_str("_besl_subgroup_ballot_and_not(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_broadcast_u32" => {
+				string.push_str("WaveReadLaneAt(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"fma" => {
 				string.push_str("mad(");
 				self.emit_call_arguments(string, arguments);
@@ -1133,6 +1178,10 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
+			return Err(());
+		}
 		self.mesh_uses_render_target_array_index = order
 			.iter()
 			.any(|node| Self::uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
@@ -1157,7 +1206,7 @@ impl Generator {
 		}
 		string.clear();
 
-		self.generate_hlsl_header_block(&mut string, shader_compilation_settings);
+		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics);
 		if self.current_stage == HlslStage::Task {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			if !self.minified {
@@ -1699,7 +1748,12 @@ impl Generator {
 		}
 	}
 
-	fn generate_hlsl_header_block(&self, hlsl_block: &mut String, compilation_settings: &ShaderGenerationSettings) {
+	fn generate_hlsl_header_block(
+		&self,
+		hlsl_block: &mut String,
+		compilation_settings: &ShaderGenerationSettings,
+		uses_subgroup_intrinsics: bool,
+	) {
 		// HLSL doesn't use #version, but we can add shader model target as a comment
 		hlsl_block.push_str("// Shader Model 6.0+\n");
 
@@ -1738,6 +1792,14 @@ impl Generator {
 
 		if !self.minified {
 			hlsl_block.push('\n');
+		}
+		if uses_subgroup_intrinsics {
+			hlsl_block.push_str(
+				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
+				 uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return firstbitlow(mask.x); } if (mask.y != 0u) { return 32u + firstbitlow(mask.y); } if (mask.z != 0u) { return 64u + firstbitlow(mask.z); } if (mask.w != 0u) { return 96u + firstbitlow(mask.w); } return 0xffffffffu; }\n\
+				 uint _besl_subgroup_ballot_count(uint4 mask) { return countbits(mask.x) + countbits(mask.y) + countbits(mask.z) + countbits(mask.w); }\n\
+				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
+			);
 		}
 	}
 
@@ -2200,6 +2262,36 @@ mod tests {
 
 		// Check main function
 		assert_string_contains!(shader, "void besl_main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn compute_subgroup_intrinsics_lower_to_hlsl_wave_operations() {
+		let root = besl::compile_to_besl(
+			r#"
+			main: fn () -> void {
+				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+				let leader: u32 = subgroup_ballot_find_lsb(mask);
+				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+				let remaining: vec4u = subgroup_ballot_and_not(mask, subgroup_ballot(value == 0));
+				if (subgroup_ballot_any(remaining)) {
+					let count: u32 = subgroup_ballot_count(remaining);
+					count;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected subgroup fixture source to link");
+		let main = root.get_main().expect("Expected subgroup fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(32)), &main)
+			.expect("Expected subgroup fixture to lower to HLSL");
+
+		assert_string_contains!(shader, "WaveActiveBallot(group_thread_index<4)");
+		assert_string_contains!(shader, "WaveReadLaneAt(group_thread_index,leader)");
+		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
+		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 	}
 
 	#[test]

@@ -210,7 +210,7 @@ impl Node {
 
 		let builtins = vec![
 			void.clone(),
-			bool_t,
+			bool_t.clone(),
 			u8_t.clone(),
 			u16_t.clone(),
 			u32_t.clone(),
@@ -223,7 +223,7 @@ impl Node {
 			vec2f32.clone(),
 			vec3u32.clone(),
 			vec3f32.clone(),
-			vec4u32,
+			vec4u32.clone(),
 			vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
@@ -419,6 +419,20 @@ impl Node {
 			builtin_intrinsic("thread_idx", vec![], u32_t.clone()),
 			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
 			builtin_intrinsic("thread_position", vec![], u32_t.clone()),
+			builtin_intrinsic("subgroup_ballot", vec![("predicate", bool_t.clone())], vec4u32.clone()),
+			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t.clone()),
+			builtin_intrinsic("subgroup_ballot_find_lsb", vec![("mask", vec4u32.clone())], u32_t.clone()),
+			builtin_intrinsic("subgroup_ballot_count", vec![("mask", vec4u32.clone())], u32_t.clone()),
+			builtin_intrinsic(
+				"subgroup_ballot_and_not",
+				vec![("mask", vec4u32.clone()), ("removed", vec4u32.clone())],
+				vec4u32.clone(),
+			),
+			builtin_intrinsic(
+				"subgroup_broadcast_u32",
+				vec![("value", u32_t.clone()), ("source_lane", u32_t.clone())],
+				u32_t.clone(),
+			),
 			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
 			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
 			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),

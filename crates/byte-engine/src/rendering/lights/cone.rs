@@ -137,7 +137,7 @@ mod tests {
 		let light = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			LightColor::TemperatureKelvin(4_500.0),
+			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,
 			0.5,
@@ -154,7 +154,7 @@ mod tests {
 		let light = ConeLight::new(
 			Vector3::zero(),
 			Vector3::unit_z(),
-			LightColor::TemperatureKelvin(4_500.0),
+			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,
 			0.5,
@@ -173,7 +173,7 @@ mod tests {
 		let light = ConeLight::new(
 			Vector3::zero(),
 			Vector3::unit_z(),
-			LightColor::TemperatureKelvin(4_500.0),
+			LightColor::Kelvin(4_500.0),
 			intensity(),
 			0.25,
 			std::f32::consts::PI,

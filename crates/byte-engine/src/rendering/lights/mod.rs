@@ -89,7 +89,7 @@ mod tests {
 		let cone = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			LightColor::TemperatureKelvin(3_200.0),
+			LightColor::Kelvin(3_200.0),
 			PhotometricIntensity::LuminousFlux {
 				lumens: 1_000.0,
 				directional_beam_area_m2: 1.0,

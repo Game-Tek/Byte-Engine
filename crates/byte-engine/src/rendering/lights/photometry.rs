@@ -1,7 +1,3 @@
-use std::fmt;
-
-use math::Vector3;
-
 /// The `LightColor` enum provides a chromaticity for physically based light authoring.
 ///
 /// Pair a color with [`PhotometricIntensity`], then pass both values to a light constructor such as
@@ -9,9 +5,33 @@ use math::Vector3;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightColor {
 	/// Uses a blackbody-style color temperature from 1,000 K through 40,000 K.
-	TemperatureKelvin(f32),
+	Kelvin(f32),
 	/// Uses a nonnegative linear-sRGB chromaticity with nonzero luminance.
 	LinearSrgb(Vector3),
+}
+
+impl LightColor {
+	/// Creates a `Kelvin` color from a temperature in Kelvin. See [`LightColor::Kelvin`].
+	pub fn kelvin(kelvin: f32) -> Self {
+		Self::Kelvin(kelvin)
+	}
+
+	/// Creates a `LinearSrgb` color from RGB components. See [`LightColor::LinearSrgb`].
+	pub fn linear_srgb(r: f32, g: f32, b: f32) -> Self {
+		Self::LinearSrgb(Vector3::new(r, g, b))
+	}
+}
+
+impl From<f32> for LightColor {
+	fn from(value: f32) -> Self {
+		Self::kelvin(value)
+	}
+}
+
+impl From<(f32, f32, f32)> for LightColor {
+	fn from(value: (f32, f32, f32)) -> Self {
+		Self::linear_srgb(value.0, value.1, value.2)
+	}
 }
 
 /// The `PhotometricIntensity` enum provides physical light quantities with enough context for analytic lights.
@@ -53,6 +73,28 @@ pub enum PhotometricIntensity {
 	},
 }
 
+impl PhotometricIntensity {
+	/// Creates an illuminance intensity from a lux value, with a default measurement distance of 1 meter.
+	pub fn illuminance(lux: f32) -> Self {
+		Self::Illuminance { lux, measurement_distance_m: 1.0 }
+	}
+
+	/// Creates a luminous intensity from a candela value, with a default reference distance of 1 meter.
+	pub fn luminous_intensity(candela: f32) -> Self {
+		Self::LuminousIntensity { candela, reference_distance_m: 1.0 }
+	}
+
+	/// Creates a luminous flux from a lumens value, with a default directional beam area of 1 square meter.
+	pub fn luminous_flux(lumens: f32) -> Self {
+		Self::LuminousFlux { lumens, directional_beam_area_m2: 1.0 }
+	}
+
+	/// Creates a luminance from a nits value, with a default projected area and reference distance of 1 square meter and 1 meter.
+	pub fn luminance(nits: f32) -> Self {
+		Self::Luminance { nits, projected_area_m2: 1.0, reference_distance_m: 1.0 }
+	}
+}
+
 /// The `PhotometricError` struct explains why a physical light description cannot be resolved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhotometricError(&'static str);
@@ -75,7 +117,7 @@ impl LightColor {
 	pub fn resolve(self) -> Result<Vector3, PhotometricError> {
 		let rgb = match self {
 			Self::LinearSrgb(rgb) => rgb,
-			Self::TemperatureKelvin(temperature) => linear_srgb_from_temperature(temperature)?,
+			Self::Kelvin(temperature) => linear_srgb_from_temperature(temperature)?,
 		};
 		normalize_luminance(rgb)
 	}
@@ -235,9 +277,9 @@ mod tests {
 	#[test]
 	fn authored_colors_resolve_to_unit_photopic_luminance() {
 		for color in [
-			LightColor::TemperatureKelvin(1_500.0),
-			LightColor::TemperatureKelvin(6_500.0),
-			LightColor::TemperatureKelvin(15_000.0),
+			LightColor::Kelvin(1_500.0),
+			LightColor::Kelvin(6_500.0),
+			LightColor::Kelvin(15_000.0),
 			LightColor::LinearSrgb(Vector3::new(0.2, 0.5, 1.0)),
 		] {
 			let rgb = color.resolve().expect("valid light chromaticity");
@@ -331,3 +373,7 @@ mod tests {
 		assert!(error.to_string().contains("measurement distance"));
 	}
 }
+
+use std::fmt;
+
+use math::Vector3;

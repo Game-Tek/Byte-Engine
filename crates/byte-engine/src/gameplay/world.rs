@@ -243,7 +243,7 @@ mod tests {
 		let light_handle = world.light_factory_mut().create(
 			PointLight::new(
 				Vector3::new(3.0, 2.0, 1.0),
-				crate::rendering::lights::LightColor::TemperatureKelvin(5_000.0),
+				crate::rendering::lights::LightColor::Kelvin(5_000.0),
 				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
 					candela: 100.0,
 					reference_distance_m: 1.0,
@@ -256,7 +256,7 @@ mod tests {
 			ConeLight::new(
 				Vector3::new(0.0, 3.0, 0.0),
 				Vector3::new(0.0, -1.0, 0.0),
-				crate::rendering::lights::LightColor::TemperatureKelvin(4_500.0),
+				crate::rendering::lights::LightColor::Kelvin(4_500.0),
 				crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
 					candela: 100.0,
 					reference_distance_m: 1.0,

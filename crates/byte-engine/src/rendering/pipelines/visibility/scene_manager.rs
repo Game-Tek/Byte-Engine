@@ -201,7 +201,7 @@ mod tests {
 		let light = ConeLight::new(
 			Vector3::new(1.0, 2.0, 3.0),
 			Vector3::new(0.0, -1.0, 0.0),
-			crate::rendering::lights::LightColor::TemperatureKelvin(4_500.0),
+			crate::rendering::lights::LightColor::Kelvin(4_500.0),
 			crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
 				reference_distance_m: 1.0,

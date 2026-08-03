@@ -1537,7 +1537,7 @@ mod tests {
 		ConeLight::new(
 			Vector3::new(position_x, 2.0, 3.0),
 			Vector3::unit_z(),
-			LightColor::TemperatureKelvin(4_500.0),
+			LightColor::Kelvin(4_500.0),
 			PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
 				reference_distance_m: 1.0,
@@ -1555,7 +1555,7 @@ mod tests {
 				ConeLight::new(
 					Vector3::zero(),
 					Vector3::unit_z(),
-					LightColor::TemperatureKelvin(4_500.0),
+					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
 						reference_distance_m: 1.0,
@@ -1569,7 +1569,7 @@ mod tests {
 			Lights::Point(
 				PointLight::new(
 					Vector3::zero(),
-					LightColor::TemperatureKelvin(4_500.0),
+					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
 						reference_distance_m: 1.0,
@@ -1580,7 +1580,7 @@ mod tests {
 			Lights::Direction(
 				DirectionalLight::new(
 					-Vector3::unit_y(),
-					LightColor::TemperatureKelvin(6_500.0),
+					LightColor::Kelvin(6_500.0),
 					PhotometricIntensity::Illuminance {
 						lux: 100_000.0,
 						measurement_distance_m: 1.0,

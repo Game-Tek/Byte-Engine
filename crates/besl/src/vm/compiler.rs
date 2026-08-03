@@ -807,25 +807,34 @@ impl<'a> Compiler<'a> {
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::SampleTexture { register, slot, uv });
+				self.instructions.push(Instruction::SampleTexture {
+					register,
+					slot,
+					uv,
+					lod: None,
+				});
 				Ok(register)
 			}
 			"texture_lod" => {
-				if arguments.len() == 3 {
+				if arguments.len() != 2 && arguments.len() != 3 {
 					return Err(VmError::UnsupportedExpression {
-						message: "Explicit texture LOD requires mipmapped VM texture storage.".to_string(),
+						message: "texture_lod requires a texture, UV coordinates, and an optional LOD.".to_string(),
 					});
 				}
-				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &coord_type, descriptor_layouts)?;
+				let lod = arguments
+					.get(2)
+					.map(|lod| self.compile_value_expression(lod, &ValueType::F32, descriptor_layouts))
+					.transpose()?;
 				let register = self.allocate_register();
 				match coord_type {
 					ValueType::Vec2F => self.instructions.push(Instruction::SampleTexture {
 						register,
 						slot,
 						uv: coord,
+						lod,
 					}),
 					ValueType::Vec3F => self.instructions.push(Instruction::SampleTexture3D {
 						register,

@@ -263,10 +263,11 @@ impl Context {
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
+		mip_levels: u32,
 	) -> image::Image {
 		let name = crate::debug_name(name);
 
-		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, 1);
+		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, mip_levels);
 
 		let texture = self
 			.device
@@ -294,7 +295,7 @@ impl Context {
 			uses: resource_uses,
 			access: device_accesses,
 			array_layers,
-			mip_levels: 1,
+			mip_levels,
 			staging,
 		}
 	}
@@ -309,8 +310,9 @@ impl Context {
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
+		mip_levels: u32,
 	) -> ImageHandle {
-		let image = self.create_image_resource(name, extent, format, resource_uses, device_accesses, array_layers);
+		let image = self.create_image_resource(name, extent, format, resource_uses, device_accesses, array_layers, mip_levels);
 		let (_, handle) = self.images.add(image);
 
 		if let Some(previous) = previous {
@@ -510,9 +512,17 @@ impl Context {
 				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Buffer { buffer: handle, size })
 			}
-			crate::descriptors::WriteData::Image { handle, layout } => {
+			crate::descriptors::WriteData::Image {
+				handle,
+				layout,
+				mip_level,
+			} => {
 				let handle = self.images.nth_handle(handle, resource_frame_index)?;
-				Some(Descriptor::Image { image: handle, layout })
+				Some(Descriptor::Image {
+					image: handle,
+					layout,
+					mip_level,
+				})
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
@@ -665,9 +675,16 @@ impl Context {
 		let mut resized = false;
 
 		for image_handle in image_handles.into_iter().flatten() {
-			let (current_extent, format, uses, access, array_layers) = {
+			let (current_extent, format, uses, access, array_layers, mip_levels) = {
 				let image = self.images.resource(image_handle);
-				(image.extent, image.format, image.uses, image.access, image.array_layers)
+				(
+					image.extent,
+					image.format,
+					image.uses,
+					image.access,
+					image.array_layers,
+					image.mip_levels,
+				)
 			};
 
 			if current_extent == extent {
@@ -675,7 +692,8 @@ impl Context {
 			}
 
 			let name = self.images.resource(image_handle).name.clone();
-			let replacement = self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers);
+			let replacement =
+				self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers, mip_levels);
 			*self.images.resource_mut(image_handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
 			resized = true;
@@ -715,6 +733,7 @@ impl Context {
 					let uses = previous.uses;
 					let access = previous.access;
 					let array_layers = previous.array_layers;
+					let mip_levels = previous.mip_levels;
 					let handle = self.create_image_internal(
 						Some(builder.previous),
 						name.as_deref(),
@@ -723,6 +742,7 @@ impl Context {
 						uses,
 						access,
 						array_layers,
+						mip_levels,
 					);
 
 					let candidates = self.image_chain_handles(builder.master.0);
@@ -795,6 +815,7 @@ impl Context {
 			image.uses,
 			image.access,
 			image.array_layers,
+			image.mip_levels,
 		);
 		*self.images.resource_mut(handle) = replacement;
 		self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
@@ -1546,6 +1567,7 @@ impl Context {
 			builder.resource_uses,
 			builder.device_accesses,
 			layers,
+			builder.mip_levels,
 		);
 		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
 
@@ -1694,6 +1716,7 @@ impl Context {
 			builder.resource_uses,
 			builder.device_accesses,
 			layers,
+			builder.mip_levels,
 		);
 
 		graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(image_handle.0))
@@ -1831,6 +1854,7 @@ impl Context {
 					format,
 					uses | Uses::BlitSource,
 					DeviceAccesses::DeviceOnly,
+					1,
 					1,
 				);
 

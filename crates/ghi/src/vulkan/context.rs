@@ -2131,16 +2131,19 @@ impl Context {
 				Descriptor::Image {
 					image: left,
 					layout: left_layout,
+					..
 				},
 				Descriptor::Image {
 					image: right,
 					layout: right_layout,
+					..
 				},
 			)
 			| (
 				Descriptor::Image {
 					image: left,
 					layout: left_layout,
+					..
 				},
 				Descriptor::CombinedImageSampler {
 					image: right,
@@ -2157,6 +2160,7 @@ impl Context {
 				Descriptor::Image {
 					image: right,
 					layout: right_layout,
+					..
 				},
 			)
 			| (
@@ -2328,13 +2332,18 @@ impl Context {
 				),
 				size,
 			},
-			crate::descriptors::WriteData::Image { handle, layout } => Descriptor::Image {
+			crate::descriptors::WriteData::Image {
+				handle,
+				layout,
+				mip_level,
+			} => Descriptor::Image {
 				image: self.resolve_descriptor_image_handle(
 					graphics_hardware_interface::ImageHandle(handle),
 					sequence_index as usize,
 					retained.frame_offset,
 				),
 				layout,
+				mip_level,
 			},
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
@@ -2361,6 +2370,7 @@ impl Context {
 				Descriptor::Image {
 					image: swapchain.images[image_index],
 					layout: crate::Layouts::General,
+					mip_level: None,
 				}
 			}
 			crate::descriptors::WriteData::StaticSamplers
@@ -2375,7 +2385,19 @@ impl Context {
 		image: &Image,
 		view_type: crate::TextureViewTypes,
 		layer: Option<u32>,
+		base_mip_level: u32,
+		level_count: u32,
 	) -> vk::ImageViewCreateInfo<'static> {
+		assert!(
+			base_mip_level < image.mip_levels,
+			"Vulkan image descriptor mip level is out of range. The most likely cause is that the selected mip exceeds the image mip count. mip_level={base_mip_level}, mip_levels={}",
+			image.mip_levels,
+		);
+		assert!(
+			level_count > 0 && level_count <= image.mip_levels - base_mip_level,
+			"Vulkan image descriptor mip range is invalid. The most likely cause is that the descriptor view exceeds the image mip count. base_mip_level={base_mip_level}, level_count={level_count}, mip_levels={}",
+			image.mip_levels,
+		);
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
 			crate::TextureViewTypes::Texture2D => {
 				assert!(
@@ -2418,8 +2440,8 @@ impl Context {
 				} else {
 					vk::ImageAspectFlags::COLOR
 				},
-				base_mip_level: 0,
-				level_count: 1,
+				base_mip_level,
+				level_count,
 				base_array_layer,
 				layer_count,
 			})
@@ -2506,12 +2528,19 @@ impl Context {
 				Descriptor::Image {
 					image,
 					layout: image_layout,
+					mip_level,
 				} => {
 					let image = &self.images[image.0 as usize];
 					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
 					image_writes.push((
 						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
-						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), None),
+						self.descriptor_image_view_create_info(
+							image,
+							resource.descriptor.texture_view(),
+							None,
+							mip_level.unwrap_or(0),
+							1,
+						),
 						vk_layout,
 						resource_offset.unwrap(),
 						resource.resource_stride as u64,
@@ -2527,7 +2556,13 @@ impl Context {
 					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view_create_info(image, resource.descriptor.texture_view(), layer),
+						self.descriptor_image_view_create_info(
+							image,
+							resource.descriptor.texture_view(),
+							layer,
+							0,
+							image.mip_levels,
+						),
 						vk_layout,
 						resource_offset.unwrap(),
 						resource.resource_stride as u64,

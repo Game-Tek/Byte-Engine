@@ -55,6 +55,15 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 	return clamp_add(origin, tile_coordinate - halo, extent);
 }
 
+// The raw AO map and depth-pyramid mip one have the same physical extent.
+fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(linear_depth, uv, 1.0).x;
+}
+
 shared_depth_at: fn (coordinate: vec2u) -> f32 {
 	return shared_linear_depth[coordinate.y * GTAO_BLUR_DEPTH_TILE_WIDTH + coordinate.x];
 }
@@ -181,7 +190,7 @@ main: fn () -> void {
 			tiled_source_coordinate(workgroup_origin.x, tile_coordinate.x, GTAO_BLUR_DEPTH_HALO_X, extent.x),
 			tiled_source_coordinate(workgroup_origin.y, tile_coordinate.y, GTAO_BLUR_DEPTH_HALO_Y, extent.y)
 		);
-		shared_linear_depth[index] = fetch(linear_depth, source_coordinate).x;
+		shared_linear_depth[index] = fetch_linear_depth(source_coordinate, extent);
 	}
 	for (let index: u32 = lane; index < GTAO_BLUR_AO_TILE_SIZE; index = index + GTAO_BLUR_WORKGROUP_SIZE) {
 		let tile_coordinate: vec2u = vec2u(

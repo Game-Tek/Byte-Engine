@@ -228,6 +228,7 @@ pub(super) enum Instruction {
 		register: usize,
 		slot: ResourceSlot,
 		uv: usize,
+		lod: Option<usize>,
 	},
 	SampleTexture3D {
 		register: usize,

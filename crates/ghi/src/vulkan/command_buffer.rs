@@ -297,7 +297,7 @@ impl CommandBufferRecording<'_> {
 				}
 				let (handle, layout) = match resource.descriptor {
 					Descriptor::Buffer { buffer, .. } => (Handles::Buffer(buffer), crate::Layouts::General),
-					Descriptor::Image { image, layout } => (Handles::Image(image), layout),
+					Descriptor::Image { image, layout, .. } => (Handles::Image(image), layout),
 					Descriptor::CombinedImageSampler { image, layout, .. } => (Handles::Image(image), layout),
 					Descriptor::AccelerationStructure { handle } => {
 						(Handles::TopLevelAccelerationStructure(handle), crate::Layouts::General)

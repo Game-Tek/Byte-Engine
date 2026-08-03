@@ -993,7 +993,17 @@ pub(super) mod tests {
 			image_write.descriptor,
 			descriptors::WriteData::Image {
 				handle,
-				layout: Layouts::General
+				layout: Layouts::General,
+				mip_level: None,
+			} if handle == BaseImageHandle(3)
+		));
+		let mip_write = descriptors::DescriptorWrite::image_mip(set, slot, image, Layouts::Read, 2);
+		assert!(matches!(
+			mip_write.descriptor,
+			descriptors::WriteData::Image {
+				handle,
+				layout: Layouts::Read,
+				mip_level: Some(2),
 			} if handle == BaseImageHandle(3)
 		));
 

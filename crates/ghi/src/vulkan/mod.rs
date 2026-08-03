@@ -43,6 +43,7 @@ pub(super) enum Descriptor {
 	Image {
 		image: ImageHandle,
 		layout: crate::Layouts,
+		mip_level: Option<u32>,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,

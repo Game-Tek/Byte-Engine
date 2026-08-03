@@ -327,10 +327,8 @@ mod tests {
 			&[
 				(0, "gtao_view"),
 				(1, "gtao_parameters"),
-				(1033, "linear_depth_0"),
+				(1033, "depth_pyramid"),
 				(1034, "ao_output"),
-				(1035, "linear_depth_1"),
-				(1036, "linear_depth_2"),
 			],
 		);
 		assert_reflected_resources(
@@ -1168,9 +1166,14 @@ mod tests {
 		let (linear_depth_2, width_2, height_2) = reduce_nearest_nonzero_depth(&linear_depth_1, width_1, height_1);
 		let mut view = gtao_view_data(program, EXTENT, EXTENT);
 		let mut parameters = gtao_parameters_data(program);
-		let mut depth = texture_2d(EXTENT, EXTENT, &linear_depth);
-		let mut pyramid_1 = texture_2d(width_1, height_1, &linear_depth_1);
-		let mut pyramid_2 = texture_2d(width_2, height_2, &linear_depth_2);
+		let mut depth_pyramid = texture_2d(
+			EXTENT * 2,
+			EXTENT * 2,
+			&vec![[0.0, 0.0, 0.0, 1.0]; (EXTENT * 2 * EXTENT * 2) as usize],
+		);
+		depth_pyramid.add_mip(texture_2d(EXTENT, EXTENT, &linear_depth));
+		depth_pyramid.add_mip(texture_2d(width_1, height_1, &linear_depth_1));
+		depth_pyramid.add_mip(texture_2d(width_2, height_2, &linear_depth_2));
 		let mut output = empty_image(EXTENT, EXTENT);
 		let group_base = [
 			coordinate[0] / GTAO_WORKGROUP_WIDTH * GTAO_WORKGROUP_WIDTH,
@@ -1191,10 +1194,8 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
-			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
-			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
 			descriptors.bind_workgroup_state(&mut workgroup);
 			program
 				.run_workgroup(&mut descriptors, &configs)
@@ -1631,19 +1632,26 @@ mod tests {
 			.iter()
 			.map(|texel| [gtao_fixture_linear_depth(texel[0]), 0.0, 0.0, 1.0])
 			.collect::<Vec<_>>();
-		let mut depth = texture_2d(width, height, &linear_depth_texels);
-		let pyramid_1_extent = [width.div_ceil(2).max(1), height.div_ceil(2).max(1)];
-		let pyramid_2_extent = [width.div_ceil(4).max(1), height.div_ceil(4).max(1)];
-		let mut pyramid_1 = texture_2d(
+		let pyramid_1_extent = [(width / 2).max(1), (height / 2).max(1)];
+		let pyramid_2_extent = [(width / 4).max(1), (height / 4).max(1)];
+		let pyramid_1 = texture_2d(
 			pyramid_1_extent[0],
 			pyramid_1_extent[1],
 			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_1_extent[0] * pyramid_1_extent[1]) as usize],
 		);
-		let mut pyramid_2 = texture_2d(
+		let pyramid_2 = texture_2d(
 			pyramid_2_extent[0],
 			pyramid_2_extent[1],
 			&vec![[0.0, 0.0, 0.0, 1.0]; (pyramid_2_extent[0] * pyramid_2_extent[1]) as usize],
 		);
+		let mut depth_pyramid = texture_2d(
+			width * 2,
+			height * 2,
+			&vec![[0.0, 0.0, 0.0, 1.0]; (width * 2 * height * 2) as usize],
+		);
+		depth_pyramid.add_mip(texture_2d(width, height, &linear_depth_texels));
+		depth_pyramid.add_mip(pyramid_1);
+		depth_pyramid.add_mip(pyramid_2);
 		let mut output = empty_image(width, height);
 		let group_base = [
 			coordinate[0] / GTAO_WORKGROUP_WIDTH * GTAO_WORKGROUP_WIDTH,
@@ -1664,10 +1672,8 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
-			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
-			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
 			descriptors.bind_workgroup_state(&mut workgroup);
 			program.run_workgroup(&mut descriptors, &configs).expect(
 				"Failed to execute the production GTAO workgroup. The most likely cause is broken cache synchronization or an invalid fixture binding.",
@@ -1684,9 +1690,22 @@ mod tests {
 
 		let mut view = gtao_view_data(program, EXTENT, EXTENT);
 		let mut parameters = gtao_parameters_data(program);
-		let mut depth = texture_2d(EXTENT, EXTENT, &linear_depth_texels);
-		let mut pyramid_1 = texture_2d(65, 65, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 65 * 65]);
-		let mut pyramid_2 = texture_2d(33, 33, &vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 33 * 33]);
+		let mut depth_pyramid = texture_2d(
+			EXTENT * 2,
+			EXTENT * 2,
+			&vec![[0.0, 0.0, 0.0, 1.0]; (EXTENT * 2 * EXTENT * 2) as usize],
+		);
+		depth_pyramid.add_mip(texture_2d(EXTENT, EXTENT, &linear_depth_texels));
+		depth_pyramid.add_mip(texture_2d(
+			EXTENT / 2,
+			EXTENT / 2,
+			&vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 64 * 64],
+		));
+		depth_pyramid.add_mip(texture_2d(
+			EXTENT / 4,
+			EXTENT / 4,
+			&vec![[coarse_linear_depth, 0.0, 0.0, 1.0]; 32 * 32],
+		));
 		let mut output = empty_image(EXTENT, EXTENT);
 		let configs: [ExecutionConfig; GTAO_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
 			let lane = lane as u32;
@@ -1703,10 +1722,8 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 			descriptors.bind_buffer(GTAO_PARAMETERS_SLOT, &mut parameters);
-			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-			descriptors.bind_texture(ResourceSlot::new(1035), &mut pyramid_1);
-			descriptors.bind_texture(ResourceSlot::new(1036), &mut pyramid_2);
 			descriptors.bind_workgroup_state(&mut workgroup);
 			program.run_workgroup(&mut descriptors, &configs).expect(
 				"Failed to execute the hierarchical GTAO fixture. The most likely cause is broken shared-cache addressing.",
@@ -1734,7 +1751,7 @@ mod tests {
 				[0.8, 0.0, 0.0, 1.0],
 			],
 		);
-		let mut reduced_1 = empty_image(2, 2);
+		let mut reduced_1 = empty_image(1, 1);
 		let mut reduced_2 = empty_image(1, 1);
 		let mut reduced_3 = empty_image(1, 1);
 		let mut view = gtao_view_data(&program, 3, 3);
@@ -1759,15 +1776,8 @@ mod tests {
 			);
 		}
 
-		for (coordinate, expected) in [
-			([0, 0], [gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0]),
-			([1, 0], [gtao_fixture_linear_depth(0.5), 0.0, 0.0, 1.0]),
-			([0, 1], [gtao_fixture_linear_depth(0.7), 0.0, 0.0, 1.0]),
-			([1, 1], [gtao_fixture_linear_depth(0.8), 0.0, 0.0, 1.0]),
-		] {
-			assert_rgba_close(rgba(&reduced_1, coordinate), expected, 0.00001);
-		}
 		let nearest = [gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0];
+		assert_rgba_close(rgba(&reduced_1, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_2, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_3, [0, 0]), nearest, 0.00001);
 	}

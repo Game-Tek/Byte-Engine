@@ -520,6 +520,7 @@ pub struct Texture {
 	height: u32,
 	depth: u32,
 	texels: Vec<Texel>,
+	mips: Vec<Texture>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -592,7 +593,13 @@ impl Texture {
 			height,
 			depth,
 			texels,
+			mips: Vec::new(),
 		})
+	}
+
+	/// Adds the next explicit mip level used by CPU shader fixtures.
+	pub fn add_mip(&mut self, mip: Texture) {
+		self.mips.push(mip);
 	}
 
 	pub fn write(&mut self, coord: [u32; 2], value: [f32; 4]) -> Result<(), VmError> {
@@ -635,6 +642,16 @@ impl Texture {
 		let bottom = lerp_rgba(self.fetch_texel([x0, y1, 0])?, self.fetch_texel([x1, y1, 0])?, tx);
 
 		Ok(Value::Vec4F(lerp_rgba(top, bottom, ty)))
+	}
+
+	/// Samples an explicit LOD, clamping to the coarsest mip like GPU texture sampling.
+	pub fn sample_lod(&self, uv: [f32; 2], lod: f32) -> Result<Value, VmError> {
+		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
+		if level == 0 {
+			return self.sample(uv);
+		}
+		let texture = self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self));
+		texture.sample(uv)
 	}
 
 	/// Samples a three-dimensional texture using trilinear interpolation.

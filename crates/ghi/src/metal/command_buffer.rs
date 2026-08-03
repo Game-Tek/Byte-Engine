@@ -56,6 +56,30 @@ fn attachment_texture_view(
 	texture.clone()
 }
 
+/// Returns a descriptor-visible view of one mip while keeping ordinary descriptors on the full texture.
+fn descriptor_texture_view(
+	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+	format: crate::Formats,
+	mip_level: Option<u32>,
+) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
+	let Some(mip_level) = mip_level else {
+		return texture.clone();
+	};
+
+	unsafe {
+		texture
+			.newTextureViewWithPixelFormat_textureType_levels_slices(
+				utils::to_pixel_format(format),
+				mtl::MTLTextureType::Type2D,
+				NSRange::new(mip_level as usize, 1),
+				NSRange::new(0, 1),
+			)
+			.expect(
+				"Metal texture mip view creation failed. The most likely cause is that the selected mip exceeds the image mip count.",
+			)
+	}
+}
+
 /// Validates one attachment's declared layer selection against the native texture.
 fn validate_attachment_layer_selection(
 	layer: Option<u32>,
@@ -1060,11 +1084,19 @@ impl CommandBufferRecording<'_> {
 							.argument_encoder
 							.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
 					},
-					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
+					(
+						DescriptorBindingSlot::Texture(slot),
+						Descriptor::Image {
+							image,
+							mip_level,
+							..
+						},
+					) => unsafe {
 						let image = self.device.images.resource(image);
+						let texture = descriptor_texture_view(&image.texture, image.format, mip_level);
 						layout
 							.argument_encoder
-							.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+							.setTexture_atIndex(Some(texture.as_ref()), slot as _);
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
 						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {

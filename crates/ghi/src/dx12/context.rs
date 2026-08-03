@@ -1522,7 +1522,9 @@ impl Device {
 		texture_view_type: TextureViewTypes,
 		array_layers: u32,
 		layer: Option<u32>,
+		mip_level: Option<u32>,
 	) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+		let mip_level = mip_level.unwrap_or(0);
 		assert!(
 			layer.is_none() || texture_view_type == TextureViewTypes::Texture2DArray,
 			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
@@ -1542,7 +1544,7 @@ impl Device {
 				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
 				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
 					Texture2D: D3D12_TEX2D_UAV {
-						MipSlice: 0,
+						MipSlice: mip_level,
 						PlaneSlice: 0,
 					},
 				},
@@ -1556,7 +1558,7 @@ impl Device {
 			ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
 			Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
 				Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-					MipSlice: 0,
+					MipSlice: mip_level,
 					FirstArraySlice: first_array_slice,
 					ArraySize: array_size,
 					PlaneSlice: 0,
@@ -1617,7 +1619,10 @@ impl Device {
 		array_layers: u32,
 		layer: Option<u32>,
 		mip_levels: u32,
+		mip_level: Option<u32>,
 	) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+		let most_detailed_mip = mip_level.unwrap_or(0);
+		let mip_count = mip_level.map_or(mip_levels, |_| 1);
 		assert!(
 			layer.is_none() || texture_view_type == TextureViewTypes::Texture2DArray,
 			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
@@ -1638,8 +1643,8 @@ impl Device {
 				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
 				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 					Texture2D: D3D12_TEX2D_SRV {
-						MostDetailedMip: 0,
-						MipLevels: mip_levels,
+						MostDetailedMip: most_detailed_mip,
+						MipLevels: mip_count,
 						PlaneSlice: 0,
 						ResourceMinLODClamp: 0.0,
 					},
@@ -1655,8 +1660,8 @@ impl Device {
 			Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
 			Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 				Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
-					MostDetailedMip: 0,
-					MipLevels: mip_levels,
+					MostDetailedMip: most_detailed_mip,
+					MipLevels: mip_count,
 					FirstArraySlice: first_array_slice,
 					ArraySize: array_size,
 					PlaneSlice: 0,
@@ -6388,20 +6393,23 @@ impl Device {
 					);
 				}
 			}
-			WriteData::Image { handle, .. } => self.validate_image_descriptor_resource(shader_resource, handle, None),
+			WriteData::Image { handle, mip_level, .. } => {
+				self.validate_image_descriptor_resource(shader_resource, handle, None, mip_level)
+			}
 			WriteData::CombinedImageSampler { image_handle, layer, .. } => {
-				self.validate_image_descriptor_resource(shader_resource, image_handle, layer)
+				self.validate_image_descriptor_resource(shader_resource, image_handle, layer, None)
 			}
 			_ => {}
 		}
 	}
 
-	/// Validates image usage, dimension metadata, and an optional selected array layer.
+	/// Validates image usage, dimension metadata, and optional selected subresources.
 	fn validate_image_descriptor_resource(
 		&self,
 		shader_resource: ShaderResourceDescriptor,
 		image_handle: crate::BaseImageHandle,
 		layer: Option<u32>,
+		mip_level: Option<u32>,
 	) {
 		let image = self
 			.images
@@ -6415,6 +6423,13 @@ impl Device {
 			assert!(
 				image.uses.intersects(Uses::Storage),
 				"Invalid DX12 storage-image descriptor. The most likely cause is that the image was not created with storage usage."
+			);
+		}
+		if let Some(mip_level) = mip_level {
+			assert!(
+				mip_level < image.mip_levels,
+				"Invalid DX12 image descriptor mip level. The most likely cause is that the selected mip exceeds the image mip count. mip_level={mip_level}, mip_levels={}",
+				image.mip_levels,
 			);
 		}
 		if let Some(layer) = layer {
@@ -8885,17 +8900,31 @@ impl Device {
 			WriteData::Buffer { handle, size } => {
 				self.write_native_buffer_descriptor(resource.descriptor, handle, size, resource_sequence, heap, slot)
 			}
-			WriteData::Image { handle, .. } => {
-				self.write_native_image_descriptor(resource.descriptor, handle, resource_sequence, None, heap, slot)
+			WriteData::Image { handle, mip_level, .. } => {
+				self.write_native_image_descriptor(resource.descriptor, handle, resource_sequence, None, mip_level, heap, slot)
 			}
-			WriteData::CombinedImageSampler { image_handle, layer, .. } => {
-				self.write_native_image_descriptor(resource.descriptor, image_handle, resource_sequence, layer, heap, slot)
-			}
+			WriteData::CombinedImageSampler { image_handle, layer, .. } => self.write_native_image_descriptor(
+				resource.descriptor,
+				image_handle,
+				resource_sequence,
+				layer,
+				None,
+				heap,
+				slot,
+			),
 			WriteData::Swapchain(handle) => {
 				let image = self
 					.get_swapchain_image_for_sequence(handle, Uses::Storage, resource_sequence)
 					.0;
-				self.write_native_image_descriptor(resource.descriptor, image.into(), resource_sequence, None, heap, slot);
+				self.write_native_image_descriptor(
+					resource.descriptor,
+					image.into(),
+					resource_sequence,
+					None,
+					None,
+					heap,
+					slot,
+				);
 			}
 			WriteData::AccelerationStructure { handle } => {
 				self.write_native_acceleration_structure_descriptor(handle, heap, slot)
@@ -9026,6 +9055,7 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 		layer: Option<u32>,
+		mip_level: Option<u32>,
 		heap: &DescriptorHeap,
 		slot: u32,
 	) {
@@ -9043,7 +9073,7 @@ impl Device {
 		let array_layers = image.array_layers.max(1);
 		unsafe {
 			if descriptor.kind() == ResourceKind::StorageImage {
-				let desc = Self::descriptor_texture_uav_desc(format, descriptor.texture_view(), array_layers, layer);
+				let desc = Self::descriptor_texture_uav_desc(format, descriptor.texture_view(), array_layers, layer, mip_level);
 				if uses.intersects(Uses::Storage) {
 					self.device
 						.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
@@ -9057,8 +9087,14 @@ impl Device {
 				}
 				self.image_uav_descriptor_write_count += 1;
 			} else {
-				let desc =
-					Self::descriptor_texture_srv_desc(format, descriptor.texture_view(), array_layers, layer, image.mip_levels);
+				let desc = Self::descriptor_texture_srv_desc(
+					format,
+					descriptor.texture_view(),
+					array_layers,
+					layer,
+					image.mip_levels,
+					mip_level,
+				);
 				self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 				self.image_srv_descriptor_write_count += 1;
 			}

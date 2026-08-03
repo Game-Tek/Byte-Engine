@@ -1,6 +1,6 @@
-// linear_depth_0..2 store conservative nearest-nonzero positive view-space distance.
-// The first level is half resolution, matching the GTAO output. The later levels
-// reduce that logical grid by another factor of two for distant samples.
+// depth_pyramid stores conservative nearest-nonzero positive view-space distance.
+// GTAO reads physical mip levels one through three. Mip one matches the half-resolution
+// AO output, and later mips serve distant samples.
 FastGTAOView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -35,10 +35,8 @@ SampleAddress: struct {
 
 gtao_view: descriptor<FastGTAOView, 0, read, constant>;
 gtao_parameters: descriptor<GTAOParameters, 1, read, constant>;
-linear_depth_0: descriptor<Texture2D, 1033, read>;
+depth_pyramid: descriptor<Texture2D, 1033, read>;
 ao_output: descriptor<StorageImage<r8>, 1034, write>;
-linear_depth_1: descriptor<Texture2D, 1035, read>;
-linear_depth_2: descriptor<Texture2D, 1036, read>;
 
 GTAO_BIAS: const f32 = 0.05;
 GTAO_STRENGTH: const f32 = 1.0;
@@ -93,23 +91,32 @@ interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 }
 
 hierarchy_extent: fn (level: u32) -> vec2u {
-	if (level == 2) {
-		return texture_size(linear_depth_2);
+	let divisor: u32 = 2;
+	if (level >= 1) {
+		divisor = divisor * 2;
 	}
-	if (level == 1) {
-		return texture_size(linear_depth_1);
+	if (level >= 2) {
+		divisor = divisor * 2;
 	}
-	return texture_size(linear_depth_0);
+	let base_extent: vec2u = texture_size(depth_pyramid);
+	let width: u32 = base_extent.x / divisor;
+	let height: u32 = base_extent.y / divisor;
+	if (width == 0) {
+		width = 1;
+	}
+	if (height == 0) {
+		height = 1;
+	}
+	return vec2u(width, height);
 }
 
 fetch_linear_depth: fn (coordinate: vec2u, level: u32) -> f32 {
-	if (level == 2) {
-		return fetch(linear_depth_2, coordinate).x;
-	}
-	if (level == 1) {
-		return fetch(linear_depth_1, coordinate).x;
-	}
-	return fetch(linear_depth_0, coordinate).x;
+	let extent: vec2u = hierarchy_extent(level);
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(depth_pyramid, uv, f32(level + 1)).x;
 }
 
 clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {

@@ -870,7 +870,7 @@ impl ExecutableProgram {
 					let slot = resolve_resource_slot(*slot, registers)?;
 					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
 				}
-				Instruction::SampleTexture { register, slot, uv } => {
+				Instruction::SampleTexture { register, slot, uv, lod } => {
 					let uv = read_register(registers, *uv)?;
 					let Value::Vec2F(uv) = uv else {
 						return Err(VmError::TypeMismatch {
@@ -880,7 +880,19 @@ impl ExecutableProgram {
 					};
 
 					let slot = resolve_resource_slot(*slot, registers)?;
-					registers[*register] = Some(descriptors.texture_mut(slot)?.sample(uv)?);
+					let sampled = if let Some(lod) = lod {
+						let lod = read_register(registers, *lod)?;
+						let Value::F32(lod) = lod else {
+							return Err(VmError::TypeMismatch {
+								expected: ValueType::F32.name().to_string(),
+								found: lod.value_type().name().to_string(),
+							});
+						};
+						descriptors.texture_mut(slot)?.sample_lod(uv, lod)?
+					} else {
+						descriptors.texture_mut(slot)?.sample(uv)?
+					};
+					registers[*register] = Some(sampled);
 				}
 				Instruction::SampleTexture3D { register, slot, uvw } => {
 					let uvw = read_register(registers, *uvw)?;

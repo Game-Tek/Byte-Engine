@@ -73,6 +73,15 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 	return clamp_add(origin, tile_coordinate - halo, extent);
 }
 
+// The AO source has the same extent as physical mip one of the depth pyramid.
+fetch_low_resolution_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(low_resolution_depth, uv, 1.0).x;
+}
+
 shared_depth_at: fn (coordinate: vec2u) -> f32 {
 	return shared_linear_depth[coordinate.y * GTAO_UPSCALE_TILE_WIDTH + coordinate.x];
 }
@@ -164,7 +173,7 @@ main: fn () -> void {
 				source_extent.y
 			)
 		);
-		shared_linear_depth[index] = fetch(low_resolution_depth, source_coordinate).x;
+		shared_linear_depth[index] = fetch_low_resolution_depth(source_coordinate, source_extent);
 		shared_ao[index] = fetch(ao_source, source_coordinate).x;
 	}
 	workgroup_barrier();

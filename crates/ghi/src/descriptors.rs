@@ -7,6 +7,7 @@ pub(crate) enum WriteData {
 	Image {
 		handle: BaseImageHandle,
 		layout: Layouts,
+		mip_level: Option<u32>,
 	},
 	CombinedImageSampler {
 		image_handle: BaseImageHandle,
@@ -35,6 +36,15 @@ impl WriteData {
 		Self::Image {
 			handle: handle.into(),
 			layout,
+			mip_level: None,
+		}
+	}
+
+	pub(crate) fn image_mip(handle: impl Into<BaseImageHandle>, layout: Layouts, mip_level: u32) -> Self {
+		Self::Image {
+			handle: handle.into(),
+			layout,
+			mip_level: Some(mip_level),
 		}
 	}
 
@@ -90,6 +100,17 @@ impl DescriptorWrite {
 		layout: Layouts,
 	) -> Self {
 		Self::new(descriptor_set, slot, WriteData::image(image_handle, layout))
+	}
+
+	/// Binds one image mip as a storage or sampled image resource.
+	pub fn image_mip(
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
+		image_handle: impl Into<BaseImageHandle>,
+		layout: Layouts,
+		mip_level: u32,
+	) -> Self {
+		Self::new(descriptor_set, slot, WriteData::image_mip(image_handle, layout, mip_level))
 	}
 
 	pub fn image_with_frame(

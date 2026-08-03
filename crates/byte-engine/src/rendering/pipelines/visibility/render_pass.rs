@@ -83,7 +83,7 @@ const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::WRITE,
 );
-const GTAO_DEPTH_PYRAMID_LEVEL_COUNT: usize = 3;
+const GTAO_DEPTH_PYRAMID_MIP_COUNT: u32 = 4;
 
 /// Returns the directional cascade view indices that receive one batched shadow dispatch.
 fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
@@ -100,7 +100,6 @@ fn cone_shadow_view_indices(mesh_dispatch: MeshDispatch, cone_shadow_count: usiz
 	};
 	(0..count).map(|layer| ((CONE_SHADOW_VIEW_OFFSET + layer) as u32, layer as u32))
 }
-const GTAO_DEPTH_PYRAMID_FIRST_SLOT: u32 = 1035;
 
 pub(crate) const GTAO_CONFIGURATION_PREFIX: &str = "render.gtao.";
 const GTAO_MIN_SAMPLES_PER_RAY: u32 = 1;
@@ -861,7 +860,7 @@ pub struct GtaoPass {
 	ao_map: ghi::BaseImageHandle,
 	view_data: ghi::DynamicBufferHandle<FastGtaoViewData>,
 	gtao_parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
-	depth_pyramid_images: [ghi::DynamicImageHandle; GTAO_DEPTH_PYRAMID_LEVEL_COUNT],
+	depth_pyramid: ghi::DynamicImageHandle,
 	raw_ao_map: ghi::DynamicImageHandle,
 	temp_ao_map: ghi::DynamicImageHandle,
 }
@@ -895,7 +894,7 @@ impl GtaoPass {
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
 				.min_lod(0f32)
-				.max_lod(0f32),
+				.max_lod((GTAO_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let ao_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -915,17 +914,15 @@ impl GtaoPass {
 				.name("GTAO Half-Resolution Raw")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let depth_pyramid_images = std::array::from_fn(|level| {
-			context.build_dynamic_image(
-				ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
-					.name(match level {
-						0 => "GTAO Depth Pyramid 1",
-						1 => "GTAO Depth Pyramid 2",
-						_ => "GTAO Depth Pyramid 3",
-					})
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-			)
-		});
+		// Mip zero retains full sink resolution so levels one through three match the depth reductions.
+		// The initial 8x8 allocation keeps all declared mips valid before the first sink resize.
+		let depth_pyramid = context.build_dynamic_image(
+			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+				.name("GTAO Depth Pyramid")
+				.extent(Extent::square(8))
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.mip_levels(GTAO_DEPTH_PYRAMID_MIP_COUNT),
+		);
 		context.write(&[
 			ghi::DescriptorWrite::buffer(depth_pyramid_descriptor_set, GTAO_VIEW_BINDING.slot(), view_data.into()),
 			ghi::DescriptorWrite::combined_image_sampler(
@@ -935,23 +932,26 @@ impl GtaoPass {
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
-			ghi::DescriptorWrite::image(
+			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
 				GTAO_DEPTH_PYRAMID_OUTPUT_1_BINDING.slot(),
-				depth_pyramid_images[0],
+				depth_pyramid,
 				ghi::Layouts::General,
+				1,
 			),
-			ghi::DescriptorWrite::image(
+			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
 				GTAO_DEPTH_PYRAMID_OUTPUT_2_BINDING.slot(),
-				depth_pyramid_images[1],
+				depth_pyramid,
 				ghi::Layouts::General,
+				2,
 			),
-			ghi::DescriptorWrite::image(
+			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
 				GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING.slot(),
-				depth_pyramid_images[2],
+				depth_pyramid,
 				ghi::Layouts::General,
+				3,
 			),
 			ghi::DescriptorWrite::buffer(gtao_descriptor_set, GTAO_VIEW_BINDING.slot(), view_data.into()),
 			ghi::DescriptorWrite::buffer(gtao_descriptor_set, GTAO_PARAMETERS_BINDING.slot(), gtao_parameters.into()),
@@ -964,28 +964,14 @@ impl GtaoPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				gtao_descriptor_set,
 				GTAO_DEPTH_BINDING.slot(),
-				depth_pyramid_images[0],
-				depth_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				gtao_descriptor_set,
-				ghi::ResourceSlot::new(GTAO_DEPTH_PYRAMID_FIRST_SLOT),
-				depth_pyramid_images[1],
-				depth_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				gtao_descriptor_set,
-				ghi::ResourceSlot::new(GTAO_DEPTH_PYRAMID_FIRST_SLOT + 1),
-				depth_pyramid_images[2],
+				depth_pyramid,
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_descriptor_set_x,
 				GTAO_BLUR_DEPTH_BINDING.slot(),
-				depth_pyramid_images[0],
+				depth_pyramid,
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
@@ -1026,7 +1012,7 @@ impl GtaoPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				upscale_descriptor_set,
 				GTAO_UPSCALE_LOW_RESOLUTION_DEPTH_BINDING.slot(),
-				depth_pyramid_images[0],
+				depth_pyramid,
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
@@ -1092,7 +1078,7 @@ impl GtaoPass {
 			ao_map,
 			view_data,
 			gtao_parameters,
-			depth_pyramid_images,
+			depth_pyramid,
 			raw_ao_map,
 			temp_ao_map,
 		}
@@ -1114,7 +1100,7 @@ impl GtaoPass {
 		let ao_map = self.ao_map;
 		let view_data = self.view_data;
 		let gtao_parameters = self.gtao_parameters;
-		let depth_pyramid_images = self.depth_pyramid_images;
+		let depth_pyramid = self.depth_pyramid;
 		let raw_ao_map = self.raw_ao_map;
 		let temp_ao_map = self.temp_ao_map;
 		let extent = sink.extent();
@@ -1127,9 +1113,7 @@ impl GtaoPass {
 		frame.resize_image(ao_map, extent);
 		frame.resize_image(raw_ao_map.into(), gtao_extent);
 		frame.resize_image(temp_ao_map.into(), gtao_extent);
-		for (level, image) in depth_pyramid_images.iter().copied().enumerate() {
-			frame.resize_image(image.into(), gtao_depth_pyramid_extent(extent, level));
-		}
+		frame.resize_image(depth_pyramid.into(), extent);
 
 		move |c, _| {
 			c.start_region(|label| label.write_str("GTAO"));
@@ -1171,18 +1155,9 @@ impl GtaoPass {
 	}
 }
 
-/// Returns the nonzero half-resolution GTAO extent for one sink.
+/// Returns the nonzero extent of the first physical mip in the GTAO depth pyramid.
 fn gtao_half_resolution_extent(extent: Extent) -> Extent {
-	Extent::rectangle(extent.width().div_ceil(2).max(1), extent.height().div_ceil(2).max(1))
-}
-
-/// Returns the nonzero sink-relative extent for one GTAO depth-pyramid level.
-fn gtao_depth_pyramid_extent(extent: Extent, level: usize) -> Extent {
-	let divisor = 1u32 << (level as u32 + 1);
-	Extent::rectangle(
-		extent.width().div_ceil(divisor).max(1),
-		extent.height().div_ceil(divisor).max(1),
-	)
+	Extent::rectangle((extent.width() / 2).max(1), (extent.height() / 2).max(1))
 }
 
 /// Returns whether this frame contains geometry that uses one material in the requested visibility phase.
@@ -1619,7 +1594,7 @@ mod tests {
 		assert_eq!(gtao_extent, Extent::rectangle(960, 540));
 		assert_eq!(
 			gtao_half_resolution_extent(Extent::rectangle(1919, 1079)),
-			Extent::rectangle(960, 540)
+			Extent::rectangle(959, 539)
 		);
 		assert_eq!(gtao_half_resolution_extent(Extent::square(1)), Extent::square(1));
 	}

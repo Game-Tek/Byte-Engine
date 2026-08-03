@@ -1,5 +1,6 @@
 // Convert reversed visibility depth into positive linear distance before every
-// conservative nearest-nonzero reduction.
+// conservative nearest-nonzero reduction. The three outputs are views of physical
+// mips one through three in the shared GTAO depth-pyramid image.
 FastGTAOView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,

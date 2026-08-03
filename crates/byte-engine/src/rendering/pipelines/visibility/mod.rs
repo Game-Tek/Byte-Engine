@@ -792,6 +792,22 @@ mod tests {
 			.expect("Failed to compile production Material Count MSL. The most likely cause is invalid Metal subgroup lowering.");
 	}
 
+	/// Compiles the production Pixel Mapping shader so its established-key fast path stays valid on Metal.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn production_pixel_mapping_stage_compiles_with_metal() {
+		let source = MslGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::square(PIXEL_MAPPING_WORKGROUP_WIDTH)),
+				&pixel_mapping_program(),
+			)
+			.expect("Failed to lower production Pixel Mapping BESL to MSL. The most likely cause is invalid atomic source.");
+		assert!(source.contains("atomic_load_explicit(&"));
+		assert!(source.contains("_besl_atomic_compare_exchange("));
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "visibility-pixel-mapping")
+			.expect("Failed to compile production Pixel Mapping MSL. The most likely cause is invalid Metal atomic lowering.");
+	}
+
 	/// Creates one identity-transformed triangle meshlet in the production visibility buffer layouts.
 	fn mesh_triangle_buffers(
 		program: &ExecutableProgram,
@@ -1327,6 +1343,80 @@ mod tests {
 		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 2), [2, 1]);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 2), 2);
 		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 5), 3);
+	}
+
+	/// Verifies a coherent tile reuses its established local key while preserving every pixel mapping.
+	#[test]
+	fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
+		let program = crate::rendering::shader_vm_test::compile(pixel_mapping_program());
+		let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+		mesh_data
+			.write_indexed_field("meshes", 0, "material_index", Value::U32(7))
+			.expect(
+				"Failed to initialize the coherent Pixel Mapping mesh. The most likely cause is a drifted Mesh buffer layout.",
+			);
+		let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+		let mut instance_indices = Texture::new(PIXEL_MAPPING_WORKGROUP_WIDTH, PIXEL_MAPPING_WORKGROUP_WIDTH)
+			.expect("Failed to create the coherent Pixel Mapping fixture. The most likely cause is an invalid test extent.");
+		for lane in 0..PIXEL_MAPPING_WORKGROUP_SIZE {
+			instance_indices
+				.write_u32(
+					[
+						(lane % PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u32,
+						(lane / PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u32,
+					],
+					0,
+				)
+				.expect("Failed to initialize a coherent Pixel Mapping texel. The most likely cause is an invalid coordinate.");
+		}
+
+		let mut pixel_mapping = buffer(&program, PIXEL_MAPPING_SLOT);
+		let mut workgroup = WorkgroupState::new();
+		let configs: [ExecutionConfig; PIXEL_MAPPING_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % PIXEL_MAPPING_WORKGROUP_WIDTH, lane / PIXEL_MAPPING_WORKGROUP_WIDTH])
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
+			descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the coherent Pixel Mapping workgroup. The most likely cause is broken established-key reservation.",
+			);
+		}
+
+		let mut seen = [[false; PIXEL_MAPPING_WORKGROUP_WIDTH as usize]; PIXEL_MAPPING_WORKGROUP_WIDTH as usize];
+		for mapping_index in 0..PIXEL_MAPPING_WORKGROUP_SIZE {
+			let coordinate = read_vec2u16(&pixel_mapping, "pixel_mapping", mapping_index);
+			assert!(
+				coordinate[0] > 0
+					&& coordinate[0] <= PIXEL_MAPPING_WORKGROUP_WIDTH as u16
+					&& coordinate[1] > 0
+					&& coordinate[1] <= PIXEL_MAPPING_WORKGROUP_WIDTH as u16,
+				"Pixel Mapping returned an invalid coherent-tile coordinate. The most likely cause is that the fast path reused a local rank."
+			);
+			let x = (coordinate[0] - 1) as usize;
+			let y = (coordinate[1] - 1) as usize;
+			assert!(
+				!seen[y][x],
+				"Pixel Mapping duplicated a coherent-tile coordinate. The most likely cause is that the fast path reused a local rank."
+			);
+			seen[y][x] = true;
+		}
+		assert!(
+			seen.into_iter().flatten().all(|coordinate| coordinate),
+			"Pixel Mapping omitted a coherent-tile coordinate. The most likely cause is that the fast path skipped a local rank."
+		);
+		assert_eq!(
+			read_u32(&material_offset_scratch, "material_offset_scratch", 7),
+			PIXEL_MAPPING_WORKGROUP_SIZE as u32,
+			"Pixel Mapping advanced the coherent material cursor incorrectly. The most likely cause is that the fast path did not reserve each pixel exactly once."
+		);
 	}
 
 	/// Verifies tile-local reservations preserve mappings when distinct materials exceed the bounded histogram.

@@ -65,15 +65,24 @@ main: fn () -> void {
 			probe = probe + 1
 		) {
 			let slot: u32 = (material_index + probe) & 31;
-			let previous_key: u32 = atomic_compare_exchange(
-				tile_histogram_keys[slot],
-				INVALID_INDEX,
-				material_index
-			);
+			let key: u32 = atomic_load(tile_histogram_keys[slot]);
 
-			if (previous_key == INVALID_INDEX || previous_key == material_index) {
+			// Most later pixels find an established key and avoid a contended compare-exchange.
+			if (key == material_index) {
 				let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
 				packed_tile_mapping = (tile_rank << 5) | slot;
+			}
+			if (key == INVALID_INDEX) {
+				let previous_key: u32 = atomic_compare_exchange(
+					tile_histogram_keys[slot],
+					INVALID_INDEX,
+					material_index
+				);
+
+				if (previous_key == INVALID_INDEX || previous_key == material_index) {
+					let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
+					packed_tile_mapping = (tile_rank << 5) | slot;
+				}
 			}
 		}
 	}

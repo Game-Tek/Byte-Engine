@@ -1648,7 +1648,8 @@ fn import_fbx_primitive<'a>(
 		}
 		if context.source_attributes.contains(VertexSemantics::UV) {
 			let uv = mesh.vertex_uv[corner];
-			uvs.push([finite_f32(uv.x, "mesh UV")?, finite_f32(uv.y, "mesh UV")?]);
+			// FBX UVs are bottom-left based, while baked image rows and material sampling are top-left based.
+			uvs.push([finite_f32(uv.x, "mesh UV")?, 1.0 - finite_f32(uv.y, "mesh UV")?]);
 		} else {
 			uvs.push([0.0, 0.0]);
 		}
@@ -2215,6 +2216,21 @@ mod tests {
 		assert!((bounds[1][0] - 0.01).abs() < 1.0e-6);
 		assert!((bounds[1][1] - 0.01).abs() < 1.0e-6);
 		assert_eq!(bounds[1][2], 0.0);
+	}
+
+	#[test]
+	fn converts_fbx_uvs_to_top_left_texture_coordinates() {
+		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").expect("fixture FBX should parse");
+		let materials = ResolvedFbxMaterials {
+			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
+		};
+		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
+		let primitive = source.primitive(0).expect("fixture should contain one primitive");
+		let Some(MeshAttributeData::F32x2(uvs)) = primitive.attribute(VertexSemantics::UV, 0) else {
+			panic!("FBX fixture should contain f32 UV data");
+		};
+
+		assert_eq!(uvs, &[[0.0, 1.0], [1.0, 0.75], [0.25, 0.0]]);
 	}
 
 	#[test]

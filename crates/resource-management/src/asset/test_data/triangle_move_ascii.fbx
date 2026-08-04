@@ -35,10 +35,23 @@ Objects:  {
                 a: 0,0,1,0,0,1,0,0,1
             }
         }
+        LayerElementUV: 0 {
+            Version: 101
+            Name: "map1"
+            MappingInformationType: "ByPolygonVertex"
+            ReferenceInformationType: "Direct"
+            UV: *6 {
+                a: 0,0,1,0.25,0.25,1
+            }
+        }
         Layer: 0 {
             Version: 100
             LayerElement: {
                 Type: "LayerElementNormal"
+                TypedIndex: 0
+            }
+            LayerElement: {
+                Type: "LayerElementUV"
                 TypedIndex: 0
             }
         }

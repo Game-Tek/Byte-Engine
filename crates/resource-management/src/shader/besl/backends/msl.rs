@@ -2607,7 +2607,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("_sampler, ");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(", level(");
+				// Qualify the Metal helper so BESL identifiers such as `level` cannot shadow it.
+				string.push_str(", metal::level(");
 				if let Some(lod) = arguments.get(2) {
 					self.emit_node_string(string, lod);
 				} else {
@@ -3657,6 +3658,31 @@ mod tests {
 			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
+	}
+
+	#[test]
+	fn texture_lod_qualifies_metal_level_helper() {
+		let source = r#"
+			depth_texture: descriptor<Texture2D, 0, read>;
+			sample_depth: fn (uv: vec2f, level: u32) -> f32 {
+				return texture_lod(depth_texture, uv, f32(level)).x;
+			}
+			main: fn () -> void {
+				sample_depth(vec2f(0.5, 0.5), 1);
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected texture LOD source to link");
+		let main = root.get_main().expect("Expected texture LOD source to define main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Expected texture LOD source to lower to Metal");
+
+		assert_string_contains!(shader, "metal::level(float(level))");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-texture-lod-level-shadowing")
+			.expect("Expected qualified Metal level helper to compile when a BESL parameter is named level");
 	}
 
 	#[test]

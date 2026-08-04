@@ -1450,7 +1450,7 @@ mod tests {
 		assert!(hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)"));
 		assert!(glsl.contains("textureLod(environment_specular, environment_uv, specular_level)"));
 		assert!(msl.contains(
-			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, level(specular_level))"
+			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, metal::level(specular_level))"
 		));
 		assert!(msl.contains("float3 world_space_vertex_position0"));
 		assert!(!msl.contains("world_space_vertex_positions[3]"));

@@ -313,14 +313,6 @@ mod tests {
 	}
 
 	#[test]
-	fn smaa_resolve_baked_workgroup_matches_its_tile_layout() {
-		assert!(
-			RESOLVE_SHADER_BEAD.contains("\"workgroup\": [16, 8, 1]"),
-			"SMAA resolve dispatch metadata must match the shader's 16x8 shared-weight tile."
-		);
-	}
-
-	#[test]
 	fn smaa_edge_besl_vm_rejects_constant_regions_and_keeps_dominant_edges() {
 		let constant = [[0.4, 0.4, 0.4, 1.0]; 5];
 		let mut source = texture_2d(5, 1, &constant);

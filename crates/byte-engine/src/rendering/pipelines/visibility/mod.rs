@@ -80,12 +80,13 @@ pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::ShaderResourceDescriptor = ghi:
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(PRIMITIVE_INDEX_BUFFER_STRIDE);
+pub(crate) const MESHLET_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMeshletData>() as u32;
 pub(crate) const MESHLET_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(8),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(64);
+.buffer_stride(MESHLET_DATA_BUFFER_STRIDE);
 pub(crate) const MESH_DISPATCH_WORK_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1063),
 	ghi::ResourceKind::StorageBuffer,
@@ -172,7 +173,7 @@ pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_S
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone)]
-#[repr(C, align(16))]
+#[repr(C)]
 pub(super) struct ShaderMeshletData {
 	/// Base index into the vertex-index buffer.
 	/// ```glsl
@@ -194,8 +195,8 @@ pub(super) struct ShaderMeshletData {
 	center_radius: [f32; 4],
 	/// Object-space normal-cone apex encoded as xyz apex and w cutoff.
 	cone_apex_cutoff: [f32; 4],
-	/// Object-space normal-cone axis encoded as xyz axis.
-	cone_axis: [f32; 4],
+	/// Octahedrally encoded object-space normal-cone axis.
+	cone_axis: RuntimeVertexNormal,
 }
 
 #[cfg(test)]
@@ -1995,8 +1996,9 @@ mod tests {
 	}
 
 	#[test]
-	fn shader_meshlet_data_matches_metal_buffer_layout() {
-		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
-		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
+	fn shader_meshlet_data_matches_packed_buffer_layout() {
+		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 4);
+		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 52);
+		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, cone_axis), 48);
 	}
 }

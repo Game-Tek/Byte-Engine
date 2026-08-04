@@ -26,7 +26,7 @@ Meshlet: struct {
 	triangle_count: u32,
 	center_radius: vec4f,
 	cone_apex_cutoff: vec4f,
-	cone_axis: vec4f,
+	cone_axis: vec2u16,
 }
 
 Views: struct {
@@ -57,6 +57,18 @@ push_constant: push_constant {
 	work_item_base: u32,
 	view_index: u32,
 	render_target_array_index: u32,
+}
+
+decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
+	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0 * 2.0 - vec2f(1.0, 1.0);
+	let normal_z: f32 = 1.0 - sqrt(octahedral.x * octahedral.x) - sqrt(octahedral.y * octahedral.y);
+	let fold: f32 = ((0.0 - normal_z) + sqrt(normal_z * normal_z)) * 0.5;
+	let decoded: vec3f = vec3f(
+		octahedral.x - (octahedral.x + 0.0000001) / (sqrt(octahedral.x * octahedral.x) + 0.0000001) * fold,
+		octahedral.y - (octahedral.y + 0.0000001) / (sqrt(octahedral.y * octahedral.y) + 0.0000001) * fold,
+		normal_z
+	);
+	return normalize(decoded);
 }
 
 extend_vec3f: fn(value: vec3f, w: f32) -> vec4f {
@@ -127,7 +139,7 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 		meshlet.cone_apex_cutoff.y,
 		meshlet.cone_apex_cutoff.z
 	);
-	let cone_axis: vec3f = vec3f(meshlet.cone_axis.x, meshlet.cone_axis.y, meshlet.cone_axis.z);
+	let cone_axis: vec3f = decode_octahedral_normal(meshlet.cone_axis);
 	let cone_view: vec3f = cone_apex - camera_position_object;
 	let cone_view_length_squared: f32 = dot(cone_view, cone_view);
 	let cone_axis_length_squared: f32 = dot(cone_axis, cone_axis);

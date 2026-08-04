@@ -26,7 +26,7 @@ Meshlet: struct {
 	triangle_count: u32,
 	center_radius: vec4f,
 	cone_apex_cutoff: vec4f,
-	cone_axis: vec4f,
+	cone_axis: vec2u16,
 }
 
 SkinnedVertex: struct {

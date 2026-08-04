@@ -857,7 +857,7 @@ impl VisibilityShaderScope {
 				Node::member("triangle_count", "u32"),
 				Node::member("center_radius", "vec4f"),
 				Node::member("cone_apex_cutoff", "vec4f"),
-				Node::member("cone_axis", "vec4f"),
+				Node::member("cone_axis", "vec2u16"),
 			],
 		);
 		let light_struct = Node::r#struct(

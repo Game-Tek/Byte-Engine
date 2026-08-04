@@ -515,7 +515,7 @@ impl GPUVertexDataManager {
 										triangle_count: meshlet_triangle_count,
 										center_radius: meshlet.center_radius,
 										cone_apex_cutoff: meshlet.cone_apex_cutoff,
-										cone_axis: meshlet.cone_axis,
+										cone_axis: encode_octahedral_normal((meshlet.cone_axis[0], meshlet.cone_axis[1], meshlet.cone_axis[2])),
 									}
 									.into()
 								},
@@ -844,7 +844,7 @@ impl GPUVertexDataManager {
 			triangle_count,
 			center_radius,
 			cone_apex_cutoff: [0.0, 0.0, 0.0, 2.0],
-			cone_axis: [0.0, 0.0, 1.0, 0.0],
+			cone_axis: encode_octahedral_normal((0.0, 0.0, 1.0)),
 		});
 
 		meshlet_vertex_indices.clear();

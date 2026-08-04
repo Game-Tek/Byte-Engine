@@ -2531,6 +2531,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
+			"packed_vec4f" => "packed_float4",
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
@@ -2677,7 +2678,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
 				string.push_str(Self::translate_type(name));
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -3557,6 +3558,23 @@ mod tests {
 
 		assert_string_contains!(shader, "struct _buff{packed_ushort4 value;};");
 		assert!(!shader.contains("struct vec4u16"));
+	}
+
+	#[test]
+	fn packed_vec4f_uses_native_msl_vectors_and_a_52_byte_record_stride() {
+		let mut shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::packed_vec4f_meshlet_binding(),
+			)
+			.expect("Expected packed_vec4f MSL generation");
+
+		assert_string_contains!(shader, "packed_float4 center_radius;packed_float4 cone_apex_cutoff;");
+		assert!(!shader.contains("struct packed_vec4f"));
+		shader.push_str("\nstatic_assert(sizeof(Meshlet) == 52, \"Packed Meshlet stride must match the host\");\n");
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-packed-vec4f")
+			.expect("Expected packed_vec4f storage lowering to compile natively");
 	}
 
 	#[test]

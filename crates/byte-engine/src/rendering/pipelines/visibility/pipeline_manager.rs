@@ -592,6 +592,8 @@ impl VisibilityPipelineManager {
 							skinning.source_vertex_offset,
 							shader_mesh.skinned_base_vertex_index,
 							palette_base,
+							u32::try_from(skinning.binding.len())
+								.expect("Skin palette size exceeds u32. The most likely cause is a corrupted skin binding."),
 							skinning.vertex_count,
 						));
 					}

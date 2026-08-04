@@ -146,6 +146,38 @@ impl GPUVertexDataManager {
 			return None;
 		};
 
+		if mesh_resource
+			.primitives
+			.iter()
+			.filter_map(|primitive| primitive.skin)
+			.any(|skin_index| skin_index as usize >= mesh_resource.skins.len())
+		{
+			log::error!(
+				"Skinned primitive references a missing skin binding. The most likely cause is corrupted primitive metadata."
+			);
+			return None;
+		}
+
+		// Retain only copyable validation metadata across the mutable asynchronous resource load.
+		let primitive_validations = mesh_resource
+			.primitives
+			.iter()
+			.map(|primitive| LoadedPrimitiveValidation {
+				vertex_count: primitive.vertex_count,
+				vertex_indices: primitive
+					.stream(Streams::Indices(resource_management::types::IndexStreamTypes::Vertices))
+					.cloned(),
+				triangle_indices: primitive
+					.stream(Streams::Indices(resource_management::types::IndexStreamTypes::Meshlets))
+					.cloned(),
+				meshlets: primitive.meshlet_stream().cloned(),
+				joints: primitive.stream(Streams::Vertices(VertexSemantics::Joints)).cloned(),
+				weights: primitive.stream(Streams::Vertices(VertexSemantics::Weights)).cloned(),
+				palette_len: primitive
+					.skin
+					.map(|skin_index| mesh_resource.skins[skin_index as usize].len()),
+			})
+			.collect::<Vec<_>>();
 		let has_skinned_primitives = mesh_resource.primitives.iter().any(|primitive| primitive.skin.is_some());
 		let joints_stream = if has_skinned_primitives {
 			let Some(stream) = mesh_resource.vertex_stream(VertexSemantics::Joints).cloned() else {
@@ -236,6 +268,14 @@ impl GPUVertexDataManager {
 		);
 
 		let vertex_count = positions_stream.count();
+		if positions_stream.stride != SKINNING_POSITION_STRIDE
+			|| !positions_stream.size.is_multiple_of(SKINNING_POSITION_STRIDE)
+		{
+			log::error!(
+				"Mesh positions are not vec3f. The most likely cause is malformed or unsupported vertex stream metadata."
+			);
+			return None;
+		}
 		if normals_stream.count() != vertex_count || normals_stream.stride != NORMAL_F32_SOURCE_STRIDE {
 			log::error!(
 				"Mesh normals are not vec3f or do not match the position count. The most likely cause is malformed or unsupported vertex stream metadata."
@@ -332,6 +372,12 @@ impl GPUVertexDataManager {
 		};
 
 		// Skinning retains the loaded f32 normals, while static visibility consumes a compact octahedral copy.
+		if validate_loaded_mesh_indices(&primitive_validations, &load_target).is_err()
+			|| validate_loaded_skin_joints(&primitive_validations, &load_target).is_err()
+		{
+			return None;
+		}
+
 		let runtime_normal_size = vertex_count * VERTEX_NORMAL_BUFFER_STRIDE as usize;
 		let source_normals = load_target
 			.stream("Vertex.Normal")
@@ -515,7 +561,11 @@ impl GPUVertexDataManager {
 										triangle_count: meshlet_triangle_count,
 										center_radius: meshlet.center_radius,
 										cone_apex_cutoff: meshlet.cone_apex_cutoff,
-										cone_axis: encode_octahedral_normal((meshlet.cone_axis[0], meshlet.cone_axis[1], meshlet.cone_axis[2])),
+										cone_axis: encode_octahedral_normal((
+											meshlet.cone_axis[0],
+											meshlet.cone_axis[1],
+											meshlet.cone_axis[2],
+										)),
 									}
 									.into()
 								},
@@ -659,7 +709,10 @@ impl GPUVertexDataManager {
 		let runtime_uv_size = uvs.len() * VERTEX_UV_BUFFER_STRIDE as usize;
 		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(runtime_uv_size);
 		// Generated geometry starts as f32, so encode directly into staging without a temporary packed vector.
-		for (destination, &(u, v)) in vertex_uv_buffer.chunks_exact_mut(VERTEX_UV_BUFFER_STRIDE as usize).zip(uvs.iter()) {
+		for (destination, &(u, v)) in vertex_uv_buffer
+			.chunks_exact_mut(VERTEX_UV_BUFFER_STRIDE as usize)
+			.zip(uvs.iter())
+		{
 			destination[..2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
 			destination[2..].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
 		}
@@ -979,7 +1032,11 @@ fn pack_f32_normals(source: &[u8], destination: &mut [u8], vertex_count: usize) 
 	for index in 0..vertex_count {
 		let offset = index * NORMAL_F32_SOURCE_STRIDE;
 		let component = |component_offset| {
-			f32::from_ne_bytes(source[offset + component_offset..offset + component_offset + 4].try_into().expect("A validated f32 normal component is four bytes."))
+			f32::from_ne_bytes(
+				source[offset + component_offset..offset + component_offset + 4]
+					.try_into()
+					.expect("A validated f32 normal component is four bytes."),
+			)
 		};
 		let encoded = encode_octahedral_normal((component(0), component(4), component(8)));
 		let destination_offset = index * VERTEX_NORMAL_BUFFER_STRIDE as usize;
@@ -998,8 +1055,16 @@ fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 	for index in 0..vertex_count {
 		let source_offset = index * UV_F32_SOURCE_STRIDE;
 		let destination_offset = index * UV_U16_SOURCE_STRIDE;
-		let u = f32::from_ne_bytes(source[source_offset..source_offset + 4].try_into().expect("A validated f32 UV is four bytes."));
-		let v = f32::from_ne_bytes(source[source_offset + 4..source_offset + 8].try_into().expect("A validated f32 UV is four bytes."));
+		let u = f32::from_ne_bytes(
+			source[source_offset..source_offset + 4]
+				.try_into()
+				.expect("A validated f32 UV is four bytes."),
+		);
+		let v = f32::from_ne_bytes(
+			source[source_offset + 4..source_offset + 8]
+				.try_into()
+				.expect("A validated f32 UV is four bytes."),
+		);
 		destination[destination_offset..destination_offset + 2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
 		destination[destination_offset + 2..destination_offset + 4].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
 	}
@@ -1106,6 +1171,190 @@ fn read_f32x4(bytes: &[u8], offset: usize) -> [f32; 4] {
 		read_f32(bytes, offset + 8),
 		read_f32(bytes, offset + 12),
 	]
+}
+
+/// The `LoadedPrimitiveValidation` struct retains the ranges needed to validate loaded bytes without borrowing the resource.
+struct LoadedPrimitiveValidation {
+	vertex_count: u32,
+	vertex_indices: Option<ResourceStream>,
+	triangle_indices: Option<ResourceStream>,
+	meshlets: Option<ResourceStream>,
+	joints: Option<ResourceStream>,
+	weights: Option<ResourceStream>,
+	palette_len: Option<usize>,
+}
+
+/// Rejects meshlet references that would address vertices or triangle lanes outside their primitive-local ranges.
+fn validate_loaded_mesh_indices(
+	primitives: &[LoadedPrimitiveValidation],
+	loaded: &resource_management::resource::ReadTargets<'_>,
+) -> Result<(), ()> {
+	let vertex_indices = loaded
+		.stream("VertexIndices")
+		.expect("The vertex-index stream was loaded.")
+		.buffer();
+	let triangle_indices = loaded
+		.stream("MeshletIndices")
+		.expect("The meshlet-index stream was loaded.")
+		.buffer();
+	let meshlets = loaded.stream("Meshlets").expect("The meshlet stream was loaded.").buffer();
+
+	for (primitive_index, primitive) in primitives.iter().enumerate() {
+		let vertex_stream = primitive
+			.vertex_indices
+			.as_ref()
+			.expect("Every loaded primitive has a validated vertex-index stream.");
+		let triangle_stream = primitive
+			.triangle_indices
+			.as_ref()
+			.expect("Every loaded primitive has a validated meshlet-index stream.");
+		let meshlet_stream = primitive
+			.meshlets
+			.as_ref()
+			.expect("Every loaded primitive has a meshlet stream.");
+		let mut vertex_cursor = vertex_stream.offset;
+		let mut triangle_cursor = triangle_stream.offset;
+		let Some(vertex_end) = vertex_stream.offset.checked_add(vertex_stream.size) else {
+			log::error!(
+				"Mesh primitive {primitive_index} vertex-index range overflows. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(triangle_stream_end) = triangle_stream.offset.checked_add(triangle_stream.size) else {
+			log::error!(
+				"Mesh primitive {primitive_index} triangle-index range overflows. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(meshlet_end) = meshlet_stream.offset.checked_add(meshlet_stream.size) else {
+			log::error!(
+				"Mesh primitive {primitive_index} meshlet range overflows. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(meshlet_bytes) = meshlets.get(meshlet_stream.offset..meshlet_end) else {
+			log::error!(
+				"Mesh primitive {primitive_index} meshlet range is out of bounds. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+
+		for meshlet_bytes in meshlet_bytes.chunks_exact(RESOURCE_MESHLET_STRIDE) {
+			let meshlet = read_resource_meshlet(meshlet_bytes);
+			for offset in (0..meshlet.primitive_count as usize).map(|index| vertex_cursor + index * 2) {
+				let Some(bytes) = vertex_indices.get(offset..offset + 2) else {
+					log::error!(
+						"Mesh primitive {primitive_index} vertex-index range is out of bounds. The most likely cause is corrupted meshlet counts."
+					);
+					return Err(());
+				};
+				let index = u16::from_ne_bytes(bytes.try_into().expect("A u16 index is two bytes."));
+				if index as u32 >= primitive.vertex_count {
+					log::error!(
+						"Mesh primitive {primitive_index} references vertex {index} outside its {} vertices. The most likely cause is corrupted meshlet vertex indices.",
+						primitive.vertex_count
+					);
+					return Err(());
+				}
+			}
+			let Some(triangle_end) = triangle_cursor.checked_add(meshlet.triangle_count as usize * 3) else {
+				log::error!(
+					"Mesh primitive {primitive_index} triangle-index range overflows. The most likely cause is corrupted meshlet counts."
+				);
+				return Err(());
+			};
+			let Some(meshlet_triangles) = triangle_indices.get(triangle_cursor..triangle_end) else {
+				log::error!(
+					"Mesh primitive {primitive_index} triangle-index range is out of bounds. The most likely cause is corrupted meshlet counts."
+				);
+				return Err(());
+			};
+			for &index in meshlet_triangles {
+				if index as u32 >= meshlet.primitive_count {
+					log::error!(
+						"Mesh primitive {primitive_index} has a triangle index outside its meshlet vertex range. The most likely cause is corrupted meshlet triangle data."
+					);
+					return Err(());
+				}
+			}
+			vertex_cursor += meshlet.primitive_count as usize * 2;
+			triangle_cursor = triangle_end;
+			if vertex_cursor > vertex_end || triangle_cursor > triangle_stream_end {
+				log::error!(
+					"Mesh primitive {primitive_index} meshlet counts exceed its declared index ranges. The most likely cause is corrupted meshlet metadata."
+				);
+				return Err(());
+			}
+		}
+		if vertex_cursor != vertex_end || triangle_cursor != triangle_stream_end {
+			log::error!(
+				"Mesh primitive {primitive_index} meshlet counts do not consume its declared index ranges. The most likely cause is inconsistent meshlet metadata."
+			);
+			return Err(());
+		}
+	}
+	Ok(())
+}
+
+/// Rejects palette-local joints that could read outside the selected skin binding.
+fn validate_loaded_skin_joints(
+	primitives: &[LoadedPrimitiveValidation],
+	loaded: &resource_management::resource::ReadTargets<'_>,
+) -> Result<(), ()> {
+	let (Some(joints), Some(weights)) = (loaded.stream("Vertex.Joints"), loaded.stream("Vertex.Weights")) else {
+		return Ok(());
+	};
+	for (primitive_index, primitive) in primitives.iter().enumerate() {
+		let Some(palette_len) = primitive.palette_len else { continue };
+		let stream = primitive
+			.joints
+			.as_ref()
+			.expect("A skinned primitive has a validated joint stream.");
+		let weight_stream = primitive
+			.weights
+			.as_ref()
+			.expect("A skinned primitive has a validated weight stream.");
+		let Some(stream_end) = stream.offset.checked_add(stream.size) else {
+			log::error!(
+				"Skinned primitive {primitive_index} joint range overflows. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(joint_bytes) = joints.buffer().get(stream.offset..stream_end) else {
+			log::error!(
+				"Skinned primitive {primitive_index} joint range is out of bounds. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(weight_end) = weight_stream.offset.checked_add(weight_stream.size) else {
+			log::error!(
+				"Skinned primitive {primitive_index} weight range overflows. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		let Some(weight_bytes) = weights.buffer().get(weight_stream.offset..weight_end) else {
+			log::error!(
+				"Skinned primitive {primitive_index} weight range is out of bounds. The most likely cause is corrupted stream metadata."
+			);
+			return Err(());
+		};
+		for (vertex, vertex_weights) in joint_bytes
+			.chunks_exact(SKINNING_JOINTS_STRIDE)
+			.zip(weight_bytes.chunks_exact(SKINNING_WEIGHTS_STRIDE))
+		{
+			for (lane, weight) in vertex.chunks_exact(2).zip(vertex_weights.chunks_exact(4)) {
+				let joint = u16::from_ne_bytes(lane.try_into().expect("A u16 joint index is two bytes."));
+				let weight = f32::from_ne_bytes(weight.try_into().expect("An f32 skin weight is four bytes."));
+				if weight > 0.0 && joint as usize >= palette_len {
+					log::error!(
+						"Skinned primitive {primitive_index} references joint {joint} outside its {palette_len}-matrix palette. The most likely cause is corrupted or legacy skinning data."
+					);
+					return Err(());
+				}
+			}
+		}
+	}
+	Ok(())
 }
 
 fn read_f32(bytes: &[u8], offset: usize) -> f32 {

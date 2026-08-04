@@ -855,8 +855,8 @@ impl VisibilityShaderScope {
 				Node::member("triangle_offset", "u32"),
 				Node::member("primitive_count", "u32"),
 				Node::member("triangle_count", "u32"),
-				Node::member("center_radius", "vec4f"),
-				Node::member("cone_apex_cutoff", "vec4f"),
+				Node::member("center_radius", "packed_vec4f"),
+				Node::member("cone_apex_cutoff", "packed_vec4f"),
 				Node::member("cone_axis", "vec2u16"),
 			],
 		);
@@ -1025,8 +1025,7 @@ impl VisibilityShaderScope {
 		};
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
 		let decode_unorm16_vec2 = parse_besl_function(DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2");
-		let decode_octahedral_normal =
-			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal");
+		let decode_octahedral_normal = parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal");
 		let cone_attenuation = parse_besl_function(
 			"cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }",
 			"cone_attenuation",
@@ -1678,12 +1677,12 @@ mod tests {
 			(0, crate::rendering::pipelines::visibility::VIEW_DATA_BUFFER_STRIDE),
 			(1, crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE),
 			(2, 12),
-			(3, 12),
+			(3, crate::rendering::pipelines::visibility::VERTEX_NORMAL_BUFFER_STRIDE),
 			(4, 32),
-			(5, 8),
+			(5, crate::rendering::pipelines::visibility::VERTEX_UV_BUFFER_STRIDE),
 			(6, crate::rendering::pipelines::visibility::VERTEX_INDEX_BUFFER_STRIDE),
 			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
-			(8, 64),
+			(8, crate::rendering::pipelines::visibility::MESHLET_DATA_BUFFER_STRIDE),
 			(1034, 4),
 			(1036, 16),
 			(1037, 4),

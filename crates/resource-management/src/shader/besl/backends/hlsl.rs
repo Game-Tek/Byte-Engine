@@ -319,7 +319,7 @@ impl Generator {
 			"vec2i" => "i32",
 			"vec2u" | "vec3u" | "vec4u" => "u32",
 			"vec2f16" | "vec3f16" | "vec4f16" => "f16",
-			"vec2f" | "vec3f" | "vec4f" => "f32",
+			"vec2f" | "vec3f" | "vec4f" | "packed_vec4f" => "f32",
 			_ => type_name,
 		}
 	}
@@ -947,7 +947,7 @@ impl Generator {
 				});
 				string.push(')');
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
 				string.push_str(Self::translate_type(name));
 				string.push('(');
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
@@ -1393,6 +1393,7 @@ impl Generator {
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
+			"packed_vec4f" => "float4",
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
@@ -2333,6 +2334,20 @@ mod tests {
 
 		assert_string_contains!(shader, "uint16_t4 value;");
 		assert_string_does_not_contain!(shader, "struct vec4u16");
+	}
+
+	#[test]
+	fn packed_vec4f_uses_native_hlsl_vectors_in_nested_records() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::packed_vec4f_meshlet_binding(),
+			)
+			.expect("Expected packed_vec4f HLSL generation");
+
+		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
+		assert_string_does_not_contain!(shader, "struct packed_vec4f");
 	}
 
 	#[test]

@@ -356,6 +356,64 @@ fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffe
 }
 
 #[test]
+fn executable_program_round_trips_packed_vec4f_storage() {
+	let script = r#"
+	main: fn () -> void {
+		let unpacked: vec4f = vec4f(buff.source);
+		buff.first = buff.source.x;
+		buff.ordinary = unpacked;
+		buff.round_trip = packed_vec4f(unpacked);
+	}
+	"#;
+
+	let mut root = Node::root();
+	let packed_vec4f = root.get_child("packed_vec4f").expect("Expected packed_vec4f");
+	let vec4f = root.get_child("vec4f").expect("Expected vec4f");
+	let f32_type = root.get_child("f32").expect("Expected f32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("source", packed_vec4f.clone()).into(),
+					Node::member("first", f32_type).into(),
+					Node::member("ordinary", vec4f).into(),
+					Node::member("round_trip", packed_vec4f).into(),
+				],
+			},
+			0,
+			true,
+			true,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(0);
+	let expected = [1.0, 2.0, 3.0, 4.0];
+	let mut buffer = buffer_for_slot(&executable, slot);
+	buffer
+		.write("source", Value::PackedVec4F(expected))
+		.expect("Expected packed source write");
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot, &mut buffer);
+		executable
+			.run_main(&mut descriptors)
+			.expect("Expected packed vector conversion execution");
+	}
+
+	assert_eq!(buffer.read("first").expect("Expected packed member access"), Value::F32(expected[0]));
+	assert_eq!(
+		buffer.read("ordinary").expect("Expected ordinary vector"),
+		Value::Vec4F(expected)
+	);
+	assert_eq!(
+		buffer.read("round_trip").expect("Expected packed round trip"),
+		Value::PackedVec4F(expected)
+	);
+}
+
+#[test]
 fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
 	let script = r#"
 	main: fn () -> void {

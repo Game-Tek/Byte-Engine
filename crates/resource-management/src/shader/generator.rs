@@ -314,9 +314,9 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "vec3f16"
 			| "vec4f16"
 			| "vec2f" | "vec3f"
-			| "vec4f" | "mat2f"
-			| "mat3f" | "mat4f"
-			| "mat4x3f"
+			| "vec4f" | "packed_vec4f"
+			| "mat2f" | "mat3f"
+			| "mat4f" | "mat4x3f"
 			| "f16" | "f32"
 			| "u8" | "u16"
 			| "u32" | "i32"
@@ -893,6 +893,53 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds the 52-byte meshlet record used to verify explicit packed-float storage across backends.
+	pub fn packed_vec4f_meshlet_binding() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> void {
+			let center: vec4f = vec4f(buff.meshlets[1].center_radius);
+			let packed: packed_vec4f = packed_vec4f(center);
+			packed.x;
+			buff.meshlets[0].cone_apex_cutoff.w;
+		}
+		"#;
+		let mut root_node = besl::Node::root();
+		let u32_type = root_node.get_child("u32").expect("Expected u32 type");
+		let packed_vec4f_type = root_node.get_child("packed_vec4f").expect("Expected packed_vec4f type");
+		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
+		let meshlet = root_node.add_child(
+			besl::Node::r#struct(
+				"Meshlet",
+				vec![
+					besl::Node::member("primitive_offset", u32_type.clone()).into(),
+					besl::Node::member("triangle_offset", u32_type.clone()).into(),
+					besl::Node::member("primitive_count", u32_type.clone()).into(),
+					besl::Node::member("triangle_count", u32_type).into(),
+					besl::Node::member("center_radius", packed_vec4f_type.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", packed_vec4f_type).into(),
+					besl::Node::member("cone_axis", vec2u16_type).into(),
+				],
+			)
+			.into(),
+		);
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("meshlets", meshlet, 2)],
+				},
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed meshlet shader to compile");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 		main
 	}

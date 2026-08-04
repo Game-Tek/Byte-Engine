@@ -92,6 +92,7 @@ pub(crate) struct SkinningDispatch {
 	pub(crate) source_vertex_base: u32,
 	pub(crate) destination_vertex_base: u32,
 	pub(crate) palette_base: u32,
+	pub(crate) palette_count: u32,
 	pub(crate) vertex_count: u32,
 }
 
@@ -100,12 +101,14 @@ impl SkinningDispatch {
 		source_vertex_base: u32,
 		destination_vertex_base: u32,
 		palette_base: u32,
+		palette_count: u32,
 		vertex_count: u32,
 	) -> Self {
 		Self {
 			source_vertex_base,
 			destination_vertex_base,
 			palette_base,
+			palette_count,
 			vertex_count,
 		}
 	}
@@ -221,6 +224,27 @@ impl SkinningPass {
 		let command = command_buffer.bind_compute_pipeline(self.pipeline);
 		command.bind_descriptor_sets(&[self.descriptor_set]);
 		for dispatch in dispatches.iter().copied().filter(|dispatch| dispatch.vertex_count != 0) {
+			let source_end = (dispatch.source_vertex_base as usize)
+				.checked_add(dispatch.vertex_count as usize)
+				.expect("Skinning source range overflows. The most likely cause is corrupted primitive metadata.");
+			let destination_end = (dispatch.destination_vertex_base as usize)
+				.checked_add(dispatch.vertex_count as usize)
+				.expect("Skinning destination range overflows. The most likely cause is an invalid frame-local allocation.");
+			let palette_end = (dispatch.palette_base as usize)
+				.checked_add(dispatch.palette_count as usize)
+				.expect("Skinning palette range overflows. The most likely cause is a corrupted skin binding.");
+			assert!(
+				source_end <= MAX_SKINNED_VERTICES,
+				"Skinning source range exceeds its buffer. The most likely cause is corrupted primitive vertex metadata."
+			);
+			assert!(
+				destination_end <= MAX_SKINNED_VERTICES,
+				"Skinning destination range exceeds its buffer. The most likely cause is an invalid frame-local allocation."
+			);
+			assert!(
+				palette_end <= MAX_SKINNING_MATRICES,
+				"Skinning palette range exceeds its buffer. The most likely cause is a corrupted skin binding."
+			);
 			command.write_push_constant(0, dispatch);
 			command.dispatch(ghi::DispatchExtent::new(
 				Extent::line(dispatch.vertex_count),
@@ -262,7 +286,7 @@ mod tests {
 		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
 		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 32);
 		assert_eq!(std::mem::align_of::<SkinnedVertex>(), 16);
-		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 16);
+		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 20);
 	}
 
 	/// Verifies every backend sees a linear 48-byte affine palette, including Metal's packed float columns.
@@ -324,6 +348,7 @@ mod tests {
 			("source_vertex_base", 1),
 			("destination_vertex_base", 2),
 			("palette_base", 1),
+			("palette_count", 2),
 			("vertex_count", 1),
 		] {
 			push_constant
@@ -354,6 +379,31 @@ mod tests {
 				.read_indexed_field("values", 2, "normal")
 				.expect("Missing skinned normal."),
 			Value::Vec4F([0.0, 0.0, 1.0, 0.0])
+		);
+
+		// A malformed legacy joint must produce legal bind-pose output without indexing beyond the palette.
+		joints
+			.write_indexed("values", 1, Value::Vec4U16([2, 0, 0, 0]))
+			.expect("Failed to write an out-of-range source joint.");
+		push_constant
+			.write("destination_vertex_base", Value::U32(3))
+			.expect("Failed to update the skinning destination.");
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(ResourceSlot::new(0), &mut positions);
+			descriptors.bind_buffer(ResourceSlot::new(1), &mut normals);
+			descriptors.bind_buffer(ResourceSlot::new(2), &mut joints);
+			descriptors.bind_buffer(ResourceSlot::new(3), &mut weights);
+			descriptors.bind_buffer(ResourceSlot::new(4), &mut palette);
+			descriptors.bind_buffer(ResourceSlot::new(5), &mut output);
+			descriptors.bind_push_constant(&mut push_constant);
+			run_at(&program, &mut descriptors, [0, 0]);
+		}
+		assert_eq!(
+			output
+				.read_indexed_field("values", 3, "position")
+				.expect("Missing fallback skinned position."),
+			Value::Vec4F([1.0, 1.0, 1.0, 1.0])
 		);
 	}
 

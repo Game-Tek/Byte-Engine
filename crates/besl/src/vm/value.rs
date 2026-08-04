@@ -53,6 +53,7 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 		| ValueType::Vec2F
 		| ValueType::Vec3F
 		| ValueType::Vec4F
+		| ValueType::PackedVec4F
 		| ValueType::Mat4F
 		| ValueType::Mat4x3F
 		| ValueType::Texture2D
@@ -83,6 +84,7 @@ pub(super) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 		ValueType::Vec2F => Ok(Value::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(Value::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(Value::Vec4F(extract_f32_components::<4>(components)?)),
+		ValueType::PackedVec4F => Ok(Value::PackedVec4F(extract_f32_components::<4>(components)?)),
 		ValueType::Mat4F => Ok(Value::Mat4F(extract_f32_components::<16>(components)?)),
 		ValueType::Mat4x3F => Ok(Value::Mat4x3F(extract_f32_components::<12>(components)?)),
 		ValueType::Struct { fields, .. } => {
@@ -120,6 +122,7 @@ pub(super) fn extract_f32_components<const N: usize>(components: &[Value]) -> Re
 			Value::Vec2F(value) => value.len(),
 			Value::Vec3F(value) => value.len(),
 			Value::Vec4F(value) => value.len(),
+			Value::PackedVec4F(value) => value.len(),
 			Value::Mat4F(value) => value.len(),
 			Value::Mat4x3F(value) => value.len(),
 			_ => {
@@ -155,6 +158,7 @@ pub(super) fn extract_f32_components<const N: usize>(components: &[Value]) -> Re
 			Value::Vec2F(value) => values[index..index + value.len()].copy_from_slice(value),
 			Value::Vec3F(value) => values[index..index + value.len()].copy_from_slice(value),
 			Value::Vec4F(value) => values[index..index + value.len()].copy_from_slice(value),
+			Value::PackedVec4F(value) => values[index..index + value.len()].copy_from_slice(value),
 			Value::Mat4F(value) => values[index..index + value.len()].copy_from_slice(value),
 			Value::Mat4x3F(value) => values[index..index + value.len()].copy_from_slice(value),
 			_ => unreachable!("Float constructor components are validated before conversion"),
@@ -1289,6 +1293,7 @@ pub(super) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 		Value::Vec2F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec3F(value) => value.get(index).copied().map(Value::F32),
 		Value::Vec4F(value) => value.get(index).copied().map(Value::F32),
+		Value::PackedVec4F(value) => value.get(index).copied().map(Value::F32),
 		Value::Mat4F(value) if index < 4 => Some(Value::Vec4F(
 			value[index * 4..index * 4 + 4].try_into().expect("Matrix column size"),
 		)),
@@ -1317,7 +1322,7 @@ pub(super) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
 		ValueType::Vec2F16 | ValueType::Vec3F16 | ValueType::Vec4F16 => Some(ValueType::F16),
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::PackedVec4F => Some(ValueType::F32),
 		_ => None,
 	}
 }

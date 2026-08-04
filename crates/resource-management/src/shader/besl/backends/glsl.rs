@@ -187,6 +187,7 @@ impl Generator {
 			"vec4u" => "uvec4",
 			"vec3f" => "vec3",
 			"vec4f" => "vec4",
+			"packed_vec4f" => "vec4",
 			"mat2f" => "mat2",
 			"mat3f" => "mat3",
 			"mat4f" => "mat4",
@@ -351,7 +352,7 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
 				string.push_str(Self::translate_type(name));
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -1103,6 +1104,21 @@ mod tests {
 
 		assert_string_contains!(shader, "u16vec4 value;");
 		assert!(!shader.contains("struct vec4u16"));
+	}
+
+	#[test]
+	fn packed_vec4f_uses_native_vectors_with_scalar_buffer_layout() {
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::packed_vec4f_meshlet_binding(),
+			)
+			.expect("Expected packed_vec4f GLSL generation");
+
+		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
+		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
+		assert!(!shader.contains("struct packed_vec4f"));
 	}
 
 	#[test]

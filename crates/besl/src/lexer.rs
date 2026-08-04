@@ -196,6 +196,16 @@ impl Node {
 				("w", f32_t.clone()),
 			],
 		);
+		// Packed vectors keep scalar alignment when they are embedded in storage records.
+		let packed_vec4f32 = record_type(
+			"packed_vec4f",
+			[
+				("x", f32_t.clone()),
+				("y", f32_t.clone()),
+				("z", f32_t.clone()),
+				("w", f32_t.clone()),
+			],
+		);
 		let mat4f32 = record_type(
 			"mat4f",
 			[
@@ -241,6 +251,7 @@ impl Node {
 			vec4u32.clone(),
 			vec4f16.clone(),
 			vec4f32.clone(),
+			packed_vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
 			texture_2d.clone(),
@@ -443,6 +454,8 @@ impl Node {
 			builtin_intrinsic("vec2f", vec![("value", vec2f16.clone())], vec2f32.clone()),
 			builtin_intrinsic("vec3f", vec![("value", vec3f16.clone())], vec3f32.clone()),
 			builtin_intrinsic("vec4f", vec![("value", vec4f16.clone())], vec4f32.clone()),
+			builtin_intrinsic("packed_vec4f", vec![("value", vec4f32.clone())], packed_vec4f32.clone()),
+			builtin_intrinsic("vec4f", vec![("value", packed_vec4f32)], vec4f32.clone()),
 			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
@@ -4207,6 +4220,21 @@ main: fn () -> void {
 				_ => panic!("Expected assignment"),
 			}
 		}
+	}
+
+	#[test]
+	fn lex_packed_vec4f_construction_and_conversion() {
+		let script = r#"
+		main: fn () -> void {
+			let packed: packed_vec4f = packed_vec4f(vec4f(1.0, 2.0, 3.0, 4.0));
+			let ordinary: vec4f = vec4f(packed);
+			ordinary.w;
+		}
+		"#;
+
+		crate::compile_to_besl(script, None).expect(
+			"Failed to resolve packed_vec4f conversions. The most likely cause is a missing packed-vector intrinsic overload.",
+		);
 	}
 
 	/// Verifies matrix products expose their vector result to subsequent intrinsic overload resolution.

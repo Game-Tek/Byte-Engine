@@ -265,7 +265,7 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 			"vec4f16" => (8, 2),
 			"vec2i" | "vec2u" | "vec2f" => (8, 4),
 			"vec3u" | "vec3f" => (12, 4),
-			"vec4u" | "vec4f" => (16, 4),
+			"vec4u" | "vec4f" | "packed_vec4f" => (16, 4),
 			"mat2f" => (16, 4),
 			"mat3f" => (36, 4),
 			"mat4f" => (64, 4),
@@ -298,6 +298,8 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 			}
 			"vec3u" => (16, 16),
 			"vec4u" | "vec4f" => (16, 16),
+			// Explicit packed vectors retain scalar alignment inside nested records.
+			"packed_vec4f" => (16, 4),
 			"mat2f" => (16, 8),
 			"mat3f" => (48, 16),
 			"mat4f" => (64, 16),
@@ -316,7 +318,7 @@ fn primitive_storage_layout(type_name: &str, target: StorageLayoutTarget, packed
 			"vec4f16" => (8, 2),
 			"vec2i" | "vec2u" | "vec2f" => (8, 4),
 			"vec3u" | "vec3f" => (12, 4),
-			"vec4u" | "vec4f" => (16, 4),
+			"vec4u" | "vec4f" | "packed_vec4f" => (16, 4),
 			"mat2f" => (16, 4),
 			"mat3f" => (36, 4),
 			"mat4f" => (64, 4),
@@ -1178,6 +1180,7 @@ mod tests {
 			("vec3f16", 6, 2),
 			("vec4f16", 8, 2),
 			("vec3f", 12, 4),
+			("packed_vec4f", 16, 4),
 		] {
 			assert_builtin_layout(&root, StorageLayoutTarget::Hlsl, type_name, StorageLayout { size, alignment });
 		}
@@ -1193,6 +1196,7 @@ mod tests {
 			("vec3f16", 8, 8),
 			("vec4f16", 8, 8),
 			("vec3f", 16, 16),
+			("packed_vec4f", 16, 4),
 		] {
 			assert_builtin_layout(&root, StorageLayoutTarget::Msl, type_name, StorageLayout { size, alignment });
 		}
@@ -1208,6 +1212,7 @@ mod tests {
 			("vec3f16", 6, 2),
 			("vec4f16", 8, 2),
 			("vec3f", 12, 4),
+			("packed_vec4f", 16, 4),
 		] {
 			assert_builtin_layout(
 				&root,
@@ -1384,6 +1389,8 @@ mod tests {
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
 		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
+		let packed_vec4f = root.get_child("packed_vec4f").expect("Expected packed_vec4f");
+		let vec2u16 = root.get_child("vec2u16").expect("Expected vec2u16");
 		let mat4f = root.get_child("mat4f").expect("Expected mat4f");
 		let mat4x3f = root.get_child("mat4x3f").expect("Expected mat4x3f");
 
@@ -1426,9 +1433,9 @@ mod tests {
 					besl::Node::member("triangle_offset", u32_type.clone()).into(),
 					besl::Node::member("primitive_count", u32_type.clone()).into(),
 					besl::Node::member("triangle_count", u32_type.clone()).into(),
-					besl::Node::member("center_radius", vec4f.clone()).into(),
-					besl::Node::member("cone_apex_cutoff", vec4f.clone()).into(),
-					besl::Node::member("cone_axis", vec4f.clone()).into(),
+					besl::Node::member("center_radius", packed_vec4f.clone()).into(),
+					besl::Node::member("cone_apex_cutoff", packed_vec4f).into(),
+					besl::Node::member("cone_axis", vec2u16).into(),
 				],
 			)
 			.into(),
@@ -1471,7 +1478,7 @@ mod tests {
 				reflected_storage_buffer_stride_for_target(&view_buffer, target),
 				Ok(view_stride)
 			);
-			assert_eq!(reflected_storage_buffer_stride_for_target(&meshlet_buffer, target), Ok(64));
+			assert_eq!(reflected_storage_buffer_stride_for_target(&meshlet_buffer, target), Ok(52));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1552));
 		}
 	}

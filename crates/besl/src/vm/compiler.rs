@@ -60,6 +60,29 @@ fn require_argument_count(arguments: &[NodeReference], expected: usize) -> Resul
 	Ok(())
 }
 
+/// Resolves one parameter from the overload selected by BESL type checking.
+fn resolve_intrinsic_parameter_type(intrinsic: &NodeReference, index: usize) -> Result<ValueType, VmError> {
+	let intrinsic_ref = intrinsic.borrow();
+	let Nodes::Intrinsic { elements, .. } = intrinsic_ref.node() else {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected an intrinsic, but found {}", describe_node(intrinsic_ref.node())),
+		});
+	};
+	let parameter_type = elements
+		.iter()
+		.filter_map(|element| match element.borrow().node() {
+			Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
+			_ => None,
+		})
+		.nth(index)
+		.ok_or(VmError::CallArgumentMismatch {
+			expected: index + 1,
+			found: index,
+		})?;
+	drop(intrinsic_ref);
+	resolve_value_type(&parameter_type)
+}
+
 /// The `Compiler` struct lowers one BESL function into bounded register-machine instructions.
 struct Compiler<'a> {
 	function_ids: &'a HashMap<NodeReference, usize>,
@@ -1313,17 +1336,12 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
+			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" | "packed_vec4f" => {
 				require_argument_count(arguments, 1)?;
-				let (source_type, target_type) = match name.as_str() {
-					"vec2f" => (ValueType::Vec2F16, ValueType::Vec2F),
-					"vec3f" => (ValueType::Vec3F16, ValueType::Vec3F),
-					"vec4f" => (ValueType::Vec4F16, ValueType::Vec4F),
-					"vec2f16" => (ValueType::Vec2F, ValueType::Vec2F16),
-					"vec3f16" => (ValueType::Vec3F, ValueType::Vec3F16),
-					"vec4f16" => (ValueType::Vec4F, ValueType::Vec4F16),
-					_ => unreachable!("Only registered float-vector casts reach this branch"),
-				};
+				// The selected overload carries the source type. This also distinguishes
+				// vec4f conversions from f16 and packed storage vectors.
+				let source_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				let target_type = return_type.clone();
 				if expected_type != &target_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -2790,6 +2808,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"vec2f" => Ok(ValueType::Vec2F),
 		"vec3f" => Ok(ValueType::Vec3F),
 		"vec4f" => Ok(ValueType::Vec4F),
+		"packed_vec4f" => Ok(ValueType::PackedVec4F),
 		"mat4f" => Ok(ValueType::Mat4F),
 		"mat4x3f" => Ok(ValueType::Mat4x3F),
 		"Texture2D" => Ok(ValueType::Texture2D),
@@ -3016,7 +3035,7 @@ fn aggregate_member(value_type: &ValueType, member_name: &str) -> Result<(usize,
 			vector_member(value_type, member_name, 2)
 		}
 		ValueType::Vec3U | ValueType::Vec3F16 | ValueType::Vec3F => vector_member(value_type, member_name, 3),
-		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F => {
+		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F | ValueType::PackedVec4F => {
 			vector_member(value_type, member_name, 4)
 		}
 		ValueType::Mat4F => matrix_member(member_name, ValueType::Vec4F),

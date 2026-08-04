@@ -523,7 +523,7 @@ mod tests {
 		for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 			let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
 			meshlets
-				.write_indexed_field("meshlets", meshlet_index, "center_radius", Value::Vec4F(center_radius))
+				.write_indexed_field("meshlets", meshlet_index, "center_radius", Value::PackedVec4F(center_radius))
 				.expect("Failed to initialize a task meshlet bound. The most likely cause is a drifted Meshlet layout.");
 			// A cutoff above one disables cone rejection so each fixture isolates frustum and skinning behavior.
 			meshlets
@@ -531,7 +531,7 @@ mod tests {
 					"meshlets",
 					meshlet_index,
 					"cone_apex_cutoff",
-					Value::Vec4F([0.0, 0.0, 0.0, 2.0]),
+					Value::PackedVec4F([0.0, 0.0, 0.0, 2.0]),
 				)
 				.expect("Failed to disable task cone culling. The most likely cause is a drifted Meshlet layout.");
 		}
@@ -1999,6 +1999,34 @@ mod tests {
 	fn shader_meshlet_data_matches_packed_buffer_layout() {
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 4);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 52);
+		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, center_radius), 16);
+		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, cone_apex_cutoff), 32);
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, cone_axis), 48);
+	}
+
+	/// Compiles the production Metal meshlet record with the exact host buffer stride.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn production_metal_meshlet_stride_matches_host_buffer() {
+		let mut source = MslGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+				&visibility_task_program(),
+			)
+			.expect("Failed to lower production visibility-task BESL to MSL. The most likely cause is an invalid meshlet declaration.");
+		assert!(
+			source.contains("packed_float4 center_radius") && source.contains("packed_float4 cone_apex_cutoff"),
+			"Production Meshlet bounds must use native Metal packed vectors"
+		);
+		source.push_str(&format!(
+			"\nstatic_assert(sizeof(Meshlet) == {}, \"Metal and host meshlet strides must match\");\n",
+			super::MESHLET_DATA_BUFFER_STRIDE
+		));
+
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&source,
+			"visibility-meshlet-layout",
+		)
+		.expect("Failed to compile the production Metal meshlet layout. The most likely cause is a host/shader buffer-stride mismatch.");
 	}
 }

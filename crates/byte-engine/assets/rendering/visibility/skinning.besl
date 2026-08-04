@@ -38,6 +38,7 @@ push_constant: push_constant {
 	source_vertex_base: u32,
 	destination_vertex_base: u32,
 	palette_base: u32,
+	palette_count: u32,
 	vertex_count: u32,
 }
 
@@ -73,10 +74,43 @@ main: fn () -> void {
 	let source_normal: vec3f = source_normals.values[source_vertex_index];
 	let joints: vec4u16 = source_joints.values[source_vertex_index];
 	let weights: vec4f = source_weights.values[source_vertex_index];
-	let matrix0: mat4x3f = matrix_palette.values[push_constant.palette_base + u32(joints.x)];
-	let matrix1: mat4x3f = matrix_palette.values[push_constant.palette_base + u32(joints.y)];
-	let matrix2: mat4x3f = matrix_palette.values[push_constant.palette_base + u32(joints.z)];
-	let matrix3: mat4x3f = matrix_palette.values[push_constant.palette_base + u32(joints.w)];
+	let destination_vertex_index: u32 = push_constant.destination_vertex_base + local_vertex_index;
+	if (
+		push_constant.palette_count == 0
+		|| (weights.x > 0.0 && u32(joints.x) >= push_constant.palette_count)
+		|| (weights.y > 0.0 && u32(joints.y) >= push_constant.palette_count)
+		|| (weights.z > 0.0 && u32(joints.z) >= push_constant.palette_count)
+		|| (weights.w > 0.0 && u32(joints.w) >= push_constant.palette_count)
+	) {
+		// Preserve legal output for malformed legacy assets instead of reading outside the matrix palette.
+		let fallback: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
+		skinned_vertices.values[destination_vertex_index] = SkinnedVertex(
+			vec4f(source_position.x, source_position.y, source_position.z, 1.0),
+			vec4f(fallback.x, fallback.y, fallback.z, 0.0)
+		);
+		return;
+	}
+	// Zero-weight lanes may contain legacy sentinel indices. Redirect them before any palette access.
+	let joint0: u32 = 0;
+	let joint1: u32 = 0;
+	let joint2: u32 = 0;
+	let joint3: u32 = 0;
+	if (u32(joints.x) < push_constant.palette_count) {
+		joint0 = u32(joints.x);
+	}
+	if (u32(joints.y) < push_constant.palette_count) {
+		joint1 = u32(joints.y);
+	}
+	if (u32(joints.z) < push_constant.palette_count) {
+		joint2 = u32(joints.z);
+	}
+	if (u32(joints.w) < push_constant.palette_count) {
+		joint3 = u32(joints.w);
+	}
+	let matrix0: mat4x3f = matrix_palette.values[push_constant.palette_base + joint0];
+	let matrix1: mat4x3f = matrix_palette.values[push_constant.palette_base + joint1];
+	let matrix2: mat4x3f = matrix_palette.values[push_constant.palette_base + joint2];
+	let matrix3: mat4x3f = matrix_palette.values[push_constant.palette_base + joint3];
 	let total_weight: f32 = weights.x + weights.y + weights.z + weights.w;
 
 	let fallback_normal: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
@@ -84,12 +118,20 @@ main: fn () -> void {
 	let normal: vec3f = fallback_normal;
 	if (total_weight > 0.00000001) {
 		let inverse_total_weight: f32 = 1.0 / total_weight;
-		let matrix: mat4x3f = (
-			matrix0 * weights.x
-			+ matrix1 * weights.y
-			+ matrix2 * weights.z
-			+ matrix3 * weights.w
+		// Blend columns explicitly so every backend and the validation VM use the same affine matrix representation.
+		let blended_column0: vec3f = (
+			matrix0[0] * weights.x + matrix1[0] * weights.y + matrix2[0] * weights.z + matrix3[0] * weights.w
 		) * inverse_total_weight;
+		let blended_column1: vec3f = (
+			matrix0[1] * weights.x + matrix1[1] * weights.y + matrix2[1] * weights.z + matrix3[1] * weights.w
+		) * inverse_total_weight;
+		let blended_column2: vec3f = (
+			matrix0[2] * weights.x + matrix1[2] * weights.y + matrix2[2] * weights.z + matrix3[2] * weights.w
+		) * inverse_total_weight;
+		let blended_column3: vec3f = (
+			matrix0[3] * weights.x + matrix1[3] * weights.y + matrix2[3] * weights.z + matrix3[3] * weights.w
+		) * inverse_total_weight;
+		let matrix: mat4x3f = mat4x3f(blended_column0, blended_column1, blended_column2, blended_column3);
 		let skinned_position: vec3f = matrix * position;
 		position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
 		normal = safe_normalize(
@@ -98,7 +140,6 @@ main: fn () -> void {
 		);
 	}
 
-	let destination_vertex_index: u32 = push_constant.destination_vertex_base + local_vertex_index;
 	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(
 		vec4f(position.x, position.y, position.z, 1.0),
 		vec4f(normal.x, normal.y, normal.z, 0.0)

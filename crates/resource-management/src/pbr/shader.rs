@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 
 use super::{
-	BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
-	BrdfTexture, BrdfValue,
+	material_texture_variable_name, BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness,
+	BrdfNode, BrdfNodeId, BrdfTexture, BrdfValue,
 };
 
 /// Generates a BESL program from a solid-value BRDF material graph.
@@ -270,7 +270,9 @@ fn material_texture_sample_expression(texture: BrdfTexture) -> besl::parser::Nod
 	// Keep the BRDF graph independent from final bindless descriptor indices by referring to the generated variable name.
 	besl::parser::Node::call(
 		"sample_material",
-		vec![besl::parser::Node::member_expression(texture_slot_name(texture.image_index))],
+		vec![besl::parser::Node::member_expression(material_texture_variable_name(
+			texture.image_index,
+		))],
 	)
 }
 
@@ -348,10 +350,6 @@ fn channel_member(channel: BrdfChannel) -> &'static str {
 		BrdfChannel::Blue => "z",
 		BrdfChannel::Alpha => "w",
 	}
-}
-
-fn texture_slot_name(image_index: u32) -> String {
-	format!("gltf_texture_{image_index}")
 }
 
 fn multiply_values(
@@ -653,11 +651,11 @@ mod tests {
 				true,
 				false,
 			),
-			besl::parser::Node::constant("gltf_texture_3", "u32", besl::parser::Node::literal_expression("3")),
-			besl::parser::Node::constant("gltf_texture_4", "u32", besl::parser::Node::literal_expression("4")),
-			besl::parser::Node::constant("gltf_texture_5", "u32", besl::parser::Node::literal_expression("5")),
-			besl::parser::Node::constant("gltf_texture_6", "u32", besl::parser::Node::literal_expression("6")),
-			besl::parser::Node::constant("gltf_texture_7", "u32", besl::parser::Node::literal_expression("7")),
+			besl::parser::Node::constant("material_texture_3", "u32", besl::parser::Node::literal_expression("3")),
+			besl::parser::Node::constant("material_texture_4", "u32", besl::parser::Node::literal_expression("4")),
+			besl::parser::Node::constant("material_texture_5", "u32", besl::parser::Node::literal_expression("5")),
+			besl::parser::Node::constant("material_texture_6", "u32", besl::parser::Node::literal_expression("6")),
+			besl::parser::Node::constant("material_texture_7", "u32", besl::parser::Node::literal_expression("7")),
 		]);
 		program.add(helper_functions);
 		program.add(vec![
@@ -873,11 +871,11 @@ mod tests {
 		);
 		let statements = main_statements(&program);
 		assert_eq!(statements.len(), 11);
-		assert_texture_sample_binding(&statements[0], "material_texture_sample_0", "gltf_texture_3");
-		assert_texture_sample_binding(&statements[2], "material_texture_sample_1", "gltf_texture_4");
-		assert_texture_sample_binding(&statements[5], "material_texture_sample_2", "gltf_texture_5");
-		assert_texture_sample_binding(&statements[7], "material_texture_sample_3", "gltf_texture_6");
-		assert_texture_sample_binding(&statements[9], "material_texture_sample_4", "gltf_texture_7");
+		assert_texture_sample_binding(&statements[0], "material_texture_sample_0", "material_texture_3");
+		assert_texture_sample_binding(&statements[2], "material_texture_sample_1", "material_texture_4");
+		assert_texture_sample_binding(&statements[5], "material_texture_sample_2", "material_texture_5");
+		assert_texture_sample_binding(&statements[7], "material_texture_sample_3", "material_texture_6");
+		assert_texture_sample_binding(&statements[9], "material_texture_sample_4", "material_texture_7");
 
 		assert_member_expression(
 			assignment_right(surface_assignment(&program, "albedo")),
@@ -942,7 +940,7 @@ mod tests {
 
 		let bindings = texture_sample_bindings(&program);
 		assert_eq!(bindings.len(), 1);
-		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "gltf_texture_3");
+		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
 
 		for name in ["albedo", "metalness", "roughness", "normal", "occlusion", "emission"] {
 			assert_eq!(
@@ -986,8 +984,8 @@ mod tests {
 
 		let bindings = texture_sample_bindings(&program);
 		assert_eq!(bindings.len(), 2);
-		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "gltf_texture_3");
-		assert_texture_sample_binding(bindings[1], "material_texture_sample_1", "gltf_texture_3");
+		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
+		assert_texture_sample_binding(bindings[1], "material_texture_sample_1", "material_texture_3");
 	}
 
 	#[test]

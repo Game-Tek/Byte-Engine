@@ -1619,7 +1619,7 @@ fn gltf_image_format(format: gltf::image::Format) -> Result<Formats, LoadErrors>
 }
 
 /// Collects unique glTF image dependencies in material-slot order.
-/// The generated shader uses `gltf_texture_<image_index>` names while the runtime fills those slots with bindless descriptor indices.
+/// The generated shader uses material texture-variable names while the runtime fills those slots with bindless descriptor indices.
 fn collect_gltf_texture_dependencies(
 	material: &BrdfMaterialDescription,
 ) -> Result<Vec<GltfTextureDependency>, BrdfMaterialValidationError> {
@@ -1723,7 +1723,7 @@ async fn store_gltf_texture_dependencies(
 		let image_ref = load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic).await?;
 
 		variables.push(VariantVariableModel {
-			name: generated_texture_variable_name(dependency.image_index),
+			name: material_texture_variable_name(dependency.image_index),
 			r#type: "Texture2D".to_string(),
 			value: ValueModel::Image(image_ref),
 		});
@@ -1756,10 +1756,6 @@ fn generated_material_json(variables: &[VariantVariableModel]) -> crate::asset::
 		.as_object()
 		.expect("generated material JSON should be an object")
 		.clone()
-}
-
-fn generated_texture_variable_name(image_index: u32) -> String {
-	format!("gltf_texture_{image_index}")
 }
 
 fn generated_gltf_image_id(mesh_url: ResourceId<'_>, image_index: u32, image_name: Option<&str>) -> String {
@@ -2828,8 +2824,8 @@ pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{
 	asset::{self},
 	pbr::{
-		brdf_material_from_gltf, generate_textured_brdf_program, BrdfMaterialDescription, BrdfMaterialValidationError,
-		BrdfNode, BrdfNodeId,
+		brdf_material_from_gltf, generate_textured_brdf_program, material_texture_variable_name, BrdfMaterialDescription,
+		BrdfMaterialValidationError, BrdfNode, BrdfNodeId,
 	},
 	processors::{
 		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},

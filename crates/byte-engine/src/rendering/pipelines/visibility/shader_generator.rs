@@ -1699,7 +1699,7 @@ mod tests {
 		);
 		let material_metadata = material_metadata! {
 			"variables": [{
-				"name": "gltf_texture_3",
+				"name": "material_texture_3",
 				"data_type": "Texture2D"
 			}]
 		};

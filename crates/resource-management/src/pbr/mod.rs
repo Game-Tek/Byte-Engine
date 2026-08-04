@@ -6,6 +6,10 @@ pub mod shader;
 pub use gltf::brdf_material_from_gltf;
 pub use shader::{generate_solid_brdf_program, generate_textured_brdf_program, BrdfShaderGenerationError};
 
+pub(crate) fn material_texture_variable_name(image_index: u32) -> String {
+	format!("material_texture_{image_index}")
+}
+
 /// The `BrdfMaterialDescription` struct stores a backend-neutral material graph for surface BRDFs.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BrdfMaterialDescription {

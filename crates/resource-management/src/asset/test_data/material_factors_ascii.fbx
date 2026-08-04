@@ -64,7 +64,8 @@ Objects:  {
             P: "EmissiveColor", "Color", "", "A",0.1,0.3,0.5
             P: "EmissiveFactor", "Number", "", "A",2
             P: "TransparentColor", "Color", "", "A",1,1,1
-            P: "TransparencyFactor", "Number", "", "A",0.2
+            P: "TransparencyFactor", "Number", "", "A",1
+            P: "Opacity", "Number", "", "A",1
             P: "Shininess", "Number", "", "A",16
         }
     }
@@ -88,6 +89,27 @@ Objects:  {
             P: "TransparencyFactor", "Number", "", "A",0.4
         }
     }
+
+    Video: 4001, "Video::FactoredDiffuse", "Clip" {
+        Type: "Clip"
+        Properties70:  {
+            P: "Path", "KString", "XRefUrl", "", "textures\factored_diffuse.png"
+            P: "RelativeFilename", "KString", "XRefUrl", "", "textures\factored_diffuse.png"
+        }
+    }
+
+    Texture: 4002, "Texture::FactoredDiffuse", "" {
+        Type: "TextureVideoClip"
+        Version: 202
+        TextureName: "Texture::FactoredDiffuse"
+        Media: "Video::FactoredDiffuse"
+        FileName: "textures\factored_diffuse.png"
+        RelativeFilename: "textures\factored_diffuse.png"
+        ModelUVTranslation: 0,0
+        ModelUVScaling: 1,1
+        Texture_Alpha_Source: "None"
+        Cropping: 0,0,0,0
+    }
 }
 
 Connections:  {
@@ -95,4 +117,6 @@ Connections:  {
     C: "OO",1002,0
     C: "OO",3001,1002
     C: "OO",3002,1002
+    C: "OO",4001,4002
+    C: "OP",4002,3001,"DiffuseColor"
 }

@@ -2,10 +2,12 @@ use std::{
 	alloc::Allocator,
 	collections::{HashMap, HashSet},
 	fmt,
+	path::Path,
 	sync::Arc,
 };
 
 use serde_json::{json, Value};
+use utils::Extent;
 
 use super::{
 	asset_handler::{AssetHandler, BakeContext, LoadErrors},
@@ -15,21 +17,28 @@ use super::{
 };
 use crate::{
 	asset,
-	pbr::{generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfValue},
-	processors::mesh_processor::{
-		MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
-		TriangleFrontFaceWinding,
+	pbr::{
+		generate_textured_brdf_program, material_texture_variable_name, BrdfAlphaMode, BrdfMaterialBuilder,
+		BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
+	},
+	processors::{
+		image_processor::{gamma_from_semantic, process_image_in, ImageDescription, Semantic},
+		mesh_processor::{
+			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
+			TriangleFrontFaceWinding,
+		},
 	},
 	r#async::spawn_cpu_task,
 	resource,
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
-		material::{MaterialModel, RenderModel, Shader, VariantModel},
+		image::Image,
+		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},
 	},
-	types::{AlphaMode, VertexComponent, VertexSemantics},
+	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
 	ProcessedAsset, ReferenceModel,
 };
 
@@ -573,7 +582,7 @@ fn fbx_material_override(spec: Option<&Value>, material: Option<&ufbx::Material>
 	material["asset"].as_str().map(ToString::to_string)
 }
 
-/// Generates the current solid-value subset of an FBX material and stores its shader/material/variant resource chain.
+/// Generates an FBX material and stores its shader, material, texture, and variant resource chain.
 async fn generate_fbx_material(
 	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
@@ -589,16 +598,14 @@ async fn generate_fbx_material(
 	})?;
 	let brdf = fbx_brdf_material(material);
 	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
+	let texture_variables = store_fbx_texture_variables(context, mesh_url, material).await?;
 	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
 	let base_id = generated_fbx_material_base_id(mesh_url, key, material);
 	let shader_id = format!("{base_id}.shader");
 	let material_id = format!("{base_id}.material");
 	let variant_id = format!("{base_id}.variant");
 	let shader_name = shader_id.clone();
-	let material_json = json!({ "variables": [] })
-		.as_object()
-		.expect("generated material JSON should be an object")
-		.clone();
+	let material_json = generated_fbx_material_json(&texture_variables);
 
 	let (shader, shader_bytes) = spawn_cpu_task(move || {
 		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
@@ -631,16 +638,152 @@ async fn generate_fbx_material(
 	let material = store_model::<MaterialModel>(context, &material_id, material, &[])?;
 	let variant = VariantModel {
 		material,
-		variables: Vec::new(),
+		variables: texture_variables,
 		alpha_mode,
 	};
 	store_model::<VariantModel>(context, &variant_id, variant, &[])
 }
 
-/// Converts ufbx's normalized PBR values into the engine's solid metallic-roughness graph.
+/// Stores the diffuse texture selected by the FBX BRDF graph as a generated material variable.
+async fn store_fbx_texture_variables(
+	context: BakeContext<'_>,
+	mesh_url: ResourceId<'_>,
+	material: Option<&ufbx::Material>,
+) -> Result<Vec<VariantVariableModel>, LoadErrors> {
+	let Some(texture) = material.and_then(fbx_base_color_texture) else {
+		return Ok(Vec::new());
+	};
+
+	let image_id = generated_fbx_image_id(mesh_url, texture);
+	let image = load_and_store_fbx_texture(context, mesh_url, &image_id, texture).await?;
+	Ok(vec![VariantVariableModel {
+		name: material_texture_variable_name(texture.element.typed_id),
+		r#type: "Texture2D".to_string(),
+		value: ValueModel::Image(image),
+	}])
+}
+
+/// Loads an embedded or file-local FBX texture, processes its RGBA pixels, and stores its image resource.
+async fn load_and_store_fbx_texture(
+	context: BakeContext<'_>,
+	mesh_url: ResourceId<'_>,
+	id: &str,
+	texture: &ufbx::Texture,
+) -> Result<ReferenceModel<Image>, LoadErrors> {
+	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
+	let description = ImageDescription {
+		format: Formats::RGBA8,
+		extent: Extent::rectangle(width, height),
+		semantic: Semantic::Albedo,
+		gamma: gamma_from_semantic(Semantic::Albedo),
+		generate_mipmaps: false,
+	};
+	let (resource, data) = process_image_in(ResourceId::new(id), description, pixels, context.allocator())?;
+	context.store_resource(resource, &data).map(Into::into)
+}
+
+/// Decodes a texture embedded in the FBX or resolves its file-local image through the current asset backend.
+async fn load_fbx_texture_image(
+	context: BakeContext<'_>,
+	mesh_url: ResourceId<'_>,
+	texture: &ufbx::Texture,
+) -> Result<(Box<[u8]>, u32, u32), LoadErrors> {
+	if !texture.content.is_empty() {
+		return decode_fbx_texture_image(&texture.content).map_err(|error| {
+			context.error(format_args!(
+				"Embedded FBX texture '{}' could not be decoded. The most likely cause is unsupported or malformed image data.",
+				texture.element.name
+			));
+			error
+		});
+	}
+
+	let Some(path) = fbx_texture_source_path(texture) else {
+		context.error(format_args!(
+			"FBX texture '{}' has no embedded image or file path. The most likely cause is an incomplete texture reference.",
+			texture.element.name
+		));
+		return Err(LoadErrors::FailedToProcess);
+	};
+	let url = resolve_fbx_texture_path(mesh_url, path)?;
+	let (bytes, ..) = context.resolve(ResourceId::new(&url)).await.map_err(|error| {
+		context.error(format_args!(
+			"FBX texture '{url}' could not be loaded. The most likely cause is a missing file-local image reference."
+		));
+		error
+	})?;
+	decode_fbx_texture_image(&bytes).map_err(|error| {
+		context.error(format_args!(
+			"FBX texture '{url}' could not be decoded. The most likely cause is unsupported or malformed image data."
+		));
+		error
+	})
+}
+
+/// Decodes one FBX texture into the RGBA pixels expected by the image processor.
+fn decode_fbx_texture_image(bytes: &[u8]) -> Result<(Box<[u8]>, u32, u32), LoadErrors> {
+	let image = image::load_from_memory(bytes).map_err(|_| LoadErrors::FailedToProcess)?;
+	let rgba = image.to_rgba8();
+	let (width, height) = rgba.dimensions();
+	Ok((rgba.into_raw().into_boxed_slice(), width, height))
+}
+
+/// Selects the file-local path that remains usable when an FBX omits embedded texture bytes.
+fn fbx_texture_source_path(texture: &ufbx::Texture) -> Option<&str> {
+	if !texture.relative_filename.is_empty() {
+		Some(texture.relative_filename.as_ref())
+	} else if !texture.filename.is_empty() {
+		Some(texture.filename.as_ref())
+	} else if !texture.absolute_filename.is_empty() {
+		Some(texture.absolute_filename.as_ref())
+	} else {
+		None
+	}
+}
+
+/// Resolves a FBX file-local texture path relative to its source asset while accepting Windows-authored separators.
+fn resolve_fbx_texture_path(mesh_url: ResourceId<'_>, texture_path: &str) -> Result<String, LoadErrors> {
+	if texture_path.is_empty() {
+		return Err(LoadErrors::FailedToProcess);
+	}
+
+	let texture_path = texture_path.replace('\\', "/");
+	let is_windows_absolute =
+		texture_path.len() > 2 && texture_path.as_bytes()[1] == b':' && texture_path.as_bytes()[2] == b'/';
+	if texture_path.contains("://") || texture_path.starts_with('/') || is_windows_absolute {
+		return Ok(texture_path);
+	}
+
+	let base = mesh_url.get_base();
+	let parent = Path::new(base.as_ref()).parent();
+	if let Some(parent) = parent {
+		Ok(parent.join(texture_path).to_string_lossy().replace('\\', "/"))
+	} else {
+		Ok(texture_path)
+	}
+}
+
+/// Produces the material declarations used while compiling a generated FBX material shader.
+fn generated_fbx_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {
+	let variables = variables
+		.iter()
+		.map(|variable| json!({ "name": variable.name, "data_type": variable.r#type }))
+		.collect::<Vec<_>>();
+	json!({ "variables": variables })
+		.as_object()
+		.expect("generated FBX material JSON should be an object")
+		.clone()
+}
+
+/// Builds a deterministic resource ID for one texture owned by an FBX source asset.
+fn generated_fbx_image_id(mesh_url: ResourceId<'_>, texture: &ufbx::Texture) -> String {
+	format!("{}#images/{}", mesh_url.as_ref(), texture.element.typed_id)
+}
+
+/// Converts ufbx's normalized PBR values into the engine's metallic-roughness graph.
 fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr::BrdfMaterialDescription {
 	let mut builder = BrdfMaterialBuilder::new();
-	let (name, base_color, metallic, roughness, emission, double_sided) = if let Some(material) = material {
+	let (name, base_color, base_color_texture, metallic, roughness, emission, double_sided) = if let Some(material) = material {
 		let base_factor = material_map_scalar(&material.pbr.base_factor, 1.0).clamp(0.0, 1.0);
 		let mut base_color = material_map_vec4(
 			&material.pbr.base_color,
@@ -661,16 +804,26 @@ fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr::BrdfMater
 		(
 			non_empty_name(&material.element.name),
 			base_color,
+			fbx_base_color_texture(material),
 			material_map_scalar(&material.pbr.metalness, 0.0).clamp(0.0, 1.0),
 			material_map_scalar(&material.pbr.roughness, 1.0).clamp(0.0, 1.0),
 			emission,
 			material.features.double_sided.enabled,
 		)
 	} else {
-		(None, [1.0; 4], 0.0, 1.0, [0.0; 3], false)
+		(None, [1.0; 4], None, 0.0, 1.0, [0.0; 3], false)
 	};
 
 	let base_color_node = builder.constant(BrdfValue::Vector4(base_color));
+	let base_color_node = if let Some(texture) = base_color_texture {
+		let texture = builder.texture(BrdfTexture {
+			image_index: texture.element.typed_id,
+			texcoord_channel: 0,
+		});
+		builder.multiply(base_color_node, texture)
+	} else {
+		base_color_node
+	};
 	let metallic_node = builder.constant(BrdfValue::Scalar(metallic));
 	let roughness_node = builder.constant(BrdfValue::Scalar(roughness));
 	let emission_color = builder.constant(BrdfValue::Vector3(emission));
@@ -691,10 +844,23 @@ fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr::BrdfMater
 	builder.finish(name, surface, double_sided, alpha_mode)
 }
 
-/// Resolves explicit PBR opacity or derives it from FBX transparency for legacy Phong materials.
+/// Selects the base-color texture from normalized PBR maps or their legacy FBX diffuse fallback.
+fn fbx_base_color_texture(material: &ufbx::Material) -> Option<&ufbx::Texture> {
+	material_map_texture(&material.pbr.base_color).or_else(|| material_map_texture(&material.fbx.diffuse_color))
+}
+
+/// Returns a material texture only when ufbx reports its source map as enabled.
+fn material_map_texture(map: &ufbx::MaterialMap) -> Option<&ufbx::Texture> {
+	map.texture_enabled.then(|| map.texture.as_ref().map(AsRef::as_ref)).flatten()
+}
+
+/// Resolves explicit opacity before deriving alpha from FBX transparency fields.
 fn material_opacity(material: &ufbx::Material) -> f32 {
 	if material.pbr.opacity.has_value {
 		return material_map_scalar(&material.pbr.opacity, 1.0).clamp(0.0, 1.0);
+	}
+	if let Some(opacity) = explicit_fbx_opacity(material) {
+		return opacity;
 	}
 	let transparency = if material.pbr.transmission_factor.has_value {
 		material_map_scalar(&material.pbr.transmission_factor, 0.0)
@@ -702,6 +868,17 @@ fn material_opacity(material: &ufbx::Material) -> f32 {
 		material_map_scalar(&material.fbx.transparency_factor, 0.0)
 	};
 	(1.0 - transparency).clamp(0.0, 1.0)
+}
+
+/// Reads the authored FBX `Opacity` property when ufbx does not normalize it into the PBR opacity map.
+fn explicit_fbx_opacity(material: &ufbx::Material) -> Option<f32> {
+	let property = material.element.props.find_prop("Opacity")?;
+	match property.type_ {
+		ufbx::PropType::Number | ufbx::PropType::Integer => {
+			Some(finite_material_component(property.value_vec4.x, 1.0).clamp(0.0, 1.0))
+		}
+		_ => None,
+	}
 }
 
 /// Reads the scalar x component used by ufbx material factor maps.
@@ -1881,15 +2058,16 @@ mod tests {
 	};
 
 	use super::{
-		fbx_brdf_material, finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes,
-		import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners,
-		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts,
-		FbxImportError, MaterialKey, ResolvedFbxMaterials,
+		decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path, finite_material_component,
+		finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton, import_fbx_skin_binding,
+		load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin,
+		select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, MaterialKey,
+		ResolvedFbxMaterials,
 	};
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::tests::MinimalTestShaderGenerator,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
 		},
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
 		processors::mesh_processor::{
@@ -1900,7 +2078,8 @@ mod tests {
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
-			material::{MaterialModel, VariantModel},
+			image::Image,
+			material::{MaterialModel, ValueModel, VariantModel},
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
@@ -1909,7 +2088,7 @@ mod tests {
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
-		asset::{asset_handler::BakeContext, asset_handler::LoadErrors, ResourceId, ResourceTraceLevel},
+		asset::{asset_handler::BakeContext, asset_handler::LoadErrors, ResourceTraceLevel},
 		ProcessedAsset,
 	};
 
@@ -1918,6 +2097,21 @@ mod tests {
 	const DEGENERATE_QUAD_FBX: &[u8] = include_bytes!("test_data/degenerate_quad_ascii.fbx");
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("test_data/material_factors_ascii.fbx");
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("test_data/skinned_triangle_ascii.fbx");
+
+	/// Encodes one RGBA texel for focused external-image decoding coverage.
+	fn one_pixel_rgba_png() -> Vec<u8> {
+		let mut png = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut png, 1, 1);
+			encoder.set_color(png::ColorType::Rgba);
+			encoder.set_depth(png::BitDepth::Eight);
+			let mut writer = encoder.write_header().expect("one-pixel PNG header should encode");
+			writer
+				.write_image_data(&[255, 64, 32, 255])
+				.expect("one-pixel PNG data should encode");
+		}
+		png
+	}
 
 	/// Imports a fixture while discarding diagnostic counts that are not relevant to the focused assertion.
 	fn import_test_fbx_meshes<'a>(
@@ -2329,18 +2523,41 @@ mod tests {
 	}
 
 	#[test]
-	fn broadcasts_scalar_material_factors_and_derives_legacy_opacity() {
+	fn preserves_explicit_opacity_and_diffuse_textures_for_legacy_phong_materials() {
 		let scene = load_fbx_scene(MATERIAL_FACTORS_FBX, "material_factors.fbx").expect("material fixture should parse");
 		let phong = ufbx::find_material(&scene, "FactoredPhong").expect("Phong material should exist");
 		let metal_rough = ufbx::find_material(&scene, "FactoredMetalRough").expect("PBR material should exist");
+		let diffuse_texture = phong
+			.pbr
+			.base_color
+			.texture
+			.as_ref()
+			.expect("Phong material should retain its diffuse texture");
+		assert!(
+			!phong.pbr.opacity.has_value,
+			"the fixture must require the raw FBX Opacity fallback rather than ufbx's normalized PBR opacity map"
+		);
+		assert_eq!(
+			phong
+				.element
+				.props
+				.find_prop("Opacity")
+				.expect("Phong material should retain its raw Opacity property")
+				.value_vec4
+				.x,
+			1.0
+		);
 
 		let phong_brdf = fbx_brdf_material(Some(phong));
 		let (base_color, metallic, roughness, emission) = brdf_values(&phong_brdf);
-		assert_vec4_close(base_color, [0.2, 0.1, 0.05, 0.8]);
+		assert_vec4_close(base_color, [0.2, 0.1, 0.05, 1.0]);
 		assert!((metallic - 0.0).abs() < 1.0e-6);
 		assert!((roughness - 0.6).abs() < 1.0e-6);
 		assert_vec3_close(emission, [0.2, 0.6, 1.0]);
-		assert_eq!(phong_brdf.alpha_mode, BrdfAlphaMode::Blend);
+		assert_eq!(phong_brdf.alpha_mode, BrdfAlphaMode::Opaque);
+		assert!(phong_brdf.nodes.iter().any(|node| {
+			matches!(node, BrdfNode::Texture(texture) if texture.image_index == diffuse_texture.element.typed_id)
+		}));
 
 		let pbr_brdf = fbx_brdf_material(Some(metal_rough));
 		let (base_color, metallic, roughness, emission) = brdf_values(&pbr_brdf);
@@ -2363,6 +2580,86 @@ mod tests {
 		assert_eq!(processed.mesh.primitives.len(), 2);
 		assert!(material_ids.iter().any(|id| id.ends_with("FactoredPhong.variant")));
 		assert!(material_ids.iter().any(|id| id.ends_with("FactoredMetalRough.variant")));
+	}
+
+	#[test]
+	fn resolves_windows_fbx_texture_paths_and_decodes_external_images() {
+		let scene =
+			load_fbx_scene(MATERIAL_FACTORS_FBX, "materials/material_factors.fbx").expect("material fixture should parse");
+		let phong = ufbx::find_material(&scene, "FactoredPhong").expect("Phong material should exist");
+		let texture = phong
+			.pbr
+			.base_color
+			.texture
+			.as_ref()
+			.expect("Phong material should retain its diffuse texture");
+		let path = fbx_texture_source_path(texture).expect("diffuse texture should retain its file-local path");
+
+		assert_eq!(path, "textures\\factored_diffuse.png");
+		assert_eq!(
+			resolve_fbx_texture_path(ResourceId::new("materials/material_factors.fbx"), path)
+				.expect("Windows-authored texture path should resolve"),
+			"materials/textures/factored_diffuse.png"
+		);
+
+		let encoded = one_pixel_rgba_png();
+		let (pixels, width, height) =
+			decode_fbx_texture_image(&encoded).expect("external PNG texture should decode into RGBA pixels");
+		assert_eq!((width, height, pixels.len()), (1, 1, 4));
+	}
+
+	#[r#async::test]
+	async fn bakes_fbx_diffuse_textures_into_opaque_material_variants() {
+		let asset_storage = AssetTestStorageBackend::new();
+		let encoded = one_pixel_rgba_png();
+		let scene = load_fbx_scene(MATERIAL_FACTORS_FBX, "material_factors.fbx").expect("material fixture should parse");
+		let image_index = ufbx::find_material(&scene, "FactoredPhong")
+			.expect("Phong material should exist")
+			.pbr
+			.base_color
+			.texture
+			.as_ref()
+			.expect("Phong material should retain its diffuse texture")
+			.element
+			.typed_id;
+		asset_storage.add_file("material_factors.fbx", MATERIAL_FACTORS_FBX);
+		asset_storage.add_file("textures/factored_diffuse.png", &encoded);
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut handler = FBXAssetHandler::new();
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake("material_factors.fbx", &resource_storage)
+			.await
+			.expect("FBX material with a diffuse texture should bake");
+
+		let variant_resource = resource_storage
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Variant" && resource.id.ends_with("FactoredPhong.variant"))
+			.expect("Phong material variant should be stored");
+		let variant: VariantModel = crate::from_slice(&variant_resource.resource).expect("Phong variant should deserialize");
+
+		assert_eq!(variant.alpha_mode, AlphaMode::Opaque);
+		assert_eq!(variant.variables.len(), 1);
+		assert_eq!(variant.variables[0].r#type, "Texture2D");
+		assert_eq!(
+			variant.variables[0].name,
+			crate::pbr::material_texture_variable_name(image_index)
+		);
+		let ValueModel::Image(image) = &variant.variables[0].value else {
+			panic!("Phong diffuse texture should become an image variable");
+		};
+		assert_eq!(image.id().as_ref(), format!("material_factors.fbx#images/{image_index}"));
+
+		let image_resource = resource_storage
+			.get_resource(ResourceId::new(image.id().as_ref()))
+			.expect("diffuse image should be stored with the generated material");
+		let image: Image = crate::from_slice(&image_resource.resource).expect("diffuse image should deserialize");
+		assert_eq!(image_resource.class, "Image");
+		assert_eq!(image.extent, [1, 1, 1]);
 	}
 
 	#[test]
@@ -2619,9 +2916,7 @@ mod tests {
 		else {
 			panic!("FBX material should use a metallic-roughness surface");
 		};
-		let BrdfValue::Vector4(base_color) = constant_value(material, surface.base_color) else {
-			panic!("FBX base color should be a vector4 constant");
-		};
+		let base_color = base_color_factor(material, surface.base_color);
 		let BrdfValue::Scalar(metallic) = constant_value(material, surface.metallic) else {
 			panic!("FBX metalness should be a scalar constant");
 		};
@@ -2636,6 +2931,23 @@ mod tests {
 			panic!("FBX emission should be a vector3 constant");
 		};
 		(base_color, metallic, roughness, emission)
+	}
+
+	/// Extracts the constant color factor from a base-color graph with an optional texture sample.
+	fn base_color_factor(material: &BrdfMaterialDescription, node: crate::pbr::BrdfNodeId) -> [f32; 4] {
+		match material.node(node).expect("base color should reference a node") {
+			BrdfNode::Constant(BrdfValue::Vector4(value)) => *value,
+			BrdfNode::Multiply { left, right } => [left, right]
+				.into_iter()
+				.find_map(
+					|node| match material.node(*node).expect("base-color factor should reference a node") {
+						BrdfNode::Constant(BrdfValue::Vector4(value)) => Some(*value),
+						_ => None,
+					},
+				)
+				.expect("textured FBX base color should retain its vector4 factor"),
+			_ => panic!("FBX base color should be a vector4 constant or texture-factor product"),
+		}
 	}
 
 	/// Reads one constant node from a fixture-generated BRDF graph.

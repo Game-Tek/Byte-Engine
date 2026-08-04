@@ -10,8 +10,8 @@ pub(super) struct GPUVertexDataManager {
 
 	/// Vertex positions buffer for rendered meshes.
 	pub vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
-	/// Vertex normals buffer for rendered meshes.
-	pub vertex_normals_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
+	/// Vertex normals buffer for rendered meshes, octahedrally encoded as two UNORM16 components.
+	pub vertex_normals_buffer: ghi::BufferHandle<[RuntimeVertexNormal; MAX_VERTICES]>,
 	/// Vertex UVs buffer for rendered meshes, packed in the visibility runtime format.
 	pub vertex_uvs_buffer: ghi::BufferHandle<[RuntimeVertexUv; MAX_VERTICES]>,
 	/// Indices laid out as indices into the vertex buffers
@@ -236,6 +236,12 @@ impl GPUVertexDataManager {
 		);
 
 		let vertex_count = positions_stream.count();
+		if normals_stream.count() != vertex_count || normals_stream.stride != NORMAL_F32_SOURCE_STRIDE {
+			log::error!(
+				"Mesh normals are not vec3f or do not match the position count. The most likely cause is malformed or unsupported vertex stream metadata."
+			);
+			return None;
+		}
 		if uvs_stream.count() != vertex_count {
 			log::error!(
 				"Mesh UV count does not match its position count. The most likely cause is malformed vertex stream metadata."
@@ -325,6 +331,15 @@ impl GPUVertexDataManager {
 			return None;
 		};
 
+		// Skinning retains the loaded f32 normals, while static visibility consumes a compact octahedral copy.
+		let runtime_normal_size = vertex_count * VERTEX_NORMAL_BUFFER_STRIDE as usize;
+		let source_normals = load_target
+			.stream("Vertex.Normal")
+			.expect("The normal staging stream was supplied to the resource loader.")
+			.buffer();
+		let (vertex_normal_upload_offset, packed_normals) = slice.take_with_offset(runtime_normal_size);
+		pack_f32_normals(source_normals, packed_normals, vertex_count);
+
 		let runtime_uv_size = vertex_count * VERTEX_UV_BUFFER_STRIDE as usize;
 		let vertex_uv_upload_offset = if uv_source_format == UvSourceFormat::F32 {
 			let source_uvs = load_target
@@ -349,10 +364,10 @@ impl GPUVertexDataManager {
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
-				vertex_normals_staging_offset,
+				vertex_normal_upload_offset,
 				self.vertex_normals_buffer.into(),
-				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
-				normals_stream.size,
+				vertex_offset * VERTEX_NORMAL_BUFFER_STRIDE as usize,
+				runtime_normal_size,
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
@@ -630,9 +645,16 @@ impl GPUVertexDataManager {
 			slice.take_with_offset(std::mem::size_of_val(positions.as_ref()));
 		vertex_positions_buffer.copy_from_slice(as_byte_slice(positions.as_ref()));
 
-		let (vertex_normals_staging_offset, vertex_normals_buffer) =
-			slice.take_with_offset(std::mem::size_of_val(normals.as_ref()));
-		vertex_normals_buffer.copy_from_slice(as_byte_slice(normals.as_ref()));
+		let runtime_normal_size = normals.len() * VERTEX_NORMAL_BUFFER_STRIDE as usize;
+		let (vertex_normals_staging_offset, vertex_normals_buffer) = slice.take_with_offset(runtime_normal_size);
+		for (destination, &normal) in vertex_normals_buffer
+			.chunks_exact_mut(VERTEX_NORMAL_BUFFER_STRIDE as usize)
+			.zip(normals.iter())
+		{
+			let encoded = encode_octahedral_normal(normal);
+			destination[..2].copy_from_slice(&encoded[0].to_ne_bytes());
+			destination[2..].copy_from_slice(&encoded[1].to_ne_bytes());
+		}
 
 		let runtime_uv_size = uvs.len() * VERTEX_UV_BUFFER_STRIDE as usize;
 		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(runtime_uv_size);
@@ -666,8 +688,8 @@ impl GPUVertexDataManager {
 				staging_data_buffer,
 				vertex_normals_staging_offset,
 				self.vertex_normals_buffer.into(),
-				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
-				std::mem::size_of_val(normals.as_ref()),
+				vertex_offset * VERTEX_NORMAL_BUFFER_STRIDE as usize,
+				runtime_normal_size,
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
@@ -922,6 +944,7 @@ impl GPUVertexDataManager {
 }
 
 const RESOURCE_MESHLET_STRIDE: usize = 52;
+const NORMAL_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
 const UV_U16_SOURCE_STRIDE: usize = std::mem::size_of::<RuntimeVertexUv>();
 const UV_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 2]>();
 
@@ -929,6 +952,40 @@ const UV_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 2]>();
 enum UvSourceFormat {
 	U16Unorm,
 	F32,
+}
+
+/// Octahedrally encodes one unit normal into two UNORM16 components.
+fn encode_octahedral_normal(normal: (f32, f32, f32)) -> RuntimeVertexNormal {
+	let length = normal.0.abs() + normal.1.abs() + normal.2.abs();
+	if !length.is_finite() || length == 0.0 {
+		return [32768, 32768];
+	}
+
+	let mut x = normal.0 / length;
+	let mut y = normal.1 / length;
+	let z = normal.2 / length;
+	if z < 0.0 {
+		let previous_x = x;
+		let sign_x = if previous_x < 0.0 { -1.0 } else { 1.0 };
+		let sign_y = if y < 0.0 { -1.0 } else { 1.0 };
+		x = (1.0 - y.abs()) * sign_x;
+		y = (1.0 - previous_x.abs()) * sign_y;
+	}
+	[encode_unorm16(x * 0.5 + 0.5), encode_unorm16(y * 0.5 + 0.5)]
+}
+
+/// Converts vec3f normals to octahedral runtime storage in transfer staging memory.
+fn pack_f32_normals(source: &[u8], destination: &mut [u8], vertex_count: usize) {
+	for index in 0..vertex_count {
+		let offset = index * NORMAL_F32_SOURCE_STRIDE;
+		let component = |component_offset| {
+			f32::from_ne_bytes(source[offset + component_offset..offset + component_offset + 4].try_into().expect("A validated f32 normal component is four bytes."))
+		};
+		let encoded = encode_octahedral_normal((component(0), component(4), component(8)));
+		let destination_offset = index * VERTEX_NORMAL_BUFFER_STRIDE as usize;
+		destination[destination_offset..destination_offset + 2].copy_from_slice(&encoded[0].to_ne_bytes());
+		destination[destination_offset + 2..destination_offset + 4].copy_from_slice(&encoded[1].to_ne_bytes());
+	}
 }
 
 /// Encodes one UV component using the visibility pipeline's UNORM conversion policy.
@@ -1115,8 +1172,8 @@ use utils::as_byte_slice;
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
 	pipelines::visibility::{
-		RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-		VERTEX_UV_BUFFER_STRIDE,
+		RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+		MAX_VERTICES, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 	},
 	pipelines::visibility::{TRIANGLE_COUNT, VERTEX_COUNT},
 };

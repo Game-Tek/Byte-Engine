@@ -40,6 +40,19 @@ fn vertex_vec3_array_type() -> &'static str {
 	ARRAY_TYPE.get_or_init(|| format!("vec3f[{MAX_VERTICES}]").into_boxed_str())
 }
 
+fn vertex_normal_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE
+		.get_or_init(|| {
+			format!(
+				"{}[{MAX_VERTICES}]",
+				crate::rendering::pipelines::visibility::VERTEX_NORMAL_SHADER_TYPE
+			)
+			.into_boxed_str()
+		})
+		.as_ref()
+}
+
 fn vertex_uv_array_type() -> &'static str {
 	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
 	ARRAY_TYPE
@@ -194,6 +207,27 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 // These statements are spliced around the material-authored main body. Keeping
 // them in BESL lets each backend derive resource access, packed loads, type names,
 // and matrix multiplication from the linked AST.
+const DECODE_UNORM16_VEC2_SOURCE: &str = r#"
+decode_unorm16_vec2: fn (encoded: vec2u16) -> vec2f {
+	return vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0;
+}
+"#;
+
+const DECODE_OCTAHEDRAL_NORMAL_SOURCE: &str = r#"
+decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
+	let octahedral: vec2f = decode_unorm16_vec2(encoded) * 2.0 - vec2f(1.0, 1.0);
+	let normal_z: f32 = 1.0 - sqrt(octahedral.x * octahedral.x) - sqrt(octahedral.y * octahedral.y);
+	let fold: f32 = ((0.0 - normal_z) + sqrt(normal_z * normal_z)) * 0.5;
+	// The denominator bias gives zero components the positive fold direction used by the CPU encoder.
+	let decoded: vec3f = vec3f(
+		octahedral.x - (octahedral.x + 0.0000001) / (sqrt(octahedral.x * octahedral.x) + 0.0000001) * fold,
+		octahedral.y - (octahedral.y + 0.0000001) / (sqrt(octahedral.y * octahedral.y) + 0.0000001) * fold,
+		normal_z
+	);
+	return normalize(decoded);
+}
+"#;
+
 const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
 material_evaluation_prefix: fn () -> void {
 	let invocation: vec2u = thread_id();
@@ -235,9 +269,9 @@ material_evaluation_prefix: fn () -> void {
 	let position0: vec3f = vertex_positions.positions[vertex_index0];
 	let position1: vec3f = vertex_positions.positions[vertex_index1];
 	let position2: vec3f = vertex_positions.positions[vertex_index2];
-	let normal0: vec3f = vertex_normals.normals[vertex_index0];
-	let normal1: vec3f = vertex_normals.normals[vertex_index1];
-	let normal2: vec3f = vertex_normals.normals[vertex_index2];
+	let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index0]);
+	let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index1]);
+	let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index2]);
 	let model_space_vertex_position0: vec4f = vec4f(position0.x, position0.y, position0.z, 1.0);
 	let model_space_vertex_position1: vec4f = vec4f(position1.x, position1.y, position1.z, 1.0);
 	let model_space_vertex_position2: vec4f = vec4f(position2.x, position2.y, position2.z, 1.0);
@@ -258,9 +292,9 @@ material_evaluation_prefix: fn () -> void {
 	}
 
 	// Runtime UVs use 16-bit UNORM storage; material evaluation expands them only when needed.
-	let vertex_uv0: vec2f = vec2f(vertex_uvs.uvs[vertex_index0]) / 65535.0;
-	let vertex_uv1: vec2f = vec2f(vertex_uvs.uvs[vertex_index1]) / 65535.0;
-	let vertex_uv2: vec2f = vec2f(vertex_uvs.uvs[vertex_index2]) / 65535.0;
+	let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
+	let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
+	let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let view: View = views.views[0];
 	let model: mat4x3f = mesh.model;
@@ -864,7 +898,7 @@ impl VisibilityShaderScope {
 		);
 		let normals = Node::device_buffer_binding(
 			"vertex_normals",
-			Node::buffer("Normals", vec![Node::member("normals", vertex_vec3_array_type())]),
+			Node::buffer("Normals", vec![Node::member("normals", vertex_normal_array_type())]),
 			3,
 			true,
 			false,
@@ -990,6 +1024,9 @@ impl VisibilityShaderScope {
 			}
 		};
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
+		let decode_unorm16_vec2 = parse_besl_function(DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2");
+		let decode_octahedral_normal =
+			parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal");
 		let cone_attenuation = parse_besl_function(
 			"cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }",
 			"cone_attenuation",
@@ -1081,6 +1118,8 @@ impl VisibilityShaderScope {
 				triangle_index,
 				instance_index,
 				u16_to_u32,
+				decode_unorm16_vec2,
+				decode_octahedral_normal,
 				cone_attenuation,
 				compute_vertex_index,
 				set2_binding0,

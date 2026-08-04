@@ -56,17 +56,15 @@ fn attachment_texture_view(
 	texture.clone()
 }
 
-/// Returns a descriptor-visible view of one mip while keeping ordinary descriptors on the full texture.
+/// Creates a descriptor-visible view when a descriptor selects one mip.
 fn descriptor_texture_view(
 	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
 	format: crate::Formats,
 	mip_level: Option<u32>,
-) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	let Some(mip_level) = mip_level else {
-		return texture.clone();
-	};
+) -> Option<Retained<ProtocolObject<dyn mtl::MTLTexture>>> {
+	let mip_level = mip_level?;
 
-	unsafe {
+	Some(unsafe {
 		texture
 			.newTextureViewWithPixelFormat_textureType_levels_slices(
 				utils::to_pixel_format(format),
@@ -77,7 +75,7 @@ fn descriptor_texture_view(
 			.expect(
 				"Metal texture mip view creation failed. The most likely cause is that the selected mip exceeds the image mip count.",
 			)
-	}
+	})
 }
 
 /// Validates one attachment's declared layer selection against the native texture.
@@ -1056,7 +1054,11 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Encodes one immutable stage-specific argument buffer from the currently bound retained set union.
-	fn encode_stage_argument_buffer(&self, layout: &StageArgumentLayout) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+	fn encode_stage_argument_buffer(
+		&self,
+		layout: &StageArgumentLayout,
+		texture_views: &mut SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,
+	) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
 		let argument_buffer = self
 			.device
 			.metal_device
@@ -1093,10 +1095,12 @@ impl CommandBufferRecording<'_> {
 						},
 					) => unsafe {
 						let image = self.device.images.resource(image);
-						let texture = descriptor_texture_view(&image.texture, image.format, mip_level);
-						layout
-							.argument_encoder
-							.setTexture_atIndex(Some(texture.as_ref()), slot as _);
+						let texture_view = descriptor_texture_view(&image.texture, image.format, mip_level);
+						let texture = texture_view.as_ref().unwrap_or(&image.texture);
+						layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _);
+						if let Some(texture_view) = texture_view {
+							texture_views.push(texture_view);
+						}
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
 						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
@@ -1209,16 +1213,23 @@ impl CommandBufferRecording<'_> {
 
 		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
 		self.validate_bound_descriptor_sets(layout);
+		let mut texture_views = SmallVec::new();
 		let argument_buffers = Rc::new(
 			layout
 				.stage_argument_layouts
 				.iter()
-				.map(|stage_layout| (stage_layout.stage, self.encode_stage_argument_buffer(stage_layout)))
+				.map(|stage_layout| {
+					(
+						stage_layout.stage,
+						self.encode_stage_argument_buffer(stage_layout, &mut texture_views),
+					)
+				})
 				.collect::<SmallVec<[_; 5]>>(),
 		);
 		let materialization = Materialization {
 			versions,
 			argument_buffers,
+			_texture_views: Rc::new(texture_views),
 		};
 		pipeline.materializations.borrow_mut().insert(key, materialization.clone());
 		materialization

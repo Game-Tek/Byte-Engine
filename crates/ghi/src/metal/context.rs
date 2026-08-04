@@ -2248,8 +2248,8 @@ use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
-use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
+use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSString};
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
@@ -2260,6 +2260,7 @@ use smallvec::SmallVec;
 use super::*;
 use crate::implementation::device::submit_metal_command_buffer;
 use crate::{
+	DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
@@ -2267,7 +2268,7 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
+	window,
 };
 
 #[cfg(test)]

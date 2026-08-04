@@ -6,8 +6,8 @@ use objc2_metal::MTLCommandEncoder;
 use smallvec::SmallVec;
 
 use super::*;
-use crate::image::ImageHandle;
 use crate::SwapchainHandle;
+use crate::image::ImageHandle;
 
 /// The `Frame` struct scopes Metal rendering state to one frame.
 ///

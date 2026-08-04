@@ -432,6 +432,8 @@ pub(crate) struct MaterializationKey {
 pub(crate) struct Materialization {
 	versions: SmallVec<[u64; 4]>,
 	argument_buffers: Rc<SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>>,
+	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
+	_texture_views: Rc<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>>,
 }
 
 #[derive(Clone)]
@@ -1034,6 +1036,237 @@ mod flat_binding_tests {
 			64 | (192 << 8),
 			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that retained materialization and MSL dense-ID allocation disagree.",
 		);
+	}
+
+	/// Verifies frame-local storage mip views remain valid after argument-buffer materialization.
+	#[test]
+	fn dynamic_storage_mips_survive_alternating_frame_sequences() {
+		use crate::{
+			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+			device::Device as _,
+			queue::{FrameRequest, Queue as _, QueueExecution as _},
+		};
+
+		let writer_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct _resources {
+				texture2d<float, access::write> mip_one [[id(0)]];
+				texture2d<float, access::write> mip_two [[id(1)]];
+				texture2d<float, access::write> mip_three [[id(2)]];
+			};
+
+			kernel void write_mips(
+				uint2 gid [[thread_position_in_grid]],
+				constant _resources& resources [[buffer(16)]]) {
+				if (gid.x != 0 || gid.y != 0) {
+					return;
+				}
+				for (uint y = 0; y < 4; ++y) {
+					for (uint x = 0; x < 4; ++x) {
+						resources.mip_one.write(float4(0.25), uint2(x, y));
+					}
+				}
+				for (uint y = 0; y < 2; ++y) {
+					for (uint x = 0; x < 2; ++x) {
+						resources.mip_two.write(float4(0.5), uint2(x, y));
+					}
+				}
+				resources.mip_three.write(float4(0.75), uint2(0));
+			}
+		"#;
+		let reader_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct _resources {
+				texture2d<float> pyramid [[id(0)]];
+				sampler pyramid_sampler [[id(1)]];
+				device uint* output [[id(2)]];
+			};
+
+			kernel void read_mips(
+				uint2 gid [[thread_position_in_grid]],
+				constant _resources& resources [[buffer(16)]]) {
+				if (gid.x != 0 || gid.y != 0) {
+					return;
+				}
+				const float2 uv = float2(0.5);
+				resources.output[0] = uint(resources.pyramid.sample(resources.pyramid_sampler, uv, level(1.0)).x * 1000.0 + 0.5);
+				resources.output[1] = uint(resources.pyramid.sample(resources.pyramid_sampler, uv, level(2.0)).x * 1000.0 + 0.5);
+				resources.output[2] = uint(resources.pyramid.sample(resources.pyramid_sampler, uv, level(3.0)).x * 1000.0 + 0.5);
+			}
+		"#;
+
+		let features = crate::device::Features::new().debug_labels(true);
+		let mut instance = super::Instance::new(features)
+			.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
+		let mut queue_handle = None;
+		let mut context = instance
+			.create_device(
+				features,
+				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
+			)
+			.expect("Failed to create a Metal device. The most likely cause is unavailable compute queue support.")
+			.create_context()
+			.expect("Failed to create a Metal context. The most likely cause is unavailable Metal command support.");
+		let queue_handle = queue_handle.expect(
+			"Missing Metal compute queue. The most likely cause is that device selection did not return the requested queue.",
+		);
+		context.set_frames_in_flight(2);
+
+		let mip_one = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(0),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let mip_two = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(1),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let mip_three = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(2),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let pyramid = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(0),
+			crate::shader::ResourceKind::CombinedImageSampler,
+			crate::AccessPolicies::READ,
+		);
+		let output = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(1),
+			crate::shader::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::WRITE,
+		);
+		let writer_shader = context
+			.create_shader(
+				Some("Dynamic Storage Mip Writer"),
+				crate::shader::Sources::MTL {
+					source: writer_source,
+					entry_point: "write_mips",
+				},
+				crate::ShaderTypes::Compute,
+				[mip_one, mip_two, mip_three],
+			)
+			.expect("Failed to create the Metal mip writer. The most likely cause is invalid test source.");
+		let reader_shader = context
+			.create_shader(
+				Some("Dynamic Storage Mip Reader"),
+				crate::shader::Sources::MTL {
+					source: reader_source,
+					entry_point: "read_mips",
+				},
+				crate::ShaderTypes::Compute,
+				[pyramid, output],
+			)
+			.expect("Failed to create the Metal mip reader. The most likely cause is invalid test source.");
+		let writer_pipeline = context.create_compute_pipeline(
+			crate::pipelines::compute::Builder::new(
+				&[],
+				crate::pipelines::ShaderParameter::new(&writer_shader, crate::ShaderTypes::Compute),
+			)
+			.name("Dynamic Storage Mip Writer Pipeline"),
+		);
+		let reader_pipeline = context.create_compute_pipeline(
+			crate::pipelines::compute::Builder::new(
+				&[],
+				crate::pipelines::ShaderParameter::new(&reader_shader, crate::ShaderTypes::Compute),
+			)
+			.name("Dynamic Storage Mip Reader Pipeline"),
+		);
+
+		let depth_pyramid = context.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::R32F, crate::Uses::Storage | crate::Uses::Image)
+				.name("Dynamic Storage Mip Test Pyramid")
+				.extent(Extent::square(8))
+				.device_accesses(crate::DeviceAccesses::DeviceOnly)
+				.mip_levels(4),
+		);
+		let output_buffer = context.build_buffer::<[u32; 3]>(
+			crate::buffer::Builder::new(crate::Uses::Storage)
+				.name("Dynamic Storage Mip Test Output")
+				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+		);
+		let sampler = context.build_sampler(
+			crate::sampler::Builder::new()
+				.filtering_mode(crate::FilteringModes::Closest)
+				.mip_map_mode(crate::FilteringModes::Closest)
+				.min_lod(0.0)
+				.max_lod(3.0),
+		);
+		let writer_set = context.create_descriptor_set(Some("Dynamic Storage Mip Writer Set"));
+		let reader_set = context.create_descriptor_set(Some("Dynamic Storage Mip Reader Set"));
+		context.write(&[
+			crate::DescriptorWrite::image_mip(
+				writer_set,
+				crate::shader::ResourceSlot::new(0),
+				depth_pyramid,
+				crate::Layouts::General,
+				1,
+			),
+			crate::DescriptorWrite::image_mip(
+				writer_set,
+				crate::shader::ResourceSlot::new(1),
+				depth_pyramid,
+				crate::Layouts::General,
+				2,
+			),
+			crate::DescriptorWrite::image_mip(
+				writer_set,
+				crate::shader::ResourceSlot::new(2),
+				depth_pyramid,
+				crate::Layouts::General,
+				3,
+			),
+			crate::DescriptorWrite::combined_image_sampler(
+				reader_set,
+				crate::shader::ResourceSlot::new(0),
+				depth_pyramid,
+				sampler,
+				crate::Layouts::Read,
+			),
+			crate::DescriptorWrite::buffer(reader_set, crate::shader::ResourceSlot::new(1), output_buffer.into()),
+		]);
+
+		let command_buffer = context
+			.queue(queue_handle)
+			.create_command_buffer(Some("Dynamic Storage Mip Test"));
+		let completion = context.create_synchronizer(Some("Dynamic Storage Mip Test Completion"), true);
+
+		for frame_index in 0..4 {
+			*context.get_mut_buffer_slice(output_buffer) = [0; 3];
+			context.queue(queue_handle).execute(
+				Some(FrameRequest {
+					index: frame_index,
+					synchronizer: completion,
+				}),
+				&[],
+				completion,
+				|execution| {
+					execution.record(command_buffer, |recording| {
+						recording
+							.bind_compute_pipeline(writer_pipeline)
+							.bind_descriptor_sets(&[writer_set])
+							.dispatch(crate::DispatchExtent::new(Extent::square(4), Extent::square(1)));
+						recording
+							.bind_compute_pipeline(reader_pipeline)
+							.bind_descriptor_sets(&[reader_set])
+							.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
+					});
+					[]
+				},
+			);
+			context.wait();
+
+			assert_eq!(
+				*context.get_buffer_slice(output_buffer),
+				[250, 500, 750],
+				"Dynamic mip storage views produced stale or incorrect values on frame {frame_index}. The most likely cause is that a frame-local mip descriptor was not retained or rebound."
+			);
+		}
 	}
 }
 

@@ -157,11 +157,7 @@ fn metal_command_encoder_label(
 ) -> Option<Retained<NSString>> {
 	unsafe {
 		let label: *mut NSString = msg_send![encoder_info, label];
-		if label.is_null() {
-			None
-		} else {
-			Retained::from_raw(label)
-		}
+		if label.is_null() { None } else { Retained::from_raw(label) }
 	}
 }
 

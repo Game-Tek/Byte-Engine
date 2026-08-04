@@ -1,0 +1,45 @@
+// Spatial SMAA 1x neighborhood resolve ported from the reference implementation.
+// See LICENSE.txt beside this shader for the original authors and license.
+source: descriptor<Texture2D, 0, read>;
+weights: descriptor<Texture2D, 1, read>;
+result: descriptor<StorageImage, 2, write>;
+
+main: fn() -> void {
+	let coordinate: vec2u = thread_id();
+	guard_image_bounds(result, coordinate);
+	let extent_u: vec2u = image_size(result);
+	let extent: vec2f = vec2f(f32(extent_u.x), f32(extent_u.y));
+	let pixel_size: vec2f = vec2f(1.0 / extent.x, 1.0 / extent.y);
+	let texcoord: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) / extent;
+
+	// Gather weights for right, top, bottom, and left exactly as the reference resolve does.
+	let right_sample: vec4f = texture_lod(weights, texcoord + vec2f(pixel_size.x, 0.0));
+	let top_sample: vec4f = texture_lod(weights, texcoord + vec2f(0.0, pixel_size.y));
+	let center_weights: vec4f = texture_lod(weights, texcoord);
+	let right: f32 = right_sample.w;
+	let top: f32 = top_sample.y;
+	let bottom: f32 = center_weights.x;
+	let left: f32 = center_weights.z;
+	let total: f32 = right + top + bottom + left;
+	if (total < 0.00001) {
+		write(result, coordinate, texture_lod(source, texcoord));
+		return;
+	}
+
+	// Resolve only the dominant axis. Bilinear sampling performs the two-tap blend.
+	let horizontal: bool = max(right, left) > max(top, bottom);
+	let first_offset: vec2f = vec2f(0.0, top);
+	let second_offset: vec2f = vec2f(0.0, 0.0 - bottom);
+	let first_weight: f32 = top;
+	let second_weight: f32 = bottom;
+	if (horizontal) {
+		first_offset = vec2f(right, 0.0);
+		second_offset = vec2f(0.0 - left, 0.0);
+		first_weight = right;
+		second_weight = left;
+	}
+	let normalization: f32 = first_weight + second_weight;
+	let color_a: vec4f = texture_lod(source, texcoord + first_offset * pixel_size);
+	let color_b: vec4f = texture_lod(source, texcoord + second_offset * pixel_size);
+	write(result, coordinate, (color_a * first_weight + color_b * second_weight) / normalization);
+}

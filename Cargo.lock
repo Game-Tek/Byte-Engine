@@ -225,6 +225,7 @@ name = "byte-engine"
 version = "0.1.1"
 dependencies = [
  "artnet_protocol",
+ "base64",
  "bitflags 2.13.0",
  "bumpalo",
  "byte-engine-ahi",
@@ -240,6 +241,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "dual_quaternion",
  "env_logger",
+ "flate2",
  "fontdue",
  "half",
  "hidapi",

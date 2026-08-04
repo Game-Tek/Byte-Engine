@@ -864,6 +864,16 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs spatial SMAA for every current and future render sink.
+///
+/// Add this pass after tonemapping and before UI or the final presentation blit
+/// so edge detection receives display-referred color without softening overlays.
+pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SmaaPass::new(render_pass_builder)));
+}
+
 /// Installs the atmosphere sky pass used as a post-scene background.
 pub fn setup_atmosphere_sky_render_pass(
 	application: &mut GraphicsApplication,
@@ -977,6 +987,7 @@ use crate::{
 			blit::SwapchainBlitPass,
 			bloom::{BloomPass, BloomPassSettings},
 			sky::AtmosphereSkyRenderPass,
+			smaa::SmaaPass,
 		},
 		renderable, renderer, Environment, RenderableMesh, UpdatePose,
 	},

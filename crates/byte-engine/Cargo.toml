@@ -20,13 +20,15 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [features]
 default = ["headed", "network"]
-headed = ["dep:ahi", "dep:ghi", "dep:besl"]
+headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:flate2"]
 network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
+base64 = { version = "0.13.1", optional = true }
+flate2 = { version = "1.1.9", optional = true }
 serde_json = "1.0.140"
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
 ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.1", optional = true }

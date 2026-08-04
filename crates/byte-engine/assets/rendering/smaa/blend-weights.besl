@@ -1,0 +1,276 @@
+// Spatial SMAA 1x weight calculation ported from the reference implementation.
+// See LICENSE.txt beside this shader for the original authors and license.
+edges: descriptor<Texture2D, 0, read>;
+area_texture: descriptor<Texture2D, 1, read>;
+search_texture: descriptor<Texture2D, 2, read>;
+weights: descriptor<StorageImage<rgba8>, 3, write>;
+
+// These values match the official SMAA 1x Ultra preset and lookup textures.
+SMAA_MAX_SEARCH_STEPS: const u32 = 32;
+SMAA_MAX_DIAGONAL_SEARCH_STEPS: const u32 = 16;
+SMAA_CORNER_ROUNDING: const f32 = 0.25;
+SMAA_AREA_MAX_DISTANCE: const f32 = 16.0;
+SMAA_AREA_MAX_DIAGONAL_DISTANCE: const f32 = 20.0;
+SMAA_AREA_PIXEL_SIZE: const vec2f = vec2f(0.00625, 0.0017857142857142857);
+SMAA_SEARCH_SIZE: const vec2f = vec2f(66.0, 33.0);
+SMAA_SEARCH_PACKED_SIZE: const vec2f = vec2f(64.0, 16.0);
+
+sample_edges: fn(texcoord: vec2f) -> vec2f {
+	let value: vec4f = texture_lod(edges, texcoord);
+	return vec2f(value.x, value.y);
+}
+
+decode_diagonal: fn(value: vec2f) -> vec2f {
+	let red: f32 = value.x * abs(5.0 * value.x - 3.75);
+	return round(vec2f(red, value.y));
+}
+
+// Returns distance, continuation state, and the last two edge values.
+search_diagonal_1: fn(texcoord: vec2f, direction: vec2f, pixel_size: vec2f) -> vec4f {
+	let position: vec2f = texcoord;
+	let distance: f32 = 0.0 - 1.0;
+	let continuation: f32 = 1.0;
+	let edge: vec2f = vec2f(0.0, 0.0);
+	for (let step: u32 = 0; step < SMAA_MAX_DIAGONAL_SEARCH_STEPS; step = step + 1) {
+		if (continuation > 0.9) {
+			position = position + direction * pixel_size;
+			distance = distance + 1.0;
+			edge = sample_edges(position);
+			continuation = 0.5 * (edge.x + edge.y);
+		}
+	}
+	return vec4f(distance, continuation, edge.x, edge.y);
+}
+
+// The quarter-pixel shift lets linear filtering retrieve both diagonal edge bits.
+search_diagonal_2: fn(texcoord: vec2f, direction: vec2f, pixel_size: vec2f) -> vec4f {
+	let position: vec2f = texcoord + vec2f(0.25 * pixel_size.x, 0.0);
+	let distance: f32 = 0.0 - 1.0;
+	let continuation: f32 = 1.0;
+	let edge: vec2f = vec2f(0.0, 0.0);
+	for (let step: u32 = 0; step < SMAA_MAX_DIAGONAL_SEARCH_STEPS; step = step + 1) {
+		if (continuation > 0.9) {
+			position = position + direction * pixel_size;
+			distance = distance + 1.0;
+			edge = decode_diagonal(sample_edges(position));
+			continuation = 0.5 * (edge.x + edge.y);
+		}
+	}
+	return vec4f(distance, continuation, edge.x, edge.y);
+}
+
+area_diagonal: fn(distance: vec2f, crossing: vec2f) -> vec2f {
+	let lookup: vec2f = distance + crossing * SMAA_AREA_MAX_DIAGONAL_DISTANCE;
+	let texcoord: vec2f = lookup * SMAA_AREA_PIXEL_SIZE + 0.5 * SMAA_AREA_PIXEL_SIZE + vec2f(0.5, 0.0);
+	let value: vec4f = texture_lod(area_texture, texcoord);
+	return vec2f(value.x, value.y);
+}
+
+// Uses both diagonal orientations and returns their accumulated reference-area weights.
+diagonal_weights: fn(texcoord: vec2f, edge: vec2f, pixel_size: vec2f) -> vec2f {
+	let result: vec2f = vec2f(0.0, 0.0);
+	let left: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (edge.x > 0.0) {
+		left = search_diagonal_1(texcoord, vec2f(0.0 - 1.0, 1.0), pixel_size);
+	}
+	let right: vec4f = search_diagonal_1(texcoord, vec2f(1.0, 0.0 - 1.0), pixel_size);
+	let left_distance: f32 = left.x;
+	if (left.w > 0.9) {
+		left_distance = left_distance + 1.0;
+	}
+	if (left_distance + right.x > 2.0) {
+		let left_coordinate: vec2f = texcoord + vec2f(0.0 - left_distance, left_distance) * pixel_size;
+		let right_coordinate: vec2f = texcoord + vec2f(right.x, 0.0 - right.x) * pixel_size;
+		let left_a: vec2f = sample_edges(left_coordinate + vec2f(0.0 - pixel_size.x, 0.0));
+		let left_b: vec2f = sample_edges(left_coordinate);
+		let right_a: vec2f = sample_edges(right_coordinate + vec2f(pixel_size.x, 0.0));
+		let right_b: vec2f = sample_edges(right_coordinate + vec2f(pixel_size.x, 0.0 - pixel_size.y));
+		let crossing_left: f32 = 2.0 * left_a.y + left_b.x;
+		let crossing_right: f32 = 2.0 * right_a.y + right_b.x;
+		if (left.y < 0.9) {
+			crossing_left = 0.0;
+		}
+		if (right.y < 0.9) {
+			crossing_right = 0.0;
+		}
+		result = result + area_diagonal(vec2f(left_distance, right.x), vec2f(crossing_left, crossing_right));
+	}
+
+	let upper_left: vec4f = search_diagonal_2(texcoord, vec2f(0.0 - 1.0, 0.0 - 1.0), pixel_size);
+	let lower_right: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (sample_edges(texcoord + vec2f(pixel_size.x, 0.0)).x > 0.0) {
+		lower_right = search_diagonal_2(texcoord, vec2f(1.0, 1.0), pixel_size);
+	}
+	let right_distance: f32 = lower_right.x;
+	if (lower_right.w > 0.9) {
+		right_distance = right_distance + 1.0;
+	}
+	if (upper_left.x + right_distance > 2.0) {
+		let left_coordinate: vec2f = texcoord + vec2f(0.0 - upper_left.x, 0.0 - upper_left.x) * pixel_size;
+		let right_coordinate: vec2f = texcoord + vec2f(right_distance, right_distance) * pixel_size;
+		let left_a: vec2f = sample_edges(left_coordinate + vec2f(0.0 - pixel_size.x, 0.0));
+		let left_b: vec2f = sample_edges(left_coordinate + vec2f(0.0, 0.0 - pixel_size.y));
+		let right_edge: vec2f = sample_edges(right_coordinate + vec2f(pixel_size.x, 0.0));
+		let crossing_left: f32 = 2.0 * left_a.y + left_b.x;
+		let crossing_right: f32 = 2.0 * right_edge.y + right_edge.x;
+		if (upper_left.y < 0.9) {
+			crossing_left = 0.0;
+		}
+		if (lower_right.y < 0.9) {
+			crossing_right = 0.0;
+		}
+		let area: vec2f = area_diagonal(vec2f(upper_left.x, right_distance), vec2f(crossing_left, crossing_right));
+		result = result + vec2f(area.y, area.x);
+	}
+	return result;
+}
+
+search_length: fn(edge: vec2f, offset: f32) -> f32 {
+	let scale: vec2f = (SMAA_SEARCH_SIZE * vec2f(0.5, 0.0 - 1.0) + vec2f(0.0 - 1.0, 1.0)) / SMAA_SEARCH_PACKED_SIZE;
+	let bias: vec2f = (SMAA_SEARCH_SIZE * vec2f(offset, 1.0) + vec2f(0.5, 0.0 - 0.5)) / SMAA_SEARCH_PACKED_SIZE;
+	return texture_lod(search_texture, scale * edge + bias).x;
+}
+
+search_x_left: fn(start: vec2f, end: f32, pixel_size: vec2f) -> f32 {
+	let position: vec2f = start;
+	let edge: vec2f = vec2f(0.0, 1.0);
+	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS; step = step + 1) {
+		if (position.x > end && edge.y > 0.8281 && edge.x <= 0.0) {
+			edge = sample_edges(position);
+			position = position - vec2f(2.0 * pixel_size.x, 0.0);
+		}
+	}
+	return position.x + pixel_size.x * (3.25 - (255.0 / 127.0) * search_length(edge, 0.0));
+}
+
+search_x_right: fn(start: vec2f, end: f32, pixel_size: vec2f) -> f32 {
+	let position: vec2f = start;
+	let edge: vec2f = vec2f(0.0, 1.0);
+	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS; step = step + 1) {
+		if (position.x < end && edge.y > 0.8281 && edge.x <= 0.0) {
+			edge = sample_edges(position);
+			position = position + vec2f(2.0 * pixel_size.x, 0.0);
+		}
+	}
+	return position.x - pixel_size.x * (3.25 - (255.0 / 127.0) * search_length(edge, 0.5));
+}
+
+search_y_up: fn(start: vec2f, end: f32, pixel_size: vec2f) -> f32 {
+	let position: vec2f = start;
+	let edge: vec2f = vec2f(1.0, 0.0);
+	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS; step = step + 1) {
+		if (position.y > end && edge.x > 0.8281 && edge.y <= 0.0) {
+			edge = sample_edges(position);
+			position = position - vec2f(0.0, 2.0 * pixel_size.y);
+		}
+	}
+	return position.y + pixel_size.y * (3.25 - (255.0 / 127.0) * search_length(vec2f(edge.y, edge.x), 0.0));
+}
+
+search_y_down: fn(start: vec2f, end: f32, pixel_size: vec2f) -> f32 {
+	let position: vec2f = start;
+	let edge: vec2f = vec2f(1.0, 0.0);
+	for (let step: u32 = 0; step < SMAA_MAX_SEARCH_STEPS; step = step + 1) {
+		if (position.y < end && edge.x > 0.8281 && edge.y <= 0.0) {
+			edge = sample_edges(position);
+			position = position + vec2f(0.0, 2.0 * pixel_size.y);
+		}
+	}
+	return position.y - pixel_size.y * (3.25 - (255.0 / 127.0) * search_length(vec2f(edge.y, edge.x), 0.5));
+}
+
+area_orthogonal: fn(distance: vec2f, edge_a: f32, edge_b: f32) -> vec2f {
+	let crossing: vec2f = round(vec2f(4.0 * edge_a, 4.0 * edge_b));
+	let lookup: vec2f = distance + crossing * SMAA_AREA_MAX_DISTANCE;
+	let value: vec4f = texture_lod(area_texture, lookup * SMAA_AREA_PIXEL_SIZE + 0.5 * SMAA_AREA_PIXEL_SIZE);
+	return vec2f(value.x, value.y);
+}
+
+horizontal_corners: fn(value: vec2f, left_coord: vec2f, right_coord: vec2f, distance: vec2f, pixel_size: vec2f) -> vec2f {
+	let left_nearer: f32 = 0.0;
+	let right_nearer: f32 = 0.0;
+	if (distance.x <= distance.y) {
+		left_nearer = 1.0;
+	}
+	if (distance.y <= distance.x) {
+		right_nearer = 1.0;
+	}
+	let divisor: f32 = left_nearer + right_nearer;
+	let left_rounding: f32 = (1.0 - SMAA_CORNER_ROUNDING) * left_nearer / divisor;
+	let right_rounding: f32 = (1.0 - SMAA_CORNER_ROUNDING) * right_nearer / divisor;
+	let factor_a: f32 = 1.0 - left_rounding * sample_edges(left_coord + vec2f(0.0, pixel_size.y)).x
+		- right_rounding * sample_edges(right_coord + vec2f(pixel_size.x, pixel_size.y)).x;
+	let factor_b: f32 = 1.0 - left_rounding * sample_edges(left_coord - vec2f(0.0, 2.0 * pixel_size.y)).x
+		- right_rounding * sample_edges(right_coord + vec2f(pixel_size.x, 0.0 - 2.0 * pixel_size.y)).x;
+	return value * vec2f(clamp(factor_a, 0.0, 1.0), clamp(factor_b, 0.0, 1.0));
+}
+
+vertical_corners: fn(value: vec2f, top_coord: vec2f, bottom_coord: vec2f, distance: vec2f, pixel_size: vec2f) -> vec2f {
+	let top_nearer: f32 = 0.0;
+	let bottom_nearer: f32 = 0.0;
+	if (distance.x <= distance.y) {
+		top_nearer = 1.0;
+	}
+	if (distance.y <= distance.x) {
+		bottom_nearer = 1.0;
+	}
+	let divisor: f32 = top_nearer + bottom_nearer;
+	let top_rounding: f32 = (1.0 - SMAA_CORNER_ROUNDING) * top_nearer / divisor;
+	let bottom_rounding: f32 = (1.0 - SMAA_CORNER_ROUNDING) * bottom_nearer / divisor;
+	let factor_a: f32 = 1.0 - top_rounding * sample_edges(top_coord + vec2f(pixel_size.x, 0.0)).y
+		- bottom_rounding * sample_edges(bottom_coord + pixel_size).y;
+	let factor_b: f32 = 1.0 - top_rounding * sample_edges(top_coord - vec2f(2.0 * pixel_size.x, 0.0)).y
+		- bottom_rounding * sample_edges(bottom_coord + vec2f(0.0 - 2.0 * pixel_size.x, pixel_size.y)).y;
+	return value * vec2f(clamp(factor_a, 0.0, 1.0), clamp(factor_b, 0.0, 1.0));
+}
+
+main: fn() -> void {
+	let coordinate: vec2u = thread_id();
+	guard_image_bounds(weights, coordinate);
+	let extent_u: vec2u = texture_size(edges);
+	let extent: vec2f = vec2f(f32(extent_u.x), f32(extent_u.y));
+	let pixel_size: vec2f = vec2f(1.0 / extent.x, 1.0 / extent.y);
+	let texcoord: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) / extent;
+	let pixel_coordinate: vec2f = texcoord * extent;
+	let edge: vec2f = sample_edges(texcoord);
+	let output: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+
+	if (edge.y > 0.0) {
+		let diagonal: vec2f = diagonal_weights(texcoord, edge, pixel_size);
+		output = vec4f(diagonal.x, diagonal.y, 0.0, 0.0);
+		if (diagonal.x + diagonal.y <= 0.0) {
+			let left_start: vec2f = texcoord + pixel_size * vec2f(0.0 - 0.25, 0.0 - 0.125);
+			let right_start: vec2f = texcoord + pixel_size * vec2f(1.25, 0.0 - 0.125);
+			let left_end: f32 = left_start.x - 2.0 * f32(SMAA_MAX_SEARCH_STEPS) * pixel_size.x;
+			let right_end: f32 = right_start.x + 2.0 * f32(SMAA_MAX_SEARCH_STEPS) * pixel_size.x;
+			let left_x: f32 = search_x_left(left_start, left_end, pixel_size);
+			let right_x: f32 = search_x_right(right_start, right_end, pixel_size);
+			let crossing_y: f32 = texcoord.y - 0.25 * pixel_size.y;
+			let distance: vec2f = abs(round(vec2f(left_x, right_x) * extent.x - vec2f(pixel_coordinate.x, pixel_coordinate.x)));
+			let root_distance: vec2f = vec2f(sqrt(distance.x), sqrt(distance.y));
+			let area: vec2f = area_orthogonal(root_distance, sample_edges(vec2f(left_x, crossing_y)).x,
+				sample_edges(vec2f(right_x + pixel_size.x, crossing_y)).x);
+			let cornered: vec2f = horizontal_corners(area, vec2f(left_x, texcoord.y), vec2f(right_x, texcoord.y), distance, pixel_size);
+			output = vec4f(cornered.x, cornered.y, 0.0, 0.0);
+		}
+	}
+
+	// A detected diagonal owns this pixel, so west-edge processing is skipped.
+	if (edge.x > 0.0 && output.x + output.y <= 0.0) {
+		let top_start: vec2f = texcoord + pixel_size * vec2f(0.0 - 0.125, 0.0 - 0.25);
+		let bottom_start: vec2f = texcoord + pixel_size * vec2f(0.0 - 0.125, 1.25);
+		let top_end: f32 = top_start.y - 2.0 * f32(SMAA_MAX_SEARCH_STEPS) * pixel_size.y;
+		let bottom_end: f32 = bottom_start.y + 2.0 * f32(SMAA_MAX_SEARCH_STEPS) * pixel_size.y;
+		let top_y: f32 = search_y_up(top_start, top_end, pixel_size);
+		let bottom_y: f32 = search_y_down(bottom_start, bottom_end, pixel_size);
+		let crossing_x: f32 = texcoord.x - 0.25 * pixel_size.x;
+		let distance: vec2f = abs(round(vec2f(top_y, bottom_y) * extent.y - vec2f(pixel_coordinate.y, pixel_coordinate.y)));
+		let root_distance: vec2f = vec2f(sqrt(distance.x), sqrt(distance.y));
+		let area: vec2f = area_orthogonal(root_distance, sample_edges(vec2f(crossing_x, top_y)).y,
+			sample_edges(vec2f(crossing_x, bottom_y + pixel_size.y)).y);
+		let cornered: vec2f = vertical_corners(area, vec2f(texcoord.x, top_y), vec2f(texcoord.x, bottom_y), distance, pixel_size);
+		output = vec4f(output.x, output.y, cornered.x, cornered.y);
+	}
+
+	write(weights, coordinate, output);
+}

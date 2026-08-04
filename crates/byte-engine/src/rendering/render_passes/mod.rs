@@ -13,6 +13,7 @@ pub mod agx;
 pub mod bloom;
 pub mod lut;
 pub mod sky;
+pub mod smaa;
 
 pub mod serial;
 

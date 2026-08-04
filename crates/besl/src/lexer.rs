@@ -316,6 +316,8 @@ impl Node {
 			builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone()),
 			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("max", vec![("left", f16_t.clone()), ("right", f16_t.clone())], f16_t.clone()),
+			builtin_intrinsic("min", vec![("left", f16_t.clone()), ("right", f16_t.clone())], f16_t.clone()),
 			builtin_intrinsic(
 				"max",
 				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
@@ -334,6 +336,15 @@ impl Node {
 					("maximum", f32_t.clone()),
 				],
 				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"clamp",
+				vec![
+					("value", f16_t.clone()),
+					("minimum", f16_t.clone()),
+					("maximum", f16_t.clone()),
+				],
+				f16_t.clone(),
 			),
 			builtin_intrinsic(
 				"clamp",
@@ -363,6 +374,9 @@ impl Node {
 			builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone()),
 			builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("abs", vec![("value", f16_t.clone())], f16_t.clone()),
+			builtin_intrinsic("abs", vec![("value", vec2f16.clone())], vec2f16.clone()),
+			builtin_intrinsic("sqrt", vec![("value", f16_t.clone())], f16_t.clone()),
 			builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
 			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
@@ -373,6 +387,8 @@ impl Node {
 			builtin_intrinsic("sincos", vec![("value", f32_t.clone())], vec2f32.clone()),
 			builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
+			builtin_intrinsic("round", vec![("value", f16_t.clone())], f16_t.clone()),
+			builtin_intrinsic("round", vec![("value", vec2f16.clone())], vec2f16.clone()),
 			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32.clone()),
 			builtin_intrinsic(
 				"fma",

@@ -866,8 +866,9 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 
 /// Installs spatial SMAA for every current and future render sink.
 ///
-/// Add this pass after tonemapping and before UI or the final presentation blit
-/// so edge detection receives display-referred color without softening overlays.
+/// This adds a self-contained post-scene pass without coalescing it with tone mapping
+/// or other independent passes. Call it after the setup that produces the `main` color
+/// input you want SMAA to filter, and before any overlay pass you want to keep sharp.
 pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 	application
 		.renderer

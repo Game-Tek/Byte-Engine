@@ -61,17 +61,15 @@ fn create_lookup_texture(
 
 /// The `SmaaPass` struct provides complete spatial SMAA 1x for one render sink.
 ///
-/// Install it after tonemapping and before UI or the final presentation blit.
+/// Install it after the scene pass that finalizes the desired `main` color input.
 /// The pass uses the reference area and search maps for orthogonal and diagonal
-/// patterns, applies corner handling, and performs the canonical neighborhood
-/// resolve. It intentionally excludes temporal reprojection and multisample modes.
+/// patterns, applies corner handling, and resolves into a separate `main` target.
+/// It intentionally excludes temporal reprojection and multisample modes.
 pub struct SmaaPass {
 	edge_pass: simple_compute::Pass,
-	weight_pass: simple_compute::Pass,
-	neighborhood_pass: simple_compute::Pass,
+	resolve_pass: simple_compute::Pass,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	edges: ghi::DynamicImageHandle,
-	weights: ghi::DynamicImageHandle,
 }
 
 impl SmaaPass {
@@ -82,13 +80,8 @@ impl SmaaPass {
 
 		let context = render_pass_builder.context();
 		let edges = context.build_dynamic_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
+			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("SMAA Edges")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-		);
-		let weights = context.build_dynamic_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
-				.name("SMAA Weights")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let area_pixels = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
@@ -123,24 +116,15 @@ impl SmaaPass {
 			),
 		)
 		.expect("Failed to create the SMAA edge shader. The most likely cause is an incompatible shader interface.");
-		let weight_pipeline = simple_compute::Pipeline::compile(
+		let resolve_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new(
-				"SMAA Blend Weights",
+				"SMAA Blend and Neighborhood",
 				"byte-engine/rendering/smaa/blend-weights.besl",
-				"SMAA Blend Weights Shader",
+				"SMAA Blend and Neighborhood Shader",
 			),
 		)
-		.expect("Failed to create the SMAA weight shader. The most likely cause is an incompatible shader interface.");
-		let neighborhood_pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"SMAA Neighborhood Blending",
-				"byte-engine/rendering/smaa/neighborhood-blending.besl",
-				"SMAA Neighborhood Blending Shader",
-			),
-		)
-		.expect("Failed to create the SMAA blend shader. The most likely cause is an incompatible shader interface.");
+		.expect("Failed to create the SMAA resolve shader. The most likely cause is an incompatible shader interface.");
 
 		let edge_pass = edge_pipeline
 			.bind(
@@ -152,11 +136,12 @@ impl SmaaPass {
 				],
 			)
 			.expect("Failed to bind SMAA edge resources. The most likely cause is a changed BESL binding contract.");
-		let weight_pass = weight_pipeline
+		let resolve_pass = resolve_pipeline
 			.bind(
 				render_pass_builder,
-				"SMAA Weight Descriptor Set",
+				"SMAA Resolve Descriptor Set",
 				&[
+					simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler("edges", edges, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler("area_texture", area_texture, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler(
@@ -165,37 +150,23 @@ impl SmaaPass {
 						sampler,
 						ghi::Layouts::Read,
 					),
-					simple_compute::Resource::image("weights", weights),
-				],
-			)
-			.expect("Failed to bind SMAA weight resources. The most likely cause is a changed BESL binding contract.");
-		let neighborhood_pass = neighborhood_pipeline
-			.bind(
-				render_pass_builder,
-				"SMAA Neighborhood Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler("weights", weights, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::image("result", output),
 				],
 			)
-			.expect("Failed to bind SMAA blend resources. The most likely cause is a changed BESL binding contract.");
+			.expect("Failed to bind SMAA resolve resources. The most likely cause is a changed BESL binding contract.");
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
 			edge_pass,
-			weight_pass,
-			neighborhood_pass,
+			resolve_pass,
 			bypass_pass,
 			edges,
-			weights,
 		}
 	}
 
 	/// Resizes retained intermediate images to the current sink extent.
 	fn resize_images(&self, frame: &mut ghi::implementation::Frame, extent: utils::Extent) {
 		frame.resize_image(self.edges.into(), extent);
-		frame.resize_image(self.weights.into(), extent);
 	}
 }
 
@@ -213,8 +184,7 @@ impl RenderPass for SmaaPass {
 		let extent = sink.extent();
 		self.resize_images(frame, extent);
 		let edge_pass = self.edge_pass;
-		let weight_pass = self.weight_pass;
-		let neighborhood_pass = self.neighborhood_pass;
+		let resolve_pass = self.resolve_pass;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -223,8 +193,7 @@ impl RenderPass for SmaaPass {
 					|label| label.write_str("SMAA"),
 					|command_buffer| {
 						edge_pass.record(command_buffer, extent);
-						weight_pass.record(command_buffer, extent);
-						neighborhood_pass.record(command_buffer, extent);
+						resolve_pass.record(command_buffer, extent);
 					},
 				);
 			},
@@ -243,47 +212,80 @@ impl RenderPass for SmaaPass {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture};
+	use besl::vm::{DescriptorBindings, ExecutionConfig, ResourceSlot, Texture, WorkgroupState};
 	use resource_management::shader::{
 		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
 		generator::ShaderGenerationSettings,
 	};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, texture_2d};
 
 	const EDGE_SHADER: &str = include_str!("../../../assets/rendering/smaa/edge-detection.besl");
-	const WEIGHT_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
-	const NEIGHBORHOOD_SHADER: &str = include_str!("../../../assets/rendering/smaa/neighborhood-blending.besl");
+	const RESOLVE_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
+	const RESOLVE_SHADER_BEAD: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl.bead");
+	const SMAA_EDGE_WORKGROUP_WIDTH: u32 = 16;
+	const SMAA_EDGE_WORKGROUP_HEIGHT: u32 = 8;
+	const SMAA_RESOLVE_WORKGROUP_WIDTH: u32 = 16;
+	const SMAA_RESOLVE_WORKGROUP_HEIGHT: u32 = 8;
+	const SMAA_WORKGROUP_SIZE: usize = 128;
+	const SMAA_VM_INSTRUCTION_LIMIT: usize = 4_000_000;
+	const SMAA_VM_CALL_DEPTH_LIMIT: usize = 128;
 
-	/// Executes edge detection with its storage-image interface.
-	fn run_edge(source: &mut Texture, result: &mut Texture, coordinate: [u32; 2]) {
+	/// Builds every invocation for one production SMAA workgroup layout.
+	fn workgroup_configs(origin: [u32; 2], workgroup_width: u32, subgroup_size: u32) -> [ExecutionConfig; SMAA_WORKGROUP_SIZE] {
+		std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(SMAA_VM_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(SMAA_VM_CALL_DEPTH_LIMIT)
+				.with_subgroup_size(subgroup_size)
+				.with_thread_idx(lane)
+				.with_thread_id([origin[0] + lane % workgroup_width, origin[1] + lane / workgroup_width])
+		})
+	}
+
+	/// Executes edge detection with its shared luma cache for one complete workgroup.
+	fn run_edge_workgroup(source: &mut Texture, result: &mut Texture, origin: [u32; 2]) {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(EDGE_SHADER));
+		let configs = workgroup_configs(origin, SMAA_EDGE_WORKGROUP_WIDTH, 32);
+		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), source);
 		descriptors.bind_image(ResourceSlot::new(1), result);
-		run_at(&program, &mut descriptors, coordinate);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		program.run_workgroup(&mut descriptors, &configs).expect(
+			"Failed to execute the SMAA edge workgroup. The most likely cause is invalid shared-cache synchronization.",
+		);
 	}
 
-	/// Executes reference weight calculation with all three sampled textures.
-	fn run_weights(edges: &mut Texture, area: &mut Texture, search: &mut Texture, result: &mut Texture, coordinate: [u32; 2]) {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(WEIGHT_SHADER));
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), edges);
-		descriptors.bind_texture(ResourceSlot::new(1), area);
-		descriptors.bind_texture(ResourceSlot::new(2), search);
-		descriptors.bind_image(ResourceSlot::new(3), result);
-		run_at(&program, &mut descriptors, coordinate);
-	}
-
-	/// Executes the sampled neighborhood resolve for a single coordinate.
-	fn run_neighborhood(source: &mut Texture, weights: &mut Texture, result: &mut Texture, coordinate: [u32; 2]) {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(NEIGHBORHOOD_SHADER));
+	/// Executes the fused reference-weight and neighborhood resolve workgroup.
+	fn run_resolve_workgroup(
+		source: &mut Texture,
+		edges: &mut Texture,
+		area: &mut Texture,
+		search: &mut Texture,
+		result: &mut Texture,
+		origin: [u32; 2],
+	) {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(RESOLVE_SHADER));
+		let configs = workgroup_configs(origin, SMAA_RESOLVE_WORKGROUP_WIDTH, 32);
+		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), source);
-		descriptors.bind_texture(ResourceSlot::new(1), weights);
-		descriptors.bind_image(ResourceSlot::new(2), result);
-		run_at(&program, &mut descriptors, coordinate);
+		descriptors.bind_texture(ResourceSlot::new(1), edges);
+		descriptors.bind_texture(ResourceSlot::new(2), area);
+		descriptors.bind_texture(ResourceSlot::new(3), search);
+		descriptors.bind_image(ResourceSlot::new(4), result);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		program.run_workgroup(&mut descriptors, &configs).expect(
+			"Failed to execute the fused SMAA workgroup. The most likely cause is invalid shared-cache synchronization.",
+		);
+	}
+
+	/// Builds one VM edge texel using the production R8 bit layout.
+	fn packed_edge(west: bool, north: bool) -> [f32; 4] {
+		let bits = u32::from(west) | (u32::from(north) << 1);
+		[bits as f32 / 3.0, 0.0, 0.0, 0.0]
 	}
 
 	/// Expands a normalized byte LUT into the VM's RGBA texture representation.
@@ -311,11 +313,19 @@ mod tests {
 	}
 
 	#[test]
+	fn smaa_resolve_baked_workgroup_matches_its_tile_layout() {
+		assert!(
+			RESOLVE_SHADER_BEAD.contains("\"workgroup\": [16, 8, 1]"),
+			"SMAA resolve dispatch metadata must match the shader's 16x8 shared-weight tile."
+		);
+	}
+
+	#[test]
 	fn smaa_edge_besl_vm_rejects_constant_regions_and_keeps_dominant_edges() {
 		let constant = [[0.4, 0.4, 0.4, 1.0]; 5];
 		let mut source = texture_2d(5, 1, &constant);
 		let mut edges = empty_image(5, 1);
-		run_edge(&mut source, &mut edges, [2, 0]);
+		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
 		assert_rgba_close(rgba(&edges, [2, 0]), [0.0, 0.0, 0.0, 0.0], 0.0);
 
 		let colors = [
@@ -327,8 +337,40 @@ mod tests {
 		];
 		let mut source = texture_2d(5, 1, &colors);
 		let mut edges = empty_image(5, 1);
-		run_edge(&mut source, &mut edges, [2, 0]);
-		assert_rgba_close(rgba(&edges, [2, 0]), [1.0, 0.0, 0.0, 0.0], 0.0);
+		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		assert_rgba_close(rgba(&edges, [2, 0]), [1.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
+
+		let north_only = [
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+		];
+		let mut source = texture_2d(3, 3, &north_only);
+		let mut edges = empty_image(3, 3);
+		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		assert_rgba_close(rgba(&edges, [1, 1]), [2.0 / 3.0, 0.0, 0.0, 0.0], 0.0);
+
+		let both = [
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+			[1.0, 1.0, 1.0, 1.0],
+		];
+		let mut source = texture_2d(3, 3, &both);
+		let mut edges = empty_image(3, 3);
+		run_edge_workgroup(&mut source, &mut edges, [0, 0]);
+		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 0.0, 0.0, 0.0], 0.0);
 	}
 
 	#[test]
@@ -340,82 +382,100 @@ mod tests {
 	}
 
 	#[test]
-	fn smaa_weight_besl_vm_finds_a_diagonal_staircase() {
+	fn smaa_fused_resolve_besl_vm_blends_a_diagonal_staircase() {
 		let mut edge_texels = [[0.0, 0.0, 0.0, 0.0]; 81];
 		for offset in -3_i32..=3 {
 			let x = (4 + offset) as usize;
 			let y = (4 - offset) as usize;
-			edge_texels[y * 9 + x] = [1.0, 1.0, 0.0, 0.0];
+			edge_texels[y * 9 + x] = packed_edge(true, true);
 		}
+		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
+		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
 		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
 		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
+		let mut source = texture_2d(9, 9, &source_texels);
 		let mut edges = texture_2d(9, 9, &edge_texels);
 		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
 		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
-		let mut weights = empty_image(9, 9);
-		run_weights(&mut edges, &mut area, &mut search, &mut weights, [4, 4]);
-		let diagonal_weights = rgba(&weights, [4, 4]);
+		let mut result = empty_image(9, 9);
+		for origin in [[0, 0], [0, 8]] {
+			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
+		}
+		let resolved = rgba(&result, [4, 4]);
 		assert!(
-			diagonal_weights[0] + diagonal_weights[1] > 0.0,
-			"The reference diagonal lookup must produce a nonzero north-edge weight."
+			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
+			"The fused reference diagonal lookup must blend the black center toward its white neighbors."
 		);
-		assert_eq!(diagonal_weights[2] + diagonal_weights[3], 0.0);
+		assert_eq!(resolved[3], 1.0);
 	}
 
 	#[test]
-	fn smaa_weight_besl_vm_uses_reference_areas_for_an_orthogonal_line() {
+	fn smaa_fused_resolve_besl_vm_uses_reference_areas_for_an_orthogonal_line() {
 		let mut edge_texels = [[0.0, 0.0, 0.0, 0.0]; 81];
 		for x in 1..=7 {
-			edge_texels[4 * 9 + x][1] = 1.0;
+			edge_texels[4 * 9 + x] = packed_edge(false, true);
 		}
-		edge_texels[4 * 9 + 1][0] = 1.0;
-		edge_texels[4 * 9 + 8][0] = 1.0;
+		edge_texels[4 * 9 + 1] = packed_edge(true, true);
+		edge_texels[4 * 9 + 8] = packed_edge(true, false);
+		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
+		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
 		let area_bytes = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
 		let search_bytes = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
+		let mut source = texture_2d(9, 9, &source_texels);
 		let mut edges = texture_2d(9, 9, &edge_texels);
 		let mut area = vm_lookup_texture(&area_bytes, AREA_TEXTURE_WIDTH, AREA_TEXTURE_HEIGHT, 2);
 		let mut search = vm_lookup_texture(&search_bytes, SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT, 1);
-		let mut weights = empty_image(9, 9);
-		run_weights(&mut edges, &mut area, &mut search, &mut weights, [4, 4]);
-		let line_weights = rgba(&weights, [4, 4]);
+		let mut result = empty_image(9, 9);
+		for origin in [[0, 0], [0, 8]] {
+			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
+		}
+		let resolved = rgba(&result, [4, 4]);
 		assert!(
-			line_weights[0] + line_weights[1] > 0.0,
-			"The reference area lookup must classify a bounded orthogonal line."
+			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
+			"The fused reference area lookup must blend the black center toward its white neighbors."
 		);
-		assert_eq!(line_weights[2] + line_weights[3], 0.0);
+		assert_eq!(resolved[3], 1.0);
 	}
 
 	#[test]
-	fn smaa_neighborhood_besl_vm_blends_toward_the_strongest_neighbor() {
-		let source_texels = [
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[1.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-			[0.0, 0.0, 1.0, 1.0],
-		];
-		let mut weight_texels = [[0.0, 0.0, 0.0, 0.0]; 9];
-		weight_texels[4][2] = 0.5;
-		let mut source = texture_2d(3, 3, &source_texels);
-		let mut weights = texture_2d(3, 3, &weight_texels);
-		let mut result = empty_image(3, 3);
-		run_neighborhood(&mut source, &mut weights, &mut result, [1, 1]);
-		assert_rgba_close(rgba(&result, [1, 1]), [0.5, 0.0, 0.5, 1.0], 1e-6);
+	fn smaa_fused_resolve_besl_vm_copies_unblended_partial_tiles() {
+		let mut source_texels = [[0.0, 0.0, 0.0, 1.0]; 17 * 9];
+		for y in 0..9 {
+			for x in 0..17 {
+				source_texels[y * 17 + x] = [x as f32 / 16.0, y as f32 / 8.0, (x + y) as f32 / 24.0, 1.0];
+			}
+		}
+		let mut source = texture_2d(17, 9, &source_texels);
+		let mut edges = empty_image(17, 9);
+		let mut area = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
+		let mut search = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
+		let mut result = empty_image(17, 9);
+		for origin in [[0, 0], [16, 0], [0, 8], [16, 8]] {
+			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
+		}
+		for y in 0..9 {
+			for x in 0..17 {
+				assert_rgba_close(rgba(&result, [x, y]), source_texels[(y * 17 + x) as usize], 0.0);
+			}
+		}
 	}
 
 	/// Verifies every production SMAA stage remains portable across the supported BESL backends.
 	#[test]
 	fn smaa_shaders_lower_for_all_backends() {
-		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		for (name, shader) in [
-			("edge detection", EDGE_SHADER),
-			("blend weights", WEIGHT_SHADER),
-			("neighborhood blending", NEIGHBORHOOD_SHADER),
+		for (name, shader, workgroup) in [
+			(
+				"edge detection",
+				EDGE_SHADER,
+				utils::Extent::new(SMAA_EDGE_WORKGROUP_WIDTH, SMAA_EDGE_WORKGROUP_HEIGHT, 1),
+			),
+			(
+				"blend and neighborhood",
+				RESOLVE_SHADER,
+				utils::Extent::new(SMAA_RESOLVE_WORKGROUP_WIDTH, SMAA_RESOLVE_WORKGROUP_HEIGHT, 1),
+			),
 		] {
+			let settings = ShaderGenerationSettings::compute(workgroup);
 			let main = simple_compute::compile_test_program(shader);
 			GLSLShaderGenerator::new()
 				.generate(&settings, &main)
@@ -423,9 +483,19 @@ mod tests {
 			HLSLShaderGenerator::new()
 				.generate(&settings, &main)
 				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to HLSL."));
-			MSLShaderGenerator::new()
+			let source = MSLShaderGenerator::new()
 				.generate(&settings, &main)
 				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to MSL."));
+			if name == "blend and neighborhood" {
+				assert!(
+					source.contains("half"),
+					"SMAA weights must remain half precision in Metal source."
+				);
+				assert!(
+					source.contains("half correction"),
+					"SMAA search correction must remain half precision in Metal source."
+				);
+			}
 		}
 	}
 
@@ -433,12 +503,19 @@ mod tests {
 	#[cfg(target_os = "macos")]
 	#[test]
 	fn smaa_shaders_compile_to_native_metal() {
-		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		for (name, shader) in [
-			("smaa-edge-detection", EDGE_SHADER),
-			("smaa-blend-weights", WEIGHT_SHADER),
-			("smaa-neighborhood-blending", NEIGHBORHOOD_SHADER),
+		for (name, shader, workgroup) in [
+			(
+				"smaa-edge-detection",
+				EDGE_SHADER,
+				utils::Extent::new(SMAA_EDGE_WORKGROUP_WIDTH, SMAA_EDGE_WORKGROUP_HEIGHT, 1),
+			),
+			(
+				"smaa-blend-and-neighborhood",
+				RESOLVE_SHADER,
+				utils::Extent::new(SMAA_RESOLVE_WORKGROUP_WIDTH, SMAA_RESOLVE_WORKGROUP_HEIGHT, 1),
+			),
 		] {
+			let settings = ShaderGenerationSettings::compute(workgroup);
 			let main = simple_compute::compile_test_program(shader);
 			let source = MSLShaderGenerator::new()
 				.generate(&settings, &main)

@@ -1,11 +1,24 @@
 // Spatial SMAA 1x luma edge detection ported from the reference implementation.
 // See LICENSE.txt beside this shader for the original authors and license.
 source: descriptor<Texture2D, 0, read>;
-edges: descriptor<StorageImage<rgba8>, 1, write>;
+edges: descriptor<StorageImage<r8>, 1, write>;
 
 // These values match the official SMAA 1x Ultra preset.
 SMAA_EDGE_THRESHOLD: const f32 = 0.05;
 SMAA_LOCAL_CONTRAST_FACTOR: const f32 = 2.0;
+SMAA_PACKED_EDGE_MAX: const f32 = 3.0;
+
+// A 16x8 tile needs two texels of left/top halo and one texel of right/bottom halo.
+// Sharing luma reduces seven source samples per output pixel to 209 loads per 128-pixel tile.
+SMAA_EDGE_WORKGROUP_WIDTH: const u32 = 16;
+SMAA_EDGE_WORKGROUP_HEIGHT: const u32 = 8;
+SMAA_EDGE_WORKGROUP_THREADS: const u32 = 128;
+SMAA_EDGE_HALO_LEFT_TOP: const u32 = 2;
+SMAA_EDGE_TILE_WIDTH: const u32 = 19;
+SMAA_EDGE_TILE_HEIGHT: const u32 = 11;
+SMAA_EDGE_TILE_SIZE: const u32 = 209;
+
+cached_luma: workgroup<f32, 209>;
 
 clamp_subtract: fn(value: u32, offset: u32) -> u32 {
 	if (value < offset) {
@@ -22,46 +35,66 @@ clamp_add: fn(value: u32, offset: u32, extent: u32) -> u32 {
 	return value + offset;
 }
 
-luma_at: fn(coordinate: vec2u, extent: vec2u) -> f32 {
-	let texcoord: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5))
-		/ vec2f(f32(extent.x), f32(extent.y));
-	let color: vec4f = texture_lod(source, texcoord);
+source_luma: fn(coordinate: vec2u) -> f32 {
+	let color: vec4f = fetch(source, coordinate);
 	return color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
+}
+
+// Maps a shared-tile coordinate to the clamped source coordinate it caches.
+tile_coordinate: fn(origin: u32, local: u32, halo: u32, extent: u32) -> u32 {
+	if (local < halo) {
+		return clamp_subtract(origin, halo - local);
+	}
+	return clamp_add(origin, local - halo, extent);
+}
+
+cached_luma_at: fn(coordinate: vec2u) -> f32 {
+	return cached_luma[coordinate.y * SMAA_EDGE_TILE_WIDTH + coordinate.x];
 }
 
 main: fn() -> void {
 	let coordinate: vec2u = thread_id();
-	guard_image_bounds(edges, coordinate);
 	let extent: vec2u = texture_size(source);
-	let left: vec2u = vec2u(clamp_subtract(coordinate.x, 1), coordinate.y);
-	let left_left: vec2u = vec2u(clamp_subtract(coordinate.x, 2), coordinate.y);
-	let right: vec2u = vec2u(clamp_add(coordinate.x, 1, extent.x), coordinate.y);
-	let top: vec2u = vec2u(coordinate.x, clamp_subtract(coordinate.y, 1));
-	let top_top: vec2u = vec2u(coordinate.x, clamp_subtract(coordinate.y, 2));
-	let bottom: vec2u = vec2u(coordinate.x, clamp_add(coordinate.y, 1, extent.y));
+	let workgroup_origin: vec2u = vec2u(
+		coordinate.x - coordinate.x % SMAA_EDGE_WORKGROUP_WIDTH,
+		coordinate.y - coordinate.y % SMAA_EDGE_WORKGROUP_HEIGHT
+	);
+	let lane: u32 = thread_idx();
 
-	// Store west and north boundaries. Neighboring pixels supply the opposite sides later.
-	let center_luma: f32 = luma_at(coordinate, extent);
-	let left_luma: f32 = luma_at(left, extent);
-	let top_luma: f32 = luma_at(top, extent);
+	// Every lane participates before the barrier, including lanes outside a partial edge workgroup.
+	for (let index: u32 = lane; index < SMAA_EDGE_TILE_SIZE; index = index + SMAA_EDGE_WORKGROUP_THREADS) {
+		let local: vec2u = vec2u(index % SMAA_EDGE_TILE_WIDTH, index / SMAA_EDGE_TILE_WIDTH);
+		let source_coordinate: vec2u = vec2u(
+			tile_coordinate(workgroup_origin.x, local.x, SMAA_EDGE_HALO_LEFT_TOP, extent.x),
+			tile_coordinate(workgroup_origin.y, local.y, SMAA_EDGE_HALO_LEFT_TOP, extent.y)
+		);
+		cached_luma[index] = source_luma(source_coordinate);
+	}
+	workgroup_barrier();
+
+	guard_image_bounds(edges, coordinate);
+	let local: vec2u = coordinate - workgroup_origin + vec2u(SMAA_EDGE_HALO_LEFT_TOP, SMAA_EDGE_HALO_LEFT_TOP);
+	let center_luma: f32 = cached_luma_at(local);
+	let left_luma: f32 = cached_luma_at(local - vec2u(1, 0));
+	let top_luma: f32 = cached_luma_at(local - vec2u(0, 1));
 	let west_delta: f32 = abs(center_luma - left_luma);
 	let north_delta: f32 = abs(center_luma - top_luma);
-	let east_delta: f32 = abs(center_luma - luma_at(right, extent));
-	let south_delta: f32 = abs(center_luma - luma_at(bottom, extent));
-	let far_west_delta: f32 = abs(left_luma - luma_at(left_left, extent));
-	let far_north_delta: f32 = abs(top_luma - luma_at(top_top, extent));
+	let east_delta: f32 = abs(center_luma - cached_luma_at(local + vec2u(1, 0)));
+	let south_delta: f32 = abs(center_luma - cached_luma_at(local + vec2u(0, 1)));
+	let far_west_delta: f32 = abs(left_luma - cached_luma_at(local - vec2u(2, 0)));
+	let far_north_delta: f32 = abs(top_luma - cached_luma_at(local - vec2u(0, 2)));
 
 	// Local contrast adaptation suppresses a weak crossing edge hidden by a stronger neighbor.
 	let maximum_delta: f32 = max(max(west_delta, north_delta), max(east_delta, south_delta));
 	maximum_delta = max(maximum_delta, max(far_west_delta, far_north_delta));
-	let west_edge: f32 = 0.0;
-	let north_edge: f32 = 0.0;
+	let packed_edges: u32 = 0;
 	if (west_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * west_delta >= maximum_delta) {
-		west_edge = 1.0;
+		packed_edges = packed_edges | 1;
 	}
 	if (north_delta >= SMAA_EDGE_THRESHOLD && SMAA_LOCAL_CONTRAST_FACTOR * north_delta >= maximum_delta) {
-		north_edge = 1.0;
+		packed_edges = packed_edges | 2;
 	}
 
-	write(edges, coordinate, vec4f(west_edge, north_edge, 0.0, 0.0));
+	// The R8 target stores west in bit 0 and north in bit 1 as one of four exact UNORM levels.
+	write(edges, coordinate, vec4f(f32(packed_edges) / SMAA_PACKED_EDGE_MAX, 0.0, 0.0, 0.0));
 }

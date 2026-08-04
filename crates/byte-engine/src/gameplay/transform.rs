@@ -1,8 +1,5 @@
-use math::{Matrix, Point};
-use maths_rs::{
-	mat::{MatScale as _, MatTranslate as _},
-	Quatf, Vec3f,
-};
+use math::{Matrix, Orientation, Point, Scale};
+use maths_rs::mat::{MatScale as _, MatTranslate as _};
 
 use crate::core::{
 	channel::{Channel as _, DefaultChannel},
@@ -10,14 +7,14 @@ use crate::core::{
 	message::Message,
 };
 
-/// The `Transform` struct stores an entity's world location, raw scale factors, and orientation.
+/// The `Transform` struct stores an entity's world location, scale, and orientation.
 ///
 /// Use this type for gameplay entities that implement [`crate::space::Transformable`].
 #[derive(Debug, Clone)]
 pub struct Transform {
 	position: Point,
-	scale: Vec3f,
-	rotation: Quatf,
+	scale: Scale,
+	orientation: Orientation,
 }
 
 impl Default for Transform {
@@ -29,15 +26,15 @@ impl Default for Transform {
 impl Transform {
 	/// Creates an identity transform at the world origin.
 	pub fn identity() -> Self {
-		Self::new(Point::origin(), Vec3f::new(1.0, 1.0, 1.0), Quatf::identity())
+		Self::new(Point::origin(), Scale::identity(), Orientation::identity())
 	}
 
-	/// Creates a transform from a world position, raw scale factors, and raw orientation quaternion.
-	pub fn new(position: Point, scale: Vec3f, rotation: Quatf) -> Self {
+	/// Creates a transform from a world position, scale, and orientation.
+	pub fn new(position: Point, scale: Scale, orientation: Orientation) -> Self {
 		Self {
 			position,
 			scale,
-			rotation,
+			orientation,
 		}
 	}
 
@@ -47,28 +44,30 @@ impl Transform {
 	}
 
 	/// Returns this transform with a replacement orientation.
-	pub fn rotation(self, rotation: Quatf) -> Self {
-		Self { rotation, ..self }
+	pub fn rotation(self, orientation: Orientation) -> Self {
+		Self { orientation, ..self }
 	}
 
 	/// Creates an identity-oriented transform at `position`.
 	pub fn from_position(position: Point) -> Self {
-		Self::new(position, Vec3f::new(1.0, 1.0, 1.0), Quatf::identity())
+		Self::new(position, Scale::identity(), Orientation::identity())
 	}
 
-	/// Creates a transform that changes only the raw scale factors.
-	pub fn from_scale(scale: Vec3f) -> Self {
-		Self::new(Point::origin(), scale, Quatf::identity())
+	/// Creates a transform that changes only the scale.
+	pub fn from_scale(scale: Scale) -> Self {
+		Self::new(Point::origin(), scale, Orientation::identity())
 	}
 
 	/// Creates a transform that changes only the orientation.
-	pub fn from_rotation(rotation: Quatf) -> Self {
-		Self::new(Point::origin(), Vec3f::new(1.0, 1.0, 1.0), rotation)
+	pub fn from_rotation(orientation: Orientation) -> Self {
+		Self::new(Point::origin(), Scale::identity(), orientation)
 	}
 
 	/// Builds the renderer-facing affine matrix with scale applied before rotation and translation.
 	pub fn get_matrix(&self) -> Matrix {
-		Matrix::from_translation(self.position.into_maths()) * Matrix::from(self.rotation) * Matrix::from_scale(self.scale)
+		Matrix::from_translation(self.position.into_maths())
+			* self.orientation.into_matrix()
+			* Matrix::from_scale(self.scale.into_maths())
 	}
 
 	/// Replaces the world position.
@@ -81,24 +80,24 @@ impl Transform {
 		self.position
 	}
 
-	/// Replaces the non-spatial scale factors.
-	pub fn set_scale(&mut self, scale: Vec3f) {
+	/// Replaces the scale.
+	pub fn set_scale(&mut self, scale: Scale) {
 		self.scale = scale;
 	}
 
-	/// Returns the non-spatial scale factors.
-	pub fn scale(&self) -> Vec3f {
+	/// Returns the scale.
+	pub fn scale(&self) -> Scale {
 		self.scale
 	}
 
-	/// Replaces the orientation quaternion.
-	pub fn set_orientation(&mut self, orientation: Quatf) {
-		self.rotation = orientation;
+	/// Replaces the orientation.
+	pub fn set_orientation(&mut self, orientation: Orientation) {
+		self.orientation = orientation;
 	}
 
-	/// Returns the orientation quaternion.
-	pub fn get_orientation(&self) -> Quatf {
-		self.rotation
+	/// Returns the orientation.
+	pub fn get_orientation(&self) -> Orientation {
+		self.orientation
 	}
 }
 
@@ -152,8 +151,8 @@ pub trait Applicator {
 
 #[cfg(test)]
 mod tests {
-	use math::Point;
-	use maths_rs::{Quatf, Vec3f, Vec4f};
+	use math::{Orientation, Point, Scale, UnitVector, WorldSpace};
+	use maths_rs::Vec4f;
 
 	use super::{Transform, TransformationUpdate};
 	use crate::{
@@ -181,7 +180,11 @@ mod tests {
 
 	#[test]
 	fn matrix_applies_scale_before_translation() {
-		let transform = Transform::new(Point::new(10.0, 20.0, 30.0), Vec3f::new(2.0, 3.0, 4.0), Quatf::identity());
+		let transform = Transform::new(
+			Point::new(10.0, 20.0, 30.0),
+			Scale::new(2.0, 3.0, 4.0),
+			Orientation::identity(),
+		);
 
 		assert_eq!(
 			transform.get_matrix() * Vec4f::new(1.0, 1.0, 1.0, 1.0),
@@ -191,17 +194,18 @@ mod tests {
 
 	#[test]
 	fn transformable_traits_share_one_transform() {
-		let orientation = Quatf::from_axis_angle(Vec3f::new(1.0, 0.0, 0.0), 0.25);
+		let orientation =
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), 0.25).expect("finite axis-angle orientation");
 		let mut entity = SpatialEntity {
 			transform: Transform::default(),
 		};
 
 		entity.set_position(Point::new(3.0, 4.0, 5.0));
-		entity.set_scale(Vec3f::new(2.0, 2.0, 2.0));
+		entity.set_scale(Scale::new(2.0, 2.0, 2.0));
 		entity.set_orientation(orientation);
 
 		assert_eq!(entity.position(), Point::new(3.0, 4.0, 5.0));
-		assert_eq!(entity.scale(), Vec3f::new(2.0, 2.0, 2.0));
+		assert_eq!(entity.scale(), Scale::new(2.0, 2.0, 2.0));
 		assert_eq!(entity.orientation(), orientation);
 	}
 

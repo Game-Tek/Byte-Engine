@@ -2,7 +2,7 @@
 /// The `Camera` struct provides scene-owned world-space view settings to render sinks and inspection tools.
 pub struct Camera {
 	position: Point,
-	orientation: Quaternion,
+	orientation: Orientation,
 	fov: f32,
 	aspect_ratio: f32,
 	aperture: f32,
@@ -14,7 +14,7 @@ impl Camera {
 	pub fn new() -> Self {
 		Self {
 			position: Point::origin(),
-			orientation: Quaternion::identity(),
+			orientation: Orientation::identity(),
 			fov: 45.0,
 			aspect_ratio: 1.0,
 			aperture: 0.0,
@@ -82,18 +82,16 @@ impl Camera {
 
 	/// Returns the checked world-space direction used when creating a [`crate::rendering::View`].
 	pub fn direction(&self) -> UnitVector {
-		direction_from_orientation(self.orientation).expect(
-			"Camera orientation produced an invalid direction. The most likely cause is a non-finite camera orientation.",
-		)
+		direction_from_orientation(self.orientation)
 	}
 }
 
 impl Orientable for Camera {
-	fn orientation(&self) -> Quaternion {
+	fn orientation(&self) -> Orientation {
 		self.orientation
 	}
 
-	fn set_orientation(&mut self, orientation: Quaternion) {
+	fn set_orientation(&mut self, orientation: Orientation) {
 		self.orientation = orientation;
 	}
 }
@@ -142,7 +140,7 @@ mod tests {
 
 	#[test]
 	fn set_direction_rotates_forward_to_the_requested_checked_direction() {
-		let requested = Vector::new(2.0, -3.0, -4.0).normalize().expect("nonzero direction");
+		let requested = Vector::new(2.0, -3.0, -4.0).normalized().expect("nonzero direction");
 
 		let camera = Camera::new().with_direction(requested);
 		let actual = camera.direction();
@@ -156,10 +154,9 @@ mod tests {
 	fn position_orientation_and_inspector_updates_share_camera_state() {
 		let mut camera = Camera::new();
 		camera.set_position(Point::new(1.0, 2.0, 3.0));
-		camera.set_orientation(Quaternion::from_axis_angle(
-			UnitVector::<math::WorldSpace>::y_axis().into_maths(),
-			0.5,
-		));
+		let orientation = Orientation::try_from_axis_angle(UnitVector::<math::WorldSpace>::y_axis(), 0.5)
+			.expect("finite angle around a checked axis");
+		<Camera as Orientable>::set_orientation(&mut camera, orientation);
 		camera.set("fov", "72.5").expect("numeric field of view");
 
 		assert_eq!(camera.position(), Point::new(1.0, 2.0, 3.0));
@@ -176,7 +173,7 @@ mod tests {
 	}
 }
 
-use math::{direction_from_orientation, orientation_from_direction, Point, Quaternion, UnitVector, Vector};
+use math::{direction_from_orientation, orientation_from_direction, Orientation, Point, UnitVector, Vector};
 
 use crate::core::{Entity, EntityHandle};
 use crate::inspector::Inspectable;

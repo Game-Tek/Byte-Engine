@@ -186,7 +186,7 @@ fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Ha
 	camera.set_position(Point::new(0.0, 1.5, 5.0));
 	camera.set_direction(
 		Vector::new(0.0, -0.15, -1.0)
-			.normalize()
+			.normalized()
 			.expect("camera direction is non-zero"),
 	);
 	let camera = app.world_mut().camera_factory_mut().create(camera);

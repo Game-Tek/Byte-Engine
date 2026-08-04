@@ -167,7 +167,7 @@ fn support_axis(half_extent: f32, direction: f32) -> f32 {
 
 fn normalize_or_zero(vector: Vector<LocalSpace>) -> Vector<LocalSpace> {
 	vector
-		.normalize()
+		.normalized()
 		.map_or_else(|_| Vector::zero(), |direction| direction.into_vector())
 }
 
@@ -207,7 +207,7 @@ fn point_projection(point: Point<LocalSpace>, direction: Vector<LocalSpace>) -> 
 /// Returns the distance from `point` to the local line through `a` and `b`.
 pub fn distance_from_line(a: Point<LocalSpace>, b: Point<LocalSpace>, point: Point<LocalSpace>) -> f32 {
 	let offset = b - a;
-	let Some(direction) = offset.normalize().ok() else {
+	let Some(direction) = offset.normalized().ok() else {
 		return point.distance_to(a);
 	};
 	let ray = point - a;
@@ -239,7 +239,7 @@ fn signed_distance_from_triangle(
 	c: Point<LocalSpace>,
 	point: Point<LocalSpace>,
 ) -> f32 {
-	let normal = (b - a).cross(c - a).normalize();
+	let normal = (b - a).cross(c - a).normalized();
 	match normal {
 		Ok(normal) => normal.dot(point - a),
 		Err(_) => distance_from_line(a, b, point)

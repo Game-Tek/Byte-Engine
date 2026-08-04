@@ -117,7 +117,7 @@ pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Quatf;
+	use math::Orientation;
 
 	use super::*;
 	use crate::{
@@ -150,7 +150,7 @@ mod tests {
 			body_type: BodyTypes::Dynamic,
 			collision_shape: Shapes::Sphere { radius: 0.5 },
 			position,
-			orientation: Quatf::identity(),
+			orientation: Orientation::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),

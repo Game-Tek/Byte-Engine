@@ -3,6 +3,8 @@
 //! Use [`Point`] for locations, [`Vector`] for displacements, and [`UnitVector`] for normals and directions. Space brands prevent accidental operations across coordinate systems; game domains define their own brands and use them as the `Space` parameter.
 
 mod geometry;
+mod orientation;
+mod scale;
 
 pub mod aabb;
 pub mod collision;
@@ -14,8 +16,10 @@ pub use aabb::AABB;
 pub use geometry::{NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace};
 use maths_rs::mat::{MatNew4, MatTranspose as _};
 pub use maths_rs::{Mat4f as Matrix, Quatf as Quaternion};
+pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;
+pub use scale::Scale;
 pub use sphere::Sphere;
 
 /// Asserts that two floating-point values differ by no more than an explicit epsilon.
@@ -178,26 +182,29 @@ pub fn from_rotation<Space>(axis: UnitVector<Space>, theta: f32) -> Matrix {
 	)
 }
 
-/// Returns the shortest orientation from the engine forward axis to `direction`.
-pub fn orientation_from_direction<Space>(direction: UnitVector<Space>) -> Quaternion {
+/// Returns the shortest checked orientation from the engine forward axis to `direction`.
+pub fn orientation_from_direction<Space>(direction: UnitVector<Space>) -> Orientation {
 	let forward = UnitVector::z_axis();
 	let alignment = forward.dot(direction.into_vector()).clamp(-1.0, 1.0);
 
 	// Opposite directions have no unique rotation axis, so use x for deterministic output.
-	if alignment <= -1.0 + f32::EPSILON {
-		return Quaternion::from_axis_angle(UnitVector::<Space>::x_axis().into_maths(), std::f32::consts::PI);
-	}
+	let quaternion = if alignment <= -1.0 + f32::EPSILON {
+		Quaternion::from_axis_angle(UnitVector::<Space>::x_axis().into_maths(), std::f32::consts::PI)
+	} else {
+		let axis = forward.cross(direction.into_vector());
+		maths_rs::normalize(Quaternion::new(axis.x(), axis.y(), axis.z(), 1.0 + alignment))
+	};
 
-	let axis = forward.cross(direction.into_vector());
-	maths_rs::normalize(Quaternion::new(axis.x(), axis.y(), axis.z(), 1.0 + alignment))
+	// Checked finite unit vectors always produce a finite, non-zero rotation.
+	Orientation::try_from_maths(quaternion).expect("checked directions produce valid orientations")
 }
 
-/// Returns the checked direction produced by rotating the engine forward axis.
-///
-/// The method returns [`NormalizationError`] if `orientation` produces a non-finite direction.
-pub fn direction_from_orientation(orientation: Quaternion) -> Result<UnitVector, NormalizationError> {
-	let rotated_forward = orientation * UnitVector::<WorldSpace>::z_axis().into_maths();
-	Vector::from_maths(rotated_forward).normalize()
+/// Returns the checked world-space direction produced by rotating the engine forward axis.
+pub fn direction_from_orientation(orientation: Orientation) -> UnitVector {
+	let rotated_forward = orientation.rotate_vector(UnitVector::<WorldSpace>::z_axis().into_vector());
+
+	// A valid orientation preserves the finite, non-zero length of the forward unit vector.
+	UnitVector::try_from_vector(rotated_forward).expect("valid orientations preserve unit directions")
 }
 
 /// Returns a left-handed perspective projection matrix with a zero-to-one depth range.
@@ -302,9 +309,9 @@ mod tests {
 			-UnitVector::<WorldSpace>::z_axis(),
 			UnitVector::<WorldSpace>::x_axis(),
 			UnitVector::<WorldSpace>::y_axis(),
-			Vector::<WorldSpace>::new(0.3, -0.4, 0.5).normalize().unwrap(),
+			Vector::<WorldSpace>::new(0.3, -0.4, 0.5).normalized().unwrap(),
 		] {
-			let resolved = direction_from_orientation(orientation_from_direction(direction)).unwrap();
+			let resolved = direction_from_orientation(orientation_from_direction(direction));
 			crate::assert_geometry_near!(resolved, direction, "orientation round trip must preserve direction");
 		}
 	}
@@ -312,8 +319,8 @@ mod tests {
 	#[test]
 	fn orientation_from_near_forward_direction_preserves_small_mouse_motion() {
 		let yaw = (2.0 / 1024.0) * std::f32::consts::PI;
-		let direction = Vector::<WorldSpace>::new(yaw.sin(), 0.0, yaw.cos()).normalize().unwrap();
-		let resolved = direction_from_orientation(orientation_from_direction(direction)).unwrap();
+		let direction = Vector::<WorldSpace>::new(yaw.sin(), 0.0, yaw.cos()).normalized().unwrap();
+		let resolved = direction_from_orientation(orientation_from_direction(direction));
 
 		crate::assert_geometry_near!(resolved, direction, "near-forward rotations must retain small input changes");
 	}

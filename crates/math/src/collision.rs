@@ -180,7 +180,7 @@ pub fn sphere_vs_sphere<Space>(sphere_a: &Sphere<Space>, sphere_b: &Sphere<Space
 	}
 
 	// Coincident centers have no geometric normal, so use a stable axis instead of producing NaNs.
-	let normal = offset.normalize().unwrap_or_else(|_| UnitVector::x_axis());
+	let normal = offset.normalized().unwrap_or_else(|_| UnitVector::x_axis());
 	let distance = distance_squared.sqrt();
 	Some(Intersection {
 		normal,
@@ -293,7 +293,7 @@ pub fn sphere_vs_aabb<Space>(sphere: &Sphere<Space>, aabb: &AABB<Space>) -> Opti
 		return None;
 	}
 
-	if let Ok(normal) = toward_box.normalize() {
+	if let Ok(normal) = toward_box.normalized() {
 		let distance = distance_squared.sqrt();
 		return Some(Intersection {
 			normal,
@@ -389,7 +389,9 @@ fn collision_at_time<Space>(
 	if moved_a.center() == moved_b.center() {
 		// Coincident dynamic centers have no geometric normal. Use relative motion directly instead
 		// of creating and replacing the static contact's known fallback normal.
-		let normal = (b_velocity - a_velocity).normalize().unwrap_or_else(|_| UnitVector::x_axis());
+		let normal = (b_velocity - a_velocity)
+			.normalized()
+			.unwrap_or_else(|_| UnitVector::x_axis());
 		return Some(DynamicIntersection {
 			toi,
 			contact: Intersection {
@@ -440,7 +442,7 @@ mod tests {
 		assert_eq!(ray_aabb_intersection(&from_above, &aabb), Some(1.5));
 		let from_front = Ray::new(Point::new(0.0, 0.0, -2.0), UnitVector::z_axis());
 		assert_eq!(ray_aabb_intersection(&from_front, &aabb), Some(1.5));
-		let diagonal = Ray::new(Point::new(0.0, 1.0, -1.0), Vector::new(0.0, -1.0, 1.0).normalize().unwrap());
+		let diagonal = Ray::new(Point::new(0.0, 1.0, -1.0), Vector::new(0.0, -1.0, 1.0).normalized().unwrap());
 		assert_float_eq_with_epsilon!(ray_aabb_intersection(&diagonal, &aabb).unwrap(), 0.5_f32.sqrt(), 0.000001);
 
 		let parallel_miss = Ray::new(Point::new(2.0, 2.0, 0.0), -UnitVector::y_axis());

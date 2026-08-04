@@ -1,5 +1,4 @@
-use math::Point;
-use maths_rs::{Quatf, Vec3f};
+use math::{Orientation, Point, Scale};
 
 use crate::{
 	gameplay::Transform,
@@ -29,21 +28,21 @@ impl<T: Transformable> Positionable for T {
 }
 
 impl<T: Transformable> Orientable for T {
-	fn orientation(&self) -> Quatf {
+	fn orientation(&self) -> Orientation {
 		self.transform().get_orientation()
 	}
 
-	fn set_orientation(&mut self, orientation: Quatf) {
+	fn set_orientation(&mut self, orientation: Orientation) {
 		self.transform_mut().set_orientation(orientation);
 	}
 }
 
 impl<T: Transformable> Scalable for T {
-	fn scale(&self) -> Vec3f {
+	fn scale(&self) -> Scale {
 		self.transform().scale()
 	}
 
-	fn set_scale(&mut self, scale: Vec3f) {
+	fn set_scale(&mut self, scale: Scale) {
 		self.transform_mut().set_scale(scale);
 	}
 }

@@ -168,7 +168,7 @@ mod tests {
 		let resolution = 1024;
 		let shadow_view = make_csm_views(
 			view,
-			Vector::new(0.5, -1.0, 0.3).normalize().expect("nonzero light direction"),
+			Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction"),
 			1,
 			resolution,
 		)
@@ -195,7 +195,7 @@ mod tests {
 			-UnitVector::y_axis(),
 			UnitVector::x_axis(),
 			UnitVector::z_axis(),
-			Vector::new(0.5, -1.0, 0.3).normalize().expect("nonzero light direction"),
+			Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction"),
 		];
 
 		for direction in directions {

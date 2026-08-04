@@ -1,7 +1,6 @@
 use std::{alloc::Allocator, ops::Deref};
 
-use math::Vector;
-use maths_rs::Vec3f;
+use math::{Scale, Vector};
 use utils::{
 	hash::{HashMap, HashMapExt},
 	StableVec, StableVecHandle,
@@ -136,7 +135,7 @@ impl World {
 			body.update(dt);
 			transforms_tx.send(TransformationUpdate::new(
 				body.handle,
-				Transform::new(body.position, Vec3f::new(1.0, 1.0, 1.0), body.orientation),
+				Transform::new(body.position, Scale::identity(), body.orientation),
 			));
 		}
 	}
@@ -204,7 +203,7 @@ impl World {
 		let normal_velocity = normal * relative_velocity.dot(normal_vector);
 		let tangent_velocity = relative_velocity - normal_velocity;
 		if tangent_velocity.length_squared() > f32::EPSILON {
-			let tangent = tangent_velocity.normalize().expect("non-zero tangent velocity");
+			let tangent = tangent_velocity.normalized().expect("non-zero tangent velocity");
 			let tangent_vector = tangent.into_vector();
 			let a_friction_factor =
 				Vector::from_maths(a_inverse_inertia * a_radius.cross(tangent_vector).into_maths()).cross(a_radius);
@@ -279,7 +278,8 @@ impl World {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::Quatf;
+
+	use math::Orientation;
 	use smallvec::SmallVec;
 
 	use super::*;
@@ -306,7 +306,7 @@ mod tests {
 				size: Vector::new(4.0, 1.0, 4.0),
 			},
 			position: math::Point::origin(),
-			orientation: Quatf::identity(),
+			orientation: Orientation::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::zero(),
@@ -323,7 +323,7 @@ mod tests {
 			body_type: BodyTypes::Dynamic,
 			collision_shape: Shapes::Sphere { radius },
 			position,
-			orientation: Quatf::identity(),
+			orientation: Orientation::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),

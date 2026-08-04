@@ -1,11 +1,11 @@
 use math::{
 	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere_dynamic},
-	Point, Sphere, Vector, AABB,
+	Orientation, Point, Sphere, Vector, AABB,
 };
 use maths_rs::{
 	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
 	vec::Magnitude as _,
-	Mat3f, Quatf, Vec3f,
+	Mat3f, Vec3f,
 };
 
 use crate::{
@@ -20,7 +20,7 @@ pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
 	pub(crate) collision_shape: Shapes,
 	pub(crate) position: Point,
-	pub(crate) orientation: Quatf,
+	pub(crate) orientation: Orientation,
 	pub(crate) acceleration: Vector,
 	pub(crate) linear_velocity: Vector,
 	pub(crate) angular_velocity: Vector,
@@ -59,7 +59,7 @@ impl PhysicsBody {
 			self.angular_velocity + Vector::from_maths(self.inverse_world_space_inertia_tensor() * impulse.into_maths());
 		const MAX_ANGULAR_SPEED: f32 = 30.0;
 		if self.angular_velocity.length_squared() > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
-			self.angular_velocity = self.angular_velocity.normalize().expect("finite angular velocity") * MAX_ANGULAR_SPEED;
+			self.angular_velocity = self.angular_velocity.normalized().expect("finite angular velocity") * MAX_ANGULAR_SPEED;
 		}
 	}
 
@@ -71,7 +71,8 @@ impl PhysicsBody {
 	/// Returns the center of mass in world coordinates.
 	pub fn world_space_center_of_mass(&self) -> Point {
 		let local_offset = self.center_of_mass - Point::origin();
-		self.position + Vector::from_maths(self.orientation * local_offset.into_maths())
+		// Rotating a local offset into the world frame crosses a spatial math boundary.
+		self.position + Vector::from_maths(self.orientation.into_maths() * local_offset.into_maths())
 	}
 
 	/// Returns the inverse local inertia tensor as a raw matrix boundary value.
@@ -82,7 +83,7 @@ impl PhysicsBody {
 
 	/// Returns the inverse world inertia tensor as a raw matrix boundary value.
 	pub fn inverse_world_space_inertia_tensor(&self) -> Mat3f {
-		let rotation = self.orientation.get_matrix();
+		let rotation = self.orientation.into_maths().get_matrix();
 		rotation * self.inverse_body_space_inertia_tensor() * rotation.transpose()
 	}
 
@@ -93,7 +94,7 @@ impl PhysicsBody {
 
 		let center_of_mass = self.world_space_center_of_mass();
 		let center_offset = self.position - center_of_mass;
-		let rotation = self.orientation.get_matrix();
+		let rotation = self.orientation.into_maths().get_matrix();
 		let inertia = rotation * self.collision_shape.inertia_tensor() * rotation.transpose();
 		let angular_momentum = Vector::from_maths(inertia * self.angular_velocity.into_maths());
 		let angular_acceleration =
@@ -104,10 +105,12 @@ impl PhysicsBody {
 		// Check the axis and measure its rotation in one operation.
 		let delta_orientation = angular_step
 			.normalize_with_length()
-			.map(|(axis, angle)| Quatf::from_axis_angle(axis.into_maths(), angle))
-			.unwrap_or_else(|_| Quatf::identity());
-		self.orientation = Quatf::normalize(delta_orientation * self.orientation);
-		self.position = center_of_mass + Vector::from_maths(delta_orientation * center_offset.into_maths());
+			.map(|(axis, angle)| {
+				Orientation::try_from_axis_angle(axis, angle).expect("a finite unit axis and finite angle form an orientation")
+			})
+			.unwrap_or_else(|_| Orientation::identity());
+		self.orientation = delta_orientation.compose(self.orientation);
+		self.position = center_of_mass + delta_orientation.rotate_vector(center_offset);
 	}
 
 	/// Returns the current world-space axis-aligned bounds.
@@ -159,7 +162,7 @@ mod tests {
 			body_type: BodyTypes::Dynamic,
 			collision_shape: Shapes::Sphere { radius: 1.0 },
 			position: Point::origin(),
-			orientation: Quatf::identity(),
+			orientation: Orientation::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::new(0.0, 1.0, 0.0),

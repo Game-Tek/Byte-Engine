@@ -1367,7 +1367,6 @@ use ghi::{
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };
-use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
 use tracing::debug_span;

@@ -51,7 +51,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 	fn default() -> Self {
 		Self {
 			sun_direction: math::Vector::new(0.35, 0.85, 0.4)
-				.normalize()
+				.normalized()
 				.expect("default sun direction is nonzero"),
 			sun_intensity: 22.0,
 			sun_angular_radius: 0.004675,

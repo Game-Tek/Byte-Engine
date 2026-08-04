@@ -2,6 +2,8 @@
 
 use std::ops::{Add, Mul};
 
+use math::{NormalizationError, UnitVector, Vector};
+
 /// The `Axis2` struct carries a two-channel input value such as a mouse delta or gamepad stick.
 ///
 /// Use `Axis2` for device-relative values passed through [`super::Value`]. It
@@ -112,6 +114,20 @@ impl Mul for Axis3 {
 
 	fn mul(self, rhs: Self) -> Self::Output {
 		Self::new(self.x * rhs.x, self.y * rhs.y, self.z * rhs.z)
+	}
+}
+
+impl From<UnitVector> for Axis3 {
+	fn from(value: UnitVector) -> Self {
+		Self::new(value.x(), value.y(), value.z())
+	}
+}
+
+impl TryFrom<Axis3> for UnitVector {
+	type Error = NormalizationError;
+
+	fn try_from(value: Axis3) -> Result<Self, NormalizationError> {
+		UnitVector::try_from_vector(Vector::new(value.x, value.y, value.z))
 	}
 }
 

@@ -31,7 +31,7 @@ impl<Space> Plane<Space> {
 		second: Point<Space>,
 		third: Point<Space>,
 	) -> Result<Self, crate::NormalizationError> {
-		let normal = (second - first).cross(third - first).normalize()?;
+		let normal = (second - first).cross(third - first).normalized()?;
 		Ok(Self::from_point_and_normal(first, normal))
 	}
 
@@ -63,7 +63,7 @@ mod tests {
 
 	#[test]
 	fn checked_normals_keep_signed_distances_in_coordinate_space_units() {
-		let normal: UnitVector<WorldSpace> = Vector::new(1.0, 2.0, -2.0).normalize().unwrap();
+		let normal: UnitVector<WorldSpace> = Vector::new(1.0, 2.0, -2.0).normalized().unwrap();
 		let plane = Plane::new(normal, -5.0);
 		let point_on_plane = Point::origin() + normal * 5.0;
 

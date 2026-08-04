@@ -2,7 +2,7 @@ use std::{
 	cmp::Ordering,
 	fmt,
 	marker::PhantomData,
-	ops::{Add, Div, Mul, Neg, Sub},
+	ops::{Add, AddAssign, Div, Mul, Neg, Sub},
 };
 
 use maths_rs::Vec3f;
@@ -190,7 +190,12 @@ impl<Space> Vector<Space, Unnormalized> {
 	}
 
 	/// Checks the vector and returns a [`UnitVector`] suitable for a normal or direction.
-	pub fn normalize(self) -> Result<UnitVector<Space>, NormalizationError> {
+	pub fn normalized(self) -> Result<UnitVector<Space>, NormalizationError> {
+		self.normalize_with_length().map(|(unit_vector, _)| unit_vector)
+	}
+
+	/// Checks the vector and returns a [`UnitVector`] suitable for a normal or direction.
+	pub fn unit(self) -> Result<UnitVector<Space>, NormalizationError> {
 		self.normalize_with_length().map(|(unit_vector, _)| unit_vector)
 	}
 }
@@ -255,6 +260,12 @@ impl<Space> Default for Vector<Space, Unnormalized> {
 	}
 }
 
+impl<Space> From<UnitVector<Space>> for Vector<Space> {
+	fn from(value: UnitVector<Space>) -> Self {
+		Vector::from_maths(value.value)
+	}
+}
+
 /// The `UnitVector` struct represents a checked unit-length direction for normals, rays, and orientation APIs.
 #[repr(transparent)]
 pub struct UnitVector<Space = WorldSpace> {
@@ -285,7 +296,7 @@ impl<Space> PartialEq for UnitVector<Space> {
 impl<Space> UnitVector<Space> {
 	/// Validates and normalizes `vector` so it can be used as a direction or normal.
 	pub fn try_from_vector(vector: Vector<Space>) -> Result<Self, NormalizationError> {
-		vector.normalize()
+		vector.normalized()
 	}
 
 	/// Returns the positive x axis.
@@ -343,8 +354,8 @@ impl<Space> UnitVector<Space> {
 	}
 
 	/// Returns a perpendicular unnormalized vector.
-	pub fn cross<OtherState>(self, other: Vector<Space, OtherState>) -> Vector<Space> {
-		Vector::from_maths(cross_values(self.value, other.value))
+	pub fn cross(self, other: impl Into<Vector<Space>>) -> Vector<Space> {
+		Vector::from_maths(cross_values(self.value, other.into().value))
 	}
 }
 
@@ -361,6 +372,12 @@ impl<Space> Add<UnitVector<Space>> for Point<Space> {
 
 	fn add(self, rhs: UnitVector<Space>) -> Self::Output {
 		self + rhs.into_vector()
+	}
+}
+
+impl<Space> AddAssign<Vector<Space>> for Point<Space> {
+	fn add_assign(&mut self, rhs: Vector<Space>) {
+		self.value += rhs.value;
 	}
 }
 
@@ -393,6 +410,12 @@ impl<Space, LeftState, RightState> Add<Vector<Space, RightState>> for Vector<Spa
 
 	fn add(self, rhs: Vector<Space, RightState>) -> Self::Output {
 		Vector::from_maths(self.value + rhs.value)
+	}
+}
+
+impl<Space, LeftState, RightState> AddAssign<Vector<Space, RightState>> for Vector<Space, LeftState> {
+	fn add_assign(&mut self, rhs: Vector<Space, RightState>) {
+		self.value += rhs.value;
 	}
 }
 
@@ -543,13 +566,13 @@ mod tests {
 
 	#[test]
 	fn normalization_rejects_zero_and_non_finite_vectors() {
-		assert_eq!(Vector::<WorldSpace>::zero().normalize(), Err(NormalizationError::ZeroLength));
+		assert_eq!(Vector::<WorldSpace>::zero().normalized(), Err(NormalizationError::ZeroLength));
 		assert_eq!(
-			Vector::<WorldSpace>::new(f32::NAN, 0.0, 0.0).normalize(),
+			Vector::<WorldSpace>::new(f32::NAN, 0.0, 0.0).normalized(),
 			Err(NormalizationError::NonFinite)
 		);
 		assert_eq!(
-			Vector::<WorldSpace>::new(f32::INFINITY, 0.0, 0.0).normalize(),
+			Vector::<WorldSpace>::new(f32::INFINITY, 0.0, 0.0).normalized(),
 			Err(NormalizationError::NonFinite)
 		);
 	}
@@ -559,16 +582,16 @@ mod tests {
 		let vector = Vector::<WorldSpace>::new(3.0, 4.0, 0.0);
 		let (unit_vector, length) = vector.normalize_with_length().unwrap();
 
-		assert_eq!(unit_vector, Vector::new(0.6, 0.8, 0.0).normalize().unwrap());
+		assert_eq!(unit_vector, Vector::new(0.6, 0.8, 0.0).normalized().unwrap());
 		assert_eq!(length, 5.0);
-		assert_eq!(vector.normalize().unwrap(), unit_vector);
+		assert_eq!(vector.normalized().unwrap(), unit_vector);
 		assert_eq!(UnitVector::try_from_vector(vector).unwrap(), unit_vector);
 	}
 
 	#[test]
 	fn normalization_handles_tiny_and_large_finite_vectors() {
-		let tiny = Vector::<WorldSpace>::new(f32::MIN_POSITIVE, 0.0, 0.0).normalize().unwrap();
-		let large = Vector::<WorldSpace>::new(f32::MAX, f32::MAX, 0.0).normalize().unwrap();
+		let tiny = Vector::<WorldSpace>::new(f32::MIN_POSITIVE, 0.0, 0.0).normalized().unwrap();
+		let large = Vector::<WorldSpace>::new(f32::MAX, f32::MAX, 0.0).normalized().unwrap();
 
 		assert_eq!(tiny, UnitVector::x_axis());
 		assert!((large.into_vector().length_squared() - 1.0).abs() < 0.0001);

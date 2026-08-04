@@ -101,7 +101,7 @@ mod tests {
 		.expect("physical cone light");
 		let point = PointLight::new(Point::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
 		let directional = DirectionalLight::new(
-			Vector::new(-1.0, -2.0, -3.0).normalize().expect("nonzero direction"),
+			Vector::new(-1.0, -2.0, -3.0).normalized().expect("nonzero direction"),
 			white(),
 			PhotometricIntensity::Illuminance {
 				lux: 10_000.0,
@@ -123,7 +123,7 @@ mod tests {
 
 		assert_eq!(
 			directional.direction,
-			Vector::new(-1.0, -2.0, -3.0).normalize().expect("nonzero direction")
+			Vector::new(-1.0, -2.0, -3.0).normalized().expect("nonzero direction")
 		);
 		assert_eq!(directional.color, Vec3f::new(10_000.0, 10_000.0, 10_000.0));
 		assert_eq!(directional.class(), LightClasses::Directional);

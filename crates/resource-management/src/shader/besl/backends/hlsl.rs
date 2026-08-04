@@ -940,6 +940,13 @@ impl Generator {
 				});
 				string.push(')');
 			}
+			"u16" => {
+				string.push_str("uint(");
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
 			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 				string.push_str(Self::translate_type(name));
 				string.push('(');

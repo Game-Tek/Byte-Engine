@@ -1096,6 +1096,15 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			};
 			return Ok(Value::U32(u32::from(*value)));
 		}
+		ScalarUnaryOperator::FromU32ToU16 => {
+			let Value::U32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+			return Ok(Value::U16(*value as u16));
+		}
 		ScalarUnaryOperator::FromI32ToU32 => {
 			let Value::I32(value) = value else {
 				return Err(VmError::TypeMismatch {
@@ -1135,6 +1144,7 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		| ScalarUnaryOperator::FromF16ToU32
 		| ScalarUnaryOperator::FromU8ToU32
 		| ScalarUnaryOperator::FromU16ToU32
+		| ScalarUnaryOperator::FromU32ToU16
 		| ScalarUnaryOperator::FromI32ToU32 => unreachable!("conversion operators return early"),
 	})
 }

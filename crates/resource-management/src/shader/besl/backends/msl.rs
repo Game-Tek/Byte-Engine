@@ -2688,6 +2688,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"u16" => {
+				string.push_str("ushort(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"atomic_add" => {
 				string.push_str("atomic_fetch_add_explicit(&");
 				self.emit_node_string(string, &arguments[0]);

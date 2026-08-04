@@ -433,6 +433,7 @@ impl Node {
 			builtin_intrinsic("f16", vec![("value", f32_t.clone())], f16_t.clone()),
 			builtin_intrinsic("f16", vec![("value", u32_t.clone())], f16_t.clone()),
 			builtin_intrinsic("f16", vec![("value", i32_t.clone())], f16_t.clone()),
+			builtin_intrinsic("u16", vec![("value", u32_t.clone())], u16_t.clone()),
 			builtin_intrinsic("f32", vec![("value", f16_t.clone())], f32_t.clone()),
 			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("f32", vec![("value", i32_t.clone())], f32_t.clone()),

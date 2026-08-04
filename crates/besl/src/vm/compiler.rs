@@ -1285,6 +1285,34 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"u16" => {
+				require_argument_count(arguments, 1)?;
+				if expected_type != &ValueType::U16 {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::U16.name().to_string(),
+					});
+				}
+
+				let source_type = self.infer_expression_type(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				if source_type == ValueType::U16 {
+					return self.compile_value_expression(&arguments[0], &ValueType::U16, descriptor_layouts);
+				}
+				if source_type != ValueType::U32 {
+					return Err(VmError::TypeMismatch {
+						expected: "u32".to_string(),
+						found: source_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator: ScalarUnaryOperator::FromU32ToU16,
+					value,
+				});
+				Ok(register)
+			}
 			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 				require_argument_count(arguments, 1)?;
 				let (source_type, target_type) = match name.as_str() {

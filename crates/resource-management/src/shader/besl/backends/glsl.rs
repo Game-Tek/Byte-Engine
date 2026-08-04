@@ -346,6 +346,11 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"u16" => {
+				string.push_str("uint16_t(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"vec2f" | "vec3f" | "vec4f" | "vec2f16" | "vec3f16" | "vec4f16" => {
 				string.push_str(Self::translate_type(name));
 				string.push('(');

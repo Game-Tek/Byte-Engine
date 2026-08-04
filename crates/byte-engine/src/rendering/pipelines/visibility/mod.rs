@@ -50,12 +50,16 @@ pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(32);
+/// The packed runtime UV element. Change this alias, its stride, and the shader storage type together to swap formats.
+pub(crate) type RuntimeVertexUv = [u16; 2];
+pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
+pub(crate) const VERTEX_UV_SHADER_TYPE: &str = "vec2u16";
 pub(crate) const VERTEX_UV_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(5),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(8);
+.buffer_stride(VERTEX_UV_BUFFER_STRIDE);
 // HLSL reads packed narrow indices through 32-bit structured words. Metal and
 // Vulkan expose their native scalar element widths directly.
 pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };

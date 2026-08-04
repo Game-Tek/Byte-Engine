@@ -40,9 +40,17 @@ fn vertex_vec3_array_type() -> &'static str {
 	ARRAY_TYPE.get_or_init(|| format!("vec3f[{MAX_VERTICES}]").into_boxed_str())
 }
 
-fn vertex_vec2_array_type() -> &'static str {
+fn vertex_uv_array_type() -> &'static str {
 	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
-	ARRAY_TYPE.get_or_init(|| format!("vec2f[{MAX_VERTICES}]").into_boxed_str())
+	ARRAY_TYPE
+		.get_or_init(|| {
+			format!(
+				"{}[{MAX_VERTICES}]",
+				crate::rendering::pipelines::visibility::VERTEX_UV_SHADER_TYPE
+			)
+			.into_boxed_str()
+		})
+		.as_ref()
 }
 
 fn skinned_vertex_array_type() -> &'static str {
@@ -249,9 +257,10 @@ material_evaluation_prefix: fn () -> void {
 		vertex_normal2 = skinned_vertices.vertices[skinned_vertex_index2].normal;
 	}
 
-	let vertex_uv0: vec2f = vertex_uvs.uvs[vertex_index0];
-	let vertex_uv1: vec2f = vertex_uvs.uvs[vertex_index1];
-	let vertex_uv2: vec2f = vertex_uvs.uvs[vertex_index2];
+	// Runtime UVs use 16-bit UNORM storage; material evaluation expands them only when needed.
+	let vertex_uv0: vec2f = vec2f(vertex_uvs.uvs[vertex_index0]) / 65535.0;
+	let vertex_uv1: vec2f = vec2f(vertex_uvs.uvs[vertex_index1]) / 65535.0;
+	let vertex_uv2: vec2f = vec2f(vertex_uvs.uvs[vertex_index2]) / 65535.0;
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let view: View = views.views[0];
 	let model: mat4x3f = mesh.model;
@@ -869,7 +878,7 @@ impl VisibilityShaderScope {
 		);
 		let uvs = Node::device_buffer_binding(
 			"vertex_uvs",
-			Node::buffer("UVs", vec![Node::member("uvs", vertex_vec2_array_type())]),
+			Node::buffer("UVs", vec![Node::member("uvs", vertex_uv_array_type())]),
 			5,
 			true,
 			false,

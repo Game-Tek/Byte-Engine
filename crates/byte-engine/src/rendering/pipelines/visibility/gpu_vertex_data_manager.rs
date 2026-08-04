@@ -12,8 +12,8 @@ pub(super) struct GPUVertexDataManager {
 	pub vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
 	/// Vertex normals buffer for rendered meshes.
 	pub vertex_normals_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
-	/// Vertex UVs buffer for rendered meshes.
-	pub vertex_uvs_buffer: ghi::BufferHandle<[(f32, f32); MAX_VERTICES]>,
+	/// Vertex UVs buffer for rendered meshes, packed in the visibility runtime format.
+	pub vertex_uvs_buffer: ghi::BufferHandle<[RuntimeVertexUv; MAX_VERTICES]>,
 	/// Indices laid out as indices into the vertex buffers
 	pub vertex_indices_buffer: ghi::BufferHandle<[u16; MAX_PRIMITIVE_TRIANGLES]>,
 	/// Indices laid out as indices into the `vertex_indices_buffer`
@@ -236,6 +236,27 @@ impl GPUVertexDataManager {
 		);
 
 		let vertex_count = positions_stream.count();
+		if uvs_stream.count() != vertex_count {
+			log::error!(
+				"Mesh UV count does not match its position count. The most likely cause is malformed vertex stream metadata."
+			);
+			return None;
+		}
+		let uv_source_format = match mesh_resource
+			.vertex_components
+			.iter()
+			.find(|component| component.semantic == VertexSemantics::UV && component.channel == 0)
+			.map(|component| component.format.as_str())
+		{
+			Some("vec2u16") if uvs_stream.stride == UV_U16_SOURCE_STRIDE => UvSourceFormat::U16Unorm,
+			Some("vec2f") if uvs_stream.stride == UV_F32_SOURCE_STRIDE => UvSourceFormat::F32,
+			format => {
+				log::error!(
+					"Unsupported mesh UV format {format:?}. The most likely cause is that the asset uses a vertex format other than vec2u16 UNORM or vec2f."
+				);
+				return None;
+			}
+		};
 		let primitive_count = vertex_indices_stream.count();
 		let triangle_count = meshlet_indices_stream.count() / 3;
 		let total_meshlet_count = meshlets_stream.count();
@@ -304,6 +325,20 @@ impl GPUVertexDataManager {
 			return None;
 		};
 
+		let runtime_uv_size = vertex_count * VERTEX_UV_BUFFER_STRIDE as usize;
+		let vertex_uv_upload_offset = if uv_source_format == UvSourceFormat::F32 {
+			let source_uvs = load_target
+				.stream("Vertex.UV")
+				.expect("The UV staging stream was supplied to the resource loader.")
+				.buffer();
+			let (packed_offset, packed_uvs) = slice.take_with_offset(runtime_uv_size);
+			pack_f32_uvs(source_uvs, packed_uvs, vertex_count);
+			packed_offset
+		} else {
+			// Already-packed assets upload directly and need no conversion storage.
+			vertex_uv_staging_offset
+		};
+
 		c.copy_buffers(&[
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
@@ -321,10 +356,10 @@ impl GPUVertexDataManager {
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
-				vertex_uv_staging_offset,
+				vertex_uv_upload_offset,
 				self.vertex_uvs_buffer.into(),
-				vertex_offset * std::mem::size_of::<(f32, f32)>(),
-				uvs_stream.size,
+				vertex_offset * VERTEX_UV_BUFFER_STRIDE as usize,
+				runtime_uv_size,
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
@@ -599,8 +634,13 @@ impl GPUVertexDataManager {
 			slice.take_with_offset(std::mem::size_of_val(normals.as_ref()));
 		vertex_normals_buffer.copy_from_slice(as_byte_slice(normals.as_ref()));
 
-		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(std::mem::size_of_val(uvs.as_ref()));
-		vertex_uv_buffer.copy_from_slice(as_byte_slice(uvs.as_ref()));
+		let runtime_uv_size = uvs.len() * VERTEX_UV_BUFFER_STRIDE as usize;
+		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(runtime_uv_size);
+		// Generated geometry starts as f32, so encode directly into staging without a temporary packed vector.
+		for (destination, &(u, v)) in vertex_uv_buffer.chunks_exact_mut(VERTEX_UV_BUFFER_STRIDE as usize).zip(uvs.iter()) {
+			destination[..2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
+			destination[2..].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
+		}
 
 		let (vertex_indices_staging_offset, indices_buffer) =
 			slice.take_with_offset(std::mem::size_of_val(vertex_indices.as_slice()));
@@ -633,8 +673,8 @@ impl GPUVertexDataManager {
 				staging_data_buffer,
 				vertex_uv_staging_offset,
 				self.vertex_uvs_buffer.into(),
-				vertex_offset * std::mem::size_of::<(f32, f32)>(),
-				std::mem::size_of_val(uvs.as_ref()),
+				vertex_offset * VERTEX_UV_BUFFER_STRIDE as usize,
+				runtime_uv_size,
 			),
 			ghi::BufferCopyDescriptor::new(
 				staging_data_buffer,
@@ -882,6 +922,31 @@ impl GPUVertexDataManager {
 }
 
 const RESOURCE_MESHLET_STRIDE: usize = 52;
+const UV_U16_SOURCE_STRIDE: usize = std::mem::size_of::<RuntimeVertexUv>();
+const UV_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 2]>();
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UvSourceFormat {
+	U16Unorm,
+	F32,
+}
+
+/// Encodes one UV component using the visibility pipeline's UNORM conversion policy.
+fn encode_unorm16(value: f32) -> u16 {
+	(value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16
+}
+
+/// Converts an f32 UV stream to packed UNORM16 in transfer staging storage.
+fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
+	for index in 0..vertex_count {
+		let source_offset = index * UV_F32_SOURCE_STRIDE;
+		let destination_offset = index * UV_U16_SOURCE_STRIDE;
+		let u = f32::from_ne_bytes(source[source_offset..source_offset + 4].try_into().expect("A validated f32 UV is four bytes."));
+		let v = f32::from_ne_bytes(source[source_offset + 4..source_offset + 8].try_into().expect("A validated f32 UV is four bytes."));
+		destination[destination_offset..destination_offset + 2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
+		destination[destination_offset + 2..destination_offset + 4].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
+	}
+}
 const SKINNING_POSITION_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
 const SKINNING_NORMAL_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
 const SKINNING_JOINTS_STRIDE: usize = std::mem::size_of::<[u16; 4]>();
@@ -1049,6 +1114,9 @@ use utils::as_byte_slice;
 
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
-	pipelines::visibility::{ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES},
+	pipelines::visibility::{
+		RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+		VERTEX_UV_BUFFER_STRIDE,
+	},
 	pipelines::visibility::{TRIANGLE_COUNT, VERTEX_COUNT},
 };

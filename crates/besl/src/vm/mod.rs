@@ -631,6 +631,11 @@ impl Texture {
 		Ok(Value::Vec4F(self.fetch_texel([coord[0], coord[1], 0])?))
 	}
 
+	/// Fetches one texel from a two-dimensional array layer without interpolation.
+	pub fn fetch_array(&self, coord: [u32; 2], layer: u32) -> Result<Value, VmError> {
+		Ok(Value::Vec4F(self.fetch_texel([coord[0], coord[1], layer])?))
+	}
+
 	/// Fetches one unsigned integer texel without interpolation.
 	pub fn fetch_u32(&self, coord: [u32; 2]) -> Result<Value, VmError> {
 		let index = self.texel_index([coord[0], coord[1], 0])?;

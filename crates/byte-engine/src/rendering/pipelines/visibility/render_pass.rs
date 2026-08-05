@@ -84,6 +84,23 @@ const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::AccessPolicies::WRITE,
 );
 const GTAO_DEPTH_PYRAMID_MIP_COUNT: u32 = 4;
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+)
+.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_2_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+pub(super) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 2;
 
 /// Returns the directional cascade view indices that receive one batched shadow dispatch.
 fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
@@ -490,7 +507,9 @@ fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
 /// The `ShadowPass` struct owns the shared pipeline and depth targets used by directional and cone shadow rendering.
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
+	directional_shadow_depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
 	directional_shadow_pass_pipeline: ghi::PipelineHandle,
+	directional_shadow_depth_pyramid_pipeline: ghi::PipelineHandle,
 	cone_shadow_pass_pipeline: ghi::PipelineHandle,
 	directional_shadow_map: ghi::BaseImageHandle,
 	cone_shadow_map: ghi::BaseImageHandle,
@@ -503,8 +522,43 @@ impl ShadowPass {
 		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		directional_shadow_map: ghi::BaseImageHandle,
+		directional_shadow_depth_pyramid: ghi::BaseImageHandle,
 		cone_shadow_map: ghi::BaseImageHandle,
 	) -> Self {
+		let directional_shadow_depth_pyramid_descriptor_set =
+			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
+		let shadow_depth_sampler = context.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Closest)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0.0)
+				.max_lod(0.0),
+		);
+		context.write(&[
+			ghi::DescriptorWrite::combined_image_sampler(
+				directional_shadow_depth_pyramid_descriptor_set,
+				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_SOURCE_BINDING.slot(),
+				directional_shadow_map,
+				shadow_depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::image_mip(
+				directional_shadow_depth_pyramid_descriptor_set,
+				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_1_BINDING.slot(),
+				directional_shadow_depth_pyramid,
+				ghi::Layouts::General,
+				0,
+			),
+			ghi::DescriptorWrite::image_mip(
+				directional_shadow_depth_pyramid_descriptor_set,
+				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_2_BINDING.slot(),
+				directional_shadow_depth_pyramid,
+				ghi::Layouts::General,
+				1,
+			),
+		]);
 		let shadow_pass_task_shader = load_visibility_shader(
 			context,
 			shader_resources,
@@ -518,6 +572,13 @@ impl ShadowPass {
 			"byte-engine/rendering/visibility/shadow-mesh.besl",
 			"Shadow Pass Mesh Shader",
 			ResourceShaderTypes::Mesh,
+		);
+		let directional_shadow_depth_pyramid_shader = load_visibility_shader(
+			context,
+			shader_resources,
+			"byte-engine/rendering/visibility/directional-shadow-depth-pyramid.besl",
+			"Directional Shadow Depth Pyramid Compute Shader",
+			ResourceShaderTypes::Compute,
 		);
 
 		let directional_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(
@@ -551,10 +612,19 @@ impl ShadowPass {
 			)
 			.name("Shadow Pass Mesh Shader (Cone)"),
 		);
+		let directional_shadow_depth_pyramid_pipeline = context.create_compute_pipeline(
+			ghi::pipelines::compute::Builder::new(
+				&[],
+				ghi::ShaderParameter::new(&directional_shadow_depth_pyramid_shader, ghi::ShaderTypes::Compute),
+			)
+			.name("Directional Shadow Depth Pyramid Compute Shader"),
+		);
 
 		Self {
 			descriptor_set,
+			directional_shadow_depth_pyramid_descriptor_set,
 			directional_shadow_pass_pipeline,
+			directional_shadow_depth_pyramid_pipeline,
 			cone_shadow_pass_pipeline,
 			directional_shadow_map,
 			cone_shadow_map,
@@ -571,11 +641,15 @@ impl ShadowPass {
 		cone_shadow_count: usize,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
+		let directional_shadow_depth_pyramid_descriptor_set = self.directional_shadow_depth_pyramid_descriptor_set;
 		let directional_pipeline = self.directional_shadow_pass_pipeline;
+		let directional_shadow_depth_pyramid_pipeline = self.directional_shadow_depth_pyramid_pipeline;
 		let cone_pipeline = self.cone_shadow_pass_pipeline;
 		let directional_shadow_map = self.directional_shadow_map;
 		let cone_shadow_map = self.cone_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
+		let directional_shadow_depth_pyramid_extent =
+			Extent::rectangle(SHADOW_MAP_RESOLUTION, SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32);
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
@@ -618,6 +692,16 @@ impl ShadowPass {
 					c.end_region();
 				}
 				c.end_render_pass();
+				c.end_region();
+
+				// Each 8x4 workgroup reduces one 8x8 source tile and emits both useful levels.
+				c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
+				let c = c.bind_compute_pipeline(directional_shadow_depth_pyramid_pipeline);
+				c.bind_descriptor_sets(&[directional_shadow_depth_pyramid_descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(
+					directional_shadow_depth_pyramid_extent,
+					Extent::new(8, 4, 1),
+				));
 				c.end_region();
 			}
 
@@ -1323,6 +1407,7 @@ impl VisibilityPipelineRenderPass {
 		lit: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 		directional_shadow_map: ghi::BaseImageHandle,
+		directional_shadow_depth_pyramid: ghi::BaseImageHandle,
 		cone_shadow_map: ghi::BaseImageHandle,
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
@@ -1337,6 +1422,7 @@ impl VisibilityPipelineRenderPass {
 			shader_resources,
 			base_descriptor_set,
 			directional_shadow_map,
+			directional_shadow_depth_pyramid,
 			cone_shadow_map,
 		);
 		let visibility_pass = VisibilityPass::new(

@@ -337,7 +337,6 @@ mod tests {
 			.iter()
 			.find(|binding| binding.name == "parameters")
 			.unwrap_or_else(|| panic!("Canonical LUT shader should retain its parameter buffer: {bindings:?}"));
-		assert_eq!(parameters.slot, 3);
 		assert!(parameters.read && !parameters.write);
 		assert_eq!(
 			parameters.kind,

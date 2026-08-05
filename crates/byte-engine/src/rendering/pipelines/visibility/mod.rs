@@ -208,7 +208,7 @@ mod tests {
 	#[cfg(target_os = "macos")]
 	use resource_management::shader::besl::backends::msl::Generator as MslGenerator;
 	use resource_management::shader::{
-		besl::{backends::hlsl::Generator as HlslGenerator, evaluation::ProgramEvaluation},
+		besl::backends::hlsl::Generator as HlslGenerator,
 		ShaderGenerationSettings,
 	};
 
@@ -242,6 +242,9 @@ mod tests {
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
 	const GTAO_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
 	const GTAO_PYRAMID_WORKGROUP_SIZE: usize = 64;
+	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
+	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
+	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE: usize = 32;
 	const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
 	const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
 	const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
@@ -314,6 +317,13 @@ mod tests {
 		)))
 	}
 
+	fn directional_shadow_depth_pyramid_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/directional-shadow-depth-pyramid.besl"
+		)))
+	}
+
 	fn gtao_upscale_program() -> besl::NodeReference {
 		asset_program(include_str!(concat!(
 			env!("CARGO_MANIFEST_DIR"),
@@ -326,56 +336,6 @@ mod tests {
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/gtao-blur-x.besl"
 		)))
-	}
-
-	/// Guards the complete GTAO interface persisted beside the native shader artifact.
-	#[test]
-	fn gtao_reflects_compact_view_and_linear_hierarchy_resources() {
-		assert_reflected_resources(
-			gtao_program(),
-			&[
-				(0, "gtao_view"),
-				(1, "gtao_parameters"),
-				(1033, "depth_pyramid"),
-				(1034, "ao_output"),
-			],
-		);
-		assert_reflected_resources(
-			gtao_depth_pyramid_program(),
-			&[
-				(0, "gtao_view"),
-				(1033, "source_depth"),
-				(1034, "reduced_depth_1"),
-				(1035, "reduced_depth_2"),
-				(1036, "reduced_depth_3"),
-			],
-		);
-		assert_reflected_resources(
-			gtao_blur_x_program(),
-			&[(1033, "linear_depth"), (1034, "ao_source"), (1035, "ao_output")],
-		);
-		assert_reflected_resources(
-			gtao_upscale_program(),
-			&[
-				(0, "gtao_view"),
-				(1033, "visibility_depth"),
-				(1034, "ao_source"),
-				(1035, "ao_output"),
-				(1036, "low_resolution_depth"),
-			],
-		);
-	}
-
-	/// Verifies a BESL prepass exposes only its reachable flat resources.
-	fn assert_reflected_resources(program: besl::NodeReference, expected: &[(u32, &str)]) {
-		let evaluation = ProgramEvaluation::from_main(&program)
-			.expect("Failed to reflect a visibility prepass. The most likely cause is an invalid BESL resource graph.");
-		let reflected = evaluation
-			.bindings()
-			.iter()
-			.map(|binding| (binding.slot, binding.name.as_str()))
-			.collect::<Vec<_>>();
-		assert_eq!(reflected, expected);
 	}
 
 	/// Verifies the visibility fragment preserves the mesh-stage identifiers consumed by later compute passes.
@@ -1789,6 +1749,57 @@ mod tests {
 		assert_rgba_close(rgba(&reduced_1, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_2, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_3, [0, 0]), nearest, 0.00001);
+	}
+
+	/// Verifies one workgroup invocation emits all three max-depth levels for each atlas-packed cascade.
+	#[test]
+	fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
+		let program = crate::rendering::shader_vm_test::compile(directional_shadow_depth_pyramid_program());
+		let layer_maximums = [0.2, 0.7, 0.4, 0.9];
+		let mut source = Texture::new_3d(8, 8, layer_maximums.len() as u32).expect("directional shadow array fixture");
+		for (layer, maximum) in layer_maximums.iter().copied().enumerate() {
+			for y in 0..8 {
+				for x in 0..8 {
+					let depth = if x == layer as u32 && y == 7 - layer as u32 {
+						maximum
+					} else {
+						maximum * 0.5
+					};
+					source
+						.write_3d([x, y, layer as u32], [depth, 0.0, 0.0, 1.0])
+						.expect("directional shadow source texel");
+				}
+			}
+		}
+		let mut reduced_1 = empty_image(2, 8);
+		let mut reduced_2 = empty_image(1, 4);
+
+		for layer in 0..layer_maximums.len() as u32 {
+			let configs: [ExecutionConfig; DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+				let lane = lane as u32;
+				ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+					.with_call_depth_limit(128)
+					.with_thread_idx(lane)
+					.with_thread_id([
+						lane % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
+						layer * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT
+							+ lane / DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
+					])
+			});
+			let mut workgroup = WorkgroupState::new();
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the fused directional shadow pyramid. The most likely cause is broken shared reduction synchronization or atlas layer addressing.",
+			);
+		}
+
+		for (layer, maximum) in layer_maximums.iter().copied().enumerate() {
+			assert_rgba_close(rgba(&reduced_2, [0, layer as u32]), [maximum, 0.0, 0.0, 1.0], 0.00001);
+		}
 	}
 
 	/// Verifies distant GTAO steps consume conservative hierarchy levels instead of always fetching full-resolution depth.

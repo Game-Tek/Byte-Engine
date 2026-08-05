@@ -239,6 +239,7 @@ fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Retained<mtl::
 	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
 	descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
+	descriptor.setReductionMode(utils::sampler_reduction_mode(builder.reduction_mode));
 	descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 	descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
@@ -751,6 +752,21 @@ pub(crate) fn build_pipeline_layout(
 #[cfg(test)]
 mod flat_binding_tests {
 	use super::*;
+
+	#[test]
+	fn sampler_descriptor_applies_maximum_reduction_with_linear_filtering() {
+		let descriptor = build_sampler_descriptor(
+			&crate::sampler::Builder::new()
+				.filtering_mode(crate::FilteringModes::Linear)
+				.mip_map_mode(crate::FilteringModes::Linear)
+				.reduction_mode(crate::SamplingReductionModes::Max),
+		);
+
+		assert_eq!(descriptor.minFilter(), mtl::MTLSamplerMinMagFilter::Linear);
+		assert_eq!(descriptor.magFilter(), mtl::MTLSamplerMinMagFilter::Linear);
+		assert_eq!(descriptor.mipFilter(), mtl::MTLSamplerMipFilter::Linear);
+		assert_eq!(descriptor.reductionMode(), mtl::MTLSamplerReductionMode::Maximum);
+	}
 
 	fn resource(
 		slot: u32,
@@ -1421,7 +1437,7 @@ mod utils {
 	use objc2_metal as mtl;
 	use utils::Extent;
 
-	use crate::{DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, Uses};
+	use crate::{DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, Uses};
 
 	pub(crate) fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
 		let metadata_prefix = "// besl-threadgroup-size:";
@@ -1539,6 +1555,14 @@ mod utils {
 		match filter {
 			FilteringModes::Closest => mtl::MTLSamplerMipFilter::Nearest,
 			FilteringModes::Linear => mtl::MTLSamplerMipFilter::Linear,
+		}
+	}
+
+	pub(crate) fn sampler_reduction_mode(mode: SamplingReductionModes) -> mtl::MTLSamplerReductionMode {
+		match mode {
+			SamplingReductionModes::WeightedAverage => mtl::MTLSamplerReductionMode::WeightedAverage,
+			SamplingReductionModes::Min => mtl::MTLSamplerReductionMode::Minimum,
+			SamplingReductionModes::Max => mtl::MTLSamplerReductionMode::Maximum,
 		}
 	}
 
@@ -1705,6 +1729,22 @@ mod utils {
 		#[test]
 		fn depth16_format_mapping_uses_depth16_unorm() {
 			assert_eq!(to_pixel_format(Formats::Depth16), mtl::MTLPixelFormat::Depth16Unorm);
+		}
+
+		#[test]
+		fn sampler_reduction_modes_preserve_the_ghi_contract() {
+			assert_eq!(
+				sampler_reduction_mode(SamplingReductionModes::WeightedAverage),
+				mtl::MTLSamplerReductionMode::WeightedAverage
+			);
+			assert_eq!(
+				sampler_reduction_mode(SamplingReductionModes::Min),
+				mtl::MTLSamplerReductionMode::Minimum
+			);
+			assert_eq!(
+				sampler_reduction_mode(SamplingReductionModes::Max),
+				mtl::MTLSamplerReductionMode::Maximum
+			);
 		}
 
 		#[test]

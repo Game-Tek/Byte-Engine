@@ -859,6 +859,30 @@ impl ExecutableProgram {
 					let slot = resolve_resource_slot(*slot, registers)?;
 					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch(coord)?);
 				}
+				Instruction::FetchTextureArray {
+					register,
+					slot,
+					coord,
+					layer,
+				} => {
+					let coord = read_register(registers, *coord)?;
+					let Value::Vec2U(coord) = coord else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec2U.name().to_string(),
+							found: coord.value_type().name().to_string(),
+						});
+					};
+					let layer = read_register(registers, *layer)?;
+					let Value::U32(layer) = layer else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: layer.value_type().name().to_string(),
+						});
+					};
+
+					let slot = resolve_resource_slot(*slot, registers)?;
+					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_array(coord, layer)?);
+				}
 				Instruction::FetchTextureU32 { register, slot, coord } => {
 					let coord = read_register(registers, *coord)?;
 					let Value::Vec2U(coord) = coord else {

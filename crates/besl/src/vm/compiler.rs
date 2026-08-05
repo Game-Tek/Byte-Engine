@@ -874,12 +874,26 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"fetch" => {
-				require_argument_count(arguments, 2)?;
+				if arguments.len() != 2 && arguments.len() != 3 {
+					return Err(VmError::UnsupportedExpression {
+						message: "fetch requires a texture, texel coordinates, and an optional array layer.".to_string(),
+					});
+				}
 
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::FetchTexture { register, slot, coord });
+				if let Some(layer) = arguments.get(2) {
+					let layer = self.compile_value_expression(layer, &ValueType::U32, descriptor_layouts)?;
+					self.instructions.push(Instruction::FetchTextureArray {
+						register,
+						slot,
+						coord,
+						layer,
+					});
+				} else {
+					self.instructions.push(Instruction::FetchTexture { register, slot, coord });
+				}
 				Ok(register)
 			}
 			"fetch_u32" => {

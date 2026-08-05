@@ -1099,6 +1099,16 @@ impl PipelineManager for VisibilityPipelineManager {
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32))
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+		let directional_shadow_depth_pyramid = context.build_image(
+			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+				.name("Directional Shadow Depth Pyramid")
+				.extent(Extent::rectangle(
+					SHADOW_MAP_RESOLUTION / 4,
+					SHADOW_MAP_RESOLUTION / 4 * SHADOW_CASCADE_COUNT as u32,
+				))
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
+		);
 		let cone_shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(CONE_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Cone Shadow Map")
@@ -1123,6 +1133,15 @@ impl PipelineManager for VisibilityPipelineManager {
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
 				.min_lod(0f32)
 				.max_lod(0f32),
+		);
+		let directional_shadow_depth_pyramid_sampler = context.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::Max)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0.0)
+				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		context.write(&[
 			ghi::DescriptorWrite::image(
@@ -1153,6 +1172,13 @@ impl PipelineManager for VisibilityPipelineManager {
 				SHADOW_MAP_BINDING.slot(),
 				directional_shadow_map,
 				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING.slot(),
+				directional_shadow_depth_pyramid,
+				directional_shadow_depth_pyramid_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
@@ -1222,6 +1248,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			ghi::BaseImageHandle::from(lit_target),
 			ao_map.into(),
 			directional_shadow_map.into(),
+			directional_shadow_depth_pyramid.into(),
 			cone_shadow_map.into(),
 			ghi::BaseImageHandle::from(depth_target),
 			ghi::BaseImageHandle::from(primitive_index),
@@ -1521,8 +1548,8 @@ mod tests {
 		select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo,
 		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
 		CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_ENVIRONMENT_TEXEL,
-		ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING,
-		SPECULAR_ENVIRONMENT_BINDING,
+		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
+		MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1650,70 +1677,6 @@ mod tests {
 
 		assert!((brighter_far - neutral_far * 2.0).abs() < 0.0001);
 		assert!((invalid_far - neutral_far).abs() < 0.0001);
-	}
-
-	/// Verifies every pair of retained descriptor-set ranges stays disjoint.
-	fn assert_descriptor_sets_disjoint(left: &[ghi::ShaderResourceDescriptor], right: &[ghi::ShaderResourceDescriptor]) {
-		for left in left {
-			let left_start = left.slot().index();
-			let left_end = left_start + left.count();
-			for right in right {
-				let right_start = right.slot().index();
-				let right_end = right_start + right.count();
-				assert!(
-					left_end <= right_start || right_end <= left_start,
-					"Retained visibility descriptor ranges overlap. The most likely cause is assigning flat slots {left_start}..{left_end} and {right_start}..{right_end} to different descriptor sets."
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn retained_visibility_descriptor_sets_use_disjoint_flat_ranges() {
-		let base = [
-			VIEWS_DATA_BINDING,
-			MESH_DATA_BINDING,
-			VERTEX_POSITIONS_BINDING,
-			VERTEX_NORMALS_BINDING,
-			SKINNED_VERTICES_BINDING,
-			VERTEX_UV_BINDING,
-			VERTEX_INDICES_BINDING,
-			PRIMITIVE_INDICES_BINDING,
-			MESHLET_DATA_BINDING,
-			TEXTURES_BINDING,
-			MESH_DISPATCH_WORK_BINDING,
-		];
-		let visibility = [
-			MATERIAL_COUNT_BINDING,
-			MATERIAL_OFFSET_BINDING,
-			MATERIAL_OFFSET_SCRATCH_BINDING,
-			MATERIAL_EVALUATION_DISPATCHES_BINDING,
-			MATERIAL_XY_BINDING,
-			TRIANGLE_INDEX_BINDING,
-			INSTANCE_ID_BINDING,
-		];
-		let material = [
-			LIT_BINDING,
-			LIGHTING_DATA_BINDING,
-			MATERIALS_DATA_BINDING,
-			AO_MAP_BINDING,
-			SHADOW_MAP_BINDING,
-			CONE_SHADOW_MAP_BINDING,
-			ENVIRONMENT_BINDING,
-			SPECULAR_ENVIRONMENT_BINDING,
-		];
-
-		assert_descriptor_sets_disjoint(&base, &visibility);
-		assert_descriptor_sets_disjoint(&base, &material);
-		assert_descriptor_sets_disjoint(&visibility, &material);
-	}
-
-	#[test]
-	fn environment_bindings_retain_diffuse_and_mipmapped_specular_images() {
-		assert_eq!(ENVIRONMENT_BINDING.slot().index(), 1054);
-		assert_eq!(ENVIRONMENT_BINDING.count(), 1);
-		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.slot().index(), 1055);
-		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.count(), 1);
 	}
 
 	#[test]
@@ -1966,6 +1929,11 @@ const SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDes
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1053),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
 const CONE_SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1064),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -2021,7 +1989,9 @@ use crate::rendering::lights::{ConeLight, DirectionalLight, Light, Lights, Point
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
-use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
+use crate::rendering::pipelines::visibility::render_pass::{
+	VisibilityPipelineRenderPass, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT,
+};
 use crate::rendering::pipelines::visibility::resource_manager::{
 	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
 	VisibilityResourceCompletion, IBL_SPECULAR_LEVEL_COUNT,

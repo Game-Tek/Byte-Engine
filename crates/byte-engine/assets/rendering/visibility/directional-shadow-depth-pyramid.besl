@@ -1,0 +1,69 @@
+// Build 4x4 and 8x8 conservative max-depth levels for every directional cascade in one dispatch.
+// Cascades occupy vertically stacked atlas regions so portable 2D storage images can hold
+// the hierarchy while the source remains a layered depth texture.
+source_depth: descriptor<Texture2DArray, 1033, read>;
+reduced_depth_1: descriptor<StorageImage<r32f>, 1034, write>;
+reduced_depth_2: descriptor<StorageImage<r32f>, 1035, write>;
+
+shared_depth: workgroup<f32, 32>;
+
+DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
+DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
+
+main: fn () -> void {
+	let source_pair_coordinate: vec2u = thread_id();
+	let lane: u32 = thread_idx();
+	let source_extent: vec2u = texture_size(source_depth);
+	let source_pair_cascade_height: u32 = source_extent.y / 2;
+	let shadow_layer: u32 = source_pair_coordinate.y / source_pair_cascade_height;
+	let workgroup_origin: vec2u = vec2u(
+		source_pair_coordinate.x - source_pair_coordinate.x % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
+		source_pair_coordinate.y - source_pair_coordinate.y % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT
+	);
+	let cascade_source_pair_coordinate: vec2u = vec2u(
+		source_pair_coordinate.x,
+		source_pair_coordinate.y - shadow_layer * source_pair_cascade_height
+	);
+	let source_coordinate: vec2u = cascade_source_pair_coordinate * vec2u(1, 2);
+
+	// One full SIMD group loads two vertical texels per lane before shared reduction.
+	// This keeps every source texel single-read without running a partially filled SIMD group.
+	let maximum_depth: f32 = max(
+		fetch(source_depth, source_coordinate, shadow_layer).x,
+		fetch(source_depth, source_coordinate + vec2u(0, 1), shadow_layer).x
+	);
+	shared_depth[lane] = maximum_depth;
+	workgroup_barrier();
+
+	if (lane < 16) {
+		let level_coordinate: vec2u = vec2u(lane % 4, lane / 4);
+		let source_index: u32 = level_coordinate.y * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH
+			+ level_coordinate.x * 2;
+		let level_maximum_depth: f32 = max(shared_depth[source_index], shared_depth[source_index + 1]);
+		shared_depth[lane] = level_maximum_depth;
+	}
+	workgroup_barrier();
+
+	if (lane < 4) {
+		let level_coordinate: vec2u = vec2u(lane % 2, lane / 2);
+		let source_index: u32 = level_coordinate.y * 8 + level_coordinate.x * 2;
+		let maximum_depth: f32 = max(
+			max(shared_depth[source_index], shared_depth[source_index + 1]),
+			max(shared_depth[source_index + 4], shared_depth[source_index + 5])
+		);
+		shared_depth[lane] = maximum_depth;
+
+		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 2) + level_coordinate;
+		write(reduced_depth_1, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+	}
+	workgroup_barrier();
+
+	if (lane == 0) {
+		let maximum_depth: f32 = max(
+			max(shared_depth[0], shared_depth[1]),
+			max(shared_depth[2], shared_depth[3])
+		);
+		let output_coordinate: vec2u = workgroup_origin / vec2u(8, 4);
+		write(reduced_depth_2, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+	}
+}

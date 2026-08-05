@@ -219,6 +219,12 @@ pub(super) enum Instruction {
 		slot: ResourceSlot,
 		coord: usize,
 	},
+	FetchTextureArray {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+		layer: usize,
+	},
 	FetchTextureU32 {
 		register: usize,
 		slot: ResourceSlot,

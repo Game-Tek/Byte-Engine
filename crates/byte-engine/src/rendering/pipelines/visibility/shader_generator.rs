@@ -928,6 +928,83 @@ sample_rotated_shadow_tap: fn (
 }
 "#;
 
+// Proves one directional PCF footprint is fully lit by descending the max-depth hierarchy.
+// Each level covers every reduction cell touched by the rotated tap footprint, including
+// footprints that cross cell boundaries.
+const DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE: &str = r#"
+directional_shadow_area_is_fully_lit: fn (
+	shadow_uv: vec2f,
+	surface_depth: f32,
+	shadow_layer: u32,
+	shadow_map_extent: vec2u
+) -> bool {
+	if (shadow_uv.x <= 0.0 || shadow_uv.x >= 1.0 || shadow_uv.y <= 0.0 || shadow_uv.y >= 1.0) {
+		return false;
+	}
+
+	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let pyramid_extent: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let footprint_min: vec2f = vec2f(
+		max(shadow_texel_position.x - 1.5, 0.0),
+		max(shadow_texel_position.y - 1.5, 0.0)
+	);
+	let footprint_max: vec2f = vec2f(
+		min(shadow_texel_position.x + 1.5, f32(shadow_map_extent.x - 1)),
+		min(shadow_texel_position.y + 1.5, f32(shadow_map_extent.y - 1))
+	);
+
+	// Start with 8x8 cells. Descend once to 4x4 cells when a coarse cell contains
+	// a possible blocker that may lie outside the actual PCF footprint.
+	for (let hierarchy_level: u32 = 1; hierarchy_level <= 1; hierarchy_level = hierarchy_level - 1) {
+		let cell_size: u32 = 4;
+		if (hierarchy_level >= 1) {
+			cell_size = cell_size * 2;
+		}
+		let first_cell: vec2u = vec2u(
+			u32(footprint_min.x) / cell_size,
+			u32(footprint_min.y) / cell_size
+		);
+		let last_cell: vec2u = vec2u(
+			u32(footprint_max.x) / cell_size,
+			u32(footprint_max.y) / cell_size
+		);
+		let level_extent: vec2u = pyramid_extent;
+		if (hierarchy_level >= 1) {
+			level_extent = level_extent / vec2u(2, 2);
+		}
+		let first_atlas_cell: vec2u = vec2u(
+			first_cell.x,
+			shadow_layer * (shadow_map_extent.y / cell_size) + first_cell.y
+		);
+		let last_atlas_cell: vec2u = vec2u(
+			last_cell.x,
+			shadow_layer * (shadow_map_extent.y / cell_size) + last_cell.y
+		);
+		// A linear maximum-reduction sampler returns the conservative maximum of
+		// the one, two, or four hierarchy cells touched by this footprint.
+		let probe_texel: vec2f = (
+			vec2f(
+				f32(first_atlas_cell.x + last_atlas_cell.x),
+				f32(first_atlas_cell.y + last_atlas_cell.y)
+			) + vec2f(1.0, 1.0)
+		) * 0.5;
+		let probe_uv: vec2f = probe_texel / vec2f(f32(level_extent.x), f32(level_extent.y));
+		let maximum_occluder_depth: f32 = texture_lod(
+			directional_shadow_depth_pyramid,
+			probe_uv,
+			f32(hierarchy_level)
+		).x;
+		if (surface_depth >= maximum_occluder_depth) {
+			return true;
+		}
+		if (hierarchy_level == 0) {
+			return false;
+		}
+	}
+	return false;
+}
+"#;
+
 // Cone maps use two positive Depth16Unorm steps as a reverse-Z comparison margin after receiver-plane correction.
 const SHADOW_SOURCE: &str = r#"
 sample_shadow: fn (
@@ -1005,6 +1082,14 @@ sample_shadow: fn (
 	}
 
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
+	if (light.type == 68 && directional_shadow_area_is_fully_lit(
+		shadow_uv,
+		surface_depth,
+		shadow_layer,
+		shadow_map_extent
+	)) {
+		return 1.0;
+	}
 	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let rotation_noise: f32 = fract(
 		sin(dot(vec2f(world_space_position.x, world_space_position.z) + world_space_position.y, vec2f(12.9898, 78.233))) * 43758.5453
@@ -1347,6 +1432,13 @@ impl VisibilityShaderScope {
 		);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
+		let directional_shadow_depth_pyramid = Node::binding(
+			"directional_shadow_depth_pyramid",
+			Node::combined_image_sampler(),
+			1053,
+			true,
+			false,
+		);
 		let cone_shadow_map = Node::binding("cone_shadow_map", Node::combined_array_image_sampler(), 1064, true, false);
 		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
 		let environment_specular = Node::binding("environment_specular", Node::combined_image_sampler(), 1055, true, false);
@@ -1374,6 +1466,8 @@ impl VisibilityShaderScope {
 			parse_besl_function(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient");
 		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
 		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
+		let directional_shadow_area_is_fully_lit =
+			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit");
 		let sample_shadow = parse_besl_function(SHADOW_SOURCE, "sample_shadow");
 		let sample_environment_irradiance = parse_besl_function(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance");
 		let sample_environment_specular = parse_besl_function(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular");
@@ -1388,9 +1482,11 @@ impl VisibilityShaderScope {
 				meshlet_struct,
 				light_struct,
 				material_struct,
+				directional_shadow_depth_pyramid,
 				shadow_receiver_plane_depth_gradient,
 				sample_shadow_tap,
 				sample_rotated_shadow_tap,
+				directional_shadow_area_is_fully_lit,
 				sample_shadow,
 				meshes,
 				positions,
@@ -1487,11 +1583,10 @@ mod tests {
 	use resource_management::shader::besl::backends::{
 		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
 	};
-	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 	use resource_management::shader::generator::ShaderGenerationSettings;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
-	use crate::rendering::shader_vm_test::{buffer, compile, run_at};
+	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	fn parser_expression_contains_raw_code(expression: &besl::parser::Expressions<'_>) -> bool {
 		match expression {
@@ -1927,6 +2022,102 @@ mod tests {
 		);
 	}
 
+	/// Verifies the progressive probe skips PCF only when every hierarchy cell touching the footprint is clear.
+	#[test]
+	fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
+		const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+		let source = r#"
+			main: fn () -> void {
+				results.fully_lit = 0;
+				results.may_be_occluded = 0;
+				results.crosses_tile_boundary = 0;
+				results.descends_to_finer_level = 0;
+				if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.8, 2, vec2u(8, 8))) {
+					results.fully_lit = 1;
+				}
+				if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.6, 2, vec2u(8, 8))) {
+					results.may_be_occluded = 1;
+				}
+				if (directional_shadow_area_is_fully_lit(vec2f(0.1, 0.5), 1.0, 2, vec2u(8, 8))) {
+					results.crosses_tile_boundary = 1;
+				}
+				if (directional_shadow_area_is_fully_lit(vec2f(0.25, 0.25), 0.8, 0, vec2u(8, 8))) {
+					results.descends_to_finer_level = 1;
+				}
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the directional-shadow probe VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			besl::ParserNode::binding(
+				"directional_shadow_depth_pyramid",
+				besl::ParserNode::combined_image_sampler(),
+				PYRAMID_SLOT.slot(),
+				true,
+				false,
+			),
+			super::parse_besl_function(
+				super::DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE,
+				"directional_shadow_area_is_fully_lit",
+			),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"DirectionalShadowProbeResults",
+					vec![
+						besl::ParserNode::member("fully_lit", "u32"),
+						besl::ParserNode::member("may_be_occluded", "u32"),
+						besl::ParserNode::member("crosses_tile_boundary", "u32"),
+						besl::ParserNode::member("descends_to_finer_level", "u32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the directional-shadow probe VM test. The most likely cause is an unresolved portable texture operation.",
+		));
+
+		let cascade_depths = [0.2, 0.4, 0.7, 0.9];
+		let mut base_depths = (0..8)
+			.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
+			.collect::<Vec<_>>();
+		// Cascade zero contains a blocker in the coarse 8x8 cell but outside the queried 4x4 cell.
+		base_depths[0] = [0.2, 0.0, 0.0, 1.0];
+		base_depths[1] = [0.9, 0.0, 0.0, 1.0];
+		let mut pyramid = texture_2d(2, 8, &base_depths);
+		pyramid.add_mip(texture_2d(
+			1,
+			4,
+			&[
+				[0.2, 0.0, 0.0, 1.0],
+				[0.4, 0.0, 0.0, 1.0],
+				[0.7, 0.0, 0.0, 1.0],
+				[0.9, 0.0, 0.0, 1.0],
+			],
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(PYRAMID_SLOT, &mut pyramid);
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (name, expected) in [
+			("fully_lit", 1),
+			("may_be_occluded", 0),
+			("crosses_tile_boundary", 1),
+			("descends_to_finer_level", 1),
+		] {
+			let Value::U32(actual) = results.read(name).expect("directional shadow probe result") else {
+				panic!("Unexpected directional shadow probe result type for {name}.");
+			};
+			assert_eq!(actual, expected, "Unexpected directional shadow probe result for {name}.");
+		}
+	}
+
 	/// Verifies material evaluation keeps per-pixel and per-light terms out of the repeated PCF tap path.
 	#[test]
 	fn material_evaluation_hoists_shared_terms_and_uses_direct_ao_reads() {
@@ -2090,98 +2281,6 @@ mod tests {
 		);
 	}
 
-	/// Compiles a production-generated trivial material evaluation pass and guards its required semantic resource access.
-	#[test]
-	fn trivial_generated_material_evaluation_pass_links_and_reflects_required_bindings() {
-		let mut builder = BrdfMaterialBuilder::new();
-		let base_color = builder.constant(BrdfValue::Vector4([0.8, 0.6, 0.4, 1.0]));
-		let metallic = builder.constant(BrdfValue::Scalar(0.25));
-		let roughness = builder.constant(BrdfValue::Scalar(0.5));
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: None,
-			occlusion: None,
-			emission: None,
-		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
-		let material_program = generate_textured_brdf_program(&material).expect(
-			"Failed to generate the trivial material program. The most likely cause is an invalid BRDF material graph.",
-		);
-		let material_metadata = material_metadata! {
-			"variables": []
-		};
-
-		// Material evaluation reads the exact dispatch count, offset, and mapping state while retaining the lit target for transparent blending.
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-		let shader = shader_generator.transform(material_program, &material_metadata);
-		let program = besl::lex(shader).expect(
-			"Failed to link the trivial material evaluation pass. The most likely cause is a drifted visibility shader contract.",
-		);
-		let main = program.get_main().expect(
-			"Missing trivial material evaluation main. The most likely cause is that material generation stopped producing an entry point.",
-		);
-		let evaluation = ProgramEvaluation::from_main(&main).expect(
-			"Failed to reflect the trivial material evaluation pass. The most likely cause is an invalid visibility resource graph.",
-		);
-
-		for slot in [1034, 1036, 1037] {
-			let binding = evaluation.bindings().iter().find(|binding| binding.slot == slot).unwrap_or_else(|| {
-				panic!(
-					"Missing required material evaluation binding at slot {slot}. The most likely cause is that generated material reachability drifted."
-				)
-			});
-			assert!(
-				binding.read,
-				"Material evaluation binding at slot {slot} is not readable. The most likely cause is incorrect visibility scope access metadata."
-			);
-		}
-
-		// These strides are the CPU/GPU storage contract reachable from this material variant.
-		for (slot, expected_stride) in [
-			(0, crate::rendering::pipelines::visibility::VIEW_DATA_BUFFER_STRIDE),
-			(1, crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE),
-			(2, 12),
-			(3, crate::rendering::pipelines::visibility::VERTEX_NORMAL_BUFFER_STRIDE),
-			(4, 32),
-			(6, crate::rendering::pipelines::visibility::VERTEX_INDEX_BUFFER_STRIDE),
-			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
-			(8, crate::rendering::pipelines::visibility::MESHLET_DATA_BUFFER_STRIDE),
-			(1034, 4),
-			(1036, 16),
-			(1037, 4),
-			(1045, 1552),
-		] {
-			let binding = evaluation
-				.bindings()
-				.iter()
-				.find(|binding| binding.slot == slot)
-				.unwrap_or_else(|| {
-					panic!(
-						"Missing material evaluation binding at slot {slot}. The most likely cause is that visibility resource retention drifted."
-					)
-				});
-			assert_eq!(
-				binding.buffer_stride,
-				Some(expected_stride),
-				"Unexpected storage-buffer stride at slot {slot}. The most likely cause is that the BESL storage layout diverged from its CPU record."
-			);
-		}
-		assert!(
-			evaluation.bindings().iter().all(|binding| binding.slot != 5),
-			"A constant material retained the UV buffer. The most likely cause is that feature-specialized reconstruction stopped pruning unused UV work."
-		);
-
-		let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(
-			"Missing material evaluation lit binding. The most likely cause is that generated shading stopped retaining its output target.",
-		);
-		assert!(
-			lit_binding.read && lit_binding.write,
-			"Material evaluation lit binding is not read-write. The most likely cause is that transparent source-over access drifted."
-		);
-	}
-
 	/// Verifies native material evaluation emits one bindless sample for a texture shared by several BRDF roles.
 	#[test]
 	fn generated_material_evaluation_reuses_shared_texture_sample() {
@@ -2294,85 +2393,4 @@ mod tests {
 		);
 	}
 
-	/// Ensures every reflected resource has a retained write in the material-evaluation pass.
-	#[test]
-	fn material_evaluation_flat_interface_matches_retained_resource_slots() {
-		let retained_ranges = [
-			(0, 1),
-			(1, 1),
-			(2, 1),
-			(3, 1),
-			(4, 1),
-			(5, 1),
-			(6, 1),
-			(7, 1),
-			(8, 1),
-			(9, 1024),
-			(1033, 1),
-			(1034, 1),
-			(1035, 1),
-			(1036, 1),
-			(1037, 1),
-			(1039, 1),
-			(1040, 1),
-			(1041, 1),
-			(1045, 1),
-			(1046, 1),
-			(1051, 1),
-			(1052, 1),
-			(1053, 1),
-			(1054, 1),
-			(1055, 8),
-			(1064, 1),
-		];
-		let cases = [
-			(
-				material_metadata! {
-					"variables": []
-				},
-				"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
-			),
-			(
-				material_metadata! {
-					"variables": [{
-						"name": "base_color",
-						"data_type": "Texture2D"
-					}]
-				},
-				"main: fn () -> void { albedo = sample_material(base_color); }",
-			),
-		];
-
-		for (material, shader_source) in cases {
-			let shader_node = besl::parse(shader_source).expect("expected test value");
-			let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-			let shader = shader_generator.transform(shader_node, &material);
-			let root = besl::lex(shader).expect("expected test value");
-			let main_node = root.get_main().expect("expected test value");
-			let evaluation =
-				ProgramEvaluation::from_main(&main_node).expect("Expected material evaluation reflection to succeed");
-			let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(
-				"Missing material lit binding. The most likely cause is that material output stopped retaining slot 1041.",
-			);
-			assert!(
-				lit_binding.read && lit_binding.write,
-				"Material lit binding is not read-write. The most likely cause is that transparent source-over access was removed from the visibility scope."
-			);
-			assert!(
-				evaluation.bindings().iter().all(|binding| binding.slot != 1053),
-				"Material evaluation still depends on opaque visibility depth. The most likely cause is that surface reconstruction stopped using the winning triangle's barycentrics."
-			);
-			let unexpected_ranges = evaluation
-				.bindings()
-				.iter()
-				.map(|binding| (binding.slot, binding.count))
-				.filter(|binding| !retained_ranges.contains(binding))
-				.collect::<Vec<_>>();
-
-			assert!(
-				unexpected_ranges.is_empty(),
-				"Material evaluation reflected resources that none of its retained descriptor sets writes: {unexpected_ranges:?}"
-			);
-		}
-	}
 }

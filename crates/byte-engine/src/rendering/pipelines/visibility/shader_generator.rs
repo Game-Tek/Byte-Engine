@@ -113,12 +113,166 @@ fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<besl:
 	}
 }
 
-fn material_evaluation_prefix_statements() -> Vec<besl::parser::Node<'static>> {
-	parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix")
+#[derive(Clone, Copy, Default)]
+struct MaterialReconstructionFeatures {
+	uses_uv: bool,
+	uses_tangent_frame: bool,
 }
 
-fn material_evaluation_suffix_statements() -> Vec<besl::parser::Node<'static>> {
-	parse_besl_statements(MATERIAL_EVALUATION_SUFFIX_SOURCE, "material_evaluation_suffix")
+fn material_reconstruction_features(node: &besl::parser::Node<'_>) -> MaterialReconstructionFeatures {
+	let mut features = MaterialReconstructionFeatures::default();
+	collect_material_reconstruction_features(node, &mut features);
+	features
+}
+
+/// Finds material sampling operations before texture shorthand is expanded.
+fn collect_material_reconstruction_features(node: &besl::parser::Node<'_>, features: &mut MaterialReconstructionFeatures) {
+	match node.node() {
+		besl::parser::Nodes::Function { statements, .. } => {
+			for statement in statements {
+				collect_material_reconstruction_features(statement, features);
+			}
+		}
+		besl::parser::Nodes::Conditional { condition, statements } => {
+			collect_material_reconstruction_features(condition, features);
+			for statement in statements {
+				collect_material_reconstruction_features(statement, features);
+			}
+		}
+		besl::parser::Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => {
+			collect_material_reconstruction_features(initializer, features);
+			collect_material_reconstruction_features(condition, features);
+			collect_material_reconstruction_features(update, features);
+			for statement in statements {
+				collect_material_reconstruction_features(statement, features);
+			}
+		}
+		besl::parser::Nodes::Expression(expression) => {
+			collect_material_expression_features(expression, features);
+		}
+		_ => {}
+	}
+}
+
+/// Tracks the operations whose generated helpers require UVs or a tangent frame.
+fn collect_material_expression_features(
+	expression: &besl::parser::Expressions<'_>,
+	features: &mut MaterialReconstructionFeatures,
+) {
+	match expression {
+		besl::parser::Expressions::Call { name, parameters } => {
+			if let besl::parser::TypeName::Named(name) = name {
+				if matches!(
+					*name,
+					"sample_material" | "sample_normal" | "decode_material_normal" | "scale_normal_xy"
+				) {
+					features.uses_uv = true;
+				}
+				if matches!(*name, "sample_normal" | "decode_material_normal" | "scale_normal_xy") {
+					features.uses_tangent_frame = true;
+				}
+			}
+			for parameter in parameters {
+				collect_material_reconstruction_features(parameter, features);
+			}
+		}
+		besl::parser::Expressions::Expression(elements) => {
+			for element in elements {
+				collect_material_reconstruction_features(element, features);
+			}
+		}
+		besl::parser::Expressions::Operator { name, left, right } => {
+			if *name == "="
+				&& matches!(
+					left.node(),
+					besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "normal"
+				) && !is_default_tangent_normal(right)
+			{
+				features.uses_uv = true;
+				features.uses_tangent_frame = true;
+			}
+			collect_material_reconstruction_features(left, features);
+			collect_material_reconstruction_features(right, features);
+		}
+		besl::parser::Expressions::Accessor { left, right } => {
+			collect_material_reconstruction_features(left, features);
+			collect_material_reconstruction_features(right, features);
+		}
+		besl::parser::Expressions::Return { value } => {
+			if let Some(value) = value {
+				collect_material_reconstruction_features(value, features);
+			}
+		}
+		besl::parser::Expressions::Macro { body, .. } => collect_material_reconstruction_features(body, features),
+		besl::parser::Expressions::Member { name } => {
+			if name == "vertex_uv" {
+				features.uses_uv = true;
+			}
+			if matches!(name.as_ref(), "T" | "B") {
+				features.uses_uv = true;
+				features.uses_tangent_frame = true;
+			}
+		}
+		besl::parser::Expressions::Literal { .. }
+		| besl::parser::Expressions::VariableDeclaration { .. }
+		| besl::parser::Expressions::RawCode { .. }
+		| besl::parser::Expressions::Continue => {}
+	}
+}
+
+/// Recognizes the canonical no-normal-map value emitted by the BRDF generators.
+fn is_default_tangent_normal(node: &besl::parser::Node<'_>) -> bool {
+	let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters }) = node.node() else {
+		return false;
+	};
+	if !matches!(name, besl::parser::TypeName::Named(name) if *name == "vec3f") || parameters.len() != 3 {
+		return false;
+	}
+
+	parameters.iter().zip([0.0_f32, 0.0, 1.0]).all(|(parameter, expected)| {
+		matches!(
+			parameter.node(),
+			besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value })
+				if value.parse::<f32>().is_ok_and(|value| value == expected)
+		)
+	})
+}
+
+fn material_evaluation_prefix_statements(features: MaterialReconstructionFeatures) -> Vec<besl::parser::Node<'static>> {
+	let mut statements = parse_besl_statements(MATERIAL_EVALUATION_PREFIX_SOURCE, "material_evaluation_prefix");
+	if features.uses_uv {
+		statements.extend(parse_besl_statements(MATERIAL_EVALUATION_UV_SOURCE, "material_evaluation_uv"));
+	}
+	if features.uses_tangent_frame {
+		statements.extend(parse_besl_statements(
+			MATERIAL_EVALUATION_TANGENT_SOURCE,
+			"material_evaluation_tangent",
+		));
+	}
+	statements.extend(parse_besl_statements(
+		MATERIAL_EVALUATION_DEFAULTS_SOURCE,
+		"material_evaluation_defaults",
+	));
+	statements
+}
+
+fn material_evaluation_suffix_statements(features: MaterialReconstructionFeatures) -> Vec<besl::parser::Node<'static>> {
+	let normal_source = if features.uses_tangent_frame {
+		MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE
+	} else {
+		MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE
+	};
+	let mut statements = parse_besl_statements(normal_source, "material_evaluation_normal");
+	statements.extend(parse_besl_statements(
+		MATERIAL_EVALUATION_SUFFIX_SOURCE,
+		"material_evaluation_suffix",
+	));
+	statements
 }
 
 /// Makes material texture context explicit before the parser tree is linked.
@@ -216,15 +370,14 @@ decode_unorm16_vec2: fn (encoded: vec2u16) -> vec2f {
 const DECODE_OCTAHEDRAL_NORMAL_SOURCE: &str = r#"
 decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
 	let octahedral: vec2f = decode_unorm16_vec2(encoded) * 2.0 - vec2f(1.0, 1.0);
-	let normal_z: f32 = 1.0 - sqrt(octahedral.x * octahedral.x) - sqrt(octahedral.y * octahedral.y);
-	let fold: f32 = ((0.0 - normal_z) + sqrt(normal_z * normal_z)) * 0.5;
-	// The denominator bias gives zero components the positive fold direction used by the CPU encoder.
-	let decoded: vec3f = vec3f(
-		octahedral.x - (octahedral.x + 0.0000001) / (sqrt(octahedral.x * octahedral.x) + 0.0000001) * fold,
-		octahedral.y - (octahedral.y + 0.0000001) / (sqrt(octahedral.y * octahedral.y) + 0.0000001) * fold,
+	let normal_z: f32 = 1.0 - abs(octahedral.x) - abs(octahedral.y);
+	let fold: f32 = max(0.0 - normal_z, 0.0);
+	// `step` returns the positive direction at zero, matching the CPU encoder's fold convention.
+	return vec3f(
+		octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
+		octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
 		normal_z
 	);
-	return normalize(decoded);
 }
 "#;
 
@@ -266,35 +419,41 @@ material_evaluation_prefix: fn () -> void {
 	let vertex_index1: u32 = compute_vertex_index(mesh, meshlet, primitive_index1);
 	let vertex_index2: u32 = compute_vertex_index(mesh, meshlet, primitive_index2);
 
-	let position0: vec3f = vertex_positions.positions[vertex_index0];
-	let position1: vec3f = vertex_positions.positions[vertex_index1];
-	let position2: vec3f = vertex_positions.positions[vertex_index2];
-	let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index0]);
-	let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index1]);
-	let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index2]);
-	let model_space_vertex_position0: vec4f = vec4f(position0.x, position0.y, position0.z, 1.0);
-	let model_space_vertex_position1: vec4f = vec4f(position1.x, position1.y, position1.z, 1.0);
-	let model_space_vertex_position2: vec4f = vec4f(position2.x, position2.y, position2.z, 1.0);
-	let vertex_normal0: vec4f = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
-	let vertex_normal1: vec4f = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
-	let vertex_normal2: vec4f = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+	let model_space_vertex_position0: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+	let model_space_vertex_position1: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+	let model_space_vertex_position2: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+	let vertex_normal0: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
+	let vertex_normal1: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
+	let vertex_normal2: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
 
 	if (mesh.skinned_base_vertex_index != 4294967295) {
 		let skinned_vertex_index0: u32 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
 		let skinned_vertex_index1: u32 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
 		let skinned_vertex_index2: u32 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
-		model_space_vertex_position0 = skinned_vertices.vertices[skinned_vertex_index0].position;
-		model_space_vertex_position1 = skinned_vertices.vertices[skinned_vertex_index1].position;
-		model_space_vertex_position2 = skinned_vertices.vertices[skinned_vertex_index2].position;
-		vertex_normal0 = skinned_vertices.vertices[skinned_vertex_index0].normal;
-		vertex_normal1 = skinned_vertices.vertices[skinned_vertex_index1].normal;
-		vertex_normal2 = skinned_vertices.vertices[skinned_vertex_index2].normal;
+		let skinned_vertex0: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index0];
+		let skinned_vertex1: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index1];
+		let skinned_vertex2: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index2];
+		model_space_vertex_position0 = skinned_vertex0.position;
+		model_space_vertex_position1 = skinned_vertex1.position;
+		model_space_vertex_position2 = skinned_vertex2.position;
+		vertex_normal0 = skinned_vertex0.normal;
+		vertex_normal1 = skinned_vertex1.normal;
+		vertex_normal2 = skinned_vertex2.normal;
 	}
-
-	// Runtime UVs use 16-bit UNORM storage; material evaluation expands them only when needed.
-	let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
-	let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
-	let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
+	if (mesh.skinned_base_vertex_index == 4294967295) {
+		let position0: vec3f = vertex_positions.positions[vertex_index0];
+		let position1: vec3f = vertex_positions.positions[vertex_index1];
+		let position2: vec3f = vertex_positions.positions[vertex_index2];
+		let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index0]);
+		let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index1]);
+		let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index2]);
+		model_space_vertex_position0 = vec4f(position0.x, position0.y, position0.z, 1.0);
+		model_space_vertex_position1 = vec4f(position1.x, position1.y, position1.z, 1.0);
+		model_space_vertex_position2 = vec4f(position2.x, position2.y, position2.z, 1.0);
+		vertex_normal0 = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
+		vertex_normal1 = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
+		vertex_normal2 = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let view: View = views.views[0];
 	let model: mat4x3f = mesh.model;
@@ -345,7 +504,6 @@ material_evaluation_prefix: fn () -> void {
 		world_space_vertex_normal1,
 		world_space_vertex_normal2
 	));
-	let vertex_uv: vec2f = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = view.inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
 	let V: vec3f = normalize(camera_position - world_space_vertex_position);
@@ -361,6 +519,21 @@ material_evaluation_prefix: fn () -> void {
 		world_space_vertex_position1,
 		world_space_vertex_position2
 	);
+}
+"#;
+
+const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
+material_evaluation_uv: fn () -> void {
+	// Runtime UVs use 16-bit UNORM storage and are expanded only for materials that sample them.
+	let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
+	let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
+	let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
+	let vertex_uv: vec2f = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
+}
+"#;
+
+const MATERIAL_EVALUATION_TANGENT_SOURCE: &str = r#"
+material_evaluation_tangent: fn () -> void {
 	let uv_derivative_x: vec2f = interpolate_vec2f_with_deriv(derivative_x, vertex_uv0, vertex_uv1, vertex_uv2);
 	let uv_derivative_y: vec2f = interpolate_vec2f_with_deriv(derivative_y, vertex_uv0, vertex_uv1, vertex_uv2);
 	let tangent_scale: f32 = 1.0 / (uv_derivative_x.x * uv_derivative_y.y - uv_derivative_y.x * uv_derivative_x.y);
@@ -370,13 +543,29 @@ material_evaluation_prefix: fn () -> void {
 	let B: vec3f = normalize(
 		tangent_scale * ((0.0 - uv_derivative_y.x) * position_derivative_x + uv_derivative_x.x * position_derivative_y)
 	);
+}
+"#;
 
+const MATERIAL_EVALUATION_DEFAULTS_SOURCE: &str = r#"
+material_evaluation_defaults: fn () -> void {
 	let albedo: vec4f = vec4f(1.0, 0.0, 0.0, 1.0);
 	let normal: vec3f = vec3f(0.0, 0.0, 1.0);
 	let metalness: f32 = 0.0;
 	let roughness: f32 = 0.5;
 	let occlusion: f32 = 1.0;
 	let emission: vec3f = vec3f(0.0, 0.0, 0.0);
+}
+"#;
+
+const MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE: &str = r#"
+material_evaluation_normal: fn () -> void {
+	normal = normalize(normal.x * T + normal.y * B + normal.z * N);
+}
+"#;
+
+const MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE: &str = r#"
+material_evaluation_normal: fn () -> void {
+	normal = N;
 }
 "#;
 
@@ -389,7 +578,6 @@ material_evaluation_suffix: fn () -> void {
 		ao_factor = fetch(ao, pixel_coordinates).x;
 	}
 
-	normal = normalize(normal.x * T + normal.y * B + normal.z * N);
 	let albedo_rgb: vec3f = vec3f(albedo.x, albedo.y, albedo.z);
 	let F0: vec3f = vec3f(0.04, 0.04, 0.04) * (1.0 - metalness) + albedo_rgb * metalness;
 	let NdotV: f32 = max(dot(normal, V), 0.0);
@@ -1168,11 +1356,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 
 		let m = root.get_mut("main").unwrap();
+		let reconstruction_features = material_reconstruction_features(m);
 		add_material_sample_context(m, &texture_slots);
 
 		if let besl::parser::Nodes::Function { statements, .. } = m.node_mut() {
-			statements.splice(0..0, material_evaluation_prefix_statements());
-			statements.extend(material_evaluation_suffix_statements());
+			statements.splice(0..0, material_evaluation_prefix_statements(reconstruction_features));
+			statements.extend(material_evaluation_suffix_statements(reconstruction_features));
 		}
 
 		root.add(extra);
@@ -1253,6 +1442,169 @@ mod tests {
 				.expect("test material metadata should be an object")
 				.clone()
 		};
+	}
+
+	/// Generates the production Metal material shader for source-shape regressions.
+	fn material_msl(shader_source: &str, material: &JsonObject) -> String {
+		let shader_node = besl::parse(shader_source).expect("Test material source should parse.");
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = besl::lex(shader_generator.transform(shader_node, material))
+			.expect("Material evaluation should produce valid BESL.");
+		let main = shader.get_main().expect(
+			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
+		);
+		MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to emit the Metal material pass. The most likely cause is an invalid visibility shader contract.")
+	}
+
+	/// Guards the algebraic decoder shape so compact normals do not reintroduce transcendental work per shaded pixel.
+	#[test]
+	fn octahedral_decoder_uses_abs_and_step_and_defers_normalization() {
+		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("sqrt("));
+		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("normalize("));
+		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("abs("));
+		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("step("));
+
+		for source in [
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/visibility-task.besl"
+			)),
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/shadow-task.besl"
+			)),
+		] {
+			assert!(!source.contains("sqrt(octahedral"));
+			assert!(source.contains("step(0.0, octahedral.x)"));
+		}
+	}
+
+	/// Executes representative octahedral seams and axes through the optimized production decoder.
+	#[test]
+	fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
+		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+		let source = r#"
+			main: fn () -> void {
+				for (let index: u32 = 0; index < 5; index = index + 1) {
+					results.values[index] = normalize(decode_octahedral_normal(inputs.values[index]));
+				}
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the octahedral decoder VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			super::parse_besl_function(super::DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2"),
+			super::parse_besl_function(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+			besl::ParserNode::binding(
+				"inputs",
+				besl::ParserNode::buffer("OctahedralInputs", vec![besl::ParserNode::member("values", "vec2u16[5]")]),
+				INPUT_SLOT.slot(),
+				true,
+				false,
+			),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer("OctahedralResults", vec![besl::ParserNode::member("values", "vec3f[5]")]),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the octahedral decoder VM test. The most likely cause is an unresolved portable decoder operation.",
+		));
+		let mut inputs = buffer(&executable, INPUT_SLOT);
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let cases = [
+			([32768, 32768], [0.0, 0.0, 1.0]),
+			([65535, 32768], [1.0, 0.0, 0.0]),
+			([0, 32768], [-1.0, 0.0, 0.0]),
+			([32768, 65535], [0.0, 1.0, 0.0]),
+			([65535, 65535], [0.0, 0.0, -1.0]),
+		];
+		for (index, (encoded, _)) in cases.iter().enumerate() {
+			inputs
+				.write_indexed("values", index, Value::Vec2U16(*encoded))
+				.expect("Failed to initialize an octahedral input. The most likely cause is a drifted packed-vector layout.");
+		}
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (index, (_, expected)) in cases.iter().enumerate() {
+			let Value::Vec3F(actual) = results
+				.read_indexed("values", index)
+				.expect("Missing decoded normal. The most likely cause is a VM output-layout regression.")
+			else {
+				panic!("Unexpected decoded-normal type. The most likely cause is a VM packed-vector regression.");
+			};
+			assert!(
+				actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() <= 0.00005),
+				"Unexpected decoded normal {actual:?} for {encoded:?}. The most likely cause is incorrect octahedral fold math.",
+				encoded = cases[index].0,
+			);
+		}
+	}
+
+	/// Guards the branch order that prevents skinned pixels from loading and decoding static attributes first.
+	#[test]
+	fn skinned_material_path_selects_geometry_before_static_attribute_loads() {
+		let material = material_metadata! { "variables": [] };
+		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
+		let selection = source
+			.find("mesh.skinned_base_vertex_index")
+			.expect("Generated material shader should select static or skinned geometry.");
+		let static_position_load = source
+			.find("vertex_positions->positions[vertex_index0]")
+			.expect("Generated material shader should retain the static geometry path.");
+		let static_normal_load = source
+			.find("vertex_normals->normals[vertex_index0]")
+			.expect("Generated material shader should retain the static normal path.");
+		assert!(selection < static_position_load);
+		assert!(selection < static_normal_load);
+	}
+
+	/// Verifies generated material reconstruction includes only the UV and tangent work required by the material body.
+	#[test]
+	fn material_reconstruction_specializes_for_texture_and_normal_usage() {
+		let constant_material = material_metadata! { "variables": [] };
+		let constant = material_msl(
+			"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
+			&constant_material,
+		);
+		assert!(!constant.contains("vertex_uvs->uvs"));
+		assert!(!constant.contains("tangent_scale"));
+		assert!(!constant.contains("normal.x * T"));
+
+		let textured_material = material_metadata! {
+			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
+		};
+		let textured = material_msl(
+			"main: fn () -> void { albedo = sample_material(base_color); }",
+			&textured_material,
+		);
+		assert!(textured.contains("vertex_uvs->uvs"));
+		assert!(!textured.contains("tangent_scale"));
+		assert!(!textured.contains("normal.x * T"));
+
+		let normal_material = material_metadata! {
+			"variables": [{ "name": "normal_map", "data_type": "Texture2D" }]
+		};
+		let normal = material_msl(
+			"main: fn () -> void { normal = sample_normal(normal_map); }",
+			&normal_material,
+		);
+		assert!(normal.contains("vertex_uvs->uvs"));
+		assert!(normal.contains("tangent_scale"));
+		assert!(normal.contains("normal.x * T"));
+
+		let procedural = material_msl("main: fn () -> void { normal = vec3f(1.0, 0.0, 0.0); }", &constant_material);
+		assert!(procedural.contains("vertex_uvs->uvs"));
+		assert!(procedural.contains("tangent_scale"));
 	}
 
 	#[test]
@@ -1679,7 +2031,6 @@ mod tests {
 			(2, 12),
 			(3, crate::rendering::pipelines::visibility::VERTEX_NORMAL_BUFFER_STRIDE),
 			(4, 32),
-			(5, crate::rendering::pipelines::visibility::VERTEX_UV_BUFFER_STRIDE),
 			(6, crate::rendering::pipelines::visibility::VERTEX_INDEX_BUFFER_STRIDE),
 			(7, crate::rendering::pipelines::visibility::PRIMITIVE_INDEX_BUFFER_STRIDE),
 			(8, crate::rendering::pipelines::visibility::MESHLET_DATA_BUFFER_STRIDE),
@@ -1703,6 +2054,10 @@ mod tests {
 				"Unexpected storage-buffer stride at slot {slot}. The most likely cause is that the BESL storage layout diverged from its CPU record."
 			);
 		}
+		assert!(
+			evaluation.bindings().iter().all(|binding| binding.slot != 5),
+			"A constant material retained the UV buffer. The most likely cause is that feature-specialized reconstruction stopped pruning unused UV work."
+		);
 
 		let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(
 			"Missing material evaluation lit binding. The most likely cause is that generated shading stopped retaining its output target.",

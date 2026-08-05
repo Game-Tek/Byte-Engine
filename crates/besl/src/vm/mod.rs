@@ -566,6 +566,40 @@ impl Texel {
 	}
 }
 
+/// The `SamplerReductionMode` enum selects how the VM combines a linear sampler's neighboring texels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SamplerReductionMode {
+	/// Blends texels using their bilinear weights.
+	#[default]
+	WeightedAverage,
+	/// Selects the component-wise minimum across the sampler footprint.
+	Min,
+	/// Selects the component-wise maximum across the sampler footprint.
+	Max,
+}
+
+/// The `Sampler` struct supplies deterministic sampler state for combined texture bindings in VM tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sampler {
+	reduction_mode: SamplerReductionMode,
+}
+
+impl Sampler {
+	/// Creates a linear clamp sampler with the requested reduction mode.
+	pub const fn new(reduction_mode: SamplerReductionMode) -> Self {
+		Self { reduction_mode }
+	}
+}
+
+fn reduce_rgba(samples: [[f32; 4]; 4], reduce: fn(f32, f32) -> f32) -> [f32; 4] {
+	std::array::from_fn(|channel| {
+		reduce(
+			reduce(samples[0][channel], samples[1][channel]),
+			reduce(samples[2][channel], samples[3][channel]),
+		)
+	})
+}
+
 impl Texture {
 	pub fn new(width: u32, height: u32) -> Result<Self, VmError> {
 		Self::new_3d(width, height, 1)
@@ -644,23 +678,45 @@ impl Texture {
 
 	/// Samples one texel using bilinear interpolation in normalized UV space.
 	pub fn sample(&self, uv: [f32; 2]) -> Result<Value, VmError> {
+		self.sample_with_sampler(uv, Sampler::default())
+	}
+
+	/// Samples one texel using the sampler state attached to a combined texture binding.
+	fn sample_with_sampler(&self, uv: [f32; 2], sampler: Sampler) -> Result<Value, VmError> {
 		let (x0, x1, tx) = normalized_linear_axis(uv[0], self.width);
 		let (y0, y1, ty) = normalized_linear_axis(uv[1], self.height);
+		let samples = [
+			self.fetch_texel([x0, y0, 0])?,
+			self.fetch_texel([x1, y0, 0])?,
+			self.fetch_texel([x0, y1, 0])?,
+			self.fetch_texel([x1, y1, 0])?,
+		];
+		let sampled = match sampler.reduction_mode {
+			SamplerReductionMode::WeightedAverage => {
+				let top = lerp_rgba(samples[0], samples[1], tx);
+				let bottom = lerp_rgba(samples[2], samples[3], tx);
+				lerp_rgba(top, bottom, ty)
+			}
+			SamplerReductionMode::Min => reduce_rgba(samples, f32::min),
+			SamplerReductionMode::Max => reduce_rgba(samples, f32::max),
+		};
 
-		let top = lerp_rgba(self.fetch_texel([x0, y0, 0])?, self.fetch_texel([x1, y0, 0])?, tx);
-		let bottom = lerp_rgba(self.fetch_texel([x0, y1, 0])?, self.fetch_texel([x1, y1, 0])?, tx);
-
-		Ok(Value::Vec4F(lerp_rgba(top, bottom, ty)))
+		Ok(Value::Vec4F(sampled))
 	}
 
 	/// Samples an explicit LOD, clamping to the coarsest mip like GPU texture sampling.
 	pub fn sample_lod(&self, uv: [f32; 2], lod: f32) -> Result<Value, VmError> {
+		self.sample_lod_with_sampler(uv, lod, Sampler::default())
+	}
+
+	/// Samples an explicit LOD using the sampler state attached to a combined texture binding.
+	fn sample_lod_with_sampler(&self, uv: [f32; 2], lod: f32, sampler: Sampler) -> Result<Value, VmError> {
 		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
 		if level == 0 {
-			return self.sample(uv);
+			return self.sample_with_sampler(uv, sampler);
 		}
 		let texture = self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self));
-		texture.sample(uv)
+		texture.sample_with_sampler(uv, sampler)
 	}
 
 	/// Samples a three-dimensional texture using trilinear interpolation.
@@ -736,7 +792,7 @@ impl Texture {
 
 enum DescriptorBinding<'a> {
 	Buffer(&'a mut Buffer),
-	Texture(&'a mut Texture),
+	Texture { texture: &'a mut Texture, sampler: Sampler },
 	Image(&'a mut Texture),
 }
 
@@ -744,7 +800,7 @@ impl DescriptorBinding<'_> {
 	const fn kind(&self) -> &'static str {
 		match self {
 			Self::Buffer(_) => "buffer",
-			Self::Texture(_) => "texture",
+			Self::Texture { .. } => "texture",
 			Self::Image(_) => "image",
 		}
 	}
@@ -1076,7 +1132,12 @@ impl<'a> DescriptorBindings<'a> {
 	}
 
 	pub fn bind_texture(&mut self, slot: ResourceSlot, texture: &'a mut Texture) {
-		self.bindings.insert(slot, DescriptorBinding::Texture(texture));
+		self.bind_texture_with_sampler(slot, texture, Sampler::default());
+	}
+
+	/// Binds one combined texture and sampler for deterministic sampling behavior.
+	pub fn bind_texture_with_sampler(&mut self, slot: ResourceSlot, texture: &'a mut Texture, sampler: Sampler) {
+		self.bindings.insert(slot, DescriptorBinding::Texture { texture, sampler });
 	}
 
 	pub fn bind_image(&mut self, slot: ResourceSlot, image: &'a mut Texture) {
@@ -1122,7 +1183,16 @@ impl<'a> DescriptorBindings<'a> {
 		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
 
 		match descriptor {
-			DescriptorBinding::Texture(texture) => Ok(&mut **texture),
+			DescriptorBinding::Texture { texture, .. } => Ok(&mut **texture),
+			descriptor => Err(descriptor.type_mismatch(slot, "texture")),
+		}
+	}
+
+	fn texture_and_sampler_mut(&mut self, slot: ResourceSlot) -> Result<(&mut Texture, Sampler), VmError> {
+		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
+
+		match descriptor {
+			DescriptorBinding::Texture { texture, sampler } => Ok((&mut **texture, *sampler)),
 			descriptor => Err(descriptor.type_mismatch(slot, "texture")),
 		}
 	}

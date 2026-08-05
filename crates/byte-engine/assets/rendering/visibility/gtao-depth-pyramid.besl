@@ -1,6 +1,6 @@
 // Convert reversed visibility depth into positive linear distance before every
-// conservative nearest-nonzero reduction. The three outputs are views of physical
-// mips one through three in the shared GTAO depth-pyramid image.
+// conservative nearest-nonzero reduction. Each SIMD group builds two adjacent
+// 8x8 source tiles and emits physical mips one through three.
 FastGTAOView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -16,11 +16,12 @@ reduced_depth_1: descriptor<StorageImage<r32f>, 1034, write>;
 reduced_depth_2: descriptor<StorageImage<r32f>, 1035, write>;
 reduced_depth_3: descriptor<StorageImage<r32f>, 1036, write>;
 
-shared_depth: workgroup<f32, 64>;
+shared_depth: workgroup<f32, 32>;
 
 GTAO_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
+GTAO_PYRAMID_TILE_LEVEL_1_WIDTH: const u32 = 4;
 
-clamp_source_coordinate: fn (coordinate: vec2u, extent: vec2u) -> vec2u {
+clamp_coordinate: fn (coordinate: vec2u, extent: vec2u) -> vec2u {
 	let clamped_x: u32 = coordinate.x;
 	let clamped_y: u32 = coordinate.y;
 	if (clamped_x >= extent.x) {
@@ -52,72 +53,65 @@ nearest_nonzero: fn (a: f32, b: f32) -> f32 {
 }
 
 main: fn () -> void {
-	let coord: vec2u = thread_id();
+	let level_1_coordinate: vec2u = thread_id();
 	let lane: u32 = thread_idx();
 	let source_extent: vec2u = texture_size(source_depth);
+	let level_1_extent: vec2u = image_size(reduced_depth_1);
+	let valid_level_1_coordinate: vec2u = clamp_coordinate(level_1_coordinate, level_1_extent);
 	let workgroup_origin: vec2u = vec2u(
-		coord.x - coord.x % GTAO_PYRAMID_WORKGROUP_WIDTH,
-		coord.y - coord.y % GTAO_PYRAMID_WORKGROUP_WIDTH
+		level_1_coordinate.x - level_1_coordinate.x % GTAO_PYRAMID_WORKGROUP_WIDTH,
+		level_1_coordinate.y - level_1_coordinate.y % 4
 	);
-	let local_coordinate: vec2u = vec2u(
-		lane % GTAO_PYRAMID_WORKGROUP_WIDTH,
-		lane / GTAO_PYRAMID_WORKGROUP_WIDTH
-	);
-	let source_coordinate: vec2u = clamp_source_coordinate(workgroup_origin + local_coordinate, source_extent);
 
-	// Load each full-resolution depth texel once, then build all three
-	// conservative levels through progressively smaller shared reductions.
-	shared_depth[lane] = linearize_depth(fetch(source_depth, source_coordinate).x);
+	// A linear maximum-reduction sample centered between four texels replaces
+	// four scalar loads. Reversed depth makes the maximum the nearest surface.
+	let source_center_coordinate: vec2u = valid_level_1_coordinate * vec2u(2, 2) + vec2u(1, 1);
+	let source_center: vec2f = vec2f(f32(source_center_coordinate.x), f32(source_center_coordinate.y));
+	let source_extent_f: vec2f = vec2f(f32(source_extent.x), f32(source_extent.y));
+	let source_uv: vec2f = source_center / source_extent_f;
+	let nearest_depth: f32 = linearize_depth(texture_lod(source_depth, source_uv, 0.0).x);
+	shared_depth[lane] = nearest_depth;
+	if (level_1_coordinate.x < level_1_extent.x && level_1_coordinate.y < level_1_extent.y) {
+		write(reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
+	}
 	workgroup_barrier();
 
-	if (lane < 16) {
-		let level_coordinate: vec2u = vec2u(lane % 4, lane / 4);
-		let source_x: u32 = level_coordinate.x * 2;
+	// Lanes 0-3 reduce the left tile and lanes 4-7 reduce the right tile.
+	if (lane < 8) {
+		let tile: u32 = lane / 4;
+		let tile_lane: u32 = lane % 4;
+		let level_coordinate: vec2u = vec2u(tile_lane % 2, tile_lane / 2);
+		let source_x: u32 = tile * GTAO_PYRAMID_TILE_LEVEL_1_WIDTH + level_coordinate.x * 2;
 		let source_y: u32 = level_coordinate.y * 2;
 		let source_index: u32 = source_y * GTAO_PYRAMID_WORKGROUP_WIDTH + source_x;
-		let nearest_depth: f32 = nearest_nonzero(
+		let level_2_depth: f32 = nearest_nonzero(
 			nearest_nonzero(shared_depth[source_index], shared_depth[source_index + 1]),
 			nearest_nonzero(
 				shared_depth[source_index + GTAO_PYRAMID_WORKGROUP_WIDTH],
 				shared_depth[source_index + GTAO_PYRAMID_WORKGROUP_WIDTH + 1]
 			)
 		);
-		shared_depth[lane] = nearest_depth;
+		shared_depth[lane] = level_2_depth;
 
-		let output_coordinate: vec2u = workgroup_origin / vec2u(2, 2) + level_coordinate;
-		let output_extent: vec2u = image_size(reduced_depth_1);
-		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
-			write(reduced_depth_1, output_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
-		}
-	}
-	workgroup_barrier();
-
-	if (lane < 4) {
-		let level_coordinate: vec2u = vec2u(lane % 2, lane / 2);
-		let source_index: u32 = level_coordinate.y * 8 + level_coordinate.x * 2;
-		let nearest_depth: f32 = nearest_nonzero(
-			nearest_nonzero(shared_depth[source_index], shared_depth[source_index + 1]),
-			nearest_nonzero(shared_depth[source_index + 4], shared_depth[source_index + 5])
-		);
-		shared_depth[lane] = nearest_depth;
-
-		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + level_coordinate;
+		let output_coordinate: vec2u = workgroup_origin / vec2u(2, 2)
+			+ vec2u(tile * 2 + level_coordinate.x, level_coordinate.y);
 		let output_extent: vec2u = image_size(reduced_depth_2);
 		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
-			write(reduced_depth_2, output_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
+			write(reduced_depth_2, output_coordinate, vec4f(level_2_depth, 0.0, 0.0, 1.0));
 		}
 	}
 	workgroup_barrier();
 
-	if (lane == 0) {
-		let nearest_depth: f32 = nearest_nonzero(
-			nearest_nonzero(shared_depth[0], shared_depth[1]),
-			nearest_nonzero(shared_depth[2], shared_depth[3])
+	if (lane < 2) {
+		let source_index: u32 = lane * 4;
+		let level_3_depth: f32 = nearest_nonzero(
+			nearest_nonzero(shared_depth[source_index], shared_depth[source_index + 1]),
+			nearest_nonzero(shared_depth[source_index + 2], shared_depth[source_index + 3])
 		);
-		let output_coordinate: vec2u = workgroup_origin / vec2u(8, 8);
+		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + vec2u(lane, 0);
 		let output_extent: vec2u = image_size(reduced_depth_3);
 		if (output_coordinate.x < output_extent.x && output_coordinate.y < output_extent.y) {
-			write(reduced_depth_3, output_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));
+			write(reduced_depth_3, output_coordinate, vec4f(level_3_depth, 0.0, 0.0, 1.0));
 		}
 	}
 }

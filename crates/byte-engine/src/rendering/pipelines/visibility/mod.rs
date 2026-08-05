@@ -203,7 +203,7 @@ pub(super) struct ShaderMeshletData {
 mod tests {
 	use besl::vm::{
 		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot,
-		TaskOutputs, Texture, Value, WorkgroupState,
+		Sampler, SamplerReductionMode, TaskOutputs, Texture, Value, WorkgroupState,
 	};
 	#[cfg(target_os = "macos")]
 	use resource_management::shader::besl::backends::msl::Generator as MslGenerator;
@@ -241,7 +241,7 @@ mod tests {
 	const GTAO_BLUR_WORKGROUP_WIDTH: u32 = 8;
 	const GTAO_BLUR_WORKGROUP_SIZE: usize = 64;
 	const GTAO_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
-	const GTAO_PYRAMID_WORKGROUP_SIZE: usize = 64;
+	const GTAO_PYRAMID_WORKGROUP_SIZE: usize = 32;
 	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: u32 = 8;
 	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
 	const DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE: usize = 32;
@@ -1735,7 +1735,11 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
+			descriptors.bind_texture_with_sampler(
+				ResourceSlot::new(1033),
+				&mut source,
+				Sampler::new(SamplerReductionMode::Max),
+			);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
 			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
 			descriptors.bind_image(ResourceSlot::new(1036), &mut reduced_3);
@@ -1749,6 +1753,77 @@ mod tests {
 		assert_rgba_close(rgba(&reduced_1, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_2, [0, 0]), nearest, 0.00001);
 		assert_rgba_close(rgba(&reduced_3, [0, 0]), nearest, 0.00001);
+	}
+
+	/// Verifies one SIMD group keeps the two adjacent source tiles independent through every emitted level.
+	#[test]
+	fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
+		let program = crate::rendering::shader_vm_test::compile(gtao_depth_pyramid_program());
+		let mut source_texels = Vec::with_capacity(16 * 8);
+		for y in 0..8u32 {
+			for x in 0..16u32 {
+				let block = (y / 2) * 8 + x / 2;
+				let maximum = if block == 11 { 0.0 } else { 0.1 + block as f32 * 0.02 };
+				let maximum_corner = [block % 2, (block / 2) % 2];
+				let depth = if [x % 2, y % 2] == maximum_corner {
+					maximum
+				} else {
+					maximum * 0.25
+				};
+				source_texels.push([depth, 0.0, 0.0, 1.0]);
+			}
+		}
+		let mut source = texture_2d(16, 8, &source_texels);
+		let mut reduced_1 = empty_image(8, 4);
+		let mut reduced_2 = empty_image(4, 2);
+		let mut reduced_3 = empty_image(2, 1);
+		let mut view = gtao_view_data(&program, 16, 8);
+		let configs: [ExecutionConfig; GTAO_PYRAMID_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
+			let lane = lane as u32;
+			ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+				.with_call_depth_limit(128)
+				.with_thread_idx(lane)
+				.with_thread_id([lane % GTAO_PYRAMID_WORKGROUP_WIDTH, lane / GTAO_PYRAMID_WORKGROUP_WIDTH])
+		});
+		let mut workgroup = WorkgroupState::new();
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+			descriptors.bind_texture_with_sampler(
+				ResourceSlot::new(1033),
+				&mut source,
+				Sampler::new(SamplerReductionMode::Max),
+			);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
+			descriptors.bind_image(ResourceSlot::new(1036), &mut reduced_3);
+			descriptors.bind_workgroup_state(&mut workgroup);
+			program
+				.run_workgroup(&mut descriptors, &configs)
+				.expect("Failed to execute the two-tile GTAO depth-pyramid fixture.");
+		}
+
+		let expected_1: Vec<[f32; 4]> = (0..32u32)
+			.map(|block| {
+				let depth = if block == 11 { 0.0 } else { gtao_fixture_linear_depth(0.1 + block as f32 * 0.02) };
+				[depth, 0.0, 0.0, 1.0]
+			})
+			.collect();
+		let (expected_2, _, _) = reduce_nearest_nonzero_depth(&expected_1, 8, 4);
+		let (expected_3, _, _) = reduce_nearest_nonzero_depth(&expected_2, 4, 2);
+		for y in 0..4 {
+			for x in 0..8 {
+				assert_rgba_close(rgba(&reduced_1, [x, y]), expected_1[(y * 8 + x) as usize], 0.00001);
+			}
+		}
+		for y in 0..2 {
+			for x in 0..4 {
+				assert_rgba_close(rgba(&reduced_2, [x, y]), expected_2[(y * 4 + x) as usize], 0.00001);
+			}
+		}
+		for x in 0..2 {
+			assert_rgba_close(rgba(&reduced_3, [x, 0]), expected_3[x as usize], 0.00001);
+		}
 	}
 
 	/// Verifies one workgroup invocation emits all three max-depth levels for each atlas-packed cascade.

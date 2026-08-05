@@ -989,6 +989,17 @@ impl GtaoPass {
 				.name("GTAO Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+		// Metal applies min/max reduction only when every sampler filter is linear.
+		// Centered samples then conservatively collapse each reversed-depth 2x2 footprint.
+		let depth_pyramid_source_sampler = context.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::Max)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -1031,7 +1042,7 @@ impl GtaoPass {
 				depth_pyramid_descriptor_set,
 				GTAO_DEPTH_PYRAMID_SOURCE_BINDING.slot(),
 				depth,
-				depth_sampler,
+				depth_pyramid_source_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image_mip(
@@ -1226,7 +1237,7 @@ impl GtaoPass {
 			c.start_region(|label| label.write_str("GTAO Depth Pyramid"));
 			let c = c.bind_compute_pipeline(depth_pyramid_pipeline);
 			c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);
-			c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+			c.dispatch(ghi::DispatchExtent::new(gtao_extent, Extent::new(8, 4, 1)));
 			c.end_region();
 
 			c.start_region(|label| label.write_str("GTAO Evaluate"));

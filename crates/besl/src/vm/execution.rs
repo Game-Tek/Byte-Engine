@@ -904,7 +904,8 @@ impl ExecutableProgram {
 					};
 
 					let slot = resolve_resource_slot(*slot, registers)?;
-					let sampled = if let Some(lod) = lod {
+						let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
+						let sampled = if let Some(lod) = lod {
 						let lod = read_register(registers, *lod)?;
 						let Value::F32(lod) = lod else {
 							return Err(VmError::TypeMismatch {
@@ -912,9 +913,9 @@ impl ExecutableProgram {
 								found: lod.value_type().name().to_string(),
 							});
 						};
-						descriptors.texture_mut(slot)?.sample_lod(uv, lod)?
-					} else {
-						descriptors.texture_mut(slot)?.sample(uv)?
+							texture.sample_lod_with_sampler(uv, lod, sampler)?
+						} else {
+							texture.sample_with_sampler(uv, sampler)?
 					};
 					registers[*register] = Some(sampled);
 				}

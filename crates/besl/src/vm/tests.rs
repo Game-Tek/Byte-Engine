@@ -1,8 +1,9 @@
 //! Focused regressions for the VM's private instruction and numeric semantics.
 
 use super::{
-	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, SpecializationValues,
-	TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot, output_slot, reflect_vector,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
+	SamplerReductionMode, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot,
+	output_slot, reflect_vector,
 };
 use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_to_besl};
 
@@ -864,6 +865,69 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 	}
 
 	assert_eq!(read_f32s(&buffer, 4), vec![1.0, 1.0, 0.0, 2.0]);
+}
+
+#[test]
+fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprints() {
+	let script = r#"
+	main: fn () -> void {
+		buff.value = texture_lod(texture_sampler, vec2f(0.5, 0.5), 0.0);
+	}
+	"#;
+	let mut root = Node::root();
+	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+	root.add_child(
+		Node::binding(
+			"texture_sampler",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			9,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("value", vec4f_type).into()],
+			},
+			10,
+			true,
+			true,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let texture_slot = ResourceSlot::new(9);
+	let buffer_slot = ResourceSlot::new(10);
+	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+	write_texture(
+		&mut texture,
+		&[
+			([0, 0], [0.0, 8.0, 2.0, 1.0]),
+			([1, 0], [2.0, 6.0, 4.0, 1.0]),
+			([0, 1], [6.0, 4.0, 8.0, 1.0]),
+			([1, 1], [8.0, 2.0, 6.0, 1.0]),
+		],
+	);
+
+	let mut sample = |reduction_mode| {
+		let mut buffer = buffer_for_slot(&executable, buffer_slot);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture_with_sampler(texture_slot, &mut texture, Sampler::new(reduction_mode));
+			descriptors.bind_buffer(buffer_slot, &mut buffer);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected combined sampler execution to succeed");
+		}
+		read_f32s(&buffer, 4)
+	};
+
+	assert_eq!(sample(SamplerReductionMode::WeightedAverage), vec![4.0, 5.0, 5.0, 1.0]);
+	assert_eq!(sample(SamplerReductionMode::Min), vec![0.0, 2.0, 2.0, 1.0]);
+	assert_eq!(sample(SamplerReductionMode::Max), vec![8.0, 8.0, 8.0, 1.0]);
 }
 
 #[test]

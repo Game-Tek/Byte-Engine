@@ -947,6 +947,18 @@ pub(super) fn apply_dot_product(left: &Value, right: &Value) -> Result<Value, Vm
 		(Value::Vec2F(left), Value::Vec2F(right)) => Ok(Value::F32(dot_product(*left, *right))),
 		(Value::Vec3F(left), Value::Vec3F(right)) => Ok(Value::F32(dot_product(*left, *right))),
 		(Value::Vec4F(left), Value::Vec4F(right)) => Ok(Value::F32(dot_product(*left, *right))),
+		(Value::Vec2F16(left), Value::Vec2F16(right)) => Ok(Value::F16(f16::from_f32(dot_product(
+			left.map(f16::to_f32),
+			right.map(f16::to_f32),
+		)))),
+		(Value::Vec3F16(left), Value::Vec3F16(right)) => Ok(Value::F16(f16::from_f32(dot_product(
+			left.map(f16::to_f32),
+			right.map(f16::to_f32),
+		)))),
+		(Value::Vec4F16(left), Value::Vec4F16(right)) => Ok(Value::F16(f16::from_f32(dot_product(
+			left.map(f16::to_f32),
+			right.map(f16::to_f32),
+		)))),
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),
 			found: right.value_type().name().to_string(),
@@ -969,6 +981,15 @@ pub(super) fn apply_length(value: &Value) -> Result<Value, VmError> {
 		Value::Vec2F(value) => Ok(Value::F32(dot_product(*value, *value).sqrt())),
 		Value::Vec3F(value) => Ok(Value::F32(dot_product(*value, *value).sqrt())),
 		Value::Vec4F(value) => Ok(Value::F32(dot_product(*value, *value).sqrt())),
+		Value::Vec2F16(value) => Ok(Value::F16(f16::from_f32(
+			dot_product(value.map(f16::to_f32), value.map(f16::to_f32)).sqrt(),
+		))),
+		Value::Vec3F16(value) => Ok(Value::F16(f16::from_f32(
+			dot_product(value.map(f16::to_f32), value.map(f16::to_f32)).sqrt(),
+		))),
+		Value::Vec4F16(value) => Ok(Value::F16(f16::from_f32(
+			dot_product(value.map(f16::to_f32), value.map(f16::to_f32)).sqrt(),
+		))),
 		value => Err(VmError::TypeMismatch {
 			expected: "float vector".to_string(),
 			found: value.value_type().name().to_string(),
@@ -981,6 +1002,9 @@ pub(super) fn apply_normalize(value: &Value) -> Result<Value, VmError> {
 		Value::Vec2F(value) => normalize_vector(*value).map(Value::Vec2F),
 		Value::Vec3F(value) => normalize_vector(*value).map(Value::Vec3F),
 		Value::Vec4F(value) => normalize_vector(*value).map(Value::Vec4F),
+		Value::Vec2F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec2F16(value.map(f16::from_f32))),
+		Value::Vec3F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec3F16(value.map(f16::from_f32))),
+		Value::Vec4F16(value) => normalize_vector(value.map(f16::to_f32)).map(|value| Value::Vec4F16(value.map(f16::from_f32))),
 		value => Err(VmError::TypeMismatch {
 			expected: "float vector".to_string(),
 			found: value.value_type().name().to_string(),

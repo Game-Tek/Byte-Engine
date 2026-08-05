@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
-use besl::{parser::Node, NodeReference};
-use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
+use besl::{NodeReference, parser::Node};
+use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
 use crate::rendering::pipelines::visibility::{
-	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
 	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 };
 
@@ -169,11 +169,22 @@ fn collect_material_expression_features(
 			if let besl::parser::TypeName::Named(name) = name {
 				if matches!(
 					*name,
-					"sample_material" | "sample_normal" | "decode_material_normal" | "scale_normal_xy"
+					"sample_material"
+						| "sample_normal" | "decode_material_normal"
+						| "decode_material_normal_f16"
+						| "scale_normal_xy"
+						| "scale_material_normal_xy_f16"
 				) {
 					features.uses_uv = true;
 				}
-				if matches!(*name, "sample_normal" | "decode_material_normal" | "scale_normal_xy") {
+				if matches!(
+					*name,
+					"sample_normal"
+						| "decode_material_normal"
+						| "decode_material_normal_f16"
+						| "scale_normal_xy"
+						| "scale_material_normal_xy_f16"
+				) {
 					features.uses_tangent_frame = true;
 				}
 			}
@@ -230,16 +241,24 @@ fn is_default_tangent_normal(node: &besl::parser::Node<'_>) -> bool {
 	let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters }) = node.node() else {
 		return false;
 	};
-	if !matches!(name, besl::parser::TypeName::Named(name) if *name == "vec3f") || parameters.len() != 3 {
+	if !matches!(name, besl::parser::TypeName::Named(name) if matches!(*name, "vec3f" | "vec3f16")) || parameters.len() != 3 {
 		return false;
 	}
 
 	parameters.iter().zip([0.0_f32, 0.0, 1.0]).all(|(parameter, expected)| {
-		matches!(
-			parameter.node(),
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value })
-				if value.parse::<f32>().is_ok_and(|value| value == expected)
-		)
+		let literal = match parameter.node() {
+			besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) => Some(value),
+			besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters })
+				if matches!(name, besl::parser::TypeName::Named(name) if *name == "f16") && parameters.len() == 1 =>
+			{
+				match parameters[0].node() {
+					besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) => Some(value),
+					_ => None,
+				}
+			}
+			_ => None,
+		};
+		literal.is_some_and(|value| value.parse::<f32>().is_ok_and(|value| value == expected))
 	})
 }
 
@@ -273,6 +292,82 @@ fn material_evaluation_suffix_statements(features: MaterialReconstructionFeature
 		"material_evaluation_suffix",
 	));
 	statements
+}
+
+/// Narrows material properties at the authored-program boundary so every material graph uses the compact evaluation ABI.
+fn narrow_material_property_assignments(node: &mut besl::parser::Node<'_>) {
+	match node.node_mut() {
+		besl::parser::Nodes::Function { statements, .. } => {
+			for statement in statements {
+				narrow_material_property_assignments(statement);
+			}
+		}
+		besl::parser::Nodes::Conditional { condition, statements } => {
+			narrow_material_property_assignments(condition);
+			for statement in statements {
+				narrow_material_property_assignments(statement);
+			}
+		}
+		besl::parser::Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => {
+			narrow_material_property_assignments(initializer);
+			narrow_material_property_assignments(condition);
+			narrow_material_property_assignments(update);
+			for statement in statements {
+				narrow_material_property_assignments(statement);
+			}
+		}
+		besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { name, left, right }) => {
+			if *name == "=" {
+				let target_type = match left.node() {
+					besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) => match name.as_ref() {
+						"albedo" => Some("vec4f16"),
+						"normal" | "emission" => Some("vec3f16"),
+						"metalness" | "roughness" | "occlusion" => Some("f16"),
+						_ => None,
+					},
+					_ => None,
+				};
+				if let Some(target_type) = target_type {
+					*right = Box::new(besl::parser::Node::call(target_type, vec![*right.clone()]));
+				}
+			}
+			narrow_material_property_assignments(left);
+			narrow_material_property_assignments(right);
+		}
+		besl::parser::Nodes::Expression(expression) => narrow_material_property_assignment_expression(expression),
+		_ => {}
+	}
+}
+
+/// Recurses through nested authored expressions while preserving assignments that require material narrowing.
+fn narrow_material_property_assignment_expression(expression: &mut besl::parser::Expressions<'_>) {
+	match expression {
+		besl::parser::Expressions::Call { parameters, .. } | besl::parser::Expressions::Expression(parameters) => {
+			for parameter in parameters {
+				narrow_material_property_assignments(parameter);
+			}
+		}
+		besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {
+			narrow_material_property_assignments(left);
+			narrow_material_property_assignments(right);
+		}
+		besl::parser::Expressions::Return { value } => {
+			if let Some(value) = value {
+				narrow_material_property_assignments(value);
+			}
+		}
+		besl::parser::Expressions::Macro { body, .. } => narrow_material_property_assignments(body),
+		besl::parser::Expressions::Member { .. }
+		| besl::parser::Expressions::Literal { .. }
+		| besl::parser::Expressions::VariableDeclaration { .. }
+		| besl::parser::Expressions::RawCode { .. }
+		| besl::parser::Expressions::Continue => {}
+	}
 }
 
 /// Makes material texture context explicit before the parser tree is linked.
@@ -548,45 +643,48 @@ material_evaluation_tangent: fn () -> void {
 
 const MATERIAL_EVALUATION_DEFAULTS_SOURCE: &str = r#"
 material_evaluation_defaults: fn () -> void {
-	let albedo: vec4f = vec4f(1.0, 0.0, 0.0, 1.0);
-	let normal: vec3f = vec3f(0.0, 0.0, 1.0);
-	let metalness: f32 = 0.0;
-	let roughness: f32 = 0.5;
-	let occlusion: f32 = 1.0;
-	let emission: vec3f = vec3f(0.0, 0.0, 0.0);
+	// Material inputs are normalized or artist-bounded values. Keep them compact until lighting needs f32 range.
+	let albedo: vec4f16 = vec4f16(1.0, 0.0, 0.0, 1.0);
+	let normal: vec3f16 = vec3f16(0.0, 0.0, 1.0);
+	let metalness: f16 = 0.0;
+	let roughness: f16 = 0.5;
+	let occlusion: f16 = 1.0;
+	let emission: vec3f16 = vec3f16(0.0, 0.0, 0.0);
 }
 "#;
 
 const MATERIAL_EVALUATION_TANGENT_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = normalize(normal.x * T + normal.y * B + normal.z * N);
+	normal = vec3f16(normalize(f32(normal.x) * T + f32(normal.y) * B + f32(normal.z) * N));
 }
 "#;
 
 const MATERIAL_EVALUATION_GEOMETRY_NORMAL_SOURCE: &str = r#"
 material_evaluation_normal: fn () -> void {
-	normal = N;
+	normal = vec3f16(N);
 }
 "#;
 
 const MATERIAL_EVALUATION_SUFFIX_SOURCE: &str = r#"
 material_evaluation_suffix: fn () -> void {
+	// Preserve compact material values and normalized vectors through the BRDF.
+	// Positions, shadow projections, HDR radiance, and accumulation remain f32.
+	let albedo_rgb: vec3f16 = vec3f16(albedo.x, albedo.y, albedo.z);
+	let V_material: vec3f16 = vec3f16(V);
+	let F0: vec3f16 = vec3f16(0.04, 0.04, 0.04) * (1.0 - metalness) + albedo_rgb * metalness;
+	let NdotV: f16 = max(dot(normal, V_material), f16(0.0));
+	let roughness_alpha: f16 = roughness * roughness;
+	let roughness_alpha_squared: f16 = roughness_alpha * roughness_alpha;
+	let adjusted_roughness: f16 = roughness + 1.0;
+	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
 	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
-	let ao_factor: f32 = 1.0;
+	let ao_factor: f16 = 1.0;
 	if (push_constant.blend == 0) {
-		ao_factor = fetch(ao, pixel_coordinates).x;
+		ao_factor = f16(fetch(ao, pixel_coordinates).x);
 	}
-
-	let albedo_rgb: vec3f = vec3f(albedo.x, albedo.y, albedo.z);
-	let F0: vec3f = vec3f(0.04, 0.04, 0.04) * (1.0 - metalness) + albedo_rgb * metalness;
-	let NdotV: f32 = max(dot(normal, V), 0.0);
-	let roughness_alpha: f32 = roughness * roughness;
-	let roughness_alpha_squared: f32 = roughness_alpha * roughness_alpha;
-	let adjusted_roughness: f32 = roughness + 1.0;
-	let geometry_k: f32 = adjusted_roughness * adjusted_roughness / 8.0;
-	let view_fresnel_factor: f32 = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-	let one_minus_fresnel_n_dot_v: vec3f = vec3f(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(view_fresnel_factor, F0);
+	let view_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0)), f16(5.0));
+	let one_minus_fresnel_n_dot_v: vec3f16 = vec3f16(1.0, 1.0, 1.0) - (F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * view_fresnel_factor);
 	let light_count: u32 = lighting_data.light_count;
 
 	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
@@ -607,12 +705,13 @@ material_evaluation_suffix: fn () -> void {
 			attenuation = 1.0 / distance_squared;
 		}
 
-		let NdotL: f32 = max(dot(normal, L), 0.0);
+		let L_material: vec3f16 = vec3f16(L);
+		let NdotL: f16 = max(dot(normal, L_material), f16(0.0));
 		if (NdotL <= 0.0) {
 			continue;
 		}
 
-		let occlusion_factor: f32 = 1.0;
+		let occlusion_factor: f16 = 1.0;
 		let view_space_surface_position: vec3f = view.view * vec4f(
 			world_space_vertex_position.x,
 			world_space_vertex_position.y,
@@ -620,7 +719,7 @@ material_evaluation_suffix: fn () -> void {
 			1.0
 		);
 		if (light.type == 68) {
-			occlusion_factor = sample_shadow(
+			occlusion_factor = f16(sample_shadow(
 				depth_shadow_map,
 				light,
 				world_space_vertex_position,
@@ -629,7 +728,7 @@ material_evaluation_suffix: fn () -> void {
 				L,
 				vec3f(0.0, 0.0, 0.0),
 				vec3f(0.0, 0.0, 0.0)
-			);
+			));
 			if (occlusion_factor == 0.0) {
 				continue;
 			}
@@ -637,66 +736,71 @@ material_evaluation_suffix: fn () -> void {
 		}
 		if (light.type != 68) {
 			if (light.type == 1) {
-				let light_direction: vec3f = vec3f(light.direction.x, light.direction.y, light.direction.z);
-				let cone_cosine: f32 = dot(normalize(light_direction), vec3f(0.0, 0.0, 0.0) - L);
-				let cone_factor: f32 = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
-				if (cone_factor <= 0.0) {
-					continue;
-				}
-				attenuation = attenuation * cone_factor;
-				occlusion_factor = sample_shadow(
-					cone_shadow_map,
-					light,
-					world_space_vertex_position,
-					view_space_surface_position,
-					world_space_vertex_normal,
-					L,
-					position_derivative_x,
-					position_derivative_y
-				);
-				if (occlusion_factor == 0.0) {
-					continue;
-				}
+			let light_direction: vec3f = vec3f(light.direction.x, light.direction.y, light.direction.z);
+			let cone_cosine: f16 = dot(vec3f16(normalize(light_direction)), vec3f16(0.0, 0.0, 0.0) - L_material);
+			let cone_factor: f16 = f16(cone_attenuation(f32(cone_cosine), light.cone_cosines.x, light.cone_cosines.y));
+			if (cone_factor <= 0.0) {
+				continue;
+			}
+			attenuation = attenuation * f32(cone_factor);
+			occlusion_factor = f16(sample_shadow(
+				cone_shadow_map,
+				light,
+				world_space_vertex_position,
+				view_space_surface_position,
+				world_space_vertex_normal,
+				L,
+				position_derivative_x,
+				position_derivative_y
+			));
+			if (occlusion_factor == 0.0) {
+				continue;
+			}
 			}
 		}
 
-		let H: vec3f = normalize(V + L);
-		let light_color: vec3f = vec3f(light.color.x, light.color.y, light.color.z);
-		let radiance: vec3f = light_color * attenuation;
-		let half_view_fresnel_factor: f32 = pow(clamp(1.0 - max(dot(H, V), 0.0), 0.0, 1.0), 5.0);
-		let F: vec3f = fresnel_schlick_from_factor(half_view_fresnel_factor, F0);
-		let NDF: f32 = distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared);
-		let G: f32 = geometry_smith_from_terms(NdotV, NdotL, geometry_k);
-		let local_specular: vec3f = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.000001);
-		let light_fresnel_factor: f32 = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
-		let kD: vec3f = (vec3f(1.0, 1.0, 1.0) - fresnel_schlick_from_factor(light_fresnel_factor, F0))
+		let H: vec3f16 = normalize(V_material + L_material);
+		let half_view_fresnel_factor: f16 = pow(clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0)), f16(5.0));
+		let F: vec3f16 = F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * half_view_fresnel_factor;
+		let NdotH: f16 = max(dot(normal, H), f16(0.0));
+		let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
+		let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
+		let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
+		let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
+		let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
+		let light_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0)), f16(5.0));
+		let kD: vec3f16 = (vec3f16(1.0, 1.0, 1.0) - (F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * light_fresnel_factor))
 			* one_minus_fresnel_n_dot_v
 			* (1.0 - metalness);
-		let local_diffuse: vec3f = kD * albedo_rgb / 3.14159265359;
-		diffuse = diffuse + local_diffuse * radiance * NdotL * occlusion_factor;
-		specular = specular + local_specular * radiance * NdotL * occlusion_factor;
+		let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
+		let light_color: vec3f = vec3f(light.color.x, light.color.y, light.color.z);
+		let radiance: vec3f = light_color * attenuation;
+		diffuse = diffuse + vec3f(local_diffuse) * radiance * f32(NdotL) * f32(occlusion_factor);
+		specular = specular + vec3f(local_specular) * radiance * f32(NdotL) * f32(occlusion_factor);
 	}
 
-	let ambient_irradiance: vec3f = sample_environment_irradiance(normal);
+	let ambient_irradiance: vec3f = sample_environment_irradiance(vec3f(normal));
 	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;
-	let reflection_direction: vec3f = incident - 2.0 * dot(incident, normal) * normal;
-	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, roughness);
-	let F_ibl: vec3f = fresnel_schlick_roughness(NdotV, F0, roughness);
-	let kD_ibl: vec3f = (vec3f(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
-	let ibl_diffuse: vec3f = kD_ibl * albedo_rgb * ambient_irradiance;
+	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
+	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness));
+	let grazing: vec3f16 = vec3f16(max(f16(1.0) - roughness, F0.x), max(f16(1.0) - roughness, F0.y), max(f16(1.0) - roughness, F0.z));
+	let ibl_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0)), f16(5.0));
+	let F_ibl: vec3f16 = F0 + (grazing - F0) * ibl_fresnel_factor;
+	let kD_ibl: vec3f16 = (vec3f16(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
+	let ibl_diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * ambient_irradiance;
 
-	let c0: vec4f = vec4f(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
-	let c1: vec4f = vec4f(1.0, 0.0425, 1.04, 0.0 - 0.04);
-	let r: vec4f = roughness * c0 + c1;
-	let a004: f32 = min(r.x * r.x, pow(2.0, (0.0 - 9.28) * NdotV)) * r.x + r.y;
-	let env_brdf: vec2f = vec2f(0.0 - 1.04, 1.04) * a004 + vec2f(r.z, r.w);
-	let ibl_specular: vec3f = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
+	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
+	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
+	let r: vec4f16 = roughness * c0 + c1;
+	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
+	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
+	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
 	let ambient: vec3f = ibl_diffuse + ibl_specular;
 	ao_factor = ao_factor * occlusion;
-	let lit: vec3f = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
+	let lit: vec3f = (diffuse + specular) * f32(ao_factor) + ambient * f32(ao_factor) + vec3f(emission);
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
 	if (push_constant.blend != 0) {
-		let source_alpha: f32 = clamp(albedo.w, 0.0, 1.0);
+		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
 		let destination_color: vec4f = image_load(lit_map, pixel_coordinates);
 		output_color = source_over(
 			vec4f(lit.x * source_alpha, lit.y * source_alpha, lit.z * source_alpha, source_alpha),
@@ -1358,6 +1462,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let m = root.get_mut("main").unwrap();
 		let reconstruction_features = material_reconstruction_features(m);
 		add_material_sample_context(m, &texture_slots);
+		narrow_material_property_assignments(m);
 
 		if let besl::parser::Nodes::Function { statements, .. } = m.node_mut() {
 			statements.splice(0..0, material_evaluation_prefix_statements(reconstruction_features));
@@ -1374,10 +1479,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
-	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
+	use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
 	use resource_management::pbr::{
-		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
-		BrdfValue,
+		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
+		generate_textured_brdf_program,
 	};
 	use resource_management::shader::besl::backends::{
 		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
@@ -1543,7 +1648,10 @@ mod tests {
 				panic!("Unexpected decoded-normal type. The most likely cause is a VM packed-vector regression.");
 			};
 			assert!(
-				actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() <= 0.00005),
+				actual
+					.iter()
+					.zip(expected)
+					.all(|(actual, expected)| (actual - expected).abs() <= 0.00005),
 				"Unexpected decoded normal {actual:?} for {encoded:?}. The most likely cause is incorrect octahedral fold math.",
 				encoded = cases[index].0,
 			);
@@ -1600,7 +1708,7 @@ mod tests {
 		);
 		assert!(normal.contains("vertex_uvs->uvs"));
 		assert!(normal.contains("tangent_scale"));
-		assert!(normal.contains("normal.x * T"));
+		assert!(normal.contains("float(normal.x) * T"));
 
 		let procedural = material_msl("main: fn () -> void { normal = vec3f(1.0, 0.0, 0.0); }", &constant_material);
 		assert!(procedural.contains("vertex_uvs->uvs"));
@@ -1712,9 +1820,11 @@ mod tests {
 			.expect(
 				"Failed to emit the HLSL material pass. The most likely cause is an invalid tangent-basis shader contract.",
 			);
-
 		assert!(
-			source.contains("normal = normalize(((normal.x * T) + (normal.y * B)) + (normal.z * N));"),
+			source.contains("normal = float16_t3(normalize(")
+				&& source.contains("float(normal.x) * T")
+				&& source.contains("float(normal.y) * B")
+				&& source.contains("float(normal.z) * N"),
 			"HLSL did not combine the tangent basis explicitly. The most likely cause is that the material pass reintroduced a row-versus-column matrix assumption."
 		);
 		assert!(
@@ -1846,7 +1956,9 @@ mod tests {
 		assert!(msl.contains("resources.ao.read(pixel_coordinates).x"));
 		assert!(glsl.contains("texelFetch(shadow_map, ivec3(ivec2(shadow_texel),int(shadow_layer)),0).x"));
 		assert!(hlsl.contains("shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x"));
-		assert!(hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)"));
+		assert!(
+			hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)")
+		);
 		assert!(glsl.contains("textureLod(environment_specular, environment_uv, specular_level)"));
 		assert!(msl.contains(
 			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, metal::level(specular_level))"
@@ -1854,8 +1966,10 @@ mod tests {
 		assert!(msl.contains("float3 world_space_vertex_position0"));
 		assert!(!msl.contains("world_space_vertex_positions[3]"));
 		assert!(!msl.contains("primitive_indices[3]"));
-		assert!(msl.contains("geometry_smith_from_terms(NdotV, NdotL, geometry_k)"));
-		assert!(msl.contains("distribution_ggx_from_terms(max(dot(normal, H), 0.0), roughness_alpha_squared)"));
+		assert!(msl.contains("half geometry_view"));
+		assert!(msl.contains("half geometry_light"));
+		assert!(msl.contains("half NdotH"));
+		assert!(msl.contains("half denominator_base"));
 		assert!(msl.contains("View shadow_view = resources.views->views[shadow_view_index];"));
 		assert!(msl.contains(
 			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 receiver_plane_depth_gradient, float2 offset, uint shadow_layer, uint2 shadow_map_extent)"
@@ -2045,8 +2159,8 @@ mod tests {
 				.find(|binding| binding.slot == slot)
 				.unwrap_or_else(|| {
 					panic!(
-					"Missing material evaluation binding at slot {slot}. The most likely cause is that visibility resource retention drifted."
-				)
+						"Missing material evaluation binding at slot {slot}. The most likely cause is that visibility resource retention drifted."
+					)
 				});
 			assert_eq!(
 				binding.buffer_stride,
@@ -2115,21 +2229,15 @@ mod tests {
 			"Missing shared-texture material entry point. The most likely cause is that material generation stopped producing an entry point.",
 		);
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		let glsl = GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect(
-				"Failed to emit the shared-texture GLSL material pass. The most likely cause is an invalid visibility shader contract.",
-			);
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect(
-				"Failed to emit the shared-texture HLSL material pass. The most likely cause is an invalid visibility shader contract.",
-			);
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect(
-				"Failed to emit the shared-texture MSL material pass. The most likely cause is an invalid visibility shader contract.",
-			);
+		let glsl = GLSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the shared-texture GLSL material pass. The most likely cause is an invalid visibility shader contract.",
+		);
+		let hlsl = HLSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the shared-texture HLSL material pass. The most likely cause is an invalid visibility shader contract.",
+		);
+		let msl = MSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the shared-texture MSL material pass. The most likely cause is an invalid visibility shader contract.",
+		);
 		assert_eq!(
 			glsl.match_indices("texture(textures[nonuniformEXT(").count(),
 			1,
@@ -2146,11 +2254,32 @@ mod tests {
 			"The generated material sampled the shared texture more than once. The most likely cause is that BRDF texture-sample reuse was bypassed."
 		);
 		assert!(
-			msl.contains("float4 material_texture_sample_0"),
+			msl.contains("half4 material_texture_sample_0"),
 			"The generated material did not retain its reusable texel local. The most likely cause is that texture-sample lowering stopped emitting the cache binding."
 		);
+		assert!(
+			msl.contains("half4 albedo")
+				&& msl.contains("half3 normal")
+				&& msl.contains("half metalness")
+				&& msl.contains("half roughness")
+				&& msl.contains("half occlusion")
+				&& msl.contains("half3 emission"),
+			"Material inputs did not remain half precision. The most likely cause is a material-evaluation type regression."
+		);
+		assert!(
+			msl.contains("half3 albedo_rgb")
+				&& msl.contains("half3 V_material")
+				&& msl.contains("half3 F0")
+				&& msl.contains("half NdotV")
+				&& msl.contains("half3 L_material")
+				&& msl.contains("half3 local_diffuse")
+				&& msl.contains("half3 local_specular")
+				&& !msl.contains("surface_albedo"),
+			"The BRDF did not retain compact material values and normalized vectors. The most likely cause is a material-evaluation precision regression."
+		);
 		assert_eq!(
-			msl.match_indices("decode_material_normal(material_texture_sample_0)").count(),
+			msl.match_indices("decode_material_normal_f16(material_texture_sample_0)")
+				.count(),
 			1,
 			"The scaled normal map decoded the shared texel more than once. The most likely cause is that normal scaling bypassed the reusable helper."
 		);

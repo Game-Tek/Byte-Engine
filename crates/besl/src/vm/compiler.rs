@@ -1058,16 +1058,23 @@ impl<'a> Compiler<'a> {
 			"dot" => {
 				require_argument_count(arguments, 2)?;
 
-				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
-					.into_iter()
-					.find(|candidate| {
-						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-							&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
-								== Some(candidate.clone())
-					})
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "`dot` expects two float vectors of matching size".to_string(),
-					})?;
+				let supported_type = [
+					ValueType::Vec2F,
+					ValueType::Vec3F,
+					ValueType::Vec4F,
+					ValueType::Vec2F16,
+					ValueType::Vec3F16,
+					ValueType::Vec4F16,
+				]
+				.into_iter()
+				.find(|candidate| {
+					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+						&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
+							== Some(candidate.clone())
+				})
+				.ok_or_else(|| VmError::UnsupportedExpression {
+					message: "`dot` expects two float vectors of matching size".to_string(),
+				})?;
 
 				let left = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
 				let right = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
@@ -1087,14 +1094,21 @@ impl<'a> Compiler<'a> {
 			"length" => {
 				require_argument_count(arguments, 1)?;
 
-				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
-					.into_iter()
-					.find(|candidate| {
-						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-					})
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "`length` expects one float vector argument".to_string(),
-					})?;
+				let supported_type = [
+					ValueType::Vec2F,
+					ValueType::Vec3F,
+					ValueType::Vec4F,
+					ValueType::Vec2F16,
+					ValueType::Vec3F16,
+					ValueType::Vec4F16,
+				]
+				.into_iter()
+				.find(|candidate| {
+					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+				})
+				.ok_or_else(|| VmError::UnsupportedExpression {
+					message: "`length` expects one float vector argument".to_string(),
+				})?;
 
 				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -1104,14 +1118,21 @@ impl<'a> Compiler<'a> {
 			"normalize" => {
 				require_argument_count(arguments, 1)?;
 
-				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
-					.into_iter()
-					.find(|candidate| {
-						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-					})
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "`normalize` expects one float vector argument".to_string(),
-					})?;
+				let supported_type = [
+					ValueType::Vec2F,
+					ValueType::Vec3F,
+					ValueType::Vec4F,
+					ValueType::Vec2F16,
+					ValueType::Vec3F16,
+					ValueType::Vec4F16,
+				]
+				.into_iter()
+				.find(|candidate| {
+					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+				})
+				.ok_or_else(|| VmError::UnsupportedExpression {
+					message: "`normalize` expects one float vector argument".to_string(),
+				})?;
 				if &supported_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),

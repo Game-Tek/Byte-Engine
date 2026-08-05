@@ -1,10 +1,10 @@
 //! Focused regressions for the VM's private instruction and numeric semantics.
 
 use super::{
-	input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs,
-	ResourceSlot, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, SpecializationValues,
+	TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot, output_slot, reflect_vector,
 };
-use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
+use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_to_besl};
 
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
@@ -402,7 +402,10 @@ fn executable_program_round_trips_packed_vec4f_storage() {
 			.expect("Expected packed vector conversion execution");
 	}
 
-	assert_eq!(buffer.read("first").expect("Expected packed member access"), Value::F32(expected[0]));
+	assert_eq!(
+		buffer.read("first").expect("Expected packed member access"),
+		Value::F32(expected[0])
+	);
 	assert_eq!(
 		buffer.read("ordinary").expect("Expected ordinary vector"),
 		Value::Vec4F(expected)
@@ -1536,6 +1539,50 @@ fn executable_program_evaluates_normalize_intrinsics() {
 	assert_eq!(read_f32s(&buffer, 3), vec![0.6, 0.8, 0.0]);
 }
 
+/// Verifies normalized material vectors and angular terms stay in the half-precision execution path.
+#[test]
+fn executable_program_evaluates_f16_vector_intrinsics() {
+	let script = r#"
+	main: fn () -> void {
+		buff.direction = normalize(vec3f16(3.0, 4.0, 0.0));
+		buff.alignment = dot(buff.direction, vec3f16(0.0, 1.0, 0.0));
+	}
+	"#;
+
+	let mut root = Node::root();
+	let f16_type = root.get_child("f16").expect("Expected f16");
+	let vec3f16_type = root.get_child("vec3f16").expect("Expected vec3f16");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("direction", vec3f16_type).into(),
+					Node::member("alignment", f16_type).into(),
+				],
+			},
+			21,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(21);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(
+		buffer.read("direction").expect("Expected f16 direction"),
+		Value::Vec3F16([f16::from_f32(0.6), f16::from_f32(0.8), f16::from_f32(0.0)])
+	);
+	assert_eq!(
+		buffer.read_f16("alignment").expect("Expected f16 alignment"),
+		f16::from_f32(0.8)
+	);
+}
+
 #[test]
 fn executable_program_evaluates_reflect_intrinsics() {
 	let mut root = Node::root();
@@ -1559,66 +1606,68 @@ fn executable_program_evaluates_reflect_intrinsics() {
 			"main",
 			Vec::new(),
 			void_type,
-			vec![Node::expression(Expressions::Operator {
-				operator: Operators::Assignment,
-				left: Node::expression(Expressions::Accessor {
-					left: Node::expression(Expressions::Member {
-						name: "buff".to_string(),
-						source: root.get_child("buff").expect("Expected buff binding"),
+			vec![
+				Node::expression(Expressions::Operator {
+					operator: Operators::Assignment,
+					left: Node::expression(Expressions::Accessor {
+						left: Node::expression(Expressions::Member {
+							name: "buff".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
+						right: Node::expression(Expressions::Member {
+							name: "value".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
 					})
 					.into(),
-					right: Node::expression(Expressions::Member {
-						name: "value".to_string(),
-						source: root.get_child("buff").expect("Expected buff binding"),
+					right: Node::expression(Expressions::IntrinsicCall {
+						intrinsic: reflect,
+						arguments: vec![
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "-1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+						],
+						elements: vec![],
 					})
 					.into(),
 				})
 				.into(),
-				right: Node::expression(Expressions::IntrinsicCall {
-					intrinsic: reflect,
-					arguments: vec![
-						Node::expression(Expressions::FunctionCall {
-							function: vec3f_type.clone(),
-							parameters: vec![
-								Node::expression(Expressions::Literal {
-									value: "1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "-1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-							],
-						})
-						.into(),
-						Node::expression(Expressions::FunctionCall {
-							function: vec3f_type.clone(),
-							parameters: vec![
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-							],
-						})
-						.into(),
-					],
-					elements: vec![],
-				})
-				.into(),
-			})
-			.into()],
+			],
 		)
 		.into(),
 	);
@@ -2405,10 +2454,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 		descriptors.bind_task_outputs(&mut outputs);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		executable
-			.run_workgroup(
-				&mut descriptors,
-				&[ExecutionConfig::new(32).with_thread_position(1)],
-			)
+			.run_workgroup(&mut descriptors, &[ExecutionConfig::new(32).with_thread_position(1)])
 			.expect_err(
 				"Stale workgroup storage was visible. The most likely cause is that scheduler reuse did not clear shared values.",
 			)
@@ -2587,11 +2633,9 @@ fn task_payload_writes_respect_the_declared_count() {
 	let error = {
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_task_outputs(&mut outputs);
-		executable
-			.run_main(&mut descriptors)
-			.expect_err(
-				"Out-of-bounds task payload write was accepted. The most likely cause is missing payload declaration bounds checking.",
-			)
+		executable.run_main(&mut descriptors).expect_err(
+			"Out-of-bounds task payload write was accepted. The most likely cause is missing payload declaration bounds checking.",
+		)
 	};
 
 	assert_eq!(
@@ -2695,9 +2739,11 @@ fn descriptor_binding_errors_report_resource_kinds_consistently() {
 			found: "texture",
 		}
 	);
-	assert!(VmError::UnboundDescriptor { slot }
-		.to_string()
-		.contains("no resource was bound"));
+	assert!(
+		VmError::UnboundDescriptor { slot }
+			.to_string()
+			.contains("no resource was bound")
+	);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
+use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.
@@ -485,6 +485,14 @@ const COMMON_SHADER_SOURCE: &str = r#"
 
 	scale_normal_xy: fn (normal: vec3f, scale: f32) -> vec3f {
 		return vec3f(normal.x * scale, normal.y * scale, normal.z);
+	}
+
+	decode_material_normal_f16: fn (sample: vec4f16) -> vec3f16 {
+		return vec3f16(unit_vector_from_xy(vec2f(f32(sample.x), f32(sample.y))));
+	}
+
+	scale_material_normal_xy_f16: fn (normal: vec3f16, scale: f16) -> vec3f16 {
+		return vec3f16(normal.x * scale, normal.y * scale, normal.z);
 	}
 
 	get_debug_color: fn (i: u32) -> vec4f {

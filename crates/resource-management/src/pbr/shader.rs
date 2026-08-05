@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 
 use super::{
-	material_texture_variable_name, BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness,
-	BrdfNode, BrdfNodeId, BrdfTexture, BrdfValue,
+	BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
+	BrdfTexture, BrdfValue, material_texture_variable_name,
 };
 
 /// Generates a BESL program from a solid-value BRDF material graph.
@@ -246,8 +246,8 @@ impl MaterialTextureSamples {
 		for entry in &self.entries[self.emitted_entries..] {
 			statements.push(besl::parser::Node::let_assignment(
 				entry.local_name.clone(),
-				"vec4f",
-				material_texture_sample_expression(entry.texture),
+				"vec4f16",
+				besl::parser::Node::call("vec4f16", vec![material_texture_sample_expression(entry.texture)]),
 			));
 		}
 		self.emitted_entries = self.entries.len();
@@ -286,7 +286,7 @@ fn texture_sample_expression(
 fn texture_rgb_expression(texture_samples: &mut MaterialTextureSamples, texture: BrdfTexture) -> besl::parser::Node<'static> {
 	let sample = texture_sample_expression(texture_samples, texture);
 	besl::parser::Node::call(
-		"vec3f",
+		"vec3f16",
 		vec![
 			channel_expression(sample.clone(), BrdfChannel::Red),
 			channel_expression(sample.clone(), BrdfChannel::Green),
@@ -310,7 +310,7 @@ fn normal_map_expression(
 		Ok(source)
 	} else {
 		Ok(besl::parser::Node::call(
-			"scale_normal_xy",
+			"scale_material_normal_xy_f16",
 			vec![source, scalar_expression(scale)],
 		))
 	}
@@ -336,7 +336,7 @@ fn occlusion_expression(
 }
 
 fn decode_material_normal_expression(sample: besl::parser::Node<'static>) -> besl::parser::Node<'static> {
-	besl::parser::Node::call("decode_material_normal", vec![sample])
+	besl::parser::Node::call("decode_material_normal_f16", vec![sample])
 }
 
 fn channel_expression(value: besl::parser::Node<'static>, channel: BrdfChannel) -> besl::parser::Node<'static> {
@@ -401,12 +401,12 @@ fn expect_vector4(node: BrdfNodeId, value: BrdfValue) -> Result<[f32; 4], BrdfSh
 }
 
 fn scalar_expression(value: f32) -> besl::parser::Node<'static> {
-	besl::parser::Node::literal_expression(float_literal(value))
+	besl::parser::Node::call("f16", vec![besl::parser::Node::literal_expression(float_literal(value))])
 }
 
 fn vector3_expression(value: [f32; 3]) -> besl::parser::Node<'static> {
 	besl::parser::Node::call(
-		"vec3f",
+		"vec3f16",
 		vec![
 			scalar_expression(value[0]),
 			scalar_expression(value[1]),
@@ -417,7 +417,7 @@ fn vector3_expression(value: [f32; 3]) -> besl::parser::Node<'static> {
 
 fn vector4_expression(value: [f32; 4]) -> besl::parser::Node<'static> {
 	besl::parser::Node::call(
-		"vec4f",
+		"vec4f16",
 		vec![
 			scalar_expression(value[0]),
 			scalar_expression(value[1]),
@@ -476,7 +476,7 @@ impl std::error::Error for BrdfShaderGenerationError {}
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value};
+	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, f16, output_slot};
 
 	use super::*;
 	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};
@@ -505,10 +505,10 @@ mod tests {
 		let mut program = generate_solid_brdf_program(&material)
 			.expect("Failed to generate constant material BESL. The most likely cause is an invalid BRDF material graph.");
 		program.add(vec![
-			besl::parser::Node::output("albedo", "vec4f", 0),
-			besl::parser::Node::output("metalness", "f32", 1),
-			besl::parser::Node::output("roughness", "f32", 2),
-			besl::parser::Node::output("normal", "vec3f", 3),
+			besl::parser::Node::output("albedo", "vec4f16", 0),
+			besl::parser::Node::output("metalness", "f16", 1),
+			besl::parser::Node::output("roughness", "f16", 2),
+			besl::parser::Node::output("normal", "vec3f16", 3),
 		]);
 		let program = besl::lex(program)
 			.expect("Failed to lex constant material BESL. The most likely cause is an invalid generated material program.");
@@ -534,19 +534,19 @@ mod tests {
 
 		assert_eq!(
 			outputs[0].read("albedo").expect("Expected albedo output"),
-			Value::Vec4F([0.2, 0.3, 0.4, 0.9])
+			Value::Vec4F16([f16::from_f32(0.2), f16::from_f32(0.3), f16::from_f32(0.4), f16::from_f32(0.9)])
 		);
 		assert_eq!(
 			outputs[1].read("metalness").expect("Expected metalness output"),
-			Value::F32(0.7)
+			Value::F16(f16::from_f32(0.7))
 		);
 		assert_eq!(
 			outputs[2].read("roughness").expect("Expected roughness output"),
-			Value::F32(0.8)
+			Value::F16(f16::from_f32(0.8))
 		);
 		assert_eq!(
 			outputs[3].read("normal").expect("Expected normal output"),
-			Value::Vec3F([0.0, 0.0, 1.0])
+			Value::Vec3F16([f16::from_f32(0.0), f16::from_f32(0.0), f16::from_f32(1.0)])
 		);
 	}
 
@@ -607,12 +607,12 @@ mod tests {
 				return sample(emission_texture, vec2f(0.5, 0.5));
 			}
 
-			decode_material_normal: fn (encoded: vec4f) -> vec3f {
-				return vec3f(encoded.x, encoded.y, encoded.z);
+			decode_material_normal_f16: fn (encoded: vec4f16) -> vec3f16 {
+				return vec3f16(encoded.x, encoded.y, encoded.z);
 			}
 
-			scale_normal_xy: fn (normal: vec3f, scale: f32) -> vec3f {
-				return vec3f(normal.x * scale, normal.y * scale, normal.z);
+			scale_material_normal_xy_f16: fn (normal: vec3f16, scale: f16) -> vec3f16 {
+				return vec3f16(normal.x * scale, normal.y * scale, normal.z);
 			}
 			"#,
 		)
@@ -659,12 +659,12 @@ mod tests {
 		]);
 		program.add(helper_functions);
 		program.add(vec![
-			besl::parser::Node::output("albedo", "vec4f", 0),
-			besl::parser::Node::output("metalness", "f32", 1),
-			besl::parser::Node::output("roughness", "f32", 2),
-			besl::parser::Node::output("normal", "vec3f", 3),
-			besl::parser::Node::output("occlusion", "f32", 4),
-			besl::parser::Node::output("emission", "vec3f", 5),
+			besl::parser::Node::output("albedo", "vec4f16", 0),
+			besl::parser::Node::output("metalness", "f16", 1),
+			besl::parser::Node::output("roughness", "f16", 2),
+			besl::parser::Node::output("normal", "vec3f16", 3),
+			besl::parser::Node::output("occlusion", "f16", 4),
+			besl::parser::Node::output("emission", "vec3f16", 5),
 		]);
 		let program = besl::lex(program)
 			.expect("Failed to lex textured material BESL. The most likely cause is an invalid generated material program.");
@@ -721,27 +721,27 @@ mod tests {
 
 		assert_eq!(
 			outputs[0].read("albedo").expect("Expected albedo output"),
-			Value::Vec4F([0.2, 0.4, 0.6, 0.8])
+			Value::Vec4F16([f16::from_f32(0.2), f16::from_f32(0.4), f16::from_f32(0.6), f16::from_f32(0.8)])
 		);
 		assert_eq!(
 			outputs[1].read("metalness").expect("Expected metalness output"),
-			Value::F32(0.7)
+			Value::F16(f16::from_f32(0.7))
 		);
 		assert_eq!(
 			outputs[2].read("roughness").expect("Expected roughness output"),
-			Value::F32(0.35)
+			Value::F16(f16::from_f32(0.35))
 		);
 		assert_eq!(
 			outputs[3].read("normal").expect("Expected normal output"),
-			Value::Vec3F([0.05, 0.1, 0.97])
+			Value::Vec3F16([f16::from_f32(0.05), f16::from_f32(0.1), f16::from_f32(0.97)])
 		);
 		assert_eq!(
 			outputs[4].read("occlusion").expect("Expected occlusion output"),
-			Value::F32(0.45)
+			Value::F16(f16::from_f32(0.45))
 		);
 		assert_eq!(
 			outputs[5].read("emission").expect("Expected emission output"),
-			Value::Vec3F([0.8, 0.3, 0.1])
+			Value::Vec3F16([f16::from_f32(0.8), f16::from_f32(0.3), f16::from_f32(0.1)])
 		);
 	}
 
@@ -890,7 +890,7 @@ mod tests {
 
 		let normal = assert_call(
 			assignment_right(surface_assignment(&program, "normal")),
-			"decode_material_normal",
+			"decode_material_normal_f16",
 		);
 		assert_eq!(normal.len(), 1);
 		assert_member_expression(&normal[0], "material_texture_sample_2");
@@ -899,7 +899,7 @@ mod tests {
 		assert_member_expression(occlusion_source, "material_texture_sample_3");
 
 		let emission = assignment_right(surface_assignment(&program, "emission"));
-		let parameters = assert_call(emission, "vec3f");
+		let parameters = assert_call(emission, "vec3f16");
 		assert_eq!(parameters.len(), 3);
 		for (parameter, channel) in parameters.iter().zip(["x", "y", "z"]) {
 			let source = assert_accessor_channel(parameter, channel);
@@ -950,9 +950,12 @@ mod tests {
 			);
 		}
 
-		let normal_parameters = assert_call(assignment_right(surface_assignment(&program, "normal")), "scale_normal_xy");
+		let normal_parameters = assert_call(
+			assignment_right(surface_assignment(&program, "normal")),
+			"scale_material_normal_xy_f16",
+		);
 		assert_eq!(normal_parameters.len(), 2);
-		let decoded_parameters = assert_call(&normal_parameters[0], "decode_material_normal");
+		let decoded_parameters = assert_call(&normal_parameters[0], "decode_material_normal_f16");
 		assert_member_expression(&decoded_parameters[0], "material_texture_sample_0");
 	}
 
@@ -1159,8 +1162,10 @@ mod tests {
 			panic!("Expected texture sample local declaration");
 		};
 		assert_eq!(name.as_ref(), local_name);
-		assert!(matches!(r#type, besl::parser::TypeName::Named(name) if *name == "vec4f"));
-		assert_sample_call(right, "sample_material", texture_slot);
+		assert!(matches!(r#type, besl::parser::TypeName::Named(name) if *name == "vec4f16"));
+		let sample = assert_call(right, "vec4f16");
+		assert_eq!(sample.len(), 1);
+		assert_sample_call(&sample[0], "sample_material", texture_slot);
 	}
 
 	fn assert_call<'a>(node: &'a besl::parser::Node<'a>, expected_name: &str) -> &'a [besl::parser::Node<'a>] {
@@ -1212,14 +1217,16 @@ mod tests {
 
 	fn assert_vec4_call(node: &besl::parser::Node<'_>, expected: &[&str; 4]) {
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) = node.node() else {
-			panic!("Expected vec4f call");
+			panic!("Expected vec4f16 call");
 		};
-		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == "vec4f"));
+		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == "vec4f16"));
 		assert_eq!(parameters.len(), 4);
 
 		for (parameter, expected) in parameters.iter().zip(expected.iter()) {
+			let literal = assert_call(parameter, "f16");
+			assert_eq!(literal.len(), 1);
 			assert!(
-				matches!(parameter.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) if value == expected)
+				matches!(literal[0].node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) if value == expected)
 			);
 		}
 	}

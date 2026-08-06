@@ -155,6 +155,11 @@ impl Drop for TempShaderDir {
 	}
 }
 
+/// Returns Metal compiler flags that keep generated shader source available to Xcode GPU captures.
+fn metal_debug_info_arguments() -> [&'static str; 2] {
+	["-gline-tables-only", "-frecord-sources=yes"]
+}
+
 /// Compiles Metal Shading Language source into a Metal library binary.
 pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
 	if !cfg!(target_os = "macos") {
@@ -179,11 +184,10 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 	})?;
 
 	let metal_output = Command::new("xcrun")
+		.args(["-sdk", "macosx", "metal", "-c"])
+		// The temporary source file is removed after compilation. Preserve it with line tables so Xcode GPU captures can resolve generated BESL back to MSL.
+		.args(metal_debug_info_arguments())
 		.args([
-			"-sdk",
-			"macosx",
-			"metal",
-			"-c",
 			source_path
 				.to_str()
 				.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?,
@@ -305,7 +309,10 @@ pub use Compiler as MSLShaderCompiler;
 mod tests {
 	use utils::Extent;
 
-	use super::{format_tool_failure, metal_toolchain_missing, reflected_workgroup_extent, CompiledShaderBinding};
+	use super::{
+		format_tool_failure, metal_debug_info_arguments, metal_toolchain_missing, reflected_workgroup_extent,
+		CompiledShaderBinding,
+	};
 	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
 	use crate::shader::generator::ShaderGenerationSettings;
 
@@ -325,6 +332,11 @@ mod tests {
 			Some(extent)
 		);
 		assert_eq!(reflected_workgroup_extent(&ShaderGenerationSettings::fragment()), None);
+	}
+
+	#[test]
+	fn metal_compiler_embeds_source_and_line_information() {
+		assert_eq!(metal_debug_info_arguments(), ["-gline-tables-only", "-frecord-sources=yes"]);
 	}
 
 	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {

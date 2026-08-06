@@ -914,6 +914,15 @@ impl CommandBufferRecording<'_> {
 		encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>,
 		layout: &PipelineLayout,
 	) {
+		struct UsageBatch {
+			usage: mtl::MTLResourceUsage,
+			stages: mtl::MTLRenderStages,
+			resources: SmallVec<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>,
+		}
+
+		let mut batches = SmallVec::<[UsageBatch; 8]>::new();
+		let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
+
 		for resource in &layout.resources {
 			let slot = resource.descriptor.slot();
 			let Some((set_handle, _)) = self.descriptors_at_slot_with_owner(slot) else {
@@ -928,9 +937,19 @@ impl CommandBufferRecording<'_> {
 			let descriptors = self
 				.descriptors_at_slot(slot)
 				.expect("A Metal descriptor slot disappeared while its residency declaration was being recorded.");
-			let mut native_resources =
-				SmallVec::<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>::with_capacity(descriptors.len());
-			let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
+
+			let batch_index = batches.iter().position(|b| b.usage.0 == usage.0 && b.stages.0 == stages.0);
+			let batch = match batch_index {
+				Some(index) => &mut batches[index],
+				None => {
+					batches.push(UsageBatch {
+						usage,
+						stages,
+						resources: SmallVec::new(),
+					});
+					batches.last_mut().unwrap()
+				}
+			};
 
 			for descriptor in descriptors.values().copied() {
 				let native_resource = match descriptor {
@@ -968,14 +987,16 @@ impl CommandBufferRecording<'_> {
 					}
 					Descriptor::Sampler { .. } => continue,
 				};
-				native_resources.push(native_resource);
+				batch.resources.push(native_resource);
 			}
+		}
 
-			if !native_resources.is_empty() {
-				let resources = NonNull::new(native_resources.as_mut_ptr())
+		for batch in &batches {
+			if !batch.resources.is_empty() {
+				let resources = NonNull::new(batch.resources.as_ptr() as *mut _)
 					.expect("A non-empty Metal render residency list had a null pointer.");
 				unsafe {
-					encoder.useResources_count_usage_stages(resources, native_resources.len(), usage, stages);
+					encoder.useResources_count_usage_stages(resources, batch.resources.len(), batch.usage, batch.stages);
 				}
 			}
 		}
@@ -987,6 +1008,14 @@ impl CommandBufferRecording<'_> {
 		encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>,
 		layout: &PipelineLayout,
 	) {
+		struct UsageBatch {
+			usage: mtl::MTLResourceUsage,
+			resources: SmallVec<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>,
+		}
+
+		let mut batches = SmallVec::<[UsageBatch; 4]>::new();
+		let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
+
 		for resource in &layout.resources {
 			let slot = resource.descriptor.slot();
 			let Some((set_handle, _)) = self.descriptors_at_slot_with_owner(slot) else {
@@ -1000,9 +1029,18 @@ impl CommandBufferRecording<'_> {
 			let descriptors = self
 				.descriptors_at_slot(slot)
 				.expect("A Metal descriptor slot disappeared while its residency declaration was being recorded.");
-			let mut native_resources =
-				SmallVec::<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>::with_capacity(descriptors.len());
-			let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
+
+			let batch_index = batches.iter().position(|b| b.usage.0 == usage.0);
+			let batch = match batch_index {
+				Some(index) => &mut batches[index],
+				None => {
+					batches.push(UsageBatch {
+						usage,
+						resources: SmallVec::new(),
+					});
+					batches.last_mut().unwrap()
+				}
+			};
 
 			for descriptor in descriptors.values().copied() {
 				let native_resource = match descriptor {
@@ -1040,14 +1078,16 @@ impl CommandBufferRecording<'_> {
 					}
 					Descriptor::Sampler { .. } => continue,
 				};
-				native_resources.push(native_resource);
+				batch.resources.push(native_resource);
 			}
+		}
 
-			if !native_resources.is_empty() {
-				let resources = NonNull::new(native_resources.as_mut_ptr())
+		for batch in &batches {
+			if !batch.resources.is_empty() {
+				let resources = NonNull::new(batch.resources.as_ptr() as *mut _)
 					.expect("A non-empty Metal compute residency list had a null pointer.");
 				unsafe {
-					encoder.useResources_count_usage(resources, native_resources.len(), usage);
+					encoder.useResources_count_usage(resources, batch.resources.len(), batch.usage);
 				}
 			}
 		}

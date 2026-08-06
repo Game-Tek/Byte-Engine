@@ -45,9 +45,9 @@ pub enum ComputeBindingMode {
 /// Selects how BESL conservative 2x2 downsampling is implemented in MSL.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DownsampleStrategy {
-	/// Gather four texels and reduce them in shader code on Metal targets without sampler reduction.
+	/// Gather four texels and reduce them in shader code for Metal targets without sampler reduction.
 	ShaderGather,
-	/// Use the texture's min/max reduction sampler on targets that support it.
+	/// Use the texture's min/max reduction sampler. This is the default because engine depth-pyramid samplers require reduction support.
 	NativeSamplerReduction,
 }
 
@@ -124,15 +124,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
-			downsample_strategy: DownsampleStrategy::ShaderGather,
+			downsample_strategy: DownsampleStrategy::NativeSamplerReduction,
 		}
 	}
 
 	/// Selects the MSL implementation for `downsample_min` and `downsample_max`.
 	///
-	/// Keep the default gather path for older Apple GPUs. Select
-	/// [`DownsampleStrategy::NativeSamplerReduction`] only when the deployment target guarantees
-	/// hardware min/max sampler reduction and the bound sampler uses the matching reduction mode.
+	/// Select [`DownsampleStrategy::ShaderGather`] only for targets without hardware min/max sampler reduction.
+	/// The bound sampler must use the matching reduction mode.
 	pub fn downsample_strategy(mut self, strategy: DownsampleStrategy) -> Self {
 		self.downsample_strategy = strategy;
 		self
@@ -3838,7 +3837,7 @@ mod tests {
 	}
 
 	#[test]
-	fn conservative_downsampling_defaults_to_gather_and_keeps_a_native_sampler_path() {
+	fn conservative_downsampling_defaults_to_native_sampler_reduction_and_keeps_a_gather_fallback() {
 		let source = r#"
 			depth_texture: descriptor<Texture2D, 0, read>;
 			array_depth_texture: descriptor<Texture2DArray, 1, read>;
@@ -3858,11 +3857,11 @@ mod tests {
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
 		let fallback = Generator::new()
 			.minified(true)
+			.downsample_strategy(DownsampleStrategy::ShaderGather)
 			.generate(&settings, &main)
 			.expect("Expected gather fallback MSL");
 		let native = Generator::new()
 			.minified(true)
-			.downsample_strategy(DownsampleStrategy::NativeSamplerReduction)
 			.generate(&settings, &main)
 			.expect("Expected native sampler-reduction MSL");
 

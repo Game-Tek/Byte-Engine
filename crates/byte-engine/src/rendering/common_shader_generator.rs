@@ -461,7 +461,11 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		v1: vec3f,
 		v2: vec3f
 	) -> vec3f {
-		return v0 * interpolation.x + v1 * interpolation.y + v2 * interpolation.z;
+		return fma(
+			v0,
+			vec3f(interpolation.x, interpolation.x, interpolation.x),
+			fma(v1, vec3f(interpolation.y, interpolation.y, interpolation.y), v2 * interpolation.z)
+		);
 	}
 
 	interpolate_vec2f_with_deriv: fn (
@@ -470,7 +474,11 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		v1: vec2f,
 		v2: vec2f
 	) -> vec2f {
-		return v0 * interpolation.x + v1 * interpolation.y + v2 * interpolation.z;
+		return fma(
+			v0,
+			vec2f(interpolation.x, interpolation.x),
+			fma(v1, vec2f(interpolation.y, interpolation.y), v2 * interpolation.z)
+		);
 	}
 
 	unit_vector_from_xy: fn (v: vec2f) -> vec3f {

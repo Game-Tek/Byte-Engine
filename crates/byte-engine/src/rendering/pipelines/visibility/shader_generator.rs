@@ -464,15 +464,20 @@ decode_unorm16_vec2: fn (encoded: vec2u16) -> vec2f {
 
 const DECODE_OCTAHEDRAL_NORMAL_SOURCE: &str = r#"
 decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
-	let octahedral: vec2f = decode_unorm16_vec2(encoded) * 2.0 - vec2f(1.0, 1.0);
+	// Combine UNORM expansion and the [-1, 1] remap so each component needs one scale.
+	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) * 0.00003051804379339284
+		- vec2f(1.0, 1.0);
 	let normal_z: f32 = 1.0 - abs(octahedral.x) - abs(octahedral.y);
-	let fold: f32 = max(0.0 - normal_z, 0.0);
-	// `step` returns the positive direction at zero, matching the CPU encoder's fold convention.
-	return vec3f(
-		octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
-		octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
-		normal_z
-	);
+	if (normal_z < 0.0) {
+		let fold: f32 = 0.0 - normal_z;
+		// `step` returns the positive direction at zero, matching the CPU encoder's fold convention.
+		return vec3f(
+			octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
+			octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
+			normal_z
+		);
+	}
+	return vec3f(octahedral.x, octahedral.y, normal_z);
 }
 "#;
 
@@ -554,7 +559,6 @@ material_evaluation_prefix: fn () -> void {
 		vertex_normal2 = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
 	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
-	let view: View = views.views[0];
 	let model: mat4x3f = mesh.model;
 	let world_space_vertex_position0: vec3f = vec3f(0.0, 0.0, 0.0);
 	let world_space_vertex_position1: vec3f = vec3f(0.0, 0.0, 0.0);
@@ -569,12 +573,13 @@ material_evaluation_prefix: fn () -> void {
 	let triangle_raw_ddx: vec3f = vec3f(0.0, 0.0, 0.0);
 	let triangle_raw_ddy: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (setup_lane) {
+		let view_projection: mat4f = views.views[0].view_projection;
 		world_space_vertex_position0 = model * model_space_vertex_position0;
 		world_space_vertex_position1 = model * model_space_vertex_position1;
 		world_space_vertex_position2 = model * model_space_vertex_position2;
-		clip_space_vertex_position0 = view.view_projection * vec4f(world_space_vertex_position0.x, world_space_vertex_position0.y, world_space_vertex_position0.z, 1.0);
-		clip_space_vertex_position1 = view.view_projection * vec4f(world_space_vertex_position1.x, world_space_vertex_position1.y, world_space_vertex_position1.z, 1.0);
-		clip_space_vertex_position2 = view.view_projection * vec4f(world_space_vertex_position2.x, world_space_vertex_position2.y, world_space_vertex_position2.z, 1.0);
+		clip_space_vertex_position0 = view_projection * vec4f(world_space_vertex_position0.x, world_space_vertex_position0.y, world_space_vertex_position0.z, 1.0);
+		clip_space_vertex_position1 = view_projection * vec4f(world_space_vertex_position1.x, world_space_vertex_position1.y, world_space_vertex_position1.z, 1.0);
+		clip_space_vertex_position2 = view_projection * vec4f(world_space_vertex_position2.x, world_space_vertex_position2.y, world_space_vertex_position2.z, 1.0);
 		world_space_vertex_normal0 = normalize(model * vertex_normal0);
 		world_space_vertex_normal1 = normalize(model * vertex_normal1);
 		world_space_vertex_normal2 = normalize(model * vertex_normal2);
@@ -655,7 +660,7 @@ material_evaluation_prefix: fn () -> void {
 	let world_space_vertex_position: vec3f = position_numerator * perspective_w;
 	let world_space_vertex_normal: vec3f = normalize(normal_numerator * perspective_w);
 	let N: vec3f = world_space_vertex_normal;
-	let camera_position: vec3f = view.inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
+	let camera_position: vec3f = views.views[0].inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
 	let V: vec3f = normalize(camera_position - world_space_vertex_position);
 	let position_derivative_x: vec3f =
 		(position_numerator + position_numerator_dx * ndc_step_x) /
@@ -758,26 +763,24 @@ material_evaluation_suffix: fn () -> void {
 	let one_minus_fresnel_n_dot_v: vec3f16 = one_minus_f0 * (f16(1.0) - view_fresnel_factor);
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
-	let view_space_surface_position: vec3f = view.view * vec4f(
-		world_space_vertex_position.x,
-		world_space_vertex_position.y,
-		world_space_vertex_position.z,
-		1.0
-	);
 	let light_count: u32 = lighting_data.light_count;
-	// PCF rotation depends only on this pixel, so shadowed lights share one lazily generated value.
-	let shadow_rotation: vec2f = vec2f(0.0, 0.0);
-	let has_shadow_rotation: bool = false;
+	// Cone shadows have no hierarchy early-out, so they share one lazily generated PCF rotation.
+	let cone_shadow_rotation: vec2f16 = vec2f16(0.0, 0.0);
+	let has_cone_shadow_rotation: bool = false;
 
 	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
-		let light: Light = lighting_data.lights[light_index];
+		let light_type: u32 = lighting_data.lights[light_index].type;
 		let L: vec3f = vec3f(0.0, 0.0, 0.0);
 		let attenuation: f32 = 1.0;
-		let light_position: vec3f = vec3f(light.position.x, light.position.y, light.position.z);
-		if (light.type == 68) {
+		let light_position: vec3f = vec3f(
+			lighting_data.lights[light_index].position.x,
+			lighting_data.lights[light_index].position.y,
+			lighting_data.lights[light_index].position.z
+		);
+		if (light_type == 68) {
 			L = vec3f(0.0, 0.0, 0.0) - light_position;
 		}
-		if (light.type != 68) {
+		if (light_type != 68) {
 			let surface_to_light: vec3f = light_position - world_space_vertex_position;
 			let distance_squared: f32 = dot(surface_to_light, surface_to_light);
 			if (distance_squared <= 0.0) {
@@ -794,53 +797,71 @@ material_evaluation_suffix: fn () -> void {
 		}
 
 		let occlusion_factor: f16 = 1.0;
-		if (light.type == 68) {
-			if (light.shadow_views[0] != 0 && has_shadow_rotation == false) {
-				shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-				has_shadow_rotation = true;
-			}
-			occlusion_factor = f16(sample_shadow(
-				depth_shadow_map,
-				light,
-				shadow_rotation,
-				world_space_vertex_position,
-				view_space_surface_position,
-				world_space_vertex_normal,
-				L,
-				vec3f(0.0, 0.0, 0.0),
-				vec3f(0.0, 0.0, 0.0)
-			));
-			if (occlusion_factor == 0.0) {
-				continue;
+		if (light_type == 68) {
+			let view_space_surface_position: vec3f = views.views[0].view * vec4f(
+				world_space_vertex_position.x,
+				world_space_vertex_position.y,
+				world_space_vertex_position.z,
+				1.0
+			);
+			let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
+			if (shadow_view0 != 0) {
+				let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
+				let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
+				let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
+				occlusion_factor = f16(sample_directional_shadow(
+					depth_shadow_map,
+					shadow_view0,
+					shadow_view1,
+					shadow_view2,
+					shadow_view3,
+					world_space_vertex_position,
+					view_space_surface_position,
+					world_space_vertex_normal,
+					L
+				));
+				if (occlusion_factor == 0.0) {
+					continue;
+				}
 			}
 			attenuation = 1.0;
 		}
-		if (light.type != 68) {
-			if (light.type == 1) {
-			let cone_direction: vec3f16 = vec3f16(light.direction.x, light.direction.y, light.direction.z);
+		if (light_type != 68) {
+			if (light_type == 1) {
+			let cone_direction: vec3f16 = vec3f16(
+				lighting_data.lights[light_index].direction.x,
+				lighting_data.lights[light_index].direction.y,
+				lighting_data.lights[light_index].direction.z
+			);
 			let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
-			let cone_factor: f16 = f16(cone_attenuation(f32(cone_cosine), light.cone_cosines.x, light.cone_cosines.y));
+			let cone_factor: f16 = f16(cone_attenuation(
+				f32(cone_cosine),
+				lighting_data.lights[light_index].cone_cosines.x,
+				lighting_data.lights[light_index].cone_cosines.y
+			));
 			if (cone_factor <= 0.0) {
 				continue;
 			}
 			attenuation = attenuation * f32(cone_factor);
-			if (light.shadow_views[0] != 0 && has_shadow_rotation == false) {
-				shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-				has_shadow_rotation = true;
-			}
-			occlusion_factor = f16(sample_shadow(
-				cone_shadow_map,
-				light,
-				shadow_rotation,
-				world_space_vertex_position,
-				view_space_surface_position,
-				world_space_vertex_normal,
-				L,
-				position_derivative_x,
-				position_derivative_y
-			));
-			if (occlusion_factor == 0.0) {
-				continue;
+			let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+			if (shadow_view_index != 0) {
+				let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+				if (has_cone_shadow_rotation == false) {
+					cone_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
+					has_cone_shadow_rotation = true;
+				}
+				occlusion_factor = f16(sample_cone_shadow(
+					cone_shadow_map,
+					shadow_view_index,
+					shadow_layer,
+					cone_shadow_rotation,
+					world_space_vertex_position,
+					position_derivative_x,
+					position_derivative_y
+				));
+				if (occlusion_factor == 0.0) {
+					continue;
+				}
 			}
 			}
 		}
@@ -862,7 +883,11 @@ material_evaluation_suffix: fn () -> void {
 			* one_minus_fresnel_n_dot_v
 			* one_minus_metalness;
 		let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
-		let light_color: vec3f = vec3f(light.color.x, light.color.y, light.color.z);
+		let light_color: vec3f = vec3f(
+			lighting_data.lights[light_index].color.x,
+			lighting_data.lights[light_index].color.y,
+			lighting_data.lights[light_index].color.z
+		);
 		let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
 		diffuse = diffuse + vec3f(local_diffuse) * irradiance;
 		specular = specular + vec3f(local_specular) * irradiance;
@@ -981,10 +1006,7 @@ sample_shadow_tap: fn (
 		return 1.0;
 	}
 	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-	if (tap_surface_depth < closest_depth) {
-		return 0.0;
-	}
-	return 1.0;
+	return step(closest_depth, tap_surface_depth);
 }
 "#;
 
@@ -994,22 +1016,22 @@ sample_rotated_shadow_tap: fn (
 	shadow_uv: vec2f,
 	surface_depth: f32,
 	receiver_plane_depth_gradient: vec2f,
-	poisson_offset: vec2f,
-	rotation: vec2f,
-	texel_size: vec2f,
+	poisson_offset: vec2f16,
+	rotation: vec2f16,
+	texel_size: vec2f16,
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	let rotated_offset: vec2f = vec2f(
+	let rotated_offset: vec2f16 = vec2f16(
 		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
 		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
-	) * texel_size * 1.5;
+	) * texel_size * f16(1.5);
 	return sample_shadow_tap(
 		shadow_map,
 		shadow_uv,
 		surface_depth,
 		receiver_plane_depth_gradient,
-		rotated_offset,
+		vec2f(rotated_offset),
 		shadow_layer,
 		shadow_map_extent
 	);
@@ -1024,21 +1046,18 @@ sample_directional_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_texel_position: vec2f,
 	surface_depth: f32,
-	poisson_offset: vec2f,
-	rotation: vec2f,
+	poisson_offset: vec2f16,
+	rotation: vec2f16,
 	shadow_layer: u32
 ) -> f32 {
-	let rotated_offset: vec2f = vec2f(
+	let rotated_offset: vec2f16 = vec2f16(
 		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
 		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
-	) * 1.5;
-	let tap_position: vec2f = shadow_texel_position + rotated_offset;
+	) * f16(1.5);
+	let tap_position: vec2f = shadow_texel_position + vec2f(rotated_offset);
 	let shadow_texel: vec2u = vec2u(u32(tap_position.x), u32(tap_position.y));
 	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-	if (surface_depth < closest_depth) {
-		return 0.0;
-	}
-	return 1.0;
+	return step(closest_depth, surface_depth);
 }
 "#;
 
@@ -1056,25 +1075,21 @@ directional_shadow_area_is_fully_lit: fn (
 	}
 
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	let fine_level_extent: vec2u = texture_size(directional_shadow_depth_pyramid);
-	let footprint_min: vec2f = vec2f(
-		max(shadow_texel_position.x - 1.5, 0.0),
-		max(shadow_texel_position.y - 1.5, 0.0)
+	// One maximum-reduction sample reads the one, two, or four 4x4 cells touched by the footprint.
+	let fine_first_cell: vec2u = vec2u(
+		u32(max(shadow_texel_position.x - 1.5, 0.0)) / 4,
+		u32(max(shadow_texel_position.y - 1.5, 0.0)) / 4
 	);
-	let footprint_max: vec2f = vec2f(
-		min(shadow_texel_position.x + 1.5, f32(shadow_map_extent.x - 1)),
-		min(shadow_texel_position.y + 1.5, f32(shadow_map_extent.y - 1))
+	let fine_last_cell: vec2u = vec2u(
+		u32(min(shadow_texel_position.x + 1.5, f32(shadow_map_extent.x - 1))) / 4,
+		u32(min(shadow_texel_position.y + 1.5, f32(shadow_map_extent.y - 1))) / 4
 	);
-
-	// One maximum-reduction gather reads the one, two, or four 4x4 cells touched by the footprint.
-	let fine_first_cell: vec2u = vec2u(u32(footprint_min.x) / 4, u32(footprint_min.y) / 4);
-	let fine_last_cell: vec2u = vec2u(u32(footprint_max.x) / 4, u32(footprint_max.y) / 4);
 	let fine_layer_offset: u32 = shadow_layer * (shadow_map_extent.y / 4);
-	let fine_probe_texel: vec2f = vec2f(
+	// Four cascades packed at quarter resolution make the atlas width W/4 and height H.
+	let fine_probe_uv: vec2f = vec2f(
 		f32(fine_first_cell.x + fine_last_cell.x) + 1.0,
 		f32(fine_first_cell.y + fine_last_cell.y + fine_layer_offset + fine_layer_offset) + 1.0
-	) * 0.5;
-	let fine_probe_uv: vec2f = fine_probe_texel / vec2f(f32(fine_level_extent.x), f32(fine_level_extent.y));
+	) * 0.5 / vec2f(f32(shadow_map_extent.x) * 0.25, f32(shadow_map_extent.y));
 	let fine_maximum_depth: f32 = downsample_max(
 		directional_shadow_depth_pyramid,
 		fine_probe_uv,
@@ -1086,55 +1101,29 @@ directional_shadow_area_is_fully_lit: fn (
 
 // Cone maps use two positive Depth16Unorm steps as a reverse-Z comparison margin after receiver-plane correction.
 const SHADOW_ROTATION_SOURCE: &str = r#"
-compute_shadow_rotation: fn (world_space_position: vec3f) -> vec2f {
+compute_shadow_rotation: fn (world_space_position: vec3f) -> vec2f16 {
 	let rotation_noise: f32 = fract(
 		sin(dot(vec2f(world_space_position.x, world_space_position.z) + world_space_position.y, vec2f(12.9898, 78.233))) * 43758.5453
 	);
 	let rotation_angle: f32 = rotation_noise * 6.2831853;
-	return vec2f(cos(rotation_angle), sin(rotation_angle));
+	let rotation_sine_cosine: vec2f = sincos(rotation_angle);
+	return vec2f16(rotation_sine_cosine.y, rotation_sine_cosine.x);
 }
 "#;
 
-const SHADOW_SOURCE: &str = r#"
-sample_shadow: fn (
+const CONE_SHADOW_SOURCE: &str = r#"
+sample_cone_shadow: fn (
 	shadow_map: ArrayTexture2D,
-	light: Light,
-	pcf_rotation: vec2f,
+	shadow_view_index: u32,
+	shadow_layer: u32,
+	pcf_rotation: vec2f16,
 	world_space_position: vec3f,
-	view_space_position: vec3f,
-	surface_normal: vec3f,
-	surface_to_light_direction: vec3f,
 	world_space_position_derivative_x: vec3f,
 	world_space_position_derivative_y: vec3f
 ) -> f32 {
-	if (light.shadow_views[0] == 0) {
-		return 1.0;
-	}
-
-	let shadow_view_index: u32 = light.shadow_views[0];
-	let shadow_layer: u32 = light.shadow_layer;
-	let bias_scale: f32 = 1.0;
-	if (light.type == 68) {
-		let depth_value: f32 = abs(view_space_position.z);
-		// Descend only while the surface lies beyond a split. This avoids testing
-		// a sentinel cascade index after every successful near-cascade match.
-		let cascade_index: u32 = 0;
-		if (depth_value >= views.views[light.shadow_views[0]].far) {
-			cascade_index = 1;
-			if (depth_value >= views.views[light.shadow_views[1]].far) {
-				cascade_index = 2;
-				if (depth_value >= views.views[light.shadow_views[2]].far) {
-					cascade_index = 3;
-				}
-			}
-		}
-		shadow_view_index = light.shadow_views[cascade_index];
-		shadow_layer = cascade_index;
-		bias_scale = f32(cascade_index + 1);
-	}
-
-	let shadow_view: View = views.views[shadow_view_index];
-	let surface_light_clip_position: vec4f = shadow_view.view_projection * vec4f(
+	// Avoid materializing the full View record. Cone projection only needs this matrix.
+	let shadow_view_projection: mat4f = views.views[shadow_view_index].view_projection;
+	let surface_light_clip_position: vec4f = shadow_view_projection * vec4f(
 		world_space_position.x,
 		world_space_position.y,
 		world_space_position.z,
@@ -1149,33 +1138,97 @@ sample_shadow: fn (
 		surface_light_ndc_position.x * 0.5 + 0.5,
 		0.5 - surface_light_ndc_position.y * 0.5
 	);
-	let receiver_plane_depth_gradient: vec2f = vec2f(0.0, 0.0);
 	let surface_depth_bias: f32 = 2.0 / 65535.0;
-	if (light.type == 68) {
-		// Material evaluation passes a normalized world-space normal.
-		let normal_alignment: f32 = max(dot(surface_normal, surface_to_light_direction), 0.0);
-		let cascade_depth_range: f32 = max(shadow_view.far - shadow_view.near, 0.0001);
-		let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
-		let constant_bias: f32 = 0.00002 * bias_scale;
-		let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
-		surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
-	}
-	if (light.type == 1) {
-		receiver_plane_depth_gradient = shadow_receiver_plane_depth_gradient(
-			shadow_view.view_projection,
-			surface_light_clip_position,
-			surface_light_ndc_position,
-			world_space_position_derivative_x,
-			world_space_position_derivative_y
-		);
-	}
+	let receiver_plane_depth_gradient: vec2f = shadow_receiver_plane_depth_gradient(
+		shadow_view_projection,
+		surface_light_clip_position,
+		surface_light_ndc_position,
+		world_space_position_derivative_x,
+		world_space_position_derivative_y
+	);
 	let surface_depth: f32 = surface_light_ndc_position.z + surface_depth_bias;
 	if (surface_depth < 0.0 || surface_depth > 1.0) {
 		return 1.0;
 	}
 
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
-	if (light.type == 68 && directional_shadow_area_is_fully_lit(
+	// Cone shadows need per-tap border handling and receiver-plane depth correction.
+	let texel_size: vec2f16 = vec2f16(1.0, 1.0) / vec2f16(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let occlusion: f32 = 0.0;
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.645680, 0.493210), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	return occlusion / 8.0;
+}
+"#;
+
+const DIRECTIONAL_SHADOW_SOURCE: &str = r#"
+sample_directional_shadow: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_view0: u32,
+	shadow_view1: u32,
+	shadow_view2: u32,
+	shadow_view3: u32,
+	world_space_position: vec3f,
+	view_space_position: vec3f,
+	surface_normal: vec3f,
+	surface_to_light_direction: vec3f
+) -> f32 {
+	let depth_value: f32 = abs(view_space_position.z);
+	// Descend only while the surface lies beyond a split. This avoids testing
+	// a sentinel cascade index after every successful near-cascade match.
+	let cascade_index: u32 = 0;
+	let shadow_view_index: u32 = shadow_view0;
+	if (depth_value >= views.views[shadow_view0].far) {
+		cascade_index = 1;
+		shadow_view_index = shadow_view1;
+		if (depth_value >= views.views[shadow_view1].far) {
+			cascade_index = 2;
+			shadow_view_index = shadow_view2;
+			if (depth_value >= views.views[shadow_view2].far) {
+				cascade_index = 3;
+				shadow_view_index = shadow_view3;
+			}
+		}
+	}
+	let shadow_layer: u32 = cascade_index;
+	let shadow_view_projection: mat4f = views.views[shadow_view_index].view_projection;
+	let surface_light_clip_position: vec4f = shadow_view_projection * vec4f(
+		world_space_position.x,
+		world_space_position.y,
+		world_space_position.z,
+		1.0
+	);
+	let surface_light_ndc_position: vec3f = vec3f(
+		surface_light_clip_position.x,
+		surface_light_clip_position.y,
+		surface_light_clip_position.z
+	) / surface_light_clip_position.w;
+	let shadow_uv: vec2f = vec2f(
+		surface_light_ndc_position.x * 0.5 + 0.5,
+		0.5 - surface_light_ndc_position.y * 0.5
+	);
+	let bias_scale: f32 = f32(cascade_index + 1);
+	let normal_alignment: f32 = max(dot(surface_normal, surface_to_light_direction), 0.0);
+	let cascade_depth_range: f32 = max(
+		views.views[shadow_view_index].far - views.views[shadow_view_index].near,
+		0.0001
+	);
+	let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
+	let constant_bias: f32 = 0.00002 * bias_scale;
+	let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
+	let surface_depth: f32 = surface_light_ndc_position.z + max(slope_scaled_bias + cascade_range_bias, constant_bias);
+	if (surface_depth < 0.0 || surface_depth > 1.0) {
+		return 1.0;
+	}
+
+	let shadow_map_extent: vec2u = texture_size(shadow_map);
+	if (directional_shadow_area_is_fully_lit(
 		shadow_uv,
 		surface_depth,
 		shadow_layer,
@@ -1183,42 +1236,39 @@ sample_shadow: fn (
 	)) {
 		return 1.0;
 	}
-	if (light.type == 68) {
-		// Poisson offsets are expressed in texels. Keep the entire directional
-		// fallback in texel space. One footprint check removes bounds and clamp
-		// work from all eight taps for every interior shadow-map pixel.
-		let shadow_texel_position: vec2f = shadow_uv
-			* vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-		let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-		let footprint_is_inside: bool = shadow_texel_position.x >= 1.5
-			&& shadow_texel_position.y >= 1.5
-			&& shadow_texel_position.x <= shadow_map_extent_f.x - 1.5
-			&& shadow_texel_position.y <= shadow_map_extent_f.y - 1.5;
-		if (footprint_is_inside) {
-			let directional_occlusion: f32 = 0.0;
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.613392, 0.617481), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.170019, 0.0 - 0.040254), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.299417, 0.791925), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.645680, 0.493210), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.651784, 0.717887), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.421003, 0.027070), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, shadow_layer);
-			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, shadow_layer);
-			return directional_occlusion / 8.0;
-		}
+
+	// Only PCF fallbacks need a rotation; fully lit footprints return above without trigonometry.
+	let pcf_rotation: vec2f16 = compute_shadow_rotation(world_space_position);
+	// Poisson offsets are expressed in texels. Keep the interior fallback in texel space.
+	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let footprint_is_inside: bool = shadow_texel_position.x >= 1.5
+		&& shadow_texel_position.y >= 1.5
+		&& shadow_texel_position.x <= shadow_map_extent_f.x - 1.5
+		&& shadow_texel_position.y <= shadow_map_extent_f.y - 1.5;
+	if (footprint_is_inside) {
+		let occlusion: f32 = 0.0;
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.645680, 0.493210), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.421003, 0.027070), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, shadow_layer);
+		return occlusion / 8.0;
 	}
 
-	// Cone shadows and the rare directional map-edge fallback need per-tap border handling.
-	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	let texel_size: vec2f16 = vec2f16(1.0, 1.0) / vec2f16(shadow_map_extent_f);
 	let occlusion: f32 = 0.0;
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.613392, 0.617481), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.170019, 0.0 - 0.040254), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.299417, 0.791925), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.645680, 0.493210), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.651784, 0.717887), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.645680, 0.493210), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
 	return occlusion / 8.0;
 }
 "#;
@@ -1659,7 +1709,8 @@ impl VisibilityShaderScope {
 		let directional_shadow_area_is_fully_lit =
 			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit");
 		let compute_shadow_rotation = parse_besl_function(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation");
-		let sample_shadow = parse_besl_function(SHADOW_SOURCE, "sample_shadow");
+		let sample_cone_shadow = parse_besl_function(CONE_SHADOW_SOURCE, "sample_cone_shadow");
+		let sample_directional_shadow = parse_besl_function(DIRECTIONAL_SHADOW_SOURCE, "sample_directional_shadow");
 		let sample_environment_irradiance = parse_besl_function(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance");
 		let sample_environment_specular = parse_besl_function(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular");
 
@@ -1681,7 +1732,8 @@ impl VisibilityShaderScope {
 				sample_directional_shadow_tap,
 				directional_shadow_area_is_fully_lit,
 				compute_shadow_rotation,
-				sample_shadow,
+				sample_cone_shadow,
+				sample_directional_shadow,
 				meshes,
 				positions,
 				normals,
@@ -2446,8 +2498,15 @@ mod tests {
 		assert!(msl.contains("float3 normal_numerator_dx"));
 		assert!(msl.contains("half one_minus_metalness"));
 		assert!(msl.contains("half3 one_minus_f0"));
-		assert!(msl.contains("float2 compute_shadow_rotation(float3 world_space_position)"));
-		assert!(msl.contains("bool has_shadow_rotation"));
+		assert!(msl.contains("half2 compute_shadow_rotation(float3 world_space_position)"));
+		assert!(msl.contains("_besl_sincos(rotation_angle)"));
+		assert!(msl.contains("half2 pcf_rotation"));
+		assert!(msl.contains("float2 shadow_uv"));
+		assert!(msl.contains("float2 receiver_plane_depth_gradient"));
+		assert!(msl.contains("bool has_cone_shadow_rotation"));
+		assert!(!msl.contains("View view = resources.views->views[0];"));
+		assert!(msl.contains("uint light_type = resources.lighting_data->lights[light_index].type;"));
+		assert!(!msl.contains("Light light = resources.lighting_data->lights[light_index];"));
 		assert!(!msl.contains("normalize(float3(0.0, 0.0, 0.0) - light_position)"));
 		assert!(!msl.contains("normalize(light_direction)"));
 		assert!(!msl.contains("barycentric_numerator_origin"));
@@ -2458,7 +2517,26 @@ mod tests {
 		assert!(msl.contains("half geometry_light"));
 		assert!(msl.contains("half NdotH"));
 		assert!(msl.contains("half denominator_base"));
-		assert!(msl.contains("View shadow_view = resources.views->views[shadow_view_index];"));
+		assert!(msl.contains("float4x4 shadow_view_projection = resources.views->views[shadow_view_index].view_projection;"));
+		assert!(!msl.contains("View shadow_view = resources.views->views[shadow_view_index];"));
+		assert!(msl.contains("float sample_directional_shadow("));
+		assert!(msl.contains("float sample_cone_shadow("));
+		assert!(!msl.contains("float sample_shadow("));
+		let directional_shadow_start = msl
+			.find("float sample_directional_shadow(")
+			.expect("Expected directional shadow helper in generated MSL.");
+		let directional_shadow = &msl[directional_shadow_start..];
+		assert!(
+			directional_shadow
+				.find("directional_shadow_area_is_fully_lit(")
+				.expect("Expected directional depth probe in generated MSL.")
+				< directional_shadow
+					.find("compute_shadow_rotation(world_space_position)")
+					.expect("Expected deferred directional PCF rotation in generated MSL.")
+		);
+		assert!(msl
+			.contains("resources.directional_shadow_depth_pyramid.sample(resources.directional_shadow_depth_pyramid_sampler"));
+		assert!(!msl.contains("_besl_downsample_max(resources.directional_shadow_depth_pyramid"));
 		assert!(msl.contains(
 			"float sample_shadow_tap(texture2d_array<float> shadow_map, float2 shadow_uv, float surface_depth, float2 receiver_plane_depth_gradient, float2 offset, uint shadow_layer, uint2 shadow_map_extent)"
 		));
@@ -2541,7 +2619,7 @@ mod tests {
 		for source in [&glsl, &hlsl, &msl] {
 			assert!(source.contains("cone_cosines"));
 			assert!(source.contains("cone_attenuation"));
-			assert!(source.contains("light.type == 1"));
+			assert!(source.contains("light_type == 1"));
 			assert!(source.contains("_light_count_padding"));
 			assert!(source.contains("shadow_layer"));
 			assert!(source.contains("cone_shadow_map"));

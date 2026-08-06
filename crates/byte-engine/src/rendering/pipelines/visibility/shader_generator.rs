@@ -507,12 +507,7 @@ material_evaluation_prefix: fn () -> void {
 	let material: Material = materials.materials[push_constant.material_id];
 
 	let primitive_index_base: u32 = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3;
-	let primitive_index0: u32 = u32(primitive_indices.primitive_indices[primitive_index_base]);
-	let primitive_index1: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 1]);
-	let primitive_index2: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 2]);
-	let vertex_index0: u32 = compute_vertex_index(mesh, meshlet, primitive_index0);
-	let vertex_index1: u32 = compute_vertex_index(mesh, meshlet, primitive_index1);
-	let vertex_index2: u32 = compute_vertex_index(mesh, meshlet, primitive_index2);
+	let triangle_vertex_indices: u32[3] = compute_vertex_indices(mesh, meshlet, primitive_index_base);
 	let active_lanes: vec4u = subgroup_ballot(true);
 	let setup_leader: u32 = subgroup_ballot_find_lsb(active_lanes);
 	let leader_instance_index: u32 = subgroup_broadcast_u32(instance_index, setup_leader);
@@ -531,9 +526,9 @@ material_evaluation_prefix: fn () -> void {
 	let vertex_normal2: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
 
 	if (setup_lane && mesh.skinned_base_vertex_index != 4294967295) {
-		let skinned_vertex_index0: u32 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
-		let skinned_vertex_index1: u32 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
-		let skinned_vertex_index2: u32 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
+		let skinned_vertex_index0: u32 = mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index);
+		let skinned_vertex_index1: u32 = mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index);
+		let skinned_vertex_index2: u32 = mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index);
 		let skinned_vertex0: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index0];
 		let skinned_vertex1: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index1];
 		let skinned_vertex2: SkinnedVertex = skinned_vertices.vertices[skinned_vertex_index2];
@@ -545,12 +540,12 @@ material_evaluation_prefix: fn () -> void {
 		vertex_normal2 = skinned_vertex2.normal;
 	}
 	if (setup_lane && mesh.skinned_base_vertex_index == 4294967295) {
-		let position0: vec3f = vertex_positions.positions[vertex_index0];
-		let position1: vec3f = vertex_positions.positions[vertex_index1];
-		let position2: vec3f = vertex_positions.positions[vertex_index2];
-		let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index0]);
-		let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index1]);
-		let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[vertex_index2]);
+		let position0: vec3f = vertex_positions.positions[triangle_vertex_indices[0]];
+		let position1: vec3f = vertex_positions.positions[triangle_vertex_indices[1]];
+		let position2: vec3f = vertex_positions.positions[triangle_vertex_indices[2]];
+		let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[0]]);
+		let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[1]]);
+		let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[2]]);
 		model_space_vertex_position0 = vec4f(position0.x, position0.y, position0.z, 1.0);
 		model_space_vertex_position1 = vec4f(position1.x, position1.y, position1.z, 1.0);
 		model_space_vertex_position2 = vec4f(position2.x, position2.y, position2.z, 1.0);
@@ -570,6 +565,9 @@ material_evaluation_prefix: fn () -> void {
 	let world_space_vertex_normal0: vec3f = vec3f(0.0, 0.0, 1.0);
 	let world_space_vertex_normal1: vec3f = vec3f(0.0, 0.0, 1.0);
 	let world_space_vertex_normal2: vec3f = vec3f(0.0, 0.0, 1.0);
+	let triangle_inverse_w: vec3f = vec3f(0.0, 0.0, 0.0);
+	let triangle_raw_ddx: vec3f = vec3f(0.0, 0.0, 0.0);
+	let triangle_raw_ddy: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (setup_lane) {
 		world_space_vertex_position0 = model * model_space_vertex_position0;
 		world_space_vertex_position1 = model * model_space_vertex_position1;
@@ -595,64 +593,40 @@ material_evaluation_prefix: fn () -> void {
 	let normal_numerator_dx: vec3f = vec3f(0.0, 0.0, 0.0);
 	let normal_numerator_dy: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (setup_lane) {
-		let inverse_w: vec3f = vec3f(
-			1.0 / clip_space_vertex_position0.w,
-			1.0 / clip_space_vertex_position1.w,
-			1.0 / clip_space_vertex_position2.w
+		let triangle_interpolation: TriangleInterpolation = compute_triangle_interpolation(
+			clip_space_vertex_position0,
+			clip_space_vertex_position1,
+			clip_space_vertex_position2
 		);
-		let ndc0: vec2f = vec2f(
-			clip_space_vertex_position0.x * inverse_w.x,
-			clip_space_vertex_position0.y * inverse_w.x
-		);
-		let ndc1: vec2f = vec2f(
-			clip_space_vertex_position1.x * inverse_w.y,
-			clip_space_vertex_position1.y * inverse_w.y
-		);
-		let ndc2: vec2f = vec2f(
-			clip_space_vertex_position2.x * inverse_w.z,
-			clip_space_vertex_position2.y * inverse_w.z
-		);
-		let determinant: f32 =
-			(ndc2.x - ndc1.x) * (ndc0.y - ndc1.y) -
-			(ndc0.x - ndc1.x) * (ndc2.y - ndc1.y);
-		let inverse_determinant: f32 = 1.0 / determinant;
-		let raw_ddx: vec3f = vec3f(
-			ndc1.y - ndc2.y,
-			ndc2.y - ndc0.y,
-			ndc0.y - ndc1.y
-		) * inverse_determinant * inverse_w;
-		let raw_ddy: vec3f = vec3f(
-			ndc2.x - ndc1.x,
-			ndc0.x - ndc2.x,
-			ndc1.x - ndc0.x
-		) * inverse_determinant * inverse_w;
-
-		interpolation_origin = ndc0;
-		inverse_w_origin = inverse_w.x;
-		inverse_w_dx = dot(raw_ddx, vec3f(1.0, 1.0, 1.0));
-		inverse_w_dy = dot(raw_ddy, vec3f(1.0, 1.0, 1.0));
-		position_numerator_origin = world_space_vertex_position0 * inverse_w.x;
+		interpolation_origin = triangle_interpolation.origin;
+		triangle_inverse_w = triangle_interpolation.inverse_w;
+		triangle_raw_ddx = triangle_interpolation.raw_ddx;
+		triangle_raw_ddy = triangle_interpolation.raw_ddy;
+		inverse_w_origin = triangle_inverse_w.x;
+		inverse_w_dx = dot(triangle_raw_ddx, vec3f(1.0, 1.0, 1.0));
+		inverse_w_dy = dot(triangle_raw_ddy, vec3f(1.0, 1.0, 1.0));
+		position_numerator_origin = world_space_vertex_position0 * triangle_inverse_w.x;
 		position_numerator_dx = interpolate_vec3f_with_deriv(
-			raw_ddx,
+			triangle_raw_ddx,
 			world_space_vertex_position0,
 			world_space_vertex_position1,
 			world_space_vertex_position2
 		);
 		position_numerator_dy = interpolate_vec3f_with_deriv(
-			raw_ddy,
+			triangle_raw_ddy,
 			world_space_vertex_position0,
 			world_space_vertex_position1,
 			world_space_vertex_position2
 		);
-		normal_numerator_origin = world_space_vertex_normal0 * inverse_w.x;
+		normal_numerator_origin = world_space_vertex_normal0 * triangle_inverse_w.x;
 		normal_numerator_dx = interpolate_vec3f_with_deriv(
-			raw_ddx,
+			triangle_raw_ddx,
 			world_space_vertex_normal0,
 			world_space_vertex_normal1,
 			world_space_vertex_normal2
 		);
 		normal_numerator_dy = interpolate_vec3f_with_deriv(
-			raw_ddy,
+			triangle_raw_ddy,
 			world_space_vertex_normal0,
 			world_space_vertex_normal1,
 			world_space_vertex_normal2
@@ -699,39 +673,12 @@ material_evaluation_uv: fn () -> void {
 	let uv_numerator_dx: vec2f = vec2f(0.0, 0.0);
 	let uv_numerator_dy: vec2f = vec2f(0.0, 0.0);
 	if (setup_lane) {
-		let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
-		let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
-		let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
-		let inverse_w: vec3f = vec3f(
-			1.0 / clip_space_vertex_position0.w,
-			1.0 / clip_space_vertex_position1.w,
-			1.0 / clip_space_vertex_position2.w
-		);
-		let ndc1: vec2f = vec2f(
-			clip_space_vertex_position1.x * inverse_w.y,
-			clip_space_vertex_position1.y * inverse_w.y
-		);
-		let ndc2: vec2f = vec2f(
-			clip_space_vertex_position2.x * inverse_w.z,
-			clip_space_vertex_position2.y * inverse_w.z
-		);
-		let determinant: f32 =
-			(ndc2.x - ndc1.x) * (interpolation_origin.y - ndc1.y) -
-			(interpolation_origin.x - ndc1.x) * (ndc2.y - ndc1.y);
-		let inverse_determinant: f32 = 1.0 / determinant;
-		let raw_ddx: vec3f = vec3f(
-			ndc1.y - ndc2.y,
-			ndc2.y - interpolation_origin.y,
-			interpolation_origin.y - ndc1.y
-		) * inverse_determinant * inverse_w;
-		let raw_ddy: vec3f = vec3f(
-			ndc2.x - ndc1.x,
-			interpolation_origin.x - ndc2.x,
-			ndc1.x - interpolation_origin.x
-		) * inverse_determinant * inverse_w;
-		uv_numerator_origin = vertex_uv0 * inverse_w.x;
-		uv_numerator_dx = interpolate_vec2f_with_deriv(raw_ddx, vertex_uv0, vertex_uv1, vertex_uv2);
-		uv_numerator_dy = interpolate_vec2f_with_deriv(raw_ddy, vertex_uv0, vertex_uv1, vertex_uv2);
+		let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[0]]);
+		let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[1]]);
+		let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[2]]);
+		uv_numerator_origin = vertex_uv0 * triangle_inverse_w.x;
+		uv_numerator_dx = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv0, vertex_uv1, vertex_uv2);
+		uv_numerator_dy = interpolate_vec2f_with_deriv(triangle_raw_ddy, vertex_uv0, vertex_uv1, vertex_uv2);
 	}
 	if (share_triangle_setup) {
 		uv_numerator_origin = vec2f(subgroup_broadcast_f32(uv_numerator_origin.x, setup_leader), subgroup_broadcast_f32(uv_numerator_origin.y, setup_leader));
@@ -1378,6 +1325,15 @@ impl VisibilityShaderScope {
 			"SkinnedVertex",
 			vec![Node::member("position", "vec4f"), Node::member("normal", "vec4f")],
 		);
+		let triangle_interpolation_struct = Node::r#struct(
+			"TriangleInterpolation",
+			vec![
+				Node::member("origin", "vec2f"),
+				Node::member("inverse_w", "vec3f"),
+				Node::member("raw_ddx", "vec3f"),
+				Node::member("raw_ddy", "vec3f"),
+			],
+		);
 		let view_struct = Node::r#struct(
 			"View",
 			vec![
@@ -1544,26 +1500,68 @@ impl VisibilityShaderScope {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1039, true, false);
 		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1040, true, false);
 
-		let compute_vertex_index = {
-			let mut root = besl::parse(
-				r#"
-				compute_vertex_index: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> u32 {
-					let relative_index: u16 = vertex_indices.vertex_indices[
-						mesh.base_primitive_index + meshlet.primitive_offset + primitive_index
-					];
-					return mesh.base_vertex_index + u16_to_u32(relative_index);
-				}
-				"#,
-			)
-			.expect("Expected compute_vertex_index source to parse");
-
-			match root.node_mut() {
-				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
-				_ => panic!(
-					"Expected compute_vertex_index source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
-				),
+		// Resolve all three triangle vertices together so mesh and meshlet offsets are computed once.
+		let compute_vertex_indices = parse_besl_function(
+			r#"
+			compute_vertex_indices: fn (mesh: Mesh, meshlet: Meshlet, primitive_index_base: u32) -> u32[3] {
+				let vertex_index_base: u32 = mesh.base_vertex_index;
+				let relative_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
+				let primitive_index0: u32 = u32(primitive_indices.primitive_indices[primitive_index_base]);
+				let primitive_index1: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 1]);
+				let primitive_index2: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 2]);
+				return u32[3](
+					vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index0]),
+					vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index1]),
+					vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index2])
+				);
 			}
-		};
+			"#,
+			"compute_vertex_indices",
+		);
+		// Share the clip-space basis between geometry and optional UV interpolation.
+		let compute_triangle_interpolation = parse_besl_function(
+			r#"
+			compute_triangle_interpolation: fn (
+				clip_position0: vec4f,
+				clip_position1: vec4f,
+				clip_position2: vec4f
+			) -> TriangleInterpolation {
+				let inverse_w: vec3f = vec3f(
+					1.0 / clip_position0.w,
+					1.0 / clip_position1.w,
+					1.0 / clip_position2.w
+				);
+				let origin: vec2f = vec2f(
+					clip_position0.x * inverse_w.x,
+					clip_position0.y * inverse_w.x
+				);
+				let ndc1: vec2f = vec2f(
+					clip_position1.x * inverse_w.y,
+					clip_position1.y * inverse_w.y
+				);
+				let ndc2: vec2f = vec2f(
+					clip_position2.x * inverse_w.z,
+					clip_position2.y * inverse_w.z
+				);
+				let determinant: f32 =
+					(ndc2.x - ndc1.x) * (origin.y - ndc1.y) -
+					(origin.x - ndc1.x) * (ndc2.y - ndc1.y);
+				let inverse_determinant: f32 = 1.0 / determinant;
+				let raw_ddx: vec3f = vec3f(
+					ndc1.y - ndc2.y,
+					ndc2.y - origin.y,
+					origin.y - ndc1.y
+				) * inverse_determinant * inverse_w;
+				let raw_ddy: vec3f = vec3f(
+					ndc2.x - ndc1.x,
+					origin.x - ndc2.x,
+					ndc1.x - origin.x
+				) * inverse_determinant * inverse_w;
+				return TriangleInterpolation(origin, inverse_w, raw_ddx, raw_ddy);
+			}
+			"#,
+			"compute_triangle_interpolation",
+		);
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
 		let decode_unorm16_vec2 = parse_besl_function(DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2");
 		let decode_octahedral_normal = parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal");
@@ -1651,6 +1649,7 @@ impl VisibilityShaderScope {
 				views_binding,
 				mesh_struct,
 				skinned_vertex_struct,
+				triangle_interpolation_struct,
 				meshlet_struct,
 				light_struct,
 				material_struct,
@@ -1681,7 +1680,8 @@ impl VisibilityShaderScope {
 				decode_unorm16_vec2,
 				decode_octahedral_normal,
 				cone_attenuation,
-				compute_vertex_index,
+				compute_vertex_indices,
+				compute_triangle_interpolation,
 				set2_binding0,
 				set2_binding4,
 				set2_binding5,
@@ -1945,13 +1945,38 @@ mod tests {
 			.find("mesh.skinned_base_vertex_index")
 			.expect("Generated material shader should select static or skinned geometry.");
 		let static_position_load = source
-			.find("vertex_positions->positions[vertex_index0]")
+			.find("vertex_positions->positions[triangle_vertex_indices[0]]")
 			.expect("Generated material shader should retain the static geometry path.");
 		let static_normal_load = source
-			.find("vertex_normals->normals[vertex_index0]")
+			.find("vertex_normals->normals[triangle_vertex_indices[0]]")
 			.expect("Generated material shader should retain the static normal path.");
 		assert!(selection < static_position_load);
 		assert!(selection < static_normal_load);
+	}
+
+	/// Verifies material reconstruction resolves one triangle's three vertices from shared meshlet state.
+	#[test]
+	fn material_vertex_indices_are_batched() {
+		let material = material_metadata! { "variables": [] };
+		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
+
+		assert!(source.contains("uint3 compute_vertex_indices("));
+		assert!(source.contains("uint3 triangle_vertex_indices = compute_vertex_indices("));
+		assert!(!source.contains("compute_vertex_index("));
+		assert!(!source.contains("uint vertex_index0"));
+	}
+
+	/// Verifies UV reconstruction reuses the clip-space basis that position and normal interpolation already computes.
+	#[test]
+	fn material_uv_reuses_triangle_interpolation_basis() {
+		let material = material_metadata! {
+			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
+		};
+		let source = material_msl("main: fn () -> void { albedo = sample_material(base_color); }", &material);
+
+		assert!(source.contains("TriangleInterpolation compute_triangle_interpolation("));
+		assert!(source.contains("triangle_raw_ddx"));
+		assert_eq!(source.matches("float inverse_determinant").count(), 1);
 	}
 
 	/// Verifies generated material reconstruction includes only the UV and tangent work required by the material body.

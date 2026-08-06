@@ -329,6 +329,22 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 	) || supports_atomic_u32 && name == "atomicu32"
 }
 
+/// Returns the vector that carries a short scalar array through backends that cannot return native arrays.
+pub(crate) fn scalar_array_vector_type(source: &str) -> Option<&'static str> {
+	match source {
+		"f32[2]" => Some("vec2f"),
+		"f32[3]" => Some("vec3f"),
+		"f32[4]" => Some("vec4f"),
+		"u16[2]" => Some("vec2u16"),
+		"u16[3]" => Some("vec3u16"),
+		"u16[4]" => Some("vec4u16"),
+		"u32[2]" => Some("vec2u"),
+		"u32[3]" => Some("vec3u"),
+		"u32[4]" => Some("vec4u"),
+		_ => None,
+	}
+}
+
 impl Settings {
 	fn normalize_local_size(extent: Extent) -> Extent {
 		Extent::new(extent.width().max(1), extent.height().max(1), extent.depth().max(1))
@@ -593,11 +609,9 @@ pub(crate) trait NodeEmitter {
 	}
 
 	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
-		string.push_str(&format!(
-			"{} {}",
-			Self::type_from_besl(r#type.borrow().get_name().unwrap()),
-			name
-		));
+		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+		string.push(' ');
+		string.push_str(name);
 	}
 
 	/// Gives a backend the opportunity to replace expression syntax before portable lowering.
@@ -746,7 +760,9 @@ pub(crate) trait NodeEmitter {
 	/// Emits a type name with optional array dimension suffix, delegating type mapping to
 	/// [`Self::type_from_besl`].
 	fn emit_type_name(string: &mut String, source: &str) {
-		if let Some((element_type, count)) = source.split_once('[') {
+		if let Some(vector_type) = scalar_array_vector_type(source) {
+			string.push_str(Self::type_from_besl(vector_type));
+		} else if let Some((element_type, count)) = source.split_once('[') {
 			string.push_str(Self::type_from_besl(element_type));
 			string.push('[');
 			string.push_str(count.trim_end_matches(']'));

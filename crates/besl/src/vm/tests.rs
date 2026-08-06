@@ -745,6 +745,42 @@ fn executable_program_calls_function_and_returns_vec3f() {
 }
 
 #[test]
+fn executable_program_calls_function_and_returns_scalar_array() {
+	let script = r#"
+	mirror_indices: fn (indices: u32[3]) -> u32[3] {
+		return indices;
+	}
+
+	main: fn () -> void {
+		let indices: u32[3] = mirror_indices(u32[3](4, 8, 15));
+		buff.value = indices[1];
+	}
+	"#;
+
+	let mut root = Node::root();
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("value", u32_type).into()],
+			},
+			6,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(6);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read("value").expect("Expected selected array element"), Value::U32(8));
+}
+
+#[test]
 fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 	let script = r#"
 	main: fn () -> void {

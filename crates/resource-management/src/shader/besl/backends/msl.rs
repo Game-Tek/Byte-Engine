@@ -2401,7 +2401,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		string.push_str(Self::translate_type(return_type.borrow().get_name().unwrap()));
+		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push(' ');
 		string.push_str(name);
 		string.push('(');
@@ -2555,6 +2555,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
 			"vec2u16" => "ushort2",
+			"vec3u16" => "ushort3",
 			"vec4u16" => "ushort4",
 			"vec3u" => "uint3",
 			"vec4u" => "uint4",
@@ -3202,7 +3203,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("constant ");
 				let type_name = r#type.borrow().get_name().unwrap().to_string();
-				if let Some((element_type, count)) = type_name.split_once('[') {
+				let short_scalar_array = crate::shader::generator::scalar_array_vector_type(&type_name);
+				if let Some(vector_type) = short_scalar_array {
+					string.push_str(Self::translate_type(vector_type));
+					string.push(' ');
+					string.push_str(name);
+				} else if let Some((element_type, count)) = type_name.split_once('[') {
 					string.push_str(Self::translate_type(element_type));
 					string.push(' ');
 					string.push_str(name);
@@ -3219,7 +3225,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					parameters, function, ..
 				}) = value.borrow().node()
 				{
-					if function.borrow().get_name() == Some(type_name.as_str()) {
+					if short_scalar_array.is_none() && function.borrow().get_name() == Some(type_name.as_str()) {
 						string.push('{');
 						self.emit_call_arguments(string, parameters);
 						string.push('}');
@@ -5352,8 +5358,52 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "constant float WEIGHTS[3] = {0.5,0.25,0.125};");
+		assert_string_contains!(shader, "constant float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
+	}
+
+	#[test]
+	fn short_scalar_arrays_lower_to_msl_vectors() {
+		let script = r#"
+		scalar_f32: fn () -> f32[3] {
+			return f32[3](0.5, 0.25, 0.125);
+		}
+		scalar_u16: fn () -> u16[3] {
+			return u16[3](1, 2, 3);
+		}
+		scalar_u32: fn () -> u32[3] {
+			return u32[3](4, 5, 6);
+		}
+		mirror_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}
+		main: fn () -> void {
+			let floats: f32[3] = scalar_f32();
+			let shorts: u16[3] = scalar_u16();
+			let indices: u32[3] = mirror_indices(scalar_u32());
+			let sum: f32 = floats[1] + f32(shorts[1]) + f32(indices[1]);
+			sum;
+		}
+		"#;
+		let root = besl::compile_to_besl(script, None).expect("Expected scalar-array shader source to lex");
+		let main = root.get_main().expect("Expected scalar-array main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected scalar arrays to lower to MSL vectors");
+
+		assert_string_contains!(shader, "float3 scalar_f32()");
+		assert_string_contains!(shader, "ushort3 scalar_u16()");
+		assert_string_contains!(shader, "uint3 scalar_u32()");
+		assert_string_contains!(shader, "uint3 mirror_indices(uint3 indices)");
+		assert_string_contains!(shader, "float3 floats=scalar_f32();");
+		assert_string_contains!(shader, "ushort3 shorts=scalar_u16();");
+		assert_string_contains!(shader, "uint3 indices=mirror_indices(scalar_u32());");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-short-scalar-arrays")
+			.expect("Expected vector-backed scalar arrays to compile as MSL");
 	}
 
 	#[test]

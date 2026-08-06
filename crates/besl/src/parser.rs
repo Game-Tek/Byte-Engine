@@ -28,6 +28,12 @@ pub enum TypeName<'a> {
 	Array { element: Box<TypeName<'a>>, count: u32 },
 }
 
+impl<'a> From<&'a str> for TypeName<'a> {
+	fn from(name: &'a str) -> Self {
+		Self::Named(name)
+	}
+}
+
 impl std::fmt::Display for TypeName<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
@@ -104,7 +110,12 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn function(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str, statements: Vec<Node<'a>>) -> Node<'a> {
+	pub fn function(
+		name: &'a str,
+		params: Vec<Node<'a>>,
+		return_type: impl Into<TypeName<'a>>,
+		statements: Vec<Node<'a>>,
+	) -> Node<'a> {
 		make_function(name, params, return_type, statements)
 	}
 
@@ -423,9 +434,12 @@ impl<'a> Node<'a> {
 		Node { node: Nodes::Null }
 	}
 
-	pub fn parameter(name: &'a str, r#type: &'a str) -> Node<'a> {
+	pub fn parameter(name: &'a str, r#type: impl Into<TypeName<'a>>) -> Node<'a> {
 		Node {
-			node: Nodes::Parameter { name, r#type },
+			node: Nodes::Parameter {
+				name,
+				r#type: r#type.into(),
+			},
 		}
 	}
 
@@ -544,7 +558,7 @@ pub enum Nodes<'a> {
 	Function {
 		name: &'a str,
 		params: Vec<Node<'a>>,
-		return_type: &'a str,
+		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
 	},
 	Conditional {
@@ -640,7 +654,7 @@ pub enum Nodes<'a> {
 	},
 	Parameter {
 		name: &'a str,
-		r#type: &'a str,
+		r#type: TypeName<'a>,
 	},
 	/// A named module-level value known at compile time.
 	Const {
@@ -762,12 +776,17 @@ fn make_struct<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
 	}
 }
 
-fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str, statements: Vec<Node<'a>>) -> Node<'a> {
+fn make_function<'a>(
+	name: &'a str,
+	params: Vec<Node<'a>>,
+	return_type: impl Into<TypeName<'a>>,
+	statements: Vec<Node<'a>>,
+) -> Node<'a> {
 	Node {
 		node: Nodes::Function {
 			name,
 			params,
-			return_type,
+			return_type: return_type.into(),
 			statements,
 		},
 	}
@@ -1953,7 +1972,9 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 			},
 			_ => e,
 		})?;
+		let (param_type, next_iterator) = parse_type_name(iterator, param_type)?;
 		params.push(Node::parameter(param_name, param_type));
+		iterator = next_iterator;
 
 		if **iterator
 			.clone()
@@ -1973,6 +1994,7 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 		},
 		_ => e,
 	})?;
+	let (return_type, mut iterator) = parse_type_name(iterator, return_type)?;
 
 	iterator.next_str("{").map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
@@ -2415,7 +2437,7 @@ Light: struct {
 		{
 			assert_eq!(*name, "main");
 			assert_eq!(params.len(), 0);
-			assert_eq!(*return_type, "void");
+			assert_eq!(*return_type, TypeName::Named("void"));
 			assert_eq!(statements.len(), 2);
 
 			let statement = &statements[0];
@@ -2497,12 +2519,12 @@ main: fn () -> void {
 		{
 			assert_eq!(*name, "add");
 			assert_eq!(params.len(), 2);
-			assert_eq!(*return_type, "f32");
+			assert_eq!(*return_type, TypeName::Named("f32"));
 			assert_eq!(statements.len(), 1);
 
 			if let Nodes::Parameter { name, r#type } = &params[0].node {
 				assert_eq!(*name, "lhs");
-				assert_eq!(*r#type, "f32");
+				assert_eq!(*r#type, TypeName::Named("f32"));
 			} else {
 				panic!("Expected parameter");
 			}
@@ -2520,6 +2542,38 @@ main: fn () -> void {
 		} else {
 			panic!("Expected function");
 		}
+	}
+
+	#[test]
+	fn parse_function_array_signature() {
+		let source = "
+		copy_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}";
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let function = &node["copy_indices"];
+		let Nodes::Function { params, return_type, .. } = &function.node else {
+			panic!("Expected function");
+		};
+		assert_eq!(
+			*return_type,
+			TypeName::Array {
+				element: Box::new(TypeName::Named("u32")),
+				count: 3,
+			}
+		);
+		let Nodes::Parameter { r#type, .. } = &params[0].node else {
+			panic!("Expected parameter");
+		};
+		assert_eq!(
+			*r#type,
+			TypeName::Array {
+				element: Box::new(TypeName::Named("u32")),
+				count: 3,
+			}
+		);
 	}
 
 	#[test]
@@ -2545,7 +2599,7 @@ main: fn () -> void {
 		{
 			assert_eq!(*name, "main");
 			assert_eq!(statements.len(), 2);
-			assert_eq!(*return_type, "void");
+			assert_eq!(*return_type, TypeName::Named("void"));
 			assert_eq!(params.len(), 0);
 
 			assert_eq!(statements.len(), 2);

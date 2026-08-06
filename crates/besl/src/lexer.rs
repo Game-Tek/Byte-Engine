@@ -1985,7 +1985,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			this
 		}
 		parser::Nodes::Parameter { name, r#type } => {
-			let t = resolve_type(&chain, r#type)?;
+			let t = resolve_type_name(&chain, r#type)?;
 
 			let this = Node::new(Nodes::Parameter {
 				name: name.to_string(),
@@ -2047,7 +2047,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			params,
 			..
 		} => {
-			let t = resolve_type(&chain, return_type)?;
+			let t = resolve_type_name(&chain, return_type)?;
 
 			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
 

@@ -85,6 +85,16 @@ mod_by_16: fn (x: i32) -> i32 {
 }
 ```
 
+You can pass, return, and index short scalar arrays with two to four elements.
+Use `f32`, `u16`, or `u32` elements. BESL lowers these values to native vectors on
+backends that cannot return arrays directly.
+
+```rust
+triangle_indices: fn () -> u32[3] {
+	return u32[3](4, 8, 15);
+}
+```
+
 The `main` function is the stage entry point after render-model transformation.
 
 ```rust

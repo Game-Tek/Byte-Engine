@@ -184,6 +184,7 @@ impl Generator {
 			"vec2u" => "uvec2",
 			"vec2i" => "ivec2",
 			"vec2u16" => "u16vec2",
+			"vec3u16" => "u16vec3",
 			"vec4u16" => "u16vec4",
 			"vec3u" => "uvec3",
 			"vec4u" => "uvec4",
@@ -1480,8 +1481,48 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "const float[3] WEIGHTS = float[3](0.5,0.25,0.125);");
+		assert_string_contains!(shader, "const vec3 WEIGHTS = vec3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
+	}
+
+	#[test]
+	fn short_scalar_arrays_lower_to_glsl_vectors() {
+		let script = r#"
+		scalar_f32: fn () -> f32[3] {
+			return f32[3](0.5, 0.25, 0.125);
+		}
+		scalar_u16: fn () -> u16[3] {
+			return u16[3](1, 2, 3);
+		}
+		scalar_u32: fn () -> u32[3] {
+			return u32[3](4, 5, 6);
+		}
+		mirror_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}
+		main: fn () -> void {
+			let floats: f32[3] = scalar_f32();
+			let shorts: u16[3] = scalar_u16();
+			let indices: u32[3] = mirror_indices(scalar_u32());
+			let sum: f32 = floats[1] + f32(shorts[1]) + f32(indices[1]);
+			sum;
+		}
+		"#;
+		let root = besl::compile_to_besl(script, None).expect("Expected scalar-array shader source to lex");
+		let main = root.get_main().expect("Expected scalar-array main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected scalar arrays to lower to GLSL vectors");
+
+		assert_string_contains!(shader, "vec3 scalar_f32()");
+		assert_string_contains!(shader, "u16vec3 scalar_u16()");
+		assert_string_contains!(shader, "uvec3 scalar_u32()");
+		assert_string_contains!(shader, "uvec3 mirror_indices(uvec3 indices)");
+		assert_string_contains!(shader, "vec3 floats=scalar_f32();");
+		assert_string_contains!(shader, "u16vec3 shorts=scalar_u16();");
+		assert_string_contains!(shader, "uvec3 indices=mirror_indices(scalar_u32());");
 	}
 
 	#[test]

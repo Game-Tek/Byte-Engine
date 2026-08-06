@@ -594,7 +594,13 @@ impl Generator {
 		let type_node = r#type.borrow();
 		let type_name = type_node.get_name().unwrap();
 		string.push_str("static const ");
-		if let Some((element_type, count)) = Self::hlsl_array_type(type_name) {
+		if let Some(vector_type) = crate::shader::generator::scalar_array_vector_type(type_name) {
+			string.push_str(Self::translate_type(vector_type));
+			string.push(' ');
+			string.push_str(name);
+			string.push_str(" = ");
+			self.emit_node_string(string, value);
+		} else if let Some((element_type, count)) = Self::hlsl_array_type(type_name) {
 			string.push_str(Self::translate_type(element_type));
 			string.push(' ');
 			string.push_str(name);
@@ -1407,6 +1413,7 @@ impl Generator {
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
 			"vec2u16" => "uint16_t2",
+			"vec3u16" => "uint16_t3",
 			"vec4u16" => "uint16_t4",
 			"vec3u" => "uint3",
 			"vec4u" => "uint4",
@@ -3903,10 +3910,49 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "static const float WEIGHTS[3] = {0.5,0.25,0.125};");
+		assert_string_contains!(shader, "static const float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
-		assert_string_does_not_contain!(shader, "float[3] WEIGHTS");
-		assert_string_does_not_contain!(shader, "float[3](");
+		assert_string_does_not_contain!(shader, "WEIGHTS[3]");
+	}
+
+	#[test]
+	fn short_scalar_arrays_lower_to_hlsl_vectors() {
+		let script = r#"
+		scalar_f32: fn () -> f32[3] {
+			return f32[3](0.5, 0.25, 0.125);
+		}
+		scalar_u16: fn () -> u16[3] {
+			return u16[3](1, 2, 3);
+		}
+		scalar_u32: fn () -> u32[3] {
+			return u32[3](4, 5, 6);
+		}
+		mirror_indices: fn (indices: u32[3]) -> u32[3] {
+			return indices;
+		}
+		main: fn () -> void {
+			let floats: f32[3] = scalar_f32();
+			let shorts: u16[3] = scalar_u16();
+			let indices: u32[3] = mirror_indices(scalar_u32());
+			let sum: f32 = floats[1] + f32(shorts[1]) + f32(indices[1]);
+			sum;
+		}
+		"#;
+		let root = besl::compile_to_besl(script, None).expect("Expected scalar-array shader source to lex");
+		let main = root.get_main().expect("Expected scalar-array main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected scalar arrays to lower to HLSL vectors");
+
+		assert_string_contains!(shader, "float3 scalar_f32()");
+		assert_string_contains!(shader, "uint16_t3 scalar_u16()");
+		assert_string_contains!(shader, "uint3 scalar_u32()");
+		assert_string_contains!(shader, "uint3 mirror_indices(uint3 indices)");
+		assert_string_contains!(shader, "float3 floats=scalar_f32();");
+		assert_string_contains!(shader, "uint16_t3 shorts=scalar_u16();");
+		assert_string_contains!(shader, "uint3 indices=mirror_indices(scalar_u32());");
 	}
 
 	#[test]

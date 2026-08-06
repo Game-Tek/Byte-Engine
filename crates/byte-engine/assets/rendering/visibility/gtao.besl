@@ -91,13 +91,7 @@ interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 }
 
 hierarchy_extent: fn (level: u32) -> vec2u {
-	let divisor: u32 = 2;
-	if (level >= 1) {
-		divisor = divisor * 2;
-	}
-	if (level >= 2) {
-		divisor = divisor * 2;
-	}
+	let divisor: u32 = 2 << level;
 	let base_extent: vec2u = texture_size(depth_pyramid);
 	let width: u32 = base_extent.x / divisor;
 	let height: u32 = base_extent.y / divisor;
@@ -110,8 +104,7 @@ hierarchy_extent: fn (level: u32) -> vec2u {
 	return vec2u(width, height);
 }
 
-fetch_linear_depth: fn (coordinate: vec2u, level: u32) -> f32 {
-	let extent: vec2u = hierarchy_extent(level);
+fetch_linear_depth: fn (coordinate: vec2u, level: u32, extent: vec2u) -> f32 {
 	let uv: vec2f = vec2f(
 		(f32(coordinate.x) + 0.5) / f32(extent.x),
 		(f32(coordinate.y) + 0.5) / f32(extent.y)
@@ -136,18 +129,17 @@ clamp_subtract: fn (value: u32, offset: u32) -> u32 {
 
 // Maps a shared-tile coordinate to the corresponding clamped texture coordinate.
 halo_coordinate: fn (base: u32, tile_coordinate: u32, halo: u32, extent: u32) -> u32 {
-	if (tile_coordinate < halo) {
-		return clamp_subtract(base, halo - tile_coordinate);
-	}
-	return clamp_add(base, tile_coordinate - halo, extent);
+	return u32(clamp(
+		f32(base) + f32(tile_coordinate) - f32(halo),
+		0.0,
+		f32(extent - 1)
+	));
 }
 
 // Maps one texture coordinate back into a cache whose logical origin may be off-screen.
 cache_coordinate: fn (coordinate: u32, base: u32, halo: u32) -> u32 {
-	if (coordinate >= base) {
-		return halo + coordinate - base;
-	}
-	return halo - (base - coordinate);
+	// Every caller selects a mip whose cache includes this coordinate, so the signed result is nonnegative.
+	return u32(f32(halo) + f32(coordinate) - f32(base));
 }
 
 prefetch_level: fn (
@@ -162,30 +154,28 @@ prefetch_level: fn (
 ) -> void {
 	let lane: u32 = thread_idx();
 	let extent: vec2u = hierarchy_extent(level);
+	let local_x: u32 = lane % WORKGROUP_X;
+	let local_y: u32 = lane / WORKGROUP_X;
 
-	for (
-		let index: u32 = lane;
-		index < tile_width * tile_height;
-		index = index + WORKGROUP_THREADS
-	) {
-		let tile_x: u32 = index % tile_width;
-		let tile_y: u32 = index / tile_width;
+	for (let tile_y: u32 = local_y; tile_y < tile_height; tile_y = tile_y + WORKGROUP_Y) {
+		for (let tile_x: u32 = local_x; tile_x < tile_width; tile_x = tile_x + WORKGROUP_X) {
 
-		if (
-			skip_level_zero_interior &&
-			tile_x >= L0_HALO &&
-			tile_x < L0_HALO + WORKGROUP_X &&
-			tile_y >= L0_HALO &&
-			tile_y < L0_HALO + WORKGROUP_Y
-		) {
-			continue;
+			if (
+				skip_level_zero_interior &&
+				tile_x >= L0_HALO &&
+				tile_x < L0_HALO + WORKGROUP_X &&
+				tile_y >= L0_HALO &&
+				tile_y < L0_HALO + WORKGROUP_Y
+			) {
+				continue;
+			}
+
+			let mip_coord: vec2u = vec2u(
+				halo_coordinate(level_group_base.x, tile_x, halo, extent.x),
+				halo_coordinate(level_group_base.y, tile_y, halo, extent.y)
+			);
+			cached_depth[destination_base + tile_y * tile_stride + tile_x] = fetch_linear_depth(mip_coord, level, extent);
 		}
-
-		let mip_coord: vec2u = vec2u(
-			halo_coordinate(level_group_base.x, tile_x, halo, extent.x),
-			halo_coordinate(level_group_base.y, tile_y, halo, extent.y)
-		);
-		cached_depth[destination_base + tile_y * tile_stride + tile_x] = fetch_linear_depth(mip_coord, level);
 	}
 }
 
@@ -227,13 +217,6 @@ view_ray_xy: fn (pixel: vec2u) -> vec2f {
 	);
 }
 
-pixel_delta: fn (sample: u32, center: u32) -> f32 {
-	if (sample >= center) {
-		return f32(sample - center);
-	}
-	return 0.0 - f32(center - sample);
-}
-
 // Reconstructs Psample - Pcenter without materializing either complete position.
 view_position_delta: fn (
 	delta_pixel: vec2f,
@@ -265,8 +248,8 @@ normal_delta: fn (
 	return NormalDelta(
 		view_position_delta(
 			vec2f(
-				pixel_delta(sample_coord.x, center_coord.x),
-				pixel_delta(sample_coord.y, center_coord.y)
+				f32(sample_coord.x) - f32(center_coord.x),
+				f32(sample_coord.y) - f32(center_coord.y)
 			),
 			sample_depth,
 			center_ray,
@@ -395,21 +378,6 @@ maximum_required_mip: fn (linear_depth: f32) -> u32 {
 	return level;
 }
 
-signed_magnitude: fn (value: i32) -> u32 {
-	if (value < 0) {
-		let magnitude: i32 = 0 - value;
-		return u32(magnitude);
-	}
-	return u32(value);
-}
-
-apply_signed_offset: fn (coordinate: u32, offset: i32, extent: u32) -> u32 {
-	if (offset < 0) {
-		return clamp_subtract(coordinate, signed_magnitude(offset));
-	}
-	return clamp_add(coordinate, u32(offset), extent);
-}
-
 pack_sample_key: fn (coord: vec2u, level: u32) -> u32 {
 	return coord.x | (coord.y << 14) | (level << 28);
 }
@@ -417,27 +385,16 @@ pack_sample_key: fn (coord: vec2u, level: u32) -> u32 {
 make_sample_address: fn (
 	pixel: vec2u,
 	extent: vec2u,
-	direction: vec2f,
-	screen_radius: f32,
+	scaled_direction: vec2f,
 	step_ratio: f32
 ) -> SampleAddress {
-	let requested_offset: vec2i = round_to_i32(direction * screen_radius * step_ratio);
-	let maximum_offset: u32 = signed_magnitude(requested_offset.x);
-	let offset_y: u32 = signed_magnitude(requested_offset.y);
-	if (offset_y > maximum_offset) {
-		maximum_offset = offset_y;
-	}
+	let requested_offset: vec2f = round(scaled_direction * step_ratio);
+	let maximum_offset: f32 = max(abs(requested_offset.x), abs(requested_offset.y));
 
-	let level: u32 = 0;
-	if (maximum_offset >= 8) {
-		level = level + 1;
-	}
-	if (maximum_offset >= 16) {
-		level = level + 1;
-	}
+	let level: u32 = u32(step(8.0, maximum_offset) + step(16.0, maximum_offset));
 	let sample_coord: vec2u = vec2u(
-		apply_signed_offset(pixel.x, requested_offset.x, extent.x),
-		apply_signed_offset(pixel.y, requested_offset.y, extent.y)
+		u32(clamp(f32(pixel.x) + requested_offset.x, 0.0, f32(extent.x - 1))),
+		u32(clamp(f32(pixel.y) + requested_offset.y, 0.0, f32(extent.y - 1)))
 	);
 	return SampleAddress(sample_coord, level, pack_sample_key(sample_coord, level));
 }
@@ -455,11 +412,14 @@ update_direction_occlusion: fn (
 	if (sample_linear_depth == 0.0) {
 		return previous_occlusion;
 	}
+	if (sample_coord.x == pixel.x && sample_coord.y == pixel.y) {
+		return previous_occlusion;
+	}
 
 	let delta: vec3f = view_position_delta(
 		vec2f(
-			pixel_delta(sample_coord.x, pixel.x),
-			pixel_delta(sample_coord.y, pixel.y)
+			f32(sample_coord.x) - f32(pixel.x),
+			f32(sample_coord.y) - f32(pixel.y)
 		),
 		sample_linear_depth,
 		center_ray,
@@ -489,7 +449,7 @@ main: fn () -> void {
 	);
 
 	// One coalesced center load per lane preserves the group-level background early out.
-	let center_linear_depth: f32 = fetch_linear_depth(safe_pixel, 0);
+	let center_linear_depth: f32 = fetch_linear_depth(safe_pixel, 0, extent);
 	let center_shared_index: u32 =
 		L0_BASE +
 		(local.y + L0_HALO) * L0_STRIDE +
@@ -602,6 +562,7 @@ main: fn () -> void {
 		radial_rays = GTAO_MAX_RADIAL_RAYS;
 	}
 	let ray_pairs: u32 = radial_rays / 2;
+	let inverse_samples_per_ray: f32 = 1.0 / f32(samples_per_ray);
 	let rotation: f32 = interleaved_gradient_noise(pixel) * GTAO_PI;
 	let rotation_trigonometry: vec2f = sincos(rotation);
 	let axis_direction: vec2f = vec2f(rotation_trigonometry.y, rotation_trigonometry.x);
@@ -623,27 +584,24 @@ main: fn () -> void {
 		let negative_maximum: f32 = 0.0;
 		let previous_positive_key: u32 = INVALID_SAMPLE_KEY;
 		let previous_negative_key: u32 = INVALID_SAMPLE_KEY;
+		let scaled_axis_direction: vec2f = axis_direction * radius.screen_radius;
 
 		for (let step: u32 = 1; step <= samples_per_ray; step = step + 1) {
 			let step_f: f32 = f32(step);
 			let positive_step_noise: f32 = fract(positive_noise + step_f * GTAO_GOLDEN);
 			let negative_step_noise: f32 = fract(negative_noise + step_f * GTAO_GOLDEN);
-			let positive_ratio: f32 =
-				(step_f - 0.5 + positive_step_noise * 0.5) / f32(samples_per_ray);
-			let negative_ratio: f32 =
-				(step_f - 0.5 + negative_step_noise * 0.5) / f32(samples_per_ray);
+			let positive_ratio: f32 = (step_f - 0.5 + positive_step_noise * 0.5) * inverse_samples_per_ray;
+			let negative_ratio: f32 = (step_f - 0.5 + negative_step_noise * 0.5) * inverse_samples_per_ray;
 			let positive_sample: SampleAddress = make_sample_address(
 				pixel,
 				extent,
-				axis_direction,
-				radius.screen_radius,
+				scaled_axis_direction,
 				positive_ratio
 			);
 			let negative_sample: SampleAddress = make_sample_address(
 				pixel,
 				extent,
-				vec2f(0.0, 0.0) - axis_direction,
-				radius.screen_radius,
+				vec2f(0.0, 0.0) - scaled_axis_direction,
 				negative_ratio
 			);
 			let evaluate_positive: bool = positive_sample.key != previous_positive_key;

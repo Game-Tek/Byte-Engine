@@ -683,7 +683,9 @@ material_evaluation_suffix: fn () -> void {
 	if (push_constant.blend == 0) {
 		ao_factor = f16(fetch(ao, pixel_coordinates).x);
 	}
-	let view_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0)), f16(5.0));
+	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
+	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
+	let view_fresnel_factor: f16 = view_fresnel_squared * view_fresnel_squared * view_fresnel_base;
 	let one_minus_fresnel_n_dot_v: vec3f16 = vec3f16(1.0, 1.0, 1.0) - (F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * view_fresnel_factor);
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
@@ -762,14 +764,18 @@ material_evaluation_suffix: fn () -> void {
 		}
 
 		let H: vec3f16 = normalize(V_material + L_material);
-		let half_view_fresnel_factor: f16 = pow(clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0)), f16(5.0));
+		let half_view_fresnel_base: f16 = clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0));
+		let half_view_fresnel_squared: f16 = half_view_fresnel_base * half_view_fresnel_base;
+		let half_view_fresnel_factor: f16 = half_view_fresnel_squared * half_view_fresnel_squared * half_view_fresnel_base;
 		let F: vec3f16 = F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * half_view_fresnel_factor;
 		let NdotH: f16 = max(dot(normal, H), f16(0.0));
 		let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
 		let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
 		let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
 		let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
-		let light_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0)), f16(5.0));
+		let light_fresnel_base: f16 = clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0));
+		let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
+		let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
 		let kD: vec3f16 = (vec3f16(1.0, 1.0, 1.0) - (F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * light_fresnel_factor))
 			* one_minus_fresnel_n_dot_v
 			* (1.0 - metalness);
@@ -1701,6 +1707,16 @@ mod tests {
 		] {
 			assert!(!source.contains("sqrt(octahedral"));
 			assert!(source.contains("step(0.0, octahedral.x)"));
+		}
+	}
+
+	/// Guards fixed fifth powers against returning to the general-purpose power intrinsic.
+	#[test]
+	fn material_fresnel_uses_multiplication_for_fifth_powers() {
+		let source = super::MATERIAL_EVALUATION_SUFFIX_SOURCE;
+		assert!(!source.contains("f16(5.0)"));
+		for base in ["view_fresnel", "half_view_fresnel", "light_fresnel"] {
+			assert!(source.contains(&format!("{base}_squared * {base}_squared * {base}_base")));
 		}
 	}
 

@@ -324,6 +324,11 @@ impl Generator {
 		}
 
 		match name.as_str() {
+			"pow" if arguments.len() == 2 && super::is_two(&arguments[0]) => {
+				string.push_str("exp2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
 			"atan2" => {
 				string.push_str("atan(");
 				self.emit_call_arguments(string, arguments);
@@ -1016,6 +1021,25 @@ mod tests {
 				$haystack
 			);
 		};
+	}
+
+	#[test]
+	fn power_of_two_uses_exp2() {
+		let root = besl::compile_to_besl(
+			"main: fn () -> void { let full: f32 = pow(2.0, 3.0); let half: f16 = pow(f16(2.0), f16(3.0)); full; half; }",
+			None,
+		)
+		.expect("Expected power source to link.");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main."),
+			)
+			.expect("Expected GLSL power lowering.");
+
+		assert_eq!(shader.matches("exp2(").count(), 2);
+		assert!(!shader.contains("pow("));
 	}
 
 	#[test]

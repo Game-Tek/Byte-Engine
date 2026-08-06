@@ -213,13 +213,15 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
 	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-		const SUBGROUP_INTRINSICS: [&str; 6] = [
+		const SUBGROUP_INTRINSICS: [&str; 8] = [
+			"subgroup_lane_index",
 			"subgroup_ballot",
 			"subgroup_ballot_any",
 			"subgroup_ballot_find_lsb",
 			"subgroup_ballot_count",
 			"subgroup_ballot_and_not",
 			"subgroup_broadcast_u32",
+			"subgroup_broadcast_f32",
 		];
 		order.iter().any(|node| {
 			SUBGROUP_INTRINSICS
@@ -1697,6 +1699,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		self.emit_separator(string);
+		string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
 		if !workgroups.is_empty() {
 			self.emit_separator(string);
 			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -1752,6 +1756,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		self.emit_separator(string);
+		string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
 		if !workgroups.is_empty() {
 			self.emit_separator(string);
 			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -2793,6 +2799,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"thread_idx" => {
 				string.push_str("thread_index");
 			}
+			"subgroup_lane_index" => string.push_str("simd_lane_id"),
 			"threadgroup_position" => {
 				string.push_str("threadgroup_position");
 			}
@@ -2823,6 +2830,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			"subgroup_broadcast_u32" => {
 				string.push_str("_besl_subgroup_broadcast_u32(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"subgroup_broadcast_f32" => {
+				string.push_str("_besl_subgroup_broadcast_f32(");
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -3306,7 +3318,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				 inline uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return ctz(mask.x); } if (mask.y != 0u) { return 32u + ctz(mask.y); } if (mask.z != 0u) { return 64u + ctz(mask.z); } if (mask.w != 0u) { return 96u + ctz(mask.w); } return 0xffffffffu; }\n\
 				 inline uint _besl_subgroup_ballot_count(uint4 mask) { return popcount(mask.x) + popcount(mask.y) + popcount(mask.z) + popcount(mask.w); }\n\
 				 inline uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n\
-				 inline uint _besl_subgroup_broadcast_u32(uint value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n",
+					 inline uint _besl_subgroup_broadcast_u32(uint value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n\
+					 inline float _besl_subgroup_broadcast_f32(float value, uint source_lane) { return simd_broadcast(value, ushort(source_lane)); }\n",
 			);
 		}
 

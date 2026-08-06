@@ -1492,6 +1492,12 @@ impl<'a> Compiler<'a> {
 				self.instructions.push(Instruction::ThreadIdx { register });
 				Ok(register)
 			}
+			"subgroup_lane_index" => {
+				require_argument_count(arguments, 0)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupLaneIndex { register });
+				Ok(register)
+			}
 			"thread_position" => {
 				require_argument_count(arguments, 0)?;
 				let register = self.allocate_register();
@@ -1553,6 +1559,18 @@ impl<'a> Compiler<'a> {
 				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::SubgroupBroadcastU32 {
+					register,
+					value,
+					source_lane,
+				});
+				Ok(register)
+			}
+			"subgroup_broadcast_f32" => {
+				require_argument_count(arguments, 2)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::SubgroupBroadcastF32 {
 					register,
 					value,
 					source_lane,

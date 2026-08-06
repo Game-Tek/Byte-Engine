@@ -128,6 +128,14 @@ pub(super) enum Instruction {
 		value: usize,
 		source_lane: usize,
 	},
+	SubgroupBroadcastF32 {
+		register: usize,
+		value: usize,
+		source_lane: usize,
+	},
+	SubgroupLaneIndex {
+		register: usize,
+	},
 	LoadTaskPayload {
 		register: usize,
 		name: String,

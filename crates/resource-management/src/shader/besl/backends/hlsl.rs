@@ -747,13 +747,15 @@ impl Generator {
 
 	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
 	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-		const SUBGROUP_INTRINSICS: [&str; 6] = [
+		const SUBGROUP_INTRINSICS: [&str; 8] = [
+			"subgroup_lane_index",
 			"subgroup_ballot",
 			"subgroup_ballot_any",
 			"subgroup_ballot_find_lsb",
 			"subgroup_ballot_count",
 			"subgroup_ballot_and_not",
 			"subgroup_broadcast_u32",
+			"subgroup_broadcast_f32",
 		];
 		order.iter().any(|node| {
 			SUBGROUP_INTRINSICS
@@ -1084,6 +1086,7 @@ impl Generator {
 			"thread_idx" => {
 				string.push_str("group_thread_index");
 			}
+			"subgroup_lane_index" => string.push_str("WaveGetLaneIndex()"),
 			"threadgroup_position" => {
 				string.push_str("group_id.x");
 			}
@@ -1112,7 +1115,7 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
-			"subgroup_broadcast_u32" => {
+			"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => {
 				string.push_str("WaveReadLaneAt(");
 				self.emit_call_arguments(string, arguments);
 				string.push(')');

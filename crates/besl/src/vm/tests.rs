@@ -2470,6 +2470,8 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 		r#"
 		Result: struct {
 			values: u32[64],
+			floats: f32[64],
+			lane_indices: u32[64],
 		}
 		result: descriptor<Result, 43, read_write>;
 
@@ -2478,11 +2480,14 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 			let active: vec4u = subgroup_ballot((lane & 3) != 0);
 			let leader: u32 = subgroup_ballot_find_lsb(active);
 			let leader_lane: u32 = subgroup_broadcast_u32(lane, leader);
+			let leader_float: f32 = subgroup_broadcast_f32(f32(lane) * 0.5, leader);
 			let removed: vec4u = subgroup_ballot((lane & 7) == 1);
 			let remaining: vec4u = subgroup_ballot_and_not(active, removed);
 
 			if (subgroup_ballot_any(remaining)) {
 				result.values[lane] = leader_lane + subgroup_ballot_count(remaining);
+				result.floats[lane] = leader_float;
+				result.lane_indices[lane] = subgroup_lane_index();
 			}
 		}
 		"#,
@@ -2505,12 +2510,16 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 			result.read_indexed("values", lane).expect("Expected first subgroup result"),
 			Value::U32(21)
 		);
+		assert_eq!(result.read_indexed("floats", lane), Ok(Value::F32(0.5)));
+		assert_eq!(result.read_indexed("lane_indices", lane), Ok(Value::U32(lane as u32)));
 	}
 	for lane in 32..64 {
 		assert_eq!(
 			result.read_indexed("values", lane).expect("Expected second subgroup result"),
 			Value::U32(53)
 		);
+		assert_eq!(result.read_indexed("floats", lane), Ok(Value::F32(16.5)));
+		assert_eq!(result.read_indexed("lane_indices", lane), Ok(Value::U32((lane - 32) as u32)));
 	}
 }
 

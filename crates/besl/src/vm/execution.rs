@@ -288,6 +288,41 @@ impl ExecutableProgram {
 					lanes[*lane_index].frame.registers[register] = Some(Value::U32(value));
 				}
 			}
+			Instruction::SubgroupBroadcastF32 {
+				register,
+				value,
+				source_lane,
+			} => {
+				let expected_source_lane = expect_u32(read_register(&lanes[first_lane].frame.registers, source_lane)?)?;
+				for lane_index in subgroup {
+					let found = expect_u32(read_register(&lanes[*lane_index].frame.registers, source_lane)?)?;
+					if found != expected_source_lane {
+						return Err(VmError::DivergentSubgroupBroadcastLane {
+							lane: *lane_index,
+							expected: expected_source_lane,
+							found,
+						});
+					}
+				}
+				let source = subgroup
+					.iter()
+					.copied()
+					.find(|lane_index| lanes[*lane_index].state.config.thread_idx() % subgroup_size == expected_source_lane)
+					.ok_or(VmError::SubgroupBroadcastLaneOutOfRange {
+						source_lane: expected_source_lane,
+						subgroup_size,
+					})?;
+				let source_value = read_register(&lanes[source].frame.registers, value)?;
+				let Value::F32(value) = source_value else {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::F32.name().to_string(),
+						found: source_value.value_type().name().to_string(),
+					});
+				};
+				for lane_index in subgroup {
+					lanes[*lane_index].frame.registers[register] = Some(Value::F32(value));
+				}
+			}
 			_ => {
 				return Err(VmError::UnsupportedStatement {
 					message: "Expected a subgroup collective instruction".to_string(),
@@ -607,6 +642,23 @@ impl ExecutableProgram {
 						});
 					}
 				},
+				Instruction::SubgroupBroadcastF32 { .. } => match collective_behavior {
+					CollectiveBehavior::Ignore => {
+						return Err(VmError::UnsupportedStatement {
+							message: "Subgroup broadcasts require run_workgroup so the VM can supply peer lanes".to_string(),
+						})
+					}
+					CollectiveBehavior::Suspend => return Ok(FrameOutcome::SubgroupCollective(frame.instruction_index)),
+					CollectiveBehavior::Reject => {
+						return Err(VmError::UnsupportedStatement {
+							message: "Subgroup collectives inside called functions cannot participate in workgroup rendezvous"
+								.to_string(),
+						})
+					}
+				},
+				Instruction::SubgroupLaneIndex { register } => {
+					registers[*register] = Some(Value::U32(state.config.thread_idx() % state.config.subgroup_size()));
+				}
 				Instruction::LoadTaskPayload {
 					register,
 					name,

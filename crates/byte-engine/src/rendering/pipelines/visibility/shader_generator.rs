@@ -513,6 +513,15 @@ material_evaluation_prefix: fn () -> void {
 	let vertex_index0: u32 = compute_vertex_index(mesh, meshlet, primitive_index0);
 	let vertex_index1: u32 = compute_vertex_index(mesh, meshlet, primitive_index1);
 	let vertex_index2: u32 = compute_vertex_index(mesh, meshlet, primitive_index2);
+	let active_lanes: vec4u = subgroup_ballot(true);
+	let setup_leader: u32 = subgroup_ballot_find_lsb(active_lanes);
+	let leader_instance_index: u32 = subgroup_broadcast_u32(instance_index, setup_leader);
+	let leader_triangle_indices: u32 = subgroup_broadcast_u32(triangle_meshlet_indices, setup_leader);
+	let matching_triangle_lanes: vec4u = subgroup_ballot(
+		instance_index == leader_instance_index && triangle_meshlet_indices == leader_triangle_indices
+	);
+	let share_triangle_setup: bool = subgroup_ballot_count(matching_triangle_lanes) == subgroup_ballot_count(active_lanes);
+	let setup_lane: bool = share_triangle_setup == false || subgroup_lane_index() == setup_leader;
 
 	let model_space_vertex_position0: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 	let model_space_vertex_position1: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
@@ -521,7 +530,7 @@ material_evaluation_prefix: fn () -> void {
 	let vertex_normal1: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
 	let vertex_normal2: vec4f = vec4f(0.0, 0.0, 1.0, 0.0);
 
-	if (mesh.skinned_base_vertex_index != 4294967295) {
+	if (setup_lane && mesh.skinned_base_vertex_index != 4294967295) {
 		let skinned_vertex_index0: u32 = mesh.skinned_base_vertex_index + (vertex_index0 - mesh.base_vertex_index);
 		let skinned_vertex_index1: u32 = mesh.skinned_base_vertex_index + (vertex_index1 - mesh.base_vertex_index);
 		let skinned_vertex_index2: u32 = mesh.skinned_base_vertex_index + (vertex_index2 - mesh.base_vertex_index);
@@ -535,7 +544,7 @@ material_evaluation_prefix: fn () -> void {
 		vertex_normal1 = skinned_vertex1.normal;
 		vertex_normal2 = skinned_vertex2.normal;
 	}
-	if (mesh.skinned_base_vertex_index == 4294967295) {
+	if (setup_lane && mesh.skinned_base_vertex_index == 4294967295) {
 		let position0: vec3f = vertex_positions.positions[vertex_index0];
 		let position1: vec3f = vertex_positions.positions[vertex_index1];
 		let position2: vec3f = vertex_positions.positions[vertex_index2];
@@ -552,85 +561,196 @@ material_evaluation_prefix: fn () -> void {
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let view: View = views.views[0];
 	let model: mat4x3f = mesh.model;
-	let world_space_vertex_position0: vec3f = model * model_space_vertex_position0;
-	let world_space_vertex_position1: vec3f = model * model_space_vertex_position1;
-	let world_space_vertex_position2: vec3f = model * model_space_vertex_position2;
-	let clip_space_vertex_position0: vec4f = view.view_projection * vec4f(
-		world_space_vertex_position0.x,
-		world_space_vertex_position0.y,
-		world_space_vertex_position0.z,
-		1.0
-	);
-	let clip_space_vertex_position1: vec4f = view.view_projection * vec4f(
-		world_space_vertex_position1.x,
-		world_space_vertex_position1.y,
-		world_space_vertex_position1.z,
-		1.0
-	);
-	let clip_space_vertex_position2: vec4f = view.view_projection * vec4f(
-		world_space_vertex_position2.x,
-		world_space_vertex_position2.y,
-		world_space_vertex_position2.z,
-		1.0
-	);
-	let world_space_vertex_normal0: vec3f = normalize(model * vertex_normal0);
-	let world_space_vertex_normal1: vec3f = normalize(model * vertex_normal1);
-	let world_space_vertex_normal2: vec3f = normalize(model * vertex_normal2);
+	let world_space_vertex_position0: vec3f = vec3f(0.0, 0.0, 0.0);
+	let world_space_vertex_position1: vec3f = vec3f(0.0, 0.0, 0.0);
+	let world_space_vertex_position2: vec3f = vec3f(0.0, 0.0, 0.0);
+	let clip_space_vertex_position0: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let clip_space_vertex_position1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let clip_space_vertex_position2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let world_space_vertex_normal0: vec3f = vec3f(0.0, 0.0, 1.0);
+	let world_space_vertex_normal1: vec3f = vec3f(0.0, 0.0, 1.0);
+	let world_space_vertex_normal2: vec3f = vec3f(0.0, 0.0, 1.0);
+	if (setup_lane) {
+		world_space_vertex_position0 = model * model_space_vertex_position0;
+		world_space_vertex_position1 = model * model_space_vertex_position1;
+		world_space_vertex_position2 = model * model_space_vertex_position2;
+		clip_space_vertex_position0 = view.view_projection * vec4f(world_space_vertex_position0.x, world_space_vertex_position0.y, world_space_vertex_position0.z, 1.0);
+		clip_space_vertex_position1 = view.view_projection * vec4f(world_space_vertex_position1.x, world_space_vertex_position1.y, world_space_vertex_position1.z, 1.0);
+		clip_space_vertex_position2 = view.view_projection * vec4f(world_space_vertex_position2.x, world_space_vertex_position2.y, world_space_vertex_position2.z, 1.0);
+		world_space_vertex_normal0 = normalize(model * vertex_normal0);
+		world_space_vertex_normal1 = normalize(model * vertex_normal1);
+		world_space_vertex_normal2 = normalize(model * vertex_normal2);
+	}
 
-	let barycentric_deriv: BarycentricDeriv = calculate_full_bary(
-		clip_space_vertex_position0,
-		clip_space_vertex_position1,
-		clip_space_vertex_position2,
-		nc,
-		vec2f(f32(image_extent.x), f32(image_extent.y))
-	);
-	let barycenter: vec3f = barycentric_deriv.lambda;
-	let derivative_x: vec3f = barycentric_deriv.ddx;
-	let derivative_y: vec3f = barycentric_deriv.ddy;
-	let world_space_vertex_position: vec3f = interpolate_vec3f_with_deriv(
-		barycenter,
-		world_space_vertex_position0,
-		world_space_vertex_position1,
-		world_space_vertex_position2
-	);
-	let world_space_vertex_normal: vec3f = normalize(interpolate_vec3f_with_deriv(
-		barycenter,
-		world_space_vertex_normal0,
-		world_space_vertex_normal1,
-		world_space_vertex_normal2
-	));
+	// Share perspective-correct interpolation planes instead of only transformed vertices. The
+	// fallback computes the same planes per lane when a SIMD group contains more than one triangle.
+	let interpolation_origin: vec2f = vec2f(0.0, 0.0);
+	let inverse_w_origin: f32 = 0.0;
+	let inverse_w_dx: f32 = 0.0;
+	let inverse_w_dy: f32 = 0.0;
+	let position_numerator_origin: vec3f = vec3f(0.0, 0.0, 0.0);
+	let position_numerator_dx: vec3f = vec3f(0.0, 0.0, 0.0);
+	let position_numerator_dy: vec3f = vec3f(0.0, 0.0, 0.0);
+	let normal_numerator_origin: vec3f = vec3f(0.0, 0.0, 0.0);
+	let normal_numerator_dx: vec3f = vec3f(0.0, 0.0, 0.0);
+	let normal_numerator_dy: vec3f = vec3f(0.0, 0.0, 0.0);
+	if (setup_lane) {
+		let inverse_w: vec3f = vec3f(
+			1.0 / clip_space_vertex_position0.w,
+			1.0 / clip_space_vertex_position1.w,
+			1.0 / clip_space_vertex_position2.w
+		);
+		let ndc0: vec2f = vec2f(
+			clip_space_vertex_position0.x * inverse_w.x,
+			clip_space_vertex_position0.y * inverse_w.x
+		);
+		let ndc1: vec2f = vec2f(
+			clip_space_vertex_position1.x * inverse_w.y,
+			clip_space_vertex_position1.y * inverse_w.y
+		);
+		let ndc2: vec2f = vec2f(
+			clip_space_vertex_position2.x * inverse_w.z,
+			clip_space_vertex_position2.y * inverse_w.z
+		);
+		let determinant: f32 =
+			(ndc2.x - ndc1.x) * (ndc0.y - ndc1.y) -
+			(ndc0.x - ndc1.x) * (ndc2.y - ndc1.y);
+		let inverse_determinant: f32 = 1.0 / determinant;
+		let raw_ddx: vec3f = vec3f(
+			ndc1.y - ndc2.y,
+			ndc2.y - ndc0.y,
+			ndc0.y - ndc1.y
+		) * inverse_determinant * inverse_w;
+		let raw_ddy: vec3f = vec3f(
+			ndc2.x - ndc1.x,
+			ndc0.x - ndc2.x,
+			ndc1.x - ndc0.x
+		) * inverse_determinant * inverse_w;
+
+		interpolation_origin = ndc0;
+		inverse_w_origin = inverse_w.x;
+		inverse_w_dx = dot(raw_ddx, vec3f(1.0, 1.0, 1.0));
+		inverse_w_dy = dot(raw_ddy, vec3f(1.0, 1.0, 1.0));
+		position_numerator_origin = world_space_vertex_position0 * inverse_w.x;
+		position_numerator_dx = interpolate_vec3f_with_deriv(
+			raw_ddx,
+			world_space_vertex_position0,
+			world_space_vertex_position1,
+			world_space_vertex_position2
+		);
+		position_numerator_dy = interpolate_vec3f_with_deriv(
+			raw_ddy,
+			world_space_vertex_position0,
+			world_space_vertex_position1,
+			world_space_vertex_position2
+		);
+		normal_numerator_origin = world_space_vertex_normal0 * inverse_w.x;
+		normal_numerator_dx = interpolate_vec3f_with_deriv(
+			raw_ddx,
+			world_space_vertex_normal0,
+			world_space_vertex_normal1,
+			world_space_vertex_normal2
+		);
+		normal_numerator_dy = interpolate_vec3f_with_deriv(
+			raw_ddy,
+			world_space_vertex_normal0,
+			world_space_vertex_normal1,
+			world_space_vertex_normal2
+		);
+	}
+	if (share_triangle_setup) {
+		interpolation_origin = vec2f(subgroup_broadcast_f32(interpolation_origin.x, setup_leader), subgroup_broadcast_f32(interpolation_origin.y, setup_leader));
+		inverse_w_origin = subgroup_broadcast_f32(inverse_w_origin, setup_leader);
+		inverse_w_dx = subgroup_broadcast_f32(inverse_w_dx, setup_leader);
+		inverse_w_dy = subgroup_broadcast_f32(inverse_w_dy, setup_leader);
+		position_numerator_origin = vec3f(subgroup_broadcast_f32(position_numerator_origin.x, setup_leader), subgroup_broadcast_f32(position_numerator_origin.y, setup_leader), subgroup_broadcast_f32(position_numerator_origin.z, setup_leader));
+		position_numerator_dx = vec3f(subgroup_broadcast_f32(position_numerator_dx.x, setup_leader), subgroup_broadcast_f32(position_numerator_dx.y, setup_leader), subgroup_broadcast_f32(position_numerator_dx.z, setup_leader));
+		position_numerator_dy = vec3f(subgroup_broadcast_f32(position_numerator_dy.x, setup_leader), subgroup_broadcast_f32(position_numerator_dy.y, setup_leader), subgroup_broadcast_f32(position_numerator_dy.z, setup_leader));
+		normal_numerator_origin = vec3f(subgroup_broadcast_f32(normal_numerator_origin.x, setup_leader), subgroup_broadcast_f32(normal_numerator_origin.y, setup_leader), subgroup_broadcast_f32(normal_numerator_origin.z, setup_leader));
+		normal_numerator_dx = vec3f(subgroup_broadcast_f32(normal_numerator_dx.x, setup_leader), subgroup_broadcast_f32(normal_numerator_dx.y, setup_leader), subgroup_broadcast_f32(normal_numerator_dx.z, setup_leader));
+		normal_numerator_dy = vec3f(subgroup_broadcast_f32(normal_numerator_dy.x, setup_leader), subgroup_broadcast_f32(normal_numerator_dy.y, setup_leader), subgroup_broadcast_f32(normal_numerator_dy.z, setup_leader));
+	}
+
+	let interpolation_delta: vec2f = nc - interpolation_origin;
+	let inverse_w_at_pixel: f32 = inverse_w_origin + interpolation_delta.x * inverse_w_dx + interpolation_delta.y * inverse_w_dy;
+	let perspective_w: f32 = 1.0 / inverse_w_at_pixel;
+	let ndc_step_x: f32 = 2.0 / f32(image_extent.x);
+	let ndc_step_y: f32 = 2.0 / f32(image_extent.y);
+	let position_numerator: vec3f = position_numerator_origin + interpolation_delta.x * position_numerator_dx + interpolation_delta.y * position_numerator_dy;
+	let normal_numerator: vec3f = normal_numerator_origin + interpolation_delta.x * normal_numerator_dx + interpolation_delta.y * normal_numerator_dy;
+	let world_space_vertex_position: vec3f = position_numerator * perspective_w;
+	let world_space_vertex_normal: vec3f = normalize(normal_numerator * perspective_w);
 	let N: vec3f = world_space_vertex_normal;
 	let camera_position: vec3f = view.inverse_view * vec4f(0.0, 0.0, 0.0, 1.0);
 	let V: vec3f = normalize(camera_position - world_space_vertex_position);
-	let position_derivative_x: vec3f = interpolate_vec3f_with_deriv(
-		derivative_x,
-		world_space_vertex_position0,
-		world_space_vertex_position1,
-		world_space_vertex_position2
-	);
-	let position_derivative_y: vec3f = interpolate_vec3f_with_deriv(
-		derivative_y,
-		world_space_vertex_position0,
-		world_space_vertex_position1,
-		world_space_vertex_position2
-	);
+	let position_derivative_x: vec3f =
+		(position_numerator + position_numerator_dx * ndc_step_x) /
+		(inverse_w_at_pixel + inverse_w_dx * ndc_step_x) - world_space_vertex_position;
+	let position_derivative_y: vec3f =
+		(position_numerator + position_numerator_dy * ndc_step_y) /
+		(inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - world_space_vertex_position;
 }
 "#;
 
 const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
 	// Runtime UVs use 16-bit UNORM storage and are expanded only for materials that sample them.
-	let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
-	let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
-	let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
-	let vertex_uv: vec2f = interpolate_vec2f_with_deriv(barycenter, vertex_uv0, vertex_uv1, vertex_uv2);
+	let uv_numerator_origin: vec2f = vec2f(0.0, 0.0);
+	let uv_numerator_dx: vec2f = vec2f(0.0, 0.0);
+	let uv_numerator_dy: vec2f = vec2f(0.0, 0.0);
+	if (setup_lane) {
+		let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index0]);
+		let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index1]);
+		let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[vertex_index2]);
+		let inverse_w: vec3f = vec3f(
+			1.0 / clip_space_vertex_position0.w,
+			1.0 / clip_space_vertex_position1.w,
+			1.0 / clip_space_vertex_position2.w
+		);
+		let ndc1: vec2f = vec2f(
+			clip_space_vertex_position1.x * inverse_w.y,
+			clip_space_vertex_position1.y * inverse_w.y
+		);
+		let ndc2: vec2f = vec2f(
+			clip_space_vertex_position2.x * inverse_w.z,
+			clip_space_vertex_position2.y * inverse_w.z
+		);
+		let determinant: f32 =
+			(ndc2.x - ndc1.x) * (interpolation_origin.y - ndc1.y) -
+			(interpolation_origin.x - ndc1.x) * (ndc2.y - ndc1.y);
+		let inverse_determinant: f32 = 1.0 / determinant;
+		let raw_ddx: vec3f = vec3f(
+			ndc1.y - ndc2.y,
+			ndc2.y - interpolation_origin.y,
+			interpolation_origin.y - ndc1.y
+		) * inverse_determinant * inverse_w;
+		let raw_ddy: vec3f = vec3f(
+			ndc2.x - ndc1.x,
+			interpolation_origin.x - ndc2.x,
+			ndc1.x - interpolation_origin.x
+		) * inverse_determinant * inverse_w;
+		uv_numerator_origin = vertex_uv0 * inverse_w.x;
+		uv_numerator_dx = interpolate_vec2f_with_deriv(raw_ddx, vertex_uv0, vertex_uv1, vertex_uv2);
+		uv_numerator_dy = interpolate_vec2f_with_deriv(raw_ddy, vertex_uv0, vertex_uv1, vertex_uv2);
+	}
+	if (share_triangle_setup) {
+		uv_numerator_origin = vec2f(subgroup_broadcast_f32(uv_numerator_origin.x, setup_leader), subgroup_broadcast_f32(uv_numerator_origin.y, setup_leader));
+		uv_numerator_dx = vec2f(subgroup_broadcast_f32(uv_numerator_dx.x, setup_leader), subgroup_broadcast_f32(uv_numerator_dx.y, setup_leader));
+		uv_numerator_dy = vec2f(subgroup_broadcast_f32(uv_numerator_dy.x, setup_leader), subgroup_broadcast_f32(uv_numerator_dy.y, setup_leader));
+	}
+	let uv_numerator: vec2f = uv_numerator_origin + interpolation_delta.x * uv_numerator_dx + interpolation_delta.y * uv_numerator_dy;
+	let vertex_uv: vec2f = uv_numerator * perspective_w;
+	let uv_derivative_x: vec2f =
+		(uv_numerator + uv_numerator_dx * ndc_step_x) /
+		(inverse_w_at_pixel + inverse_w_dx * ndc_step_x) - vertex_uv;
+	let uv_derivative_y: vec2f =
+		(uv_numerator + uv_numerator_dy * ndc_step_y) /
+		(inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - vertex_uv;
 }
 "#;
 
 const MATERIAL_EVALUATION_TANGENT_SOURCE: &str = r#"
 material_evaluation_tangent: fn () -> void {
-	let uv_derivative_x: vec2f = interpolate_vec2f_with_deriv(derivative_x, vertex_uv0, vertex_uv1, vertex_uv2);
-	let uv_derivative_y: vec2f = interpolate_vec2f_with_deriv(derivative_y, vertex_uv0, vertex_uv1, vertex_uv2);
 	let tangent_scale: f32 = 1.0 / (uv_derivative_x.x * uv_derivative_y.y - uv_derivative_y.x * uv_derivative_x.y);
 	let T: vec3f = normalize(
 		tangent_scale * (uv_derivative_y.y * position_derivative_x - uv_derivative_x.y * position_derivative_y)
@@ -2266,26 +2386,19 @@ mod tests {
 			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
 		);
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		let glsl = GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit the GLSL material pass. The most likely cause is an invalid visibility shader contract.");
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit the HLSL material pass. The most likely cause is an invalid visibility shader contract.");
 		let msl = MSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Failed to emit the MSL material pass. The most likely cause is an invalid visibility shader contract.");
-		assert!(glsl.contains("texelFetch(ao, ivec2(pixel_coordinates),0).x"));
-		assert!(hlsl.contains("ao.Load(int3(pixel_coordinates, 0)).x"));
 		assert!(msl.contains("resources.ao.read(pixel_coordinates).x"));
-		assert!(glsl.contains("texelFetch(shadow_map, ivec3(ivec2(shadow_texel),int(shadow_layer)),0).x"));
-		assert!(hlsl.contains("shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x"));
-		assert!(hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)"));
-		assert!(glsl.contains("textureLod(environment_specular, environment_uv, specular_level)"));
 		assert!(msl.contains(
-			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, metal::level(specular_level))"
+			"resources.environment_specular.sample(resources.environment_specular_sampler, normalized_direction, metal::level(specular_level))"
 		));
-		assert!(msl.contains("float3 world_space_vertex_position0"));
+		assert!(msl.contains("_besl_subgroup_broadcast_f32"));
+		assert!(msl.contains("simd_lane_id"));
+		assert!(msl.contains("float3 position_numerator_origin"));
+		assert!(msl.contains("float3 normal_numerator_dx"));
+		assert!(!msl.contains("barycentric_numerator_origin"));
+		assert!(!msl.contains("calculate_full_bary("));
 		assert!(!msl.contains("world_space_vertex_positions[3]"));
 		assert!(!msl.contains("primitive_indices[3]"));
 		assert!(msl.contains("half geometry_view"));

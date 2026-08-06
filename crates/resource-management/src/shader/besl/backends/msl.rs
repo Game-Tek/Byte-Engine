@@ -1608,6 +1608,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
+					"TextureCube" => "texturecube<float>",
 					"ArrayTexture2D" => "texture2d_array<float>",
 					"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 					_ => "texture2d<float>",
@@ -2028,6 +2029,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
+					"TextureCube" => "texturecube<float>",
 					"ArrayTexture2D" => "texture2d_array<float>",
 					_ => "texture2d<float>",
 				};
@@ -2565,6 +2567,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"i32" => "int",
 			"Texture2D" => "texture2d<float>",
 			"Texture3D" => "texture3d<float>",
+			"TextureCube" => "texturecube<float>",
 			"ArrayTexture2D" => "texture2d_array<float>",
 			_ => source,
 		}
@@ -3147,6 +3150,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						let texture_type = match format.as_str() {
 							"ArrayTexture2D" => "texture2d_array<float>",
+							"TextureCube" => "texturecube<float>",
 							"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 							_ => "texture2d<float>",
 						};

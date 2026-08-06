@@ -225,6 +225,12 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	pub fn combined_cube_image_sampler() -> Node<'a> {
+		Node {
+			node: Nodes::CombinedImageSampler { format: "TextureCube" },
+		}
+	}
+
 	pub fn r#macro(name: &'a str, body: Node<'a>) -> Node<'a> {
 		Node {
 			node: Nodes::Expression(Expressions::Macro {

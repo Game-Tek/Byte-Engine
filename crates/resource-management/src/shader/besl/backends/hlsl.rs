@@ -1423,6 +1423,7 @@ impl Generator {
 			"i32" => "int32_t",
 			"Texture2D" => "Texture2D",
 			"Texture3D" => "Texture3D",
+			"TextureCube" => "TextureCube<float4>",
 			"ArrayTexture2D" => "Texture2DArray<float4>",
 			_ => source,
 		}
@@ -1746,6 +1747,7 @@ impl Generator {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
 						let texture_type = match format.as_str() {
 							"Texture3D" => "Texture3D",
+							"TextureCube" => "TextureCube",
 							"ArrayTexture2D" => "Texture2DArray",
 							_ => "Texture2D",
 						};

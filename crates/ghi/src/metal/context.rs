@@ -263,11 +263,20 @@ impl Context {
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
+		cube_compatible: bool,
 		mip_levels: u32,
 	) -> image::Image {
 		let name = crate::debug_name(name);
 
-		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, mip_levels);
+		let descriptor = build_texture_descriptor(
+			format,
+			extent,
+			resource_uses,
+			device_accesses,
+			array_layers,
+			cube_compatible,
+			mip_levels,
+		);
 
 		let texture = self
 			.device
@@ -295,6 +304,7 @@ impl Context {
 			uses: resource_uses,
 			access: device_accesses,
 			array_layers,
+			cube_compatible,
 			mip_levels,
 			staging,
 		}
@@ -310,9 +320,19 @@ impl Context {
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
+		cube_compatible: bool,
 		mip_levels: u32,
 	) -> ImageHandle {
-		let image = self.create_image_resource(name, extent, format, resource_uses, device_accesses, array_layers, mip_levels);
+		let image = self.create_image_resource(
+			name,
+			extent,
+			format,
+			resource_uses,
+			device_accesses,
+			array_layers,
+			cube_compatible,
+			mip_levels,
+		);
 		let (_, handle) = self.images.add(image);
 
 		if let Some(previous) = previous {
@@ -675,7 +695,7 @@ impl Context {
 		let mut resized = false;
 
 		for image_handle in image_handles.into_iter().flatten() {
-			let (current_extent, format, uses, access, array_layers, mip_levels) = {
+			let (current_extent, format, uses, access, array_layers, cube_compatible, mip_levels) = {
 				let image = self.images.resource(image_handle);
 				(
 					image.extent,
@@ -683,6 +703,7 @@ impl Context {
 					image.uses,
 					image.access,
 					image.array_layers,
+					image.cube_compatible,
 					image.mip_levels,
 				)
 			};
@@ -692,8 +713,16 @@ impl Context {
 			}
 
 			let name = self.images.resource(image_handle).name.clone();
-			let replacement =
-				self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers, mip_levels);
+			let replacement = self.create_image_resource(
+				name.as_deref(),
+				extent,
+				format,
+				uses,
+				access,
+				array_layers,
+				cube_compatible,
+				mip_levels,
+			);
 			*self.images.resource_mut(image_handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
 			resized = true;
@@ -733,6 +762,7 @@ impl Context {
 					let uses = previous.uses;
 					let access = previous.access;
 					let array_layers = previous.array_layers;
+					let cube_compatible = previous.cube_compatible;
 					let mip_levels = previous.mip_levels;
 					let handle = self.create_image_internal(
 						Some(builder.previous),
@@ -742,6 +772,7 @@ impl Context {
 						uses,
 						access,
 						array_layers,
+						cube_compatible,
 						mip_levels,
 					);
 
@@ -815,6 +846,7 @@ impl Context {
 			image.uses,
 			image.access,
 			image.array_layers,
+			image.cube_compatible,
 			image.mip_levels,
 		);
 		*self.images.resource_mut(handle) = replacement;
@@ -1584,6 +1616,7 @@ impl Context {
 			builder.resource_uses,
 			builder.device_accesses,
 			layers,
+			builder.cube_compatible,
 			builder.mip_levels,
 		);
 		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
@@ -1733,6 +1766,7 @@ impl Context {
 			builder.resource_uses,
 			builder.device_accesses,
 			layers,
+			builder.cube_compatible,
 			builder.mip_levels,
 		);
 
@@ -1873,6 +1907,7 @@ impl Context {
 					uses | Uses::BlitSource,
 					DeviceAccesses::DeviceOnly,
 					1,
+					false,
 					1,
 				);
 

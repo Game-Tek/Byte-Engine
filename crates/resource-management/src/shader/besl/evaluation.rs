@@ -32,6 +32,7 @@ pub enum BindingKind {
 pub enum TextureView {
 	Texture2D,
 	Texture2DArray,
+	TextureCube,
 	Texture3D,
 }
 
@@ -540,6 +541,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					BindingKind::CombinedImageSampler {
 						view: match format.as_str() {
 							"Texture3D" => TextureView::Texture3D,
+							"TextureCube" => TextureView::TextureCube,
 							"ArrayTexture2D" => TextureView::Texture2DArray,
 							_ => TextureView::Texture2D,
 						},

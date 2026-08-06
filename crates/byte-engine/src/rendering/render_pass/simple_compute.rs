@@ -273,6 +273,7 @@ fn texture_view(view: TextureView) -> ghi::TextureViewTypes {
 	match view {
 		TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
 		TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+		TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
 		TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
 	}
 }

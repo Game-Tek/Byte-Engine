@@ -356,6 +356,7 @@ fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 					resource_management::resources::material::TextureView::Texture2D => 0,
 					resource_management::resources::material::TextureView::Texture2DArray => 1,
 					resource_management::resources::material::TextureView::Texture3D => 2,
+					resource_management::resources::material::TextureView::TextureCube => 3,
 				});
 			}
 			resource_management::resources::material::BindingKind::StorageImage => hasher.write_u8(2),
@@ -433,6 +434,7 @@ pub(crate) fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDes
 		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
 			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
 			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
 			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
 		}),
 		_ => descriptor,

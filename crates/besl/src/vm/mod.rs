@@ -106,6 +106,7 @@ pub enum ValueType {
 	Mat4x3F,
 	Texture2D,
 	Texture3D,
+	TextureCube,
 	ArrayTexture2D,
 	Struct {
 		name: String,
@@ -134,7 +135,7 @@ impl ValueType {
 			ValueType::Vec3F => 12,
 			ValueType::Mat4F => 64,
 			ValueType::Mat4x3F => 48,
-			ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D => 0,
+			ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D => 0,
 			ValueType::Struct { size, .. } => *size,
 		}
 	}
@@ -165,6 +166,7 @@ impl ValueType {
 			ValueType::Mat4x3F => "mat4x3f",
 			ValueType::Texture2D => "Texture2D",
 			ValueType::Texture3D => "Texture3D",
+			ValueType::TextureCube => "TextureCube",
 			ValueType::ArrayTexture2D => "ArrayTexture2D",
 			ValueType::Struct { name, .. } => name,
 		}
@@ -417,7 +419,7 @@ impl Buffer {
 			ValueType::PackedVec4F => Value::PackedVec4F(read_f32_array::<4>(bytes)?),
 			ValueType::Mat4F => Value::Mat4F(read_f32_array::<16>(bytes)?),
 			ValueType::Mat4x3F => Value::Mat4x3F(read_f32_array::<12>(bytes)?),
-			ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D => {
+			ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D => {
 				return Err(VmError::UnsupportedBufferLayout {
 					message: "Resource handles cannot be stored in CPU buffer memory".to_string(),
 				});

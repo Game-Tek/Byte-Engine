@@ -989,6 +989,7 @@ impl crate::device::Device for Device {
 			device_accesses: builder.device_accesses,
 			use_case: builder.use_case,
 			array_layers: builder.array_layers,
+			cube_compatible: builder.cube_compatible,
 		}
 	}
 
@@ -1058,8 +1059,22 @@ impl InnerDevice {
 		resource_uses: crate::Uses,
 		mip_levels: u32,
 		array_layers: Option<NonZeroU32>,
+		cube_compatible: bool,
 	) -> MemoryBackedResourceCreationResult<vk::Image> {
+		if cube_compatible {
+			assert!(
+				array_layers.is_some_and(|layers| layers.get() == 6)
+					&& extent.width() == extent.height()
+					&& extent.depth().max(1) == 1,
+				"Invalid Vulkan cubemap image. The most likely cause is that cube compatibility was requested for a non-square image or an image without six faces."
+			);
+		}
 		let image_create_info = vk::ImageCreateInfo::default()
+			.flags(if cube_compatible {
+				vk::ImageCreateFlags::CUBE_COMPATIBLE
+			} else {
+				vk::ImageCreateFlags::empty()
+			})
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
 			.extent(extent_into_vk_extent(extent))
@@ -1219,6 +1234,7 @@ pub struct FactoryImage {
 	pub(crate) device_accesses: crate::DeviceAccesses,
 	pub(crate) use_case: crate::UseCases,
 	pub(crate) array_layers: Option<NonZeroU32>,
+	pub(crate) cube_compatible: bool,
 }
 
 /// The `FactorySampler` struct carries Vulkan sampler parameters until a context interns them.

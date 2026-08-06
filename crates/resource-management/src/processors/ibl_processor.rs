@@ -22,6 +22,9 @@ const MAX_SPECULAR_WIDTH: u32 = 1024;
 const MAX_SPECULAR_HEIGHT: u32 = 512;
 const DIFFUSE_WIDTH: u32 = 32;
 const DIFFUSE_HEIGHT: u32 = 16;
+const MAX_SPECULAR_CUBE_FACE_SIZE: u32 = 256;
+const DIFFUSE_CUBE_FACE_SIZE: u32 = 8;
+const CUBE_FACE_COUNT: usize = 6;
 const DIFFUSE_SAMPLE_COUNT: usize = 1024;
 const SPECULAR_SAMPLE_COUNT: usize = 1024;
 
@@ -74,7 +77,7 @@ impl fmt::Display for IblBakeError {
 impl Error for IblBakeError {}
 
 /// Bakes normalized diffuse irradiance and eight GGX-prefiltered specular levels beside an EXR base image.
-pub fn bake_image_ibl_in<'a>(
+pub fn bake_image_ibl_lat_long_in<'a>(
 	source_extent: Extent,
 	source_rgba16f: &[u8],
 	allocator: &'a dyn Allocator,
@@ -163,6 +166,7 @@ pub fn bake_image_ibl_in<'a>(
 		gamma: Gamma::Linear,
 		extent,
 		mip_count,
+		array_layers: 1,
 	};
 
 	Ok(BakedImageIbl {
@@ -170,6 +174,104 @@ pub fn bake_image_ibl_in<'a>(
 		ibl: ImageIbl {
 			diffuse_irradiance: subresource([DIFFUSE_WIDTH, DIFFUSE_HEIGHT, 1], 1),
 			prefiltered_specular: subresource([specular_width, specular_height, 1], IBL_PREFILTERED_SPECULAR_MIP_COUNT),
+		},
+		streams,
+		data: data.into_boxed_slice(),
+	})
+}
+
+/// Bakes native cubemaps while retaining [`bake_image_ibl_lat_long_in`] for tools that need equirectangular maps.
+pub fn bake_image_ibl_in<'a>(
+	source_extent: Extent,
+	source_rgba16f: &[u8],
+	allocator: &'a dyn Allocator,
+) -> Result<BakedImageIbl<'a>, IblBakeError> {
+	let source_width = source_extent.width();
+	let source_height = source_extent.height();
+	if source_width == 0 || source_height == 0 {
+		return Err(IblBakeError::ZeroDimensions);
+	}
+	let root_size = image_byte_size(source_width, source_height)?;
+	if source_rgba16f.len() != root_size {
+		return Err(IblBakeError::BufferSizeMismatch {
+			expected: root_size,
+			got: source_rgba16f.len(),
+		});
+	}
+
+	let source = decode_source_radiance(source_rgba16f, allocator)?;
+	let source_mips = build_source_mips(source_width, source_height, source, allocator)?;
+	let specular_face_size = (source_width / 4)
+		.min(source_height / 2)
+		.min(MAX_SPECULAR_CUBE_FACE_SIZE)
+		.max(1);
+	let mut specular_sizes = [1_u32; IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize];
+	for (level, size) in specular_sizes.iter_mut().enumerate() {
+		*size = specular_face_size.checked_shr(level as u32).unwrap_or(0).max(1);
+	}
+	let cube_size = |face_size| {
+		image_byte_size(face_size, face_size)?
+			.checked_mul(CUBE_FACE_COUNT)
+			.ok_or(IblBakeError::DimensionsTooLarge)
+	};
+	let diffuse_size = cube_size(DIFFUSE_CUBE_FACE_SIZE)?;
+	let mut total_size = root_size.checked_add(diffuse_size).ok_or(IblBakeError::DimensionsTooLarge)?;
+	for &face_size in &specular_sizes {
+		total_size = total_size
+			.checked_add(cube_size(face_size)?)
+			.ok_or(IblBakeError::DimensionsTooLarge)?;
+	}
+	let mut data = Vec::new_in(allocator);
+	data.try_reserve_exact(total_size)
+		.map_err(|_| IblBakeError::AllocationFailed)?;
+	data.resize(total_size, 0);
+	data[..root_size].copy_from_slice(source_rgba16f);
+	let mut streams = Vec::with_capacity(IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
+	streams.push(StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, root_size, 0));
+
+	let mut offset = root_size;
+	for (level, &face_size) in specular_sizes.iter().enumerate() {
+		let level_size = cube_size(face_size)?;
+		let end = offset.checked_add(level_size).ok_or(IblBakeError::DimensionsTooLarge)?;
+		let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
+		if level == 0 {
+			resample_environment_cubemap(
+				&source_mips[0].pixels,
+				source_width,
+				source_height,
+				face_size,
+				&mut data[offset..end],
+			);
+		} else {
+			prefilter_specular_cubemap(&source_mips, face_size, roughness, &mut data[offset..end]);
+		}
+		streams.push(StreamDescription::new(
+			&ibl_prefiltered_specular_stream_name(level as u32),
+			level_size,
+			offset,
+		));
+		offset = end;
+	}
+	let diffuse_end = offset.checked_add(diffuse_size).ok_or(IblBakeError::DimensionsTooLarge)?;
+	convolve_diffuse_irradiance_cubemap(&source_mips, DIFFUSE_CUBE_FACE_SIZE, &mut data[offset..diffuse_end]);
+	streams.push(StreamDescription::new(
+		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
+		diffuse_size,
+		offset,
+	));
+
+	let subresource = |face_size, mip_count| ImageSubresource {
+		format: Formats::RGBA16F,
+		gamma: Gamma::Linear,
+		extent: [face_size, face_size, 1],
+		mip_count,
+		array_layers: 6,
+	};
+	Ok(BakedImageIbl {
+		root_extent: [source_width, source_height, 1],
+		ibl: ImageIbl {
+			diffuse_irradiance: subresource(DIFFUSE_CUBE_FACE_SIZE, 1),
+			prefiltered_specular: subresource(specular_face_size, IBL_PREFILTERED_SPECULAR_MIP_COUNT),
 		},
 		streams,
 		data: data.into_boxed_slice(),
@@ -310,6 +412,25 @@ fn resample_environment(
 	}
 }
 
+fn resample_environment_cubemap(
+	source: &[Radiance],
+	source_width: u32,
+	source_height: u32,
+	face_size: u32,
+	destination: &mut [u8],
+) {
+	for face in 0..CUBE_FACE_COUNT as u32 {
+		for y in 0..face_size {
+			for x in 0..face_size {
+				let direction = cubemap_texel_direction(face, x, y, face_size);
+				let radiance = sample_direction(source, source_width, source_height, direction);
+				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
+				write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+			}
+		}
+	}
+}
+
 /// Stores irradiance divided by pi, allowing Lambertian shading to multiply this map by albedo directly.
 fn convolve_diffuse_irradiance(
 	source_mips: &[SourceMip<'_>],
@@ -338,6 +459,33 @@ fn convolve_diffuse_irradiance(
 			let radiance = [(sum[0] * scale) as f32, (sum[1] * scale) as f32, (sum[2] * scale) as f32];
 			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
 			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+		}
+	}
+}
+
+fn convolve_diffuse_irradiance_cubemap(source_mips: &[SourceMip<'_>], face_size: u32, destination: &mut [u8]) {
+	let samples = cosine_hemisphere_samples();
+	for face in 0..CUBE_FACE_COUNT as u32 {
+		for y in 0..face_size {
+			for x in 0..face_size {
+				let normal = cubemap_texel_direction(face, x, y, face_size);
+				let (tangent, bitangent) = orthonormal_basis(normal);
+				let mut sum = [0.0_f64; 3];
+				for &local_direction in &samples {
+					let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
+					let radiance =
+						sample_filtered_direction(source_mips, direction, local_direction[2] / PI, DIFFUSE_SAMPLE_COUNT);
+					for channel in 0..3 {
+						sum[channel] += radiance[channel] as f64;
+					}
+				}
+				let scale = 1.0 / DIFFUSE_SAMPLE_COUNT as f64;
+				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
+				write_rgba16f(
+					&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL],
+					[(sum[0] * scale) as f32, (sum[1] * scale) as f32, (sum[2] * scale) as f32],
+				);
+			}
 		}
 	}
 }
@@ -389,6 +537,46 @@ fn prefilter_specular_level(
 			};
 			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
 			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+		}
+	}
+}
+
+fn prefilter_specular_cubemap(source_mips: &[SourceMip<'_>], face_size: u32, roughness: f32, destination: &mut [u8]) {
+	let samples = ggx_half_vector_samples(roughness);
+	for face in 0..CUBE_FACE_COUNT as u32 {
+		for y in 0..face_size {
+			for x in 0..face_size {
+				let normal = cubemap_texel_direction(face, x, y, face_size);
+				let (tangent, bitangent) = orthonormal_basis(normal);
+				let mut sum = [0.0_f64; 3];
+				let mut total_weight = 0.0_f64;
+				for &local_half_vector in &samples {
+					let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
+					let view_dot_half = dot(normal, half_vector).max(0.0);
+					let light = normalize(sub(scale(half_vector, 2.0 * view_dot_half), normal));
+					let normal_dot_light = dot(normal, light).max(0.0);
+					if normal_dot_light <= 0.0 {
+						continue;
+					}
+					let pdf = ggx_light_pdf(dot(normal, half_vector).max(0.0), view_dot_half, roughness);
+					let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
+					for channel in 0..3 {
+						sum[channel] += radiance[channel] as f64 * normal_dot_light as f64;
+					}
+					total_weight += normal_dot_light as f64;
+				}
+				let radiance = if total_weight > 0.0 {
+					[
+						(sum[0] / total_weight) as f32,
+						(sum[1] / total_weight) as f32,
+						(sum[2] / total_weight) as f32,
+					]
+				} else {
+					sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, normal)
+				};
+				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
+				write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+			}
 		}
 	}
 }
@@ -483,6 +671,21 @@ fn texel_direction(x: u32, y: u32, width: u32, height: u32) -> Vector3 {
 	[cos_latitude * cos_longitude, sin_latitude, cos_latitude * sin_longitude]
 }
 
+/// Maps the API-standard +X, -X, +Y, -Y, +Z, -Z face order to a world direction.
+fn cubemap_texel_direction(face: u32, x: u32, y: u32, face_size: u32) -> Vector3 {
+	let u = 2.0 * (x as f32 + 0.5) / face_size as f32 - 1.0;
+	let v = 2.0 * (y as f32 + 0.5) / face_size as f32 - 1.0;
+	normalize(match face {
+		0 => [1.0, -v, -u],
+		1 => [-1.0, -v, u],
+		2 => [u, 1.0, v],
+		3 => [u, -1.0, -v],
+		4 => [u, -v, 1.0],
+		5 => [-u, -v, -1.0],
+		_ => unreachable!("cubemap face index is always below six"),
+	})
+}
+
 fn sample_direction(source: &[Radiance], width: u32, height: u32, direction: Vector3) -> Radiance {
 	let direction = normalize(direction);
 	let u = direction[2].atan2(direction[0]) / TAU + 0.5;
@@ -573,7 +776,8 @@ mod tests {
 	use super::{
 		bake_image_ibl_in, build_source_mips, dot, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
 		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, scale, sub,
-		tangent_to_world, IblBakeError, Radiance, BYTES_PER_RGBA16F_PIXEL, DIFFUSE_HEIGHT, DIFFUSE_WIDTH,
+		tangent_to_world, IblBakeError, Radiance, BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE,
+		DIFFUSE_HEIGHT, DIFFUSE_WIDTH,
 	};
 	use crate::resources::image::{
 		ibl_prefiltered_specular_stream_name, IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT,
@@ -670,8 +874,13 @@ mod tests {
 			"fixed sampling must bake stable bytes"
 		);
 		assert_eq!(first.root_extent, [4, 2, 1]);
-		assert_eq!(first.ibl.diffuse_irradiance.extent, [DIFFUSE_WIDTH, DIFFUSE_HEIGHT, 1]);
-		assert_eq!(first.ibl.prefiltered_specular.extent, [4, 2, 1]);
+		assert_eq!(
+			first.ibl.diffuse_irradiance.extent,
+			[DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_CUBE_FACE_SIZE, 1]
+		);
+		assert_eq!(first.ibl.diffuse_irradiance.array_layers, 6);
+		assert_eq!(first.ibl.prefiltered_specular.extent, [1, 1, 1]);
+		assert_eq!(first.ibl.prefiltered_specular.array_layers, 6);
 		assert_eq!(first.ibl.prefiltered_specular.mip_count, IBL_PREFILTERED_SPECULAR_MIP_COUNT);
 		assert_eq!(first.streams.len(), IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
 
@@ -682,7 +891,7 @@ mod tests {
 		assert_eq!(root.size(), 4 * 2 * BYTES_PER_RGBA16F_PIXEL);
 		assert_eq!(specular_zero.name(), ibl_prefiltered_specular_stream_name(0));
 		assert_eq!(specular_zero.offset(), root.size());
-		assert_eq!(specular_zero.size(), root.size());
+		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		assert_eq!(first.streams.last().unwrap().name(), IBL_DIFFUSE_IRRADIANCE_STREAM_NAME);
 
 		for pixel in first.data[root.offset()..root.offset() + root.size()].chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
@@ -696,8 +905,7 @@ mod tests {
 		}
 
 		let mut expected_offset = root.size();
-		let mut expected_width = 4_u32;
-		let mut expected_height = 2_u32;
+		let mut expected_face_size = 1_u32;
 		for (level, stream) in first.streams[1..1 + IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize]
 			.iter()
 			.enumerate()
@@ -706,11 +914,10 @@ mod tests {
 			assert_eq!(stream.offset(), expected_offset);
 			assert_eq!(
 				stream.size(),
-				expected_width as usize * expected_height as usize * BYTES_PER_RGBA16F_PIXEL
+				CUBE_FACE_COUNT * expected_face_size as usize * expected_face_size as usize * BYTES_PER_RGBA16F_PIXEL
 			);
 			expected_offset += stream.size();
-			expected_width = (expected_width / 2).max(1);
-			expected_height = (expected_height / 2).max(1);
+			expected_face_size = (expected_face_size / 2).max(1);
 		}
 		assert_eq!(first.streams.last().unwrap().offset(), expected_offset);
 		assert_eq!(expected_offset + first.streams.last().unwrap().size(), first.data.len());
@@ -724,10 +931,10 @@ mod tests {
 		let specular_zero = &baked.streams[1];
 
 		assert_eq!(baked.root_extent, [1025, 1, 1]);
-		assert_eq!(baked.ibl.prefiltered_specular.extent, [1024, 1, 1]);
+		assert_eq!(baked.ibl.prefiltered_specular.extent, [1, 1, 1]);
 		assert_eq!(root.size(), source.len());
 		assert_eq!(&baked.data[root.offset()..root.offset() + root.size()], source.as_slice());
-		assert_eq!(specular_zero.size(), 1024 * BYTES_PER_RGBA16F_PIXEL);
+		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		for pixel in baked.data[specular_zero.offset()..specular_zero.offset() + specular_zero.size()]
 			.chunks_exact(BYTES_PER_RGBA16F_PIXEL)
 		{
@@ -743,6 +950,21 @@ mod tests {
 
 		assert_eq!(at_zero, [4.0, 0.0, 0.0]);
 		assert_eq!(at_one, at_zero);
+	}
+
+	#[test]
+	fn cubemap_face_centers_follow_the_native_api_face_order() {
+		let expected = [
+			[1.0, 0.0, 0.0],
+			[-1.0, 0.0, 0.0],
+			[0.0, 1.0, 0.0],
+			[0.0, -1.0, 0.0],
+			[0.0, 0.0, 1.0],
+			[0.0, 0.0, -1.0],
+		];
+		for (face, expected) in expected.into_iter().enumerate() {
+			assert_eq!(super::cubemap_texel_direction(face as u32, 0, 0, 1), expected);
+		}
 	}
 
 	#[test]

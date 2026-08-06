@@ -1437,6 +1437,9 @@ impl Device {
 
 	fn null_texture_uav_desc(texture_view_type: TextureViewTypes) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
 		match texture_view_type {
+			TextureViewTypes::TextureCube => {
+				panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.")
+			}
 			TextureViewTypes::Texture2DArray => D3D12_UNORDERED_ACCESS_VIEW_DESC {
 				Format: DXGI_FORMAT_R32_UINT,
 				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
@@ -1534,6 +1537,9 @@ impl Device {
 				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
 			);
 		}
+		if texture_view_type == TextureViewTypes::TextureCube {
+			panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.");
+		}
 		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
 			assert!(
 				array_layers <= 1,
@@ -1569,6 +1575,18 @@ impl Device {
 
 	fn null_texture_srv_desc(texture_view_type: TextureViewTypes) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
 		match texture_view_type {
+			TextureViewTypes::TextureCube => D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBE,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					TextureCube: D3D12_TEXCUBE_SRV {
+						MostDetailedMip: 0,
+						MipLevels: 1,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			},
 			TextureViewTypes::Texture2DArray => D3D12_SHADER_RESOURCE_VIEW_DESC {
 				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
 				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
@@ -1631,6 +1649,24 @@ impl Device {
 			panic!(
 				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
 			);
+		}
+		if texture_view_type == TextureViewTypes::TextureCube {
+			assert!(
+				layer.is_none() && array_layers == 6,
+				"Invalid DX12 cubemap descriptor view. The most likely cause is that the image is not a six-layer cubemap."
+			);
+			return D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBE,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					TextureCube: D3D12_TEXCUBE_SRV {
+						MostDetailedMip: most_detailed_mip,
+						MipLevels: mip_count,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			};
 		}
 		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
 			assert!(
@@ -7311,24 +7347,30 @@ impl Device {
 		} else {
 			copy.source_bytes_per_image
 		};
+		let array_layers = image.array_layers.max(1) as usize;
+		let mip_levels = image.mip_levels;
 		let source_bytes = self.buffer_range_for_sequence(
 			copy.source_buffer,
 			copy.source_offset,
-			source_image_pitch * extent.depth().max(1) as usize,
+			source_image_pitch * extent.depth().max(1) as usize * array_layers,
 			sequence_index,
 		);
-		self.record_image_upload(
-			command_buffer_handle,
-			&command_list,
-			copy.destination_image,
-			destination,
-			format,
-			extent,
-			&source_bytes,
-			source_row_pitch,
-			source_image_pitch,
-			copy.destination_mip_level,
-		);
+		for layer in 0..array_layers {
+			let start = layer * source_image_pitch;
+			let end = start + source_image_pitch;
+			self.record_image_upload(
+				command_buffer_handle,
+				&command_list,
+				copy.destination_image,
+				destination.clone(),
+				format,
+				extent,
+				&source_bytes[start..end],
+				source_row_pitch,
+				source_image_pitch,
+				copy.destination_mip_level + layer as u32 * mip_levels,
+			);
+		}
 	}
 
 	pub(crate) fn record_image_data_write(

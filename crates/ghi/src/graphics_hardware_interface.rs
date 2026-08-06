@@ -529,6 +529,7 @@ pub struct DescriptorSetBindingTemplate {
 pub enum TextureViewTypes {
 	Texture2D,
 	Texture2DArray,
+	TextureCube,
 	Texture3D,
 }
 

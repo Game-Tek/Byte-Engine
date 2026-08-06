@@ -1944,12 +1944,14 @@ const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDe
 	ghi::ResourceSlot::new(1054),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
-);
+)
+.texture_view_type(ghi::TextureViewTypes::TextureCube);
 const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1055),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
-);
+)
+.texture_view_type(ghi::TextureViewTypes::TextureCube);
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};

@@ -372,6 +372,8 @@ impl VisibilityPipelineResourceManager {
 			|| ibl.prefiltered_specular.mip_count as usize != IBL_SPECULAR_LEVEL_COUNT
 			|| ibl.diffuse_irradiance.gamma != resource_management::types::Gamma::Linear
 			|| ibl.prefiltered_specular.gamma != resource_management::types::Gamma::Linear
+			|| ibl.diffuse_irradiance.array_layers != 6
+			|| ibl.prefiltered_specular.array_layers != 6
 		{
 			log::error!(
 				"Visibility environment IBL metadata is unsupported for {}. The most likely cause is that the baked image does not contain one linear diffuse map and {} linear specular levels.",
@@ -412,9 +414,9 @@ impl VisibilityPipelineResourceManager {
 			return Err(());
 		}
 
-		let mut diffuse_data = vec![0u8; compact_image_byte_size(diffuse_format, diffuse_extent)];
+		let mut diffuse_data = vec![0u8; compact_image_byte_size(diffuse_format, diffuse_extent) * 6];
 		let mut specular_data: [Vec<u8>; IBL_SPECULAR_LEVEL_COUNT] =
-			std::array::from_fn(|level| vec![0u8; compact_image_byte_size(specular_format, specular_extents[level])]);
+			std::array::from_fn(|level| vec![0u8; compact_image_byte_size(specular_format, specular_extents[level]) * 6]);
 		let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|level| {
 			resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
 		});
@@ -443,7 +445,7 @@ impl VisibilityPipelineResourceManager {
 		}
 		drop(loaded);
 
-		let diffuse_upload = make_texture_upload(diffuse_format, diffuse_extent, &diffuse_data).ok_or_else(|| {
+		let diffuse_upload = make_layered_texture_upload(diffuse_format, diffuse_extent, 6, &diffuse_data).ok_or_else(|| {
 			log::error!(
 				"Visibility diffuse IBL upload preparation failed for {}. The most likely cause is that its stream size does not match its format and extent.",
 				id
@@ -452,7 +454,7 @@ impl VisibilityPipelineResourceManager {
 		let specular_uploads = specular_data
 			.iter()
 			.zip(specular_extents)
-			.map(|(data, extent)| make_texture_upload(specular_format, extent, data))
+			.map(|(data, extent)| make_layered_texture_upload(specular_format, extent, 6, data))
 			.collect::<Option<Vec<_>>>()
 			.ok_or_else(|| {
 				log::error!(
@@ -473,6 +475,7 @@ impl VisibilityPipelineResourceManager {
 			ghi::image::Builder::new(diffuse_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(&diffuse_name)
 				.extent(diffuse_extent)
+				.cube_compatible()
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
@@ -481,6 +484,7 @@ impl VisibilityPipelineResourceManager {
 			ghi::image::Builder::new(specular_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(&specular_name)
 				.extent(specular_extents[0])
+				.cube_compatible()
 				.mip_levels(IBL_SPECULAR_LEVEL_COUNT as u32)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
@@ -1754,14 +1758,25 @@ fn stage_texture_upload(
 
 /// Builds row-padded upload data compatible with the transfer command buffer image copy path.
 fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> Option<TextureUpload> {
+	make_layered_texture_upload(format, extent, 1, source)
+}
+
+/// Builds row-padded upload data with one image pitch per array layer.
+fn make_layered_texture_upload(
+	format: ghi::Formats,
+	extent: Extent,
+	layer_count: usize,
+	source: &[u8],
+) -> Option<TextureUpload> {
 	let (source_bytes_per_row, row_count, compact_bytes_per_image) =
 		format.compact_copy_layout(extent.width().max(1), extent.height().max(1));
-	if source.len() < compact_bytes_per_image {
+	let compact_size = compact_bytes_per_image.checked_mul(layer_count)?;
+	if source.len() < compact_size {
 		return None;
 	}
 	assert_eq!(
 		source.len(),
-		compact_bytes_per_image,
+		compact_size,
 		"Texture upload source size mismatch. The most likely cause is that the baked texture payload does not match the runtime texture layout. format={format:?}, extent={extent:?}, source_len={}, source_bytes_per_row={source_bytes_per_row}, row_count={row_count}, expected={compact_bytes_per_image}",
 		source.len()
 	);
@@ -1777,29 +1792,31 @@ fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> O
 		source_bytes_per_image >= compact_bytes_per_image,
 		"Texture upload padded image is smaller than compact image. The most likely cause is an invalid row count or row pitch. format={format:?}, extent={extent:?}, compact_bytes_per_image={compact_bytes_per_image}, source_bytes_per_image={source_bytes_per_image}, row_count={row_count}, padded_bytes_per_row={padded_bytes_per_row}"
 	);
-	let mut data = vec![0u8; source_bytes_per_image];
+	let mut data = vec![0u8; source_bytes_per_image.checked_mul(layer_count)?];
 
-	for row in 0..row_count {
-		let source_offset = row * source_bytes_per_row;
-		let destination_offset = row * padded_bytes_per_row;
-		let source_end = source_offset + source_bytes_per_row;
-		let destination_end = destination_offset + source_bytes_per_row;
-		assert!(
+	for layer in 0..layer_count {
+		for row in 0..row_count {
+			let source_offset = layer * compact_bytes_per_image + row * source_bytes_per_row;
+			let destination_offset = layer * source_bytes_per_image + row * padded_bytes_per_row;
+			let source_end = source_offset + source_bytes_per_row;
+			let destination_end = destination_offset + source_bytes_per_row;
+			assert!(
 			source_end <= source.len(),
 			"Texture upload source row is out of bounds. The most likely cause is a bad compact row pitch for this format. format={format:?}, extent={extent:?}, row={row}, row_count={row_count}, source_offset={source_offset}, source_end={source_end}, source_len={}, source_bytes_per_row={source_bytes_per_row}",
 			source.len()
 		);
-		assert!(
+			assert!(
 			destination_end <= data.len(),
 			"Texture upload padded row is out of bounds. The most likely cause is a bad padded row pitch for this format. format={format:?}, extent={extent:?}, row={row}, row_count={row_count}, destination_offset={destination_offset}, destination_end={destination_end}, data_len={}, padded_bytes_per_row={padded_bytes_per_row}",
 			data.len()
 		);
-		let source_row = &source[source_offset..source_end];
-		data[destination_offset..destination_end].copy_from_slice(source_row);
+			let source_row = &source[source_offset..source_end];
+			data[destination_offset..destination_end].copy_from_slice(source_row);
+		}
 	}
 	assert_eq!(
 		data.len(),
-		source_bytes_per_image,
+		source_bytes_per_image * layer_count,
 		"Texture upload output size mismatch. The most likely cause is that the padded upload allocation changed during row copy. format={format:?}, extent={extent:?}, data_len={}, expected={source_bytes_per_image}",
 		data.len()
 	);
@@ -1935,15 +1952,35 @@ mod tests {
 	}
 
 	#[test]
+	fn cubemap_upload_preserves_every_face_and_image_pitch() {
+		let extent = Extent::square(2);
+		let compact_face_size = 2 * 2 * 8;
+		let source = (0..compact_face_size * 6).map(|value| value as u8).collect::<Vec<_>>();
+		let upload = make_layered_texture_upload(ghi::Formats::RGBA16F, extent, 6, &source).expect("cubemap upload");
+		assert_eq!(upload.source_bytes_per_image, 512);
+		assert_eq!(upload.data.len(), 512 * 6);
+		for face in 0..6 {
+			for row in 0..2 {
+				let source_start = face * compact_face_size + row * 16;
+				let upload_start = face * 512 + row * 256;
+				assert_eq!(
+					&upload.data[upload_start..upload_start + 16],
+					&source[source_start..source_start + 16]
+				);
+			}
+		}
+	}
+
+	#[test]
 	fn environment_specular_streams_form_one_gpu_mip_chain() {
 		let extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
-			std::array::from_fn(|level| environment_mip_extent([1024, 512, 1], level as u32));
+			std::array::from_fn(|level| environment_mip_extent([256, 256, 1], level as u32));
 
-		assert_eq!(extents[0], Extent::new(1024, 512, 1));
-		assert_eq!(extents[1], Extent::new(512, 256, 1));
-		assert_eq!(extents[7], Extent::new(8, 4, 1));
-		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[0]), 1024 * 512 * 8);
-		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[7]), 8 * 4 * 8);
+		assert_eq!(extents[0], Extent::square(256));
+		assert_eq!(extents[1], Extent::square(128));
+		assert_eq!(extents[7], Extent::square(2));
+		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[0]), 256 * 256 * 8);
+		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[7]), 2 * 2 * 8);
 	}
 }
 

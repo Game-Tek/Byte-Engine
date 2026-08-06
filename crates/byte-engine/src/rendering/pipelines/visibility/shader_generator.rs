@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
-use besl::{NodeReference, parser::Node};
-use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
+use besl::{parser::Node, NodeReference};
+use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
 use crate::rendering::pipelines::visibility::{
-	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
 	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 };
 
@@ -1136,7 +1136,8 @@ sample_shadow: fn (
 }
 "#;
 
-const ENVIRONMENT_IRRADIANCE_SOURCE: &str = r#"
+#[allow(dead_code)]
+const ENVIRONMENT_LAT_LONG_IRRADIANCE_SOURCE: &str = r#"
 sample_environment_irradiance: fn (normalized_direction: vec3f) -> vec3f {
 	// Material evaluation normalizes the shading normal before environment lighting.
 	let environment_uv: vec2f = vec2f(
@@ -1151,7 +1152,8 @@ sample_environment_irradiance: fn (normalized_direction: vec3f) -> vec3f {
 }
 "#;
 
-const ENVIRONMENT_SPECULAR_SOURCE: &str = r#"
+#[allow(dead_code)]
+const ENVIRONMENT_LAT_LONG_SPECULAR_SOURCE: &str = r#"
 sample_environment_specular: fn (normalized_direction: vec3f, roughness: f32) -> vec3f {
 	// Reflecting a normalized view vector around a normalized shading normal preserves length.
 	let environment_uv: vec2f = vec2f(
@@ -1168,6 +1170,21 @@ sample_environment_specular: fn (normalized_direction: vec3f, roughness: f32) ->
 	let upper_half_texel: f32 = 0.5 * upper_level_scale / f32(base_extent.y);
 	environment_uv.y = clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel);
 	let environment_sample: vec4f = texture_lod(environment_specular, environment_uv, specular_level);
+	return vec3f(environment_sample.x, environment_sample.y, environment_sample.z);
+}
+"#;
+
+const ENVIRONMENT_IRRADIANCE_SOURCE: &str = r#"
+sample_environment_irradiance: fn (normalized_direction: vec3f) -> vec3f {
+	let environment_sample: vec4f = texture_lod(environment_irradiance, normalized_direction, 0.0);
+	return vec3f(environment_sample.x, environment_sample.y, environment_sample.z);
+}
+"#;
+
+const ENVIRONMENT_SPECULAR_SOURCE: &str = r#"
+sample_environment_specular: fn (normalized_direction: vec3f, roughness: f32) -> vec3f {
+	let specular_level: f32 = clamp(roughness, 0.0, 1.0) * 7.0;
+	let environment_sample: vec4f = texture_lod(environment_specular, normalized_direction, specular_level);
 	return vec3f(environment_sample.x, environment_sample.y, environment_sample.z);
 }
 "#;
@@ -1467,8 +1484,15 @@ impl VisibilityShaderScope {
 			false,
 		);
 		let cone_shadow_map = Node::binding("cone_shadow_map", Node::combined_array_image_sampler(), 1064, true, false);
-		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
-		let environment_specular = Node::binding("environment_specular", Node::combined_image_sampler(), 1055, true, false);
+		let environment_irradiance = Node::binding(
+			"environment_irradiance",
+			Node::combined_cube_image_sampler(),
+			1054,
+			true,
+			false,
+		);
+		let environment_specular =
+			Node::binding("environment_specular", Node::combined_cube_image_sampler(), 1055, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]);
 
@@ -1604,10 +1628,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
-	use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
+	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 	use resource_management::pbr::{
-		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
-		generate_textured_brdf_program,
+		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
+		BrdfValue,
 	};
 	use resource_management::shader::besl::backends::{
 		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
@@ -2256,9 +2280,7 @@ mod tests {
 		assert!(msl.contains("resources.ao.read(pixel_coordinates).x"));
 		assert!(glsl.contains("texelFetch(shadow_map, ivec3(ivec2(shadow_texel),int(shadow_layer)),0).x"));
 		assert!(hlsl.contains("shadow_map.Load(int4(shadow_texel, int(shadow_layer), 0)).x"));
-		assert!(
-			hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)")
-		);
+		assert!(hlsl.contains("environment_specular.SampleLevel(environment_specular_sampler, environment_uv, specular_level)"));
 		assert!(glsl.contains("textureLod(environment_specular, environment_uv, specular_level)"));
 		assert!(msl.contains(
 			"resources.environment_specular.sample(resources.environment_specular_sampler, environment_uv, metal::level(specular_level))"
@@ -2320,6 +2342,10 @@ mod tests {
 		assert!(!source.contains("sample_analytical_reflection"));
 		assert!(!source.contains("environment_sample.a"));
 		assert!(!source.contains("lower_sample.a"));
+		assert!(source.contains("texturecube<float> environment_irradiance"));
+		assert!(source.contains("texturecube<float> environment_specular"));
+		assert!(!source.contains("atan2("));
+		assert!(!source.contains("asin("));
 	}
 
 	#[test]
@@ -2501,5 +2527,4 @@ mod tests {
 			"Failed to compile the shared-texture MSL material pass. The most likely cause is invalid generated Metal source.",
 		);
 	}
-
 }

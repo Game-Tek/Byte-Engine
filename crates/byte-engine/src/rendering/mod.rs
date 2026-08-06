@@ -138,6 +138,7 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
 			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
 			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
 			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
 		}),
 		_ => descriptor,

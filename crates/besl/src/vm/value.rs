@@ -58,6 +58,7 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 		| ValueType::Mat4x3F
 		| ValueType::Texture2D
 		| ValueType::Texture3D
+		| ValueType::TextureCube
 		| ValueType::ArrayTexture2D
 		| ValueType::Struct { .. } => {
 			return Err(VmError::InvalidLiteral {

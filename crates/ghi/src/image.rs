@@ -31,6 +31,7 @@ pub struct Builder<'a> {
 	pub(crate) use_case: UseCases,
 	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<NonZeroU32>,
+	pub(crate) cube_compatible: bool,
 	pub(crate) optimized_clear_value: Option<ClearValue>,
 }
 
@@ -49,6 +50,7 @@ impl<'a> Builder<'a> {
 			use_case: UseCases::STATIC,
 			mip_levels: 1,
 			array_layers: None,
+			cube_compatible: false,
 			optimized_clear_value: None,
 		}
 	}
@@ -80,6 +82,13 @@ impl<'a> Builder<'a> {
 
 	pub fn array_layers(mut self, array_layers: Option<NonZeroU32>) -> Self {
 		self.array_layers = array_layers;
+		self
+	}
+
+	/// Makes a six-layer 2D image usable through native cubemap views.
+	pub fn cube_compatible(mut self) -> Self {
+		self.array_layers = NonZeroU32::new(6);
+		self.cube_compatible = true;
 		self
 	}
 
@@ -139,6 +148,7 @@ mod tests {
 		assert_eq!(builder.use_case, UseCases::STATIC);
 		assert_eq!(builder.mip_levels, 1);
 		assert_eq!(builder.array_layers, None);
+		assert!(!builder.cube_compatible);
 		assert_eq!(builder.optimized_clear_value, None);
 	}
 
@@ -150,7 +160,7 @@ mod tests {
 			.device_accesses(DeviceAccesses::HostToDevice)
 			.use_case(UseCases::DYNAMIC)
 			.mip_levels(7)
-			.array_layers(NonZeroU32::new(6))
+			.cube_compatible()
 			.optimized_clear_value(crate::ClearValue::Depth(0.0));
 
 		assert_eq!(builder.get_name(), Some("albedo"));
@@ -160,6 +170,7 @@ mod tests {
 		assert_eq!(builder.use_case, UseCases::DYNAMIC);
 		assert_eq!(builder.mip_levels, 7);
 		assert_eq!(builder.array_layers, NonZeroU32::new(6));
+		assert!(builder.cube_compatible);
 		assert_eq!(builder.optimized_clear_value, Some(crate::ClearValue::Depth(0.0)));
 	}
 

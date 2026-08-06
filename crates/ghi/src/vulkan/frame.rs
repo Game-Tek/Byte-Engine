@@ -608,6 +608,7 @@ impl<'a> Frame<'a> {
 			.use_case(image.use_case);
 		builder.name = image.name.as_deref();
 		builder.array_layers = image.array_layers;
+		builder.cube_compatible = image.cube_compatible;
 
 		self.device.build_image(builder)
 	}

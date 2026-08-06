@@ -1969,7 +1969,7 @@ impl<'a> Compiler<'a> {
 				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
 				if !matches!(
 					value_type,
-					ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D
+					ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D
 				) {
 					return Err(VmError::TypeMismatch {
 						expected: "texture resource".to_string(),
@@ -2892,6 +2892,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"mat4x3f" => Ok(ValueType::Mat4x3F),
 		"Texture2D" => Ok(ValueType::Texture2D),
 		"Texture3D" => Ok(ValueType::Texture3D),
+		"TextureCube" => Ok(ValueType::TextureCube),
 		"ArrayTexture2D" => Ok(ValueType::ArrayTexture2D),
 		_ => {
 			let fields = match node.borrow().node() {
@@ -2911,7 +2912,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 fn is_resource_type(value_type: &ValueType) -> bool {
 	matches!(
 		value_type,
-		ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D
+		ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D
 	)
 }
 

@@ -26,6 +26,13 @@ pub struct ImageSubresource {
 	pub extent: [u32; 3],
 	/// Number of mip levels stored for this subresource, including its base level.
 	pub mip_count: u32,
+	/// Number of independently addressable image layers. Cubemaps use six.
+	#[serde(default = "default_array_layers")]
+	pub array_layers: u32,
+}
+
+fn default_array_layers() -> u32 {
+	1
 }
 
 /// The `ImageIbl` struct groups the baked image-based-lighting maps derived from an environment image.
@@ -83,12 +90,14 @@ mod tests {
 					gamma: Gamma::Linear,
 					extent: [32, 16, 1],
 					mip_count: 1,
+					array_layers: 1,
 				},
 				prefiltered_specular: ImageSubresource {
 					format: Formats::RGBA16F,
 					gamma: Gamma::Linear,
 					extent: [128, 64, 1],
 					mip_count: 8,
+					array_layers: 1,
 				},
 			}),
 		};

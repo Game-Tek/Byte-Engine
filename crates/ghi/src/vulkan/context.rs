@@ -511,6 +511,7 @@ impl Context {
 					proxy_format,
 					crate::DeviceAccesses::DeviceOnly,
 					None,
+					false,
 					proxy_extent,
 					proxy_uses,
 					1,
@@ -584,6 +585,7 @@ impl Context {
 						proxy_format,
 						crate::DeviceAccesses::DeviceOnly,
 						None,
+						false,
 						extent,
 						proxy_uses,
 						1,
@@ -903,6 +905,7 @@ impl Context {
 						previous_image.format_,
 						previous_image.access,
 						previous_image.layers,
+						previous_image.cube_compatible,
 						previous_image.extent,
 						previous_image.uses,
 						previous_image.mip_levels,
@@ -1396,6 +1399,7 @@ impl Context {
 				format_: format,
 				uses,
 				layers: None,
+				cube_compatible: false,
 				mip_levels: 1,
 				owns_image: false,
 			}
@@ -1666,6 +1670,7 @@ impl Context {
 		format: crate::Formats,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
+		cube_compatible: bool,
 		extent: Extent,
 		resource_uses: crate::Uses,
 		mip_levels: u32,
@@ -1687,6 +1692,7 @@ impl Context {
 				format_: format,
 				uses: resource_uses,
 				layers: array_layers,
+				cube_compatible,
 				mip_levels,
 				owns_image: true,
 			};
@@ -1702,8 +1708,15 @@ impl Context {
 			crate::Uses::empty()
 		});
 
-		let texture_creation_result =
-			self.create_vulkan_texture(name, extent, format, resource_uses | transfer_uses, mip_levels, array_layers);
+		let texture_creation_result = self.create_vulkan_texture(
+			name,
+			extent,
+			format,
+			resource_uses | transfer_uses,
+			mip_levels,
+			array_layers,
+			cube_compatible,
+		);
 
 		let uses_cpu_staging = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
 
@@ -1814,6 +1827,7 @@ impl Context {
 			format_: format,
 			uses: resource_uses,
 			layers: array_layers,
+			cube_compatible,
 			mip_levels,
 			owns_image: true,
 		}
@@ -1827,6 +1841,7 @@ impl Context {
 		format: crate::Formats,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
+		cube_compatible: bool,
 		extent: Extent,
 		resource_uses: crate::Uses,
 		mip_levels: u32,
@@ -1839,6 +1854,7 @@ impl Context {
 			format,
 			device_accesses,
 			array_layers,
+			cube_compatible,
 			extent,
 			resource_uses,
 			mip_levels,
@@ -1942,6 +1958,7 @@ impl Context {
 			image.format_,
 			image.access,
 			image.layers,
+			image.cube_compatible,
 			extent,
 			image.uses,
 			image.mip_levels,
@@ -2421,6 +2438,10 @@ impl Context {
 					if layer.is_some() { 1 } else { layers },
 				)
 			}
+			crate::TextureViewTypes::TextureCube => {
+				assert!(layer.is_none() && layers == 6, "Vulkan cubemap descriptor view mismatch. The most likely cause is that the image is not a six-layer cube-compatible image.");
+				(vk::ImageViewType::CUBE, 0, 6)
+			}
 			crate::TextureViewTypes::Texture3D => {
 				assert!(
 					layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
@@ -2841,6 +2862,7 @@ impl crate::context::Context for Context {
 				let format = current_image.format_;
 				let access = current_image.access;
 				let array_layers = current_image.layers;
+				let cube_compatible = current_image.cube_compatible;
 				let extent = current_image.extent;
 				let resource_uses = current_image.uses;
 				let mip_levels = current_image.mip_levels;
@@ -2852,6 +2874,7 @@ impl crate::context::Context for Context {
 					format,
 					access,
 					array_layers,
+					cube_compatible,
 					extent,
 					resource_uses,
 					mip_levels,
@@ -3397,6 +3420,7 @@ impl crate::context::ContextCreate for Context {
 			builder.format,
 			builder.device_accesses,
 			builder.array_layers,
+			builder.cube_compatible,
 			builder.extent,
 			builder.resource_uses,
 			builder.mip_levels,
@@ -3419,6 +3443,7 @@ impl crate::context::ContextCreate for Context {
 				builder.format,
 				builder.device_accesses,
 				builder.array_layers,
+				builder.cube_compatible,
 				builder.extent,
 				builder.resource_uses,
 				builder.mip_levels,

@@ -719,6 +719,40 @@ impl Texture {
 		texture.sample_with_sampler(uv, sampler)
 	}
 
+	/// Samples one array layer at an explicit LOD with deterministic reduction behavior.
+	fn sample_array_lod_with_sampler(
+		&self,
+		uv: [f32; 2],
+		layer: u32,
+		lod: f32,
+		sampler: Sampler,
+	) -> Result<Value, VmError> {
+		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
+		let texture = if level == 0 {
+			self
+		} else {
+			self.mips.get(level - 1).unwrap_or_else(|| self.mips.last().unwrap_or(self))
+		};
+		let (x0, x1, tx) = normalized_linear_axis(uv[0], texture.width);
+		let (y0, y1, ty) = normalized_linear_axis(uv[1], texture.height);
+		let samples = [
+			texture.fetch_texel([x0, y0, layer])?,
+			texture.fetch_texel([x1, y0, layer])?,
+			texture.fetch_texel([x0, y1, layer])?,
+			texture.fetch_texel([x1, y1, layer])?,
+		];
+		let sampled = match sampler.reduction_mode {
+			SamplerReductionMode::WeightedAverage => {
+				let top = lerp_rgba(samples[0], samples[1], tx);
+				let bottom = lerp_rgba(samples[2], samples[3], tx);
+				lerp_rgba(top, bottom, ty)
+			}
+			SamplerReductionMode::Min => reduce_rgba(samples, f32::min),
+			SamplerReductionMode::Max => reduce_rgba(samples, f32::max),
+		};
+		Ok(Value::Vec4F(sampled))
+	}
+
 	/// Samples a three-dimensional texture using trilinear interpolation.
 	pub fn sample_3d(&self, uvw: [f32; 3]) -> Result<Value, VmError> {
 		let x = normalized_linear_axis(uvw[0], self.width);

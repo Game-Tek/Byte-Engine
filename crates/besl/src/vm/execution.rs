@@ -894,7 +894,13 @@ impl ExecutableProgram {
 					let slot = resolve_resource_slot(*slot, registers)?;
 					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
 				}
-				Instruction::SampleTexture { register, slot, uv, lod } => {
+				Instruction::SampleTexture {
+					register,
+					slot,
+					uv,
+					lod,
+					reduction_mode,
+				} => {
 					let uv = read_register(registers, *uv)?;
 					let Value::Vec2F(uv) = uv else {
 						return Err(VmError::TypeMismatch {
@@ -905,6 +911,7 @@ impl ExecutableProgram {
 
 					let slot = resolve_resource_slot(*slot, registers)?;
 						let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
+						let sampler = reduction_mode.map(Sampler::new).unwrap_or(sampler);
 						let sampled = if let Some(lod) = lod {
 						let lod = read_register(registers, *lod)?;
 						let Value::F32(lod) = lod else {
@@ -918,6 +925,40 @@ impl ExecutableProgram {
 							texture.sample_with_sampler(uv, sampler)?
 					};
 					registers[*register] = Some(sampled);
+				}
+				Instruction::SampleTextureArray {
+					register,
+					slot,
+					uv,
+					layer,
+					lod,
+					reduction_mode,
+				} => {
+					let uv = read_register(registers, *uv)?;
+					let Value::Vec2F(uv) = uv else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec2F.name().to_string(),
+							found: uv.value_type().name().to_string(),
+						});
+					};
+					let layer = read_register(registers, *layer)?;
+					let Value::U32(layer) = layer else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: layer.value_type().name().to_string(),
+						});
+					};
+					let lod = read_register(registers, *lod)?;
+					let Value::F32(lod) = lod else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::F32.name().to_string(),
+							found: lod.value_type().name().to_string(),
+						});
+					};
+					let slot = resolve_resource_slot(*slot, registers)?;
+					let (texture, _) = descriptors.texture_and_sampler_mut(slot)?;
+					let sampler = Sampler::new(*reduction_mode);
+					registers[*register] = Some(texture.sample_array_lod_with_sampler(uv, layer, lod, sampler)?);
 				}
 				Instruction::SampleTexture3D { register, slot, uvw } => {
 					let uvw = read_register(registers, *uvw)?;

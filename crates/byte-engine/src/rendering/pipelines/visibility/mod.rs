@@ -1826,16 +1826,20 @@ mod tests {
 		}
 	}
 
-	/// Verifies one workgroup invocation emits all three max-depth levels for each atlas-packed cascade.
+	/// Verifies one SIMD group emits the retained 4x4 level for two adjacent tiles in every cascade.
 	#[test]
 	fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
 		let program = crate::rendering::shader_vm_test::compile(directional_shadow_depth_pyramid_program());
-		let layer_maximums = [0.2, 0.7, 0.4, 0.9];
-		let mut source = Texture::new_3d(8, 8, layer_maximums.len() as u32).expect("directional shadow array fixture");
-		for (layer, maximum) in layer_maximums.iter().copied().enumerate() {
+		let layer_count = 4u32;
+		let cell_maximum = |layer: u32, cell_x: u32, cell_y: u32| {
+			0.1 + layer as f32 * 0.15 + cell_y as f32 * 0.04 + cell_x as f32 * 0.01
+		};
+		let mut source = Texture::new_3d(16, 8, layer_count).expect("directional shadow array fixture");
+		for layer in 0..layer_count {
 			for y in 0..8 {
-				for x in 0..8 {
-					let depth = if x == layer as u32 && y == 7 - layer as u32 {
+				for x in 0..16 {
+					let maximum = cell_maximum(layer, x / 4, y / 4);
+					let depth = if x % 4 == layer && y % 4 == 3 - layer {
 						maximum
 					} else {
 						maximum * 0.5
@@ -1846,10 +1850,9 @@ mod tests {
 				}
 			}
 		}
-		let mut reduced_1 = empty_image(2, 8);
-		let mut reduced_2 = empty_image(1, 4);
+		let mut reduced_1 = empty_image(4, 8);
 
-		for layer in 0..layer_maximums.len() as u32 {
+		for layer in 0..layer_count {
 			let configs: [ExecutionConfig; DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE] = std::array::from_fn(|lane| {
 				let lane = lane as u32;
 				ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
@@ -1865,15 +1868,22 @@ mod tests {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut source);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut reduced_1);
-			descriptors.bind_image(ResourceSlot::new(1035), &mut reduced_2);
 			descriptors.bind_workgroup_state(&mut workgroup);
 			program.run_workgroup(&mut descriptors, &configs).expect(
 				"Failed to execute the fused directional shadow pyramid. The most likely cause is broken shared reduction synchronization or atlas layer addressing.",
 			);
 		}
 
-		for (layer, maximum) in layer_maximums.iter().copied().enumerate() {
-			assert_rgba_close(rgba(&reduced_2, [0, layer as u32]), [maximum, 0.0, 0.0, 1.0], 0.00001);
+		for layer in 0..layer_count {
+			for cell_y in 0..2 {
+				for cell_x in 0..4 {
+					assert_rgba_close(
+						rgba(&reduced_1, [cell_x, layer * 2 + cell_y]),
+						[cell_maximum(layer, cell_x, cell_y), 0.0, 0.0, 1.0],
+						0.00001,
+					);
+				}
+			}
 		}
 	}
 

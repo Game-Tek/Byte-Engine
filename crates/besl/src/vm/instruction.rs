@@ -1,6 +1,6 @@
 //! Private instruction and operator types shared by lowering and execution.
 
-use super::{ResourceSlot, Value, ValueType};
+use super::{ResourceSlot, SamplerReductionMode, Value, ValueType};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Instruction {
@@ -235,6 +235,15 @@ pub(super) enum Instruction {
 		slot: ResourceSlot,
 		uv: usize,
 		lod: Option<usize>,
+		reduction_mode: Option<SamplerReductionMode>,
+	},
+	SampleTextureArray {
+		register: usize,
+		slot: ResourceSlot,
+		uv: usize,
+		layer: usize,
+		lod: usize,
+		reduction_mode: SamplerReductionMode,
 	},
 	SampleTexture3D {
 		register: usize,

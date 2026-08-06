@@ -996,19 +996,30 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(']');
 			}
-			"texture_lod" => {
+			"texture_lod" | "downsample_min" | "downsample_max" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".SampleLevel(");
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str("_sampler, ");
-				self.emit_node_string(string, &arguments[1]);
+				if arguments.len() == 4 {
+					string.push_str("float3(");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(", float(");
+					self.emit_node_string(string, &arguments[2]);
+					string.push_str("))");
+				} else {
+					self.emit_node_string(string, &arguments[1]);
+				}
 				string.push_str(", ");
-				if let Some(lod) = arguments.get(2) {
+				if let Some(lod) = arguments.get(if arguments.len() == 4 { 3 } else { 2 }) {
 					self.emit_node_string(string, lod);
 				} else {
 					string.push_str("0.0");
 				}
 				string.push(')');
+				if name != "texture_lod" {
+					string.push_str(".x");
+				}
 			}
 			"image_atomic_or" => {
 				string.push_str("({ uint _previous; InterlockedOr(");

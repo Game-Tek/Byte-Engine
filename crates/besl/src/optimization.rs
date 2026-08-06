@@ -496,6 +496,8 @@ impl EffectAnalysis {
 			name.as_str(),
 			"sample"
 				| "texture_lod"
+				| "downsample_min"
+				| "downsample_max"
 				| "fetch" | "fetch_u32"
 				| "dot" | "cross"
 				| "length" | "normalize"

@@ -22,6 +22,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	mesh_stage_context: Option<MeshStageContext>,
 	in_buffer_binding_struct: bool,
 	packed_mat4x3_members: Vec<besl::NodeReference>,
+	downsample_strategy: DownsampleStrategy,
 }
 
 const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -39,6 +40,15 @@ fn buffer_address_space(memory_class: besl::BufferMemoryClass, write: bool) -> &
 pub enum ComputeBindingMode {
 	ArgumentBuffers,
 	BareResources,
+}
+
+/// Selects how BESL conservative 2x2 downsampling is implemented in MSL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DownsampleStrategy {
+	/// Gather four texels and reduce them in shader code on Metal targets without sampler reduction.
+	ShaderGather,
+	/// Use the texture's min/max reduction sampler on targets that support it.
+	NativeSamplerReduction,
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +124,18 @@ impl<A: Allocator + Clone> Generator<A> {
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
+			downsample_strategy: DownsampleStrategy::ShaderGather,
 		}
+	}
+
+	/// Selects the MSL implementation for `downsample_min` and `downsample_max`.
+	///
+	/// Keep the default gather path for older Apple GPUs. Select
+	/// [`DownsampleStrategy::NativeSamplerReduction`] only when the deployment target guarantees
+	/// hardware min/max sampler reduction and the bound sampler uses the matching reduction mode.
+	pub fn downsample_strategy(mut self, strategy: DownsampleStrategy) -> Self {
+		self.downsample_strategy = strategy;
+		self
 	}
 
 	pub fn minified(mut self, minified: bool) -> Self {
@@ -2618,6 +2639,43 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str("))");
 				return;
 			}
+			"downsample_min" | "downsample_max" => {
+				if self.downsample_strategy == DownsampleStrategy::ShaderGather {
+					string.push_str(if name == "downsample_min" {
+						"_besl_downsample_min("
+					} else {
+						"_besl_downsample_max("
+					});
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str(", ");
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str("_sampler, ");
+					self.emit_node_string(string, &arguments[1]);
+					string.push_str(", ");
+					if arguments.len() == 4 {
+						self.emit_node_string(string, &arguments[2]);
+						string.push_str(", ");
+						self.emit_node_string(string, &arguments[3]);
+					} else {
+						self.emit_node_string(string, &arguments[2]);
+					}
+					string.push(')');
+				} else {
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str(".sample(");
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str("_sampler, ");
+					self.emit_node_string(string, &arguments[1]);
+					if arguments.len() == 4 {
+						string.push_str(", ");
+						self.emit_node_string(string, &arguments[2]);
+					}
+					string.push_str(", metal::level(");
+					self.emit_node_string(string, &arguments[if arguments.len() == 4 { 3 } else { 2 }]);
+					string.push_str(")).x");
+				}
+				return;
+			}
 			_ => {}
 		}
 
@@ -3165,6 +3223,30 @@ impl<A: Allocator + Clone> Generator<A> {
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
+		// Metal gather has no explicit-LOD overload. Use it for mip zero and preserve explicit
+		// pyramid levels with four reads. Native reduction remains a generator strategy choice.
+		msl_block.push_str(
+			"inline float _besl_downsample_min(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
+			 \tfloat4 samples;\n\
+			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, int2(0), component::x); }\n\
+			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
+			 \treturn metal::min(metal::min(samples.x, samples.y), metal::min(samples.z, samples.w));\n\
+			 }\n\
+			 inline float _besl_downsample_max(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
+			 \tfloat4 samples;\n\
+			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, int2(0), component::x); }\n\
+			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, level).x, texture.read(b, level).x, texture.read(c, level).x, texture.read(d, level).x); }\n\
+			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
+			 }\n",
+		);
+		msl_block.push_str(
+			"inline float _besl_downsample_max(texture2d_array<float> texture, sampler texture_sampler, float2 uv, uint layer, float lod) {\n\
+			 \tfloat4 samples;\n\
+			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, layer, int2(0), component::x); }\n\
+			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, layer, level).x, texture.read(b, layer, level).x, texture.read(c, layer, level).x, texture.read(d, layer, level).x); }\n\
+			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
+			 }\n",
+		);
 		if !self.packed_mat4x3_members.is_empty() {
 			// MSL has no packed matrix type. Keep native float4x3 values in expressions and
 			// convert only where a logical mat4x3f crosses a buffer-storage boundary.
@@ -3706,6 +3788,49 @@ mod tests {
 		#[cfg(target_os = "macos")]
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-texture-lod-level-shadowing")
 			.expect("Expected qualified Metal level helper to compile when a BESL parameter is named level");
+	}
+
+	#[test]
+	fn conservative_downsampling_defaults_to_gather_and_keeps_a_native_sampler_path() {
+		let source = r#"
+			depth_texture: descriptor<Texture2D, 0, read>;
+			array_depth_texture: descriptor<Texture2DArray, 1, read>;
+			main: fn () -> void {
+				let minimum: f32 = downsample_min(depth_texture, vec2f(0.5, 0.5), 0.0);
+				let maximum: f32 = downsample_max(depth_texture, vec2f(0.5, 0.5), 0.0);
+				let array_maximum: f32 = downsample_max(array_depth_texture, vec2f(0.5, 0.5), 1, 0.0);
+				minimum;
+				maximum;
+				array_maximum;
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected conservative downsample source to link");
+		let main = root.get_main().expect("Expected conservative downsample source to define main");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
+		let fallback = Generator::new().minified(true).generate(&settings, &main).expect("Expected gather fallback MSL");
+		let native = Generator::new()
+			.minified(true)
+			.downsample_strategy(DownsampleStrategy::NativeSamplerReduction)
+			.generate(&settings, &main)
+			.expect("Expected native sampler-reduction MSL");
+
+		assert_string_contains!(fallback, "_besl_downsample_min(resources.depth_texture, resources.depth_texture_sampler");
+		assert_string_contains!(fallback, "_besl_downsample_max(resources.depth_texture, resources.depth_texture_sampler");
+		assert_string_contains!(fallback, ".gather(texture_sampler, uv, int2(0), component::x)");
+		assert_string_contains!(fallback, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
+		assert_string_contains!(fallback, "texture.read(a, level).x");
+		assert_string_contains!(
+			native,
+			".sample(resources.depth_texture_sampler, float2(0.5,0.5), metal::level(0.0)).x"
+		);
+		assert_string_contains!(
+			native,
+			".sample(resources.array_depth_texture_sampler, float2(0.5,0.5), 1, metal::level(0.0)).x"
+		);
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&fallback, "besl-downsample-gather")
+			.expect("Expected gather fallback MSL to compile natively");
 	}
 
 	#[test]

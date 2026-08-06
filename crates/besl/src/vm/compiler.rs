@@ -835,13 +835,39 @@ impl<'a> Compiler<'a> {
 					slot,
 					uv,
 					lod: None,
+					reduction_mode: None,
 				});
 				Ok(register)
 			}
-			"texture_lod" => {
+			"texture_lod" | "downsample_min" | "downsample_max" => {
+				if arguments.len() == 4 && name == "downsample_max" {
+					let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+					let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
+					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32, descriptor_layouts)?;
+					let sample_register = self.allocate_register();
+					self.instructions.push(Instruction::SampleTextureArray {
+						register: sample_register,
+						slot,
+						uv,
+						layer,
+						lod,
+						reduction_mode: SamplerReductionMode::Max,
+					});
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::Extract {
+						register,
+						source: sample_register,
+						index: 0,
+						value_type: ValueType::F32,
+					});
+					return Ok(register);
+				}
 				if arguments.len() != 2 && arguments.len() != 3 {
 					return Err(VmError::UnsupportedExpression {
-						message: "texture_lod requires a texture, UV coordinates, and an optional LOD.".to_string(),
+						message: format!(
+							"{name} requires a texture, UV coordinates, and an optional LOD; array maximum reduction also requires a layer."
+						),
 					});
 				}
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
@@ -851,16 +877,21 @@ impl<'a> Compiler<'a> {
 					.get(2)
 					.map(|lod| self.compile_value_expression(lod, &ValueType::F32, descriptor_layouts))
 					.transpose()?;
-				let register = self.allocate_register();
+				let sample_register = self.allocate_register();
 				match coord_type {
 					ValueType::Vec2F => self.instructions.push(Instruction::SampleTexture {
-						register,
+						register: sample_register,
 						slot,
 						uv: coord,
 						lod,
+						reduction_mode: match name.as_str() {
+							"downsample_min" => Some(SamplerReductionMode::Min),
+							"downsample_max" => Some(SamplerReductionMode::Max),
+							_ => None,
+						},
 					}),
 					ValueType::Vec3F => self.instructions.push(Instruction::SampleTexture3D {
-						register,
+						register: sample_register,
 						slot,
 						uvw: coord,
 					}),
@@ -871,7 +902,20 @@ impl<'a> Compiler<'a> {
 						});
 					}
 				}
-				Ok(register)
+				if name == "texture_lod" {
+					Ok(sample_register)
+				} else {
+					// Conservative downsampling is scalar because both production pyramids reduce depth.
+					// The instruction-level override keeps VM behavior independent of fixture sampler state.
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::Extract {
+						register,
+						source: sample_register,
+						index: 0,
+						value_type: ValueType::F32,
+					});
+					Ok(register)
+				}
 			}
 			"fetch" => {
 				if arguments.len() != 2 && arguments.len() != 3 {

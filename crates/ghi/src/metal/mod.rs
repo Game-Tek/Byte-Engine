@@ -254,6 +254,30 @@ fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Retained<mtl::
 	descriptor
 }
 
+/// Falls back to standard Metal sampling when the device cannot execute sampler reductions.
+fn apply_sampler_reduction_fallback(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	descriptor: &mtl::MTLSamplerDescriptor,
+) {
+	let reduction_mode = sampler_reduction_mode_for_device(
+		descriptor.reductionMode(),
+		device.supportsFamily(mtl::MTLGPUFamily::Apple10),
+	);
+	descriptor.setReductionMode(reduction_mode);
+}
+
+/// Selects the native Metal sampler mode without changing the cross-backend sampler contract.
+fn sampler_reduction_mode_for_device(
+	requested: mtl::MTLSamplerReductionMode,
+	supports_reduction: bool,
+) -> mtl::MTLSamplerReductionMode {
+	if supports_reduction {
+		requested
+	} else {
+		mtl::MTLSamplerReductionMode::WeightedAverage
+	}
+}
+
 /// Configures one Metal color attachment with the GHI format and blend mode.
 fn configure_color_attachment(
 	color_attachment: &mtl::MTLRenderPipelineColorAttachmentDescriptor,
@@ -766,6 +790,22 @@ mod flat_binding_tests {
 		assert_eq!(descriptor.magFilter(), mtl::MTLSamplerMinMagFilter::Linear);
 		assert_eq!(descriptor.mipFilter(), mtl::MTLSamplerMipFilter::Linear);
 		assert_eq!(descriptor.reductionMode(), mtl::MTLSamplerReductionMode::Maximum);
+	}
+
+	#[test]
+	fn sampler_reduction_falls_back_before_apple10() {
+		assert_eq!(
+			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Minimum, false),
+			mtl::MTLSamplerReductionMode::WeightedAverage
+		);
+		assert_eq!(
+			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Maximum, false),
+			mtl::MTLSamplerReductionMode::WeightedAverage
+		);
+		assert_eq!(
+			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Maximum, true),
+			mtl::MTLSamplerReductionMode::Maximum
+		);
 	}
 
 	fn resource(

@@ -272,7 +272,7 @@ impl Generator {
 				string.push(')');
 				return;
 			}
-			"texture_lod" => {
+			"texture_lod" | "downsample_min" | "downsample_max" => {
 				string.push_str("textureLod(");
 				self.emit_node_string(string, &arguments[0]);
 				if self.minified {
@@ -280,18 +280,34 @@ impl Generator {
 				} else {
 					string.push_str(", ");
 				}
-				self.emit_node_string(string, &arguments[1]);
+				if arguments.len() == 4 {
+					string.push_str("vec3(");
+					self.emit_node_string(string, &arguments[1]);
+					if self.minified {
+						string.push(',');
+					} else {
+						string.push_str(", ");
+					}
+					string.push_str("float(");
+					self.emit_node_string(string, &arguments[2]);
+					string.push_str("))");
+				} else {
+					self.emit_node_string(string, &arguments[1]);
+				}
 				if self.minified {
 					string.push(',');
 				} else {
 					string.push_str(", ");
 				}
-				if let Some(lod) = arguments.get(2) {
+				if let Some(lod) = arguments.get(if arguments.len() == 4 { 3 } else { 2 }) {
 					self.emit_node_string(string, lod);
 				} else {
 					string.push_str("0.0");
 				}
 				string.push(')');
+				if name != "texture_lod" {
+					string.push_str(".x");
+				}
 				return;
 			}
 			_ => {}

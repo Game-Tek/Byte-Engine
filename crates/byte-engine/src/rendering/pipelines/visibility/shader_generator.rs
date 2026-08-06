@@ -685,6 +685,14 @@ material_evaluation_suffix: fn () -> void {
 	}
 	let view_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0)), f16(5.0));
 	let one_minus_fresnel_n_dot_v: vec3f16 = vec3f16(1.0, 1.0, 1.0) - (F0 + (vec3f16(1.0, 1.0, 1.0) - F0) * view_fresnel_factor);
+	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
+	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
+	let view_space_surface_position: vec3f = view.view * vec4f(
+		world_space_vertex_position.x,
+		world_space_vertex_position.y,
+		world_space_vertex_position.z,
+		1.0
+	);
 	let light_count: u32 = lighting_data.light_count;
 
 	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
@@ -712,12 +720,6 @@ material_evaluation_suffix: fn () -> void {
 		}
 
 		let occlusion_factor: f16 = 1.0;
-		let view_space_surface_position: vec3f = view.view * vec4f(
-			world_space_vertex_position.x,
-			world_space_vertex_position.y,
-			world_space_vertex_position.z,
-			1.0
-		);
 		if (light.type == 68) {
 			occlusion_factor = f16(sample_shadow(
 				depth_shadow_map,
@@ -765,7 +767,6 @@ material_evaluation_suffix: fn () -> void {
 		let NdotH: f16 = max(dot(normal, H), f16(0.0));
 		let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
 		let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
-		let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
 		let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
 		let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
 		let light_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0)), f16(5.0));
@@ -774,9 +775,9 @@ material_evaluation_suffix: fn () -> void {
 			* (1.0 - metalness);
 		let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
 		let light_color: vec3f = vec3f(light.color.x, light.color.y, light.color.z);
-		let radiance: vec3f = light_color * attenuation;
-		diffuse = diffuse + vec3f(local_diffuse) * radiance * f32(NdotL) * f32(occlusion_factor);
-		specular = specular + vec3f(local_specular) * radiance * f32(NdotL) * f32(occlusion_factor);
+		let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
+		diffuse = diffuse + vec3f(local_diffuse) * irradiance;
+		specular = specular + vec3f(local_specular) * irradiance;
 	}
 
 	let ambient_irradiance: vec3f = sample_environment_irradiance(vec3f(normal));
@@ -784,8 +785,7 @@ material_evaluation_suffix: fn () -> void {
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
 	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness));
 	let grazing: vec3f16 = vec3f16(max(f16(1.0) - roughness, F0.x), max(f16(1.0) - roughness, F0.y), max(f16(1.0) - roughness, F0.z));
-	let ibl_fresnel_factor: f16 = pow(clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0)), f16(5.0));
-	let F_ibl: vec3f16 = F0 + (grazing - F0) * ibl_fresnel_factor;
+	let F_ibl: vec3f16 = F0 + (grazing - F0) * view_fresnel_factor;
 	let kD_ibl: vec3f16 = (vec3f16(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
 	let ibl_diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * ambient_irradiance;
 
@@ -928,9 +928,34 @@ sample_rotated_shadow_tap: fn (
 }
 "#;
 
-// Proves one directional PCF footprint is fully lit by descending the max-depth hierarchy.
-// Each level covers every reduction cell touched by the rotated tap footprint, including
-// footprints that cross cell boundaries.
+// Directional shadows have one depth for the whole PCF kernel. Interior taps stay
+// in texel space after one kernel-wide bounds check, avoiding eight normalize,
+// bounds, clamp, receiver-plane, and denormalize sequences.
+const DIRECTIONAL_SHADOW_TAP_SOURCE: &str = r#"
+sample_directional_shadow_tap: fn (
+	shadow_map: ArrayTexture2D,
+	shadow_texel_position: vec2f,
+	surface_depth: f32,
+	poisson_offset: vec2f,
+	rotation: vec2f,
+	shadow_layer: u32
+) -> f32 {
+	let rotated_offset: vec2f = vec2f(
+		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
+		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
+	) * 1.5;
+	let tap_position: vec2f = shadow_texel_position + rotated_offset;
+	let shadow_texel: vec2u = vec2u(u32(tap_position.x), u32(tap_position.y));
+	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
+	if (surface_depth < closest_depth) {
+		return 0.0;
+	}
+	return 1.0;
+}
+"#;
+
+// Proves one directional PCF footprint is fully lit from the 4x4 max-depth level.
+// The gather covers every reduction cell touched by the rotated tap footprint.
 const DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE: &str = r#"
 directional_shadow_area_is_fully_lit: fn (
 	shadow_uv: vec2f,
@@ -943,7 +968,7 @@ directional_shadow_area_is_fully_lit: fn (
 	}
 
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	let pyramid_extent: vec2u = texture_size(directional_shadow_depth_pyramid);
+	let fine_level_extent: vec2u = texture_size(directional_shadow_depth_pyramid);
 	let footprint_min: vec2f = vec2f(
 		max(shadow_texel_position.x - 1.5, 0.0),
 		max(shadow_texel_position.y - 1.5, 0.0)
@@ -953,55 +978,21 @@ directional_shadow_area_is_fully_lit: fn (
 		min(shadow_texel_position.y + 1.5, f32(shadow_map_extent.y - 1))
 	);
 
-	// Start with 8x8 cells. Descend once to 4x4 cells when a coarse cell contains
-	// a possible blocker that may lie outside the actual PCF footprint.
-	for (let hierarchy_level: u32 = 1; hierarchy_level <= 1; hierarchy_level = hierarchy_level - 1) {
-		let cell_size: u32 = 4;
-		if (hierarchy_level >= 1) {
-			cell_size = cell_size * 2;
-		}
-		let first_cell: vec2u = vec2u(
-			u32(footprint_min.x) / cell_size,
-			u32(footprint_min.y) / cell_size
-		);
-		let last_cell: vec2u = vec2u(
-			u32(footprint_max.x) / cell_size,
-			u32(footprint_max.y) / cell_size
-		);
-		let level_extent: vec2u = pyramid_extent;
-		if (hierarchy_level >= 1) {
-			level_extent = level_extent / vec2u(2, 2);
-		}
-		let first_atlas_cell: vec2u = vec2u(
-			first_cell.x,
-			shadow_layer * (shadow_map_extent.y / cell_size) + first_cell.y
-		);
-		let last_atlas_cell: vec2u = vec2u(
-			last_cell.x,
-			shadow_layer * (shadow_map_extent.y / cell_size) + last_cell.y
-		);
-		// A linear maximum-reduction sampler returns the conservative maximum of
-		// the one, two, or four hierarchy cells touched by this footprint.
-		let probe_texel: vec2f = (
-			vec2f(
-				f32(first_atlas_cell.x + last_atlas_cell.x),
-				f32(first_atlas_cell.y + last_atlas_cell.y)
-			) + vec2f(1.0, 1.0)
-		) * 0.5;
-		let probe_uv: vec2f = probe_texel / vec2f(f32(level_extent.x), f32(level_extent.y));
-		let maximum_occluder_depth: f32 = texture_lod(
-			directional_shadow_depth_pyramid,
-			probe_uv,
-			f32(hierarchy_level)
-		).x;
-		if (surface_depth >= maximum_occluder_depth) {
-			return true;
-		}
-		if (hierarchy_level == 0) {
-			return false;
-		}
-	}
-	return false;
+	// One maximum-reduction gather reads the one, two, or four 4x4 cells touched by the footprint.
+	let fine_first_cell: vec2u = vec2u(u32(footprint_min.x) / 4, u32(footprint_min.y) / 4);
+	let fine_last_cell: vec2u = vec2u(u32(footprint_max.x) / 4, u32(footprint_max.y) / 4);
+	let fine_layer_offset: u32 = shadow_layer * (shadow_map_extent.y / 4);
+	let fine_probe_texel: vec2f = vec2f(
+		f32(fine_first_cell.x + fine_last_cell.x) + 1.0,
+		f32(fine_first_cell.y + fine_last_cell.y + fine_layer_offset + fine_layer_offset) + 1.0
+	) * 0.5;
+	let fine_probe_uv: vec2f = fine_probe_texel / vec2f(f32(fine_level_extent.x), f32(fine_level_extent.y));
+	let fine_maximum_depth: f32 = downsample_max(
+		directional_shadow_depth_pyramid,
+		fine_probe_uv,
+		0.0
+	);
+	return surface_depth >= fine_maximum_depth;
 }
 "#;
 
@@ -1026,15 +1017,17 @@ sample_shadow: fn (
 	let bias_scale: f32 = 1.0;
 	if (light.type == 68) {
 		let depth_value: f32 = abs(view_space_position.z);
-		let cascade_index: u32 = 3;
-		if (depth_value < views.views[light.shadow_views[0]].far) {
-			cascade_index = 0;
-		}
-		if (cascade_index == 3 && depth_value < views.views[light.shadow_views[1]].far) {
+		// Descend only while the surface lies beyond a split. This avoids testing
+		// a sentinel cascade index after every successful near-cascade match.
+		let cascade_index: u32 = 0;
+		if (depth_value >= views.views[light.shadow_views[0]].far) {
 			cascade_index = 1;
-		}
-		if (cascade_index == 3 && depth_value < views.views[light.shadow_views[2]].far) {
-			cascade_index = 2;
+			if (depth_value >= views.views[light.shadow_views[1]].far) {
+				cascade_index = 2;
+				if (depth_value >= views.views[light.shadow_views[2]].far) {
+					cascade_index = 3;
+				}
+			}
 		}
 		shadow_view_index = light.shadow_views[cascade_index];
 		shadow_layer = cascade_index;
@@ -1060,7 +1053,8 @@ sample_shadow: fn (
 	let receiver_plane_depth_gradient: vec2f = vec2f(0.0, 0.0);
 	let surface_depth_bias: f32 = 2.0 / 65535.0;
 	if (light.type == 68) {
-		let normal_alignment: f32 = max(dot(normalize(surface_normal), surface_to_light_direction), 0.0);
+		// Material evaluation passes a normalized world-space normal.
+		let normal_alignment: f32 = max(dot(surface_normal, surface_to_light_direction), 0.0);
 		let cascade_depth_range: f32 = max(shadow_view.far - shadow_view.near, 0.0001);
 		let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
 		let constant_bias: f32 = 0.00002 * bias_scale;
@@ -1090,12 +1084,39 @@ sample_shadow: fn (
 	)) {
 		return 1.0;
 	}
-	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+	// Generate the PCF rotation only after the hierarchy fails to prove the area is lit.
 	let rotation_noise: f32 = fract(
 		sin(dot(vec2f(world_space_position.x, world_space_position.z) + world_space_position.y, vec2f(12.9898, 78.233))) * 43758.5453
 	);
 	let rotation_angle: f32 = rotation_noise * 6.2831853;
 	let rotation: vec2f = vec2f(cos(rotation_angle), sin(rotation_angle));
+	if (light.type == 68) {
+		// Poisson offsets are expressed in texels. Keep the entire directional
+		// fallback in texel space. One footprint check removes bounds and clamp
+		// work from all eight taps for every interior shadow-map pixel.
+		let shadow_texel_position: vec2f = shadow_uv
+			* vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+		let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
+		let footprint_is_inside: bool = shadow_texel_position.x >= 1.5
+			&& shadow_texel_position.y >= 1.5
+			&& shadow_texel_position.x <= shadow_map_extent_f.x - 1.5
+			&& shadow_texel_position.y <= shadow_map_extent_f.y - 1.5;
+		if (footprint_is_inside) {
+			let directional_occlusion: f32 = 0.0;
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.613392, 0.617481), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.170019, 0.0 - 0.040254), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.299417, 0.791925), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.645680, 0.493210), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.651784, 0.717887), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.421003, 0.027070), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.817194, 0.0 - 0.271096), rotation, shadow_layer);
+			directional_occlusion = directional_occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f(0.0 - 0.705374, 0.0 - 0.668203), rotation, shadow_layer);
+			return directional_occlusion / 8.0;
+		}
+	}
+
+	// Cone shadows and the rare directional map-edge fallback need per-tap border handling.
+	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let occlusion: f32 = 0.0;
 	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.0 - 0.613392, 0.617481), rotation, texel_size, shadow_layer, shadow_map_extent);
 	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f(0.170019, 0.0 - 0.040254), rotation, texel_size, shadow_layer, shadow_map_extent);
@@ -1466,6 +1487,7 @@ impl VisibilityShaderScope {
 			parse_besl_function(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient");
 		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
 		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
+		let sample_directional_shadow_tap = parse_besl_function(DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap");
 		let directional_shadow_area_is_fully_lit =
 			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit");
 		let sample_shadow = parse_besl_function(SHADOW_SOURCE, "sample_shadow");
@@ -1486,6 +1508,7 @@ impl VisibilityShaderScope {
 				shadow_receiver_plane_depth_gradient,
 				sample_shadow_tap,
 				sample_rotated_shadow_tap,
+				sample_directional_shadow_tap,
 				directional_shadow_area_is_fully_lit,
 				sample_shadow,
 				meshes,
@@ -1574,7 +1597,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
 	use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
 	use resource_management::pbr::{
 		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
@@ -2022,7 +2045,7 @@ mod tests {
 		);
 	}
 
-	/// Verifies the progressive probe skips PCF only when every hierarchy cell touching the footprint is clear.
+	/// Verifies the directional probe skips PCF only when every fine cell touching the footprint is clear.
 	#[test]
 	fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 		const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -2032,7 +2055,7 @@ mod tests {
 				results.fully_lit = 0;
 				results.may_be_occluded = 0;
 				results.crosses_tile_boundary = 0;
-				results.descends_to_finer_level = 0;
+				results.adjacent_cell_may_occlude = 0;
 				if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.8, 2, vec2u(8, 8))) {
 					results.fully_lit = 1;
 				}
@@ -2043,7 +2066,7 @@ mod tests {
 					results.crosses_tile_boundary = 1;
 				}
 				if (directional_shadow_area_is_fully_lit(vec2f(0.25, 0.25), 0.8, 0, vec2u(8, 8))) {
-					results.descends_to_finer_level = 1;
+					results.adjacent_cell_may_occlude = 1;
 				}
 			}
 		"#;
@@ -2069,7 +2092,7 @@ mod tests {
 						besl::ParserNode::member("fully_lit", "u32"),
 						besl::ParserNode::member("may_be_occluded", "u32"),
 						besl::ParserNode::member("crosses_tile_boundary", "u32"),
-						besl::ParserNode::member("descends_to_finer_level", "u32"),
+						besl::ParserNode::member("adjacent_cell_may_occlude", "u32"),
 					],
 				),
 				RESULT_SLOT.slot(),
@@ -2085,7 +2108,8 @@ mod tests {
 		let mut base_depths = (0..8)
 			.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
 			.collect::<Vec<_>>();
-		// Cascade zero contains a blocker in the coarse 8x8 cell but outside the queried 4x4 cell.
+		// Cascade zero contains a blocker in the neighboring 4x4 cell. A maximum
+		// gather may conservatively include it even when the footprint stays in cell zero.
 		base_depths[0] = [0.2, 0.0, 0.0, 1.0];
 		base_depths[1] = [0.9, 0.0, 0.0, 1.0];
 		let mut pyramid = texture_2d(2, 8, &base_depths);
@@ -2093,7 +2117,7 @@ mod tests {
 			1,
 			4,
 			&[
-				[0.2, 0.0, 0.0, 1.0],
+				[0.9, 0.0, 0.0, 1.0],
 				[0.4, 0.0, 0.0, 1.0],
 				[0.7, 0.0, 0.0, 1.0],
 				[0.9, 0.0, 0.0, 1.0],
@@ -2109,12 +2133,81 @@ mod tests {
 			("fully_lit", 1),
 			("may_be_occluded", 0),
 			("crosses_tile_boundary", 1),
-			("descends_to_finer_level", 1),
+			("adjacent_cell_may_occlude", 0),
 		] {
 			let Value::U32(actual) = results.read(name).expect("directional shadow probe result") else {
 				panic!("Unexpected directional shadow probe result type for {name}.");
 			};
 			assert_eq!(actual, expected, "Unexpected directional shadow probe result for {name}.");
+		}
+	}
+
+	/// Verifies the interior texel-space directional fallback preserves reverse-Z shadow comparison.
+	#[test]
+	fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
+		const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+		let source = r#"
+			main: fn () -> void {
+				results.lit = sample_directional_shadow_tap(
+					shadow_map, vec2f(1.0, 1.0), 0.8, vec2f(0.0, 0.0), vec2f(1.0, 0.0), u32(0)
+				);
+				results.blocked = sample_directional_shadow_tap(
+					shadow_map, vec2f(2.0, 2.0), 0.8, vec2f(0.0, 0.0), vec2f(1.0, 0.0), u32(0)
+				);
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the directional-shadow tap VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			besl::ParserNode::binding(
+				"shadow_map",
+				besl::ParserNode::combined_array_image_sampler(),
+				SHADOW_SLOT.slot(),
+				true,
+				false,
+			),
+			super::parse_besl_function(super::DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"DirectionalShadowTapResults",
+					vec![
+						besl::ParserNode::member("lit", "f32"),
+						besl::ParserNode::member("blocked", "f32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the directional-shadow tap VM test. The most likely cause is an unresolved portable texture operation.",
+		));
+		let mut shadow_map = Texture::new_3d(4, 4, 1)
+			.expect("Failed to create the directional shadow fixture. The most likely cause is an invalid extent.");
+		for y in 0..4 {
+			for x in 0..4 {
+				shadow_map
+					.write_3d([x, y, 0], [0.2, 0.0, 0.0, 1.0])
+					.expect("Failed to initialize the directional shadow fixture.");
+			}
+		}
+		shadow_map
+			.write_3d([2, 2, 0], [0.9, 0.0, 0.0, 1.0])
+			.expect("Failed to initialize the directional shadow blocker.");
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (name, expected) in [("lit", 1.0), ("blocked", 0.0)] {
+			let Value::F32(actual) = results.read(name).expect("directional shadow tap result") else {
+				panic!("Unexpected directional shadow tap result type for {name}.");
+			};
+			assert_eq!(actual, expected, "Unexpected directional shadow tap result for {name}.");
 		}
 	}
 

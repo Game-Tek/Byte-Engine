@@ -1741,6 +1741,7 @@ impl Context {
 
 	pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
 		let descriptor = build_sampler_descriptor(&builder);
+		apply_sampler_reduction_fallback(self.device.as_ref(), &descriptor);
 
 		let sampler_state = self
 			.device

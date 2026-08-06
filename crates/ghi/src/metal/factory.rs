@@ -380,6 +380,7 @@ impl crate::device::Device for Factory {
 	/// Builds a Metal sampler that can be interned by a device later.
 	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
 		let descriptor = build_sampler_descriptor(&builder);
+		apply_sampler_reduction_fallback(self.device.as_ref(), &descriptor);
 
 		let sampler_state = self
 			.device

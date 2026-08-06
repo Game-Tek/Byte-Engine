@@ -95,12 +95,7 @@ const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDesc
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::WRITE,
 );
-const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_2_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-pub(super) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 2;
+pub(super) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
 
 /// Returns the directional cascade view indices that receive one batched shadow dispatch.
 fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
@@ -529,9 +524,9 @@ impl ShadowPass {
 			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
 		let shadow_depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Closest)
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::Max)
+				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
 				.min_lod(0.0)
 				.max_lod(0.0),
@@ -550,13 +545,6 @@ impl ShadowPass {
 				directional_shadow_depth_pyramid,
 				ghi::Layouts::General,
 				0,
-			),
-			ghi::DescriptorWrite::image_mip(
-				directional_shadow_depth_pyramid_descriptor_set,
-				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_2_BINDING.slot(),
-				directional_shadow_depth_pyramid,
-				ghi::Layouts::General,
-				1,
 			),
 		]);
 		let shadow_pass_task_shader = load_visibility_shader(
@@ -649,7 +637,7 @@ impl ShadowPass {
 		let cone_shadow_map = self.cone_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
 		let directional_shadow_depth_pyramid_extent =
-			Extent::rectangle(SHADOW_MAP_RESOLUTION, SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32);
+			Extent::rectangle(SHADOW_MAP_RESOLUTION / 2, SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32);
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
@@ -694,7 +682,7 @@ impl ShadowPass {
 				c.end_render_pass();
 				c.end_region();
 
-				// Each 8x4 workgroup reduces one 8x8 source tile and emits both useful levels.
+				// Each SIMD-width workgroup reduces two adjacent source tiles into 4x4 cells.
 				c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
 				let c = c.bind_compute_pipeline(directional_shadow_depth_pyramid_pipeline);
 				c.bind_descriptor_sets(&[directional_shadow_depth_pyramid_descriptor_set]);

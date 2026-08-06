@@ -269,6 +269,34 @@ impl Node {
 				vec4f32.clone(),
 			),
 			builtin_intrinsic(
+				"downsample_min",
+				vec![
+					("texture", texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("lod", f32_t.clone()),
+				],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"downsample_max",
+				vec![
+					("texture", texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("lod", f32_t.clone()),
+				],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"downsample_max",
+				vec![
+					("texture", array_texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("layer", u32_t.clone()),
+					("lod", f32_t.clone()),
+				],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
 				"texture_lod",
 				vec![
 					("texture", texture_2d.clone()),

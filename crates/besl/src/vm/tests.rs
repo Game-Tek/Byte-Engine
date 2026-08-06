@@ -931,6 +931,64 @@ fn combined_sampler_reduction_modes_select_weighted_minimum_and_maximum_footprin
 }
 
 #[test]
+fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_state() {
+	let script = r#"
+	main: fn () -> void {
+		buff.minimum = downsample_min(texture_sampler, vec2f(0.5, 0.5), 0.0);
+		buff.maximum = downsample_max(texture_sampler, vec2f(0.5, 0.5), 0.0);
+	}
+	"#;
+	let mut root = Node::root();
+	let f32_type = root.get_child("f32").expect("Expected f32");
+	root.add_child(
+		Node::binding(
+			"texture_sampler",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			9,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("minimum", f32_type.clone()).into(), Node::member("maximum", f32_type).into()],
+			},
+			10,
+			true,
+			true,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let texture_slot = ResourceSlot::new(9);
+	let buffer_slot = ResourceSlot::new(10);
+	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
+	write_texture(
+		&mut texture,
+		&[
+			([0, 0], [1.0, 0.0, 0.0, 1.0]),
+			([1, 0], [7.0, 0.0, 0.0, 1.0]),
+			([0, 1], [3.0, 0.0, 0.0, 1.0]),
+			([1, 1], [5.0, 0.0, 0.0, 1.0]),
+		],
+	);
+	let mut buffer = buffer_for_slot(&executable, buffer_slot);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture_with_sampler(
+		texture_slot,
+		&mut texture,
+		Sampler::new(SamplerReductionMode::WeightedAverage),
+	);
+	descriptors.bind_buffer(buffer_slot, &mut buffer);
+	executable.run_main(&mut descriptors).expect("Expected conservative downsample execution to succeed");
+
+	assert_eq!(read_f32s(&buffer, 2), vec![1.0, 7.0]);
+}
+
+#[test]
 fn executable_program_writes_a_pixel_to_a_bound_image() {
 	let script = r#"
 	main: fn () -> void {

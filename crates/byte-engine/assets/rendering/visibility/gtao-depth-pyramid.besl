@@ -69,7 +69,7 @@ main: fn () -> void {
 	let source_center: vec2f = vec2f(f32(source_center_coordinate.x), f32(source_center_coordinate.y));
 	let source_extent_f: vec2f = vec2f(f32(source_extent.x), f32(source_extent.y));
 	let source_uv: vec2f = source_center / source_extent_f;
-	let nearest_depth: f32 = linearize_depth(texture_lod(source_depth, source_uv, 0.0).x);
+	let nearest_depth: f32 = linearize_depth(downsample_max(source_depth, source_uv, 0.0));
 	shared_depth[lane] = nearest_depth;
 	if (level_1_coordinate.x < level_1_extent.x && level_1_coordinate.y < level_1_extent.y) {
 		write(reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));

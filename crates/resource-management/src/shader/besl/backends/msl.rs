@@ -3805,17 +3805,28 @@ mod tests {
 			}
 		"#;
 		let root = besl::compile_to_besl(source, None).expect("Expected conservative downsample source to link");
-		let main = root.get_main().expect("Expected conservative downsample source to define main");
+		let main = root
+			.get_main()
+			.expect("Expected conservative downsample source to define main");
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		let fallback = Generator::new().minified(true).generate(&settings, &main).expect("Expected gather fallback MSL");
+		let fallback = Generator::new()
+			.minified(true)
+			.generate(&settings, &main)
+			.expect("Expected gather fallback MSL");
 		let native = Generator::new()
 			.minified(true)
 			.downsample_strategy(DownsampleStrategy::NativeSamplerReduction)
 			.generate(&settings, &main)
 			.expect("Expected native sampler-reduction MSL");
 
-		assert_string_contains!(fallback, "_besl_downsample_min(resources.depth_texture, resources.depth_texture_sampler");
-		assert_string_contains!(fallback, "_besl_downsample_max(resources.depth_texture, resources.depth_texture_sampler");
+		assert_string_contains!(
+			fallback,
+			"_besl_downsample_min(resources.depth_texture, resources.depth_texture_sampler"
+		);
+		assert_string_contains!(
+			fallback,
+			"_besl_downsample_max(resources.depth_texture, resources.depth_texture_sampler"
+		);
 		assert_string_contains!(fallback, ".gather(texture_sampler, uv, int2(0), component::x)");
 		assert_string_contains!(fallback, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
 		assert_string_contains!(fallback, "texture.read(a, level).x");

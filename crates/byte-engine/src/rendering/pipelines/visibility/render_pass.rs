@@ -636,8 +636,10 @@ impl ShadowPass {
 		let directional_shadow_map = self.directional_shadow_map;
 		let cone_shadow_map = self.cone_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
-		let directional_shadow_depth_pyramid_extent =
-			Extent::rectangle(SHADOW_MAP_RESOLUTION / 2, SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32);
+		let directional_shadow_depth_pyramid_extent = Extent::rectangle(
+			SHADOW_MAP_RESOLUTION / 2,
+			SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32,
+		);
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();

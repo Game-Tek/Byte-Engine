@@ -1,11 +1,10 @@
 //! Focused regressions for the VM's private instruction and numeric semantics.
 
 use super::{
-	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
-	SamplerReductionMode, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot,
-	output_slot, reflect_vector,
+	f16, input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs,
+	ResourceSlot, Sampler, SamplerReductionMode, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState,
 };
-use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_to_besl};
+use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
@@ -954,7 +953,10 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: vec![Node::member("minimum", f32_type.clone()).into(), Node::member("maximum", f32_type).into()],
+				members: vec![
+					Node::member("minimum", f32_type.clone()).into(),
+					Node::member("maximum", f32_type).into(),
+				],
 			},
 			10,
 			true,
@@ -983,7 +985,9 @@ fn downsample_intrinsics_select_the_requested_reduction_independent_of_sampler_s
 		Sampler::new(SamplerReductionMode::WeightedAverage),
 	);
 	descriptors.bind_buffer(buffer_slot, &mut buffer);
-	executable.run_main(&mut descriptors).expect("Expected conservative downsample execution to succeed");
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected conservative downsample execution to succeed");
 
 	assert_eq!(read_f32s(&buffer, 2), vec![1.0, 7.0]);
 }
@@ -1728,68 +1732,66 @@ fn executable_program_evaluates_reflect_intrinsics() {
 			"main",
 			Vec::new(),
 			void_type,
-			vec![
-				Node::expression(Expressions::Operator {
-					operator: Operators::Assignment,
-					left: Node::expression(Expressions::Accessor {
-						left: Node::expression(Expressions::Member {
-							name: "buff".to_string(),
-							source: root.get_child("buff").expect("Expected buff binding"),
-						})
-						.into(),
-						right: Node::expression(Expressions::Member {
-							name: "value".to_string(),
-							source: root.get_child("buff").expect("Expected buff binding"),
-						})
-						.into(),
+			vec![Node::expression(Expressions::Operator {
+				operator: Operators::Assignment,
+				left: Node::expression(Expressions::Accessor {
+					left: Node::expression(Expressions::Member {
+						name: "buff".to_string(),
+						source: root.get_child("buff").expect("Expected buff binding"),
 					})
 					.into(),
-					right: Node::expression(Expressions::IntrinsicCall {
-						intrinsic: reflect,
-						arguments: vec![
-							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.clone(),
-								parameters: vec![
-									Node::expression(Expressions::Literal {
-										value: "1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "-1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-								],
-							})
-							.into(),
-							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.clone(),
-								parameters: vec![
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "1.0".to_string(),
-									})
-									.into(),
-									Node::expression(Expressions::Literal {
-										value: "0.0".to_string(),
-									})
-									.into(),
-								],
-							})
-							.into(),
-						],
-						elements: vec![],
+					right: Node::expression(Expressions::Member {
+						name: "value".to_string(),
+						source: root.get_child("buff").expect("Expected buff binding"),
 					})
 					.into(),
 				})
 				.into(),
-			],
+				right: Node::expression(Expressions::IntrinsicCall {
+					intrinsic: reflect,
+					arguments: vec![
+						Node::expression(Expressions::FunctionCall {
+							function: vec3f_type.clone(),
+							parameters: vec![
+								Node::expression(Expressions::Literal {
+									value: "1.0".to_string(),
+								})
+								.into(),
+								Node::expression(Expressions::Literal {
+									value: "-1.0".to_string(),
+								})
+								.into(),
+								Node::expression(Expressions::Literal {
+									value: "0.0".to_string(),
+								})
+								.into(),
+							],
+						})
+						.into(),
+						Node::expression(Expressions::FunctionCall {
+							function: vec3f_type.clone(),
+							parameters: vec![
+								Node::expression(Expressions::Literal {
+									value: "0.0".to_string(),
+								})
+								.into(),
+								Node::expression(Expressions::Literal {
+									value: "1.0".to_string(),
+								})
+								.into(),
+								Node::expression(Expressions::Literal {
+									value: "0.0".to_string(),
+								})
+								.into(),
+							],
+						})
+						.into(),
+					],
+					elements: vec![],
+				})
+				.into(),
+			})
+			.into()],
 		)
 		.into(),
 	);
@@ -2861,11 +2863,9 @@ fn descriptor_binding_errors_report_resource_kinds_consistently() {
 			found: "texture",
 		}
 	);
-	assert!(
-		VmError::UnboundDescriptor { slot }
-			.to_string()
-			.contains("no resource was bound")
-	);
+	assert!(VmError::UnboundDescriptor { slot }
+		.to_string()
+		.contains("no resource was bound"));
 }
 
 #[test]

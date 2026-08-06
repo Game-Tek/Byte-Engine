@@ -1131,11 +1131,11 @@ sample_shadow: fn (
 "#;
 
 const ENVIRONMENT_IRRADIANCE_SOURCE: &str = r#"
-sample_environment_irradiance: fn (direction: vec3f) -> vec3f {
-	let dir: vec3f = normalize(direction);
+sample_environment_irradiance: fn (normalized_direction: vec3f) -> vec3f {
+	// Material evaluation normalizes the shading normal before environment lighting.
 	let environment_uv: vec2f = vec2f(
-		atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-		0.5 - asin(clamp(dir.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
+		atan2(normalized_direction.z, normalized_direction.x) * 0.15915494309189535 + 0.5,
+		0.5 - asin(clamp(normalized_direction.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
 	);
 	let environment_extent: vec2u = texture_size(environment_irradiance);
 	let environment_half_texel: f32 = 0.5 / f32(environment_extent.y);
@@ -1146,11 +1146,11 @@ sample_environment_irradiance: fn (direction: vec3f) -> vec3f {
 "#;
 
 const ENVIRONMENT_SPECULAR_SOURCE: &str = r#"
-sample_environment_specular: fn (direction: vec3f, roughness: f32) -> vec3f {
-	let dir: vec3f = normalize(direction);
+sample_environment_specular: fn (normalized_direction: vec3f, roughness: f32) -> vec3f {
+	// Reflecting a normalized view vector around a normalized shading normal preserves length.
 	let environment_uv: vec2f = vec2f(
-		atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
-		0.5 - asin(clamp(dir.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
+		atan2(normalized_direction.z, normalized_direction.x) * 0.15915494309189535 + 0.5,
+		0.5 - asin(clamp(normalized_direction.y, 0.0 - 1.0, 1.0)) * 0.3183098861837907
 	);
 	let specular_level: f32 = clamp(roughness, 0.0, 1.0) * 7.0;
 	let upper_level: u32 = u32(floor(specular_level)) + 1;

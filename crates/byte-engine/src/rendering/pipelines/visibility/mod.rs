@@ -202,15 +202,12 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{
-		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot,
-		Sampler, SamplerReductionMode, TaskOutputs, Texture, Value, WorkgroupState,
+		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
+		SamplerReductionMode, TaskOutputs, Texture, Value, WorkgroupState,
 	};
 	#[cfg(target_os = "macos")]
 	use resource_management::shader::besl::backends::msl::Generator as MslGenerator;
-	use resource_management::shader::{
-		besl::backends::hlsl::Generator as HlslGenerator,
-		ShaderGenerationSettings,
-	};
+	use resource_management::shader::{besl::backends::hlsl::Generator as HlslGenerator, ShaderGenerationSettings};
 
 	use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkItem;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
@@ -1805,12 +1802,16 @@ mod tests {
 
 		let expected_1: Vec<[f32; 4]> = (0..32u32)
 			.map(|block| {
-				let depth = if block == 11 { 0.0 } else { gtao_fixture_linear_depth(0.1 + block as f32 * 0.02) };
+				let depth = if block == 11 {
+					0.0
+				} else {
+					gtao_fixture_linear_depth(0.1 + block as f32 * 0.02)
+				};
 				[depth, 0.0, 0.0, 1.0]
 			})
 			.collect();
-		let (expected_2, _, _) = reduce_nearest_nonzero_depth(&expected_1, 8, 4);
-		let (expected_3, _, _) = reduce_nearest_nonzero_depth(&expected_2, 4, 2);
+		let (expected_2, ..) = reduce_nearest_nonzero_depth(&expected_1, 8, 4);
+		let (expected_3, ..) = reduce_nearest_nonzero_depth(&expected_2, 4, 2);
 		for y in 0..4 {
 			for x in 0..8 {
 				assert_rgba_close(rgba(&reduced_1, [x, y]), expected_1[(y * 8 + x) as usize], 0.00001);
@@ -1831,9 +1832,8 @@ mod tests {
 	fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
 		let program = crate::rendering::shader_vm_test::compile(directional_shadow_depth_pyramid_program());
 		let layer_count = 4u32;
-		let cell_maximum = |layer: u32, cell_x: u32, cell_y: u32| {
-			0.1 + layer as f32 * 0.15 + cell_y as f32 * 0.04 + cell_x as f32 * 0.01
-		};
+		let cell_maximum =
+			|layer: u32, cell_x: u32, cell_y: u32| 0.1 + layer as f32 * 0.15 + cell_y as f32 * 0.04 + cell_x as f32 * 0.01;
 		let mut source = Texture::new_3d(16, 8, layer_count).expect("directional shadow array fixture");
 		for layer in 0..layer_count {
 			for y in 0..8 {
@@ -1860,8 +1860,7 @@ mod tests {
 					.with_thread_idx(lane)
 					.with_thread_id([
 						lane % DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
-						layer * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT
-							+ lane / DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
+						layer * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT + lane / DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
 					])
 			});
 			let mut workgroup = WorkgroupState::new();

@@ -720,13 +720,7 @@ impl Texture {
 	}
 
 	/// Samples one array layer at an explicit LOD with deterministic reduction behavior.
-	fn sample_array_lod_with_sampler(
-		&self,
-		uv: [f32; 2],
-		layer: u32,
-		lod: f32,
-		sampler: Sampler,
-	) -> Result<Value, VmError> {
+	fn sample_array_lod_with_sampler(&self, uv: [f32; 2], layer: u32, lod: f32, sampler: Sampler) -> Result<Value, VmError> {
 		let level = if lod.is_finite() { lod.max(0.0) as usize } else { 0 };
 		let texture = if level == 0 {
 			self

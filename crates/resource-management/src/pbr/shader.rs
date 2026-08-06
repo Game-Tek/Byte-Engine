@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 
 use super::{
-	BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
-	BrdfTexture, BrdfValue, material_texture_variable_name,
+	material_texture_variable_name, BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness,
+	BrdfNode, BrdfNodeId, BrdfTexture, BrdfValue,
 };
 
 /// Generates a BESL program from a solid-value BRDF material graph.
@@ -476,7 +476,7 @@ impl std::error::Error for BrdfShaderGenerationError {}
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, f16, output_slot};
+	use besl::vm::{f16, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value};
 
 	use super::*;
 	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};

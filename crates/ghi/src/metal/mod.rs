@@ -255,14 +255,9 @@ fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Retained<mtl::
 }
 
 /// Falls back to standard Metal sampling when the device cannot execute sampler reductions.
-fn apply_sampler_reduction_fallback(
-	device: &ProtocolObject<dyn mtl::MTLDevice>,
-	descriptor: &mtl::MTLSamplerDescriptor,
-) {
-	let reduction_mode = sampler_reduction_mode_for_device(
-		descriptor.reductionMode(),
-		device.supportsFamily(mtl::MTLGPUFamily::Apple10),
-	);
+fn apply_sampler_reduction_fallback(device: &ProtocolObject<dyn mtl::MTLDevice>, descriptor: &mtl::MTLSamplerDescriptor) {
+	let reduction_mode =
+		sampler_reduction_mode_for_device(descriptor.reductionMode(), device.supportsFamily(mtl::MTLGPUFamily::Apple10));
 	descriptor.setReductionMode(reduction_mode);
 }
 

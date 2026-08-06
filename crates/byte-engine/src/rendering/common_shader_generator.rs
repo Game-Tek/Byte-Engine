@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use resource_management::asset::{JsonObject, bema_asset_handler::ProgramGenerator};
+use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.

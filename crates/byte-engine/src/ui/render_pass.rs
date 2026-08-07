@@ -1754,8 +1754,61 @@ fn build_ui_image_geometry<'a>(
 	geometry
 }
 
+type UiShaderCompiler =
+	std::boxed::Box<dyn FnOnce(&mut ghi::implementation::Factory) -> Result<ghi::ShaderHandle, String> + Send>;
+
+/// Queues one detached UI raster pipeline during pass construction.
+fn request_ui_raster_pipeline(
+	manager: &crate::rendering::PipelineManagerClient,
+	key: u64,
+	name: &'static str,
+	vertex: UiShaderCompiler,
+	fragment: UiShaderCompiler,
+	vertex_layout: &'static [ghi::pipelines::VertexElement<'static>],
+) -> crate::rendering::PipelineRef {
+	manager.request_raster(crate::rendering::PipelineKey::new(key), move |factory| {
+		use ghi::Device as _;
+
+		let vertex = vertex(factory)?;
+		let fragment = fragment(factory)?;
+		Ok(factory.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[],
+				vertex_layout,
+				&[
+					ghi::ShaderParameter::new(&vertex, ghi::ShaderTypes::Vertex),
+					ghi::ShaderParameter::new(&fragment, ghi::ShaderTypes::Fragment),
+				],
+				&[ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
+					.blend(ghi::pipelines::raster::BlendMode::Alpha)],
+			)
+			.name(name),
+		))
+	})
+}
+
+/// Creates a worker-local shader from static platform source.
+fn create_ui_detached_shader(
+	factory: &mut ghi::implementation::Factory,
+	name: &'static str,
+	source: ghi::shader::ShaderSource<'static>,
+	stage: ghi::ShaderTypes,
+	descriptors: &'static [ghi::ShaderResourceDescriptor],
+) -> Result<ghi::ShaderHandle, String> {
+	use ghi::Device as _;
+
+	let compiled = ghi::shader::compile(name, source)?;
+	factory
+		.create_shader(Some(name), compiled.as_source(), stage, descriptors.iter().copied())
+		.map_err(|_| {
+			format!("Failed to create detached UI shader '{name}'. The most likely cause is an incompatible shader interface.")
+		})
+}
+
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
+	/// Retains every construction-time pipeline request for cache identity and diagnostics.
+	_pipeline_requests: [crate::rendering::PipelineRef; 7],
 	pipeline: ghi::PipelineHandle,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
@@ -1830,12 +1883,166 @@ impl UiRenderPass {
 
 		let vertex_shader = render_pass_builder
 			.load_shader("rendering/ui/rect-vertex.besl", "UI Vertex Shader")
-			.expect("Failed to load the UI vertex shader. The most likely cause is that the BESL asset was not baked.")
-			.handle;
+			.expect("Failed to load the UI vertex shader. The most likely cause is that the BESL asset was not baked.");
 		let fragment_shader = render_pass_builder
 			.load_shader("rendering/ui/rect-fragment.besl", "UI Fragment Shader")
-			.expect("Failed to load the UI fragment shader. The most likely cause is that the BESL asset was not baked.")
-			.handle;
+			.expect("Failed to load the UI fragment shader. The most likely cause is that the BESL asset was not baked.");
+
+		let manager = render_pass_builder.pipeline_manager();
+		let rect_vertex = vertex_shader.compilation.clone();
+		let rect_fragment = fragment_shader.compilation.clone();
+		let rectangle_request = request_ui_raster_pipeline(
+			manager,
+			0x5549_0001,
+			"UI Fragment Shader",
+			std::boxed::Box::new(move |factory| rect_vertex.create(factory)),
+			std::boxed::Box::new(move |factory| rect_fragment.create(factory)),
+			&UI_VERTEX_LAYOUT,
+		);
+		let curve_request = request_ui_raster_pipeline(
+			manager,
+			0x5549_0002,
+			"UI Curve Fragment Shader",
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Curve Vertex Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: UI_CURVE_VERTEX_SHADER_GLSL,
+						msl: UI_CURVE_VERTEX_SHADER_MSL,
+						msl_entry_point: "ui_curve_vertex_main",
+					},
+					ghi::ShaderTypes::Vertex,
+					&[],
+				)
+			}),
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Curve Fragment Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: UI_CURVE_FRAGMENT_SHADER_GLSL,
+						msl: UI_CURVE_FRAGMENT_SHADER_MSL,
+						msl_entry_point: "ui_curve_fragment_main",
+					},
+					ghi::ShaderTypes::Fragment,
+					&[],
+				)
+			}),
+			&UI_CURVE_VERTEX_LAYOUT,
+		);
+		let image_request = request_ui_raster_pipeline(
+			manager,
+			0x5549_0003,
+			"UI Image Fragment Shader",
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Image Vertex Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: IMAGE_VERTEX_SHADER_GLSL,
+						msl: IMAGE_VERTEX_SHADER_MSL,
+						msl_entry_point: "ui_image_vertex",
+					},
+					ghi::ShaderTypes::Vertex,
+					&[],
+				)
+			}),
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Image Fragment Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: IMAGE_FRAGMENT_SHADER_GLSL,
+						msl: IMAGE_FRAGMENT_SHADER_MSL,
+						msl_entry_point: "ui_image_fragment",
+					},
+					ghi::ShaderTypes::Fragment,
+					&[UI_IMAGE_BINDING],
+				)
+			}),
+			&UI_IMAGE_VERTEX_LAYOUT,
+		);
+		let text_request = request_ui_raster_pipeline(
+			manager,
+			0x5549_0004,
+			"UI Text Overlay Fragment Shader",
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Text Overlay Vertex Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: TEXT_OVERLAY_VERTEX_SHADER_GLSL,
+						msl: TEXT_OVERLAY_VERTEX_SHADER_MSL,
+						msl_entry_point: "ui_text_overlay_vertex",
+					},
+					ghi::ShaderTypes::Vertex,
+					&[],
+				)
+			}),
+			std::boxed::Box::new(|factory| {
+				create_ui_detached_shader(
+					factory,
+					"UI Text Overlay Fragment Shader",
+					ghi::shader::ShaderSource::Platform {
+						glsl: TEXT_OVERLAY_FRAGMENT_SHADER_GLSL,
+						msl: TEXT_OVERLAY_FRAGMENT_SHADER_MSL,
+						msl_entry_point: "ui_text_overlay_fragment",
+					},
+					ghi::ShaderTypes::Fragment,
+					&[TEXT_OVERLAY_BINDING],
+				)
+			}),
+			&[],
+		);
+		let downsample = blur_downsample_shader.compilation.clone();
+		let downsample_request = manager.request_compute(crate::rendering::PipelineKey::new(0x5549_0005), move |factory| {
+			use ghi::Device as _;
+			let shader = downsample.create(factory)?;
+			Ok(factory.create_compute_pipeline(
+				ghi::pipelines::compute::Builder::new(
+					&[ghi::pipelines::PushConstantRange::new(
+						0,
+						UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
+					)],
+					ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+				)
+				.name("UI Backdrop Blur Downsample Shader"),
+			))
+		});
+		let filter = blur_filter_shader.compilation.clone();
+		let filter_request = manager.request_compute(crate::rendering::PipelineKey::new(0x5549_0006), move |factory| {
+			use ghi::Device as _;
+			let shader = filter.create(factory)?;
+			Ok(factory.create_compute_pipeline(
+				ghi::pipelines::compute::Builder::new(
+					&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
+					ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+				)
+				.name("UI Backdrop Blur Filter Shader"),
+			))
+		});
+		let composite_vertex = vertex_shader.compilation.clone();
+		let composite_fragment = blur_composite_shader.compilation.clone();
+		let composite_request = request_ui_raster_pipeline(
+			manager,
+			0x5549_0007,
+			"UI Backdrop Blur Composite Shader",
+			std::boxed::Box::new(move |factory| composite_vertex.create(factory)),
+			std::boxed::Box::new(move |factory| composite_fragment.create(factory)),
+			&UI_VERTEX_LAYOUT,
+		);
+		let pipeline_requests = [
+			rectangle_request,
+			curve_request,
+			image_request,
+			text_request,
+			downsample_request,
+			filter_request,
+			composite_request,
+		];
+		let vertex_shader = vertex_shader.handle;
+		let fragment_shader = fragment_shader.handle;
 
 		let context = render_pass_builder.context();
 
@@ -2086,6 +2293,7 @@ impl UiRenderPass {
 		]);
 
 		Self {
+			_pipeline_requests: pipeline_requests,
 			pipeline,
 			vertex_buffer,
 			index_buffer,

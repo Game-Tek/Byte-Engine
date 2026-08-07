@@ -15,6 +15,39 @@ pub(crate) struct LoadedShader {
 	pub(crate) handle: ghi::ShaderHandle,
 	pub(crate) stage: resource_management::types::ShaderTypes,
 	pub(crate) interface: resource_management::resources::material::ShaderInterface,
+	pub(crate) compilation: ShaderCompilation,
+}
+
+/// The `ShaderCompilation` struct owns a baked shader artifact for detached pipeline compilation.
+#[derive(Clone)]
+pub(crate) struct ShaderCompilation {
+	name: String,
+	stage: ghi::ShaderTypes,
+	artifact: resource_management::resources::material::ShaderArtifact,
+	workgroup_size: Option<(u32, u32, u32)>,
+	bytes: std::sync::Arc<[u8]>,
+	descriptors: Vec<ghi::ShaderResourceDescriptor>,
+}
+
+impl ShaderCompilation {
+	/// Creates this shader in a worker-local detached factory.
+	pub(crate) fn create(&self, factory: &mut ghi::implementation::Factory) -> Result<ghi::ShaderHandle, String> {
+		use ghi::Device as _;
+
+		factory
+			.create_shader(
+				Some(&self.name),
+				shader_artifact_source(&self.artifact, self.workgroup_size, &self.bytes)?,
+				self.stage,
+				self.descriptors.iter().copied(),
+			)
+			.map_err(|_| {
+				format!(
+					"Failed to create detached shader '{}'. The most likely cause is an incompatible persisted shader interface.",
+					self.name
+				)
+			})
+	}
 }
 
 thread_local! {
@@ -62,13 +95,9 @@ pub(crate) fn load_shader(
 		format!("Failed to load baked shader bytes for '{id}'. The most likely cause is an unsupported shader resource reader.")
 	})?;
 	let source = shader_artifact_source(&artifact, interface.workgroup_size, backing.as_slice())?;
+	let descriptors = interface.bindings.iter().map(binding_to_descriptor).collect::<Vec<_>>();
 	let handle = context
-		.create_shader(
-			Some(name),
-			source,
-			shader_type_to_ghi(stage),
-			interface.bindings.iter().map(binding_to_descriptor),
-		)
+		.create_shader(Some(name), source, shader_type_to_ghi(stage), descriptors.iter().copied())
 		.map_err(|_| {
 			format!(
 				"Failed to create baked shader '{id}'. The most likely cause is an incompatible persisted shader interface."
@@ -79,6 +108,14 @@ pub(crate) fn load_shader(
 		handle,
 		stage,
 		interface,
+		compilation: ShaderCompilation {
+			name: name.to_string(),
+			stage: shader_type_to_ghi(stage),
+			artifact,
+			workgroup_size: shader.resource.interface.workgroup_size,
+			bytes: std::sync::Arc::from(backing.as_slice()),
+			descriptors,
+		},
 	})
 }
 

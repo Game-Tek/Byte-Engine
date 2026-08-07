@@ -15,6 +15,7 @@ pub mod fbx_asset_handler;
 pub mod gltf_asset_handler;
 pub mod lut_asset_handler;
 pub mod ogg_asset_handler;
+pub mod pipeline_asset_handler;
 pub mod png_asset_handler;
 pub mod wav_asset_handler;
 

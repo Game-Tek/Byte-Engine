@@ -47,7 +47,21 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 		application
 			.threads
 			.push(Thread::new(application.application_events.1.clone(), move |mut events| {
-				server.run_until(|| matches!(events.try_recv(), Ok(Events::Close))); // TODO: improve this
+				let runtime = build_single_threaded_async_runtime();
+				runtime.enter(|| {
+					runtime.spawn(server.run()).detach();
+					loop {
+						if matches!(events.try_recv(), Ok(Events::Close)) {
+							return;
+						}
+						let ready = runtime.run();
+						runtime.poll_with(Some(if ready {
+							std::time::Duration::ZERO
+						} else {
+							std::time::Duration::from_millis(10)
+						}));
+					}
+				});
 			}));
 	}
 }
@@ -138,6 +152,7 @@ pub fn setup_default_resource_and_asset_management(
 		gltf_asset_handler.set_shader_generator(generator);
 		asset_manager.add_asset_handler(gltf_asset_handler);
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
+		asset_manager.add_asset_handler(resource_management::asset::pipeline_asset_handler::PipelineAssetHandler);
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
 		asset_manager.add_asset_handler(WAVAssetHandler::new());

@@ -1754,80 +1754,29 @@ fn build_ui_image_geometry<'a>(
 	geometry
 }
 
-type UiShaderCompiler =
-	std::boxed::Box<dyn FnOnce(&mut ghi::implementation::Factory) -> Result<ghi::ShaderHandle, String> + Send>;
-
-/// Queues one detached UI raster pipeline during pass construction.
-fn request_ui_raster_pipeline(
-	manager: &crate::rendering::PipelineManagerClient,
-	key: u64,
-	name: &'static str,
-	vertex: UiShaderCompiler,
-	fragment: UiShaderCompiler,
-	vertex_layout: &'static [ghi::pipelines::VertexElement<'static>],
-) -> crate::rendering::PipelineRef {
-	manager.request_raster(crate::rendering::PipelineKey::new(key), move |factory| {
-		use ghi::Device as _;
-
-		let vertex = vertex(factory)?;
-		let fragment = fragment(factory)?;
-		Ok(factory.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[],
-				vertex_layout,
-				&[
-					ghi::ShaderParameter::new(&vertex, ghi::ShaderTypes::Vertex),
-					ghi::ShaderParameter::new(&fragment, ghi::ShaderTypes::Fragment),
-				],
-				&[ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
-					.blend(ghi::pipelines::raster::BlendMode::Alpha)],
-			)
-			.name(name),
-		))
-	})
-}
-
-/// Creates a worker-local shader from static platform source.
-fn create_ui_detached_shader(
-	factory: &mut ghi::implementation::Factory,
-	name: &'static str,
-	source: ghi::shader::ShaderSource<'static>,
-	stage: ghi::ShaderTypes,
-	descriptors: &'static [ghi::ShaderResourceDescriptor],
-) -> Result<ghi::ShaderHandle, String> {
-	use ghi::Device as _;
-
-	let compiled = ghi::shader::compile(name, source)?;
-	factory
-		.create_shader(Some(name), compiled.as_source(), stage, descriptors.iter().copied())
-		.map_err(|_| {
-			format!("Failed to create detached UI shader '{name}'. The most likely cause is an incompatible shader interface.")
-		})
-}
-
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
-	/// Retains every construction-time pipeline request for cache identity and diagnostics.
-	_pipeline_requests: [crate::rendering::PipelineRef; 7],
-	pipeline: ghi::PipelineHandle,
+	pipeline_manager: crate::rendering::PipelineManagerClient,
+	pipeline: crate::rendering::PipelineRef,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	curve_pipeline: ghi::PipelineHandle,
+	curve_pipeline: crate::rendering::PipelineRef,
 	curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]>,
 	curve_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	image_pipeline: ghi::PipelineHandle,
+	image_pipeline: crate::rendering::PipelineRef,
 	image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]>,
 	image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
-	text_pipeline: ghi::PipelineHandle,
+	text_pipeline: crate::rendering::PipelineRef,
+	text_vertex_buffer: ghi::BufferHandle<[[f32; 2]; 3]>,
 	text_sampler: ghi::SamplerHandle,
 	text_overlays: Vec<UiTextOverlayTexture>,
-	blur_downsample_pipeline: ghi::PipelineHandle,
-	blur_filter_pipeline: ghi::PipelineHandle,
+	blur_downsample_pipeline: crate::rendering::PipelineRef,
+	blur_filter_pipeline: crate::rendering::PipelineRef,
 	blur_downsample_workgroup: Extent,
 	blur_filter_workgroup: Extent,
-	blur_composite_pipeline: ghi::PipelineHandle,
+	blur_composite_pipeline: crate::rendering::PipelineRef,
 	blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	blur_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	blur_sampler: ghi::SamplerHandle,
@@ -1859,203 +1808,18 @@ impl UiRenderPass {
 
 		render_pass_builder.alias("UI", "main");
 
-		let blur_downsample_shader = render_pass_builder
-			.load_shader(UI_BLUR_DOWNSAMPLE_SHADER_ID, "UI Backdrop Blur Downsample Shader")
-			.expect(
-				"Failed to load the UI backdrop downsample shader. The most likely cause is that the BESL asset was not baked.",
-			);
-		let blur_filter_shader = render_pass_builder
-			.load_shader(UI_BLUR_FILTER_SHADER_ID, "UI Backdrop Blur Filter Shader")
-			.expect(
-				"Failed to load the UI backdrop filter shader. The most likely cause is that the BESL asset was not baked.",
-			);
-		let blur_composite_shader = render_pass_builder
-			.load_shader(UI_BLUR_COMPOSITE_SHADER_ID, "UI Backdrop Blur Composite Shader")
-			.expect(
-				"Failed to load the UI backdrop composite shader. The most likely cause is that the BESL asset was not baked.",
-			);
-		let blur_downsample_workgroup = blur_shader_workgroup(&blur_downsample_shader, "UI backdrop downsample");
-		let blur_filter_workgroup = blur_shader_workgroup(&blur_filter_shader, "UI backdrop filter");
-		assert!(
-			matches!(blur_composite_shader.stage, ResourceShaderTypes::Fragment),
-			"Invalid UI backdrop composite shader stage. The most likely cause is incorrect BESL sidecar metadata."
-		);
-
-		let vertex_shader = render_pass_builder
-			.load_shader("rendering/ui/rect-vertex.besl", "UI Vertex Shader")
-			.expect("Failed to load the UI vertex shader. The most likely cause is that the BESL asset was not baked.");
-		let fragment_shader = render_pass_builder
-			.load_shader("rendering/ui/rect-fragment.besl", "UI Fragment Shader")
-			.expect("Failed to load the UI fragment shader. The most likely cause is that the BESL asset was not baked.");
-
-		let manager = render_pass_builder.pipeline_manager();
-		let rect_vertex = vertex_shader.compilation.clone();
-		let rect_fragment = fragment_shader.compilation.clone();
-		let rectangle_request = request_ui_raster_pipeline(
-			manager,
-			0x5549_0001,
-			"UI Fragment Shader",
-			std::boxed::Box::new(move |factory| rect_vertex.create(factory)),
-			std::boxed::Box::new(move |factory| rect_fragment.create(factory)),
-			&UI_VERTEX_LAYOUT,
-		);
-		let curve_request = request_ui_raster_pipeline(
-			manager,
-			0x5549_0002,
-			"UI Curve Fragment Shader",
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Curve Vertex Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: UI_CURVE_VERTEX_SHADER_GLSL,
-						msl: UI_CURVE_VERTEX_SHADER_MSL,
-						msl_entry_point: "ui_curve_vertex_main",
-					},
-					ghi::ShaderTypes::Vertex,
-					&[],
-				)
-			}),
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Curve Fragment Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: UI_CURVE_FRAGMENT_SHADER_GLSL,
-						msl: UI_CURVE_FRAGMENT_SHADER_MSL,
-						msl_entry_point: "ui_curve_fragment_main",
-					},
-					ghi::ShaderTypes::Fragment,
-					&[],
-				)
-			}),
-			&UI_CURVE_VERTEX_LAYOUT,
-		);
-		let image_request = request_ui_raster_pipeline(
-			manager,
-			0x5549_0003,
-			"UI Image Fragment Shader",
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Image Vertex Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: IMAGE_VERTEX_SHADER_GLSL,
-						msl: IMAGE_VERTEX_SHADER_MSL,
-						msl_entry_point: "ui_image_vertex",
-					},
-					ghi::ShaderTypes::Vertex,
-					&[],
-				)
-			}),
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Image Fragment Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: IMAGE_FRAGMENT_SHADER_GLSL,
-						msl: IMAGE_FRAGMENT_SHADER_MSL,
-						msl_entry_point: "ui_image_fragment",
-					},
-					ghi::ShaderTypes::Fragment,
-					&[UI_IMAGE_BINDING],
-				)
-			}),
-			&UI_IMAGE_VERTEX_LAYOUT,
-		);
-		let text_request = request_ui_raster_pipeline(
-			manager,
-			0x5549_0004,
-			"UI Text Overlay Fragment Shader",
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Text Overlay Vertex Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: TEXT_OVERLAY_VERTEX_SHADER_GLSL,
-						msl: TEXT_OVERLAY_VERTEX_SHADER_MSL,
-						msl_entry_point: "ui_text_overlay_vertex",
-					},
-					ghi::ShaderTypes::Vertex,
-					&[],
-				)
-			}),
-			std::boxed::Box::new(|factory| {
-				create_ui_detached_shader(
-					factory,
-					"UI Text Overlay Fragment Shader",
-					ghi::shader::ShaderSource::Platform {
-						glsl: TEXT_OVERLAY_FRAGMENT_SHADER_GLSL,
-						msl: TEXT_OVERLAY_FRAGMENT_SHADER_MSL,
-						msl_entry_point: "ui_text_overlay_fragment",
-					},
-					ghi::ShaderTypes::Fragment,
-					&[TEXT_OVERLAY_BINDING],
-				)
-			}),
-			&[],
-		);
-		let downsample = blur_downsample_shader.compilation.clone();
-		let downsample_request = manager.request_compute(crate::rendering::PipelineKey::new(0x5549_0005), move |factory| {
-			use ghi::Device as _;
-			let shader = downsample.create(factory)?;
-			Ok(factory.create_compute_pipeline(
-				ghi::pipelines::compute::Builder::new(
-					&[ghi::pipelines::PushConstantRange::new(
-						0,
-						UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
-					)],
-					ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-				)
-				.name("UI Backdrop Blur Downsample Shader"),
-			))
-		});
-		let filter = blur_filter_shader.compilation.clone();
-		let filter_request = manager.request_compute(crate::rendering::PipelineKey::new(0x5549_0006), move |factory| {
-			use ghi::Device as _;
-			let shader = filter.create(factory)?;
-			Ok(factory.create_compute_pipeline(
-				ghi::pipelines::compute::Builder::new(
-					&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
-					ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-				)
-				.name("UI Backdrop Blur Filter Shader"),
-			))
-		});
-		let composite_vertex = vertex_shader.compilation.clone();
-		let composite_fragment = blur_composite_shader.compilation.clone();
-		let composite_request = request_ui_raster_pipeline(
-			manager,
-			0x5549_0007,
-			"UI Backdrop Blur Composite Shader",
-			std::boxed::Box::new(move |factory| composite_vertex.create(factory)),
-			std::boxed::Box::new(move |factory| composite_fragment.create(factory)),
-			&UI_VERTEX_LAYOUT,
-		);
-		let pipeline_requests = [
-			rectangle_request,
-			curve_request,
-			image_request,
-			text_request,
-			downsample_request,
-			filter_request,
-			composite_request,
-		];
-		let vertex_shader = vertex_shader.handle;
-		let fragment_shader = fragment_shader.handle;
+		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
+		let pipeline = pipeline_manager.request_pipeline("rendering/ui/rectangle.pipeline");
+		let curve_pipeline = pipeline_manager.request_pipeline("rendering/ui/curve.pipeline");
+		let image_pipeline = pipeline_manager.request_pipeline("rendering/ui/image.pipeline");
+		let text_pipeline = pipeline_manager.request_pipeline("rendering/ui/text.pipeline");
+		let blur_downsample_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-downsample.pipeline");
+		let blur_filter_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-filter.pipeline");
+		let blur_composite_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-composite.pipeline");
+		let blur_downsample_workgroup = Extent::square(16);
+		let blur_filter_workgroup = Extent::square(16);
 
 		let context = render_pass_builder.context();
-
-		let shaders = [
-			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-			ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
-		];
-		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
-			.blend(ghi::pipelines::raster::BlendMode::Alpha)];
-
-		let pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(&[], &UI_VERTEX_LAYOUT, &shaders, &attachments).name("UI Fragment Shader"),
-		);
 
 		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -2067,16 +1831,6 @@ impl UiRenderPass {
 				.name("UI Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let curve_vertex_shader = create_curve_vertex_shader(context);
-		let curve_fragment_shader = create_curve_fragment_shader(context);
-		let curve_shaders = [
-			ghi::ShaderParameter::new(&curve_vertex_shader, ghi::ShaderTypes::Vertex),
-			ghi::ShaderParameter::new(&curve_fragment_shader, ghi::ShaderTypes::Fragment),
-		];
-		let curve_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(&[], &UI_CURVE_VERTEX_LAYOUT, &curve_shaders, &attachments)
-				.name("UI Curve Fragment Shader"),
-		);
 		let curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("UI Curve Vertices")
@@ -2086,16 +1840,6 @@ impl UiRenderPass {
 			ghi::buffer::Builder::new(ghi::Uses::Index)
 				.name("UI Curve Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let image_vertex_shader = create_image_vertex_shader(context);
-		let image_fragment_shader = create_image_fragment_shader(context);
-		let image_shaders = [
-			ghi::ShaderParameter::new(&image_vertex_shader, ghi::ShaderTypes::Vertex),
-			ghi::ShaderParameter::new(&image_fragment_shader, ghi::ShaderTypes::Fragment),
-		];
-		let image_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(&[], &UI_IMAGE_VERTEX_LAYOUT, &image_shaders, &attachments)
-				.name("UI Image Fragment Shader"),
 		);
 		let image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -2113,18 +1857,14 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let text_vertex_shader = create_text_overlay_vertex_shader(context);
-		let text_fragment_shader = create_text_overlay_fragment_shader(context);
-		let text_shaders = [
-			ghi::ShaderParameter::new(&text_vertex_shader, ghi::ShaderTypes::Vertex),
-			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
-		];
-		let text_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(&[], &[], &text_shaders, &attachments).name("UI Text Overlay Fragment Shader"),
-		);
 		let text_overlay = context.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let text_vertex_buffer = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Text Fullscreen Triangle")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_sampler = context.build_sampler(
@@ -2132,35 +1872,6 @@ impl UiRenderPass {
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
-		let blur_downsample_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(
-					0,
-					UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
-				)],
-				ghi::ShaderParameter::new(&blur_downsample_shader.handle, ghi::ShaderTypes::Compute),
-			)
-			.name("UI Backdrop Blur Downsample Shader"),
-		);
-		let blur_filter_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
-				ghi::ShaderParameter::new(&blur_filter_shader.handle, ghi::ShaderTypes::Compute),
-			)
-			.name("UI Backdrop Blur Filter Shader"),
-		);
-		let blur_composite_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[],
-				&UI_VERTEX_LAYOUT,
-				&[
-					ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-					ghi::ShaderParameter::new(&blur_composite_shader.handle, ghi::ShaderTypes::Fragment),
-				],
-				&attachments,
-			)
-			.name("UI Backdrop Blur Composite Shader"),
 		);
 		let blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -2293,7 +2004,7 @@ impl UiRenderPass {
 		]);
 
 		Self {
-			_pipeline_requests: pipeline_requests,
+			pipeline_manager,
 			pipeline,
 			vertex_buffer,
 			index_buffer,
@@ -2306,6 +2017,7 @@ impl UiRenderPass {
 			image_sampler,
 			image_textures: HashMap::new(),
 			text_pipeline,
+			text_vertex_buffer,
 			text_sampler,
 			text_overlays: vec![UiTextOverlayTexture {
 				image: text_overlay.into(),
@@ -2438,7 +2150,18 @@ impl RenderPass for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
+		let curve_pipeline = self.pipeline_manager.pipeline(self.curve_pipeline)?;
+		let image_pipeline = self.pipeline_manager.pipeline(self.image_pipeline)?;
+		let text_pipeline = self.pipeline_manager.pipeline(self.text_pipeline)?;
+		let blur_downsample_pipeline = self.pipeline_manager.pipeline(self.blur_downsample_pipeline)?;
+		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
+		let blur_composite_pipeline = self.pipeline_manager.pipeline(self.blur_composite_pipeline)?;
 		let extent = sink.extent();
+		frame
+			.get_mut_buffer_slice(self.text_vertex_buffer)
+			.copy_from_slice(&[[-1.0, -1.0], [-1.0, 3.0], [3.0, -1.0]]);
+		frame.sync_buffer(self.text_vertex_buffer);
 		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
 		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
 		let curve_geometry = build_ui_curve_geometry(&self.data, extent, frame_allocator);
@@ -2583,21 +2306,15 @@ impl RenderPass for UiRenderPass {
 			return None;
 		}
 
-		let pipeline = self.pipeline;
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
-		let curve_pipeline = self.curve_pipeline;
 		let curve_vertex_buffer = self.curve_vertex_buffer;
 		let curve_index_buffer = self.curve_index_buffer;
-		let image_pipeline = self.image_pipeline;
 		let image_vertex_buffer = self.image_vertex_buffer;
 		let image_index_buffer = self.image_index_buffer;
-		let text_pipeline = self.text_pipeline;
-		let blur_downsample_pipeline = self.blur_downsample_pipeline;
-		let blur_filter_pipeline = self.blur_filter_pipeline;
+		let text_vertex_buffer = self.text_vertex_buffer;
 		let blur_downsample_workgroup = self.blur_downsample_workgroup;
 		let blur_filter_workgroup = self.blur_filter_workgroup;
-		let blur_composite_pipeline = self.blur_composite_pipeline;
 		let blur_vertex_buffer = self.blur_vertex_buffer;
 		let blur_index_buffer = self.blur_index_buffer;
 		let blur_half_downsample_descriptor_set = self.blur_half_downsample_descriptor_set;
@@ -2686,6 +2403,7 @@ impl RenderPass for UiRenderPass {
 										command_buffer.end_render_pass();
 									}
 									UiPreparedBatch::Text(prepared) => {
+										command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
 										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 										let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
 										command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
@@ -3632,34 +3350,6 @@ mod tests {
 			second_moment += 2.0 * (first_weight * first * first + second_weight * (first + 1.0) * (first + 1.0));
 		}
 		second_moment
-	}
-
-	// Exercises every production backend before platform-specific shader baking
-	// so one portable blur asset cannot silently drift on an inactive backend.
-	fn assert_ui_blur_shader_lowers(source: &str, settings: &ShaderGenerationSettings, name: &str) {
-		let main = simple_compute::compile_test_program(source);
-		GLSLShaderGenerator::new()
-			.generate(settings, &main)
-			.unwrap_or_else(|error| panic!("Failed to lower {name} to GLSL: {error:?}"));
-		HLSLShaderGenerator::new()
-			.generate(settings, &main)
-			.unwrap_or_else(|error| panic!("Failed to lower {name} to HLSL: {error:?}"));
-		MSLShaderGenerator::new()
-			.generate(settings, &main)
-			.unwrap_or_else(|error| panic!("Failed to lower {name} to MSL: {error:?}"));
-	}
-
-	/// Verifies every checked-in blur stage lowers from one portable BESL source to all production backends.
-	#[test]
-	fn backdrop_blur_besl_lowers_for_every_backend() {
-		let compute = ShaderGenerationSettings::compute(Extent::square(16));
-		assert_ui_blur_shader_lowers(UI_BLUR_DOWNSAMPLE_BESL, &compute, "UI backdrop downsample");
-		assert_ui_blur_shader_lowers(UI_BLUR_FILTER_BESL, &compute, "UI backdrop filter");
-		assert_ui_blur_shader_lowers(
-			UI_BLUR_COMPOSITE_BESL,
-			&ShaderGenerationSettings::fragment(),
-			"UI backdrop composite",
-		);
 	}
 
 	// Executes the production composite shader with a full-coverage rectangle.

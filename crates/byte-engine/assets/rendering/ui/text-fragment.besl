@@ -1,0 +1,6 @@
+text_overlay: descriptor<Texture2D, 0, read>;
+in_uv: input<vec2f, 0>;
+out_color_attachment: output<vec4f, 0>;
+main: fn() -> void {
+	out_color_attachment = sample(text_overlay, in_uv);
+}

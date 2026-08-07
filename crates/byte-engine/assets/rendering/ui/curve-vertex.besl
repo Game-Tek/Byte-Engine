@@ -1,0 +1,32 @@
+in_position: input<vec2f, 0>;
+in_pixel_position: input<vec2f, 1>;
+in_segment_from: input<vec2f, 2>;
+in_segment_to: input<vec2f, 3>;
+in_color: input<vec4f, 4>;
+in_half_width: input<f32, 5>;
+in_feather_mask_position: input<vec2f, 6>;
+in_feather_mask_size: input<vec2f, 7>;
+in_feather_mask_edges: input<vec4f, 8>;
+in_feather_mask_corner: input<vec2f, 9>;
+position: output<vec4f, 0>;
+out_pixel_position: output<vec2f, 0>;
+out_segment_from: output<vec2f, 1>;
+out_segment_to: output<vec2f, 2>;
+out_color: output<vec4f, 3>;
+out_half_width: output<f32, 4>;
+out_feather_mask_position: output<vec2f, 5>;
+out_feather_mask_size: output<vec2f, 6>;
+out_feather_mask_edges: output<vec4f, 7>;
+out_feather_mask_corner: output<vec2f, 8>;
+main: fn() -> void {
+	position = vec4f(in_position.x, in_position.y, 0.0, 1.0);
+	out_pixel_position = in_pixel_position;
+	out_segment_from = in_segment_from;
+	out_segment_to = in_segment_to;
+	out_color = in_color;
+	out_half_width = in_half_width;
+	out_feather_mask_position = in_feather_mask_position;
+	out_feather_mask_size = in_feather_mask_size;
+	out_feather_mask_edges = in_feather_mask_edges;
+	out_feather_mask_corner = in_feather_mask_corner;
+}

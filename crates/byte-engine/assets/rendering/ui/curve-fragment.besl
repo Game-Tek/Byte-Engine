@@ -1,0 +1,17 @@
+in_pixel_position: input<vec2f, 0>;
+in_segment_from: input<vec2f, 1>;
+in_segment_to: input<vec2f, 2>;
+in_color: input<vec4f, 3>;
+in_half_width: input<f32, 4>;
+out_color_attachment: output<vec4f, 0>;
+main: fn() -> void {
+	let segment: vec2f = in_segment_to - in_segment_from;
+	let segment_length: f32 = sqrt(max(dot(segment, segment), 0.0001));
+	let tangent: vec2f = segment / segment_length;
+	let normal: vec2f = vec2f(0.0 - tangent.y, tangent.x);
+	let relative_position: vec2f = in_pixel_position - (in_segment_from + in_segment_to) * 0.5;
+	let strip_distance: vec2f = abs(vec2f(dot(relative_position, tangent), dot(relative_position, normal))) - vec2f(segment_length * 0.5, in_half_width);
+	let signed_distance: f32 = length(vec4f(max(strip_distance, vec2f(0.0, 0.0)).x, max(strip_distance, vec2f(0.0, 0.0)).y, 0.0, 0.0)) + min(max(strip_distance.x, strip_distance.y), 0.0);
+	let coverage: f32 = 1.0 - smoothstep(0.0 - max(fwidth(signed_distance), 1.0), max(fwidth(signed_distance), 1.0), signed_distance);
+	out_color_attachment = vec4f(in_color.x, in_color.y, in_color.z, in_color.w * coverage);
+}

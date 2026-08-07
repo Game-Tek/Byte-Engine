@@ -247,6 +247,9 @@ impl Renderer {
 	/// passes before creating windows.
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
 		self.resource_manager = Some(resource_manager.weak());
+		for server in &mut self.pipeline_compilation_servers {
+			server.set_resource_manager(resource_manager.clone());
+		}
 	}
 
 	/// Registers a scene pipeline manager with the renderer.

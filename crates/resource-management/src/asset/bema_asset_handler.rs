@@ -1,34 +1,3 @@
-use std::sync::Arc;
-
-use serde_json::Value;
-use utils::Extent;
-
-use super::{
-	asset_handler::{AssetHandler, BakeContext, LoadErrors},
-	asset_manager::AssetManager,
-	ResourceId,
-};
-use crate::shader::{
-	artifact::finalize_platform_shader_artifact,
-	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
-};
-use crate::{
-	asset::{self, JsonObject},
-	online_docs_url,
-	r#async::spawn_cpu_task,
-	resource,
-	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
-		VariantVariableModel,
-	},
-	shader::generator::ShaderGenerationSettings,
-	types::{AlphaMode, ShaderTypes},
-	ProcessedAsset, ReferenceModel,
-};
-
-const BEMA_DOCS_PATH: &str = "develop/design/resource-management/bema";
-const BESL_DOCS_PATH: &str = "reference/besl";
-
 /// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
 	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
@@ -71,7 +40,9 @@ impl ShaderCompiler for PlatformShaderCompiler {
 		shader_json: &Value,
 		stage: &str,
 	) -> Result<(Shader, Box<[u8]>), ()> {
-		compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage)
+		compio::runtime::Runtime::new()
+			.map_err(|_| ())?
+			.block_on(compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage))
 	}
 }
 
@@ -261,7 +232,7 @@ impl AssetHandler for BEMAAssetHandler {
 }
 
 /// Converts a shader source into a compiled shader and binary payload.
-fn compile_shader(
+async fn compile_shader(
 	generator: &dyn ProgramGenerator,
 	name: &str,
 	shader_code: &str,
@@ -292,11 +263,11 @@ fn compile_shader(
 		return Err(());
 	};
 
-	compile_shader_program(generator, name, root_node, _domain, material, stage)
+	compile_shader_program(generator, name, root_node, _domain, material, stage).await
 }
 
 /// Compiles a BESL shader program into a stored shader model and binary payload.
-pub(crate) fn compile_shader_program(
+pub(crate) async fn compile_shader_program(
 	generator: &dyn ProgramGenerator,
 	name: &str,
 	root_node: besl::parser::Node<'_>,
@@ -340,6 +311,7 @@ pub(crate) fn compile_shader_program(
 
 	let shader_program = PlatformShaderGenerator::new()
 		.generate(&settings, &main_node)
+		.await
 		.map_err(|error| {
 			log::error!(
 				"Failed to compile shader '{name}' for stage '{stage}': {error}. See {}.",
@@ -413,8 +385,7 @@ async fn compile_and_store_shader(
 	let name = path.get_base().as_ref().to_string();
 	let shader_json = shader_json.clone();
 
-	let (shader, result_shader_bytes) = spawn_cpu_task(move || {
-		compiler.compile(
+	let (shader, result_shader_bytes) = compiler.compile(
 			generator.as_ref(),
 			&name,
 			&shader_code,
@@ -424,10 +395,7 @@ async fn compile_and_store_shader(
 			&shader_json,
 			&stage,
 		)
-	})
-	.await
-	.map_err(|_| LoadErrors::FailedToProcess)?
-	.map_err(|_| LoadErrors::FailedToProcess)?;
+		.map_err(|_| LoadErrors::FailedToProcess)?;
 
 	context
 		.store_generated(ProcessedAsset::new(path, shader), &result_shader_bytes)
@@ -463,6 +431,9 @@ async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -
 		_ => Err(LoadErrors::FailedToProcess),
 	}
 }
+
+const BEMA_DOCS_PATH: &str = "develop/design/resource-management/bema";
+const BESL_DOCS_PATH: &str = "reference/besl";
 
 #[cfg(test)]
 pub mod tests {
@@ -788,3 +759,31 @@ pub mod tests {
 		assert_eq!(variant.class, "Variant");
 	}
 }
+
+use std::sync::Arc;
+
+use serde_json::Value;
+use utils::Extent;
+
+use super::{
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
+	asset_manager::AssetManager,
+	ResourceId,
+};
+use crate::shader::{
+	artifact::finalize_platform_shader_artifact,
+	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+};
+use crate::{
+	asset::{self, JsonObject},
+	online_docs_url,
+	r#async::spawn_cpu_task,
+	resource,
+	resources::material::{
+		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
+		VariantVariableModel,
+	},
+	shader::generator::ShaderGenerationSettings,
+	types::{AlphaMode, ShaderTypes},
+	ProcessedAsset, ReferenceModel,
+};

@@ -67,16 +67,16 @@ pub fn load_shader_resource(
 }
 
 /// Loads a baked shader from storage, or bakes and stores it when the source descriptor changed.
-pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSourceDescriptor<'_>) -> Result<Shader, String> {
+pub async fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSourceDescriptor<'_>) -> Result<Shader, String> {
 	validate_besl_interface(descriptor)?;
 	let source_hash = hash_shader_source(descriptor);
 	let resource_id = ResourceId::new(descriptor.id);
 
-	if crate::rendering::resource_loading::block_on(storage_backend.read(resource_id)).is_some() {
+	if let Some(_) = storage_backend.read(resource_id).await {
 		// A cache schema can change before its source hash can be read. Treat an
 		// unreadable entry as stale because this descriptor is the authoritative
 		// source and `store` replaces the entry after a successful bake.
-		if let Ok(shader) = load_shader_reference(storage_backend, descriptor.id) {
+		if let Ok(shader) = load_shader_reference(storage_backend, descriptor.id).await {
 			let shader = shader.into_resource();
 			if shader.source_hash == source_hash {
 				return Ok(shader);
@@ -84,7 +84,7 @@ pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSo
 		}
 	}
 
-	let (shader, bytes) = bake_shader(descriptor, source_hash)?;
+	let (shader, bytes) = bake_shader(descriptor, source_hash).await?;
 	let processed = ProcessedAsset::new(ResourceId::new(descriptor.id), shader.clone());
 	storage_backend.store(processed, &bytes).map_err(|_| {
 		"Failed to store baked shader. The most likely cause is a resource storage backend failure.".to_string()
@@ -100,12 +100,13 @@ pub fn create_shader(
 	descriptor: &ShaderSourceDescriptor<'_>,
 ) -> Result<ghi::ShaderHandle, String> {
 	if let Some(storage_backend) = storage_backend {
-		upsert_shader(storage_backend, descriptor)?;
-		let mut shader = load_shader_reference(storage_backend, descriptor.id)?;
-		let backing =
-			crate::rendering::resource_loading::block_on(shader.consume_reader().into_backing_storage()).map_err(|_| {
-				"Failed to load baked shader bytes. The most likely cause is an unsupported shader resource reader.".to_string()
-			})?;
+		let runtime = compio::runtime::Runtime::new()
+			.map_err(|e| format!("Failed to create runtime for shader creation: {e}"))?;
+		runtime.block_on(upsert_shader(storage_backend, descriptor))?;
+		let mut shader = runtime.block_on(load_shader_reference(storage_backend, descriptor.id))?;
+		let backing = runtime.block_on(shader.consume_reader().into_backing_storage()).map_err(|_| {
+			"Failed to load baked shader bytes. The most likely cause is an unsupported shader resource reader.".to_string()
+		})?;
 		let bytes = backing.as_slice();
 		let source = shader_artifact_source(&shader.resource.artifact, shader.resource.interface.workgroup_size, bytes)?;
 		return context
@@ -203,15 +204,17 @@ fn with_shader_source<T>(
 	}
 }
 
-fn load_shader_reference(storage_backend: &dyn StorageBackend, id: &str) -> Result<Reference<Shader>, String> {
-	let (resource, _) = crate::rendering::resource_loading::block_on(storage_backend.read(ResourceId::new(id)))
+async fn load_shader_reference(storage_backend: &dyn StorageBackend, id: &str) -> Result<Reference<Shader>, String> {
+	let (resource, _) = storage_backend.read(ResourceId::new(id))
+		.await
 		.ok_or_else(|| "Failed to load baked shader. The most likely cause is a missing shader resource.".to_string())?;
 	let model: ReferenceModel<Shader> = resource.into();
-	crate::rendering::resource_loading::block_on(model.solve(storage_backend))
+	model.solve(storage_backend)
+		.await
 		.map_err(|_| "Failed to solve baked shader. The most likely cause is invalid shader resource metadata.".to_string())
 }
 
-fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Result<(Shader, Vec<u8>), String> {
+async fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Result<(Shader, Vec<u8>), String> {
 	let compiled = with_shader_source(descriptor.name, &descriptor.source, |source| {
 		ghi::shader::compile(descriptor.name, source)
 	})?;
@@ -221,12 +224,12 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 			(ShaderArtifact::Hlsl { entry_point }, source.into_bytes())
 		}
 		ghi::shader::CompiledShaderSource::MTL { source, entry_point } => {
-			#[cfg(target_os = "macos")]
-			{
-				let bytes =
-					resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
-				(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
-			}
+		#[cfg(target_os = "macos")]
+		{
+			let bytes =
+				resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name).await?;
+			(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
+		}
 			#[cfg(not(target_os = "macos"))]
 			{
 				(ShaderArtifact::Msl { entry_point }, source.into_bytes())
@@ -551,6 +554,8 @@ mod tests {
 			types::BitDepths,
 		};
 
+		let runtime = compio::runtime::Runtime::new().expect("Failed to create runtime for test");
+
 		let unique = std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
 			.expect("System clock should follow the Unix epoch")
@@ -582,11 +587,11 @@ mod tests {
 			.expect("Expected stale cache fixture to store");
 
 		let expected_hash = hash_shader_source(&descriptor);
-		let shader = upsert_shader(&storage, &descriptor)
+		let shader = runtime.block_on(upsert_shader(&storage, &descriptor))
 			.expect("An unreadable cached resource should be replaced from the shader descriptor");
 
 		assert_eq!(shader.source_hash, expected_hash);
-		let loaded_hash = load_shader_reference(&storage, descriptor.id)
+		let loaded_hash = runtime.block_on(load_shader_reference(&storage, descriptor.id))
 			.expect("Expected the replacement shader to load")
 			.resource
 			.source_hash;

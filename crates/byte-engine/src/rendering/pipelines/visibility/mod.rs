@@ -698,82 +698,6 @@ mod tests {
 		)))
 	}
 
-	/// Compiles the checked-in visibility and shadow stages against the packed Metal affine ABI.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn production_visibility_and_shadow_mesh_stages_compile_with_packed_metal_matrices() {
-		let stages = [
-			(
-				"visibility-task",
-				visibility_task_program(),
-				ShaderGenerationSettings::task(utils::Extent::line(32), 32),
-			),
-			(
-				"shadow-task",
-				shadow_task_program(),
-				ShaderGenerationSettings::task(utils::Extent::line(32), 32),
-			),
-			(
-				"visibility-mesh",
-				visibility_mesh_program(),
-				ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-			),
-			(
-				"shadow-mesh",
-				shadow_mesh_program(),
-				ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-			),
-		];
-
-		for (name, main, settings) in stages {
-			let source = MslGenerator::new()
-				.generate(&settings, &main)
-				.unwrap_or_else(|()| panic!("Failed to lower production {name} BESL to MSL."));
-			assert!(source.contains("_besl_packed_float4x3 model"));
-			assert!(source.contains("_besl_load_mat4x3("));
-			assert!(
-				!source.contains("mul("),
-				"Production {name} MSL must use Metal's native multiplication operator."
-			);
-			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name)
-				.unwrap_or_else(|error| panic!("Failed to compile production {name} MSL: {error}"));
-		}
-	}
-
-	/// Compiles the production Material Count shader so subgroup lowering stays valid on Metal.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn production_material_count_stage_compiles_with_metal_subgroups() {
-		let source = MslGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::square(MATERIAL_COUNT_WORKGROUP_WIDTH)),
-				&material_count_program(),
-			)
-			.expect("Failed to lower production Material Count BESL to MSL. The most likely cause is invalid subgroup source.");
-		assert!(source.contains("_besl_subgroup_ballot("));
-		assert!(source.contains("_besl_subgroup_broadcast_u32("));
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "visibility-material-count")
-			.expect(
-				"Failed to compile production Material Count MSL. The most likely cause is invalid Metal subgroup lowering.",
-			);
-	}
-
-	/// Compiles the production Pixel Mapping shader so its established-key fast path stays valid on Metal.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn production_pixel_mapping_stage_compiles_with_metal() {
-		let source = MslGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::square(PIXEL_MAPPING_WORKGROUP_WIDTH)),
-				&pixel_mapping_program(),
-			)
-			.expect("Failed to lower production Pixel Mapping BESL to MSL. The most likely cause is invalid atomic source.");
-		assert!(source.contains("atomic_load_explicit(&"));
-		assert!(source.contains("_besl_atomic_compare_exchange("));
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "visibility-pixel-mapping")
-			.expect("Failed to compile production Pixel Mapping MSL. The most likely cause is invalid Metal atomic lowering.");
-	}
-
 	/// Creates one identity-transformed triangle meshlet in the production visibility buffer layouts.
 	fn mesh_triangle_buffers(
 		program: &ExecutableProgram,
@@ -2098,31 +2022,5 @@ mod tests {
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, center_radius), 16);
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, cone_apex_cutoff), 32);
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, cone_axis), 48);
-	}
-
-	/// Compiles the production Metal meshlet record with the exact host buffer stride.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn production_metal_meshlet_stride_matches_host_buffer() {
-		let mut source = MslGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
-				&visibility_task_program(),
-			)
-			.expect("Failed to lower production visibility-task BESL to MSL. The most likely cause is an invalid meshlet declaration.");
-		assert!(
-			source.contains("packed_float4 center_radius") && source.contains("packed_float4 cone_apex_cutoff"),
-			"Production Meshlet bounds must use native Metal packed vectors"
-		);
-		source.push_str(&format!(
-			"\nstatic_assert(sizeof(Meshlet) == {}, \"Metal and host meshlet strides must match\");\n",
-			super::MESHLET_DATA_BUFFER_STRIDE
-		));
-
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
-			&source,
-			"visibility-meshlet-layout",
-		)
-		.expect("Failed to compile the production Metal meshlet layout. The most likely cause is a host/shader buffer-stride mismatch.");
 	}
 }

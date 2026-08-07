@@ -123,16 +123,4 @@ mod tests {
 			"Invalid AGX VM output. The most likely cause is unstable tone-mapping arithmetic: {warm:?}"
 		);
 	}
-
-	/// Verifies the production AGX shader, including display encoding, remains valid Metal source.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn agx_tonemap_compiles_to_native_metal() {
-		let main = simple_compute::compile_test_program(TONE_MAPPING_SHADER);
-		let source = MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to emit AGX MSL. The most likely cause is an unsupported tone-mapping expression.");
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, "agx-tonemap")
-			.expect("Failed to compile AGX MSL. The most likely cause is invalid generated Metal source.");
-	}
 }

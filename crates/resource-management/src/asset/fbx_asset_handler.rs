@@ -607,22 +607,18 @@ async fn generate_fbx_material(
 	let shader_name = shader_id.clone();
 	let material_json = generated_fbx_material_json(&texture_variables);
 
-	let (shader, shader_bytes) = spawn_cpu_task(move || {
-		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
-	})
-	.await
-	.map_err(|_| {
-		context.error(
-			"FBX material shader compilation did not complete. The most likely cause is a failed background compiler task.",
-		);
-		LoadErrors::FailedToProcess
-	})?
-	.map_err(|_| {
-		context.error(format_args!(
-			"Failed to compile generated FBX material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
-		));
-		LoadErrors::FailedToProcess
-	})?;
+	let (shader, shader_bytes) = compio::runtime::Runtime::new()
+		.map_err(|_| {
+			context.error("Failed to create runtime for FBX shader compilation.");
+			LoadErrors::FailedToProcess
+		})?
+		.block_on(compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute"))
+		.map_err(|_| {
+			context.error(format_args!(
+				"Failed to compile generated FBX material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
+			));
+			LoadErrors::FailedToProcess
+		})?;
 
 	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
 	let material = MaterialModel {

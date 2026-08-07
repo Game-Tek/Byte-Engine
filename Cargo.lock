@@ -520,6 +520,7 @@ dependencies = [
  "compio-io",
  "compio-log",
  "compio-macros",
+ "compio-process",
  "compio-runtime",
 ]
 
@@ -628,6 +629,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "compio-process"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb7cc04a44627dab383be5fb327f5952c757091ecfea028b04af0e99e4caa9c6"
+dependencies = [
+ "compio-buf",
+ "compio-driver",
+ "compio-io",
+ "compio-runtime",
+ "futures-util",
+ "windows-sys",
 ]
 
 [[package]]

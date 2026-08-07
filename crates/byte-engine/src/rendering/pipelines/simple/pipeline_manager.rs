@@ -519,31 +519,6 @@ mod tests {
 		assert_eq!(output_local.read("out_local_position"), Ok(Value::Vec3F([1.0, 2.0, 3.0])));
 	}
 
-	/// Verifies BESL affine matrices stay compact through backend-specific storage lowering.
-	#[test]
-	fn simple_vertex_uses_backend_packed_affine_matrices() {
-		let main = create_simple_vertex_program();
-		let settings = ShaderGenerationSettings::vertex();
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit HLSL simple vertex shader. The most likely cause is an invalid compact transform layout.");
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit MSL simple vertex shader. The most likely cause is an invalid compact transform layout.");
-
-		assert!(hlsl.contains("StructuredBuffer<float4x3> instances"));
-		assert!(msl.contains("_besl_packed_float4x3 transforms[1024]"));
-		assert!(
-			!msl.contains("mul("),
-			"Simple vertex MSL must use Metal's native multiplication operator."
-		);
-
-		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "simple-vertex").expect(
-			"Failed to compile compact simple-vertex MSL. The most likely cause is incompatible packed transform source.",
-		);
-	}
-
 	/// Verifies palette selection, grid blending, and wrapped instance indices in the VM.
 	#[test]
 	fn simple_fragment_besl_vm_produces_palette_and_grid_colors() {

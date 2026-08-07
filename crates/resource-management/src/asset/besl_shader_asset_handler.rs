@@ -132,9 +132,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) =
-			spawn_cpu_task(move || compiler.compile(&id_string, &source, settings, source_hash, generator.as_deref()))
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?
+			compiler.compile(&id_string, &source, settings, source_hash, generator.as_deref())
 				.map_err(|error| {
 					log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
 					LoadErrors::FailedToProcess
@@ -167,7 +165,9 @@ impl ShaderCompiler for PlatformShaderCompiler {
 		source_hash: u64,
 		generator: Option<&dyn ProgramGenerator>,
 	) -> Result<(Shader, Box<[u8]>), String> {
-		compile_shader(id, source, settings, source_hash, generator)
+		compio::runtime::Runtime::new()
+			.map_err(|e| format!("Failed to create runtime for shader compilation: {e}"))?
+			.block_on(compile_shader(id, source, settings, source_hash, generator))
 	}
 }
 
@@ -453,7 +453,7 @@ fn prepare_shader(
 }
 
 /// Compiles one validated standalone program and persists its semantic interface alongside the platform artifact.
-fn compile_shader(
+async fn compile_shader(
 	id: &str,
 	source: &str,
 	settings: BESLShaderSettings,
@@ -462,7 +462,7 @@ fn compile_shader(
 ) -> Result<(Shader, Box<[u8]>), String> {
 	let (main, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
 	let mut generator = PlatformShaderGenerator::new();
-	let compiled = generator.generate(&settings.generation_settings(id), &main)?;
+	let compiled = generator.generate(&settings.generation_settings(id), &main).await?;
 
 	// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
 	let semantic_bindings = interface

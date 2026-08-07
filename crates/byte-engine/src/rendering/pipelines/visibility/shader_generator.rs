@@ -2460,8 +2460,8 @@ mod tests {
 	}
 
 	/// Verifies material evaluation keeps per-pixel and per-light terms out of the repeated PCF tap path.
-	#[test]
-	fn material_evaluation_hoists_shared_terms_and_uses_direct_ao_reads() {
+	#[compio::test]
+	async fn material_evaluation_hoists_shared_terms_and_uses_direct_ao_reads() {
 		let material = material_metadata! {
 			"variables": []
 		};
@@ -2539,7 +2539,7 @@ mod tests {
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
 			&msl,
 			"visibility-mipmapped-environment",
-		)
+		).await
 		.expect(
 			"Failed to compile the mipmapped-environment MSL material pass. The most likely cause is invalid explicit-LOD Metal source.",
 		);
@@ -2581,8 +2581,8 @@ mod tests {
 		assert!(!source.contains("asin("));
 	}
 
-	#[test]
-	fn material_evaluation_emits_cone_attenuation_for_every_backend() {
+	#[compio::test]
+	async fn material_evaluation_emits_cone_attenuation_for_every_backend() {
 		let material = material_metadata! {
 			"variables": []
 		};
@@ -2628,7 +2628,7 @@ mod tests {
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
 			&msl,
 			"visibility-cone-light-material",
-		)
+		).await
 		.expect("Failed to compile the MSL cone-light material pass. The most likely cause is invalid generated Metal source.");
 	}
 
@@ -2650,8 +2650,8 @@ mod tests {
 	}
 
 	/// Verifies native material evaluation emits one bindless sample for a texture shared by several BRDF roles.
-	#[test]
-	fn generated_material_evaluation_reuses_shared_texture_sample() {
+	#[compio::test]
+	async fn generated_material_evaluation_reuses_shared_texture_sample() {
 		let mut builder = BrdfMaterialBuilder::new();
 		let texture = builder.texture(BrdfTexture {
 			image_index: 3,
@@ -2755,7 +2755,7 @@ mod tests {
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
 			&msl,
 			"visibility-shared-material-texture-sample",
-		)
+		).await
 		.expect(
 			"Failed to compile the shared-texture MSL material pass. The most likely cause is invalid generated Metal source.",
 		);

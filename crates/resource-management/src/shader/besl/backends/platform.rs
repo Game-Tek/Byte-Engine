@@ -109,7 +109,7 @@ impl Generator {
 	}
 
 	/// Generates a compiled shader artifact for the current platform.
-	pub fn generate(
+	pub async fn generate(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
@@ -119,10 +119,11 @@ impl Generator {
 			shader_generation_settings,
 			main_function_node,
 		)
+		.await
 	}
 
 	/// Generates a compiled shader artifact for the backend associated with `language`.
-	pub fn generate_for_language(
+	pub async fn generate_for_language(
 		&mut self,
 		language: PlatformShaderLanguage,
 		shader_generation_settings: &ShaderGenerationSettings,
@@ -147,7 +148,8 @@ impl Generator {
 			PlatformShaderLanguage::Msl => {
 				let (binary, bindings, extent) = self
 					.msl_shader_compiler
-					.generate(shader_generation_settings, main_function_node)?
+					.generate(shader_generation_settings, main_function_node)
+					.await?
 					.into_parts();
 
 				Ok(GeneratedCompiledPlatformShader {
@@ -214,13 +216,14 @@ mod tests {
 	}
 
 	#[cfg(target_os = "linux")]
-	#[test]
-	fn generate_uses_current_platform_compiler() {
+	#[compio::test]
+	async fn generate_uses_current_platform_compiler() {
 		let main = generator::tests::fragment_shader();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
 		let generated = generator
 			.generate(&settings, &main)
+			.await
 			.expect("Failed to generate compiled platform shader");
 
 		if cfg!(target_vendor = "apple") {
@@ -232,12 +235,12 @@ mod tests {
 	}
 
 	#[cfg(target_os = "windows")]
-	#[test]
-	fn generate_uses_hlsl_on_windows() {
+	#[compio::test]
+	async fn generate_uses_hlsl_on_windows() {
 		let main = generator::tests::fragment_shader();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
-		let generated = generator.generate(&settings, &main).expect("Failed to generate HLSL shader");
+		let generated = generator.generate(&settings, &main).await.expect("Failed to generate HLSL shader");
 
 		assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Hlsl.entry_point()));
 		assert!(std::str::from_utf8(generated.binary()).is_ok());

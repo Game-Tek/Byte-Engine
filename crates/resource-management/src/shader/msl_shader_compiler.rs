@@ -3,7 +3,6 @@ use std::{
 	cell::RefCell,
 	fs,
 	path::{Path, PathBuf},
-	process::Command,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -62,16 +61,17 @@ impl<A: Allocator + Clone> Compiler<A> {
 		}
 	}
 
-	pub fn generate(
+	pub async fn generate(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<GeneratedShader, String> {
 		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
+			.await
 	}
 
 	/// Generates a compiled Metal shader using `allocator` for one-call source-generation scratch.
-	pub fn generate_in(
+	pub async fn generate_in(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
@@ -87,7 +87,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 				)
 			})?;
 
-		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name)?;
+		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 
 		{
 			let node_borrow = RefCell::borrow(main_function_node);
@@ -161,7 +161,7 @@ fn metal_debug_info_arguments() -> [&'static str; 2] {
 }
 
 /// Compiles Metal Shading Language source into a Metal library binary.
-pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
+pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
 	if !cfg!(target_os = "macos") {
 		return Err(error(
 			"MSL compilation is only supported on macOS",
@@ -169,43 +169,46 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		));
 	}
 
-	let safe_name = sanitize_shader_name(name);
-	let temp_dir = TempShaderDir::new(&safe_name)?;
-
-	let source_path = temp_dir.path().join(format!("{safe_name}.metal"));
-	let air_path = temp_dir.path().join(format!("{safe_name}.air"));
-	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
-
-	fs::write(&source_path, msl_source).map_err(|_| {
-		error(
-			"Failed to write MSL shader source to disk",
-			"The temporary directory could not be written",
-		)
-	})?;
-
 	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
 	// Omit in release builds to keep the compiled library smaller.
 	let debug_args = if cfg!(debug_assertions) { metal_debug_info_arguments().to_vec() } else { Vec::new() };
 
-	let metal_output = Command::new("xcrun")
-		.args(["-sdk", "macosx", "metal", "-c"])
+	// Pipe MSL source via stdin and read AIR from stdout to avoid writing the source file to disk.
+	let mut metal_cmd = crate::r#async::Command::new("xcrun");
+	metal_cmd
+		.args(["-sdk", "macosx", "metal", "-c", "-x", "metal"])
 		.args(debug_args.iter())
-		.args([
-			source_path
-				.to_str()
-				.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?,
-			"-o",
-			air_path
-				.to_str()
-				.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?,
-		])
-		.output()
-		.map_err(|_| {
-			error(
-				"Failed to invoke the Metal compiler",
-				"The Xcode command line tools may be missing",
-			)
+		.args(["-", "-o", "-"]);
+	metal_cmd
+		.stdin(std::process::Stdio::piped())
+		.map_err(|_| error("Failed to configure Metal compiler stdin", "Stdio pipe failed"))?;
+	metal_cmd
+		.stdout(std::process::Stdio::piped())
+		.map_err(|_| error("Failed to configure Metal compiler stdout", "Stdio pipe failed"))?;
+	metal_cmd
+		.stderr(std::process::Stdio::piped())
+		.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
+
+	let mut metal_process = metal_cmd.spawn().map_err(|_| {
+		error(
+			"Failed to invoke the Metal compiler",
+			"The Xcode command line tools may be missing",
+		)
+	})?;
+
+	if let Some(mut stdin) = metal_process.stdin.take() {
+		use compio::io::AsyncWriteExt;
+		stdin.write_all(msl_source.as_bytes().to_vec()).await.0.map_err(|_| {
+			error("Failed to write MSL source to Metal compiler", "Stdin write failed")
 		})?;
+	}
+
+	let metal_output = metal_process.wait_with_output().await.map_err(|_| {
+		error(
+			"Failed to invoke the Metal compiler",
+			"The Xcode command line tools may be missing",
+		)
+	})?;
 
 	if !metal_output.status.success() {
 		let exit_status = metal_output
@@ -230,7 +233,20 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		));
 	}
 
-	let metallib_output = Command::new("xcrun")
+	// metallib requires a file path for its input, so we write the AIR to a temp file.
+	let safe_name = sanitize_shader_name(name);
+	let temp_dir = TempShaderDir::new(&safe_name)?;
+	let air_path = temp_dir.path().join(format!("{safe_name}.air"));
+	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
+
+	crate::r#async::write(&air_path, metal_output.stdout).await.0.map_err(|_| {
+		error(
+			"Failed to write AIR intermediate to disk",
+			"The temporary directory could not be written",
+		)
+	})?;
+
+	let metallib_output = crate::r#async::Command::new("xcrun")
 		.args([
 			"-sdk",
 			"macosx",
@@ -244,6 +260,7 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 				.ok_or_else(|| error("Failed to link Metal library", "The temporary file path was not valid UTF-8"))?,
 		])
 		.output()
+		.await
 		.map_err(|_| error("Failed to invoke metallib", "The Xcode command line tools may be missing"))?;
 
 	if !metallib_output.status.success() {
@@ -260,7 +277,8 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		));
 	}
 
-	let binary = fs::read(&metallib_path)
+	let binary = crate::r#async::read(&metallib_path)
+		.await
 		.map_err(|_| error("Failed to read compiled Metal library", "The metallib output was not created"))?;
 
 	Ok(binary.into_boxed_slice())

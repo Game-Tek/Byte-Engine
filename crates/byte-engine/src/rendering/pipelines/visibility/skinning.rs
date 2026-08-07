@@ -290,8 +290,8 @@ mod tests {
 	}
 
 	/// Verifies every backend sees a linear 48-byte affine palette, including Metal's packed float columns.
-	#[test]
-	fn skinning_palette_layout_stays_compact_across_backends() {
+	#[compio::test]
+	async fn skinning_palette_layout_stays_compact_across_backends() {
 		let main = production_skinning_main();
 		let settings = ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE));
 		let glsl = GLSLShaderGenerator::new()
@@ -313,7 +313,7 @@ mod tests {
 		);
 
 		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "visibility-skinning")
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "visibility-skinning").await
 			.expect("Failed to compile compact skinning MSL. The most likely cause is incompatible packed palette source.");
 	}
 

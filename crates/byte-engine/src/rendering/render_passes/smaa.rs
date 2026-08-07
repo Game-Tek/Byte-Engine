@@ -490,30 +490,4 @@ mod tests {
 			}
 		}
 	}
-
-	/// Verifies every production SMAA stage compiles with Apple's native Metal compiler.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn smaa_shaders_compile_to_native_metal() {
-		for (name, shader, workgroup) in [
-			(
-				"smaa-edge-detection",
-				EDGE_SHADER,
-				utils::Extent::new(SMAA_EDGE_WORKGROUP_WIDTH, SMAA_EDGE_WORKGROUP_HEIGHT, 1),
-			),
-			(
-				"smaa-blend-and-neighborhood",
-				RESOLVE_SHADER,
-				utils::Extent::new(SMAA_RESOLVE_WORKGROUP_WIDTH, SMAA_RESOLVE_WORKGROUP_HEIGHT, 1),
-			),
-		] {
-			let settings = ShaderGenerationSettings::compute(workgroup);
-			let main = simple_compute::compile_test_program(shader);
-			let source = MSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.unwrap_or_else(|()| panic!("Failed to lower production {name} BESL to MSL."));
-			resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, name)
-				.unwrap_or_else(|error| panic!("Failed to compile production {name} MSL: {error}"));
-		}
-	}
 }

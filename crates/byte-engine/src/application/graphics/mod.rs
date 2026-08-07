@@ -573,9 +573,9 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		}
 	}
 
-	let sm = {
-		CustomPipelineManager {
-			pipeline_manager: SimplePipelineManager::new(renderer.context_mut()),
+		let sm = {
+			CustomPipelineManager {
+				pipeline_manager: SimplePipelineManager::new(renderer.context_mut()),
 			mesh_receiver: listener,
 			mesh_delete_receiver: delete_listener,
 			transforms_listener,
@@ -815,7 +815,6 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 		}
 
 		Box::new(CustomRenderPass {
-			// Spawn only the listeners that are actively consumed by render passes.
 			listener: ui_channel.listener(),
 			render_pass: UiRenderPass::new(render_pass_builder),
 		})

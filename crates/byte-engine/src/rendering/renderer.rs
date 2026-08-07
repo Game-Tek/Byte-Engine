@@ -47,6 +47,9 @@ pub struct Renderer {
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
+	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
+	pipeline_compilation_manager: crate::rendering::pipeline_compilation::PipelineManager,
+	pipeline_compilation_servers: Vec<crate::rendering::PipelineManagerServer>,
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
@@ -178,6 +181,12 @@ impl Renderer {
 		let mut context = device.create_context().unwrap();
 		let frame_queue_depth = 2;
 		context.set_frames_in_flight(frame_queue_depth);
+		let pipeline_compilation_server_count = parameters
+			.get_parameter("render.pipeline-compilation.threads")
+			.and_then(|parameter| parameter.value().parse::<usize>().ok())
+			.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| (count.get() / 2).clamp(1, 4)));
+		let (pipeline_compilation_client, pipeline_compilation_manager, pipeline_compilation_servers) =
+			crate::rendering::pipeline_compilation::PipelineManager::new(&mut context, pipeline_compilation_server_count);
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
@@ -214,6 +223,9 @@ impl Renderer {
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
+			pipeline_compilation_client,
+			pipeline_compilation_manager,
+			pipeline_compilation_servers,
 
 			graphics_queue_handle,
 			transfer_queue_handle,
@@ -259,7 +271,13 @@ impl Renderer {
 					.resource_manager
 					.as_ref()
 					.and_then(|resource_manager| resource_manager.upgrade());
-				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				let mut rpb = RenderPassBuilder::new(
+					&mut self.context,
+					&mut self.render_targets,
+					sink_id,
+					swapchain,
+					self.pipeline_compilation_client.clone(),
+				);
 				if let Some(resource_manager) = resource_manager.as_deref() {
 					rpb = rpb.with_shader_resources(resource_manager);
 				}
@@ -292,6 +310,7 @@ impl Renderer {
 				resource_manager,
 				pipeline_managers,
 				pipeline_manager_resources_by_sink,
+				pipeline_compilation_client,
 				..
 			} = self;
 
@@ -299,7 +318,13 @@ impl Renderer {
 				let resource_manager = resource_manager
 					.as_ref()
 					.and_then(|resource_manager| resource_manager.upgrade());
-				let mut rpb = RenderPassBuilder::new(context, render_targets, sink_id, swapchain);
+				let mut rpb = RenderPassBuilder::new(
+					context,
+					render_targets,
+					sink_id,
+					swapchain,
+					pipeline_compilation_client.clone(),
+				);
 				if let Some(resource_manager) = resource_manager.as_deref() {
 					rpb = rpb.with_shader_resources(resource_manager);
 				}
@@ -369,8 +394,13 @@ impl Renderer {
 					.resource_manager
 					.as_ref()
 					.and_then(|resource_manager| resource_manager.upgrade());
-				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				let mut render_pass_builder = RenderPassBuilder::new(
+					&mut self.context,
+					&mut self.render_targets,
+					sink_id,
+					swapchain,
+					self.pipeline_compilation_client.clone(),
+				);
 				if let Some(resource_manager) = resource_manager.as_deref() {
 					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
 				}
@@ -395,8 +425,13 @@ impl Renderer {
 					.resource_manager
 					.as_ref()
 					.and_then(|resource_manager| resource_manager.upgrade());
-				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				let mut render_pass_builder = RenderPassBuilder::new(
+					&mut self.context,
+					&mut self.render_targets,
+					sink_id,
+					swapchain,
+					self.pipeline_compilation_client.clone(),
+				);
 				if let Some(resource_manager) = resource_manager.as_deref() {
 					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
 				}
@@ -493,6 +528,7 @@ impl Renderer {
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
+		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
 		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
@@ -504,6 +540,9 @@ impl Renderer {
 			let _enter = span.enter();
 			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 				let completed_graphics_frame = execution.completed_frame();
+				pipeline_compilation_manager.publish(execution.frame().expect(
+					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
+				));
 
 				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
@@ -679,6 +718,16 @@ impl Renderer {
 
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
 		&mut self.context
+	}
+
+	/// Returns a client for requesting renderer-owned asynchronous pipelines.
+	pub fn pipeline_manager_client(&self) -> crate::rendering::PipelineManagerClient {
+		self.pipeline_compilation_client.clone()
+	}
+
+	/// Takes pending compiler servers so an application setup function can start them on owned threads.
+	pub(crate) fn take_pipeline_compilation_servers(&mut self) -> Vec<crate::rendering::PipelineManagerServer> {
+		std::mem::take(&mut self.pipeline_compilation_servers)
 	}
 
 	/// Creates the swapchain and sink state for a window.

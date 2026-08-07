@@ -34,6 +34,9 @@ When an error or warning has a documented recovery workflow, include a direct li
 - Always leave comments for any non-trivial code
 - Always prefer breaking APIs to ad-hoc changes. The app is not shipped yet. We can make all breaking changes.
 
+# Tests
+- Write tests at their appropriate seam. (E.G: don't test material evaluation shaders correctly lower to MSL. MSL lowering is responsability of the BESL MSL shader generator. Material evaluation must only ensure their BESL shader correctly executes, which is asserted with a BESL VM supported test).
+
 # Best Practices
 
 - Avoid allocations, especially transient ones.

@@ -528,6 +528,7 @@ const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
 /// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
+	defaults::setup_default_pipeline_compilation(application);
 	let listener = application.world().renderable_factory().listener();
 	let delete_listener = application.world().delete_channel().listener();
 	let transforms_listener = application.world().transforms_channel().listener();
@@ -594,6 +595,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
+	defaults::setup_default_pipeline_compilation(application);
 	let gtao_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::render_pass::GTAO_CONFIGURATION_PREFIX);
@@ -1003,7 +1005,8 @@ pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_setup, setup_default_audio, setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
+	default_setup, setup_default_audio, setup_default_input, setup_default_pipeline_compilation,
+	setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;
 #[cfg(feature = "dmx")]

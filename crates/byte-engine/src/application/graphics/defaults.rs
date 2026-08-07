@@ -19,6 +19,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 		setup_default_resource_and_asset_management(application, generator);
 	}
 	setup_default_input(application);
+	setup_default_pipeline_compilation(application);
 
 	let mut loading_tasks = build_deferred_tasks_queue();
 
@@ -33,6 +34,22 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 	setup_default_window(application);
 
 	launch_deferred_tasks_thread(application, loading_tasks);
+}
+
+/// Starts the renderer's pending pipeline compiler servers on application-owned threads.
+///
+/// This setup is idempotent. Call it when composing a graphics application
+/// without [`default_setup`] before registering pipeline managers or render
+/// passes that request asynchronous pipelines.
+pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication) {
+	let servers = application.renderer.take_pipeline_compilation_servers();
+	for server in servers {
+		application
+			.threads
+			.push(Thread::new(application.application_events.1.clone(), move |_events| {
+				server.run()
+			}));
+	}
 }
 
 pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {

@@ -146,6 +146,7 @@ pub struct RenderPassBuilder<'a> {
 	pub(crate) images: &'a mut RenderTargets,
 	shader_storage: Option<&'a dyn resource_management::resource::StorageBackend>,
 	shader_resources: Option<&'a resource_management::resource::resource_manager::ResourceManager>,
+	pipeline_manager: crate::rendering::PipelineManagerClient,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -154,6 +155,7 @@ impl<'a> RenderPassBuilder<'a> {
 		images: &'a mut RenderTargets,
 		sink_id: usize,
 		swapchain: ghi::SwapchainHandle,
+		pipeline_manager: crate::rendering::PipelineManagerClient,
 	) -> Self {
 		RenderPassBuilder {
 			context,
@@ -163,6 +165,7 @@ impl<'a> RenderPassBuilder<'a> {
 			images,
 			shader_storage: None,
 			shader_resources: None,
+			pipeline_manager,
 		}
 	}
 
@@ -226,6 +229,11 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
 		self.context
+	}
+
+	/// Returns a client for requesting pipelines shared by renderer dependants.
+	pub fn pipeline_manager(&self) -> &crate::rendering::PipelineManagerClient {
+		&self.pipeline_manager
 	}
 
 	pub fn create_shader(&mut self, descriptor: &ShaderSourceDescriptor<'_>) -> Result<ghi::ShaderHandle, String> {

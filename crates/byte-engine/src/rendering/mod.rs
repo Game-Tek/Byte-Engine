@@ -35,6 +35,7 @@ pub mod mesh;
 #[doc(hidden)]
 pub mod renderable;
 
+mod pipeline_compilation;
 #[doc(hidden)]
 pub mod pipeline_manager;
 mod pose;
@@ -76,6 +77,7 @@ pub use environment::Environment;
 pub use lights::{
 	ConeLight, DirectionalLight, Light, LightClasses, LightColor, Lights, PhotometricError, PhotometricIntensity, PointLight,
 };
+pub use pipeline_compilation::{PipelineKey, PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
 pub use pose::UpdatePose;

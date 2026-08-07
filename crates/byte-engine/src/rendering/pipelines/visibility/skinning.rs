@@ -289,34 +289,6 @@ mod tests {
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 20);
 	}
 
-	/// Verifies every backend sees a linear 48-byte affine palette, including Metal's packed float columns.
-	#[compio::test]
-	async fn skinning_palette_layout_stays_compact_across_backends() {
-		let main = production_skinning_main();
-		let settings = ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE));
-		let glsl = GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit GLSL skinning shader. The most likely cause is an invalid compact palette contract.");
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit HLSL skinning shader. The most likely cause is an invalid compact palette contract.");
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to emit MSL skinning shader. The most likely cause is an invalid compact palette contract.");
-
-		assert!(glsl.contains("mat4x3 values[65536]"));
-		assert!(hlsl.contains("StructuredBuffer<float4x3> matrix_palette"));
-		assert!(msl.contains("_besl_packed_float4x3 values[65536]"));
-		assert!(
-			!msl.contains("mul("),
-			"Skinning MSL must use Metal's native multiplication operator."
-		);
-
-		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&msl, "visibility-skinning").await
-			.expect("Failed to compile compact skinning MSL. The most likely cause is incompatible packed palette source.");
-	}
-
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {

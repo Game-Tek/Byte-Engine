@@ -84,7 +84,7 @@ fn main() {
 
 		setup_default_resource_and_asset_management(
 			&mut app,
-			VisibilityShaderGenerator::new(false, false, false, false, false, false, true, true),
+			VisibilityShaderGenerator::new(true, false, false, false, false, false, true, true),
 		);
 	}
 	setup_default_input(&mut app);

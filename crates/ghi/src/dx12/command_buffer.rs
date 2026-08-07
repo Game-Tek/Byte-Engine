@@ -395,7 +395,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
 	}
 
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.dispatch_compute_indirect_native(self.command_buffer, buffer, entry_index);

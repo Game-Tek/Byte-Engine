@@ -124,7 +124,7 @@ pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::ShaderResourceDesc
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
 )
-.buffer_stride(16);
+.buffer_stride(12);
 pub(crate) const MATERIAL_XY_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1037),
 	ghi::ResourceKind::StorageBuffer,
@@ -1184,12 +1184,12 @@ mod tests {
 	}
 
 	/// Reads one dispatch tuple from an indexed visibility buffer member.
-	fn read_vec4u(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u32; 4] {
+	fn read_vec3u(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u32; 3] {
 		match buffer
 			.read_indexed(member, index)
-			.expect("Failed to read a VM vec4u array element. The most likely cause is a drifted visibility buffer layout.")
+			.expect("Failed to read a VM vec3u array element. The most likely cause is a drifted visibility buffer layout.")
 		{
-			Value::Vec4U(value) => value,
+			Value::Vec3U(value) => value,
 			value => panic!(
 				"Unexpected visibility dispatch value: {value:?}. The most likely cause is a drifted dispatch buffer type."
 			),
@@ -1271,19 +1271,20 @@ mod tests {
 		assert_eq!(read_u32(&material_offsets, "material_offset", 2), 0);
 		assert_eq!(read_u32(&material_offsets, "material_offset", 5), 2);
 		assert_eq!(read_u32(&material_offsets, "material_offset", 6), 3);
-		assert_eq!(read_u32(&material_counts, "material_count", 2), 0);
-		assert_eq!(read_u32(&material_counts, "material_count", 5), 0);
+		// The offset pass no longer clears material_count; evaluation reads it directly for bounds.
+		assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
+		assert_eq!(read_u32(&material_counts, "material_count", 5), 1);
 		assert_eq!(
-			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 0),
-			[0, 1, 1, 0]
+			read_vec3u(&material_dispatches, "material_evaluation_dispatches", 0),
+			[0, 1, 1]
 		);
 		assert_eq!(
-			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 2),
-			[1, 1, 1, 2]
+			read_vec3u(&material_dispatches, "material_evaluation_dispatches", 2),
+			[1, 1, 1]
 		);
 		assert_eq!(
-			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 5),
-			[1, 1, 1, 1]
+			read_vec3u(&material_dispatches, "material_evaluation_dispatches", 5),
+			[1, 1, 1]
 		);
 
 		// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.

@@ -2219,7 +2219,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
-		let indirect_buffer = device.build_buffer::<[[u32; 4]; 2]>(
+		let indirect_buffer = device.build_buffer::<[[u32; 3]; 2]>(
 			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
 

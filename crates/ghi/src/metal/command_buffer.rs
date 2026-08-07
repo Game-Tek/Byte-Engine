@@ -2303,7 +2303,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
 		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into());
@@ -2322,7 +2322,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 			self.ensure_compute_encoder()
 				.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
 					buffer.as_ref(),
-					(entry_index * std::mem::size_of::<[u32; 4]>()) as _,
+					(entry_index * std::mem::size_of::<[u32; 3]>()) as _,
 					mtl::MTLSize {
 						width: threadgroup_extent.width().max(1) as _,
 						height: threadgroup_extent.height().max(1) as _,

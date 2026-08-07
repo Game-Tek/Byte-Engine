@@ -484,7 +484,7 @@ decode_octahedral_normal: fn (encoded: vec2u16) -> vec3f {
 const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
 material_evaluation_prefix: fn () -> void {
 	let invocation: vec2u = thread_id();
-	if (invocation.x >= material_evaluation_dispatches.material_evaluation_dispatches[push_constant.material_id].w) {
+	if (invocation.x >= material_count.material_count[push_constant.material_id]) {
 		return;
 	}
 
@@ -1544,16 +1544,6 @@ impl VisibilityShaderScope {
 			material_offset_scratch_read,
 			material_offset_scratch_write,
 		);
-		let material_evaluation_dispatches = Node::device_buffer_binding(
-			"material_evaluation_dispatches",
-			Node::buffer(
-				"MaterialEvaluationDispatches",
-				vec![Node::member("material_evaluation_dispatches", "vec4u[1024]")],
-			),
-			1036,
-			material_offset_read,
-			material_offset_write,
-		);
 		let pixel_mapping = Node::device_buffer_binding(
 			"pixel_mapping",
 			Node::buffer(
@@ -1746,7 +1736,6 @@ impl VisibilityShaderScope {
 				material_count,
 				material_offset,
 				material_offset_scratch,
-				material_evaluation_dispatches,
 				pixel_mapping,
 				triangle_index,
 				instance_index,

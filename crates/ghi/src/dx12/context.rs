@@ -5448,7 +5448,7 @@ impl Device {
 	pub(crate) fn dispatch_compute_indirect_native<const N: usize>(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		buffer_handle: BufferHandle<[[u32; 4]; N]>,
+		buffer_handle: BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
 		let base_buffer_handle: BaseBufferHandle = buffer_handle.into();
@@ -5468,7 +5468,7 @@ impl Device {
 		let Some(command_signature) = self.indirect_dispatch_command_signature() else {
 			return;
 		};
-		let argument_offset = (entry_index * std::mem::size_of::<[u32; 4]>()) as u64;
+		let argument_offset = (entry_index * std::mem::size_of::<[u32; 3]>()) as u64;
 
 		unsafe {
 			self.transition_tracked_buffer(
@@ -5493,7 +5493,7 @@ impl Device {
 			Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
 		};
 		let description = D3D12_COMMAND_SIGNATURE_DESC {
-			ByteStride: std::mem::size_of::<[u32; 4]>() as u32,
+			ByteStride: std::mem::size_of::<[u32; 3]>() as u32,
 			NumArgumentDescs: 1,
 			pArgumentDescs: &argument,
 			NodeMask: 0,

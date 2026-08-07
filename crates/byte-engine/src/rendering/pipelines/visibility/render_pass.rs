@@ -736,7 +736,6 @@ pub struct MaterialCountPass {
 	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 	material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	pipeline: ghi::PipelineHandle,
-	needs_initial_clear: std::sync::atomic::AtomicBool,
 }
 
 impl MaterialCountPass {
@@ -768,16 +767,14 @@ impl MaterialCountPass {
 			material_count_buffer,
 			visibility_pass_descriptor_set,
 			pipeline: material_count_pipeline,
-			needs_initial_clear: std::sync::atomic::AtomicBool::new(true),
 		}
 	}
 
-	fn prepare(&self, sink: &Sink, initialize_counts: bool) -> impl RenderPassFunction + use<'_> {
+	fn prepare(&self, sink: &Sink) -> impl RenderPassFunction + use<'_> {
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
 		let material_count_buffer = self.material_count_buffer;
-		let needs_initial_clear = &self.needs_initial_clear;
 
 		let extent = sink.extent();
 
@@ -789,11 +786,8 @@ impl MaterialCountPass {
 			);
 			c.start_region(|label| label.write_str("Material Count"));
 
-			// The offset pass consumes and resets every counter. Only the buffer's first recorded use needs a clear.
-			let clear_counts = initialize_counts && needs_initial_clear.swap(false, std::sync::atomic::Ordering::Relaxed);
-			if clear_counts {
-				c.clear_buffers(&[material_count_buffer.into()]);
-			}
+			// The offset pass reads these counts without resetting them, so clear before every dispatch.
+			c.clear_buffers(&[material_count_buffer.into()]);
 
 			let compute_pipeline_command = c.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
@@ -813,7 +807,7 @@ pub struct MaterialOffsetPass {
 	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 	material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-	material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+	material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 	material_offset_pipeline: ghi::PipelineHandle,
 }
 
@@ -825,7 +819,7 @@ impl MaterialOffsetPass {
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 	) -> Self {
 		let material_offset_shader = load_visibility_shader(
 			context,
@@ -1284,7 +1278,7 @@ pub struct MaterialEvaluationPass {
 	visibility_descriptor_set: ghi::DescriptorSetHandle,
 	/// Material evaluation descriptor set
 	descriptor_set: ghi::DescriptorSetHandle,
-	material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+	material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 }
 
 impl MaterialEvaluationPass {
@@ -1296,7 +1290,7 @@ impl MaterialEvaluationPass {
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
-		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 	) -> Self {
 		MaterialEvaluationPass {
 			lit,
@@ -1415,7 +1409,7 @@ impl VisibilityPipelineRenderPass {
 		instance_id: ghi::BaseImageHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
+		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 		gtao_settings: GtaoSettings,
 	) -> Self {
 		let shadow_pass = ShadowPass::new(
@@ -1506,8 +1500,8 @@ impl VisibilityPipelineRenderPass {
 		);
 		let visibility_pass = &self.visibility_pass;
 		// The offset pass consumes and resets every counter before the optional transparent layer runs.
-		let opaque_material_count_pass = self.material_count_pass.prepare(sink, true);
-		let transparent_material_count_pass = self.material_count_pass.prepare(sink, false);
+		let opaque_material_count_pass = self.material_count_pass.prepare(sink);
+		let transparent_material_count_pass = self.material_count_pass.prepare(sink);
 		let material_offset_pass = self.material_offset_pass.prepare();
 		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(sink);
 		let gtao_pass = self.gtao_pass.prepare(frame, sink);

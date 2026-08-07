@@ -185,7 +185,7 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
 	/// Dispatches compute workgroups using parameters stored in a buffer.
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize);
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize);
 }
 
 /// The `BoundRayTracingPipelineMode` trait provides ray dispatch for a bound ray-tracing pipeline.

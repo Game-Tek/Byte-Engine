@@ -2199,7 +2199,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
 		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_handle.into())).buffer;
@@ -2219,7 +2219,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 			self.device.device.cmd_dispatch_indirect(
 				command_buffer_handle,
 				buffer,
-				entry_index as u64 * std::mem::size_of::<[u32; 4]>() as u64,
+				entry_index as u64 * std::mem::size_of::<[u32; 3]>() as u64,
 			);
 		}
 	}

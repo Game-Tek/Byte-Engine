@@ -11,7 +11,7 @@ MaterialOffsetScratch: struct {
 }
 
 MaterialEvaluationDispatches: struct {
-	material_evaluation_dispatches: vec4u[1024],
+	material_evaluation_dispatches: vec3u[1024],
 }
 
 material_count_buffer: descriptor<MaterialCount, 1033, read_write>;
@@ -27,12 +27,10 @@ main: fn () -> void {
 
 		for (let i: u32 = 0; i < 1024; i = i + 1) {
 			let count: u32 = atomic_load(material_count_buffer.material_count[i]);
-			// Consume the count so the next visibility layer can reuse the buffer without a transfer clear.
-			atomic_store(material_count_buffer.material_count[i], 0);
 			material_offset_buffer.material_offset[i] = sum;
 			atomic_store(material_offset_scratch_buffer.material_offset_scratch[i], sum);
-			// The indirect dispatch consumes xyz. Preserve the exact count in w because this pass also resets the source counter.
-			material_evaluation_dispatches.material_evaluation_dispatches[i] = vec4u((count + 127) / 128, 1, 1, count);
+			// The indirect dispatch consumes all three components for group counts.
+			material_evaluation_dispatches.material_evaluation_dispatches[i] = vec3u((count + 127) / 128, 1, 1);
 			sum = sum + count;
 		}
 	}

@@ -1663,6 +1663,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"vec4f16" => "packed_half4",
 			"vec2f" => "packed_float2",
 			"vec3f" => "packed_float3",
+			"vec3u" => "packed_uint3",
 			"mat4x3f" => "_besl_packed_float4x3",
 			"vec2u16" => "packed_ushort2",
 			"vec4u16" => "packed_ushort4",

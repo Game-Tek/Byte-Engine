@@ -155,7 +155,7 @@ impl SkinningPass {
 		];
 		context.write(&writes);
 
-		let loaded = crate::rendering::shader_store::load_shader_resource(
+		let loaded = crate::rendering::resource_loading::load_shader(
 			context,
 			shader_resources,
 			"byte-engine/rendering/visibility/skinning.besl",

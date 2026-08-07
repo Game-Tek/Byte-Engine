@@ -574,9 +574,9 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		}
 	}
 
-		let sm = {
-			CustomPipelineManager {
-				pipeline_manager: SimplePipelineManager::new(renderer.context_mut()),
+	let sm = {
+		CustomPipelineManager {
+			pipeline_manager: SimplePipelineManager::new(renderer.context_mut(), &application.resource_manager),
 			mesh_receiver: listener,
 			mesh_delete_receiver: delete_listener,
 			transforms_listener,

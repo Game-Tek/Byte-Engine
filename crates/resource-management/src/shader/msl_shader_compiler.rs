@@ -171,7 +171,11 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 
 	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
 	// Omit in release builds to keep the compiled library smaller.
-	let debug_args = if cfg!(debug_assertions) { metal_debug_info_arguments().to_vec() } else { Vec::new() };
+	let debug_args = if cfg!(debug_assertions) {
+		metal_debug_info_arguments().to_vec()
+	} else {
+		Vec::new()
+	};
 
 	// Pipe MSL source via stdin and read AIR from stdout to avoid writing the source file to disk.
 	let mut metal_cmd = crate::r#async::Command::new("xcrun");
@@ -198,9 +202,11 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 
 	if let Some(mut stdin) = metal_process.stdin.take() {
 		use compio::io::AsyncWriteExt;
-		stdin.write_all(msl_source.as_bytes().to_vec()).await.0.map_err(|_| {
-			error("Failed to write MSL source to Metal compiler", "Stdin write failed")
-		})?;
+		stdin
+			.write_all(msl_source.as_bytes().to_vec())
+			.await
+			.0
+			.map_err(|_| error("Failed to write MSL source to Metal compiler", "Stdin write failed"))?;
 	}
 
 	let metal_output = metal_process.wait_with_output().await.map_err(|_| {

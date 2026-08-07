@@ -40,9 +40,16 @@ impl ShaderCompiler for PlatformShaderCompiler {
 		shader_json: &Value,
 		stage: &str,
 	) -> Result<(Shader, Box<[u8]>), ()> {
-		compio::runtime::Runtime::new()
-			.map_err(|_| ())?
-			.block_on(compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage))
+		compio::runtime::Runtime::new().map_err(|_| ())?.block_on(compile_shader(
+			generator,
+			name,
+			shader_code,
+			format,
+			domain,
+			material,
+			shader_json,
+			stage,
+		))
 	}
 }
 
@@ -385,7 +392,8 @@ async fn compile_and_store_shader(
 	let name = path.get_base().as_ref().to_string();
 	let shader_json = shader_json.clone();
 
-	let (shader, result_shader_bytes) = compiler.compile(
+	let (shader, result_shader_bytes) = compiler
+		.compile(
 			generator.as_ref(),
 			&name,
 			&shader_code,

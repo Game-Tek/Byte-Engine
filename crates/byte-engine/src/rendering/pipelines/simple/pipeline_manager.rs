@@ -15,7 +15,10 @@ const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl PipelineManager {
-	pub fn new(context: &mut ghi::implementation::Context) -> Self {
+	pub fn new(
+		context: &mut ghi::implementation::Context,
+		resources: &resource_management::resource::resource_manager::ResourceManager,
+	) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("Vertex Positions")
@@ -38,34 +41,8 @@ impl PipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let vertex_shader = create_besl_shader(
-			context,
-			"byte-engine/rendering/simple/vertex",
-			"Vertex Shader",
-			ResourceShaderTypes::Vertex,
-			ShaderGenerationSettings::vertex(),
-			create_simple_vertex_program(),
-			material::ShaderInterface {
-				workgroup_size: None,
-				bindings: vec![
-					material::Binding::new(0, material::BindingKind::StorageBuffer, 1, Some(64), true, false),
-					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, Some(48), true, false),
-				],
-			},
-		);
-
-		let fragment_shader = create_besl_shader(
-			context,
-			"byte-engine/rendering/simple/fragment",
-			"Fragment Shader",
-			ResourceShaderTypes::Fragment,
-			ShaderGenerationSettings::fragment(),
-			create_simple_fragment_program(),
-			material::ShaderInterface {
-				workgroup_size: None,
-				bindings: Vec::new(),
-			},
-		);
+		let vertex_shader = load_besl_shader(context, resources, "rendering/simple/vertex.besl", "Vertex Shader");
+		let fragment_shader = load_besl_shader(context, resources, "rendering/simple/fragment.besl", "Fragment Shader");
 
 		let pipeline = context.create_raster_pipeline(
 			ghi::pipelines::raster::Builder::new(
@@ -247,136 +224,15 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
-/// Builds the simple pipeline fragment BESL program used to visualize object-space grid lines.
-fn create_simple_fragment_program() -> besl::NodeReference {
-	let mut root = besl::Node::root();
-	let u32_type = root.get_child("u32").expect("u32 type not found in BESL root");
-	let vec3f_type = root.get_child("vec3f").expect("vec3f type not found in BESL root");
-	let vec4f_type = root.get_child("vec4f").expect("vec4f type not found in BESL root");
-
-	root.add_children(vec![
-		besl::Node::input("in_instance_index", u32_type, 0).into(),
-		besl::Node::input("in_local_position", vec3f_type, 1).into(),
-		besl::Node::output("out_albedo", vec4f_type, 0).into(),
-	]);
-
-	let program = besl::compile_to_besl(SIMPLE_FRAGMENT_SHADER_BESL, Some(root))
-		.expect("Failed to compile the simple fragment BESL shader. The most likely cause is invalid BESL syntax.");
-	program.get_main().expect(
-		"Failed to find the simple fragment entry point. The most likely cause is that the BESL program did not define main.",
-	)
-}
-
-const SIMPLE_FRAGMENT_SHADER_BESL: &str = r#"
-palette_color: fn(index: u32) -> vec3f {
-	let color: vec3f = vec3f(0.90, 0.20, 0.20);
-	if (index == 1) { color = vec3f(0.20, 0.70, 0.95); }
-	if (index == 2) { color = vec3f(0.35, 0.85, 0.35); }
-	if (index == 3) { color = vec3f(0.95, 0.75, 0.20); }
-	if (index == 4) { color = vec3f(0.75, 0.35, 0.95); }
-	if (index == 5) { color = vec3f(0.95, 0.45, 0.20); }
-	if (index == 6) { color = vec3f(0.25, 0.90, 0.75); }
-	if (index == 7) { color = vec3f(0.85, 0.85, 0.90); }
-	return color;
-}
-
-main: fn () -> void {
-	let instance_index: u32 = in_instance_index;
-	let local_grid: vec3f = vec3f(
-		abs(fract(in_local_position.x * 4.0 + 0.5) - 0.5),
-		abs(fract(in_local_position.y * 4.0 + 0.5) - 0.5),
-		abs(fract(in_local_position.z * 4.0 + 0.5) - 0.5)
-	);
-	let grid_distance: f32 = min(local_grid.x, min(local_grid.y, local_grid.z));
-	let grid_line: f32 = 1.0 - smoothstep(0.015, 0.035, grid_distance);
-	let base_color: vec3f = palette_color(instance_index % 8);
-	let grid_color: vec3f = base_color + (vec3f(1.0, 1.0, 1.0) - base_color) * (grid_line * 0.45);
-	out_albedo = vec4f(grid_color.x, grid_color.y, grid_color.z, 1.0);
-}
-"#;
-
-/// Builds the simple pipeline vertex BESL program that transforms instanced meshes with the
-/// bound camera and forwards the instance index and object-space position to the fragment stage.
-fn create_simple_vertex_program() -> besl::NodeReference {
-	let mut root = besl::Node::root();
-	let mat4f = root.get_child("mat4f").expect("mat4f type not found in BESL root");
-	let mat4x3f = root.get_child("mat4x3f").expect("mat4x3f type not found in BESL root");
-	let vec3f = root.get_child("vec3f").expect("vec3f type not found in BESL root");
-	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
-	let u32_type = root.get_child("u32").expect("u32 type not found in BESL root");
-
-	let camera = root
-		.add_child(besl::Node::r#struct("Camera", vec![besl::Node::member("view_projection", mat4f.clone()).into()]).into());
-
-	root.add_children(vec![
-		besl::Node::binding_in_memory(
-			"cameras",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("cameras", camera, 8)],
-			},
-			0,
-			true,
-			false,
-			besl::BufferMemoryClass::Constant,
-		)
-		.into(),
-		besl::Node::binding_in_memory(
-			"instances",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("transforms", mat4x3f, 1024)],
-			},
-			1,
-			true,
-			false,
-			besl::BufferMemoryClass::Device,
-		)
-		.into(),
-		besl::Node::input("in_position", vec3f.clone(), 0).into(),
-		besl::Node::input("instance_id", u32_type.clone(), 1).into(),
-		besl::Node::output("position", vec4f, 0).into(),
-		besl::Node::output("out_instance_index", u32_type, 0).into(),
-		besl::Node::output("out_local_position", vec3f, 1).into(),
-	]);
-
-	let root_node = besl::compile_to_besl(SIMPLE_VERTEX_SHADER_BESL, Some(root))
-		.expect("Failed to lex the simple pipeline vertex shader. The most likely cause is invalid BESL syntax.");
-	root_node.get_main().expect(
-		"Failed to find the simple pipeline vertex entry point. The most likely cause is that the BESL program did not define main.",
-	)
-}
-
-const SIMPLE_VERTEX_SHADER_BESL: &str = r#"
-main: fn () -> void {
-	let instance_index: u32 = instance_id;
-	let transform: mat4x3f = instances.transforms[instance_index];
-	let world_position: vec3f = transform * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
-	position = cameras.cameras[0].view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);
-	out_instance_index = instance_index;
-	out_local_position = in_position;
-}
-"#;
-
-fn create_besl_shader(
+fn load_besl_shader(
 	context: &mut ghi::implementation::Context,
+	resources: &resource_management::resource::resource_manager::ResourceManager,
 	id: &str,
 	name: &str,
-	stage: ResourceShaderTypes,
-	settings: ShaderGenerationSettings,
-	main_node: besl::NodeReference,
-	interface: material::ShaderInterface,
 ) -> ghi::ShaderHandle {
-	crate::rendering::shader_store::create_shader(
-		context,
-		None,
-		&crate::rendering::shader_store::ShaderSourceDescriptor {
-			id,
-			name,
-			stage,
-			source: crate::rendering::shader_store::ShaderSourceDefinition::Besl { settings, main_node },
-			interface,
-		},
-	)
-	.expect("Failed to create simple pipeline BESL shader. The most likely cause is an incompatible shader interface.")
+	crate::rendering::resource_loading::load_shader(context, resources, id, name)
+		.unwrap_or_else(|error| panic!("Failed to load simple pipeline shader '{id}': {error}"))
+		.handle
 }
 
 use std::{
@@ -393,10 +249,7 @@ use ghi::{
 	frame::Frame,
 };
 use math::{AffineShaderMatrix, Matrix, ShaderMatrix};
-use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator, resources::material, shader::generator::ShaderGenerationSettings,
-	types::ShaderTypes as ResourceShaderTypes,
-};
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use smallvec::SmallVec;
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -435,8 +288,27 @@ mod tests {
 		generator::ShaderGenerationSettings,
 	};
 
-	use super::{create_simple_fragment_program, create_simple_vertex_program};
 	use crate::rendering::shader_vm_test::{buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at};
+
+	fn create_simple_fragment_program() -> besl::NodeReference {
+		besl::compile_to_besl(
+			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/fragment.besl")),
+			None,
+		)
+		.expect("Simple fragment asset should compile")
+		.get_main()
+		.expect("Simple fragment asset should contain main")
+	}
+
+	fn create_simple_vertex_program() -> besl::NodeReference {
+		besl::compile_to_besl(
+			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/vertex.besl")),
+			None,
+		)
+		.expect("Simple vertex asset should compile")
+		.get_main()
+		.expect("Simple vertex asset should contain main")
+	}
 
 	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 

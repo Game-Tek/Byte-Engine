@@ -46,8 +46,8 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 	for server in servers {
 		application
 			.threads
-			.push(Thread::new(application.application_events.1.clone(), move |_events| {
-				server.run()
+			.push(Thread::new(application.application_events.1.clone(), move |mut events| {
+				server.run_until(|| matches!(events.try_recv(), Ok(Events::Close))); // TODO: improve this
 			}));
 	}
 }

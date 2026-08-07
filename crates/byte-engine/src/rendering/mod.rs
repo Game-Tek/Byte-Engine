@@ -51,9 +51,7 @@ pub mod framebuffer;
 pub mod render_pass;
 #[doc(hidden)]
 pub mod render_passes;
-mod resource_loading;
-#[doc(hidden)]
-pub mod shader_store;
+pub(crate) mod resource_loading;
 
 #[cfg(test)]
 pub(crate) mod shader_vm_test;

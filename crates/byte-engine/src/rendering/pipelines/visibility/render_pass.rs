@@ -282,7 +282,7 @@ fn load_visibility_shader(
 	name: &str,
 	expected_stage: ResourceShaderTypes,
 ) -> ghi::ShaderHandle {
-	let loaded = crate::rendering::shader_store::load_shader_resource(context, resources, id, name)
+	let loaded = crate::rendering::resource_loading::load_shader(context, resources, id, name)
 		.unwrap_or_else(|error| panic!("Failed to load visibility shader '{id}': {error}"));
 	assert_eq!(
 		loaded.stage, expected_stage,

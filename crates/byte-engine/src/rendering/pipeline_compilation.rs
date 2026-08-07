@@ -110,6 +110,25 @@ impl PipelineManagerServer {
 		while self.serve_next() {}
 	}
 
+	/// Compiles queued requests until the owning application requests shutdown.
+	///
+	/// The blocking [`Self::run`] loop is suitable for an independently managed
+	/// worker. Application-owned threads must use this method so they can observe
+	/// their close event while no compilation request is pending.
+	pub fn run_until(mut self, mut should_stop: impl FnMut() -> bool) {
+		while !should_stop() {
+			match self.requests.recv_timeout(std::time::Duration::from_millis(10)) {
+				Ok(request) => {
+					if !self.compile(request) {
+						break;
+					}
+				}
+				Err(kanal::ReceiveErrorTimeout::Timeout) => {}
+				Err(_) => break,
+			}
+		}
+	}
+
 	/// Compiles one request, blocking until work arrives.
 	///
 	/// Returns `false` after shutdown. A future thread-pool integration can call
@@ -118,6 +137,10 @@ impl PipelineManagerServer {
 		let Ok(request) = self.requests.recv() else {
 			return false;
 		};
+		self.compile(request)
+	}
+
+	fn compile(&mut self, request: PipelineRequest) -> bool {
 		let key = request.key;
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (request.compile)(&mut self.factory)))
 			.unwrap_or_else(|_| {
@@ -132,13 +155,7 @@ impl PipelineManagerServer {
 		let Ok(Some(request)) = self.requests.try_recv() else {
 			return false;
 		};
-		let key = request.key;
-		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (request.compile)(&mut self.factory)))
-			.unwrap_or_else(|_| {
-				Err("Pipeline compilation panicked. The most likely cause is invalid backend pipeline input.".to_string())
-			});
-
-		self.completions.send(PipelineCompletion { key, result }).is_ok()
+		self.compile(request)
 	}
 }
 

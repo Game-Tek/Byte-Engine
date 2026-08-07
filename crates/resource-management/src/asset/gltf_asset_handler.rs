@@ -1363,7 +1363,14 @@ async fn generate_gltf_material_variant(
 
 	let (shader, shader_bytes) = compio::runtime::Runtime::new()
 		.map_err(|_| LoadErrors::FailedToProcess)?
-		.block_on(compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute"))
+		.block_on(compile_shader_program(
+			generator.as_ref(),
+			&shader_name,
+			program,
+			"World",
+			&material_json,
+			"Compute",
+		))
 		.map_err(|_| LoadErrors::FailedToProcess)?;
 
 	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;

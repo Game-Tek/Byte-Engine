@@ -1569,10 +1569,10 @@ impl VisibilityPipelineResourceManager {
 			.interface
 			.bindings
 			.iter()
-			.map(crate::rendering::shader_store::binding_to_descriptor)
+			.map(crate::rendering::resource_loading::binding_to_descriptor)
 			.collect::<Vec<_>>();
 
-		let stage = crate::rendering::shader_store::shader_type_to_ghi(shader.resource().stage);
+		let stage = crate::rendering::resource_loading::shader_type_to_ghi(shader.resource().stage);
 		let shader_backing = Self::load_shader_backing(shader).await?;
 
 		let source = match &shader.resource().artifact {

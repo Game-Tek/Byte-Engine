@@ -240,7 +240,10 @@ mod tests {
 		let main = generator::tests::fragment_shader();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
-		let generated = generator.generate(&settings, &main).await.expect("Failed to generate HLSL shader");
+		let generated = generator
+			.generate(&settings, &main)
+			.await
+			.expect("Failed to generate HLSL shader");
 
 		assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Hlsl.entry_point()));
 		assert!(std::str::from_utf8(generated.binary()).is_ok());

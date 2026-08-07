@@ -131,12 +131,12 @@ impl AssetHandler for BESLShaderAssetHandler {
 		let generator = self.generator.clone();
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
-		let (shader, bytes) =
-			compiler.compile(&id_string, &source, settings, source_hash, generator.as_deref())
-				.map_err(|error| {
-					log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
-					LoadErrors::FailedToProcess
-				})?;
+		let (shader, bytes) = compiler
+			.compile(&id_string, &source, settings, source_hash, generator.as_deref())
+			.map_err(|error| {
+				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
+				LoadErrors::FailedToProcess
+			})?;
 
 		context.store_primary(ProcessedAsset::new(id, shader), &bytes)
 	}

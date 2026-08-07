@@ -1,0 +1,29 @@
+in_instance_index: input<u32, 0>;
+in_local_position: input<vec3f, 1>;
+out_albedo: output<vec4f, 0>;
+
+palette_color: fn(index: u32) -> vec3f {
+	let color: vec3f = vec3f(0.90, 0.20, 0.20);
+	if (index == 1) { color = vec3f(0.20, 0.70, 0.95); }
+	if (index == 2) { color = vec3f(0.35, 0.85, 0.35); }
+	if (index == 3) { color = vec3f(0.95, 0.75, 0.20); }
+	if (index == 4) { color = vec3f(0.75, 0.35, 0.95); }
+	if (index == 5) { color = vec3f(0.95, 0.45, 0.20); }
+	if (index == 6) { color = vec3f(0.25, 0.90, 0.75); }
+	if (index == 7) { color = vec3f(0.85, 0.85, 0.90); }
+	return color;
+}
+
+main: fn () -> void {
+	let instance_index: u32 = in_instance_index;
+	let local_grid: vec3f = vec3f(
+		abs(fract(in_local_position.x * 4.0 + 0.5) - 0.5),
+		abs(fract(in_local_position.y * 4.0 + 0.5) - 0.5),
+		abs(fract(in_local_position.z * 4.0 + 0.5) - 0.5)
+	);
+	let grid_distance: f32 = min(local_grid.x, min(local_grid.y, local_grid.z));
+	let grid_line: f32 = 1.0 - smoothstep(0.015, 0.035, grid_distance);
+	let base_color: vec3f = palette_color(instance_index % 8);
+	let grid_color: vec3f = base_color + (vec3f(1.0, 1.0, 1.0) - base_color) * (grid_line * 0.45);
+	out_albedo = vec4f(grid_color.x, grid_color.y, grid_color.z, 1.0);
+}

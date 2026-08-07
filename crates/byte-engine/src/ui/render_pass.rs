@@ -24,7 +24,6 @@ use crate::{
 	core::Entity,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		Sink,
 	},
 	ui::{
@@ -689,7 +688,7 @@ fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> UiBlurHalfP
 }
 
 // Reads the dispatch contract persisted beside a production compute shader.
-fn blur_shader_workgroup(shader: &crate::rendering::shader_store::LoadedShader, name: &str) -> Extent {
+fn blur_shader_workgroup(shader: &crate::rendering::resource_loading::LoadedShader, name: &str) -> Extent {
 	assert!(
 		matches!(shader.stage, ResourceShaderTypes::Compute),
 		"Invalid {name} shader stage. The most likely cause is incorrect BESL sidecar metadata."
@@ -1829,10 +1828,16 @@ impl UiRenderPass {
 			"Invalid UI backdrop composite shader stage. The most likely cause is incorrect BESL sidecar metadata."
 		);
 
-		let context = render_pass_builder.context();
+		let vertex_shader = render_pass_builder
+			.load_shader("rendering/ui/rect-vertex.besl", "UI Vertex Shader")
+			.expect("Failed to load the UI vertex shader. The most likely cause is that the BESL asset was not baked.")
+			.handle;
+		let fragment_shader = render_pass_builder
+			.load_shader("rendering/ui/rect-fragment.besl", "UI Fragment Shader")
+			.expect("Failed to load the UI fragment shader. The most likely cause is that the BESL asset was not baked.")
+			.handle;
 
-		let vertex_shader = create_vertex_shader(context);
-		let fragment_shader = create_fragment_shader(context);
+		let context = render_pass_builder.context();
 
 		let shaders = [
 			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
@@ -2601,29 +2606,6 @@ impl RenderPass for UiRenderPass {
 	}
 }
 
-fn create_ui_besl_shader(
-	context: &mut ghi::implementation::Context,
-	id: &str,
-	name: &str,
-	stage: ResourceShaderTypes,
-	settings: ShaderGenerationSettings,
-	main_node: besl::NodeReference,
-	interface: material::ShaderInterface,
-) -> ghi::ShaderHandle {
-	crate::rendering::shader_store::create_shader(
-		context,
-		None,
-		&ShaderSourceDescriptor {
-			id,
-			name,
-			stage,
-			source: ShaderSourceDefinition::Besl { settings, main_node },
-			interface,
-		},
-	)
-	.expect("Failed to create UI BESL shader. The most likely cause is an incompatible shader interface.")
-}
-
 /// Lexes a complete UI shader scope and returns the entry point consumed by render pipeline creation.
 fn lex_ui_shader(root: ParserNode<'_>, shader_name: &str) -> besl::NodeReference {
 	let root = besl::lex(root)
@@ -2631,23 +2613,6 @@ fn lex_ui_shader(root: ParserNode<'_>, shader_name: &str) -> besl::NodeReference
 	root.get_main().unwrap_or_else(|| {
 		panic!("Failed to find {shader_name} entry point. The most likely cause is a missing main function.")
 	})
-}
-
-/// Builds the UI vertex shader using BESL and compiles it for the active platform.
-fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	let main_node = create_ui_vertex_program();
-	create_ui_besl_shader(
-		context,
-		"byte-engine/ui/rect/vertex",
-		"UI Vertex Shader",
-		ResourceShaderTypes::Vertex,
-		ShaderGenerationSettings::vertex(),
-		main_node,
-		material::ShaderInterface {
-			workgroup_size: None,
-			bindings: Vec::new(),
-		},
-	)
 }
 
 /// Builds the portable UI rectangle vertex program shared by VM tests and production backends.
@@ -2748,23 +2713,6 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 	let mut root = ParserNode::root();
 	root.add(vec![shader_scope]);
 	lex_ui_shader(root, "UI vertex shader")
-}
-
-/// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
-fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	let main_node = create_ui_fragment_program();
-	create_ui_besl_shader(
-		context,
-		"byte-engine/ui/rect/fragment",
-		"UI Fragment Shader",
-		ResourceShaderTypes::Fragment,
-		ShaderGenerationSettings::fragment(),
-		main_node,
-		material::ShaderInterface {
-			workgroup_size: None,
-			bindings: Vec::new(),
-		},
-	)
 }
 
 /// Builds the portable UI rectangle fragment program shared by VM tests and production backends.

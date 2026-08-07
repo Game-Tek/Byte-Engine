@@ -1,0 +1,62 @@
+in_color: input<vec4f, 0>;
+in_pixel_position: input<vec2f, 1>;
+in_local_position: input<vec2f, 2>;
+in_rect_size: input<vec2f, 3>;
+in_corner_radius: input<f32, 4>;
+in_corner_exponent: input<f32, 5>;
+in_layer_kind: input<f32, 6>;
+in_stroke_width: input<f32, 7>;
+in_feather_mask_position: input<vec2f, 8>;
+in_feather_mask_size: input<vec2f, 9>;
+in_feather_mask_edges: input<vec4f, 10>;
+in_feather_mask_corner: input<vec2f, 11>;
+out_color_attachment: output<vec4f, 0>;
+
+main: fn() -> void {
+	let half_size: vec2f = in_rect_size * 0.5;
+	let corner_radius: f32 = min(in_corner_radius, min(half_size.x, half_size.y));
+	let corner_exponent: f32 = in_corner_exponent;
+	let centered_position: vec2f = in_local_position - half_size;
+	let rounded_extent: vec2f = half_size - vec2f(corner_radius, corner_radius);
+	let corner_delta: vec2f = abs(centered_position) - rounded_extent;
+	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
+	let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+	let corner_distance: f32 = pow(corner_sum, 1.0 / corner_exponent);
+	let field_distance: f32 = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	let edge_width: f32 = max(fwidth(field_distance), 1.0);
+	let rounded_shape: f32 = step(0.0001, corner_radius);
+	let rounded_fill_coverage: f32 = 1.0 - smoothstep(0.0 - edge_width, edge_width, field_distance);
+	let fill_coverage: f32 = mix(1.0, rounded_fill_coverage, rounded_shape);
+
+	let corner_gradient_scale: f32 = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
+	let corner_gradient: vec2f = vec2f(
+		pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
+		pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
+	);
+	let field_gradient_length: f32 = mix(1.0, max(length(vec4f(corner_gradient.x, corner_gradient.y, 0.0, 0.0)), 0.0001), step(0.0001, corner_sum));
+	let signed_distance: f32 = field_distance / field_gradient_length;
+	let corrected_edge_width: f32 = max(fwidth(signed_distance), 1.0);
+	let inner_signed_distance: f32 = signed_distance + in_stroke_width;
+	let inner_coverage: f32 = 1.0 - smoothstep(0.0 - corrected_edge_width, corrected_edge_width, inner_signed_distance);
+	let stroke_coverage: f32 = max(fill_coverage - inner_coverage, 0.0);
+	let coverage: f32 = mix(fill_coverage, stroke_coverage, step(0.5, in_layer_kind));
+
+	let feather_top: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+	let feather_right: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+	let feather_bottom: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+	let feather_left: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+	let feather_half_size: vec2f = in_feather_mask_size * 0.5;
+	let feather_corner_radius: f32 = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	let feather_corner_exponent: f32 = in_feather_mask_corner.y;
+	let feather_centered_position: vec2f = in_pixel_position - in_feather_mask_position - feather_half_size;
+	let feather_rounded_extent: vec2f = feather_half_size - vec2f(feather_corner_radius, feather_corner_radius);
+	let feather_corner_delta: vec2f = abs(feather_centered_position) - feather_rounded_extent;
+	let feather_abs_corner: vec2f = max(feather_corner_delta, vec2f(0.0, 0.0));
+	let feather_corner_sum: f32 = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	let feather_field_distance: f32 = pow(feather_corner_sum, 1.0 / feather_corner_exponent) + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	let feather_mask_enabled: f32 = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
+	let feather_rounded_shape: f32 = step(0.0001, feather_corner_radius);
+	let feather_shape_coverage: f32 = mix(1.0, 1.0 - smoothstep(0.0 - 1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	let feather_coverage: f32 = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	out_color_attachment = vec4f(in_color.x, in_color.y, in_color.z, in_color.w * coverage * feather_coverage);
+}

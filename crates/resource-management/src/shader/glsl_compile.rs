@@ -10,7 +10,9 @@ pub fn compile(source_code: &str, shader_name: &str) -> Result<CompiledShader, S
 
 	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
 	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
-	options.set_generate_debug_info();
+	if cfg!(debug_assertions) {
+		options.set_generate_debug_info();
+	}
 	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
 
 	let binary = compiler.compile_into_spirv(

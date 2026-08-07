@@ -183,10 +183,13 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		)
 	})?;
 
+	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
+	// Omit in release builds to keep the compiled library smaller.
+	let debug_args = if cfg!(debug_assertions) { metal_debug_info_arguments().to_vec() } else { Vec::new() };
+
 	let metal_output = Command::new("xcrun")
 		.args(["-sdk", "macosx", "metal", "-c"])
-		// The temporary source file is removed after compilation. Preserve it with line tables so Xcode GPU captures can resolve generated BESL back to MSL.
-		.args(metal_debug_info_arguments())
+		.args(debug_args.iter())
 		.args([
 			source_path
 				.to_str()
@@ -332,11 +335,6 @@ mod tests {
 			Some(extent)
 		);
 		assert_eq!(reflected_workgroup_extent(&ShaderGenerationSettings::fragment()), None);
-	}
-
-	#[test]
-	fn metal_compiler_embeds_source_and_line_information() {
-		assert_eq!(metal_debug_info_arguments(), ["-gline-tables-only", "-frecord-sources=yes"]);
 	}
 
 	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {

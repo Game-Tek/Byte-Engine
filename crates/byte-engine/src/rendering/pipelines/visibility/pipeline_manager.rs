@@ -781,7 +781,11 @@ fn select_shadow_lights<'a>(
 			Lights::Direction(light) if selection.directional.is_none() => {
 				selection.directional = Some((index, light.direction));
 			}
-			Lights::Cone(light) if light.supports_shadow_mapping() && cone_shadow_is_visible(*light, sinks) => {
+			Lights::Cone(light)
+				if cone_light_has_brightness(*light)
+					&& light.supports_shadow_mapping()
+					&& cone_shadow_is_visible(*light, sinks) =>
+			{
 				if selection.eligible_cone_count < cone_shadow_map_pool_capacity {
 					let slot = &mut selection.cones[selection.eligible_cone_count];
 					*slot = Some((index, *light));
@@ -809,7 +813,7 @@ const CONE_SHADOW_EXPOSURE_THRESHOLD_LUX: f32 = 0.125;
 /// value. Manual endpoints replace their respective automatic values and are clamped to retain a
 /// valid perspective projection.
 fn resolve_cone_shadow_range(light: ConeLight, exposure_scale: f32) -> (f32, f32) {
-	let peak_candela = 0.2126 * light.color.x + 0.7152 * light.color.y + 0.0722 * light.color.z;
+	let peak_candela = cone_light_peak_candela(light);
 	let exposure_scale = exposure_scale
 		.is_finite()
 		.then_some(exposure_scale)
@@ -830,6 +834,17 @@ fn resolve_cone_shadow_range(light: ConeLight, exposure_scale: f32) -> (f32, f32
 		.max(near + CONE_SHADOW_NEAR_M);
 
 	(near, far)
+}
+
+/// Returns whether a cone has finite positive luminance that can cast a visible shadow.
+fn cone_light_has_brightness(light: ConeLight) -> bool {
+	let peak_candela = cone_light_peak_candela(light);
+	peak_candela.is_finite() && peak_candela > 0.0
+}
+
+/// Returns the luminance-weighted luminous intensity used for cone shadow coverage.
+fn cone_light_peak_candela(light: ConeLight) -> f32 {
+	0.2126 * light.color.x + 0.7152 * light.color.y + 0.0722 * light.color.z
 }
 
 /// Builds the perspective view used to cull and render one cone-light shadow layer.
@@ -1608,17 +1623,17 @@ mod tests {
 	use std::sync::Arc;
 
 	use math::{Point, UnitVector};
-	use maths_rs::Vec4f;
+	use maths_rs::{Vec3f, Vec4f};
 	use resource_management::resources::skeleton::SkinBinding;
 	use resource_management::types::AlphaMode;
 	use utils::Extent;
 
 	use super::{
-		cached_skin_palette_base, cone_shadow_is_visible, make_cone_shadow_view, reserve_deformed_vertex_range,
-		resolve_cone_shadow_range, select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData,
-		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings,
-		AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING,
-		CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL,
+		cached_skin_palette_base, cone_light_has_brightness, cone_shadow_is_visible, make_cone_shadow_view,
+		reserve_deformed_vertex_range, resolve_cone_shadow_range, select_shadow_lights, write_material_texture_indices,
+		Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry,
+		VisibilityPipelineSettings, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX,
+		CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL,
 		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
 		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
@@ -1749,6 +1764,23 @@ mod tests {
 		assert_eq!(selection.eligible_cone_count, 2);
 		assert!(empty_selection.cones.iter().all(Option::is_none));
 		assert_eq!(empty_selection.eligible_cone_count, 2);
+	}
+
+	#[test]
+	fn unlit_cones_yield_pool_layers_to_visible_lit_cones() {
+		let mut unlit = cone(0.0);
+		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
+		let lights = [Lights::Cone(unlit), Lights::Cone(cone(1.0))];
+		let sinks = [sink(Point::origin())];
+
+		assert!(!cone_light_has_brightness(unlit));
+		let selection = select_shadow_lights(lights.iter(), &sinks, 1);
+
+		assert_eq!(
+			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[1]
+		);
+		assert_eq!(selection.eligible_cone_count, 1);
 	}
 
 	#[test]

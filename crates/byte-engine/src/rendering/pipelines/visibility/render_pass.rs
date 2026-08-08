@@ -9,7 +9,7 @@ fn cone_shadow_view_indices(mesh_dispatch: MeshDispatch, cone_shadow_count: usiz
 	let count = if mesh_dispatch.is_empty() {
 		0
 	} else {
-		cone_shadow_count.min(MAX_CONE_SHADOWS)
+		cone_shadow_count.min(MAX_CONE_SHADOW_POOL_CAPACITY)
 	};
 	(0..count).map(|layer| ((CONE_SHADOW_VIEW_OFFSET + layer) as u32, layer as u32))
 }
@@ -488,7 +488,7 @@ impl ShadowPass {
 					false,
 					true,
 				)
-				.layers(MAX_CONE_SHADOWS as u32)];
+				.layers(cone_shadow_count as u32)];
 				let c = c.start_render_pass(cone_extent, &attachments);
 				let c = c.bind_raster_pipeline(cone_pipeline);
 				c.bind_descriptor_sets(&[descriptor_set]);
@@ -1400,6 +1400,7 @@ mod tests {
 		transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
 	};
 	use crate::configuration::ConfigurationValue;
+	use crate::rendering::pipelines::visibility::{CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY};
 	use crate::rendering::{view::View, Sink};
 
 	#[test]
@@ -1410,6 +1411,13 @@ mod tests {
 		assert_eq!(
 			cone_shadow_view_indices(dispatch, 4).collect::<Vec<_>>(),
 			[(5, 0), (6, 1), (7, 2), (8, 3)]
+		);
+		assert_eq!(
+			cone_shadow_view_indices(dispatch, MAX_CONE_SHADOW_POOL_CAPACITY + 1).last(),
+			Some((
+				(CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY - 1) as u32,
+				(MAX_CONE_SHADOW_POOL_CAPACITY - 1) as u32
+			))
 		);
 		assert_eq!(directional_shadow_view_indices(MeshDispatch::default()).count(), 0);
 		assert_eq!(cone_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
@@ -1768,8 +1776,8 @@ use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, Skinni
 use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
+	MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };

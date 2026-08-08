@@ -14,6 +14,42 @@ struct EnvironmentTexture {
 	sampler: ghi::SamplerHandle,
 }
 
+/// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisibilityPipelineSettings {
+	cone_shadow_map_pool_capacity: usize,
+}
+
+/// The startup parameter that sets [`VisibilityPipelineSettings::cone_shadow_map_pool_capacity`].
+pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
+
+impl Default for VisibilityPipelineSettings {
+	fn default() -> Self {
+		Self {
+			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
+		}
+	}
+}
+
+impl VisibilityPipelineSettings {
+	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
+	pub fn with_cone_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
+		if capacity > MAX_CONE_SHADOW_POOL_CAPACITY {
+			return Err(format!(
+				"Cone shadow map pool capacity was not set. The most likely cause is that {capacity} exceeds the visibility pipeline limit of {MAX_CONE_SHADOW_POOL_CAPACITY}."
+			));
+		}
+
+		self.cone_shadow_map_pool_capacity = capacity;
+		Ok(self)
+	}
+
+	/// Returns the maximum number of cone-light shadow maps reused by each visibility sink.
+	pub fn cone_shadow_map_pool_capacity(&self) -> usize {
+		self.cone_shadow_map_pool_capacity
+	}
+}
+
 /// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
 ///
 /// See the [visibility render-model guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering/render-models/visibility)
@@ -46,6 +82,8 @@ pub struct VisibilityPipelineManager {
 	environment_resource_id: Option<String>,
 	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
 	environment_texture: EnvironmentTexture,
+	/// Maximum number of local-light maps reused by each sink during a frame.
+	cone_shadow_map_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: crate::rendering::pipelines::visibility::render_pass::GtaoSettings,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
@@ -63,6 +101,7 @@ impl VisibilityPipelineManager {
 		shader_resources: EntityHandle<ResourceManager>,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
+		settings: VisibilityPipelineSettings,
 	) -> Self {
 		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
@@ -192,6 +231,7 @@ impl VisibilityPipelineManager {
 			loaded_pipelines: HashMap::new(),
 			environment_resource_id: None,
 			environment_texture,
+			cone_shadow_map_pool_capacity: settings.cone_shadow_map_pool_capacity,
 			gtao_configuration,
 			gtao_settings: Default::default(),
 			scene: VisibilitySceneManager {
@@ -721,12 +761,16 @@ impl VisibilityPipelineManager {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct ShadowLightSelection {
 	directional: Option<(usize, UnitVector)>,
-	cones: [Option<(usize, ConeLight)>; MAX_CONE_SHADOWS],
-	cone_count: usize,
+	cones: [Option<(usize, ConeLight)>; MAX_CONE_SHADOW_POOL_CAPACITY],
+	eligible_cone_count: usize,
 }
 
 /// Selects shadow casters from the light prefix uploaded to material evaluation and visible sinks.
-fn select_shadow_lights<'a>(lights: impl Iterator<Item = &'a Lights>, sinks: &[Sink]) -> ShadowLightSelection {
+fn select_shadow_lights<'a>(
+	lights: impl Iterator<Item = &'a Lights>,
+	sinks: &[Sink],
+	cone_shadow_map_pool_capacity: usize,
+) -> ShadowLightSelection {
 	let mut selection = ShadowLightSelection::default();
 	if sinks.is_empty() {
 		return selection;
@@ -738,10 +782,11 @@ fn select_shadow_lights<'a>(lights: impl Iterator<Item = &'a Lights>, sinks: &[S
 				selection.directional = Some((index, light.direction));
 			}
 			Lights::Cone(light) if light.supports_shadow_mapping() && cone_shadow_is_visible(*light, sinks) => {
-				if let Some(slot) = selection.cones.get_mut(selection.cone_count) {
+				if selection.eligible_cone_count < cone_shadow_map_pool_capacity {
+					let slot = &mut selection.cones[selection.eligible_cone_count];
 					*slot = Some((index, *light));
 				}
-				selection.cone_count += 1;
+				selection.eligible_cone_count += 1;
 			}
 			Lights::Cone(_) | Lights::Direction(_) | Lights::Point(_) => {}
 		}
@@ -940,10 +985,15 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
 
-		let shadow_lights = select_shadow_lights(self.scene.lights.iter().map(|(_, light)| light), sinks);
-		if shadow_lights.cone_count > MAX_CONE_SHADOWS {
+		let shadow_lights = select_shadow_lights(
+			self.scene.lights.iter().map(|(_, light)| light),
+			sinks,
+			self.cone_shadow_map_pool_capacity,
+		);
+		if shadow_lights.eligible_cone_count > self.cone_shadow_map_pool_capacity {
 			warn!(
-				"Cone-light shadow budget exceeded. The most likely cause is that the scene contains more than {MAX_CONE_SHADOWS} cone lights. Extra cone lights remain lit without shadows."
+				"Cone-light shadow pool capacity exceeded. The most likely cause is that more than {} visible cone lights require shadows. Extra cone lights remain lit without shadows.",
+				self.cone_shadow_map_pool_capacity,
 			);
 		}
 		let [opaque_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
@@ -1024,7 +1074,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect::<SmallVec<[_; 16]>>();
 
 		log::debug!(
-			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}",
+			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}, cone_shadow_pool_capacity={}",
 			sinks.len(),
 			self.scene.sink_states.len(),
 			commands.len(),
@@ -1039,6 +1089,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.scene.render_info.transparent_materials.len(),
 			directional_shadow_light_index.is_some(),
 			cone_shadow_light_indices.iter().flatten().count(),
+			self.cone_shadow_map_pool_capacity,
 		);
 
 		Some(commands)
@@ -1124,11 +1175,14 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
 		);
+		// Dynamic images start at zero extent, so this pool has no backing shadow maps until a visible cone uses it.
+		// Metal requires two layers to create the array texture that material evaluation always binds.
+		let cone_shadow_map_layers = self.cone_shadow_map_pool_capacity.max(2) as u32;
 		let cone_shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(CONE_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Cone Shadow Map")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.array_layers(NonZeroU32::new(MAX_CONE_SHADOWS as u32))
+				.array_layers(NonZeroU32::new(cone_shadow_map_layers))
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 		let sampler = context.build_sampler(
@@ -1562,10 +1616,11 @@ mod tests {
 	use super::{
 		cached_skin_palette_base, cone_shadow_is_visible, make_cone_shadow_view, reserve_deformed_vertex_range,
 		resolve_cone_shadow_range, select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData,
-		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING,
-		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
-		DEFAULT_ENVIRONMENT_TEXEL, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING,
-		LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings,
+		AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING,
+		CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL,
+		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
+		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1650,14 +1705,14 @@ mod tests {
 			Lights::Cone(cone(4.0)),
 		];
 
-		let selection = select_shadow_lights(lights.iter(), &[sink(Point::origin())]);
+		let selection = select_shadow_lights(lights.iter(), &[sink(Point::origin())], DEFAULT_CONE_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(selection.directional.map(|(index, _)| index), Some(3));
 		assert_eq!(
-			selection.cones.map(|light| light.map(|(index, _)| index)),
-			[Some(1), Some(4), Some(5), Some(6)]
+			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[1, 4, 5, 6]
 		);
-		assert_eq!(selection.cone_count, 5);
+		assert_eq!(selection.eligible_cone_count, 5);
 	}
 
 	#[test]
@@ -1670,13 +1725,44 @@ mod tests {
 		assert!(cone_shadow_is_visible(visible_in_second_sink, &sinks));
 		assert!(!cone_shadow_is_visible(outside_all_sinks, &sinks));
 
-		let selection = select_shadow_lights(lights.iter(), &sinks);
+		let selection = select_shadow_lights(lights.iter(), &sinks, DEFAULT_CONE_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
-			selection.cones.map(|light| light.map(|(index, _)| index)),
-			[Some(0), None, None, None]
+			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[0]
 		);
-		assert_eq!(selection.cone_count, 1);
+		assert_eq!(selection.eligible_cone_count, 1);
+	}
+
+	#[test]
+	fn cone_shadow_pool_assigns_its_limited_layers_to_visible_lights() {
+		let lights = [Lights::Cone(cone(0.0)), Lights::Cone(cone(1.0))];
+		let sinks = [sink(Point::origin())];
+
+		let selection = select_shadow_lights(lights.iter(), &sinks, 1);
+		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0);
+
+		assert_eq!(
+			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[0]
+		);
+		assert_eq!(selection.eligible_cone_count, 2);
+		assert!(empty_selection.cones.iter().all(Option::is_none));
+		assert_eq!(empty_selection.eligible_cone_count, 2);
+	}
+
+	#[test]
+	fn visibility_pipeline_settings_bound_the_cone_shadow_pool_capacity() {
+		let defaults = VisibilityPipelineSettings::default();
+		let settings = defaults
+			.with_cone_shadow_map_pool_capacity(1)
+			.expect("supported cone shadow map pool capacity");
+
+		assert_eq!(defaults.cone_shadow_map_pool_capacity(), DEFAULT_CONE_SHADOW_POOL_CAPACITY);
+		assert_eq!(settings.cone_shadow_map_pool_capacity(), 1);
+		assert!(defaults
+			.with_cone_shadow_map_pool_capacity(MAX_CONE_SHADOW_POOL_CAPACITY + 1)
+			.is_err());
 	}
 
 	#[test]
@@ -2048,13 +2134,14 @@ use crate::rendering::pipelines::visibility::skinning::{
 	SkinningDispatch, SkinningPass, SkinningSourceBuffers, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
 };
 use crate::rendering::pipelines::visibility::{
-	ActiveMaterialMask, ShaderMeshletData, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
-	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS,
-	MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT, SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	ActiveMaterialMask, ShaderMeshletData, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY,
+	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES,
+	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS,
+	MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT, SKINNED_VERTICES_BINDING,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;

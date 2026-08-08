@@ -56,7 +56,7 @@ impl VisibilitySceneManager {
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		directional_shadow_light_index: Option<usize>,
-		cone_shadow_light_indices: &[Option<usize>; MAX_CONE_SHADOWS],
+		cone_shadow_light_indices: &[Option<usize>; MAX_CONE_SHADOW_POOL_CAPACITY],
 	) {
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.light_data_buffer);
 		let light_count = self.lights.len().min(MAX_LIGHTS);
@@ -287,7 +287,7 @@ use crate::rendering::pipelines::visibility::pipeline_manager::ShaderViewData;
 use crate::rendering::pipelines::visibility::pipeline_manager::SinkState;
 use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, ShaderVec3};
 use crate::rendering::pipelines::visibility::CONE_SHADOW_VIEW_OFFSET;
-use crate::rendering::pipelines::visibility::MAX_CONE_SHADOWS;
+use crate::rendering::pipelines::visibility::MAX_CONE_SHADOW_POOL_CAPACITY;
 use crate::rendering::pipelines::visibility::MAX_LIGHTS;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
 use crate::rendering::pipelines::visibility::SHADOW_VIEW_COUNT;

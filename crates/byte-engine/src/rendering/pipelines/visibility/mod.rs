@@ -12,7 +12,7 @@ pub mod scene_manager;
 pub mod shader_generator;
 pub(crate) mod skinning;
 
-pub use pipeline_manager::VisibilityPipelineManager;
+pub use pipeline_manager::{VisibilityPipelineManager, VisibilityPipelineSettings, CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER};
 
 /* BASE */
 /// Shader binding used to access scene views.
@@ -162,14 +162,17 @@ const MAX_VERTICES: usize = 65536 * 4;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
-pub(crate) const MAX_CONE_SHADOWS: usize = 4;
+/// The largest cone shadow pool that fits the visibility light table.
+pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = MAX_LIGHTS;
+/// The cone shadow pool capacity used when an application does not configure one.
+pub(crate) const DEFAULT_CONE_SHADOW_POOL_CAPACITY: usize = 4;
 pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
 /// The depth format that halves the memory used by cone-light shadow maps.
 pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 /// The depth format retained for directional cascades and the camera depth target.
 pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth32;
 pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
-pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOWS;
+pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone)]

@@ -5,10 +5,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
-use resource_management::{
-	resource::resource_manager::ResourceManager, resources::skeleton::AffineMatrix4x3Columns,
-	types::ShaderTypes as ResourceShaderTypes,
-};
+use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use utils::Extent;
 
 pub(crate) const SKINNING_WORKGROUP_SIZE: u32 = 64;
@@ -116,17 +113,17 @@ impl SkinningDispatch {
 
 /// The `SkinningPass` struct owns frame-local animation outputs and the compute state that populates them before visibility rendering.
 pub(crate) struct SkinningPass {
-	pipeline: ghi::PipelineHandle,
+	pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
 	matrix_palette_buffer: ghi::DynamicBufferHandle<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]>,
 	skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
 
 impl SkinningPass {
-	/// Creates the frame-local palette and output buffers plus the immutable compute descriptor set.
+	/// Creates frame-local buffers and requests the skinning pipeline.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		sources: SkinningSourceBuffers,
 	) -> Self {
 		let matrix_palette_buffer = context.build_dynamic_buffer::<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]>(
@@ -155,29 +152,7 @@ impl SkinningPass {
 		];
 		context.write(&writes);
 
-		let loaded = crate::rendering::resource_loading::load_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/skinning.besl",
-			"Visibility Skinning Compute Shader",
-		)
-		.unwrap_or_else(|error| panic!("Failed to load visibility skinning shader: {error}"));
-		assert_eq!(
-			loaded.stage,
-			ResourceShaderTypes::Compute,
-			"Visibility skinning shader stage mismatch. The most likely cause is incorrect shader sidecar metadata."
-		);
-		let shader = loaded.handle;
-		let pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(
-					0,
-					std::mem::size_of::<SkinningDispatch>() as u32,
-				)],
-				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-			)
-			.name("Visibility Skinning Compute Shader"),
-		);
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/skinning.pipeline");
 
 		Self {
 			pipeline,
@@ -195,6 +170,11 @@ impl SkinningPass {
 
 	pub(crate) const fn skinned_vertices_buffer(&self) -> ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]> {
 		self.skinned_vertices_buffer
+	}
+
+	/// Returns the asynchronously compiled pipeline required by this pass.
+	pub(crate) const fn pipeline(&self) -> crate::rendering::PipelineRef {
+		self.pipeline
 	}
 
 	/// Copies a complete caller-produced palette into the active frame without allocating intermediate storage.
@@ -216,12 +196,13 @@ impl SkinningPass {
 		&self,
 		command_buffer: &mut ghi::implementation::CommandBufferRecording,
 		dispatches: &[SkinningDispatch],
+		pipeline: ghi::PipelineHandle,
 	) {
 		if dispatches.is_empty() {
 			return;
 		}
 
-		let command = command_buffer.bind_compute_pipeline(self.pipeline);
+		let command = command_buffer.bind_compute_pipeline(pipeline);
 		command.bind_descriptor_sets(&[self.descriptor_set]);
 		for dispatch in dispatches.iter().copied().filter(|dispatch| dispatch.vertex_count != 0) {
 			let source_end = (dispatch.source_vertex_base as usize)

@@ -1,8 +1,8 @@
 use resource_management::asset::{
 	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
 	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
-	wav_asset_handler::WAVAssetHandler, StorageBackend,
+	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, pipeline_asset_handler::PipelineAssetHandler,
+	png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
 };
 
 pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
@@ -13,6 +13,7 @@ pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> A
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
+	asset_manager.add_asset_handler(PipelineAssetHandler);
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
 	besl_shader_asset_handler
 		.set_shader_generator(byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new());
@@ -62,10 +63,11 @@ mod tests {
 	impl StorageBackend for EmptyAssetStorage {}
 
 	#[test]
-	fn default_asset_manager_registers_the_standalone_besl_handler() {
+	fn default_asset_manager_registers_shader_and_pipeline_handlers() {
 		let asset_manager = get_asset_manager(EmptyAssetStorage);
 
 		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
+		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
 		assert!(!asset_manager.should_discover("byte-engine/render-passes/resolve.besl", false));
 		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));
 	}

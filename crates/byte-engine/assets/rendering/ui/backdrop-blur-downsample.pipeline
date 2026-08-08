@@ -1,1 +1,1 @@
-{"name":"UI Backdrop Blur Downsample","kind":{"type":"compute","shader":"rendering/ui/backdrop-blur-downsample.besl","push_constants":[{"offset":0,"size":16}]}}
+{"name":"UI Backdrop Blur Downsample","kind":{"type":"compute","shader":"byte-engine/rendering/ui/backdrop-blur-downsample.besl","push_constants":[{"offset":0,"size":16}]}}

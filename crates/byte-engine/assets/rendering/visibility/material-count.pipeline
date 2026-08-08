@@ -1,0 +1,1 @@
+{"name":"Material Count","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/material-count.besl"}}

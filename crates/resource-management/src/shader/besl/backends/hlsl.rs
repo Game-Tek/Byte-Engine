@@ -886,6 +886,15 @@ impl Generator {
 		};
 
 		match name.as_str() {
+			"sample" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".Sample(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				return;
+			}
 			"sample_material" => {
 				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
 				return;

@@ -27,6 +27,8 @@ pub struct VisibilityPipelineManager {
 	mesh_dispatch_work: crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkBuffer,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
+	/// Fixed visibility pipelines requested during sink creation and resolved during frame preparation.
+	pipeline_manager: crate::rendering::PipelineManagerClient,
 	/// Application-owned baked resources used by the fixed visibility shader set.
 	shader_resources: EntityHandle<ResourceManager>,
 	/// Reused palette upload storage prevents per-frame matrix allocations.
@@ -59,12 +61,13 @@ impl VisibilityPipelineManager {
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
 		shader_resources: EntityHandle<ResourceManager>,
+		pipeline_manager: crate::rendering::PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
 	) -> Self {
 		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
 			context,
-			&shader_resources,
+			&pipeline_manager,
 			SkinningSourceBuffers::new(
 				resource_manager.gpu_vertex_data_manager.skinning_rest_positions_buffer.into(),
 				resource_manager.gpu_vertex_data_manager.skinning_rest_normals_buffer.into(),
@@ -172,6 +175,7 @@ impl VisibilityPipelineManager {
 			context.create_factory(),
 		));
 		Self {
+			pipeline_manager,
 			materials_data,
 			materials_data_buffer_handle,
 			mesh_dispatch_work,
@@ -985,26 +989,24 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let commands: SmallVec<[RenderPassReturn<'a>; 16]> = sink_x_rp
 			.enumerate()
-			.map(|(command_index, (v, r))| {
-				crate::rendering::render_pass::allocate_render_command(
-					frame_allocator,
-					r.prepare(
-						frame,
-						v,
-						(command_index == 0).then_some(skinning_pass),
-						opaque_mesh_dispatch,
-						transparent_mesh_dispatch,
-						skinning_dispatches,
-						&self.scene.render_info.opaque_instances,
-						&self.scene.render_info.transparent_instances,
-						&self.scene.render_info.opaque_materials,
-						&self.scene.render_info.transparent_materials,
-						&self.scene.render_info.opaque_material_mask,
-						&self.scene.render_info.transparent_material_mask,
-						directional_shadow_light_index.is_some(),
-						cone_shadow_light_indices.iter().flatten().count(),
-					),
+			.filter_map(|(command_index, (v, r))| {
+				r.prepare(
+					frame,
+					v,
+					(command_index == 0).then_some(skinning_pass),
+					opaque_mesh_dispatch,
+					transparent_mesh_dispatch,
+					skinning_dispatches,
+					&self.scene.render_info.opaque_instances,
+					&self.scene.render_info.transparent_instances,
+					&self.scene.render_info.opaque_materials,
+					&self.scene.render_info.transparent_materials,
+					&self.scene.render_info.opaque_material_mask,
+					&self.scene.render_info.transparent_material_mask,
+					directional_shadow_light_index.is_some(),
+					cone_shadow_light_indices.iter().flatten().count(),
 				)
+				.map(|command| crate::rendering::render_pass::allocate_render_command(frame_allocator, command))
 			})
 			.collect::<SmallVec<[_; 16]>>();
 
@@ -1240,7 +1242,7 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.context(),
-			&self.shader_resources,
+			self.pipeline_manager.clone(),
 			self.scene.descriptor_set,
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,

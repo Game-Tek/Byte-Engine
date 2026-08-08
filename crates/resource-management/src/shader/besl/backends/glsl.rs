@@ -266,6 +266,18 @@ impl Generator {
 		};
 
 		match name.as_str() {
+			"sample" => {
+				string.push_str("texture(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				return;
+			}
 			"sample_material" => {
 				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
 				return;

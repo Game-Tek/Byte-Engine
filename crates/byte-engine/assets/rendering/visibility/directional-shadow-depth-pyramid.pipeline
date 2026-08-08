@@ -1,0 +1,1 @@
+{"name":"Directional Shadow Depth Pyramid","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/directional-shadow-depth-pyramid.besl"}}

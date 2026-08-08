@@ -1,0 +1,1 @@
+{"name":"Cone Shadow Pass","kind":{"type":"raster","shaders":["byte-engine/rendering/visibility/shadow-task.besl","byte-engine/rendering/visibility/shadow-mesh.besl"],"push_constants":[{"offset":0,"size":12}],"vertex_elements":[{"name":"POSITION","format":"float3","binding":0},{"name":"NORMAL","format":"float3","binding":1}],"attachments":[{"format":"depth16"}]}}

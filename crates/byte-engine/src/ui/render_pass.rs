@@ -1809,13 +1809,15 @@ impl UiRenderPass {
 		render_pass_builder.alias("UI", "main");
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
-		let pipeline = pipeline_manager.request_pipeline("rendering/ui/rectangle.pipeline");
-		let curve_pipeline = pipeline_manager.request_pipeline("rendering/ui/curve.pipeline");
-		let image_pipeline = pipeline_manager.request_pipeline("rendering/ui/image.pipeline");
-		let text_pipeline = pipeline_manager.request_pipeline("rendering/ui/text.pipeline");
-		let blur_downsample_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-downsample.pipeline");
-		let blur_filter_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-filter.pipeline");
-		let blur_composite_pipeline = pipeline_manager.request_pipeline("rendering/ui/backdrop-blur-composite.pipeline");
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/rectangle.pipeline");
+		let curve_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/curve.pipeline");
+		let image_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/image.pipeline");
+		let text_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/text.pipeline");
+		let blur_downsample_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-downsample.pipeline");
+		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
+		let blur_composite_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-composite.pipeline");
 		let blur_downsample_workgroup = Extent::square(16);
 		let blur_filter_workgroup = Extent::square(16);
 

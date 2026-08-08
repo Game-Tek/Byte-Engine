@@ -249,7 +249,9 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 	let format = match value.format {
 		Format::Rgba8Unorm => ghi::Formats::RGBA8UNORM,
 		Format::Rgba16Unorm => ghi::Formats::RGBA16UNORM,
+		Format::Depth16 => ghi::Formats::Depth16,
 		Format::Depth32 => ghi::Formats::Depth32,
+		Format::U32 => ghi::Formats::U32,
 		_ => panic!("Pipeline attachment format is invalid. The most likely cause is a vertex format used as an attachment."),
 	};
 	let mut descriptor = ghi::pipelines::raster::AttachmentDescriptor::new(format).blend(match value.blend {

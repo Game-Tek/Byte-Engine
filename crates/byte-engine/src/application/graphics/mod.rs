@@ -754,12 +754,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let environment_receiver = application.world().environment_factory().listener();
 
 		let renderer = &mut application.renderer;
+		let pipeline_manager = renderer.pipeline_manager_client();
 
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
 				renderer.context_mut(),
 				resource_manager_client,
 				visibility_shader_resources,
+				pipeline_manager,
 				gtao_configuration,
 			),
 			light_receiver,

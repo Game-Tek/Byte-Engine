@@ -2623,6 +2623,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 
 		match name.as_str() {
+			"sample" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".sample(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				return;
+			}
 			"sample_material" => {
 				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
 				return;
@@ -3838,6 +3847,34 @@ mod tests {
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-texture-lod-level-shadowing")
 			.await
 			.expect("Expected qualified Metal level helper to compile when a BESL parameter is named level");
+	}
+
+	#[compio::test]
+	async fn sample_intrinsic_lowers_to_a_texture_sample_call() {
+		let source = r#"
+			image_texture: descriptor<Texture2D, 0, read>;
+			in_uv: input<vec2f, 0>;
+			out_color_attachment: output<vec4f, 0>;
+			main: fn() -> void {
+				out_color_attachment = sample(image_texture, in_uv);
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected sample source to link");
+		let main = root.get_main().expect("Expected sample source to define main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Expected sample source to lower to Metal");
+
+		assert_string_contains!(
+			shader,
+			"resources.image_texture.sample(resources.image_texture_sampler, in_uv)"
+		);
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-sample-intrinsic")
+			.await
+			.expect("Expected sample intrinsic MSL to compile");
 	}
 
 	#[compio::test]

@@ -1,0 +1,1 @@
+{"name":"Material Offset","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/material-offset.besl"}}

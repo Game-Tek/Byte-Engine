@@ -1,102 +1,3 @@
-use ghi::command_buffer::{
-	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-};
-use ghi::context::{Context as _, ContextCreate as _};
-use ghi::frame::Frame as _;
-use ghi::implementation::Frame;
-use resource_management::{resource::resource_manager::ResourceManager, types::ShaderTypes as ResourceShaderTypes};
-use utils::{Box, Extent, RGBA};
-
-use crate::configuration::ConfigurationValue;
-use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
-use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
-use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
-use crate::rendering::pipelines::visibility::{
-	ActiveMaterialMask, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET,
-	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS,
-	MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
-};
-use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
-
-const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const GTAO_BLUR_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const GTAO_UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1036),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const GTAO_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const GTAO_DEPTH_PYRAMID_OUTPUT_2_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1036),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const GTAO_DEPTH_PYRAMID_MIP_COUNT: u32 = 4;
-const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-)
-.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-pub(super) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
-
 /// Returns the directional cascade view indices that receive one batched shadow dispatch.
 fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
 	let has_work = !mesh_dispatch.is_empty();
@@ -274,28 +175,11 @@ fn fast_gtao_view_data(sink: &Sink, extent: Extent) -> FastGtaoViewData {
 	}
 }
 
-/// Loads one fixed visibility shader from the application resource store and verifies its persisted stage contract.
-fn load_visibility_shader(
-	context: &mut ghi::implementation::Context,
-	resources: &ResourceManager,
-	id: &str,
-	name: &str,
-	expected_stage: ResourceShaderTypes,
-) -> ghi::ShaderHandle {
-	let loaded = crate::rendering::resource_loading::load_shader(context, resources, id, name)
-		.unwrap_or_else(|error| panic!("Failed to load visibility shader '{id}': {error}"));
-	assert_eq!(
-		loaded.stage, expected_stage,
-		"Visibility shader stage mismatch for '{id}'. The most likely cause is incorrect shader sidecar metadata."
-	);
-	loaded.handle
-}
-
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate visibility buffers.
 #[derive(Clone)]
 pub(crate) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: ghi::PipelineHandle,
+	pipeline: crate::rendering::PipelineRef,
 	opaque_attachments: [ghi::AttachmentInformation; 3],
 	transparent_attachments: [ghi::AttachmentInformation; 3],
 }
@@ -323,71 +207,16 @@ impl VisibilityPhase {
 }
 
 impl VisibilityPass {
-	/// Creates the visibility pipeline and phase-specific attachment behavior.
+	/// Creates phase-specific attachment behavior and requests the visibility pipeline.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
 		depth_target: ghi::BaseImageHandle,
 	) -> Self {
-		let visibility_pass_task_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/visibility-task.besl",
-			"Visibility Pass Task Shader",
-			ResourceShaderTypes::Task,
-		);
-		let visibility_pass_mesh_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/visibility-mesh.besl",
-			"Visibility Pass Mesh Shader",
-			ResourceShaderTypes::Mesh,
-		);
-		let visibility_pass_fragment_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/visibility-fragment.besl",
-			"Visibility Pass Fragment Shader",
-			ResourceShaderTypes::Fragment,
-		);
-
-		let mut visibility_pass_shaders = Vec::with_capacity(3);
-		visibility_pass_shaders.push(ghi::ShaderParameter::new(
-			&visibility_pass_task_shader,
-			ghi::ShaderTypes::Task,
-		));
-		visibility_pass_shaders.push(ghi::ShaderParameter::new(
-			&visibility_pass_mesh_shader,
-			ghi::ShaderTypes::Mesh,
-		));
-		visibility_pass_shaders.push(ghi::ShaderParameter::new(
-			&visibility_pass_fragment_shader,
-			ghi::ShaderTypes::Fragment,
-		));
-
-		let pipeline_attachments = [
-			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::U32),
-			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::U32),
-			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
-		];
-
-		let vertex_layout = [
-			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
-		];
-
-		let pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(0, 12)],
-				&vertex_layout,
-				&visibility_pass_shaders,
-				&pipeline_attachments,
-			)
-			.name("Visibility Pass Mesh Shader"),
-		);
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline");
 
 		VisibilityPass {
 			descriptor_set,
@@ -453,6 +282,7 @@ impl VisibilityPass {
 		instances: &[Instance],
 		mesh_dispatch: MeshDispatch,
 		phase: VisibilityPhase,
+		pipeline: ghi::PipelineHandle,
 	) {
 		let attachments: &[ghi::AttachmentInformation] = match phase {
 			VisibilityPhase::Opaque => &self.opaque_attachments,
@@ -478,7 +308,7 @@ impl VisibilityPass {
 
 		let c = c.start_render_pass(extent, attachments);
 		if !mesh_dispatch.is_empty() {
-			let c = c.bind_raster_pipeline(self.pipeline);
+			let c = c.bind_raster_pipeline(pipeline);
 			c.bind_descriptor_sets(&[self.descriptor_set]);
 			c.write_push_constant(0, mesh_dispatch.work_item_base());
 			c.write_push_constant(4, 0u32);
@@ -503,18 +333,18 @@ fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	directional_shadow_depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
-	directional_shadow_pass_pipeline: ghi::PipelineHandle,
-	directional_shadow_depth_pyramid_pipeline: ghi::PipelineHandle,
-	cone_shadow_pass_pipeline: ghi::PipelineHandle,
+	directional_shadow_pass_pipeline: crate::rendering::PipelineRef,
+	directional_shadow_depth_pyramid_pipeline: crate::rendering::PipelineRef,
+	cone_shadow_pass_pipeline: crate::rendering::PipelineRef,
 	directional_shadow_map: ghi::BaseImageHandle,
 	cone_shadow_map: ghi::BaseImageHandle,
 }
 
 impl ShadowPass {
-	/// Creates raster pipelines that match the directional and cone shadow-map depth formats.
+	/// Creates shadow resources and requests pipelines that match the directional and cone depth formats.
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		directional_shadow_map: ghi::BaseImageHandle,
 		directional_shadow_depth_pyramid: ghi::BaseImageHandle,
@@ -547,66 +377,12 @@ impl ShadowPass {
 				0,
 			),
 		]);
-		let shadow_pass_task_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/shadow-task.besl",
-			"Shadow Pass Task Shader",
-			ResourceShaderTypes::Task,
-		);
-		let shadow_pass_mesh_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/shadow-mesh.besl",
-			"Shadow Pass Mesh Shader",
-			ResourceShaderTypes::Mesh,
-		);
-		let directional_shadow_depth_pyramid_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/directional-shadow-depth-pyramid.besl",
-			"Directional Shadow Depth Pyramid Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let directional_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(
-			DIRECTIONAL_SHADOW_MAP_FORMAT,
-		)];
-		let cone_attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(CONE_SHADOW_MAP_FORMAT)];
-		let vertex_layout = [
-			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
-		];
-
-		let mut shadow_pass_shaders = Vec::with_capacity(2);
-		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_task_shader, ghi::ShaderTypes::Task));
-		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
-
-		let directional_shadow_pass_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(0, 12)],
-				&vertex_layout,
-				&shadow_pass_shaders,
-				&directional_attachments,
-			)
-			.name("Shadow Pass Mesh Shader (Directional)"),
-		);
-		let cone_shadow_pass_pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(0, 12)],
-				&vertex_layout,
-				&shadow_pass_shaders,
-				&cone_attachments,
-			)
-			.name("Shadow Pass Mesh Shader (Cone)"),
-		);
-		let directional_shadow_depth_pyramid_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&directional_shadow_depth_pyramid_shader, ghi::ShaderTypes::Compute),
-			)
-			.name("Directional Shadow Depth Pyramid Compute Shader"),
-		);
+		let directional_shadow_pass_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/directional-shadow.pipeline");
+		let directional_shadow_depth_pyramid_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/directional-shadow-depth-pyramid.pipeline");
+		let cone_shadow_pass_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/cone-shadow.pipeline");
 
 		Self {
 			descriptor_set,
@@ -627,12 +403,12 @@ impl ShadowPass {
 		mesh_dispatch: MeshDispatch,
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
+		directional_pipeline: ghi::PipelineHandle,
+		directional_shadow_depth_pyramid_pipeline: ghi::PipelineHandle,
+		cone_pipeline: ghi::PipelineHandle,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
 		let directional_shadow_depth_pyramid_descriptor_set = self.directional_shadow_depth_pyramid_descriptor_set;
-		let directional_pipeline = self.directional_shadow_pass_pipeline;
-		let directional_shadow_depth_pyramid_pipeline = self.directional_shadow_depth_pyramid_pipeline;
-		let cone_pipeline = self.cone_shadow_pass_pipeline;
 		let directional_shadow_map = self.directional_shadow_map;
 		let cone_shadow_map = self.cone_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
@@ -735,32 +511,19 @@ pub struct MaterialCountPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 	material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-	pipeline: ghi::PipelineHandle,
+	pipeline: crate::rendering::PipelineRef,
 }
 
 impl MaterialCountPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	) -> Self {
-		let material_count_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/material-count.besl",
-			"Material Count Pass Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let material_count_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
-			)
-			.name("Material Count Pass Compute Shader"),
-		);
+		let material_count_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/material-count.pipeline");
 
 		MaterialCountPass {
 			descriptor_set,
@@ -770,10 +533,9 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn prepare(&self, sink: &Sink) -> impl RenderPassFunction + use<'_> {
+	fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction + use<'_> {
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
-		let pipeline = self.pipeline;
 		let material_count_buffer = self.material_count_buffer;
 
 		let extent = sink.extent();
@@ -808,34 +570,21 @@ pub struct MaterialOffsetPass {
 	material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
-	material_offset_pipeline: ghi::PipelineHandle,
+	material_offset_pipeline: crate::rendering::PipelineRef,
 }
 
 impl MaterialOffsetPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 3]; MAX_MATERIALS]>,
 	) -> Self {
-		let material_offset_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/material-offset.besl",
-			"Material Offset Pass Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let material_offset_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
-			)
-			.name("Material Offset Pass Compute Shader"),
-		);
+		let material_offset_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/material-offset.pipeline");
 
 		MaterialOffsetPass {
 			material_offset_buffer,
@@ -847,10 +596,9 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	fn prepare(&self) -> impl RenderPassFunction {
+	fn prepare(&self, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
-		let pipeline = self.material_offset_pipeline;
 
 		move |c, _| {
 			log::debug!("Visibility material offset pass executing");
@@ -875,31 +623,18 @@ impl MaterialOffsetPass {
 pub struct PixelMappingPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
-	pixel_mapping_pipeline: ghi::PipelineHandle,
+	pixel_mapping_pipeline: crate::rendering::PipelineRef,
 }
 
 impl PixelMappingPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 	) -> Self {
-		let pixel_mapping_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/pixel-mapping.besl",
-			"Pixel Mapping Pass Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let pixel_mapping_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
-			)
-			.name("Pixel Mapping Pass Compute Shader"),
-		);
+		let pixel_mapping_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/pixel-mapping.pipeline");
 
 		PixelMappingPass {
 			descriptor_set,
@@ -908,9 +643,8 @@ impl PixelMappingPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, sink: &Sink) -> impl RenderPassFunction {
+	pub(super) fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
-		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
 
 		let extent = sink.extent();
@@ -939,10 +673,10 @@ pub struct GtaoPass {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
 	blur_descriptor_set_x: ghi::DescriptorSetHandle,
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
-	gtao_pipeline: ghi::PipelineHandle,
-	depth_pyramid_pipeline: ghi::PipelineHandle,
-	blur_pipeline_x: ghi::PipelineHandle,
-	upscale_pipeline: ghi::PipelineHandle,
+	gtao_pipeline: crate::rendering::PipelineRef,
+	depth_pyramid_pipeline: crate::rendering::PipelineRef,
+	blur_pipeline_x: crate::rendering::PipelineRef,
+	upscale_pipeline: crate::rendering::PipelineRef,
 	ao_map: ghi::BaseImageHandle,
 	view_data: ghi::DynamicBufferHandle<FastGtaoViewData>,
 	gtao_parameters: ghi::DynamicBufferHandle<GtaoShaderParameters>,
@@ -954,7 +688,7 @@ pub struct GtaoPass {
 impl GtaoPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 		settings: GtaoSettings,
@@ -1114,56 +848,11 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 		]);
-		let depth_pyramid_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/gtao-depth-pyramid.besl",
-			"GTAO Depth Pyramid Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-		let gtao_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/gtao.besl",
-			"GTAO Pass Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let depth_pyramid_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&[],
-				ghi::ShaderParameter::new(&depth_pyramid_shader, ghi::ShaderTypes::Compute),
-			)
-			.name("GTAO Depth Pyramid Compute Shader"),
-		);
-		let gtao_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute))
-				.name("GTAO Pass Compute Shader"),
-		);
-
-		let blur_x_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/gtao-blur-x.besl",
-			"GTAO Blur X Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-		let upscale_shader = load_visibility_shader(
-			context,
-			shader_resources,
-			"byte-engine/rendering/visibility/gtao-upscale.besl",
-			"GTAO Depth-Aware Upscale Compute Shader",
-			ResourceShaderTypes::Compute,
-		);
-
-		let blur_pipeline_x = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute))
-				.name("GTAO Blur X Compute Shader"),
-		);
-		let upscale_pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&upscale_shader, ghi::ShaderTypes::Compute))
-				.name("GTAO Depth-Aware Upscale Compute Shader"),
-		);
+		let depth_pyramid_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/gtao-depth-pyramid.pipeline");
+		let gtao_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/gtao.pipeline");
+		let blur_pipeline_x = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/gtao-blur-x.pipeline");
+		let upscale_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/gtao-upscale.pipeline");
 
 		Self {
 			settings,
@@ -1188,15 +877,19 @@ impl GtaoPass {
 		self.settings = settings;
 	}
 
-	fn prepare(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
+	fn prepare(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		gtao_pipeline: ghi::PipelineHandle,
+		depth_pyramid_pipeline: ghi::PipelineHandle,
+		blur_pipeline_x: ghi::PipelineHandle,
+		upscale_pipeline: ghi::PipelineHandle,
+	) -> impl RenderPassFunction {
 		let gtao_descriptor_set = self.gtao_descriptor_set;
 		let depth_pyramid_descriptor_set = self.depth_pyramid_descriptor_set;
 		let blur_descriptor_set_x = self.blur_descriptor_set_x;
 		let upscale_descriptor_set = self.upscale_descriptor_set;
-		let gtao_pipeline = self.gtao_pipeline;
-		let depth_pyramid_pipeline = self.depth_pyramid_pipeline;
-		let blur_pipeline_x = self.blur_pipeline_x;
-		let upscale_pipeline = self.upscale_pipeline;
 		let ao_map = self.ao_map;
 		let view_data = self.view_data;
 		let gtao_parameters = self.gtao_parameters;
@@ -1373,6 +1066,7 @@ impl MaterialEvaluationPass {
 
 /// The `VisibilityPipelineRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
 pub(crate) struct VisibilityPipelineRenderPass {
+	pipeline_manager: crate::rendering::PipelineManagerClient,
 	shadow_pass: ShadowPass,
 	visibility_pass: VisibilityPass,
 	material_count_pass: MaterialCountPass,
@@ -1394,7 +1088,7 @@ impl VisibilityPipelineRenderPass {
 
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		shader_resources: &ResourceManager,
+		pipeline_manager: crate::rendering::PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
@@ -1414,7 +1108,7 @@ impl VisibilityPipelineRenderPass {
 	) -> Self {
 		let shadow_pass = ShadowPass::new(
 			context,
-			shader_resources,
+			&pipeline_manager,
 			base_descriptor_set,
 			directional_shadow_map,
 			directional_shadow_depth_pyramid,
@@ -1422,7 +1116,7 @@ impl VisibilityPipelineRenderPass {
 		);
 		let visibility_pass = VisibilityPass::new(
 			context,
-			shader_resources,
+			&pipeline_manager,
 			base_descriptor_set,
 			primitive_index,
 			instance_id,
@@ -1430,14 +1124,14 @@ impl VisibilityPipelineRenderPass {
 		);
 		let material_count_pass = MaterialCountPass::new(
 			context,
-			shader_resources,
+			&pipeline_manager,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_count_buffer,
 		);
 		let material_offset_pass = MaterialOffsetPass::new(
 			context,
-			shader_resources,
+			&pipeline_manager,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_offset_buffer,
@@ -1445,8 +1139,8 @@ impl VisibilityPipelineRenderPass {
 			material_evaluation_dispatches,
 		);
 		let pixel_mapping_pass =
-			PixelMappingPass::new(context, shader_resources, base_descriptor_set, visibility_descriptor_set);
-		let gtao_pass = GtaoPass::new(context, shader_resources, depth, ao_map, gtao_settings);
+			PixelMappingPass::new(context, &pipeline_manager, base_descriptor_set, visibility_descriptor_set);
+		let gtao_pass = GtaoPass::new(context, &pipeline_manager, depth, ao_map, gtao_settings);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches;
 
@@ -1462,6 +1156,7 @@ impl VisibilityPipelineRenderPass {
 		);
 
 		Self {
+			pipeline_manager,
 			shadow_pass,
 			visibility_pass,
 			material_count_pass,
@@ -1489,7 +1184,30 @@ impl VisibilityPipelineRenderPass {
 		transparent_material_mask: &'a ActiveMaterialMask,
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
-	) -> impl RenderPassFunction + 'a {
+	) -> Option<impl RenderPassFunction + 'a> {
+		let skinning_pipeline = match skinning_pass {
+			Some(pass) => Some(self.pipeline_manager.pipeline(pass.pipeline())?),
+			None => None,
+		};
+		let visibility_pipeline = self.pipeline_manager.pipeline(self.visibility_pass.pipeline)?;
+		let directional_shadow_pipeline = self
+			.pipeline_manager
+			.pipeline(self.shadow_pass.directional_shadow_pass_pipeline)?;
+		let directional_shadow_depth_pyramid_pipeline = self
+			.pipeline_manager
+			.pipeline(self.shadow_pass.directional_shadow_depth_pyramid_pipeline)?;
+		let cone_shadow_pipeline = self.pipeline_manager.pipeline(self.shadow_pass.cone_shadow_pass_pipeline)?;
+		let material_count_pipeline = self.pipeline_manager.pipeline(self.material_count_pass.pipeline)?;
+		let material_offset_pipeline = self
+			.pipeline_manager
+			.pipeline(self.material_offset_pass.material_offset_pipeline)?;
+		let pixel_mapping_pipeline = self
+			.pipeline_manager
+			.pipeline(self.pixel_mapping_pass.pixel_mapping_pipeline)?;
+		let gtao_pipeline = self.pipeline_manager.pipeline(self.gtao_pass.gtao_pipeline)?;
+		let depth_pyramid_pipeline = self.pipeline_manager.pipeline(self.gtao_pass.depth_pyramid_pipeline)?;
+		let blur_pipeline_x = self.pipeline_manager.pipeline(self.gtao_pass.blur_pipeline_x)?;
+		let upscale_pipeline = self.pipeline_manager.pipeline(self.gtao_pass.upscale_pipeline)?;
 		// Blend materials have no alpha-aware shadow shader, so only opaque-phase primitives populate the depth map.
 		let shadow_pass = self.shadow_pass.prepare(
 			frame,
@@ -1497,14 +1215,24 @@ impl VisibilityPipelineRenderPass {
 			opaque_mesh_dispatch,
 			directional_shadow_enabled,
 			cone_shadow_count,
+			directional_shadow_pipeline,
+			directional_shadow_depth_pyramid_pipeline,
+			cone_shadow_pipeline,
 		);
 		let visibility_pass = &self.visibility_pass;
 		// The offset pass consumes and resets every counter before the optional transparent layer runs.
-		let opaque_material_count_pass = self.material_count_pass.prepare(sink);
-		let transparent_material_count_pass = self.material_count_pass.prepare(sink);
-		let material_offset_pass = self.material_offset_pass.prepare();
-		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(sink);
-		let gtao_pass = self.gtao_pass.prepare(frame, sink);
+		let opaque_material_count_pass = self.material_count_pass.prepare(sink, material_count_pipeline);
+		let transparent_material_count_pass = self.material_count_pass.prepare(sink, material_count_pipeline);
+		let material_offset_pass = self.material_offset_pass.prepare(material_offset_pipeline);
+		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(sink, pixel_mapping_pipeline);
+		let gtao_pass = self.gtao_pass.prepare(
+			frame,
+			sink,
+			gtao_pipeline,
+			depth_pyramid_pipeline,
+			blur_pipeline_x,
+			upscale_pipeline,
+		);
 		let opaque_material_evaluation_pass =
 			self.material_evaluation_pass
 				.prepare(frame, sink, opaque_materials, opaque_material_mask, VisibilityPhase::Opaque);
@@ -1530,8 +1258,9 @@ impl VisibilityPipelineRenderPass {
 			.iter()
 			.filter(|(_, index, _)| material_is_active(transparent_material_mask, *index))
 			.count();
-		move |c, t| {
-			log::debug!(
+		Some(
+			move |c: &mut ghi::implementation::CommandBufferRecording, t: &[ghi::AttachmentInformation]| {
+				log::debug!(
 				"Visibility render model executing: primitives={}, opaque_primitives={}, transparent_primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
 				instance_count,
 				opaque_instances.len(),
@@ -1541,41 +1270,124 @@ impl VisibilityPipelineRenderPass {
 				transparent_count,
 				directional_shadow_enabled || cone_shadow_count > 0,
 			);
-			c.start_region(|label| label.write_str("Visibility Render Model"));
+				c.start_region(|label| label.write_str("Visibility Render Model"));
 
-			if let Some(skinning_pass) = skinning_pass {
-				skinning_pass.record(c, skinning_dispatches);
-			}
-			shadow_pass(c, t);
+				if let (Some(skinning_pass), Some(skinning_pipeline)) = (skinning_pass, skinning_pipeline) {
+					skinning_pass.record(c, skinning_dispatches, skinning_pipeline);
+				}
+				shadow_pass(c, t);
 
-			// The opaque layer establishes the depth and color retained by every later transparent primitive.
-			visibility_pass.record(c, extent, opaque_instances, opaque_mesh_dispatch, VisibilityPhase::Opaque);
-			opaque_material_count_pass(c, t);
-			material_offset_pass(c, t);
-			pixel_mapping_pass(c, t);
-			gtao_pass(c, t);
-			opaque_material_evaluation_pass(c, t);
-
-			// The visibility buffer represents one transparent layer. Resolve every blend primitive
-			// together so normal depth testing selects the nearest surface before source-over evaluation.
-			if let Some(transparent_layer) = transparent_visibility_layer(transparent_instances) {
+				// The opaque layer establishes the depth and color retained by every later transparent primitive.
 				visibility_pass.record(
 					c,
 					extent,
-					transparent_layer,
-					transparent_mesh_dispatch,
-					VisibilityPhase::Transparent,
+					opaque_instances,
+					opaque_mesh_dispatch,
+					VisibilityPhase::Opaque,
+					visibility_pipeline,
 				);
-				transparent_material_count_pass(c, t);
+				opaque_material_count_pass(c, t);
 				material_offset_pass(c, t);
 				pixel_mapping_pass(c, t);
-				transparent_material_evaluation_pass(c, t);
-			}
+				gtao_pass(c, t);
+				opaque_material_evaluation_pass(c, t);
 
-			c.end_region();
-		}
+				// The visibility buffer represents one transparent layer. Resolve every blend primitive
+				// together so normal depth testing selects the nearest surface before source-over evaluation.
+				if let Some(transparent_layer) = transparent_visibility_layer(transparent_instances) {
+					visibility_pass.record(
+						c,
+						extent,
+						transparent_layer,
+						transparent_mesh_dispatch,
+						VisibilityPhase::Transparent,
+						visibility_pipeline,
+					);
+					transparent_material_count_pass(c, t);
+					material_offset_pass(c, t);
+					pixel_mapping_pass(c, t);
+					transparent_material_evaluation_pass(c, t);
+				}
+
+				c.end_region();
+			},
+		)
 	}
 }
+
+const GTAO_VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_BLUR_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1036),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_DEPTH_PYRAMID_OUTPUT_2_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_DEPTH_PYRAMID_OUTPUT_3_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1036),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+const GTAO_DEPTH_PYRAMID_MIP_COUNT: u32 = 4;
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+)
+.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_OUTPUT_1_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
+pub(super) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
 
 #[cfg(test)]
 mod tests {
@@ -1939,3 +1751,27 @@ mod tests {
 		}
 	}
 }
+
+use ghi::command_buffer::{
+	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+};
+use ghi::context::{Context as _, ContextCreate as _};
+use ghi::frame::Frame as _;
+use ghi::implementation::Frame;
+use utils::{Box, Extent, RGBA};
+
+use crate::configuration::ConfigurationValue;
+use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatch;
+use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
+use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
+use crate::rendering::pipelines::visibility::{
+	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_CONE_SHADOWS, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+};
+use crate::rendering::render_pass::RenderPassFunction;
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};

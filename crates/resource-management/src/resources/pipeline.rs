@@ -62,8 +62,10 @@ pub enum Format {
 	Float3,
 	Float4,
 	U16,
+	U32,
 	Rgba8Unorm,
 	Rgba16Unorm,
+	Depth16,
 	Depth32,
 }
 
@@ -103,3 +105,22 @@ const fn default_depth_write() -> bool {
 }
 
 super::impl_direct_resource!(Pipeline, "Pipeline");
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn raster_attachments_deserialize_integer_and_depth16_formats() {
+		let pipeline: Pipeline = serde_json::from_str(
+			r#"{"name":"Visibility","kind":{"type":"raster","shaders":[],"attachments":[{"format":"u32"},{"format":"depth16"}]}}"#,
+		)
+		.expect("Pipeline attachment formats must deserialize from their persisted names.");
+
+		let PipelineKind::Raster { attachments, .. } = pipeline.kind else {
+			panic!("Pipeline fixture must deserialize as a raster pipeline.");
+		};
+		assert!(matches!(attachments[0].format, Format::U32));
+		assert!(matches!(attachments[1].format, Format::Depth16));
+	}
+}

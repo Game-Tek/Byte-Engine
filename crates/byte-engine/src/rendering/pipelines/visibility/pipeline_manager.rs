@@ -725,16 +725,19 @@ struct ShadowLightSelection {
 	cone_count: usize,
 }
 
-/// Selects shadow casters from the same bounded light prefix uploaded to material evaluation.
-fn select_shadow_lights<'a>(lights: impl Iterator<Item = &'a Lights>) -> ShadowLightSelection {
+/// Selects shadow casters from the light prefix uploaded to material evaluation and visible sinks.
+fn select_shadow_lights<'a>(lights: impl Iterator<Item = &'a Lights>, sinks: &[Sink]) -> ShadowLightSelection {
 	let mut selection = ShadowLightSelection::default();
+	if sinks.is_empty() {
+		return selection;
+	}
 
 	for (index, light) in lights.take(MAX_LIGHTS).enumerate() {
 		match light {
 			Lights::Direction(light) if selection.directional.is_none() => {
 				selection.directional = Some((index, light.direction));
 			}
-			Lights::Cone(light) if light.supports_shadow_mapping() => {
+			Lights::Cone(light) if light.supports_shadow_mapping() && cone_shadow_is_visible(*light, sinks) => {
 				if let Some(slot) = selection.cones.get_mut(selection.cone_count) {
 					*slot = Some((index, *light));
 				}
@@ -795,6 +798,19 @@ fn make_cone_shadow_view(light: ConeLight, exposure_scale: f32) -> View {
 		light.position,
 		light.direction,
 	)
+}
+
+/// Returns whether a cone shadow can affect at least one active visibility view.
+fn cone_shadow_is_visible(light: ConeLight, sinks: &[Sink]) -> bool {
+	let (_, far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
+	let cosine = light.outer_angle.cos();
+	let enclosing_radius = far / (2.0 * cosine * cosine);
+	let bounds = math::Sphere::new(light.position + light.direction * enclosing_radius, enclosing_radius);
+
+	// The enclosing sphere keeps the test conservative: a cone that reaches a view is never culled.
+	sinks
+		.iter()
+		.any(|sink| math::collision::sphere_in_frustum(&bounds, &sink.view().get_frustum_planes()))
 }
 
 /// Builds the diffuse IBL write shared by context-time sink creation and frame-time environment adoption.
@@ -924,10 +940,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
 
-		let mut shadow_lights = select_shadow_lights(self.scene.lights.iter().map(|(_, light)| light));
-		if sinks.is_empty() {
-			shadow_lights = ShadowLightSelection::default();
-		}
+		let shadow_lights = select_shadow_lights(self.scene.lights.iter().map(|(_, light)| light), sinks);
 		if shadow_lights.cone_count > MAX_CONE_SHADOWS {
 			warn!(
 				"Cone-light shadow budget exceeded. The most likely cause is that the scene contains more than {MAX_CONE_SHADOWS} cone lights. Extra cone lights remain lit without shadows."
@@ -1544,14 +1557,15 @@ mod tests {
 	use maths_rs::Vec4f;
 	use resource_management::resources::skeleton::SkinBinding;
 	use resource_management::types::AlphaMode;
+	use utils::Extent;
 
 	use super::{
-		cached_skin_palette_base, make_cone_shadow_view, reserve_deformed_vertex_range, resolve_cone_shadow_range,
-		select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo,
-		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
-		CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_ENVIRONMENT_TEXEL,
-		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
-		MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, cone_shadow_is_visible, make_cone_shadow_view, reserve_deformed_vertex_range,
+		resolve_cone_shadow_range, select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData,
+		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, AO_MAP_BINDING,
+		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
+		DEFAULT_ENVIRONMENT_TEXEL, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING,
+		LIT_BINDING, MATERIALS_DATA_BINDING, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1563,6 +1577,7 @@ mod tests {
 		SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
+	use crate::rendering::{Sink, View};
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
 	fn cone(position_x: f32) -> ConeLight {
@@ -1578,6 +1593,15 @@ mod tests {
 			30.0_f32.to_radians(),
 		)
 		.expect("physical cone light")
+	}
+
+	/// Creates a visibility sink for shadow-selection tests.
+	fn sink(position: Point) -> Sink {
+		Sink::new(
+			View::new_perspective(90.0, 1.0, 0.1, 100.0, position, UnitVector::z_axis()),
+			Extent::square(1),
+			0,
+		)
 	}
 
 	#[test]
@@ -1626,7 +1650,7 @@ mod tests {
 			Lights::Cone(cone(4.0)),
 		];
 
-		let selection = select_shadow_lights(lights.iter());
+		let selection = select_shadow_lights(lights.iter(), &[sink(Point::origin())]);
 
 		assert_eq!(selection.directional.map(|(index, _)| index), Some(3));
 		assert_eq!(
@@ -1634,6 +1658,25 @@ mod tests {
 			[Some(1), Some(4), Some(5), Some(6)]
 		);
 		assert_eq!(selection.cone_count, 5);
+	}
+
+	#[test]
+	fn shadow_selection_keeps_cones_visible_in_any_sink_and_skips_cones_outside_all_sinks() {
+		let visible_in_second_sink = cone(100.0).with_shadow_far(20.0);
+		let outside_all_sinks = cone(500.0).with_shadow_far(20.0);
+		let lights = [Lights::Cone(visible_in_second_sink), Lights::Cone(outside_all_sinks)];
+		let sinks = [sink(Point::origin()), sink(Point::new(100.0, 0.0, 0.0))];
+
+		assert!(cone_shadow_is_visible(visible_in_second_sink, &sinks));
+		assert!(!cone_shadow_is_visible(outside_all_sinks, &sinks));
+
+		let selection = select_shadow_lights(lights.iter(), &sinks);
+
+		assert_eq!(
+			selection.cones.map(|light| light.map(|(index, _)| index)),
+			[Some(0), None, None, None]
+		);
+		assert_eq!(selection.cone_count, 1);
 	}
 
 	#[test]

@@ -294,11 +294,11 @@ impl GPUVertexDataManager {
 			.find(|component| component.semantic == VertexSemantics::UV && component.channel == 0)
 			.map(|component| component.format.as_str())
 		{
-			Some("vec2u16") if uvs_stream.stride == UV_U16_SOURCE_STRIDE => UvSourceFormat::U16Unorm,
+			Some("vec2f16") if uvs_stream.stride == UV_F16_SOURCE_STRIDE => UvSourceFormat::F16,
 			Some("vec2f") if uvs_stream.stride == UV_F32_SOURCE_STRIDE => UvSourceFormat::F32,
 			format => {
 				log::error!(
-					"Unsupported mesh UV format {format:?}. The most likely cause is that the asset uses a vertex format other than vec2u16 UNORM or vec2f."
+					"Unsupported mesh UV format {format:?}. The most likely cause is that the asset uses a vertex format other than vec2f16 or vec2f."
 				);
 				return None;
 			}
@@ -396,7 +396,7 @@ impl GPUVertexDataManager {
 			pack_f32_uvs(source_uvs, packed_uvs, vertex_count);
 			packed_offset
 		} else {
-			// Already-packed assets upload directly and need no conversion storage.
+			// Already-packed half-float assets upload directly and need no conversion storage.
 			vertex_uv_staging_offset
 		};
 
@@ -713,8 +713,8 @@ impl GPUVertexDataManager {
 			.chunks_exact_mut(VERTEX_UV_BUFFER_STRIDE as usize)
 			.zip(uvs.iter())
 		{
-			destination[..2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
-			destination[2..].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
+			destination[..2].copy_from_slice(&half::f16::from_f32(u).to_bits().to_ne_bytes());
+			destination[2..].copy_from_slice(&half::f16::from_f32(v).to_bits().to_ne_bytes());
 		}
 
 		let (vertex_indices_staging_offset, indices_buffer) =
@@ -998,12 +998,12 @@ impl GPUVertexDataManager {
 
 const RESOURCE_MESHLET_STRIDE: usize = 52;
 const NORMAL_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
-const UV_U16_SOURCE_STRIDE: usize = std::mem::size_of::<RuntimeVertexUv>();
+const UV_F16_SOURCE_STRIDE: usize = std::mem::size_of::<RuntimeVertexUv>();
 const UV_F32_SOURCE_STRIDE: usize = std::mem::size_of::<[f32; 2]>();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UvSourceFormat {
-	U16Unorm,
+	F16,
 	F32,
 }
 
@@ -1050,11 +1050,11 @@ fn encode_unorm16(value: f32) -> u16 {
 	(value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16
 }
 
-/// Converts an f32 UV stream to packed UNORM16 in transfer staging storage.
+/// Converts an f32 UV stream to half-float transfer storage without clamping sampler coordinates.
 fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 	for index in 0..vertex_count {
 		let source_offset = index * UV_F32_SOURCE_STRIDE;
-		let destination_offset = index * UV_U16_SOURCE_STRIDE;
+		let destination_offset = index * UV_F16_SOURCE_STRIDE;
 		let u = f32::from_ne_bytes(
 			source[source_offset..source_offset + 4]
 				.try_into()
@@ -1065,8 +1065,33 @@ fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 				.try_into()
 				.expect("A validated f32 UV is four bytes."),
 		);
-		destination[destination_offset..destination_offset + 2].copy_from_slice(&encode_unorm16(u).to_ne_bytes());
-		destination[destination_offset + 2..destination_offset + 4].copy_from_slice(&encode_unorm16(v).to_ne_bytes());
+		destination[destination_offset..destination_offset + 2]
+			.copy_from_slice(&half::f16::from_f32(u).to_bits().to_ne_bytes());
+		destination[destination_offset + 2..destination_offset + 4]
+			.copy_from_slice(&half::f16::from_f32(v).to_bits().to_ne_bytes());
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::pack_f32_uvs;
+
+	#[test]
+	fn packed_uvs_preserve_wrapping_coordinates() {
+		let values = [[-0.5f32, 2.0f32], [1.25f32, -3.0f32]];
+		let source = values
+			.iter()
+			.flat_map(|uv| uv.iter().flat_map(|component| component.to_ne_bytes()))
+			.collect::<Vec<_>>();
+		let mut packed = [0u8; 8];
+
+		pack_f32_uvs(&source, &mut packed, values.len());
+
+		let decoded = packed
+			.chunks_exact(2)
+			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes(bytes.try_into().unwrap())).to_f32())
+			.collect::<Vec<_>>();
+		assert_eq!(decoded, vec![-0.5, 2.0, 1.25, -3.0]);
 	}
 }
 const SKINNING_POSITION_STRIDE: usize = std::mem::size_of::<[f32; 3]>();

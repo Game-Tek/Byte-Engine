@@ -456,9 +456,9 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 // These statements are spliced around the material-authored main body. Keeping
 // them in BESL lets each backend derive resource access, packed loads, type names,
 // and matrix multiplication from the linked AST.
-const DECODE_UNORM16_VEC2_SOURCE: &str = r#"
-decode_unorm16_vec2: fn (encoded: vec2u16) -> vec2f {
-	return vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0;
+const DECODE_F16_VEC2_SOURCE: &str = r#"
+decode_f16_vec2: fn (encoded: vec2f16) -> vec2f {
+	return vec2f(encoded);
 }
 "#;
 
@@ -673,14 +673,14 @@ material_evaluation_prefix: fn () -> void {
 
 const MATERIAL_EVALUATION_UV_SOURCE: &str = r#"
 material_evaluation_uv: fn () -> void {
-	// Runtime UVs use 16-bit UNORM storage and are expanded only for materials that sample them.
+	// Runtime UVs use half-float storage and are expanded only for materials that sample them.
 	let uv_numerator_origin: vec2f = vec2f(0.0, 0.0);
 	let uv_numerator_dx: vec2f = vec2f(0.0, 0.0);
 	let uv_numerator_dy: vec2f = vec2f(0.0, 0.0);
 	if (setup_lane) {
-		let vertex_uv0: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[0]]);
-		let vertex_uv1: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[1]]);
-		let vertex_uv2: vec2f = decode_unorm16_vec2(vertex_uvs.uvs[triangle_vertex_indices[2]]);
+		let vertex_uv0: vec2f = decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[0]]);
+		let vertex_uv1: vec2f = decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[1]]);
+		let vertex_uv2: vec2f = decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[2]]);
 		uv_numerator_origin = vertex_uv0 * triangle_inverse_w.x;
 		uv_numerator_dx = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv0, vertex_uv1, vertex_uv2);
 		uv_numerator_dy = interpolate_vec2f_with_deriv(triangle_raw_ddy, vertex_uv0, vertex_uv1, vertex_uv2);
@@ -1846,7 +1846,7 @@ impl VisibilityShaderScope {
 			"compute_triangle_interpolation",
 		);
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
-		let decode_unorm16_vec2 = parse_besl_function(DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2");
+		let decode_f16_vec2 = parse_besl_function(DECODE_F16_VEC2_SOURCE, "decode_f16_vec2");
 		let decode_octahedral_normal = parse_besl_function(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal");
 		let cone_attenuation = parse_besl_function(
 			"cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }",
@@ -1985,7 +1985,7 @@ impl VisibilityShaderScope {
 				triangle_index,
 				instance_index,
 				u16_to_u32,
-				decode_unorm16_vec2,
+				decode_f16_vec2,
 				decode_octahedral_normal,
 				cone_attenuation,
 				compute_vertex_indices,
@@ -2195,7 +2195,6 @@ mod tests {
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the octahedral decoder VM test. The most likely cause is invalid BESL test syntax.");
 		root.add(vec![
-			super::parse_besl_function(super::DECODE_UNORM16_VEC2_SOURCE, "decode_unorm16_vec2"),
 			super::parse_besl_function(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
 			besl::ParserNode::binding(
 				"inputs",

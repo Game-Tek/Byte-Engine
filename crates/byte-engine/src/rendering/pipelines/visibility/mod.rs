@@ -57,10 +57,10 @@ pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(32);
-/// The packed runtime UV element. Change this alias, its stride, and the shader storage type together to swap formats.
+/// The packed half-float runtime UV element preserves sampler wrapping coordinates outside `[0, 1]`.
 pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
-pub(crate) const VERTEX_UV_SHADER_TYPE: &str = "vec2u16";
+pub(crate) const VERTEX_UV_SHADER_TYPE: &str = "vec2f16";
 pub(crate) const VERTEX_UV_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(5),
 	ghi::ResourceKind::StorageBuffer,

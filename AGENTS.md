@@ -36,6 +36,7 @@ When an error or warning has a documented recovery workflow, include a direct li
 
 # Tests
 - Write tests at their appropriate seam. (E.G: don't test material evaluation shaders correctly lower to MSL. MSL lowering is responsability of the BESL MSL shader generator. Material evaluation must only ensure their BESL shader correctly executes, which is asserted with a BESL VM supported test).
+- Do not add tombstone tests whose only purpose is to assert that removed code, routes, fields, or features remain absent. Negative tests are appropriate when the failure or absence is itself a current API, security, or persistence contract.
 
 # Best Practices
 

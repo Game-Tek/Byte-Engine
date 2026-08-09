@@ -1236,6 +1236,21 @@ point_shadow_receiver_vector: fn (
 }
 "#;
 
+// Keeps the receiver plane independent of the screen-space derivative scale as the camera moves.
+const POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE: &str = r#"
+point_shadow_receiver_plane_normal: fn (
+	position_derivative_x: vec3f,
+	position_derivative_y: vec3f
+) -> vec3f {
+	let receiver_plane_normal: vec3f = cross(position_derivative_x, position_derivative_y);
+	let length_squared: f32 = dot(receiver_plane_normal, receiver_plane_normal);
+	if (length_squared <= 0.0) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+	return receiver_plane_normal * inversesqrt(length_squared);
+}
+"#;
+
 // Snaps a cube lookup ray so depth sampling and receiver-plane correction use the same texel-center ray.
 const POINT_SHADOW_TEXEL_DIRECTION_SOURCE: &str = r#"
 point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
@@ -1358,14 +1373,10 @@ sample_point_shadow: fn (
 	}
 	let tangent: vec3f = normalize(cross(reference, center_direction));
 	let bitangent: vec3f = cross(center_direction, tangent);
-	let receiver_plane_normal: vec3f = cross(world_space_position_derivative_x, world_space_position_derivative_y);
-	let receiver_plane_normal_length_squared: f32 = dot(receiver_plane_normal, receiver_plane_normal);
-	if (receiver_plane_normal_length_squared <= 0.000000000001) {
-		receiver_plane_normal = center_direction;
-	}
-	if (receiver_plane_normal_length_squared > 0.000000000001) {
-		receiver_plane_normal = receiver_plane_normal * inversesqrt(receiver_plane_normal_length_squared);
-	}
+	let receiver_plane_normal: vec3f = point_shadow_receiver_plane_normal(
+		world_space_position_derivative_x,
+		world_space_position_derivative_y
+	);
 	let occlusion: f32 = 0.0;
 	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation);
 	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation);
@@ -1925,6 +1936,10 @@ impl VisibilityShaderScope {
 		let point_shadow_occlusion = parse_besl_function(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion");
 		let point_shadow_receiver_vector =
 			parse_besl_function(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector");
+		let point_shadow_receiver_plane_normal = parse_besl_function(
+			POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
+			"point_shadow_receiver_plane_normal",
+		);
 		let point_shadow_texel_direction =
 			parse_besl_function(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction");
 		let sample_point_shadow_tap = parse_besl_function(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap");
@@ -1985,6 +2000,7 @@ impl VisibilityShaderScope {
 				point_shadow_receiver_depth,
 				point_shadow_occlusion,
 				point_shadow_receiver_vector,
+				point_shadow_receiver_plane_normal,
 				point_shadow_texel_direction,
 				sample_point_shadow_tap,
 				sample_point_shadow,
@@ -2796,6 +2812,63 @@ mod tests {
 		};
 		assert!((receiver_x - 1.0).abs() < 0.000001);
 		assert!((receiver_y + 5.0).abs() < 0.000001);
+	}
+
+	/// Verifies receiver-plane orientation does not change as close-camera derivatives shrink.
+	#[test]
+	fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				results.large = point_shadow_receiver_plane_normal(
+					vec3f(1.0, 0.0, 0.0),
+					vec3f(0.0, 1.0, 0.0)
+				).z;
+				results.small = point_shadow_receiver_plane_normal(
+					vec3f(0.0001, 0.0, 0.0),
+					vec3f(0.0, 0.0001, 0.0)
+				).z;
+			}
+		"#;
+		let mut root = besl::parse(source).expect(
+			"Failed to parse the point-shadow receiver-plane scale VM test. The most likely cause is invalid BESL test syntax.",
+		);
+		root.add(vec![
+			super::parse_besl_function(
+				super::POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
+				"point_shadow_receiver_plane_normal",
+			),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"PointShadowReceiverPlaneScaleResults",
+					vec![
+						besl::ParserNode::member("large", "f32"),
+						besl::ParserNode::member("small", "f32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the point-shadow receiver-plane scale VM test. The most likely cause is an unresolved portable vector operation.",
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for name in ["large", "small"] {
+			let Value::F32(actual) = results.read(name).expect("point-shadow receiver-plane scale result") else {
+				panic!("Unexpected point-shadow receiver-plane scale result type for {name}.");
+			};
+			assert!(
+				(actual - 1.0).abs() < 0.000001,
+				"Unexpected point-shadow receiver-plane scale result for {name}."
+			);
+		}
 	}
 
 	/// Verifies point PCF compares against the center of the cube texel selected by closest sampling.

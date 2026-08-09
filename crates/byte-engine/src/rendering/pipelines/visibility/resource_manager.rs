@@ -26,6 +26,19 @@ const ACTIVE_TRANSFER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 type CompletionList = SmallVec<[VisibilityResourceCompletion; 16]>;
 
+/// Polls bounded preparation work together and yields each result as soon as it is ready.
+fn completion_ordered<F>(
+	futures: impl IntoIterator<Item = F>,
+	max_concurrency: usize,
+) -> impl utils::r#async::stream::Stream<Item = F::Output>
+where
+	F: std::future::Future,
+{
+	use utils::r#async::StreamExt as _;
+
+	utils::r#async::stream::iter(futures).buffer_unordered(max_concurrency.max(1))
+}
+
 impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
 		context: &mut ghi::implementation::Context,
@@ -74,20 +87,23 @@ impl VisibilityPipelineResourceManager {
 		}
 	}
 
-	/// Starts storage reads and debug bakes without mutating worker-owned GPU state.
-	async fn prefetch_command(&self, command: &VisibilityTransferCommand) {
-		match command {
+	/// Starts one command's storage reads and debug bakes, then returns it for GPU-state adoption.
+	async fn prefetch_command(
+		resource_manager: EntityHandle<ResourceManager>,
+		command: VisibilityTransferCommand,
+	) -> VisibilityTransferCommand {
+		match &command {
 			VisibilityTransferCommand::RequestMesh {
 				source: MeshSource::Resource(id),
 				..
 			} => {
-				let _ = self.resource_manager.request::<ResourceMesh>(id).await;
+				let _ = resource_manager.request::<ResourceMesh>(id).await;
 			}
 			VisibilityTransferCommand::RequestImage { key } => {
-				let _ = self.resource_manager.request::<ResourceImage>(key.as_str()).await;
+				let _ = resource_manager.request::<ResourceImage>(key.as_str()).await;
 			}
 			VisibilityTransferCommand::RequestEnvironment { id } => {
-				let _ = self.resource_manager.request::<ResourceImage>(id).await;
+				let _ = resource_manager.request::<ResourceImage>(id).await;
 			}
 			VisibilityTransferCommand::RequestMesh {
 				source: MeshSource::Generated(_),
@@ -98,6 +114,8 @@ impl VisibilityPipelineResourceManager {
 			| VisibilityTransferCommand::EnqueueEnvironmentUpload { .. }
 			| VisibilityTransferCommand::Shutdown => {}
 		}
+
+		command
 	}
 
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
@@ -827,6 +845,8 @@ impl VisibilityPipelineResourceManagerWorker {
 		transfer_command_buffer: ghi::CommandBufferHandle,
 		upload_buffer: ghi::BufferHandle<[u8; ASYNC_UPLOAD_BUFFER_BYTE_COUNT]>,
 	) {
+		use utils::r#async::StreamExt as _;
+
 		let mut started_frame_count = 0;
 
 		loop {
@@ -861,8 +881,8 @@ impl VisibilityPipelineResourceManagerWorker {
 				command
 			};
 
-			// Drain a bounded batch so independent source preparation overlaps. GPU
-			// resource mutation and upload adoption remain ordered below.
+			// Start a bounded group together, but adopt each command as soon as its own
+			// preparation completes so an unrelated slow asset cannot hold it back.
 			let mut commands = Vec::with_capacity(8);
 			commands.push(command);
 			while commands.len() < 8 {
@@ -871,12 +891,32 @@ impl VisibilityPipelineResourceManagerWorker {
 					Ok(None) | Err(_) => break,
 				}
 			}
-			utils::r#async::join_all(commands.iter().map(|command| self.resource_manager.prefetch_command(command))).await;
+			let resource_manager = self.resource_manager.resource_manager.clone();
+			let prefetches = commands
+				.into_iter()
+				.map(|command| VisibilityPipelineResourceManager::prefetch_command(resource_manager.clone(), command));
+			let mut prepared_commands = completion_ordered(prefetches, 8);
 			let mut stop = false;
-			for command in commands {
+			while let Some(command) = prepared_commands.next().await {
 				if self.handle_command(command).await == ResourceWorkerFlow::Stop {
 					stop = true;
 					break;
+				}
+
+				// Finish the command's queued transfer before adopting another prepared
+				// resource. CPU prefetches continue independently on the asset workers.
+				while self.has_active_transfer_work() {
+					self.advance_transfer_queue(
+						&mut transfer_queue,
+						transfer_finished_synchronizer,
+						transfer_command_buffer,
+						upload_buffer,
+						&mut started_frame_count,
+					)
+					.await;
+					if self.has_active_transfer_work() {
+						compio::time::sleep(ACTIVE_TRANSFER_POLL_INTERVAL).await;
+					}
 				}
 			}
 			if stop {
@@ -1927,7 +1967,27 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+	use utils::r#async::StreamExt as _;
+
 	use super::*;
+
+	#[test]
+	fn prepared_resources_are_yielded_without_waiting_for_the_batch() {
+		let executor = resource_management::r#async::Executor::new().expect("expected test runtime");
+		let (release, wait_for_release) = kanal::bounded_async(1);
+		let blocked = resource_management::r#async::future(async move {
+			wait_for_release.recv().await.expect("release signal");
+			"helmet"
+		});
+		let ready = resource_management::r#async::future(async { "floor" });
+
+		executor.block_on(async {
+			let mut resources = completion_ordered([blocked, ready], 2);
+			assert_eq!(resources.next().await, Some("floor"));
+			release.send(()).await.expect("release blocked resource");
+			assert_eq!(resources.next().await, Some("helmet"));
+		});
+	}
 
 	#[test]
 	fn owned_dxil_source_maps_to_native_ghi_bytecode() {

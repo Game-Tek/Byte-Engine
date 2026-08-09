@@ -628,7 +628,7 @@ pub mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		let mut asset_handler = BEMAAssetHandler::new();
 		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
@@ -638,7 +638,7 @@ pub mod tests {
 		asset_manager.add_asset_handler(asset_handler);
 
 		asset_manager
-			.bake("load_material.bema", &resource_storage_backend)
+			.bake("load_material.bema")
 			.await
 			.expect("Failed to load material");
 
@@ -720,7 +720,7 @@ pub mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		let mut asset_handler = BEMAAssetHandler::new();
 		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
@@ -731,7 +731,7 @@ pub mod tests {
 		asset_manager.add_asset_handler(asset_handler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
-			.bake_if_not_exists("load_variant.bema", &resource_storage_backend)
+			.bake_if_not_exists("load_variant.bema")
 			.await
 			.expect("Failed to load material");
 

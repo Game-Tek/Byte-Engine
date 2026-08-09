@@ -15,8 +15,6 @@ use utils::{r#async::StreamExt, sync::Arc};
 
 use crate::{utils::get_asset_manager, InspectFormat, QueryFormat};
 
-const DEFAULT_BAKE_ARENA_CAPACITY: usize = 64 * 1024 * 1024;
-
 pub fn wipe(destination_path: String) -> Result<(), i32> {
 	std::fs::remove_dir_all(&destination_path).map_err(|e| {
 		log::error!("Failed to wipe resources. Error: {}", e);
@@ -512,9 +510,10 @@ fn open_read_only_storage(destination_path: String, operation: &str) -> Result<R
 
 pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
-	let storage_backend = FileStorageBackend::new(source_path.clone());
+	let asset_storage_backend = FileStorageBackend::new(source_path.clone());
 
-	let asset_manager = get_asset_manager(storage_backend);
+	let resource_storage_backend = RedbStorageBackend::new_writable(destination_path.into());
+	let asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);
 	let ids = if ids.is_empty() {
 		discover_asset_ids(&source_path, &asset_manager)?
 	} else {
@@ -526,8 +525,6 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 		return Ok(());
 	}
 
-	let storage_backend = RedbStorageBackend::new_writable(destination_path.into());
-
 	let executor = resource_management::r#async::Executor::new().map_err(|_| 1)?;
 
 	let asset_manager = Arc::new(asset_manager);
@@ -535,11 +532,8 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 
 	let tasks = ids.into_iter().map(async |id| {
 		let asset_manager = asset_manager.clone();
-		// Keep decode-time allocations local to each asset so large PNG/WAV/OGG temporaries are released after baking.
-		let arena = bumpalo::Bump::with_capacity(DEFAULT_BAKE_ARENA_CAPACITY);
-		let allocator = &arena;
 		log::info!("Baking resource '{}'", id);
-		match asset_manager.bake_in(&id, &storage_backend, &allocator).await {
+		match asset_manager.bake(&id).await {
 			Ok(_) => {
 				log::info!("Baked resource '{}'", id);
 				true
@@ -874,7 +868,10 @@ mod tests {
 		std::fs::write(root.join("nested/material.bema.bead"), []).unwrap();
 		std::fs::write(root.join("ignored.txt"), []).unwrap();
 
-		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let asset_manager = get_asset_manager(
+			FileStorageBackend::new(root.clone()),
+			RedbStorageBackend::new(root.join("test-resources")),
+		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
 		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
@@ -897,7 +894,10 @@ mod tests {
 		.unwrap();
 		std::fs::write(root.join("rendering/orphan.besl"), b"main: fn () -> void {}").unwrap();
 
-		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let asset_manager = get_asset_manager(
+			FileStorageBackend::new(root.clone()),
+			RedbStorageBackend::new(root.join("test-resources")),
+		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
 		assert_eq!(ids, ["rendering/configured.besl"]);
@@ -924,7 +924,10 @@ mod tests {
 		symlink(engine_assets.join("engine-icon.png"), root.join("linked-engine-icon.png")).unwrap();
 		symlink(&root, engine_assets.join("cycle-to-application-assets")).unwrap();
 
-		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let asset_manager = get_asset_manager(
+			FileStorageBackend::new(root.clone()),
+			RedbStorageBackend::new(root.join("test-resources")),
+		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
 		assert_eq!(

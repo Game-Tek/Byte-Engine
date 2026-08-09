@@ -138,7 +138,7 @@ pub fn setup_default_resource_and_asset_management(
 			.into();
 
 		let storage_backend = FileStorageBackend::new(assets_path);
-		let mut asset_manager = AssetManager::new(storage_backend);
+		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
 		let mut material_asset_handler = BEMAAssetHandler::new();
 		material_asset_handler.set_shader_generator(generator.clone());

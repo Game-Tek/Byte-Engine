@@ -5,8 +5,12 @@ use resource_management::asset::{
 	png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
 };
 
-pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
-	let mut asset_manager = AssetManager::new(storage_backend);
+pub fn get_asset_manager<AS, RS>(storage_backend: AS, resource_storage_backend: RS) -> AssetManager
+where
+	AS: StorageBackend + 'static,
+	RS: resource_management::resource::StorageBackend + 'static,
+{
+	let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
 
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
@@ -64,12 +68,19 @@ mod tests {
 
 	#[test]
 	fn default_asset_manager_registers_shader_and_pipeline_handlers() {
-		let asset_manager = get_asset_manager(EmptyAssetStorage);
+		let resources_path = std::env::temp_dir().join(format!(
+			"beld-registration-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		let asset_manager = get_asset_manager(EmptyAssetStorage, RedbStorageBackend::new(resources_path.clone()));
 
 		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
 		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
 		assert!(!asset_manager.should_discover("byte-engine/render-passes/resolve.besl", false));
 		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));
+		drop(asset_manager);
+		std::fs::remove_dir_all(resources_path).unwrap();
 	}
 
 	/// Confirms that the production handlers bake an FBX mesh and its visibility material dependencies.
@@ -93,14 +104,15 @@ mod tests {
 			std::fs::write(assets_path.join("triangle_move.fbx"), TRIANGLE_MOVE_FBX)
 				.expect("FBX test asset could not be written. The most likely cause is an unwritable temporary directory.");
 
-			let asset_manager = get_asset_manager(FileStorageBackend::new(assets_path));
+			let asset_manager = get_asset_manager(
+				FileStorageBackend::new(assets_path),
+				RedbStorageBackend::new(resources_path.clone()),
+			);
+			let mesh: ReferenceModel<MeshModel> = asset_manager.bake_if_not_exists("triangle_move.fbx").await.expect(
+				"FBX mesh baking failed. The most likely cause is broken BELD handler or shader-generator registration.",
+			);
+			drop(asset_manager);
 			let resource_storage = RedbStorageBackend::new(resources_path);
-			let mesh: ReferenceModel<MeshModel> = asset_manager
-				.bake_if_not_exists("triangle_move.fbx", &resource_storage)
-				.await
-				.expect(
-					"FBX mesh baking failed. The most likely cause is broken BELD handler or shader-generator registration.",
-				);
 			let (serialized, _) = resource_storage
 				.read(ResourceId::new("triangle_move.fbx"))
 				.await

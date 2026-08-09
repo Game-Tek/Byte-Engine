@@ -50,7 +50,7 @@ pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,
 
-	storage_backend: Box<dyn StorageBackend>,
+	storage_backend: std::sync::Arc<dyn StorageBackend>,
 }
 
 impl ResourceManager {
@@ -59,11 +59,21 @@ impl ResourceManager {
 	/// In debug builds, optionally install an asset manager before the first
 	/// request. Next, call [`Self::request`] for each typed runtime resource.
 	pub fn new<SB: StorageBackend>(storage_backend: SB) -> Self {
+		Self::new_shared(std::sync::Arc::new(storage_backend))
+	}
+
+	/// Creates a resource manager that shares its store with an asset manager.
+	pub fn new_shared(storage_backend: std::sync::Arc<dyn StorageBackend>) -> Self {
 		ResourceManager {
 			#[cfg(debug_assertions)]
 			asset_manager: std::sync::OnceLock::new(),
-			storage_backend: Box::new(storage_backend),
+			storage_backend,
 		}
+	}
+
+	/// Returns the shared destination store used for resource reads and asset bakes.
+	pub fn storage_backend(&self) -> std::sync::Arc<dyn StorageBackend> {
+		std::sync::Arc::clone(&self.storage_backend)
 	}
 
 	/// Installs an asset manager that can bake missing assets on demand in debug builds.
@@ -75,13 +85,16 @@ impl ResourceManager {
 	pub fn set_asset_manager(&self, asset_manager: AssetManager) {
 		assert!(
 			self.try_set_asset_manager(asset_manager).is_ok(),
-			"Failed to set up resource manager. The most likely cause is that asset management was installed more than once."
+			"Failed to set up resource manager. The most likely cause is that asset management was installed more than once or uses a different destination resource store."
 		);
 	}
 
 	/// Attempts to install the development asset manager without replacing an existing one.
 	#[cfg(debug_assertions)]
 	pub fn try_set_asset_manager(&self, asset_manager: AssetManager) -> Result<(), AssetManager> {
+		if !asset_manager.uses_resource_storage(&self.storage_backend) {
+			return Err(asset_manager);
+		}
 		self.asset_manager.set(asset_manager)
 	}
 
@@ -117,7 +130,7 @@ impl ResourceManager {
 			#[cfg(debug_assertions)]
 			{
 				if let Some(asset_manager) = self.asset_manager.get() {
-					asset_manager.bake_if_not_exists(id, storage_backend).await.map_err(|error| {
+					asset_manager.bake_if_not_exists(id).await.map_err(|error| {
 						asset_lookup_error(
 							"Failed to load asset. The asset manager could not bake the resource.",
 							id,
@@ -346,23 +359,25 @@ mod debug_tests {
 	}
 
 	fn resource_manager_with_file_assets(path: std::path::PathBuf) -> ResourceManager {
-		let mut asset_manager = AssetManager::new(FileStorageBackend::new(path));
+		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new_shared(FileStorageBackend::new(path), Arc::clone(&storage));
 		asset_manager.add_asset_handler(ResolvingAssetHandler);
-		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		let resource_manager = ResourceManager::new_shared(storage);
 		resource_manager.set_asset_manager(asset_manager);
 		resource_manager
 	}
 
 	#[test]
 	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
-		let resource_manager = Arc::new(ResourceManager::new(ResourceTestStorageBackend::new()));
+		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let resource_manager = Arc::new(ResourceManager::new_shared(Arc::clone(&storage)));
 		let renderer_reference = Arc::downgrade(&resource_manager);
 
-		resource_manager.set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()));
+		resource_manager.set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), Arc::clone(&storage)));
 		assert!(renderer_reference.upgrade().is_some());
 		assert!(resource_manager.resource_trace().is_some());
 		assert!(resource_manager
-			.try_set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()))
+			.try_set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), storage))
 			.is_err());
 	}
 
@@ -407,13 +422,14 @@ mod debug_tests {
 		let invocations = Arc::new(AtomicUsize::new(0));
 		let (started, started_announcement) = announcement::Announcement::new();
 		let (release, release_announcement) = announcement::Announcement::new();
-		let mut asset_manager = AssetManager::new(AssetTestStorageBackend::new());
+		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new_shared(AssetTestStorageBackend::new(), Arc::clone(&storage));
 		asset_manager.add_asset_handler(CoordinatingShaderHandler {
 			invocations: Arc::clone(&invocations),
 			started: Mutex::new(Some(started)),
 			release: release_announcement.listener(),
 		});
-		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		let resource_manager = ResourceManager::new_shared(storage);
 		resource_manager.set_asset_manager(asset_manager);
 
 		let release_handler = async {
@@ -443,11 +459,12 @@ mod debug_tests {
 		let invocations = Arc::new(AtomicUsize::new(0));
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("versioned.test", b"first shader");
-		let mut asset_manager = AssetManager::new(asset_storage.clone());
+		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let mut asset_manager = AssetManager::new_shared(asset_storage.clone(), Arc::clone(&storage));
 		asset_manager.add_asset_handler(VersionedShaderHandler {
 			invocations: Arc::clone(&invocations),
 		});
-		let resource_manager = ResourceManager::new(ResourceTestStorageBackend::new());
+		let resource_manager = ResourceManager::new_shared(storage);
 		resource_manager.set_asset_manager(asset_manager);
 
 		let first = resource_manager

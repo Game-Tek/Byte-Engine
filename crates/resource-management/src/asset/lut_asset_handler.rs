@@ -269,11 +269,11 @@ mod tests {
 		);
 
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
 
 		asset_manager
-			.bake("grading/neutral.lut", &resource_storage_backend)
+			.bake("grading/neutral.lut")
 			.await
 			.expect("LUT asset handler should bake the asset");
 

@@ -228,11 +228,11 @@ mod tests {
 	async fn load_image() {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
 		asset_manager
-			.bake("patterned_brick_floor_02_diff_2k.png", &resource_storage_backend)
+			.bake("patterned_brick_floor_02_diff_2k.png")
 			.await
 			.expect("Image asset handler did not handle asset");
 
@@ -266,11 +266,11 @@ mod tests {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
 		asset_storage_backend.add_file("generated_normal.png", &generated_rgb16_normal_png());
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
 		asset_manager
-			.bake("generated_normal.png", &resource_storage_backend)
+			.bake("generated_normal.png")
 			.await
 			.expect("generated 16-bit PNG should bake");
 

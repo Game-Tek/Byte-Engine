@@ -2296,11 +2296,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb#skeleton", &resource_storage_backend)
+			.bake_if_not_exists("generated_skeletal.glb#skeleton")
 			.await
 			.expect("generated skeleton fragment should bake");
 		let skeleton = crate::from_slice::<SkeletonModel>(&skeleton.resource).expect("skeleton should deserialize");
@@ -2315,11 +2315,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb#animations/Walk", &resource_storage_backend)
+			.bake_if_not_exists("generated_skeletal.glb#animations/Walk")
 			.await
 			.expect("generated animation fragment should bake");
 		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation should deserialize");
@@ -2335,11 +2335,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("animation_only.glb", &generated_animation_only_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		asset_manager
-			.bake("animation_only.glb", &resource_storage_backend)
+			.bake("animation_only.glb")
 			.await
 			.expect("an unfragmented animation-only GLB should bake as Animation");
 		let animation = resource_storage_backend
@@ -2362,11 +2362,11 @@ mod tests {
 			}"#,
 		);
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb", &resource_storage_backend)
+			.bake_if_not_exists("generated_skeletal.glb")
 			.await
 			.expect("the BEAD default should override mesh-first glTF dispatch");
 
@@ -2411,11 +2411,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("characters/generated_skeletal.gltf", &document);
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend.clone(), resource_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("characters/generated_skeletal.gltf#skeleton", &resource_storage_backend)
+			.bake_if_not_exists("characters/generated_skeletal.gltf#skeleton")
 			.await
 			.expect("nested glTF skeleton should not load unrelated buffers");
 		assert_eq!(skeleton.id().as_ref(), "characters/generated_skeletal.gltf#skeleton");
@@ -2423,10 +2423,7 @@ mod tests {
 		asset_storage_backend.add_file("characters/timeline", times);
 		asset_storage_backend.add_file("characters/animation values", values);
 		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists(
-				"characters/generated_skeletal.gltf#animations/Walk",
-				&resource_storage_backend,
-			)
+			.bake_if_not_exists("characters/generated_skeletal.gltf#animations/Walk")
 			.await
 			.expect("nested glTF animation should load its sibling buffer");
 		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation should deserialize");
@@ -2464,13 +2461,13 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		let mut handler = GLTFAssetHandler::new();
 		handler.set_shader_generator(MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(handler);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb", &resource_storage_backend)
+			.bake_if_not_exists("generated_skeletal.glb")
 			.await
 			.expect("generated skeletal mesh should bake");
 		let mesh = crate::from_slice::<MeshModel>(&mesh.resource).expect("generated mesh should deserialize");
@@ -2730,11 +2727,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("triangle.glb", &package_fixture_glb(&document, binary));
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("triangle.glb#skeleton", &resource_storage_backend)
+			.bake_if_not_exists("triangle.glb#skeleton")
 			.await
 			.expect("generated triangle GLB skeleton should bake");
 		let skeleton =
@@ -2773,11 +2770,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		asset_manager
-			.bake("named_image.glb#Test Texture", &resource_storage_backend)
+			.bake("named_image.glb#Test Texture")
 			.await
 			.expect("named image fragment should bake");
 		let resource = resource_storage_backend
@@ -2794,11 +2791,11 @@ mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("image.glb", &generated_textured_triangle_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
 		asset_manager
-			.bake("image.glb#images/0_Test_Texture", &resource_storage_backend)
+			.bake("image.glb#images/0_Test_Texture")
 			.await
 			.expect("generated GLB image fragment should bake");
 		let resource = resource_storage_backend

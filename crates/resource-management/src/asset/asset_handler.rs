@@ -104,7 +104,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 /// The `BakeContext` struct provides format handlers with the shared facilities used during one asset bake.
 #[derive(Clone, Copy)]
 pub struct BakeContext<'a> {
-	asset_manager: &'a AssetManager,
+	asset_manager: &'a AssetManagerState,
 	resource_storage_backend: &'a dyn resource::StorageBackend,
 	asset_storage_backend: &'a dyn asset::StorageBackend,
 	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
@@ -117,7 +117,7 @@ pub struct BakeContext<'a> {
 
 impl<'a> BakeContext<'a> {
 	pub(crate) fn new(
-		asset_manager: &'a AssetManager,
+		asset_manager: &'a AssetManagerState,
 		resource_storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
@@ -199,7 +199,7 @@ impl<'a> BakeContext<'a> {
 	pub async fn bake_dependency<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadErrors> {
 		let dependency = self
 			.asset_manager
-			.bake_if_not_exists_in(id, self.resource_storage_backend, self.allocator)
+			.bake_if_not_exists_in(id, self.allocator)
 			.await
 			.map_err(|error| match error {
 				super::asset_manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
@@ -275,7 +275,7 @@ use utils::sync::Mutex;
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
-	asset_manager::AssetManager,
+	asset_manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},
 	AssetStorageBytes, BEADType, ResourceId,
 };

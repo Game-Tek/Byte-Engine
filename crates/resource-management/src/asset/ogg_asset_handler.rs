@@ -135,11 +135,11 @@ mod tests {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
 		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 		asset_manager
-			.bake("test-tone.ogg", &resource_storage_backend)
+			.bake("test-tone.ogg")
 			.await
 			.expect("Audio asset handler failed to load asset");
 

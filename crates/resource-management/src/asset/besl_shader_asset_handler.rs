@@ -687,7 +687,7 @@ mod tests {
 	#[test]
 	fn standalone_besl_discovery_requires_an_adjacent_sidecar() {
 		let asset_storage = AssetTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, ResourceTestStorageBackend::new());
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
 			generator: None,
@@ -703,13 +703,13 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("passes/no-settings.besl", b"main: fn () -> void {}");
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
 			generator: None,
 		});
 
-		let result = asset_manager.bake("passes/no-settings.besl", &resource_storage).await;
+		let result = asset_manager.bake("passes/no-settings.besl").await;
 
 		assert_eq!(
 			result,
@@ -728,14 +728,14 @@ mod tests {
 		asset_storage.add_file("passes/resolve.besl", source.as_bytes());
 		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
 			generator: None,
 		});
 
 		asset_manager
-			.bake("passes/resolve.besl", &resource_storage)
+			.bake("passes/resolve.besl")
 			.await
 			.expect("standalone BESL source should bake through its registered handler");
 
@@ -774,7 +774,7 @@ mod tests {
 		asset_storage.add_file("passes/resolve.besl", source.as_bytes());
 		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		let mut handler = BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
 			generator: None,
@@ -783,7 +783,7 @@ mod tests {
 		asset_manager.add_asset_handler(handler);
 
 		asset_manager
-			.bake("passes/resolve.besl", &resource_storage)
+			.bake("passes/resolve.besl")
 			.await
 			.expect(
 				"Failed to bake a generated standalone shader. The most likely cause is that the configured program generator was not forwarded to compilation.",

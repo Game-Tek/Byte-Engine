@@ -2637,13 +2637,13 @@ mod tests {
 		asset_storage.add_file("material_factors.fbx", MATERIAL_FACTORS_FBX);
 		asset_storage.add_file("textures/factored_diffuse.png", &encoded);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 		let mut handler = FBXAssetHandler::new();
 		handler.set_shader_generator(MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(handler);
 
 		asset_manager
-			.bake("material_factors.fbx", &resource_storage)
+			.bake("material_factors.fbx")
 			.await
 			.expect("FBX material with a diffuse texture should bake");
 
@@ -2710,11 +2710,11 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("triangle_move.fbx#animations/MoveX", &resource_storage)
+			.bake_if_not_exists("triangle_move.fbx#animations/MoveX")
 			.await
 			.expect("FBX animation fragment should bake");
 
@@ -2732,11 +2732,11 @@ mod tests {
 			br#"{ "asset": { "default": { "asset": "materials/test.variant" } } }"#,
 		);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(TestVariantAssetHandler);
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
-		let result = asset_manager.bake("degenerate_quad.fbx", &resource_storage).await;
+		let result = asset_manager.bake("degenerate_quad.fbx").await;
 		assert!(
 			result.is_ok(),
 			"valid geometry should remain after the degenerate quad is culled: {result:?}; trace: {:?}",
@@ -2761,10 +2761,10 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("broken.fbx", b"not an FBX");
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
-		assert!(asset_manager.bake("broken.fbx", &resource_storage).await.is_err());
+		assert!(asset_manager.bake("broken.fbx").await.is_err());
 
 		assert!(resource_storage.get_resource(ResourceId::new("broken.fbx")).is_none());
 		let items = asset_manager.resource_trace().items("broken.fbx");
@@ -2778,11 +2778,11 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("animation_only.fbx", ANIMATION_ONLY_FBX);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
 		asset_manager
-			.bake("animation_only.fbx", &resource_storage)
+			.bake("animation_only.fbx")
 			.await
 			.expect("an unfragmented animation-only FBX should bake as Animation");
 
@@ -2803,11 +2803,11 @@ mod tests {
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 		asset_storage.add_file("triangle_move.fbx.bead", br#"{ "default_resource": "animation" }"#);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
 		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("triangle_move.fbx", &resource_storage)
+			.bake_if_not_exists("triangle_move.fbx")
 			.await
 			.expect("the BEAD default should override mesh-first FBX dispatch");
 
@@ -2819,11 +2819,11 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("skinned_triangle.fbx", SKINNED_TRIANGLE_FBX);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		asset_manager.add_asset_handler(FBXAssetHandler::new());
 
 		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("skinned_triangle.fbx#skeleton", &resource_storage)
+			.bake_if_not_exists("skinned_triangle.fbx#skeleton")
 			.await
 			.expect("FBX skeleton fragment should bake without a shader generator");
 
@@ -2836,13 +2836,13 @@ mod tests {
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 		let resource_storage = ResourceTestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 		let mut handler = FBXAssetHandler::new();
 		handler.set_shader_generator(MinimalTestShaderGenerator);
 		asset_manager.add_asset_handler(handler);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists("triangle_move.fbx", &resource_storage)
+			.bake_if_not_exists("triangle_move.fbx")
 			.await
 			.expect("animated FBX base mesh should bake");
 		let mesh = crate::from_slice::<MeshModel>(&mesh.resource).expect("animated FBX mesh should deserialize");

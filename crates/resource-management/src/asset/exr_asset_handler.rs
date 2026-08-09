@@ -192,11 +192,11 @@ mod tests {
 		let source_storage = TestStorageBackend::new();
 		source_storage.add_file("studio.exr", &hdr_fixture());
 		let resource_storage = TestResourceStorage::new();
-		let mut asset_manager = AssetManager::new(source_storage);
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
 		asset_manager
-			.bake("studio.exr", &resource_storage)
+			.bake("studio.exr")
 			.await
 			.expect("the registered EXR handler must bake the image");
 		let (stored, _) = resource_storage
@@ -245,10 +245,10 @@ mod tests {
 		let source_storage = TestStorageBackend::new();
 		source_storage.add_file("broken.exr", b"not an exr image");
 		let resource_storage = TestResourceStorage::new();
-		let mut asset_manager = AssetManager::new(source_storage);
+		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
-		assert!(asset_manager.bake("broken.exr", &resource_storage).await.is_err());
+		assert!(asset_manager.bake("broken.exr").await.is_err());
 		assert!(resource_storage.read(ResourceId::new("broken.exr")).await.is_none());
 	}
 }

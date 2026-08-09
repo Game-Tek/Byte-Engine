@@ -255,13 +255,10 @@ mod tests {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
 		asset_storage_backend.add_file("generated.wav", &wav);
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 		asset_manager.add_asset_handler(WAVAssetHandler::new());
 
-		asset_manager
-			.bake("generated.wav", &resource_storage_backend)
-			.await
-			.expect("generated WAV should bake");
+		asset_manager.bake("generated.wav").await.expect("generated WAV should bake");
 
 		let resource = resource_storage_backend
 			.get_resource(ResourceId::new("generated.wav"))

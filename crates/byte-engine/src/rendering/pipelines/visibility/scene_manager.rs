@@ -57,6 +57,7 @@ impl VisibilitySceneManager {
 		frame: &mut ghi::implementation::Frame,
 		directional_shadow_light_index: Option<usize>,
 		cone_shadow_light_indices: &[Option<usize>; MAX_CONE_SHADOW_POOL_CAPACITY],
+		point_shadow_light_indices: &[Option<usize>; MAX_POINT_SHADOW_POOL_CAPACITY],
 	) {
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.light_data_buffer);
 		let light_count = self.lights.len().min(MAX_LIGHTS);
@@ -81,6 +82,14 @@ impl VisibilitySceneManager {
 				LightShadow::Cone {
 					view_index: (CONE_SHADOW_VIEW_OFFSET + layer) as u32,
 					layer: layer as u32,
+				}
+			} else if let Some(cube_index) = point_shadow_light_indices
+				.iter()
+				.position(|light_index| *light_index == Some(index))
+			{
+				LightShadow::Point {
+					view_index: (POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT) as u32,
+					cube_index: cube_index as u32,
 				}
 			} else {
 				LightShadow::None
@@ -109,11 +118,11 @@ impl VisibilitySceneManager {
 				light_type: 1,
 				shadow_views: match shadow {
 					LightShadow::Cone { view_index, .. } => [view_index, 0, 0, 0, 0, 0, 0, 0],
-					LightShadow::None | LightShadow::Directional => [0; 8],
+					LightShadow::None | LightShadow::Directional | LightShadow::Point { .. } => [0; 8],
 				},
 				shadow_layer: match shadow {
 					LightShadow::Cone { layer, .. } => layer,
-					LightShadow::None | LightShadow::Directional => 0,
+					LightShadow::None | LightShadow::Directional | LightShadow::Point { .. } => 0,
 				},
 			},
 			Lights::Direction(light) => LightData {
@@ -131,8 +140,14 @@ impl VisibilitySceneManager {
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
 				light_type: 0,
-				shadow_views: [0; 8],
-				shadow_layer: 0,
+				shadow_views: match shadow {
+					LightShadow::Point { view_index, .. } => [view_index, 0, 0, 0, 0, 0, 0, 0],
+					LightShadow::None | LightShadow::Directional | LightShadow::Cone { .. } => [0; 8],
+				},
+				shadow_layer: match shadow {
+					LightShadow::Point { cube_index, .. } => cube_index,
+					LightShadow::None | LightShadow::Directional | LightShadow::Cone { .. } => 0,
+				},
 			},
 		}
 	}
@@ -144,6 +159,7 @@ enum LightShadow {
 	None,
 	Directional,
 	Cone { view_index: u32, layer: u32 },
+	Point { view_index: u32, cube_index: u32 },
 }
 
 /// Converts an affine gameplay matrix into the compact column-major skin-palette representation.
@@ -255,6 +271,29 @@ mod tests {
 	}
 
 	#[test]
+	fn point_light_data_packs_cube_index_and_first_face_view() {
+		let point = PointLight::new(
+			Point::new(1.0, 2.0, 3.0),
+			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
+			PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
+		)
+		.expect("physical point light");
+		let light_data = VisibilitySceneManager::make_light_data(
+			&Lights::Point(point),
+			LightShadow::Point {
+				view_index: 23,
+				cube_index: 2,
+			},
+		);
+
+		assert_eq!(light_data.shadow_views, [23, 0, 0, 0, 0, 0, 0, 0]);
+		assert_eq!(light_data.shadow_layer, 2);
+	}
+
+	#[test]
 	fn light_data_layout_matches_the_shader_light_record() {
 		assert_eq!(std::mem::align_of::<LightData>(), 16);
 		assert_eq!(std::mem::size_of::<LightData>(), 96);
@@ -289,6 +328,9 @@ use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, Shad
 use crate::rendering::pipelines::visibility::CONE_SHADOW_VIEW_OFFSET;
 use crate::rendering::pipelines::visibility::MAX_CONE_SHADOW_POOL_CAPACITY;
 use crate::rendering::pipelines::visibility::MAX_LIGHTS;
+use crate::rendering::pipelines::visibility::MAX_POINT_SHADOW_POOL_CAPACITY;
+use crate::rendering::pipelines::visibility::POINT_SHADOW_FACE_COUNT;
+use crate::rendering::pipelines::visibility::POINT_SHADOW_VIEW_OFFSET;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
 use crate::rendering::pipelines::visibility::SHADOW_VIEW_COUNT;
 use crate::rendering::View;

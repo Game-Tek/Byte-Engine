@@ -32,6 +32,7 @@ pub struct Builder<'a> {
 	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
+	pub(crate) cube_array_compatible: bool,
 	pub(crate) optimized_clear_value: Option<ClearValue>,
 }
 
@@ -51,6 +52,7 @@ impl<'a> Builder<'a> {
 			mip_levels: 1,
 			array_layers: None,
 			cube_compatible: false,
+			cube_array_compatible: false,
 			optimized_clear_value: None,
 		}
 	}
@@ -89,6 +91,18 @@ impl<'a> Builder<'a> {
 	pub fn cube_compatible(mut self) -> Self {
 		self.array_layers = NonZeroU32::new(6);
 		self.cube_compatible = true;
+		self.cube_array_compatible = false;
+		self
+	}
+
+	/// Makes a 2D image usable through native cubemap-array views.
+	pub fn cube_array_compatible(mut self, cube_count: NonZeroU32) -> Self {
+		let layers = cube_count.get().checked_mul(6).expect(
+			"Cube-array image layer count is invalid. The most likely cause is that the requested cube count exceeds the supported image layer range.",
+		);
+		self.array_layers = NonZeroU32::new(layers);
+		self.cube_compatible = false;
+		self.cube_array_compatible = true;
 		self
 	}
 
@@ -149,6 +163,7 @@ mod tests {
 		assert_eq!(builder.mip_levels, 1);
 		assert_eq!(builder.array_layers, None);
 		assert!(!builder.cube_compatible);
+		assert!(!builder.cube_array_compatible);
 		assert_eq!(builder.optimized_clear_value, None);
 	}
 
@@ -171,7 +186,19 @@ mod tests {
 		assert_eq!(builder.mip_levels, 7);
 		assert_eq!(builder.array_layers, NonZeroU32::new(6));
 		assert!(builder.cube_compatible);
+		assert!(!builder.cube_array_compatible);
 		assert_eq!(builder.optimized_clear_value, Some(crate::ClearValue::Depth(0.0)));
+	}
+
+	#[test]
+	fn cube_array_builder_uses_six_layers_per_cube() {
+		let builder = Builder::new(Formats::Depth16, Uses::Image)
+			.extent(Extent::square(64))
+			.cube_array_compatible(NonZeroU32::new(4).expect("nonzero cube count"));
+
+		assert_eq!(builder.array_layers, NonZeroU32::new(24));
+		assert!(!builder.cube_compatible);
+		assert!(builder.cube_array_compatible);
 	}
 
 	#[test]

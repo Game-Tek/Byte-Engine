@@ -29,6 +29,30 @@ impl View {
 		}
 	}
 
+	/// Creates a perspective view with an explicit up direction when a stable image orientation matters.
+	pub fn new_perspective_with_up(
+		fov: f32,
+		aspect_ratio: f32,
+		near: f32,
+		far: f32,
+		position: Point,
+		direction: UnitVector,
+		up: UnitVector,
+	) -> Self {
+		assert!(
+			direction.dot(up.into_vector()).abs() < 0.99,
+			"Perspective view up direction is invalid. The most likely cause is that the up direction is parallel to the view direction."
+		);
+		Self {
+			projection: projection_matrix(fov, aspect_ratio, near, far),
+			view: world_view_matrix_with_up(position, direction, up),
+			near,
+			far,
+			y_fov: fov,
+			aspect_ratio,
+		}
+	}
+
 	/// Creates an orthographic view for light, editor, or flat scene rendering.
 	pub fn new_orthographic(
 		left: f32,
@@ -178,6 +202,20 @@ fn world_view_matrix(position: Point, direction: UnitVector) -> Matrix {
 	} else {
 		maths_rs::cross(direction.into_maths(), x_basis)
 	});
+	let orientation = Matrix::from((
+		Vec4f::from((x_basis, 0.0)),
+		Vec4f::from((y_basis, 0.0)),
+		Vec4f::from((direction.into_maths(), 0.0)),
+		Vec4f::new(0.0, 0.0, 0.0, 1.0),
+	));
+
+	orientation * Matrix::from_translation(-position.into_maths())
+}
+
+/// Builds a view matrix from explicit, non-colinear forward and up directions.
+fn world_view_matrix_with_up(position: Point, direction: UnitVector, up: UnitVector) -> Matrix {
+	let x_basis = maths_rs::normalize(maths_rs::cross(up.into_maths(), direction.into_maths()));
+	let y_basis = maths_rs::normalize(maths_rs::cross(direction.into_maths(), x_basis));
 	let orientation = Matrix::from((
 		Vec4f::from((x_basis, 0.0)),
 		Vec4f::from((y_basis, 0.0)),

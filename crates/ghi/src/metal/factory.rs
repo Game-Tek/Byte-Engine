@@ -348,6 +348,7 @@ impl crate::device::Device for Factory {
 			builder.device_accesses,
 			layers,
 			builder.cube_compatible,
+			builder.cube_array_compatible,
 			builder.mip_levels,
 		);
 
@@ -373,6 +374,7 @@ impl crate::device::Device for Factory {
 				access: builder.device_accesses,
 				array_layers: layers,
 				cube_compatible: builder.cube_compatible,
+				cube_array_compatible: builder.cube_array_compatible,
 				mip_levels: builder.mip_levels,
 				staging: None,
 			},

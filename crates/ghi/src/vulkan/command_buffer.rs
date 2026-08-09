@@ -707,7 +707,9 @@ impl CommandBufferRecording<'_> {
 			);
 			image.full_image_view
 		} else {
-			image.image_views[attachment.layer.unwrap_or(0) as usize]
+			*image.image_views.get(attachment.layer.unwrap_or(0) as usize).expect(
+				"Vulkan attachment layer is unavailable. The most likely cause is that the selected layer exceeds the image array size.",
+			)
 		}
 	}
 

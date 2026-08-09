@@ -14,6 +14,23 @@ fn cone_shadow_view_indices(mesh_dispatch: MeshDispatch, cone_shadow_count: usiz
 	(0..count).map(|layer| ((CONE_SHADOW_VIEW_OFFSET + layer) as u32, layer as u32))
 }
 
+/// Returns the packed point-cube view and target-face indices that receive shadow dispatches.
+fn point_shadow_view_indices(mesh_dispatch: MeshDispatch, point_shadow_count: usize) -> impl Iterator<Item = (u32, u32)> {
+	let count = if mesh_dispatch.is_empty() {
+		0
+	} else {
+		point_shadow_count.min(MAX_POINT_SHADOW_POOL_CAPACITY)
+	};
+	(0..count).flat_map(|cube| {
+		(0..POINT_SHADOW_FACE_COUNT).map(move |face| {
+			(
+				(POINT_SHADOW_VIEW_OFFSET + cube * POINT_SHADOW_FACE_COUNT + face) as u32,
+				(cube * POINT_SHADOW_FACE_COUNT + face) as u32,
+			)
+		})
+	})
+}
+
 pub(crate) const GTAO_CONFIGURATION_PREFIX: &str = "render.gtao.";
 const GTAO_MIN_SAMPLES_PER_RAY: u32 = 1;
 const GTAO_MAX_SAMPLES_PER_RAY: u32 = 32;
@@ -329,7 +346,7 @@ fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
 		.then_some(instances)
 }
 
-/// The `ShadowPass` struct owns the shared pipeline and depth targets used by directional and cone shadow rendering.
+/// The `ShadowPass` struct owns the shared pipeline and depth targets used by directional, cone, and point shadow rendering.
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	directional_shadow_depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
@@ -338,6 +355,7 @@ pub struct ShadowPass {
 	cone_shadow_pass_pipeline: crate::rendering::PipelineRef,
 	directional_shadow_map: ghi::BaseImageHandle,
 	cone_shadow_map: ghi::BaseImageHandle,
+	point_shadow_map: ghi::BaseImageHandle,
 }
 
 impl ShadowPass {
@@ -349,6 +367,7 @@ impl ShadowPass {
 		directional_shadow_map: ghi::BaseImageHandle,
 		directional_shadow_depth_pyramid: ghi::BaseImageHandle,
 		cone_shadow_map: ghi::BaseImageHandle,
+		point_shadow_map: ghi::BaseImageHandle,
 	) -> Self {
 		let directional_shadow_depth_pyramid_descriptor_set =
 			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
@@ -392,10 +411,11 @@ impl ShadowPass {
 			cone_shadow_pass_pipeline,
 			directional_shadow_map,
 			cone_shadow_map,
+			point_shadow_map,
 		}
 	}
 
-	/// Prepares directional cascades and packed cone layers for the current scene geometry.
+	/// Prepares directional cascades, cone layers, and point-cube faces for the current scene geometry.
 	fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -403,6 +423,7 @@ impl ShadowPass {
 		mesh_dispatch: MeshDispatch,
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
+		point_shadow_count: usize,
 		directional_pipeline: ghi::PipelineHandle,
 		directional_shadow_depth_pyramid_pipeline: ghi::PipelineHandle,
 		cone_pipeline: ghi::PipelineHandle,
@@ -411,12 +432,14 @@ impl ShadowPass {
 		let directional_shadow_depth_pyramid_descriptor_set = self.directional_shadow_depth_pyramid_descriptor_set;
 		let directional_shadow_map = self.directional_shadow_map;
 		let cone_shadow_map = self.cone_shadow_map;
+		let point_shadow_map = self.point_shadow_map;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
 		let directional_shadow_depth_pyramid_extent = Extent::rectangle(
 			SHADOW_MAP_RESOLUTION / 2,
 			SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32,
 		);
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
+		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
@@ -425,6 +448,9 @@ impl ShadowPass {
 		}
 		if cone_shadow_count > 0 {
 			frame.resize_image(cone_shadow_map, cone_extent);
+		}
+		if point_shadow_count > 0 {
+			frame.resize_image(point_shadow_map, point_extent);
 		}
 
 		move |c, _| {
@@ -494,6 +520,40 @@ impl ShadowPass {
 				c.bind_descriptor_sets(&[descriptor_set]);
 				for (view_index, layer) in cone_shadow_view_indices(mesh_dispatch, cone_shadow_count) {
 					c.start_region(|label| label.write_str("Cone"));
+					c.write_push_constant(0, mesh_dispatch.work_item_base());
+					c.write_push_constant(4, view_index);
+					c.write_push_constant(8, layer);
+					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
+					c.end_region();
+				}
+				c.end_render_pass();
+				c.end_region();
+			}
+
+			if point_shadow_count > 0 {
+				log::debug!(
+					"Point shadow pass executing: lights={}, faces={}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
+					point_shadow_count,
+					point_shadow_count * POINT_SHADOW_FACE_COUNT,
+					instances.len(),
+					drawable_instances,
+					meshlet_count,
+					mesh_dispatch.workgroup_count(),
+				);
+				c.start_region(|label| label.write_str("Point Shadow Map"));
+				let attachments = [ghi::AttachmentInformation::new(
+					point_shadow_map,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					false,
+					true,
+				)
+				.layers((point_shadow_count * POINT_SHADOW_FACE_COUNT) as u32)];
+				let c = c.start_render_pass(point_extent, &attachments);
+				let c = c.bind_raster_pipeline(cone_pipeline);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				for (view_index, layer) in point_shadow_view_indices(mesh_dispatch, point_shadow_count) {
+					c.start_region(|label| label.write_str("Cube Face"));
 					c.write_push_constant(0, mesh_dispatch.work_item_base());
 					c.write_push_constant(4, view_index);
 					c.write_push_constant(8, layer);
@@ -980,6 +1040,7 @@ impl MaterialEvaluationPass {
 		ao_map: ghi::BaseImageHandle,
 		_directional_shadow_map: ghi::BaseImageHandle,
 		_cone_shadow_map: ghi::BaseImageHandle,
+		_point_shadow_map: ghi::BaseImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -1098,6 +1159,7 @@ impl VisibilityPipelineRenderPass {
 		directional_shadow_map: ghi::BaseImageHandle,
 		directional_shadow_depth_pyramid: ghi::BaseImageHandle,
 		cone_shadow_map: ghi::BaseImageHandle,
+		point_shadow_map: ghi::BaseImageHandle,
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
@@ -1113,6 +1175,7 @@ impl VisibilityPipelineRenderPass {
 			directional_shadow_map,
 			directional_shadow_depth_pyramid,
 			cone_shadow_map,
+			point_shadow_map,
 		);
 		let visibility_pass = VisibilityPass::new(
 			context,
@@ -1149,6 +1212,7 @@ impl VisibilityPipelineRenderPass {
 			ao_map,
 			directional_shadow_map,
 			cone_shadow_map,
+			point_shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,
@@ -1184,6 +1248,7 @@ impl VisibilityPipelineRenderPass {
 		transparent_material_mask: &'a ActiveMaterialMask,
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
+		point_shadow_count: usize,
 	) -> Option<impl RenderPassFunction + 'a> {
 		let skinning_pipeline = match skinning_pass {
 			Some(pass) => Some(self.pipeline_manager.pipeline(pass.pipeline())?),
@@ -1215,6 +1280,7 @@ impl VisibilityPipelineRenderPass {
 			opaque_mesh_dispatch,
 			directional_shadow_enabled,
 			cone_shadow_count,
+			point_shadow_count,
 			directional_shadow_pipeline,
 			directional_shadow_depth_pyramid_pipeline,
 			cone_shadow_pipeline,
@@ -1268,7 +1334,7 @@ impl VisibilityPipelineRenderPass {
 				meshlet_count,
 				opaque_count,
 				transparent_count,
-				directional_shadow_enabled || cone_shadow_count > 0,
+				directional_shadow_enabled || cone_shadow_count > 0 || point_shadow_count > 0,
 			);
 				c.start_region(|label| label.write_str("Visibility Render Model"));
 
@@ -1397,14 +1463,17 @@ mod tests {
 
 	use super::{
 		cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent,
-		transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
+		point_shadow_view_indices, transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
 	};
 	use crate::configuration::ConfigurationValue;
-	use crate::rendering::pipelines::visibility::{CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY};
+	use crate::rendering::pipelines::visibility::{
+		CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY, POINT_SHADOW_FACE_COUNT,
+		POINT_SHADOW_VIEW_OFFSET,
+	};
 	use crate::rendering::{view::View, Sink};
 
 	#[test]
-	fn shadow_dispatches_preserve_directional_cascades_and_packed_cone_layers() {
+	fn shadow_dispatches_preserve_directional_cascades_cone_layers_and_point_cube_faces() {
 		let dispatch = MeshDispatch::with_workgroup_count(19);
 
 		assert_eq!(directional_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
@@ -1421,6 +1490,31 @@ mod tests {
 		);
 		assert_eq!(directional_shadow_view_indices(MeshDispatch::default()).count(), 0);
 		assert_eq!(cone_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
+		assert_eq!(
+			point_shadow_view_indices(dispatch, 2).collect::<Vec<_>>(),
+			[
+				(POINT_SHADOW_VIEW_OFFSET as u32, 0),
+				((POINT_SHADOW_VIEW_OFFSET + 1) as u32, 1),
+				((POINT_SHADOW_VIEW_OFFSET + 2) as u32, 2),
+				((POINT_SHADOW_VIEW_OFFSET + 3) as u32, 3),
+				((POINT_SHADOW_VIEW_OFFSET + 4) as u32, 4),
+				((POINT_SHADOW_VIEW_OFFSET + 5) as u32, 5),
+				((POINT_SHADOW_VIEW_OFFSET + 6) as u32, 6),
+				((POINT_SHADOW_VIEW_OFFSET + 7) as u32, 7),
+				((POINT_SHADOW_VIEW_OFFSET + 8) as u32, 8),
+				((POINT_SHADOW_VIEW_OFFSET + 9) as u32, 9),
+				((POINT_SHADOW_VIEW_OFFSET + 10) as u32, 10),
+				((POINT_SHADOW_VIEW_OFFSET + 11) as u32, 11),
+			]
+		);
+		assert_eq!(
+			point_shadow_view_indices(dispatch, MAX_POINT_SHADOW_POOL_CAPACITY + 1).last(),
+			Some((
+				(POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT - 1) as u32,
+				(MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT - 1) as u32,
+			))
+		);
+		assert_eq!(point_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
 	}
 
 	#[test]
@@ -1776,8 +1870,9 @@ use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, Skinni
 use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
-	MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_POINT_SHADOW_POOL_CAPACITY,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
+	POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };

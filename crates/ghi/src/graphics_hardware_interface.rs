@@ -530,6 +530,7 @@ pub enum TextureViewTypes {
 	Texture2D,
 	Texture2DArray,
 	TextureCube,
+	TextureCubeArray,
 	Texture3D,
 }
 

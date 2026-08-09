@@ -228,6 +228,7 @@ impl Node {
 		let texture_2d = primitive_type("Texture2D");
 		let texture_3d = primitive_type("Texture3D");
 		let texture_cube = primitive_type("TextureCube");
+		let texture_cube_array = primitive_type("TextureCubeArray");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
 		let atomic_u32 = primitive_type("atomicu32");
 
@@ -258,6 +259,7 @@ impl Node {
 			texture_2d.clone(),
 			texture_3d.clone(),
 			texture_cube.clone(),
+			texture_cube_array.clone(),
 			array_texture_2d.clone(),
 			atomic_u32.clone(),
 			builtin_intrinsic(
@@ -268,6 +270,16 @@ impl Node {
 			builtin_intrinsic(
 				"texture_lod",
 				vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_cube_array_lod",
+				vec![
+					("texture", texture_cube_array),
+					("direction", vec3f32.clone()),
+					("cube", u32_t.clone()),
+					("lod", f32_t.clone()),
+				],
 				vec4f32.clone(),
 			),
 			builtin_intrinsic(
@@ -1564,6 +1576,9 @@ fn resolve_descriptor_type(
 		}),
 		"TextureCube" => Ok(BindingTypes::CombinedImageSampler {
 			format: "TextureCube".to_string(),
+		}),
+		"TextureCubeArray" => Ok(BindingTypes::CombinedImageSampler {
+			format: "TextureCubeArray".to_string(),
 		}),
 		"StorageImage" => Ok(BindingTypes::Image {
 			format: format.unwrap_or("unknown").to_string(),

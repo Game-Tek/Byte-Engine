@@ -1610,6 +1610,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
 					"TextureCube" => "texturecube<float>",
+					"TextureCubeArray" => "texturecube_array<float>",
 					"ArrayTexture2D" => "texture2d_array<float>",
 					"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 					_ => "texture2d<float>",
@@ -2036,6 +2037,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let texture_type = match format.as_str() {
 					"Texture3D" => "texture3d<float>",
 					"TextureCube" => "texturecube<float>",
+					"TextureCubeArray" => "texturecube_array<float>",
 					"ArrayTexture2D" => "texture2d_array<float>",
 					_ => "texture2d<float>",
 				};
@@ -2575,6 +2577,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"Texture2D" => "texture2d<float>",
 			"Texture3D" => "texture3d<float>",
 			"TextureCube" => "texturecube<float>",
+			"TextureCubeArray" => "texturecube_array<float>",
 			"ArrayTexture2D" => "texture2d_array<float>",
 			_ => source,
 		}
@@ -2655,6 +2658,19 @@ impl<A: Allocator + Clone> Generator<A> {
 				} else {
 					string.push_str("0.0");
 				}
+				string.push_str("))");
+				return;
+			}
+			"texture_cube_array_lod" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".sample(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", ");
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(", metal::level(");
+				self.emit_node_string(string, &arguments[3]);
 				string.push_str("))");
 				return;
 			}
@@ -3173,6 +3189,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						let texture_type = match format.as_str() {
 							"ArrayTexture2D" => "texture2d_array<float>",
 							"TextureCube" => "texturecube<float>",
+							"TextureCubeArray" => "texturecube_array<float>",
 							"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 							_ => "texture2d<float>",
 						};

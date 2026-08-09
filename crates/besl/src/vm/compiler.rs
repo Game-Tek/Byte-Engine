@@ -839,6 +839,21 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"texture_cube_array_lod" => {
+				require_argument_count(arguments, 4)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let direction = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
+				let _cube = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+				let _lod = self.compile_value_expression(&arguments[3], &ValueType::F32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				// The VM has no cube-array storage model. Sampling the supplied direction preserves the shader seam's typed execution.
+				self.instructions.push(Instruction::SampleTexture3D {
+					register,
+					slot,
+					uvw: direction,
+				});
+				Ok(register)
+			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				if arguments.len() == 4 && name == "downsample_max" {
 					let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
@@ -1987,7 +2002,11 @@ impl<'a> Compiler<'a> {
 				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
 				if !matches!(
 					value_type,
-					ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D
+					ValueType::Texture2D
+						| ValueType::Texture3D
+						| ValueType::TextureCube
+						| ValueType::TextureCubeArray
+						| ValueType::ArrayTexture2D
 				) {
 					return Err(VmError::TypeMismatch {
 						expected: "texture resource".to_string(),
@@ -2911,6 +2930,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"Texture2D" => Ok(ValueType::Texture2D),
 		"Texture3D" => Ok(ValueType::Texture3D),
 		"TextureCube" => Ok(ValueType::TextureCube),
+		"TextureCubeArray" => Ok(ValueType::TextureCubeArray),
 		"ArrayTexture2D" => Ok(ValueType::ArrayTexture2D),
 		_ => {
 			let fields = match node.borrow().node() {
@@ -2930,7 +2950,11 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 fn is_resource_type(value_type: &ValueType) -> bool {
 	matches!(
 		value_type,
-		ValueType::Texture2D | ValueType::Texture3D | ValueType::TextureCube | ValueType::ArrayTexture2D
+		ValueType::Texture2D
+			| ValueType::Texture3D
+			| ValueType::TextureCube
+			| ValueType::TextureCubeArray
+			| ValueType::ArrayTexture2D
 	)
 }
 

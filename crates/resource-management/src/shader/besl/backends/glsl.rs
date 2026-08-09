@@ -204,6 +204,7 @@ impl Generator {
 			"Texture2D" => "in sampler2D",
 			"Texture3D" => "in sampler3D",
 			"TextureCube" => "in samplerCube",
+			"TextureCubeArray" => "in samplerCubeArray",
 			"ArrayTexture2D" => "in sampler2DArray",
 			_ => source,
 		}
@@ -324,6 +325,18 @@ impl Generator {
 				if name != "texture_lod" {
 					string.push_str(".x");
 				}
+				return;
+			}
+			"texture_cube_array_lod" => {
+				string.push_str("textureLod(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(if self.minified { ",vec4(" } else { ", vec4(" });
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(if self.minified { ",float(" } else { ", float(" });
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(if self.minified { "))," } else { ")), " });
+				self.emit_node_string(string, &arguments[3]);
+				string.push(')');
 				return;
 			}
 			_ => {}
@@ -826,6 +839,7 @@ impl Generator {
 					besl::BindingTypes::CombinedImageSampler { format } => match format.as_str() {
 						"Texture3D" => "uniform sampler3D",
 						"TextureCube" => "uniform samplerCube",
+						"TextureCubeArray" => "uniform samplerCubeArray",
 						"ArrayTexture2D" => "uniform sampler2DArray",
 						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
 						_ => "uniform sampler2D",

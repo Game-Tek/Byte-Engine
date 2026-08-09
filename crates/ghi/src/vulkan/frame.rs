@@ -609,6 +609,7 @@ impl<'a> Frame<'a> {
 		builder.name = image.name.as_deref();
 		builder.array_layers = image.array_layers;
 		builder.cube_compatible = image.cube_compatible;
+		builder.cube_array_compatible = image.cube_array_compatible;
 
 		self.device.build_image(builder)
 	}

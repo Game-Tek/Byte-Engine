@@ -12,7 +12,10 @@ pub mod scene_manager;
 pub mod shader_generator;
 pub(crate) mod skinning;
 
-pub use pipeline_manager::{VisibilityPipelineManager, VisibilityPipelineSettings, CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER};
+pub use pipeline_manager::{
+	VisibilityPipelineManager, VisibilityPipelineSettings, CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
+	POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
+};
 
 /* BASE */
 /// Shader binding used to access scene views.
@@ -169,10 +172,19 @@ pub(crate) const DEFAULT_CONE_SHADOW_POOL_CAPACITY: usize = 4;
 pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
 /// The depth format that halves the memory used by cone-light shadow maps.
 pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
+/// The largest point-shadow pool that fits the visibility light table.
+pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = MAX_LIGHTS;
+/// The point-shadow pool capacity used when an application does not configure one.
+pub(crate) const DEFAULT_POINT_SHADOW_POOL_CAPACITY: usize = 4;
+pub(crate) const POINT_SHADOW_MAP_RESOLUTION: u32 = 1024;
+/// The depth format that halves the memory used by point-light cube shadow maps.
+pub(crate) const POINT_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 /// The depth format retained for directional cascades and the camera depth target.
 pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth32;
 pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
-pub(crate) const SHADOW_VIEW_COUNT: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
+pub(crate) const POINT_SHADOW_FACE_COUNT: usize = 6;
+pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
+pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone)]

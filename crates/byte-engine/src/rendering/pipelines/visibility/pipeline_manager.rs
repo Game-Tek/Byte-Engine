@@ -18,15 +18,19 @@ struct EnvironmentTexture {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
+	point_shadow_map_pool_capacity: usize,
 }
 
 /// The startup parameter that sets [`VisibilityPipelineSettings::cone_shadow_map_pool_capacity`].
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
+/// The startup parameter that sets [`VisibilityPipelineSettings::point_shadow_map_pool_capacity`].
+pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-map-pool.capacity";
 
 impl Default for VisibilityPipelineSettings {
 	fn default() -> Self {
 		Self {
 			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
+			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 		}
 	}
 }
@@ -47,6 +51,23 @@ impl VisibilityPipelineSettings {
 	/// Returns the maximum number of cone-light shadow maps reused by each visibility sink.
 	pub fn cone_shadow_map_pool_capacity(&self) -> usize {
 		self.cone_shadow_map_pool_capacity
+	}
+
+	/// Sets the maximum number of reusable point-light cube shadow maps per visibility sink.
+	pub fn with_point_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
+		if capacity > MAX_POINT_SHADOW_POOL_CAPACITY {
+			return Err(format!(
+				"Point shadow map pool capacity was not set. The most likely cause is that {capacity} exceeds the visibility pipeline limit of {MAX_POINT_SHADOW_POOL_CAPACITY}."
+			));
+		}
+
+		self.point_shadow_map_pool_capacity = capacity;
+		Ok(self)
+	}
+
+	/// Returns the maximum number of point-light cube shadow maps reused by each visibility sink.
+	pub fn point_shadow_map_pool_capacity(&self) -> usize {
+		self.point_shadow_map_pool_capacity
 	}
 }
 
@@ -84,6 +105,8 @@ pub struct VisibilityPipelineManager {
 	environment_texture: EnvironmentTexture,
 	/// Maximum number of local-light maps reused by each sink during a frame.
 	cone_shadow_map_pool_capacity: usize,
+	/// Maximum number of point-light cube maps reused by each sink during a frame.
+	point_shadow_map_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: crate::rendering::pipelines::visibility::render_pass::GtaoSettings,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
@@ -202,9 +225,9 @@ impl VisibilityPipelineManager {
 		);
 		let _depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
+				.filtering_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
 				.min_lod(0f32)
 				.max_lod(0f32),
@@ -232,6 +255,7 @@ impl VisibilityPipelineManager {
 			environment_resource_id: None,
 			environment_texture,
 			cone_shadow_map_pool_capacity: settings.cone_shadow_map_pool_capacity,
+			point_shadow_map_pool_capacity: settings.point_shadow_map_pool_capacity,
 			gtao_configuration,
 			gtao_settings: Default::default(),
 			scene: VisibilitySceneManager {
@@ -763,6 +787,8 @@ struct ShadowLightSelection {
 	directional: Option<(usize, UnitVector)>,
 	cones: [Option<(usize, ConeLight)>; MAX_CONE_SHADOW_POOL_CAPACITY],
 	eligible_cone_count: usize,
+	points: [Option<(usize, PointLight)>; MAX_POINT_SHADOW_POOL_CAPACITY],
+	eligible_point_count: usize,
 }
 
 /// Selects shadow casters from the light prefix uploaded to material evaluation and visible sinks.
@@ -770,6 +796,7 @@ fn select_shadow_lights<'a>(
 	lights: impl Iterator<Item = &'a Lights>,
 	sinks: &[Sink],
 	cone_shadow_map_pool_capacity: usize,
+	point_shadow_map_pool_capacity: usize,
 ) -> ShadowLightSelection {
 	let mut selection = ShadowLightSelection::default();
 	if sinks.is_empty() {
@@ -792,6 +819,13 @@ fn select_shadow_lights<'a>(
 				}
 				selection.eligible_cone_count += 1;
 			}
+			Lights::Point(light) if point_light_has_brightness(*light) && point_shadow_is_visible(*light, sinks) => {
+				if selection.eligible_point_count < point_shadow_map_pool_capacity {
+					let slot = &mut selection.points[selection.eligible_point_count];
+					*slot = Some((index, *light));
+				}
+				selection.eligible_point_count += 1;
+			}
 			Lights::Cone(_) | Lights::Direction(_) | Lights::Point(_) => {}
 		}
 	}
@@ -805,6 +839,12 @@ const CONE_SHADOW_NEAR_M: f32 = 0.1;
 const CONE_SHADOW_DEFAULT_EXPOSURE_SCALE: f32 = 1.0;
 /// The exposure-weighted peak illuminance threshold for automatic cone shadow coverage.
 const CONE_SHADOW_EXPOSURE_THRESHOLD_LUX: f32 = 0.125;
+/// The minimum distance from a point light covered by an automatic cube shadow map.
+const POINT_SHADOW_NEAR_M: f32 = 0.1;
+/// The linear exposure multiplier used until a camera provides an exposure value.
+const POINT_SHADOW_DEFAULT_EXPOSURE_SCALE: f32 = 1.0;
+/// The exposure-weighted peak illuminance threshold for automatic point shadow coverage.
+const POINT_SHADOW_EXPOSURE_THRESHOLD_LUX: f32 = 0.125;
 
 /// Resolves the clipping range for one cone-light shadow view.
 ///
@@ -847,6 +887,42 @@ fn cone_light_peak_candela(light: ConeLight) -> f32 {
 	0.2126 * light.color.x + 0.7152 * light.color.y + 0.0722 * light.color.z
 }
 
+/// Resolves the clipping range for one point-light cube shadow map.
+fn resolve_point_shadow_range(light: PointLight, exposure_scale: f32) -> (f32, f32) {
+	let peak_candela = point_light_peak_candela(light);
+	let exposure_scale = exposure_scale
+		.is_finite()
+		.then_some(exposure_scale)
+		.unwrap_or(POINT_SHADOW_DEFAULT_EXPOSURE_SCALE)
+		.max(0.0);
+	let automatic_far = (peak_candela * exposure_scale / POINT_SHADOW_EXPOSURE_THRESHOLD_LUX)
+		.sqrt()
+		.max(POINT_SHADOW_NEAR_M + POINT_SHADOW_NEAR_M);
+	let near = light
+		.shadow_near_override()
+		.filter(|value| value.is_finite())
+		.unwrap_or(POINT_SHADOW_NEAR_M)
+		.max(POINT_SHADOW_NEAR_M);
+	let far = light
+		.shadow_far_override()
+		.filter(|value| value.is_finite())
+		.unwrap_or(automatic_far)
+		.max(near + POINT_SHADOW_NEAR_M);
+
+	(near, far)
+}
+
+/// Returns whether a point light has finite positive luminance that can cast a visible shadow.
+fn point_light_has_brightness(light: PointLight) -> bool {
+	let peak_candela = point_light_peak_candela(light);
+	peak_candela.is_finite() && peak_candela > 0.0
+}
+
+/// Returns the luminance-weighted luminous intensity used for point shadow coverage.
+fn point_light_peak_candela(light: PointLight) -> f32 {
+	0.2126 * light.color.x + 0.7152 * light.color.y + 0.0722 * light.color.z
+}
+
 /// Builds the perspective view used to cull and render one cone-light shadow layer.
 fn make_cone_shadow_view(light: ConeLight, exposure_scale: f32) -> View {
 	let (near, far) = resolve_cone_shadow_range(light, exposure_scale);
@@ -860,6 +936,21 @@ fn make_cone_shadow_view(light: ConeLight, exposure_scale: f32) -> View {
 	)
 }
 
+/// Builds one of the six perspective views used to render a point-light cube shadow map.
+fn make_point_shadow_view(light: PointLight, face: usize, exposure_scale: f32) -> View {
+	let (near, far) = resolve_point_shadow_range(light, exposure_scale);
+	let (direction, up) = match face {
+		0 => (UnitVector::x_axis(), UnitVector::y_axis()),
+		1 => (-UnitVector::x_axis(), UnitVector::y_axis()),
+		2 => (UnitVector::y_axis(), -UnitVector::z_axis()),
+		3 => (-UnitVector::y_axis(), UnitVector::z_axis()),
+		4 => (UnitVector::z_axis(), UnitVector::y_axis()),
+		5 => (-UnitVector::z_axis(), UnitVector::y_axis()),
+		_ => unreachable!("Point shadow face is invalid. The most likely cause is a cube map dispatch outside its six faces."),
+	};
+	View::new_perspective_with_up(90.0, 1.0, near, far, light.position, direction, up)
+}
+
 /// Returns whether a cone shadow can affect at least one active visibility view.
 fn cone_shadow_is_visible(light: ConeLight, sinks: &[Sink]) -> bool {
 	let (_, far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
@@ -868,6 +959,15 @@ fn cone_shadow_is_visible(light: ConeLight, sinks: &[Sink]) -> bool {
 	let bounds = math::Sphere::new(light.position + light.direction * enclosing_radius, enclosing_radius);
 
 	// The enclosing sphere keeps the test conservative: a cone that reaches a view is never culled.
+	sinks
+		.iter()
+		.any(|sink| math::collision::sphere_in_frustum(&bounds, &sink.view().get_frustum_planes()))
+}
+
+/// Returns whether a point-light shadow can affect at least one active visibility view.
+fn point_shadow_is_visible(light: PointLight, sinks: &[Sink]) -> bool {
+	let (_, far) = resolve_point_shadow_range(light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+	let bounds = math::Sphere::new(light.position, far);
 	sinks
 		.iter()
 		.any(|sink| math::collision::sphere_in_frustum(&bounds, &sink.view().get_frustum_planes()))
@@ -1004,11 +1104,18 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.scene.lights.iter().map(|(_, light)| light),
 			sinks,
 			self.cone_shadow_map_pool_capacity,
+			self.point_shadow_map_pool_capacity,
 		);
 		if shadow_lights.eligible_cone_count > self.cone_shadow_map_pool_capacity {
 			warn!(
 				"Cone-light shadow pool capacity exceeded. The most likely cause is that more than {} visible cone lights require shadows. Extra cone lights remain lit without shadows.",
 				self.cone_shadow_map_pool_capacity,
+			);
+		}
+		if shadow_lights.eligible_point_count > self.point_shadow_map_pool_capacity {
+			warn!(
+				"Point-light shadow pool capacity exceeded. The most likely cause is that more than {} visible point lights require shadows. Extra point lights remain lit without shadows.",
+				self.point_shadow_map_pool_capacity,
 			);
 		}
 		let [opaque_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
@@ -1047,13 +1154,31 @@ impl PipelineManager for VisibilityPipelineManager {
 				}
 			}
 
+			for (cube_index, shadow_light) in shadow_lights.points.iter().enumerate() {
+				if let Some((_, light)) = shadow_light {
+					for face in 0..POINT_SHADOW_FACE_COUNT {
+						views_data_buffer[POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT + face] =
+							Self::make_shader_view_data(make_point_shadow_view(
+								*light,
+								face,
+								POINT_SHADOW_DEFAULT_EXPOSURE_SCALE,
+							));
+					}
+				}
+			}
+
 			frame.sync_buffer(self.scene.views_data_buffer_handle);
 		}
 
 		let directional_shadow_light_index = shadow_lights.directional.map(|(index, _)| index);
 		let cone_shadow_light_indices = shadow_lights.cones.map(|light| light.map(|(index, _)| index));
-		self.scene
-			.write_light_data(frame, directional_shadow_light_index, &cone_shadow_light_indices);
+		let point_shadow_light_indices = shadow_lights.points.map(|light| light.map(|(index, _)| index));
+		self.scene.write_light_data(
+			frame,
+			directional_shadow_light_index,
+			&cone_shadow_light_indices,
+			&point_shadow_light_indices,
+		);
 
 		let sink_x_rp = sinks.iter().filter_map(|sink| {
 			self.scene
@@ -1083,13 +1208,14 @@ impl PipelineManager for VisibilityPipelineManager {
 					&self.scene.render_info.transparent_material_mask,
 					directional_shadow_light_index.is_some(),
 					cone_shadow_light_indices.iter().flatten().count(),
+					point_shadow_light_indices.iter().flatten().count(),
 				)
 				.map(|command| crate::rendering::render_pass::allocate_render_command(frame_allocator, command))
 			})
 			.collect::<SmallVec<[_; 16]>>();
 
 		log::debug!(
-			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}, cone_shadow_pool_capacity={}",
+			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}, cone_shadow_pool_capacity={}, point_shadow_count={}, point_shadow_pool_capacity={}",
 			sinks.len(),
 			self.scene.sink_states.len(),
 			commands.len(),
@@ -1105,6 +1231,8 @@ impl PipelineManager for VisibilityPipelineManager {
 			directional_shadow_light_index.is_some(),
 			cone_shadow_light_indices.iter().flatten().count(),
 			self.cone_shadow_map_pool_capacity,
+			point_shadow_light_indices.iter().flatten().count(),
+			self.point_shadow_map_pool_capacity,
 		);
 
 		Some(commands)
@@ -1200,6 +1328,17 @@ impl PipelineManager for VisibilityPipelineManager {
 				.array_layers(NonZeroU32::new(cone_shadow_map_layers))
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+		// Dynamic images start at zero extent, so this cube array has no backing maps until a visible point light uses it.
+		let point_shadow_map = context.build_dynamic_image(
+			ghi::image::Builder::new(POINT_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
+				.name("Point Shadow Map")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.cube_array_compatible(
+					NonZeroU32::new(self.point_shadow_map_pool_capacity.max(1) as u32)
+						.expect("Point shadow map pool has a nonzero fallback cube."),
+				)
+				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
+		);
 		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -1211,9 +1350,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
+				.filtering_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
 				.min_lod(0f32)
 				.max_lod(0f32),
@@ -1269,6 +1408,13 @@ impl PipelineManager for VisibilityPipelineManager {
 				material_evaluation_descriptor_set,
 				CONE_SHADOW_MAP_BINDING.slot(),
 				cone_shadow_map,
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				POINT_SHADOW_MAP_BINDING.slot(),
+				point_shadow_map,
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
@@ -1334,6 +1480,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			directional_shadow_map.into(),
 			directional_shadow_depth_pyramid.into(),
 			cone_shadow_map.into(),
+			point_shadow_map.into(),
 			ghi::BaseImageHandle::from(depth_target),
 			ghi::BaseImageHandle::from(primitive_index),
 			ghi::BaseImageHandle::from(instance_id),
@@ -1630,12 +1777,15 @@ mod tests {
 
 	use super::{
 		cached_skin_palette_base, cone_light_has_brightness, cone_shadow_is_visible, make_cone_shadow_view,
-		reserve_deformed_vertex_range, resolve_cone_shadow_range, select_shadow_lights, write_material_texture_indices,
-		Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry,
+		make_point_shadow_view, point_light_has_brightness, point_shadow_is_visible, reserve_deformed_vertex_range,
+		resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights, write_material_texture_indices, Instance,
+		LightData, LightingData, MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry,
 		VisibilityPipelineSettings, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX,
 		CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL,
-		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
-		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		DEFAULT_POINT_SHADOW_POOL_CAPACITY, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING,
+		LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY,
+		MAX_POINT_SHADOW_POOL_CAPACITY, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX,
+		POINT_SHADOW_NEAR_M, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1643,9 +1793,9 @@ mod tests {
 	use crate::rendering::pipelines::visibility::{
 		INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
 		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESHLET_DATA_BINDING,
-		MESH_DATA_BINDING, MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, PRIMITIVE_INDICES_BINDING,
-		SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
+		MESH_DATA_BINDING, MESH_DATA_BUFFER_STRIDE, MESH_DISPATCH_WORK_BINDING, POINT_SHADOW_FACE_COUNT,
+		PRIMITIVE_INDICES_BINDING, SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+		VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
 	use crate::rendering::{Sink, View};
 
@@ -1663,6 +1813,19 @@ mod tests {
 			30.0_f32.to_radians(),
 		)
 		.expect("physical cone light")
+	}
+
+	/// Creates one compact shadow-capable point light for selection and projection tests.
+	fn point(position_x: f32) -> PointLight {
+		PointLight::new(
+			Point::new(position_x, 2.0, 3.0),
+			LightColor::Kelvin(4_500.0),
+			PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
+		)
+		.expect("physical point light")
 	}
 
 	/// Creates a visibility sink for shadow-selection tests.
@@ -1720,7 +1883,12 @@ mod tests {
 			Lights::Cone(cone(4.0)),
 		];
 
-		let selection = select_shadow_lights(lights.iter(), &[sink(Point::origin())], DEFAULT_CONE_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(
+			lights.iter(),
+			&[sink(Point::origin())],
+			DEFAULT_CONE_SHADOW_POOL_CAPACITY,
+			DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+		);
 
 		assert_eq!(selection.directional.map(|(index, _)| index), Some(3));
 		assert_eq!(
@@ -1728,6 +1896,11 @@ mod tests {
 			[1, 4, 5, 6]
 		);
 		assert_eq!(selection.eligible_cone_count, 5);
+		assert_eq!(
+			selection.points.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[2]
+		);
+		assert_eq!(selection.eligible_point_count, 1);
 	}
 
 	#[test]
@@ -1740,7 +1913,12 @@ mod tests {
 		assert!(cone_shadow_is_visible(visible_in_second_sink, &sinks));
 		assert!(!cone_shadow_is_visible(outside_all_sinks, &sinks));
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, DEFAULT_CONE_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(
+			lights.iter(),
+			&sinks,
+			DEFAULT_CONE_SHADOW_POOL_CAPACITY,
+			DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+		);
 
 		assert_eq!(
 			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
@@ -1754,8 +1932,8 @@ mod tests {
 		let lights = [Lights::Cone(cone(0.0)), Lights::Cone(cone(1.0))];
 		let sinks = [sink(Point::origin())];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 1);
-		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0);
+		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
 			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
@@ -1774,7 +1952,7 @@ mod tests {
 		let sinks = [sink(Point::origin())];
 
 		assert!(!cone_light_has_brightness(unlit));
-		let selection = select_shadow_lights(lights.iter(), &sinks, 1);
+		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
 			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
@@ -1784,16 +1962,103 @@ mod tests {
 	}
 
 	#[test]
-	fn visibility_pipeline_settings_bound_the_cone_shadow_pool_capacity() {
+	fn point_shadow_pool_assigns_its_limited_cubes_to_visible_lights() {
+		let lights = [
+			Lights::Point(point(0.0)),
+			Lights::Point(point(1.0)),
+			Lights::Point(point(2.0)),
+		];
+		let sinks = [sink(Point::origin())];
+
+		let selection = select_shadow_lights(lights.iter(), &sinks, 0, 2);
+		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, 0);
+
+		assert_eq!(
+			selection.points.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			[0, 1]
+		);
+		assert_eq!(selection.eligible_point_count, 3);
+		assert!(empty_selection.points.iter().all(Option::is_none));
+		assert_eq!(empty_selection.eligible_point_count, 3);
+	}
+
+	#[test]
+	fn point_shadow_views_cover_every_cube_direction_and_range() {
+		let light = point(1.0).with_shadow_range(0.2, 50.0);
+		let directions = [
+			UnitVector::x_axis(),
+			-UnitVector::x_axis(),
+			UnitVector::y_axis(),
+			-UnitVector::y_axis(),
+			UnitVector::z_axis(),
+			-UnitVector::z_axis(),
+		];
+
+		for (face, direction) in directions.into_iter().enumerate() {
+			let view = make_point_shadow_view(light, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+			let point = (light.position + direction * 10.0).into_maths();
+			let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
+			let ndc = clip / clip.w;
+
+			assert!((view.y_fov() - 90.0).abs() < 0.0001);
+			assert_eq!(view.near(), 0.2);
+			assert_eq!(view.far(), 50.0);
+			assert!(ndc.x.abs() < 0.0001 && ndc.y.abs() < 0.0001);
+			assert!((0.0..=1.0).contains(&ndc.z));
+		}
+
+		let positive_y_view = make_point_shadow_view(light, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+		let right_of_positive_y_face = (light.position + UnitVector::y_axis() * 10.0 + UnitVector::x_axis()).into_maths();
+		let clip = positive_y_view.view_projection()
+			* Vec4f::new(
+				right_of_positive_y_face.x,
+				right_of_positive_y_face.y,
+				right_of_positive_y_face.z,
+				1.0,
+			);
+		assert!((clip.x / clip.w) > 0.0);
+	}
+
+	#[test]
+	fn point_shadow_range_uses_manual_endpoints_and_visibility() {
+		let light = point(500.0).with_shadow_range(-4.0, f32::NAN);
+		let (near, far) = resolve_point_shadow_range(light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+		let automatic_far = (100.0 / POINT_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
+
+		assert_eq!(near, POINT_SHADOW_NEAR_M);
+		assert_eq!(far, automatic_far);
+		assert!(!point_shadow_is_visible(
+			light.with_shadow_far(20.0),
+			&[sink(Point::origin())]
+		));
+		assert!(point_shadow_is_visible(
+			point(100.0).with_shadow_far(20.0),
+			&[sink(Point::new(100.0, 0.0, 0.0))]
+		));
+		let mut unlit = point(0.0);
+		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
+		assert!(!point_light_has_brightness(unlit));
+		assert_eq!(POINT_SHADOW_FACE_COUNT, 6);
+	}
+
+	#[test]
+	fn visibility_pipeline_settings_bound_local_shadow_pool_capacities() {
 		let defaults = VisibilityPipelineSettings::default();
 		let settings = defaults
 			.with_cone_shadow_map_pool_capacity(1)
-			.expect("supported cone shadow map pool capacity");
+			.expect("supported cone shadow map pool capacity")
+			.with_point_shadow_map_pool_capacity(2)
+			.expect("supported point shadow map pool capacity");
 
 		assert_eq!(defaults.cone_shadow_map_pool_capacity(), DEFAULT_CONE_SHADOW_POOL_CAPACITY);
 		assert_eq!(settings.cone_shadow_map_pool_capacity(), 1);
+		assert_eq!(defaults.point_shadow_map_pool_capacity(), DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		assert_eq!(settings.point_shadow_map_pool_capacity(), 2);
 		assert!(defaults
 			.with_cone_shadow_map_pool_capacity(MAX_CONE_SHADOW_POOL_CAPACITY + 1)
+			.is_err());
+		assert!(defaults
+			.with_point_shadow_map_pool_capacity(MAX_POINT_SHADOW_POOL_CAPACITY + 1)
 			.is_err());
 	}
 
@@ -1805,12 +2070,12 @@ mod tests {
 		let point = point.into_maths();
 		let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
 		let ndc = clip / clip.w;
-		let original_far = (100.0 / 0.1_f32).sqrt();
+		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert!((view.y_fov() - 60.0).abs() < 0.0001);
 		assert_eq!(view.near(), CONE_SHADOW_NEAR_M);
-		assert_eq!(CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, 0.225);
-		assert!((view.far() - original_far / 1.5).abs() < 0.0001);
+		assert_eq!(CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, 0.125);
+		assert!((view.far() - automatic_far).abs() < 0.0001);
 		assert!(ndc.x.abs() < 0.0001 && ndc.y.abs() < 0.0001);
 		assert!((0.0..=1.0).contains(&ndc.z));
 	}
@@ -1819,10 +2084,10 @@ mod tests {
 	fn cone_shadow_range_uses_manual_endpoints_and_clamps_invalid_values() {
 		let light = cone(1.0).with_shadow_range(-4.0, f32::NAN);
 		let (near, far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
-		let original_far = (100.0 / 0.1_f32).sqrt();
+		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, CONE_SHADOW_NEAR_M);
-		assert!((far - original_far / 1.5).abs() < 0.0001);
+		assert!((far - automatic_far).abs() < 0.0001);
 
 		let light = cone(1.0).with_shadow_near(50.0).with_shadow_far(20.0);
 		assert_eq!(
@@ -2103,6 +2368,12 @@ const CONE_SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResour
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+const POINT_SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1065),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+)
+.texture_view_type(ghi::TextureViewTypes::TextureCubeArray);
 const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1054),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -2167,13 +2438,14 @@ use crate::rendering::pipelines::visibility::skinning::{
 };
 use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, ShaderMeshletData, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY,
-	DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES,
-	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS,
-	MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT, SKINNED_VERTICES_BINDING,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	DEFAULT_POINT_SHADOW_POOL_CAPACITY, DIRECTIONAL_SHADOW_MAP_FORMAT, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES,
+	MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_POINT_SHADOW_POOL_CAPACITY, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT,
+	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SHADOW_VIEW_COUNT,
+	SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;

@@ -187,12 +187,25 @@ let spotlight = ConeLight::new(
 
 Cone angles are half angles measured from the light direction. The renderer automatically uses a
 0.1 m near plane and a neutral exposure scale of 1. It extends the far plane until peak
-exposure-weighted illumination falls below 0.225 lux, making the automatic range 1.5 times shorter
-than the former 0.1 lux policy. These values control only the cone shadow view; they do not limit
+exposure-weighted illumination falls below 0.125 lux. These values control only the cone shadow view; they do not limit
 lighting attenuation. Future camera exposure will replace the neutral scale. Override either
 endpoint with `with_shadow_near` or `with_shadow_far`, or override both with `with_shadow_range`.
 A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
 shadow map.
+
+## Control local-light shadows
+
+Point lights use a cube shadow map, so each selected point light renders six 90-degree shadow
+views. The renderer uses a 0.1 m near plane and extends the automatic far plane until the peak
+exposure-weighted illumination falls below 0.125 lux. This range controls shadow coverage only; it
+does not limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far`, or
+`with_shadow_range` on `PointLight` when your scene needs explicit coverage.
+
+The visibility pipeline reuses up to four cone maps and four point-light cube maps per sink by
+default. Set `render.cone-shadow-map-pool.capacity` or `render.point-shadow-map-pool.capacity` at
+application startup to change either limit. A point-shadow capacity uses one cube map per light;
+each cube map has six 1024 by 1024 depth faces. When a visible pool is full, later local lights stay
+lit but do not cast shadows.
 
 ## Understand the rendering result
 

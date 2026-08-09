@@ -323,6 +323,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "Texture2D"
 			| "Texture3D"
 			| "TextureCube"
+			| "TextureCubeArray"
 			| "ArrayTexture2D"
 			| "VertexOutput"
 			| "PrimitiveOutput"

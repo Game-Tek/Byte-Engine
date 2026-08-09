@@ -16,7 +16,7 @@ pub(crate) struct Image {
 	pub(crate) pointer: Option<*mut u8>,
 	pub(crate) image: vk::Image,
 	pub(crate) full_image_view: vk::ImageView,
-	pub(crate) image_views: [vk::ImageView; 8],
+	pub(crate) image_views: Vec<vk::ImageView>,
 	pub(crate) extent: Extent,
 	pub(crate) format: vk::Format,
 	pub(crate) format_: Formats,
@@ -25,6 +25,7 @@ pub(crate) struct Image {
 	pub(crate) uses: Uses,
 	pub(crate) layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
+	pub(crate) cube_array_compatible: bool,
 	pub(crate) mip_levels: u32,
 	pub(crate) owns_image: bool,
 }

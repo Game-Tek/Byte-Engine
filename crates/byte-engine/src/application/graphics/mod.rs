@@ -34,6 +34,7 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `6`.
 /// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `8`.
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
+/// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 ///
 /// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -597,20 +598,29 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
 	defaults::setup_default_pipeline_compilation(application);
-	let visibility_pipeline_settings = application
-		.get_parameter(CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER)
-		.map(|parameter| {
-			let capacity = parameter.value().parse::<usize>().unwrap_or_else(|_| {
-				panic!(
-					"Cone shadow map pool capacity was not set. The most likely cause is that `{}` is not a whole number.",
-					parameter.value()
-				)
-			});
-			VisibilityPipelineSettings::default()
-				.with_cone_shadow_map_pool_capacity(capacity)
-				.unwrap_or_else(|reason| panic!("{reason}"))
-		})
-		.unwrap_or_default();
+	let mut visibility_pipeline_settings = VisibilityPipelineSettings::default();
+	if let Some(parameter) = application.get_parameter(CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER) {
+		let capacity = parameter.value().parse::<usize>().unwrap_or_else(|_| {
+			panic!(
+				"Cone shadow map pool capacity was not set. The most likely cause is that `{}` is not a whole number.",
+				parameter.value()
+			)
+		});
+		visibility_pipeline_settings = visibility_pipeline_settings
+			.with_cone_shadow_map_pool_capacity(capacity)
+			.unwrap_or_else(|reason| panic!("{reason}"));
+	}
+	if let Some(parameter) = application.get_parameter(POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER) {
+		let capacity = parameter.value().parse::<usize>().unwrap_or_else(|_| {
+			panic!(
+				"Point shadow map pool capacity was not set. The most likely cause is that `{}` is not a whole number.",
+				parameter.value()
+			)
+		});
+		visibility_pipeline_settings = visibility_pipeline_settings
+			.with_point_shadow_map_pool_capacity(capacity)
+			.unwrap_or_else(|reason| panic!("{reason}"));
+	}
 	let gtao_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::render_pass::GTAO_CONFIGURATION_PREFIX);
@@ -1000,7 +1010,7 @@ use crate::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
 			visibility::{
 				resource_manager::VisibilityPipelineResourceManager, VisibilityPipelineManager, VisibilityPipelineSettings,
-				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
+				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
 			},
 		},
 		render_pass::RenderPass,

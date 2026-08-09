@@ -764,9 +764,9 @@ material_evaluation_suffix: fn () -> void {
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
 	let light_count: u32 = lighting_data.light_count;
-	// Cone shadows have no hierarchy early-out, so they share one lazily generated PCF rotation.
-	let cone_shadow_rotation: vec2f16 = vec2f16(0.0, 0.0);
-	let has_cone_shadow_rotation: bool = false;
+	// Local shadows have no hierarchy early-out, so they share one lazily generated PCF rotation.
+	let local_shadow_rotation: vec2f16 = vec2f16(0.0, 0.0);
+	let has_local_shadow_rotation: bool = false;
 
 	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
 		let light_type: u32 = lighting_data.lights[light_index].type;
@@ -826,7 +826,29 @@ material_evaluation_suffix: fn () -> void {
 			}
 			attenuation = 1.0;
 		}
-		if (light_type != 68) {
+	if (light_type != 68) {
+		if (light_type == 0) {
+			let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+			if (shadow_view_index != 0) {
+				let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
+				if (has_local_shadow_rotation == false) {
+					local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
+					has_local_shadow_rotation = true;
+				}
+				occlusion_factor = f16(sample_point_shadow(
+					shadow_view_index,
+					shadow_cube_index,
+					local_shadow_rotation,
+					world_space_vertex_position,
+					light_position,
+					position_derivative_x,
+					position_derivative_y
+				));
+				if (occlusion_factor == 0.0) {
+					continue;
+				}
+			}
+		}
 			if (light_type == 1) {
 			let cone_direction: vec3f16 = vec3f16(
 				lighting_data.lights[light_index].direction.x,
@@ -846,15 +868,15 @@ material_evaluation_suffix: fn () -> void {
 			let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
 			if (shadow_view_index != 0) {
 				let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-				if (has_cone_shadow_rotation == false) {
-					cone_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-					has_cone_shadow_rotation = true;
+				if (has_local_shadow_rotation == false) {
+					local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
+					has_local_shadow_rotation = true;
 				}
 				occlusion_factor = f16(sample_cone_shadow(
 					cone_shadow_map,
 					shadow_view_index,
 					shadow_layer,
-					cone_shadow_rotation,
+					local_shadow_rotation,
 					world_space_vertex_position,
 					position_derivative_x,
 					position_derivative_y
@@ -1010,6 +1032,15 @@ sample_shadow_tap: fn (
 }
 "#;
 
+const SHADOW_POISSON_ROTATION_SOURCE: &str = r#"
+rotate_shadow_poisson_offset: fn (poisson_offset: vec2f16, rotation: vec2f16) -> vec2f16 {
+	return vec2f16(
+		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
+		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
+	);
+}
+"#;
+
 const ROTATED_SHADOW_TAP_SOURCE: &str = r#"
 sample_rotated_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
@@ -1022,10 +1053,7 @@ sample_rotated_shadow_tap: fn (
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	let rotated_offset: vec2f16 = vec2f16(
-		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
-		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
-	) * texel_size * f16(1.5);
+	let rotated_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, rotation) * texel_size * f16(1.5);
 	return sample_shadow_tap(
 		shadow_map,
 		shadow_uv,
@@ -1050,10 +1078,7 @@ sample_directional_shadow_tap: fn (
 	rotation: vec2f16,
 	shadow_layer: u32
 ) -> f32 {
-	let rotated_offset: vec2f16 = vec2f16(
-		poisson_offset.x * rotation.x - poisson_offset.y * rotation.y,
-		poisson_offset.x * rotation.y + poisson_offset.y * rotation.x
-	) * f16(1.5);
+	let rotated_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, rotation) * f16(1.5);
 	let tap_position: vec2f = shadow_texel_position + vec2f(rotated_offset);
 	let shadow_texel: vec2u = vec2u(u32(tap_position.x), u32(tap_position.y));
 	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
@@ -1163,6 +1188,193 @@ sample_cone_shadow: fn (
 	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
 	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
 	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	return occlusion / 8.0;
+}
+"#;
+
+// Point shadows use native cube-array addressing so taps can cross cube-face boundaries.
+const POINT_SHADOW_RECEIVER_DEPTH_SOURCE: &str = r#"
+point_shadow_receiver_depth: fn (light_to_surface: vec3f, near: f32, far: f32) -> f32 {
+	let face_distance: f32 = max(max(abs(light_to_surface.x), abs(light_to_surface.y)), abs(light_to_surface.z));
+	return (near * far / face_distance - near) / (far - near);
+}
+"#;
+
+const POINT_SHADOW_OCCLUSION_SOURCE: &str = r#"
+point_shadow_occlusion: fn (
+	closest_depth: f32,
+	receiver_depth: f32,
+	face_distance: f32,
+	near: f32,
+	far: f32
+) -> f32 {
+	if (face_distance <= near || closest_depth <= 0.0) {
+		return 1.0;
+	}
+	if (face_distance >= far) {
+		return 0.0;
+	}
+	return step(closest_depth, receiver_depth + 2.0 / 65535.0);
+}
+"#;
+
+const POINT_SHADOW_RECEIVER_VECTOR_SOURCE: &str = r#"
+point_shadow_receiver_vector: fn (
+	sample_direction: vec3f,
+	center_receiver_vector: vec3f,
+	receiver_plane_normal: vec3f
+) -> vec3f {
+	let ray_alignment: f32 = dot(receiver_plane_normal, sample_direction);
+	if (abs(ray_alignment) <= 0.000001) {
+		return center_receiver_vector;
+	}
+	let intersection_distance: f32 = dot(receiver_plane_normal, center_receiver_vector) / ray_alignment;
+	if (intersection_distance <= 0.0) {
+		return center_receiver_vector;
+	}
+	return sample_direction * intersection_distance;
+}
+"#;
+
+// Snaps a cube lookup ray so depth sampling and receiver-plane correction use the same texel-center ray.
+const POINT_SHADOW_TEXEL_DIRECTION_SOURCE: &str = r#"
+point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
+	let absolute_direction: vec3f = vec3f(
+		abs(sample_direction.x),
+		abs(sample_direction.y),
+		abs(sample_direction.z)
+	);
+	let face: u32 = 0;
+	let face_coordinate: vec2f = vec2f(0.0, 0.0);
+	if (absolute_direction.x >= absolute_direction.y && absolute_direction.x >= absolute_direction.z) {
+		if (sample_direction.x >= 0.0) {
+			face = 0;
+			face_coordinate = vec2f(0.0 - sample_direction.z, 0.0 - sample_direction.y) / absolute_direction.x;
+		}
+		if (sample_direction.x < 0.0) {
+			face = 1;
+			face_coordinate = vec2f(sample_direction.z, 0.0 - sample_direction.y) / absolute_direction.x;
+		}
+	}
+	if (absolute_direction.y > absolute_direction.x && absolute_direction.y >= absolute_direction.z) {
+		if (sample_direction.y >= 0.0) {
+			face = 2;
+			face_coordinate = vec2f(sample_direction.x, sample_direction.z) / absolute_direction.y;
+		}
+		if (sample_direction.y < 0.0) {
+			face = 3;
+			face_coordinate = vec2f(sample_direction.x, 0.0 - sample_direction.z) / absolute_direction.y;
+		}
+	}
+	if (absolute_direction.z > absolute_direction.x && absolute_direction.z > absolute_direction.y) {
+		if (sample_direction.z >= 0.0) {
+			face = 4;
+			face_coordinate = vec2f(sample_direction.x, 0.0 - sample_direction.y) / absolute_direction.z;
+		}
+		if (sample_direction.z < 0.0) {
+			face = 5;
+			face_coordinate = vec2f(0.0 - sample_direction.x, 0.0 - sample_direction.y) / absolute_direction.z;
+		}
+	}
+
+	let texel_position: vec2f = (face_coordinate * 0.5 + vec2f(0.5, 0.5)) * 1024.0;
+	let texel: vec2u = vec2u(
+		u32(clamp(texel_position.x, 0.0, 1023.0)),
+		u32(clamp(texel_position.y, 0.0, 1023.0))
+	);
+	let texel_center: vec2f = ((vec2f(f32(texel.x), f32(texel.y)) + vec2f(0.5, 0.5)) / 1024.0) * 2.0
+		- vec2f(1.0, 1.0);
+	let snapped_direction: vec3f = vec3f(1.0, 0.0 - texel_center.y, 0.0 - texel_center.x);
+	if (face == 1) {
+		snapped_direction = vec3f(0.0 - 1.0, 0.0 - texel_center.y, texel_center.x);
+	}
+	if (face == 2) {
+		snapped_direction = vec3f(texel_center.x, 1.0, texel_center.y);
+	}
+	if (face == 3) {
+		snapped_direction = vec3f(texel_center.x, 0.0 - 1.0, 0.0 - texel_center.y);
+	}
+	if (face == 4) {
+		snapped_direction = vec3f(texel_center.x, 0.0 - texel_center.y, 1.0);
+	}
+	if (face == 5) {
+		snapped_direction = vec3f(0.0 - texel_center.x, 0.0 - texel_center.y, 0.0 - 1.0);
+	}
+	return normalize(snapped_direction);
+}
+"#;
+
+const POINT_SHADOW_TAP_SOURCE: &str = r#"
+sample_point_shadow_tap: fn (
+	shadow_cube_index: u32,
+	center_direction: vec3f,
+	tangent: vec3f,
+	bitangent: vec3f,
+	center_receiver_vector: vec3f,
+	receiver_plane_normal: vec3f,
+	near: f32,
+	far: f32,
+	poisson_offset: vec2f16,
+	pcf_rotation: vec2f16
+) -> f32 {
+	let tap_offset: vec2f16 = rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)
+		* f16(1.5 * 2.0 / 1024.0);
+	let sample_direction: vec3f = point_shadow_texel_direction(
+		center_direction + tangent * f32(tap_offset.x) + bitangent * f32(tap_offset.y)
+	);
+	let receiver_vector: vec3f = point_shadow_receiver_vector(
+		sample_direction,
+		center_receiver_vector,
+		receiver_plane_normal
+	);
+	let face_distance: f32 = max(max(abs(receiver_vector.x), abs(receiver_vector.y)), abs(receiver_vector.z));
+	let receiver_depth: f32 = point_shadow_receiver_depth(receiver_vector, near, far);
+	let closest_depth: f32 = texture_cube_array_lod(point_shadow_map, sample_direction, shadow_cube_index, 0.0).x;
+	return point_shadow_occlusion(closest_depth, receiver_depth, face_distance, near, far);
+}
+"#;
+
+const POINT_SHADOW_SOURCE: &str = r#"
+sample_point_shadow: fn (
+	shadow_view_index: u32,
+	shadow_cube_index: u32,
+	pcf_rotation: vec2f16,
+	world_space_position: vec3f,
+	light_position: vec3f,
+	world_space_position_derivative_x: vec3f,
+	world_space_position_derivative_y: vec3f
+) -> f32 {
+	let light_to_surface: vec3f = world_space_position - light_position;
+	let distance_squared: f32 = dot(light_to_surface, light_to_surface);
+	if (distance_squared <= 0.0) {
+		return 1.0;
+	}
+	let view: View = views.views[shadow_view_index];
+	let receiver_distance: f32 = sqrt(distance_squared);
+	let center_direction: vec3f = light_to_surface / receiver_distance;
+	let reference: vec3f = vec3f(0.0, 1.0, 0.0);
+	if (abs(center_direction.y) > 0.99) {
+		reference = vec3f(0.0, 0.0, 1.0);
+	}
+	let tangent: vec3f = normalize(cross(reference, center_direction));
+	let bitangent: vec3f = cross(center_direction, tangent);
+	let receiver_plane_normal: vec3f = cross(world_space_position_derivative_x, world_space_position_derivative_y);
+	let receiver_plane_normal_length_squared: f32 = dot(receiver_plane_normal, receiver_plane_normal);
+	if (receiver_plane_normal_length_squared <= 0.000000000001) {
+		receiver_plane_normal = center_direction;
+	}
+	if (receiver_plane_normal_length_squared > 0.000000000001) {
+		receiver_plane_normal = receiver_plane_normal * inversesqrt(receiver_plane_normal_length_squared);
+	}
+	let occlusion: f32 = 0.0;
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.645680, 0.493210), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.421003, 0.027070), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation);
+	occlusion = occlusion + sample_point_shadow_tap(shadow_cube_index, center_direction, tangent, bitangent, light_to_surface, receiver_plane_normal, view.near, view.far, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation);
 	return occlusion / 8.0;
 }
 "#;
@@ -1662,6 +1874,13 @@ impl VisibilityShaderScope {
 			false,
 		);
 		let cone_shadow_map = Node::binding("cone_shadow_map", Node::combined_array_image_sampler(), 1064, true, false);
+		let point_shadow_map = Node::binding(
+			"point_shadow_map",
+			Node::combined_cube_array_image_sampler(),
+			1065,
+			true,
+			false,
+		);
 		let environment_irradiance = Node::binding(
 			"environment_irradiance",
 			Node::combined_cube_image_sampler(),
@@ -1694,12 +1913,22 @@ impl VisibilityShaderScope {
 		let shadow_receiver_plane_depth_gradient =
 			parse_besl_function(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient");
 		let sample_shadow_tap = parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap");
+		let rotate_shadow_poisson_offset = parse_besl_function(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset");
 		let sample_rotated_shadow_tap = parse_besl_function(ROTATED_SHADOW_TAP_SOURCE, "sample_rotated_shadow_tap");
 		let sample_directional_shadow_tap = parse_besl_function(DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap");
 		let directional_shadow_area_is_fully_lit =
 			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit");
 		let compute_shadow_rotation = parse_besl_function(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation");
 		let sample_cone_shadow = parse_besl_function(CONE_SHADOW_SOURCE, "sample_cone_shadow");
+		let point_shadow_receiver_depth =
+			parse_besl_function(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth");
+		let point_shadow_occlusion = parse_besl_function(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion");
+		let point_shadow_receiver_vector =
+			parse_besl_function(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector");
+		let point_shadow_texel_direction =
+			parse_besl_function(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction");
+		let sample_point_shadow_tap = parse_besl_function(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap");
+		let sample_point_shadow = parse_besl_function(POINT_SHADOW_SOURCE, "sample_point_shadow");
 		let sample_directional_shadow = parse_besl_function(DIRECTIONAL_SHADOW_SOURCE, "sample_directional_shadow");
 		let sample_environment_irradiance = parse_besl_function(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance");
 		let sample_environment_specular = parse_besl_function(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular");
@@ -1718,6 +1947,7 @@ impl VisibilityShaderScope {
 				directional_shadow_depth_pyramid,
 				shadow_receiver_plane_depth_gradient,
 				sample_shadow_tap,
+				rotate_shadow_poisson_offset,
 				sample_rotated_shadow_tap,
 				sample_directional_shadow_tap,
 				directional_shadow_area_is_fully_lit,
@@ -1751,6 +1981,13 @@ impl VisibilityShaderScope {
 				set2_binding10,
 				set2_binding11,
 				cone_shadow_map,
+				point_shadow_map,
+				point_shadow_receiver_depth,
+				point_shadow_occlusion,
+				point_shadow_receiver_vector,
+				point_shadow_texel_direction,
+				sample_point_shadow_tap,
+				sample_point_shadow,
 				environment_irradiance,
 				environment_specular,
 				push_constant,
@@ -2398,10 +2635,10 @@ mod tests {
 		let source = r#"
 			main: fn () -> void {
 				results.lit = sample_directional_shadow_tap(
-					shadow_map, vec2f(1.0, 1.0), 0.8, vec2f(0.0, 0.0), vec2f(1.0, 0.0), u32(0)
+					shadow_map, vec2f(1.0, 1.0), 0.8, vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
 				);
 				results.blocked = sample_directional_shadow_tap(
-					shadow_map, vec2f(2.0, 2.0), 0.8, vec2f(0.0, 0.0), vec2f(1.0, 0.0), u32(0)
+					shadow_map, vec2f(2.0, 2.0), 0.8, vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
 				);
 			}
 		"#;
@@ -2415,6 +2652,7 @@ mod tests {
 				true,
 				false,
 			),
+			super::parse_besl_function(super::SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
 			super::parse_besl_function(super::DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap"),
 			besl::ParserNode::binding(
 				"results",
@@ -2459,6 +2697,221 @@ mod tests {
 		}
 	}
 
+	/// Verifies point receivers use the perspective depth stored by the selected cube face.
+	#[test]
+	fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				results.center = point_shadow_receiver_depth(vec3f(0.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
+				results.off_axis = point_shadow_receiver_depth(vec3f(4.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
+				results.adjacent_face = point_shadow_receiver_depth(vec3f(6.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the point-shadow depth VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			super::parse_besl_function(super::POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"PointShadowDepthResults",
+					vec![
+						besl::ParserNode::member("center", "f32"),
+						besl::ParserNode::member("off_axis", "f32"),
+						besl::ParserNode::member("adjacent_face", "f32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the point-shadow depth VM test. The most likely cause is an unresolved portable depth operation.",
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		let read = |name| {
+			let Value::F32(value) = results.read(name).expect("point-shadow receiver depth result") else {
+				panic!("Unexpected point-shadow receiver depth result type for {name}.");
+			};
+			value
+		};
+		let center = read("center");
+		let off_axis = read("off_axis");
+		let adjacent_face = read("adjacent_face");
+		assert!((center - off_axis).abs() < 0.000001);
+		assert!(adjacent_face < center);
+	}
+
+	/// Verifies offset point-shadow rays compare against the shaded receiver plane instead of a constant radius.
+	#[test]
+	fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				let sample_direction: vec3f = normalize(vec3f(1.0, 0.0 - 5.0, 0.0));
+				let receiver: vec3f = point_shadow_receiver_vector(
+					sample_direction,
+					vec3f(0.0, 0.0 - 5.0, 0.0),
+					vec3f(0.0, 1.0, 0.0)
+				);
+				results.x = receiver.x;
+				results.y = receiver.y;
+			}
+		"#;
+		let mut root = besl::parse(source).expect(
+			"Failed to parse the point-shadow receiver-plane VM test. The most likely cause is invalid BESL test syntax.",
+		);
+		root.add(vec![
+			super::parse_besl_function(super::POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"PointShadowReceiverPlaneResults",
+					vec![besl::ParserNode::member("x", "f32"), besl::ParserNode::member("y", "f32")],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the point-shadow receiver-plane VM test. The most likely cause is an unresolved portable vector operation.",
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		let Value::F32(receiver_x) = results.read("x").expect("point-shadow receiver-plane x result") else {
+			panic!("Unexpected point-shadow receiver-plane x result type.");
+		};
+		let Value::F32(receiver_y) = results.read("y").expect("point-shadow receiver-plane y result") else {
+			panic!("Unexpected point-shadow receiver-plane y result type.");
+		};
+		assert!((receiver_x - 1.0).abs() < 0.000001);
+		assert!((receiver_y + 5.0).abs() < 0.000001);
+	}
+
+	/// Verifies point PCF compares against the center of the cube texel selected by closest sampling.
+	#[test]
+	fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)));
+				results.y_over_x = direction.y / direction.x;
+				results.z_over_x = direction.z / direction.x;
+			}
+		"#;
+		let mut root = besl::parse(source).expect(
+			"Failed to parse the point-shadow texel-center VM test. The most likely cause is invalid BESL test syntax.",
+		);
+		root.add(vec![
+			super::parse_besl_function(super::POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"PointShadowTexelCenterResults",
+					vec![
+						besl::ParserNode::member("y_over_x", "f32"),
+						besl::ParserNode::member("z_over_x", "f32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the point-shadow texel-center VM test. The most likely cause is an unresolved portable vector operation.",
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (name, expected) in [("y_over_x", -0.2509765625), ("z_over_x", 0.1005859375)] {
+			let Value::F32(actual) = results.read(name).expect("point-shadow texel-center result") else {
+				panic!("Unexpected point-shadow texel-center result type for {name}.");
+			};
+			assert!(
+				(actual - expected).abs() < 0.000001,
+				"Unexpected point-shadow texel-center result for {name}."
+			);
+		}
+	}
+
+	/// Verifies a captured point-shadow blocker continues to occlude receivers beyond the projection far plane.
+	#[test]
+	fn point_shadow_occlusion_preserves_captured_blockers_beyond_the_far_plane_in_the_besl_vm() {
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		let source = r#"
+			main: fn () -> void {
+				results.blocker_beyond_far = point_shadow_occlusion(0.4, 0.0 - 0.01, 110.0, 0.1, 100.0);
+				results.clear_beyond_far = point_shadow_occlusion(0.0, 0.0 - 0.01, 110.0, 0.1, 100.0);
+				results.blocked_inside = point_shadow_occlusion(0.4, 0.2, 10.0, 0.1, 100.0);
+				results.lit_inside = point_shadow_occlusion(0.1, 0.2, 10.0, 0.1, 100.0);
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the point-shadow occlusion VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			super::parse_besl_function(super::POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer(
+					"PointShadowOcclusionResults",
+					vec![
+						besl::ParserNode::member("blocker_beyond_far", "f32"),
+						besl::ParserNode::member("clear_beyond_far", "f32"),
+						besl::ParserNode::member("blocked_inside", "f32"),
+						besl::ParserNode::member("lit_inside", "f32"),
+					],
+				),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the point-shadow occlusion VM test. The most likely cause is an unresolved portable comparison.",
+		));
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (name, expected) in [
+			("blocker_beyond_far", 0.0),
+			("clear_beyond_far", 1.0),
+			("blocked_inside", 0.0),
+			("lit_inside", 1.0),
+		] {
+			let Value::F32(actual) = results.read(name).expect("point-shadow occlusion result") else {
+				panic!("Unexpected point-shadow occlusion result type for {name}.");
+			};
+			assert_eq!(actual, expected, "Unexpected point-shadow occlusion result for {name}.");
+		}
+	}
+
+	#[test]
+	fn point_shadow_sampling_matches_the_shared_rotated_poisson_kernel() {
+		assert_eq!(super::POINT_SHADOW_SOURCE.matches("sample_point_shadow_tap(").count(), 8);
+		assert!(super::POINT_SHADOW_SOURCE.contains("pcf_rotation: vec2f16"));
+		assert!(super::POINT_SHADOW_SOURCE.contains("cross(reference, center_direction)"));
+		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("point_shadow_receiver_vector("));
+		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("point_shadow_texel_direction("));
+		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)"));
+		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("texture_cube_array_lod(point_shadow_map"));
+		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("1.5 * 2.0 / 1024.0"));
+	}
+
 	/// Verifies material evaluation with skinned geometry produces valid BESL.
 	#[test]
 	fn material_evaluation_with_skinning_produces_valid_besl() {
@@ -2473,8 +2926,8 @@ mod tests {
 	}
 
 	/// Verifies material evaluation samples the bound environment without a procedural fallback.
-	#[test]
-	fn material_evaluation_with_environment_ibl_produces_valid_besl() {
+	#[compio::test]
+	async fn material_evaluation_with_environment_ibl_produces_valid_besl() {
 		let material = material_metadata! {
 			"variables": []
 		};
@@ -2489,10 +2942,21 @@ mod tests {
 		assert!(!source.contains("sample_analytical_reflection"));
 		assert!(!source.contains("environment_sample.a"));
 		assert!(!source.contains("lower_sample.a"));
+		assert!(source.contains("texturecube_array<float> point_shadow_map"));
+		assert!(source.contains("resources.point_shadow_map_sampler"));
+		assert!(!source.contains("shadow_map.sample(shadow_map_sampler"));
 		assert!(source.contains("texturecube<float> environment_irradiance"));
 		assert!(source.contains("texturecube<float> environment_specular"));
 		assert!(!source.contains("atan2("));
 		assert!(!source.contains("asin("));
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&source,
+			"visibility-point-shadow-material",
+		)
+		.await
+		.expect("Expected the generated point-shadow material shader to compile with Metal");
 	}
 
 	/// Verifies the generated material pass stays in BESL so backend lowering owns storage and matrix syntax.

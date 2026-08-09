@@ -208,12 +208,19 @@ fn build_texture_descriptor(
 	device_accesses: crate::DeviceAccesses,
 	array_layers: u32,
 	cube_compatible: bool,
+	cube_array_compatible: bool,
 	mip_levels: u32,
 ) -> Retained<mtl::MTLTextureDescriptor> {
 	if cube_compatible {
 		assert!(
 			array_layers == 6 && extent.width() == extent.height() && extent.depth().max(1) == 1,
 			"Invalid Metal cubemap image. The most likely cause is that cube compatibility was requested for a non-square image or an image without six faces."
+		);
+	}
+	if cube_array_compatible {
+		assert!(
+			array_layers > 0 && array_layers.is_multiple_of(6) && extent.width() == extent.height() && extent.depth().max(1) == 1,
+			"Invalid Metal cubemap-array image. The most likely cause is that cube-array compatibility was requested for a non-square image or an array layer count not divisible by six."
 		);
 	}
 	let descriptor = unsafe {
@@ -227,6 +234,8 @@ fn build_texture_descriptor(
 
 	if extent.depth() > 1 {
 		descriptor.setTextureType(mtl::MTLTextureType::Type3D);
+	} else if cube_array_compatible {
+		descriptor.setTextureType(mtl::MTLTextureType::TypeCubeArray);
 	} else if cube_compatible {
 		descriptor.setTextureType(mtl::MTLTextureType::TypeCube);
 	} else if array_layers > 1 {
@@ -235,7 +244,13 @@ fn build_texture_descriptor(
 	descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
 	descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
 	unsafe {
-		descriptor.setArrayLength(if cube_compatible { 1 } else { array_layers } as _);
+		descriptor.setArrayLength(if cube_compatible {
+			1
+		} else if cube_array_compatible {
+			array_layers / 6
+		} else {
+			array_layers
+		} as _);
 		descriptor.setMipmapLevelCount(mip_levels as _);
 	}
 
@@ -676,6 +691,7 @@ fn build_stage_argument_layout(
 						crate::TextureViewTypes::Texture2D => mtl::MTLTextureType::Type2D,
 						crate::TextureViewTypes::Texture2DArray => mtl::MTLTextureType::Type2DArray,
 						crate::TextureViewTypes::TextureCube => mtl::MTLTextureType::TypeCube,
+						crate::TextureViewTypes::TextureCubeArray => mtl::MTLTextureType::TypeCubeArray,
 						crate::TextureViewTypes::Texture3D => mtl::MTLTextureType::Type3D,
 					};
 					descriptor.setTextureType(texture_type);
@@ -2002,6 +2018,7 @@ pub mod image {
 		pub(crate) access: DeviceAccesses,
 		pub(crate) array_layers: u32,
 		pub(crate) cube_compatible: bool,
+		pub(crate) cube_array_compatible: bool,
 		pub(crate) mip_levels: u32,
 		pub(crate) staging: Option<Vec<u8>>,
 	}

@@ -906,6 +906,7 @@ impl Context {
 						previous_image.access,
 						previous_image.layers,
 						previous_image.cube_compatible,
+						previous_image.cube_array_compatible,
 						previous_image.extent,
 						previous_image.uses,
 						previous_image.mip_levels,
@@ -1381,9 +1382,7 @@ impl Context {
 	) -> ImageHandle {
 		let root_handle = ImageHandle(self.images.len() as u64);
 		let root_image = {
-			let mut image_views = [vk::ImageView::null(); 8];
-
-			image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None);
+			let image_views = vec![self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None)];
 
 			Image {
 				next: None,
@@ -1400,6 +1399,7 @@ impl Context {
 				uses,
 				layers: None,
 				cube_compatible: false,
+				cube_array_compatible: false,
 				mip_levels: 1,
 				owns_image: false,
 			}
@@ -1671,6 +1671,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
 		cube_compatible: bool,
+		cube_array_compatible: bool,
 		extent: Extent,
 		resource_uses: crate::Uses,
 		mip_levels: u32,
@@ -1685,7 +1686,7 @@ impl Context {
 				pointer: None,
 				image: vk::Image::null(),
 				full_image_view: vk::ImageView::null(),
-				image_views: [vk::ImageView::null(); 8],
+				image_views: Vec::new(),
 				extent,
 				access: device_accesses,
 				format: to_format(format),
@@ -1693,6 +1694,7 @@ impl Context {
 				uses: resource_uses,
 				layers: array_layers,
 				cube_compatible,
+				cube_array_compatible,
 				mip_levels,
 				owns_image: true,
 			};
@@ -1716,6 +1718,7 @@ impl Context {
 			mip_levels,
 			array_layers,
 			cube_compatible,
+			cube_array_compatible,
 		);
 
 		let uses_cpu_staging = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
@@ -1782,11 +1785,11 @@ impl Context {
 			.flatten();
 
 		let image_views = if image_can_have_views {
-			let mut image_views = [vk::ImageView::null(); 8];
+			let mut image_views = Vec::with_capacity(array_layers.map_or(1, NonZeroU32::get) as usize);
 
 			if let Some(l) = array_layers.map(|e| e.get()) {
 				for i in 0..l {
-					image_views[i as usize] = self.create_vulkan_image_view(
+					image_views.push(self.create_vulkan_image_view(
 						name,
 						&texture_creation_result.resource,
 						format,
@@ -1794,10 +1797,10 @@ impl Context {
 						mip_levels,
 						i,
 						NonZeroU32::new(1),
-					);
+					));
 				}
 			} else {
-				image_views[0] = self.create_vulkan_image_view(
+				image_views.push(self.create_vulkan_image_view(
 					name,
 					&texture_creation_result.resource,
 					format,
@@ -1805,12 +1808,12 @@ impl Context {
 					mip_levels,
 					0,
 					None,
-				);
+				));
 			}
 
 			image_views
 		} else {
-			[vk::ImageView::null(); 8]
+			Vec::new()
 		};
 
 		Image {
@@ -1828,6 +1831,7 @@ impl Context {
 			uses: resource_uses,
 			layers: array_layers,
 			cube_compatible,
+			cube_array_compatible,
 			mip_levels,
 			owns_image: true,
 		}
@@ -1842,6 +1846,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
 		cube_compatible: bool,
+		cube_array_compatible: bool,
 		extent: Extent,
 		resource_uses: crate::Uses,
 		mip_levels: u32,
@@ -1855,6 +1860,7 @@ impl Context {
 			device_accesses,
 			array_layers,
 			cube_compatible,
+			cube_array_compatible,
 			extent,
 			resource_uses,
 			mip_levels,
@@ -1937,7 +1943,7 @@ impl Context {
 				.push(Task::delete_vulkan_buffer(staging_buffer_handle, Some(sequence_index)));
 		}
 
-		for image_view in image.image_views {
+		for &image_view in &image.image_views {
 			if !image_view.is_null() {
 				self.tasks.push(Task::delete_vulkan_image_view(image_view, sequence_index));
 			}
@@ -1959,6 +1965,7 @@ impl Context {
 			image.access,
 			image.layers,
 			image.cube_compatible,
+			image.cube_array_compatible,
 			extent,
 			image.uses,
 			image.mip_levels,
@@ -2442,6 +2449,13 @@ impl Context {
 				assert!(layer.is_none() && layers == 6, "Vulkan cubemap descriptor view mismatch. The most likely cause is that the image is not a six-layer cube-compatible image.");
 				(vk::ImageViewType::CUBE, 0, 6)
 			}
+			crate::TextureViewTypes::TextureCubeArray => {
+				assert!(
+					layer.is_none() && image.cube_array_compatible && layers.is_multiple_of(6),
+					"Vulkan cube-array descriptor view mismatch. The most likely cause is that the image is not a cube-array-compatible image."
+				);
+				(vk::ImageViewType::CUBE_ARRAY, 0, layers)
+			}
 			crate::TextureViewTypes::Texture3D => {
 				assert!(
 					layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
@@ -2863,6 +2877,7 @@ impl crate::context::Context for Context {
 				let access = current_image.access;
 				let array_layers = current_image.layers;
 				let cube_compatible = current_image.cube_compatible;
+				let cube_array_compatible = current_image.cube_array_compatible;
 				let extent = current_image.extent;
 				let resource_uses = current_image.uses;
 				let mip_levels = current_image.mip_levels;
@@ -2875,6 +2890,7 @@ impl crate::context::Context for Context {
 					access,
 					array_layers,
 					cube_compatible,
+					cube_array_compatible,
 					extent,
 					resource_uses,
 					mip_levels,
@@ -3421,6 +3437,7 @@ impl crate::context::ContextCreate for Context {
 			builder.device_accesses,
 			builder.array_layers,
 			builder.cube_compatible,
+			builder.cube_array_compatible,
 			builder.extent,
 			builder.resource_uses,
 			builder.mip_levels,
@@ -3444,6 +3461,7 @@ impl crate::context::ContextCreate for Context {
 				builder.device_accesses,
 				builder.array_layers,
 				builder.cube_compatible,
+				builder.cube_array_compatible,
 				builder.extent,
 				builder.resource_uses,
 				builder.mip_levels,
@@ -3847,7 +3865,7 @@ impl Drop for Context {
 					self.device.destroy_image_view(image.full_image_view, None);
 				}
 
-				for vk_image_view in image.image_views {
+				for &vk_image_view in &image.image_views {
 					self.device.destroy_image_view(vk_image_view, None);
 				}
 			});

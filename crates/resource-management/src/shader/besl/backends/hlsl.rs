@@ -1043,6 +1043,18 @@ impl Generator {
 					string.push_str(".x");
 				}
 			}
+			"texture_cube_array_lod" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".SampleLevel(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler, float4(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", float(");
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(")), ");
+				self.emit_node_string(string, &arguments[3]);
+				string.push(')');
+			}
 			"image_atomic_or" => {
 				string.push_str("({ uint _previous; InterlockedOr(");
 				self.emit_node_string(string, &arguments[0]);
@@ -1443,6 +1455,7 @@ impl Generator {
 			"Texture2D" => "Texture2D",
 			"Texture3D" => "Texture3D",
 			"TextureCube" => "TextureCube<float4>",
+			"TextureCubeArray" => "TextureCubeArray<float4>",
 			"ArrayTexture2D" => "Texture2DArray<float4>",
 			_ => source,
 		}
@@ -1767,6 +1780,7 @@ impl Generator {
 						let texture_type = match format.as_str() {
 							"Texture3D" => "Texture3D",
 							"TextureCube" => "TextureCube",
+							"TextureCubeArray" => "TextureCubeArray",
 							"ArrayTexture2D" => "Texture2DArray",
 							_ => "Texture2D",
 						};

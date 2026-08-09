@@ -990,6 +990,7 @@ impl crate::device::Device for Device {
 			use_case: builder.use_case,
 			array_layers: builder.array_layers,
 			cube_compatible: builder.cube_compatible,
+			cube_array_compatible: builder.cube_array_compatible,
 		}
 	}
 
@@ -1060,6 +1061,7 @@ impl InnerDevice {
 		mip_levels: u32,
 		array_layers: Option<NonZeroU32>,
 		cube_compatible: bool,
+		cube_array_compatible: bool,
 	) -> MemoryBackedResourceCreationResult<vk::Image> {
 		if cube_compatible {
 			assert!(
@@ -1069,8 +1071,16 @@ impl InnerDevice {
 				"Invalid Vulkan cubemap image. The most likely cause is that cube compatibility was requested for a non-square image or an image without six faces."
 			);
 		}
+		if cube_array_compatible {
+			assert!(
+				array_layers.is_some_and(|layers| layers.get().is_multiple_of(6))
+					&& extent.width() == extent.height()
+					&& extent.depth().max(1) == 1,
+				"Invalid Vulkan cubemap-array image. The most likely cause is that cube-array compatibility was requested for a non-square image or an array layer count not divisible by six."
+			);
+		}
 		let image_create_info = vk::ImageCreateInfo::default()
-			.flags(if cube_compatible {
+			.flags(if cube_compatible || cube_array_compatible {
 				vk::ImageCreateFlags::CUBE_COMPATIBLE
 			} else {
 				vk::ImageCreateFlags::empty()
@@ -1235,6 +1245,7 @@ pub struct FactoryImage {
 	pub(crate) use_case: crate::UseCases,
 	pub(crate) array_layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
+	pub(crate) cube_array_compatible: bool,
 }
 
 /// The `FactorySampler` struct carries Vulkan sampler parameters until a context interns them.

@@ -33,6 +33,7 @@ pub enum TextureView {
 	Texture2D,
 	Texture2DArray,
 	TextureCube,
+	TextureCubeArray,
 	Texture3D,
 }
 
@@ -542,6 +543,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 						view: match format.as_str() {
 							"Texture3D" => TextureView::Texture3D,
 							"TextureCube" => TextureView::TextureCube,
+							"TextureCubeArray" => TextureView::TextureCubeArray,
 							"ArrayTexture2D" => TextureView::Texture2DArray,
 							_ => TextureView::Texture2D,
 						},

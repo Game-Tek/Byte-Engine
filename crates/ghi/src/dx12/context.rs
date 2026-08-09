@@ -1437,7 +1437,7 @@ impl Device {
 
 	fn null_texture_uav_desc(texture_view_type: TextureViewTypes) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
 		match texture_view_type {
-			TextureViewTypes::TextureCube => {
+			TextureViewTypes::TextureCube | TextureViewTypes::TextureCubeArray => {
 				panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.")
 			}
 			TextureViewTypes::Texture2DArray => D3D12_UNORDERED_ACCESS_VIEW_DESC {
@@ -1537,7 +1537,10 @@ impl Device {
 				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
 			);
 		}
-		if texture_view_type == TextureViewTypes::TextureCube {
+		if matches!(
+			texture_view_type,
+			TextureViewTypes::TextureCube | TextureViewTypes::TextureCubeArray
+		) {
 			panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.");
 		}
 		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
@@ -1583,6 +1586,20 @@ impl Device {
 					TextureCube: D3D12_TEXCUBE_SRV {
 						MostDetailedMip: 0,
 						MipLevels: 1,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			},
+			TextureViewTypes::TextureCubeArray => D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
+						MostDetailedMip: 0,
+						MipLevels: 1,
+						First2DArrayFace: 0,
+						NumCubes: 1,
 						ResourceMinLODClamp: 0.0,
 					},
 				},
@@ -1663,6 +1680,26 @@ impl Device {
 					TextureCube: D3D12_TEXCUBE_SRV {
 						MostDetailedMip: most_detailed_mip,
 						MipLevels: mip_count,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			};
+		}
+		if texture_view_type == TextureViewTypes::TextureCubeArray {
+			assert!(
+				layer.is_none() && array_layers > 0 && array_layers.is_multiple_of(6),
+				"Invalid DX12 cube-array descriptor view. The most likely cause is that the image layer count is not divisible by six."
+			);
+			return D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
+						MostDetailedMip: most_detailed_mip,
+						MipLevels: mip_count,
+						First2DArrayFace: 0,
+						NumCubes: array_layers / 6,
 						ResourceMinLODClamp: 0.0,
 					},
 				},
@@ -6455,6 +6492,12 @@ impl Device {
 			shader_resource.texture_view() != TextureViewTypes::Texture3D,
 			"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
 		);
+		if shader_resource.texture_view() == TextureViewTypes::TextureCubeArray {
+			assert!(
+				layer.is_none() && image.array_layers > 0 && image.array_layers.is_multiple_of(6),
+				"Invalid DX12 cube-array descriptor view. The most likely cause is that the image layer count is not divisible by six."
+			);
+		}
 		if shader_resource.kind() == ResourceKind::StorageImage {
 			assert!(
 				image.uses.intersects(Uses::Storage),
@@ -10679,19 +10722,21 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RTV_DIMENSION_TEXTURE2DARRAY, D3D12_RT_FORMAT_ARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
 	D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
 	D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
-	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC,
+	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D,
+	D3D12_SRV_DIMENSION_TEXTURECUBE, D3D12_SRV_DIMENSION_TEXTURECUBEARRAY, D3D12_STATE_OBJECT_DESC,
 	D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, D3D12_STATE_SUBOBJECT, D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY,
 	D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP,
 	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG,
 	D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
 	D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_RTV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV,
 	D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEX3D_SRV, D3D12_TEX3D_UAV,
-	D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-	D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_COPY_LOCATION,
-	D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-	D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
-	D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC,
-	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D_ROOT_SIGNATURE_VERSION_1_0,
+	D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+	D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+	D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+	D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+	D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D, D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
+	D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0,
+	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D_ROOT_SIGNATURE_VERSION_1_0,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC5_UNORM,

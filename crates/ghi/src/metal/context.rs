@@ -264,6 +264,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 		cube_compatible: bool,
+		cube_array_compatible: bool,
 		mip_levels: u32,
 	) -> image::Image {
 		let name = crate::debug_name(name);
@@ -275,6 +276,7 @@ impl Context {
 			device_accesses,
 			array_layers,
 			cube_compatible,
+			cube_array_compatible,
 			mip_levels,
 		);
 
@@ -305,6 +307,7 @@ impl Context {
 			access: device_accesses,
 			array_layers,
 			cube_compatible,
+			cube_array_compatible,
 			mip_levels,
 			staging,
 		}
@@ -321,6 +324,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 		cube_compatible: bool,
+		cube_array_compatible: bool,
 		mip_levels: u32,
 	) -> ImageHandle {
 		let image = self.create_image_resource(
@@ -331,6 +335,7 @@ impl Context {
 			device_accesses,
 			array_layers,
 			cube_compatible,
+			cube_array_compatible,
 			mip_levels,
 		);
 		let (_, handle) = self.images.add(image);
@@ -695,7 +700,7 @@ impl Context {
 		let mut resized = false;
 
 		for image_handle in image_handles.into_iter().flatten() {
-			let (current_extent, format, uses, access, array_layers, cube_compatible, mip_levels) = {
+			let (current_extent, format, uses, access, array_layers, cube_compatible, cube_array_compatible, mip_levels) = {
 				let image = self.images.resource(image_handle);
 				(
 					image.extent,
@@ -704,6 +709,7 @@ impl Context {
 					image.access,
 					image.array_layers,
 					image.cube_compatible,
+					image.cube_array_compatible,
 					image.mip_levels,
 				)
 			};
@@ -721,6 +727,7 @@ impl Context {
 				access,
 				array_layers,
 				cube_compatible,
+				cube_array_compatible,
 				mip_levels,
 			);
 			*self.images.resource_mut(image_handle) = replacement;
@@ -763,6 +770,7 @@ impl Context {
 					let access = previous.access;
 					let array_layers = previous.array_layers;
 					let cube_compatible = previous.cube_compatible;
+					let cube_array_compatible = previous.cube_array_compatible;
 					let mip_levels = previous.mip_levels;
 					let handle = self.create_image_internal(
 						Some(builder.previous),
@@ -773,6 +781,7 @@ impl Context {
 						access,
 						array_layers,
 						cube_compatible,
+						cube_array_compatible,
 						mip_levels,
 					);
 
@@ -847,6 +856,7 @@ impl Context {
 			image.access,
 			image.array_layers,
 			image.cube_compatible,
+			image.cube_array_compatible,
 			image.mip_levels,
 		);
 		*self.images.resource_mut(handle) = replacement;
@@ -1617,6 +1627,7 @@ impl Context {
 			builder.device_accesses,
 			layers,
 			builder.cube_compatible,
+			builder.cube_array_compatible,
 			builder.mip_levels,
 		);
 		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
@@ -1767,6 +1778,7 @@ impl Context {
 			builder.device_accesses,
 			layers,
 			builder.cube_compatible,
+			builder.cube_array_compatible,
 			builder.mip_levels,
 		);
 
@@ -1907,6 +1919,7 @@ impl Context {
 					uses | Uses::BlitSource,
 					DeviceAccesses::DeviceOnly,
 					1,
+					false,
 					false,
 					1,
 				);

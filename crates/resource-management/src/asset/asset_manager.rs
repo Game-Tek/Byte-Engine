@@ -30,8 +30,7 @@ pub(crate) struct AssetManagerState {
 	storage_backend: Box<dyn StorageBackend>,
 	resource_storage_backend: Arc<dyn ResourceStorageBackend>,
 	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
-	dispatchers: std::sync::OnceLock<Box<[compio::dispatcher::Dispatcher]>>,
-	next_dispatcher: std::sync::atomic::AtomicUsize,
+	dispatcher: compio::dispatcher::Dispatcher,
 	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>,
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
@@ -77,14 +76,29 @@ impl AssetManager {
 		storage_backend: AS,
 		resource_storage_backend: Arc<dyn ResourceStorageBackend>,
 	) -> AssetManager {
+		#[cfg(test)]
+		let worker_count = std::num::NonZeroUsize::new(2).unwrap();
+		#[cfg(not(test))]
+		let worker_count = std::thread::available_parallelism()
+			.unwrap_or(std::num::NonZeroUsize::MIN)
+			.min(std::num::NonZeroUsize::new(16).unwrap());
+
+		// Start the shared worker pool with the manager so the first bake does not pay its setup cost.
+		let dispatcher = compio::dispatcher::Dispatcher::builder()
+			.worker_threads(worker_count)
+			.thread_names(|worker_index| format!("Asset Worker {worker_index}"))
+			.build()
+			.expect(
+				"Failed to start asset workers. The most likely cause is that the platform I/O driver or worker threads could not be initialized.",
+			);
+
 		Self {
 			state: Arc::new(AssetManagerState {
 				asset_handlers: Vec::with_capacity(8),
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
 				in_flight_bakes: Mutex::new(HashMap::with_capacity(32)),
-				dispatchers: std::sync::OnceLock::new(),
-				next_dispatcher: std::sync::atomic::AtomicUsize::new(0),
+				dispatcher,
 				self_weak: std::sync::OnceLock::new(),
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
@@ -188,31 +202,6 @@ impl AssetManager {
 }
 
 impl AssetManagerState {
-	/// Returns the shared worker pool used by top-level and batched dependency requests.
-	fn dispatchers(&self) -> &[compio::dispatcher::Dispatcher] {
-		self.dispatchers.get_or_init(|| {
-			#[cfg(test)]
-			let worker_count = std::num::NonZeroUsize::new(2).unwrap();
-			#[cfg(not(test))]
-			let worker_count = std::thread::available_parallelism()
-				.unwrap_or(std::num::NonZeroUsize::MIN)
-				.min(std::num::NonZeroUsize::new(16).unwrap());
-
-			(0..worker_count.get())
-				.map(|worker_index| {
-					compio::dispatcher::Dispatcher::builder()
-						.worker_threads(std::num::NonZeroUsize::MIN)
-						.thread_names(move |_| format!("Asset Worker {worker_index}"))
-						.build()
-						.expect(
-							"Failed to start asset workers. The most likely cause is that the platform I/O driver or worker threads could not be initialized.",
-						)
-				})
-				.collect::<Vec<_>>()
-				.into_boxed_slice()
-		})
-	}
-
 	/// Runs one owned bake request on the asset worker pool.
 	pub(crate) async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
 		let notification = match self.register_bake(id) {
@@ -229,9 +218,8 @@ impl AssetManagerState {
 			.get()
 			.and_then(std::sync::Weak::upgrade)
 			.ok_or(LoadMessages::ExecutionUnavailable)?;
-		let dispatchers = self.dispatchers();
-		let dispatcher_index = self.next_dispatcher.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % dispatchers.len();
-		let task = dispatchers[dispatcher_index]
+		let task = self
+			.dispatcher
 			.dispatch(move || async move {
 				// Each request releases all transient processing memory together when its bake completes.
 				let arena = bumpalo::Bump::with_capacity(DEFAULT_BAKE_ARENA_CAPACITY);
@@ -908,7 +896,7 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn different_assets_run_independently() {
-		let (asset_manager, invocations, thread_ids, started, release) = coordinating_asset_manager(false, false);
+		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
 
 		let release_handler = async {
 			started[1].listen().await.expect("two independent invocations should start");
@@ -919,13 +907,11 @@ pub mod tests {
 
 		assert_eq!(results, (Ok(()), Ok(())));
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
-		let thread_ids = thread_ids.lock();
-		assert_ne!(thread_ids[0], thread_ids[1]);
 	}
 
 	#[r#async::test]
-	async fn batched_dependencies_start_on_independent_workers_before_parent_continues() {
-		let (mut asset_manager, invocations, thread_ids, started, release) = coordinating_asset_manager(false, false);
+	async fn batched_dependencies_start_before_parent_continues() {
+		let (mut asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
 		asset_manager.add_asset_handler(BatchedDependencyAssetHandler);
 
 		let release_handler = async {
@@ -936,8 +922,6 @@ pub mod tests {
 
 		assert_eq!(result, Ok(()));
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
-		let thread_ids = thread_ids.lock();
-		assert_ne!(thread_ids[0], thread_ids[1]);
 	}
 
 	#[r#async::test]

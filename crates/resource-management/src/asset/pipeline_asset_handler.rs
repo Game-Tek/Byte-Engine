@@ -41,9 +41,7 @@ impl AssetHandler for PipelineAssetHandler {
 				context.bake_dependency::<Shader>(shader).await?;
 			}
 			PipelineKind::Raster { shaders, .. } => {
-				for shader in shaders {
-					context.bake_dependency::<Shader>(shader).await?;
-				}
+				context.bake_dependencies::<Shader>(shaders, 8).await?;
 			}
 		}
 		context.store_primary(ProcessedAsset::new(id, pipeline), &[])

@@ -270,10 +270,6 @@ impl Renderer {
 					continue;
 				}
 
-				let resource_manager = self
-					.resource_manager
-					.as_ref()
-					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(
 					&mut self.context,
 					&mut self.render_targets,
@@ -281,10 +277,6 @@ impl Renderer {
 					swapchain,
 					self.pipeline_compilation_client.clone(),
 				);
-				if let Some(resource_manager) = resource_manager.as_deref() {
-					rpb = rpb.with_shader_resources(resource_manager);
-				}
-
 				pipeline_manager.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
 					.consumed_resources
@@ -310,7 +302,6 @@ impl Renderer {
 			let Renderer {
 				context,
 				render_targets,
-				resource_manager,
 				pipeline_managers,
 				pipeline_manager_resources_by_sink,
 				pipeline_compilation_client,
@@ -318,9 +309,6 @@ impl Renderer {
 			} = self;
 
 			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
-				let resource_manager = resource_manager
-					.as_ref()
-					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(
 					context,
 					render_targets,
@@ -328,10 +316,6 @@ impl Renderer {
 					swapchain,
 					pipeline_compilation_client.clone(),
 				);
-				if let Some(resource_manager) = resource_manager.as_deref() {
-					rpb = rpb.with_shader_resources(resource_manager);
-				}
-
 				sm.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
 					.consumed_resources
@@ -393,10 +377,6 @@ impl Renderer {
 		for sink_id in sink_ids {
 			let render_pass = {
 				let swapchain = self.windows[sink_id].1;
-				let resource_manager = self
-					.resource_manager
-					.as_ref()
-					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder = RenderPassBuilder::new(
 					&mut self.context,
 					&mut self.render_targets,
@@ -404,9 +384,6 @@ impl Renderer {
 					swapchain,
 					self.pipeline_compilation_client.clone(),
 				);
-				if let Some(resource_manager) = resource_manager.as_deref() {
-					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
-				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -424,10 +401,6 @@ impl Renderer {
 
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
-				let resource_manager = self
-					.resource_manager
-					.as_ref()
-					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder = RenderPassBuilder::new(
 					&mut self.context,
 					&mut self.render_targets,
@@ -435,9 +408,6 @@ impl Renderer {
 					swapchain,
 					self.pipeline_compilation_client.clone(),
 				);
-				if let Some(resource_manager) = resource_manager.as_deref() {
-					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
-				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 

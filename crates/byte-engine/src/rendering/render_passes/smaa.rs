@@ -109,19 +109,14 @@ impl SmaaPass {
 
 		let edge_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"SMAA Edge Detection",
-				"byte-engine/rendering/smaa/edge-detection.besl",
-				"SMAA Edge Detection Shader",
-			),
+			simple_compute::Descriptor::new("SMAA Edge Detection", "byte-engine/rendering/smaa/edge-detection.pipeline"),
 		)
 		.expect("Failed to create the SMAA edge shader. The most likely cause is an incompatible shader interface.");
 		let resolve_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new(
 				"SMAA Blend and Neighborhood",
-				"byte-engine/rendering/smaa/blend-weights.besl",
-				"SMAA Blend and Neighborhood Shader",
+				"byte-engine/rendering/smaa/blend-weights.pipeline",
 			),
 		)
 		.expect("Failed to create the SMAA resolve shader. The most likely cause is an incompatible shader interface.");
@@ -181,10 +176,10 @@ impl RenderPass for SmaaPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		let edge_pass = self.edge_pass.ready(frame)?;
+		let resolve_pass = self.resolve_pass.ready(frame)?;
 		let extent = sink.extent();
 		self.resize_images(frame, extent);
-		let edge_pass = self.edge_pass;
-		let resolve_pass = self.resolve_pass;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,

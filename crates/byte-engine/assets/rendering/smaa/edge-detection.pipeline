@@ -1,0 +1,1 @@
+{"name":"SMAA Edge Detection","kind":{"type":"compute","shader":"byte-engine/rendering/smaa/edge-detection.besl"}}

@@ -44,11 +44,7 @@ impl LutRenderPass {
 
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"LUT",
-				"byte-engine/rendering/lut/apply.besl",
-				"LUT Render Pass Compute Shader",
-			),
+			simple_compute::Descriptor::new("LUT", "byte-engine/rendering/lut/apply.pipeline"),
 		)
 		.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.");
 

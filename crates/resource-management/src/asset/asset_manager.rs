@@ -22,8 +22,6 @@ enum InFlightBakeRole {
 /// for supported source families and processing behavior.
 pub struct AssetManager {
 	state: Arc<AssetManagerState>,
-	dispatchers: std::sync::OnceLock<Box<[compio::dispatcher::Dispatcher]>>,
-	next_dispatcher: std::sync::atomic::AtomicUsize,
 }
 
 /// The `AssetManagerState` struct keeps shared bake state independent from the worker runtimes that execute requests.
@@ -32,6 +30,9 @@ pub(crate) struct AssetManagerState {
 	storage_backend: Box<dyn StorageBackend>,
 	resource_storage_backend: Arc<dyn ResourceStorageBackend>,
 	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
+	dispatchers: std::sync::OnceLock<Box<[compio::dispatcher::Dispatcher]>>,
+	next_dispatcher: std::sync::atomic::AtomicUsize,
+	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>,
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
 }
@@ -82,11 +83,12 @@ impl AssetManager {
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
 				in_flight_bakes: Mutex::new(HashMap::with_capacity(32)),
+				dispatchers: std::sync::OnceLock::new(),
+				next_dispatcher: std::sync::atomic::AtomicUsize::new(0),
+				self_weak: std::sync::OnceLock::new(),
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
 			}),
-			dispatchers: std::sync::OnceLock::new(),
-			next_dispatcher: std::sync::atomic::AtomicUsize::new(0),
 		}
 	}
 
@@ -141,31 +143,6 @@ impl AssetManager {
 		&self.state.resource_trace
 	}
 
-	/// Returns the lazily created worker pool used by top-level bake requests.
-	fn dispatchers(&self) -> &[compio::dispatcher::Dispatcher] {
-		self.dispatchers.get_or_init(|| {
-			#[cfg(test)]
-			let worker_count = std::num::NonZeroUsize::new(2).unwrap();
-			#[cfg(not(test))]
-			let worker_count = std::thread::available_parallelism()
-				.unwrap_or(std::num::NonZeroUsize::MIN)
-				.min(std::num::NonZeroUsize::new(16).unwrap());
-
-			(0..worker_count.get())
-				.map(|worker_index| {
-					compio::dispatcher::Dispatcher::builder()
-						.worker_threads(std::num::NonZeroUsize::MIN)
-						.thread_names(move |_| format!("Asset Worker {worker_index}"))
-						.build()
-						.expect(
-							"Failed to start asset workers. The most likely cause is that the platform I/O driver or worker threads could not be initialized.",
-						)
-				})
-				.collect::<Vec<_>>()
-				.into_boxed_slice()
-		})
-	}
-
 	/// Returns whether a registered asset handler can bake the given source ID.
 	pub fn supports(&self, id: &str) -> bool {
 		let id = ResourceId::new(id);
@@ -205,7 +182,40 @@ impl AssetManager {
 
 	/// Runs one owned bake request on the asset worker pool.
 	async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
-		let notification = match self.state.register_bake(id) {
+		let _ = self.state.self_weak.set(Arc::downgrade(&self.state));
+		self.state.dispatch_bake(id, only_when_stale).await
+	}
+}
+
+impl AssetManagerState {
+	/// Returns the shared worker pool used by top-level and batched dependency requests.
+	fn dispatchers(&self) -> &[compio::dispatcher::Dispatcher] {
+		self.dispatchers.get_or_init(|| {
+			#[cfg(test)]
+			let worker_count = std::num::NonZeroUsize::new(2).unwrap();
+			#[cfg(not(test))]
+			let worker_count = std::thread::available_parallelism()
+				.unwrap_or(std::num::NonZeroUsize::MIN)
+				.min(std::num::NonZeroUsize::new(16).unwrap());
+
+			(0..worker_count.get())
+				.map(|worker_index| {
+					compio::dispatcher::Dispatcher::builder()
+						.worker_threads(std::num::NonZeroUsize::MIN)
+						.thread_names(move |_| format!("Asset Worker {worker_index}"))
+						.build()
+						.expect(
+							"Failed to start asset workers. The most likely cause is that the platform I/O driver or worker threads could not be initialized.",
+						)
+				})
+				.collect::<Vec<_>>()
+				.into_boxed_slice()
+		})
+	}
+
+	/// Runs one owned bake request on the asset worker pool.
+	pub(crate) async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
+		let notification = match self.register_bake(id) {
 			InFlightBakeRole::Leader(notification) => notification,
 			InFlightBakeRole::Follower(notification) => {
 				return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
@@ -214,7 +224,11 @@ impl AssetManager {
 
 		let id = id.to_owned();
 		let registry_id = id.clone();
-		let state = Arc::clone(&self.state);
+		let state = self
+			.self_weak
+			.get()
+			.and_then(std::sync::Weak::upgrade)
+			.ok_or(LoadMessages::ExecutionUnavailable)?;
 		let dispatchers = self.dispatchers();
 		let dispatcher_index = self.next_dispatcher.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % dispatchers.len();
 		let task = dispatchers[dispatcher_index]
@@ -233,15 +247,13 @@ impl AssetManager {
 				result
 			})
 			.map_err(|_| {
-				self.state.in_flight_bakes.lock().remove(registry_id.as_str());
+				self.in_flight_bakes.lock().remove(registry_id.as_str());
 				LoadMessages::ExecutionUnavailable
 			})?;
 
 		task.await.map_err(|_| LoadMessages::ExecutionUnavailable)?
 	}
-}
 
-impl AssetManagerState {
 	/// Registers one requested resource before it is submitted to a worker.
 	fn register_bake(&self, id: &str) -> InFlightBakeRole {
 		let mut registry = self.in_flight_bakes.lock();
@@ -539,6 +551,20 @@ pub mod tests {
 		release: announcement::Listener<()>,
 		fail: bool,
 		block_first_only: bool,
+	}
+
+	struct BatchedDependencyAssetHandler;
+
+	impl AssetHandler for BatchedDependencyAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "batch"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			let dependencies = vec!["first.test".to_string(), "second.test".to_string()];
+			context.bake_dependencies::<TestResource>(&dependencies, 2).await?;
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+		}
 	}
 
 	impl AssetHandler for CoordinatingAssetHandler {
@@ -892,6 +918,23 @@ pub mod tests {
 		let (_, results) = std::future::join!(release_handler, requests).await;
 
 		assert_eq!(results, (Ok(()), Ok(())));
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+		let thread_ids = thread_ids.lock();
+		assert_ne!(thread_ids[0], thread_ids[1]);
+	}
+
+	#[r#async::test]
+	async fn batched_dependencies_start_on_independent_workers_before_parent_continues() {
+		let (mut asset_manager, invocations, thread_ids, started, release) = coordinating_asset_manager(false, false);
+		asset_manager.add_asset_handler(BatchedDependencyAssetHandler);
+
+		let release_handler = async {
+			started[1].listen().await.expect("both dependency bakes should start");
+			release.announce(()).expect("dependency release should be announced once");
+		};
+		let (_, result) = std::future::join!(release_handler, asset_manager.bake("parent.batch")).await;
+
+		assert_eq!(result, Ok(()));
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 		let thread_ids = thread_ids.lock();
 		assert_ne!(thread_ids[0], thread_ids[1]);

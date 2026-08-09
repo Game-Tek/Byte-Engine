@@ -104,29 +104,17 @@ impl AtmosphereSkyRenderPass {
 		let main = render_pass_builder.render_to("main");
 		let transmittance_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"Sky Transmittance LUT",
-				"byte-engine/rendering/sky-transmittance.besl",
-				"Sky Transmittance LUT Compute Shader",
-			),
+			simple_compute::Descriptor::new("Sky Transmittance LUT", "byte-engine/rendering/sky-transmittance.pipeline"),
 		)
 		.expect("Failed to create the sky transmittance shader. The most likely cause is an incompatible shader interface.");
 		let sky_view_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"Sky View LUT",
-				"byte-engine/rendering/sky-view.besl",
-				"Sky View LUT Compute Shader",
-			),
+			simple_compute::Descriptor::new("Sky View LUT", "byte-engine/rendering/sky-view.pipeline"),
 		)
 		.expect("Failed to create the sky-view shader. The most likely cause is an incompatible shader interface.");
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"Sky Composite",
-				"byte-engine/rendering/sky.besl",
-				"Sky Render Pass Compute Shader",
-			),
+			simple_compute::Descriptor::new("Sky Composite", "byte-engine/rendering/sky.pipeline"),
 		)
 		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.");
 		let context = render_pass_builder.context();
@@ -268,6 +256,9 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		let transmittance_pass = self.transmittance_pass.ready(frame)?;
+		let sky_view_pass = self.sky_view_pass.ready(frame)?;
+		let composite_pass = self.composite_pass.ready(frame)?;
 		let camera_height = self.write_parameters(frame, sink).to_bits();
 		let rebuild_transmittance = !self.transmittance_valid;
 		// Horizontal movement leaves the camera-to-planet vector unchanged because the planet center follows the camera in X/Z.
@@ -275,9 +266,6 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		self.transmittance_valid = true;
 		self.sky_view_camera_height = Some(camera_height);
 
-		let transmittance_pass = self.transmittance_pass;
-		let sky_view_pass = self.sky_view_pass;
-		let composite_pass = self.composite_pass;
 		let extent = sink.extent();
 		let transmittance_extent = transmittance_lut_extent();
 		let sky_view_extent = sky_view_lut_extent();

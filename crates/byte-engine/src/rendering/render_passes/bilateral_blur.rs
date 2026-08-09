@@ -17,14 +17,14 @@ impl BaseBilateralBlurPass {
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let pipeline_x = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Bilateral Blur", "byte-engine/rendering/bilateral-blur/x.besl", "SSGI Blur X"),
+			simple_compute::Descriptor::new("Bilateral Blur", "byte-engine/rendering/bilateral-blur/x.pipeline"),
 		)
 		.expect("Failed to create the X SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
 
 		let pipeline_y = pipeline_x
 			.compile_variant(
 				render_pass_builder,
-				simple_compute::Descriptor::new("Bilateral Blur", "byte-engine/rendering/bilateral-blur/y.besl", "SSGI Blur Y"),
+				simple_compute::Descriptor::new("Bilateral Blur", "byte-engine/rendering/bilateral-blur/y.pipeline"),
 			)
 			.expect("Failed to create the Y SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
 
@@ -119,12 +119,12 @@ impl RenderPass for BilateralBlurPass {
 
 	fn prepare<'a>(
 		&mut self,
-		_frame: &mut ghi::implementation::Frame,
+		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let pass_x = self.pass_x;
-		let pass_y = self.pass_y;
+		let pass_x = self.pass_x.ready(frame)?;
+		let pass_y = self.pass_y.ready(frame)?;
 		let extent = sink.extent();
 
 		Some(crate::rendering::render_pass::allocate_render_command(

@@ -128,11 +128,7 @@ impl BloomPass {
 
 		let extract_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor(
-				"Bloom Extract",
-				"byte-engine/rendering/bloom/extract.besl",
-				"Bloom Extract Shader",
-			),
+			bloom_pipeline_descriptor("Bloom Extract", "byte-engine/rendering/bloom/extract.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
@@ -141,8 +137,7 @@ impl BloomPass {
 			render_pass_builder,
 			bloom_pipeline_descriptor(
 				"Bloom Downsample",
-				"byte-engine/rendering/bloom/downsample.besl",
-				"Bloom Downsample Shader",
+				"byte-engine/rendering/bloom/downsample.pipeline",
 			),
 		)
 		.expect(
@@ -150,11 +145,7 @@ impl BloomPass {
 		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor(
-				"Bloom Upsample",
-				"byte-engine/rendering/bloom/upsample.besl",
-				"Bloom Upsample Shader",
-			),
+			bloom_pipeline_descriptor("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
@@ -163,8 +154,7 @@ impl BloomPass {
 			render_pass_builder,
 			bloom_pipeline_descriptor(
 				"Bloom Composite",
-				"byte-engine/rendering/bloom/composite.besl",
-				"Bloom Composite Shader",
+				"byte-engine/rendering/bloom/composite.pipeline",
 			),
 		)
 		.expect(
@@ -319,15 +309,25 @@ impl RenderPass for BloomPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		let extract_pass = self.extract_pass.ready(frame)?;
+		let downsample_passes = self
+			.downsample_passes
+			.iter_mut()
+			.map(|pass| pass.ready(frame))
+			.collect::<Option<Vec<_>>>()?;
+		let upsample_passes = self
+			.upsample_passes
+			.iter_mut()
+			.map(|pass| pass.ready(frame))
+			.collect::<Option<Vec<_>>>()?;
+		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
 
 		self.resize_images(frame, extent);
 		self.write_parameters(frame, 1.0);
 
-		let extract_pass = self.extract_pass;
-		let downsample_passes = frame_allocator.alloc_slice_copy(&self.downsample_passes);
-		let upsample_passes = frame_allocator.alloc_slice_copy(&self.upsample_passes);
-		let composite_pass = self.composite_pass;
+		let downsample_passes = frame_allocator.alloc_slice_copy(&downsample_passes);
+		let upsample_passes = frame_allocator.alloc_slice_copy(&upsample_passes);
 		let level_count = self.downsample_images.len();
 
 		Some(crate::rendering::render_pass::allocate_render_command(
@@ -373,8 +373,8 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	)
 }
 
-fn bloom_pipeline_descriptor<'a>(label: &'static str, id: &'a str, name: &'a str) -> simple_compute::Descriptor<'a> {
-	simple_compute::Descriptor::new(label, id, name)
+fn bloom_pipeline_descriptor<'a>(label: &'static str, id: &'a str) -> simple_compute::Descriptor<'a> {
+	simple_compute::Descriptor::new(label, id)
 }
 
 #[cfg(test)]

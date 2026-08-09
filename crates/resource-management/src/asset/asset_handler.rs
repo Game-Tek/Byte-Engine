@@ -206,7 +206,54 @@ impl<'a> BakeContext<'a> {
 				_ => LoadErrors::FailedToProcess,
 			})?;
 
-		// Parent resources inherit transitive source provenance so changing a nested asset also rebuilds the parent metadata.
+		self.inherit_dependency_provenance(id).await;
+
+		Ok(dependency)
+	}
+
+	/// Bakes independent dependencies on the shared worker pool while bounding active requests.
+	///
+	/// Results preserve the input order. Use this method when a source format exposes
+	/// several dependencies before any one dependency result is needed.
+	pub async fn bake_dependencies<M: Model>(
+		&self,
+		ids: &[String],
+		max_concurrency: usize,
+	) -> Result<Vec<ReferenceModel<M>>, LoadErrors> {
+		use utils::r#async::StreamExt as _;
+
+		let max_concurrency = max_concurrency.max(1);
+		let requests = ids.iter().cloned().enumerate().map(|(index, id)| async move {
+			self.asset_manager
+				.dispatch_bake(&id, true)
+				.await
+				.map_err(|error| match error {
+					super::asset_manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
+					_ => LoadErrors::FailedToProcess,
+				})?;
+			Ok::<_, LoadErrors>((index, id))
+		});
+		let completed = utils::r#async::stream::iter(requests)
+			.buffer_unordered(max_concurrency)
+			.collect::<Vec<_>>()
+			.await;
+		let mut completed = completed.into_iter().collect::<Result<Vec<_>, _>>()?;
+		completed.sort_unstable_by_key(|(index, _)| *index);
+
+		let mut dependencies = Vec::with_capacity(completed.len());
+		for (_, id) in completed {
+			let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await else {
+				return Err(LoadErrors::FailedToProcess);
+			};
+			dependencies.push(resource.into());
+			self.inherit_dependency_provenance(&id).await;
+		}
+
+		Ok(dependencies)
+	}
+
+	/// Adds one stored dependency's transitive source versions to the parent bake.
+	async fn inherit_dependency_provenance(&self, id: &str) {
 		if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await {
 			let mut dependencies = self.asset_dependencies.lock();
 			for dependency in resource.asset_dependencies() {
@@ -217,8 +264,6 @@ impl<'a> BakeContext<'a> {
 				}
 			}
 		}
-
-		Ok(dependency)
 	}
 
 	/// Stores the requested resource after all of its generated dependencies are ready.

@@ -20,11 +20,7 @@ impl ImageBypassPass {
 	) -> Self {
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"Render Pass Bypass",
-				"byte-engine/rendering/blit/image.besl",
-				"Render Pass Bypass Compute Shader",
-			),
+			simple_compute::Descriptor::new("Render Pass Bypass", "byte-engine/rendering/blit/image.pipeline"),
 		)
 		.expect("Failed to create the render-pass bypass shader. The most likely cause is an incompatible shader interface.");
 		let render_pass = pipeline
@@ -65,11 +61,7 @@ impl BaseSwapchainBlitPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new(
-				"Swapchain Blit",
-				"byte-engine/rendering/blit/swapchain.besl",
-				"Swapchain Blit Compute Shader",
-			),
+			simple_compute::Descriptor::new("Swapchain Blit", "byte-engine/rendering/blit/swapchain.pipeline"),
 		)
 		.expect("Failed to create swapchain blit shader");
 

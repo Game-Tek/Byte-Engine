@@ -6,8 +6,7 @@ use crate::rendering::{
 };
 
 const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
-	shader_id: "byte-engine/rendering/agx/tone-mapping.besl",
-	shader_name: "AGX Tone Mapping Compute Shader",
+	pipeline_id: "byte-engine/rendering/agx/tone-mapping.pipeline",
 	descriptor_set_name: "AGX Tonemap Pass Descriptor Set",
 	shader_error: "Failed to create AGX tone mapping shader",
 };

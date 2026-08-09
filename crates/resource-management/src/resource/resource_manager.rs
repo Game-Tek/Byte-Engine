@@ -162,6 +162,30 @@ impl ResourceManager {
 		Ok(reference)
 	}
 
+	/// Loads independent resources concurrently while preserving the requested order.
+	///
+	/// Use this method when every ID is known before any individual result is
+	/// needed. `max_concurrency` bounds debug baking and storage pressure.
+	pub async fn request_many<T: Resource>(&self, ids: &[String], max_concurrency: usize) -> Result<Vec<Reference<T>>, String>
+	where
+		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
+		SerializableResource: TryInto<ReferenceModel<T::Model>>,
+	{
+		use utils::r#async::StreamExt as _;
+
+		let requests = ids
+			.iter()
+			.enumerate()
+			.map(|(index, id)| async move { self.request(id).await.map(|resource| (index, resource)) });
+		let completed = utils::r#async::stream::iter(requests)
+			.buffer_unordered(max_concurrency.max(1))
+			.collect::<Vec<_>>()
+			.await;
+		let mut completed = completed.into_iter().collect::<Result<Vec<_>, _>>()?;
+		completed.sort_unstable_by_key(|(index, _)| *index);
+		Ok(completed.into_iter().map(|(_, resource)| resource).collect())
+	}
+
 	/// Returns one page of typed resources that match indexed metadata.
 	///
 	/// Await this query, then use each

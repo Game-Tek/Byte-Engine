@@ -1,0 +1,1 @@
+{"name":"Sky Transmittance LUT","kind":{"type":"compute","shader":"byte-engine/rendering/sky-transmittance.besl"}}

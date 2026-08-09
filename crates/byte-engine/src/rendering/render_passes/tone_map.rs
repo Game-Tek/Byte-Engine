@@ -6,19 +6,15 @@ use crate::rendering::render_passes::blit::SwapchainBlitPass;
 
 /// The `Configuration` struct keeps algorithm-specific tonemap resource names behind the shared pass implementation.
 pub(super) struct Configuration {
-	pub shader_id: &'static str,
-	pub shader_name: &'static str,
+	pub pipeline_id: &'static str,
 	pub descriptor_set_name: &'static str,
 	pub shader_error: &'static str,
 }
 
 /// Creates the reusable pipeline for one tonemap algorithm.
 pub(super) fn create_pipeline(render_pass_builder: &mut RenderPassBuilder<'_>, configuration: &Configuration) -> Pipeline {
-	Pipeline::compile(
-		render_pass_builder,
-		Descriptor::new("Tonemap", configuration.shader_id, configuration.shader_name),
-	)
-	.expect(configuration.shader_error)
+	Pipeline::compile(render_pass_builder, Descriptor::new("Tonemap", configuration.pipeline_id))
+		.expect(configuration.shader_error)
 }
 
 /// The `ToneMapPasses` struct keeps the active tonemap and its swapchain-forwarding bypass together.

@@ -144,7 +144,6 @@ pub struct RenderPassBuilder<'a> {
 	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
-	shader_resources: Option<&'a resource_management::resource::resource_manager::ResourceManager>,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 }
 
@@ -162,17 +161,8 @@ impl<'a> RenderPassBuilder<'a> {
 			swapchain,
 			consumed_resources: Vec::new(),
 			images,
-			shader_resources: None,
 			pipeline_manager,
 		}
-	}
-
-	pub fn with_shader_resources(
-		mut self,
-		shader_resources: &'a resource_management::resource::resource_manager::ResourceManager,
-	) -> Self {
-		self.shader_resources = Some(shader_resources);
-		self
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
@@ -227,18 +217,6 @@ impl<'a> RenderPassBuilder<'a> {
 	/// Returns a client for requesting pipelines shared by renderer dependants.
 	pub fn pipeline_manager(&self) -> &crate::rendering::PipelineManagerClient {
 		&self.pipeline_manager
-	}
-
-	/// Loads a previously baked shader resource and creates its GHI shader handle.
-	pub(crate) fn load_shader(
-		&mut self,
-		id: &str,
-		name: &str,
-	) -> Result<crate::rendering::resource_loading::LoadedShader, String> {
-		let resource_manager = self.shader_resources.ok_or_else(|| {
-			format!("Failed to load render-pass shader '{id}'. The renderer has no resource manager configured.")
-		})?;
-		crate::rendering::resource_loading::load_shader(self.context, resource_manager, id, name)
 	}
 
 	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {

@@ -1,0 +1,1 @@
+{"name":"Bloom Upsample","kind":{"type":"compute","shader":"byte-engine/rendering/bloom/upsample.besl"}}

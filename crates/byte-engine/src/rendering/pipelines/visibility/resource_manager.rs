@@ -74,6 +74,32 @@ impl VisibilityPipelineResourceManager {
 		}
 	}
 
+	/// Starts storage reads and debug bakes without mutating worker-owned GPU state.
+	async fn prefetch_command(&self, command: &VisibilityTransferCommand) {
+		match command {
+			VisibilityTransferCommand::RequestMesh {
+				source: MeshSource::Resource(id),
+				..
+			} => {
+				let _ = self.resource_manager.request::<ResourceMesh>(id).await;
+			}
+			VisibilityTransferCommand::RequestImage { key } => {
+				let _ = self.resource_manager.request::<ResourceImage>(key.as_str()).await;
+			}
+			VisibilityTransferCommand::RequestEnvironment { id } => {
+				let _ = self.resource_manager.request::<ResourceImage>(id).await;
+			}
+			VisibilityTransferCommand::RequestMesh {
+				source: MeshSource::Generated(_),
+				..
+			}
+			| VisibilityTransferCommand::ConfigureMaterialPipeline(_)
+			| VisibilityTransferCommand::EnqueueTextureUpload { .. }
+			| VisibilityTransferCommand::EnqueueEnvironmentUpload { .. }
+			| VisibilityTransferCommand::Shutdown => {}
+		}
+	}
+
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
 	pub(crate) fn configure_material_pipeline(&mut self, mut config: MaterialPipelineConfig) {
 		self.factory = config.pipeline_factory.take();
@@ -96,10 +122,23 @@ impl VisibilityPipelineResourceManager {
 				};
 
 				let primitive_count = resource.resource().primitives.len();
-				for primitive_index in 0..primitive_count {
-					// Own only the ID that crosses this await; the mesh reference
-					// remains intact for its later borrowed staging load.
-					let material_id = resource.resource().primitives[primitive_index].material.id.clone();
+				let mut material_ids = Vec::with_capacity(primitive_count);
+				for primitive in &resource.resource().primitives {
+					if !material_ids.iter().any(|id| id == &primitive.material.id) {
+						material_ids.push(primitive.material.id.clone());
+					}
+				}
+				// Start all debug material bakes and resource reads before ordered GPU
+				// adoption. The later requests reuse these stored results.
+				if self
+					.resource_manager
+					.request_many::<ResourceVariant>(&material_ids, 8)
+					.await
+					.is_err()
+				{
+					return Err(());
+				}
+				for material_id in material_ids {
 					self.request_material(&material_id).await;
 				}
 
@@ -822,7 +861,25 @@ impl VisibilityPipelineResourceManagerWorker {
 				command
 			};
 
-			if self.handle_command(command).await == ResourceWorkerFlow::Stop {
+			// Drain a bounded batch so independent source preparation overlaps. GPU
+			// resource mutation and upload adoption remain ordered below.
+			let mut commands = Vec::with_capacity(8);
+			commands.push(command);
+			while commands.len() < 8 {
+				match self.commands.try_recv() {
+					Ok(Some(command)) => commands.push(command),
+					Ok(None) | Err(_) => break,
+				}
+			}
+			utils::r#async::join_all(commands.iter().map(|command| self.resource_manager.prefetch_command(command))).await;
+			let mut stop = false;
+			for command in commands {
+				if self.handle_command(command).await == ResourceWorkerFlow::Stop {
+					stop = true;
+					break;
+				}
+			}
+			if stop {
 				break;
 			}
 

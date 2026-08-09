@@ -30,6 +30,14 @@ pub enum PipelineState {
 	Failed,
 }
 
+/// The `ComputePipeline` struct provides a compiled handle and its reflected dispatch contract.
+#[derive(Clone)]
+pub(crate) struct ComputePipeline {
+	pub(crate) handle: ghi::PipelineHandle,
+	pub(crate) workgroup: utils::Extent,
+	pub(crate) bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+}
+
 /// The `PipelineManagerClient` struct lets renderer dependants request and poll
 /// asynchronously compiled pipelines without blocking.
 ///
@@ -67,6 +75,11 @@ impl PipelineManagerClient {
 			PipelineState::Ready(handle) => Some(handle),
 			PipelineState::Pending | PipelineState::Failed => None,
 		}
+	}
+
+	/// Returns a published compute pipeline with the metadata needed for descriptor adoption.
+	pub(crate) fn compute_pipeline(&self, pipeline: PipelineRef) -> Option<ComputePipeline> {
+		self.shared.compute_pipelines.read().get(&pipeline.0).cloned()
 	}
 
 	/// Coalesces a request before placing compilation work on the shared queue.
@@ -137,17 +150,24 @@ impl PipelineManagerServer {
 			})?;
 		match &pipeline.resource().kind {
 			PipelineKind::Compute { shader, push_constants } => {
-				let (shader, stage) = load_shader(&mut self.factory, resources, shader).await?;
+				let prepared = prepare_shader(resources, shader).await?;
+				let workgroup = prepared.workgroup.ok_or_else(|| {
+					format!("Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata.")
+				})?;
+				let bindings = prepared.bindings.clone();
+				let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
 				let ranges = push_constants
 					.iter()
 					.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
 					.collect::<Vec<_>>();
-				Ok(DetachedPipeline::Compute(
-					self.factory.create_compute_pipeline(
+				Ok(DetachedPipeline::Compute {
+					pipeline: self.factory.create_compute_pipeline(
 						ghi::pipelines::compute::Builder::new(&ranges, ghi::ShaderParameter::new(&shader, stage))
 							.name(&pipeline.resource().name),
 					),
-				))
+					workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
+					bindings,
+				})
 			}
 			PipelineKind::Raster {
 				shaders,
@@ -158,10 +178,14 @@ impl PipelineManagerServer {
 				cull_mode,
 				depth_write,
 			} => {
-				let mut loaded = Vec::with_capacity(shaders.len());
-				for shader in shaders {
-					loaded.push(load_shader(&mut self.factory, resources, shader).await?);
-				}
+				// Resource reads and debug bakes are independent of mutable GHI state, so
+				// prepare every shader before adopting handles in descriptor order.
+				let prepared =
+					utils::r#async::try_join_all(shaders.iter().map(|shader| prepare_shader(resources, shader))).await?;
+				let loaded = prepared
+					.into_iter()
+					.map(|shader| adopt_shader(&mut self.factory, shader))
+					.collect::<Result<Vec<_>, _>>()?;
 				let parameters = loaded
 					.iter()
 					.map(|(handle, stage)| ghi::ShaderParameter::new(handle, *stage))
@@ -199,13 +223,19 @@ impl PipelineManagerServer {
 	}
 }
 
-/// Loads one shader artifact and creates its worker-local handle.
-async fn load_shader(
-	factory: &mut ghi::implementation::Factory,
-	resources: &resource_management::ResourceManager,
-	id: &str,
-) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
-	use ghi::Device as _;
+/// The `PreparedShader` struct keeps resource-owned shader inputs ready for ordered GHI adoption.
+struct PreparedShader {
+	id: String,
+	stage: ghi::ShaderTypes,
+	artifact: resource_management::resources::material::ShaderArtifact,
+	workgroup: Option<(u32, u32, u32)>,
+	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
+	bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	backing: resource_management::resource::reader::ResourceReaderBacking,
+}
+
+/// Loads one shader resource without borrowing mutable GHI factory state.
+async fn prepare_shader(resources: &resource_management::ResourceManager, id: &str) -> Result<PreparedShader, String> {
 	use resource_management::resource::ReadStorageBackend as _;
 
 	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> =
@@ -222,14 +252,59 @@ async fn load_shader(
 		.iter()
 		.map(crate::rendering::resource_loading::binding_to_descriptor)
 		.collect::<Vec<_>>();
+	let bindings = shader
+		.resource()
+		.interface
+		.bindings
+		.iter()
+		.map(|binding| resource_management::shader::besl::evaluation::BindingUsage {
+			name: binding.name.clone(),
+			kind: binding.kind,
+			count: binding.count,
+			slot: binding.slot,
+			buffer_stride: binding.buffer_stride,
+			read: binding.read,
+			write: binding.write,
+		})
+		.collect::<Vec<_>>()
+		.into();
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
-	let source = crate::rendering::resource_loading::shader_artifact_source(&artifact, workgroup, backing.as_slice())?;
-	let handle = factory.create_shader(Some(id), source, stage, descriptors).map_err(|_| {
-		format!("Shader '{id}' could not be created. The most likely cause is an incompatible persisted interface.")
-	})?;
-	Ok((handle, stage))
+	// Validate persisted source metadata before mutable GHI adoption begins.
+	let _ = crate::rendering::resource_loading::shader_artifact_source(&artifact, workgroup, backing.as_slice())?;
+	Ok(PreparedShader {
+		id: id.to_string(),
+		stage,
+		artifact,
+		workgroup,
+		descriptors,
+		bindings,
+		backing,
+	})
+}
+
+/// Creates one shader handle after asynchronous resource preparation has completed.
+fn adopt_shader(
+	factory: &mut ghi::implementation::Factory,
+	prepared: PreparedShader,
+) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
+	use ghi::Device as _;
+
+	let source = crate::rendering::resource_loading::shader_artifact_source(
+		&prepared.artifact,
+		prepared.workgroup,
+		prepared.backing.as_slice(),
+	)?;
+	let handle = factory
+		.create_shader(Some(&prepared.id), source, prepared.stage, prepared.descriptors)
+		.map_err(|_| {
+			format!(
+				"Shader '{}' could not be created. The most likely cause is an incompatible persisted interface.",
+				prepared.id
+			)
+		})?;
+	Ok((handle, prepared.stage))
 }
 
 fn data_type(format: resource_management::resources::pipeline::Format) -> ghi::DataTypes {
@@ -275,6 +350,7 @@ mod tests {
 			PipelineManagerClient {
 				shared: Arc::new(PipelineManagerShared {
 					entries: RwLock::new(HashMap::new()),
+					compute_pipelines: RwLock::new(HashMap::new()),
 				}),
 				requests,
 			},
@@ -321,6 +397,7 @@ impl PipelineManager {
 		let (completion_sender, completion_receiver) = kanal::unbounded();
 		let shared = Arc::new(PipelineManagerShared {
 			entries: RwLock::new(HashMap::new()),
+			compute_pipelines: RwLock::new(HashMap::new()),
 		});
 		let servers = (0..server_count.max(1))
 			.filter_map(|_| {
@@ -350,7 +427,22 @@ impl PipelineManager {
 	pub(crate) fn publish(&mut self, frame: &mut ghi::implementation::Frame) {
 		while let Ok(Some(completion)) = self.completions.try_recv() {
 			let state = match completion.result {
-				Ok(DetachedPipeline::Compute(pipeline)) => PipelineState::Ready(frame.intern_compute_pipeline(pipeline)),
+				Ok(DetachedPipeline::Compute {
+					pipeline,
+					workgroup,
+					bindings,
+				}) => {
+					let handle = frame.intern_compute_pipeline(pipeline);
+					self.shared.compute_pipelines.write().insert(
+						completion.key,
+						ComputePipeline {
+							handle,
+							workgroup,
+							bindings,
+						},
+					);
+					PipelineState::Ready(handle)
+				}
 				Ok(DetachedPipeline::Raster(pipeline)) => PipelineState::Ready(frame.intern_raster_pipeline(pipeline)),
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
@@ -364,6 +456,7 @@ impl PipelineManager {
 
 struct PipelineManagerShared {
 	entries: RwLock<HashMap<PipelineKey, PipelineState>>,
+	compute_pipelines: RwLock<HashMap<PipelineKey, ComputePipeline>>,
 }
 
 struct PipelineRequest {
@@ -377,7 +470,11 @@ struct PipelineCompletion {
 }
 
 enum DetachedPipeline {
-	Compute(ghi::factory::ComputePipeline),
+	Compute {
+		pipeline: ghi::factory::ComputePipeline,
+		workgroup: utils::Extent,
+		bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	},
 	Raster(ghi::factory::RasterPipeline),
 }
 

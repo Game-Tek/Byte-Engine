@@ -1,0 +1,1 @@
+{"name":"Bloom Extract","kind":{"type":"compute","shader":"byte-engine/rendering/bloom/extract.besl"}}

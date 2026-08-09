@@ -1,0 +1,1 @@
+{"name":"SMAA Blend and Neighborhood","kind":{"type":"compute","shader":"byte-engine/rendering/smaa/blend-weights.besl"}}

@@ -1,0 +1,1 @@
+{"name":"Bloom Composite","kind":{"type":"compute","shader":"byte-engine/rendering/bloom/composite.besl"}}

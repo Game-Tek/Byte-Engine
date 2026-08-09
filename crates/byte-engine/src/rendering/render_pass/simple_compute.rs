@@ -8,31 +8,23 @@ use ghi::{
 	},
 	context::{Context as _, ContextCreate as _},
 };
-use resource_management::{
-	shader::besl::evaluation::{BindingKind, BindingUsage, TextureView},
-	types::ShaderTypes as ResourceShaderTypes,
-};
+use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
 use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{allocate_render_command, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::{common_shader_generator::CommonShaderScope, Sink};
 
-/// The `Descriptor` struct describes the stable shader and naming contract for one single-set BESL compute pipeline.
+/// The `Descriptor` struct identifies one single-set compute pipeline and its command label.
 pub struct Descriptor<'a> {
 	label: &'static str,
-	shader_id: &'a str,
-	shader_name: &'a str,
+	pipeline_id: &'a str,
 }
 
 impl<'a> Descriptor<'a> {
-	/// Creates a descriptor for one baked shader resource and its human-readable GPU label.
-	pub fn new(label: &'static str, shader_id: &'a str, shader_name: &'a str) -> Self {
-		Self {
-			label,
-			shader_id,
-			shader_name,
-		}
+	/// Creates a descriptor for one baked pipeline resource and its human-readable command label.
+	pub fn new(label: &'static str, pipeline_id: &'a str) -> Self {
+		Self { label, pipeline_id }
 	}
 }
 
@@ -54,19 +46,19 @@ pub fn compile_test_program(source: &str) -> besl::NodeReference {
 /// The `Pipeline` struct provides reusable compute state to sink-specific retained resource sets.
 #[derive(Clone)]
 pub struct Pipeline {
-	handle: ghi::PipelineHandle,
+	reference: crate::rendering::PipelineRef,
+	pipeline_manager: crate::rendering::PipelineManagerClient,
 	label: &'static str,
-	workgroup: Extent,
-	bindings: Arc<[BindingUsage]>,
+	shared_layout: Option<crate::rendering::PipelineRef>,
 }
 
 impl Pipeline {
-	/// Loads a baked shader and derives its dispatch and binding contracts from the persisted reflected interface.
+	/// Requests a baked pipeline and defers descriptor adoption until compilation is published.
 	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Result<Self, String> {
 		Self::build(render_pass_builder, descriptor, None)
 	}
 
-	/// Loads another baked shader against this pipeline's validated binding layout.
+	/// Requests another baked pipeline against this pipeline's validated binding layout.
 	pub fn compile_variant(
 		&self,
 		render_pass_builder: &mut RenderPassBuilder<'_>,
@@ -81,54 +73,15 @@ impl Pipeline {
 		descriptor: Descriptor<'_>,
 		shared_layout: Option<&Self>,
 	) -> Result<Self, String> {
-		let Descriptor {
-			label,
-			shader_id,
-			shader_name,
-		} = descriptor;
-		let loaded = render_pass_builder.load_shader(shader_id, shader_name)?;
-		if loaded.stage != ResourceShaderTypes::Compute {
-			return Err(format!(
-				"Render-pass shader '{shader_id}' is not a compute shader. The most likely cause is incorrect .besl.bead stage metadata."
-			));
-		}
-		let (width, height, depth) = loaded.interface.workgroup_size.ok_or_else(|| {
-			format!(
-				"Render-pass shader '{shader_id}' has no compute workgroup size. The most likely cause is missing .besl.bead workgroup metadata."
-			)
-		})?;
-		let workgroup = Extent::new(width, height, depth);
-		let bindings = loaded
-			.interface
-			.bindings
-			.into_iter()
-			.map(|binding| BindingUsage {
-				name: binding.name,
-				kind: binding.kind,
-				count: binding.count,
-				slot: binding.slot,
-				buffer_stride: binding.buffer_stride,
-				read: binding.read,
-				write: binding.write,
-			})
-			.collect::<Vec<_>>();
-		validate_binding_schema(&bindings)?;
-		let binding_schema = if let Some(shared_layout) = shared_layout {
-			validate_shared_schema(&shared_layout.bindings, &bindings)?;
-			shared_layout.bindings.clone()
-		} else {
-			bindings.into()
-		};
-		let handle = render_pass_builder.context().create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(&[], ghi::ShaderParameter::new(&loaded.handle, ghi::ShaderTypes::Compute))
-				.name(shader_name),
-		);
+		let Descriptor { label, pipeline_id } = descriptor;
+		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
+		let reference = pipeline_manager.request_pipeline(pipeline_id);
 
 		Ok(Self {
-			handle,
+			reference,
+			pipeline_manager,
 			label,
-			workgroup,
-			bindings: binding_schema,
+			shared_layout: shared_layout.map(|pipeline| pipeline.reference),
 		})
 	}
 
@@ -136,57 +89,48 @@ impl Pipeline {
 	pub fn bind(
 		&self,
 		render_pass_builder: &mut RenderPassBuilder<'_>,
-		descriptor_set_name: &str,
-		resources: &[Resource<'_>],
+		descriptor_set_name: &'static str,
+		resources: &[Resource],
 	) -> Result<Pass, String> {
-		validate_resources(&self.bindings, resources)?;
-
-		let context = render_pass_builder.context();
-		let descriptor_set = context.create_descriptor_set(Some(descriptor_set_name));
-		let mut writes = SmallVec::<[ghi::DescriptorWrite; 8]>::with_capacity(self.bindings.len());
-		for binding in self.bindings.iter() {
-			let resource = resources.iter().find(|resource| resource.name() == binding.name).expect(
-				"Validated compute resource disappeared. The most likely cause is inconsistent named-resource validation.",
-			);
-			writes.push(resource.descriptor_write(descriptor_set, ghi::ResourceSlot::new(binding.slot)));
-		}
-		context.write(&writes);
-
 		Ok(Pass {
-			pipeline: self.handle,
-			descriptor_set,
+			pipeline: self.reference,
+			pipeline_manager: self.pipeline_manager.clone(),
+			shared_layout: self.shared_layout,
+			descriptor_set_name,
+			resources: resources.to_vec(),
+			ready: None,
+			failed: false,
 			label: self.label,
-			workgroup: self.workgroup,
 		})
 	}
 }
 
 /// The `Resource` enum names one concrete resource for a reachable or planned BESL binding.
 #[derive(Clone, Copy)]
-pub enum Resource<'a> {
-	Buffer(&'a str, ghi::BaseBufferHandle),
-	PlannedBuffer(&'a str, ghi::BaseBufferHandle),
-	Image(&'a str, ghi::BaseImageHandle),
-	CombinedImageSampler(&'a str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
-	Swapchain(&'a str, ghi::SwapchainHandle),
+pub enum Resource {
+	Buffer(&'static str, ghi::BaseBufferHandle),
+	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
+	Image(&'static str, ghi::BaseImageHandle),
+	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
+	Swapchain(&'static str, ghi::SwapchainHandle),
 }
 
-impl<'a> Resource<'a> {
-	pub fn buffer(name: &'a str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
+impl Resource {
+	pub fn buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
 		Self::Buffer(name, buffer.into())
 	}
 
 	/// Keeps a buffer ready for a BESL binding that is intentionally not reachable yet.
-	pub fn planned_buffer(name: &'a str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
+	pub fn planned_buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
 		Self::PlannedBuffer(name, buffer.into())
 	}
 
-	pub fn image(name: &'a str, image: impl Into<ghi::BaseImageHandle>) -> Self {
+	pub fn image(name: &'static str, image: impl Into<ghi::BaseImageHandle>) -> Self {
 		Self::Image(name, image.into())
 	}
 
 	pub fn combined_image_sampler(
-		name: &'a str,
+		name: &'static str,
 		image: impl Into<ghi::BaseImageHandle>,
 		sampler: ghi::SamplerHandle,
 		layout: ghi::Layouts,
@@ -194,7 +138,7 @@ impl<'a> Resource<'a> {
 		Self::CombinedImageSampler(name, image.into(), sampler, layout)
 	}
 
-	pub fn swapchain(name: &'a str, swapchain: ghi::SwapchainHandle) -> Self {
+	pub fn swapchain(name: &'static str, swapchain: ghi::SwapchainHandle) -> Self {
 		Self::Swapchain(name, swapchain)
 	}
 
@@ -234,20 +178,80 @@ impl<'a> Resource<'a> {
 }
 
 /// The `Pass` struct provides one sink with a validated pipeline and descriptor set for a single compute dispatch.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Pass {
-	pipeline: ghi::PipelineHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
+	pipeline: crate::rendering::PipelineRef,
+	pipeline_manager: crate::rendering::PipelineManagerClient,
+	shared_layout: Option<crate::rendering::PipelineRef>,
+	descriptor_set_name: &'static str,
+	resources: Vec<Resource>,
+	ready: Option<ReadyPass>,
+	failed: bool,
 	label: &'static str,
-	workgroup: Extent,
 }
 
 impl Pass {
-	/// Records this pass without allocating a render-command closure.
-	pub fn record(&self, command_buffer: &mut ghi::implementation::CommandBufferRecording, extent: Extent) {
-		let command_buffer = command_buffer.bind_compute_pipeline(self.pipeline);
-		command_buffer.bind_descriptor_sets(&[self.descriptor_set]);
-		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
+	/// Adopts a published pipeline and creates this sink's descriptor set once.
+	pub fn ready(&mut self, frame: &mut ghi::implementation::Frame) -> Option<ReadyPass> {
+		use ghi::context::Context as _;
+		use ghi::context::ContextCreate as _;
+
+		if let Some(ready) = self.ready {
+			return Some(ready);
+		}
+		if self.failed {
+			return None;
+		}
+		let compiled = match self.pipeline_manager.get(self.pipeline) {
+			crate::rendering::PipelineState::Pending => return None,
+			crate::rendering::PipelineState::Failed => {
+				log::error!(
+					"Simple compute pipeline is unavailable. The most likely cause is that its pipeline asset or shader dependency failed to bake or compile."
+				);
+				self.failed = true;
+				return None;
+			}
+			crate::rendering::PipelineState::Ready(_) => self.pipeline_manager.compute_pipeline(self.pipeline).expect(
+				"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
+			),
+		};
+		if let Err(error) = validate_binding_schema(&compiled.bindings) {
+			log::error!("Simple compute pipeline adoption failed: {error}");
+			self.failed = true;
+			return None;
+		}
+		if let Some(shared) = self.shared_layout {
+			let shared = self.pipeline_manager.compute_pipeline(shared)?;
+			if let Err(error) = validate_shared_schema(&shared.bindings, &compiled.bindings) {
+				log::error!("Simple compute pipeline adoption failed: {error}");
+				self.failed = true;
+				return None;
+			}
+		}
+		if let Err(error) = validate_resources(&compiled.bindings, &self.resources) {
+			log::error!("Simple compute pipeline adoption failed: {error}");
+			self.failed = true;
+			return None;
+		}
+		let descriptor_set = frame.create_descriptor_set(Some(self.descriptor_set_name));
+		let mut writes = SmallVec::<[ghi::DescriptorWrite; 8]>::with_capacity(compiled.bindings.len());
+		for binding in compiled.bindings.iter() {
+			let resource = self
+				.resources
+				.iter()
+				.find(|resource| resource.name() == binding.name)
+				.unwrap();
+			writes.push(resource.descriptor_write(descriptor_set, ghi::ResourceSlot::new(binding.slot)));
+		}
+		frame.write(&writes);
+		let ready = ReadyPass {
+			pipeline: compiled.handle,
+			descriptor_set,
+			label: self.label,
+			workgroup: compiled.workgroup,
+		};
+		self.ready = Some(ready);
+		Some(ready)
 	}
 
 	/// Allocates a frame command that records this compute pass for the sink extent.
@@ -257,7 +261,7 @@ impl Pass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let pass = *self;
+		let pass = self.ready(_frame)?;
 		let extent = sink.extent();
 
 		Some(allocate_render_command(frame_allocator, move |command_buffer, _| {
@@ -266,6 +270,24 @@ impl Pass {
 				|command_buffer| pass.record(command_buffer, extent),
 			);
 		}))
+	}
+}
+
+/// The `ReadyPass` struct provides immutable recording state after pipeline publication.
+#[derive(Clone, Copy)]
+pub struct ReadyPass {
+	pipeline: ghi::PipelineHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	label: &'static str,
+	workgroup: Extent,
+}
+
+impl ReadyPass {
+	/// Records this pass without allocating a render-command closure.
+	pub fn record(&self, command_buffer: &mut ghi::implementation::CommandBufferRecording, extent: Extent) {
+		let command_buffer = command_buffer.bind_compute_pipeline(self.pipeline);
+		command_buffer.bind_descriptor_sets(&[self.descriptor_set]);
+		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
 	}
 }
 
@@ -306,7 +328,7 @@ fn validate_shared_schema(schema: &[BindingUsage], bindings: &[BindingUsage]) ->
 	}
 }
 
-fn validate_resources(bindings: &[BindingUsage], resources: &[Resource<'_>]) -> Result<(), String> {
+fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Result<(), String> {
 	if let Some(resource) = resources
 		.iter()
 		.find(|resource| !resource.is_planned() && !bindings.iter().any(|binding| binding.name == resource.name()))

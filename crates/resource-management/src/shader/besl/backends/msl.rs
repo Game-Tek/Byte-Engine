@@ -2588,6 +2588,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		string: &mut String,
 		texture_index: &besl::NodeReference,
 		uv: &besl::NodeReference,
+		uv_derivative_x: &besl::NodeReference,
+		uv_derivative_y: &besl::NodeReference,
 		xy_only: bool,
 	) {
 		string.push_str("resources.textures[");
@@ -2599,7 +2601,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push(' ');
 		}
 		self.emit_node_string(string, uv);
-		string.push_str(", level(0.0))");
+		string.push_str(", metal::gradient2d(");
+		self.emit_node_string(string, uv_derivative_x);
+		string.push(',');
+		if !self.minified {
+			string.push(' ');
+		}
+		self.emit_node_string(string, uv_derivative_y);
+		string.push_str("))");
 		if xy_only {
 			string.push_str(".xy");
 		}
@@ -2636,12 +2645,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				return;
 			}
 			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], false);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], false);
 				return;
 			}
 			"sample_normal" => {
 				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], true);
+				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], true);
 				string.push(')');
 				return;
 			}

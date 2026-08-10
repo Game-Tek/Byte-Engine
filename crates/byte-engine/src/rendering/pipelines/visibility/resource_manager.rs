@@ -264,6 +264,21 @@ impl VisibilityPipelineResourceManager {
 		let extent = Extent::from(texture.extent);
 
 		let mip_count = texture.mip_count.max(1);
+		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
+			.map_err(|_| {
+				log::error!(
+					"Visibility texture dimensions are invalid for {}. The most likely cause is that the baked image has a zero width or height.", id
+				);
+			})?;
+		if mip_count > available_mip_count {
+			log::error!(
+				"Visibility texture mip metadata is invalid for {}: declared {}, available {}. The most likely cause is that the baked mip count does not match the image dimensions.",
+				id,
+				mip_count,
+				available_mip_count
+			);
+			return Err(());
+		}
 		let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
 		let mut upload_byte_count = 0usize;
 		for level in 0..mip_count {
@@ -1882,9 +1897,9 @@ mod tests {
 		let extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
 			std::array::from_fn(|level| environment_mip_extent([256, 256, 1], level as u32));
 
-		assert_eq!(extents[0], Extent::square(256));
-		assert_eq!(extents[1], Extent::square(128));
-		assert_eq!(extents[7], Extent::square(2));
+		assert_eq!(extents[0], Extent::new(256, 256, 1));
+		assert_eq!(extents[1], Extent::new(128, 128, 1));
+		assert_eq!(extents[7], Extent::new(2, 2, 1));
 		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[0]), 256 * 256 * 8);
 		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[7]), 2 * 2 * 8);
 	}

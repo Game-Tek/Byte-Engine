@@ -429,6 +429,8 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 			// the linked backend AST can distinguish `textures[slot]` from `.field`.
 			parameters.push(Node::accessor(material_textures, Node::sentence(vec![slot])));
 			parameters.push(Node::member_expression("vertex_uv"));
+			parameters.push(Node::member_expression("uv_derivative_x"));
+			parameters.push(Node::member_expression("uv_derivative_y"));
 		}
 		besl::parser::Expressions::Expression(elements) => {
 			for element in elements {
@@ -1906,14 +1908,24 @@ impl VisibilityShaderScope {
 
 		let sample_function = Node::intrinsic_with_parameters(
 			"sample_material",
-			vec![Node::parameter("texture_index", "u32"), Node::parameter("uv", "vec2f")],
+			vec![
+				Node::parameter("texture_index", "u32"),
+				Node::parameter("uv", "vec2f"),
+				Node::parameter("uv_derivative_x", "vec2f"),
+				Node::parameter("uv_derivative_y", "vec2f"),
+			],
 			Node::sentence(vec![Node::member_expression("textures")]),
 			"vec4f",
 		);
 
 		let sample_normal_function = Node::intrinsic_with_parameters(
 			"sample_normal",
-			vec![Node::parameter("texture_index", "u32"), Node::parameter("uv", "vec2f")],
+			vec![
+				Node::parameter("texture_index", "u32"),
+				Node::parameter("uv", "vec2f"),
+				Node::parameter("uv_derivative_x", "vec2f"),
+				Node::parameter("uv_derivative_y", "vec2f"),
+			],
 			Node::sentence(vec![
 				Node::member_expression("textures"),
 				Node::member_expression("unit_vector_from_xy"),
@@ -2292,6 +2304,47 @@ mod tests {
 		assert!(source.contains("TriangleInterpolation compute_triangle_interpolation("));
 		assert!(source.contains("triangle_raw_ddx"));
 		assert_eq!(source.matches("float inverse_determinant").count(), 1);
+	}
+
+	/// Verifies compute material sampling forwards analytic UV gradients so hardware selects the baked mip chain.
+	#[compio::test]
+	async fn material_texture_samples_use_analytic_gradients_on_every_backend() {
+		let material = material_metadata! {
+			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
+		};
+		let shader_node = besl::parse("main: fn () -> void { albedo = sample_material(base_color); }")
+			.expect("Textured material should parse.");
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = besl::lex(shader_generator.transform(shader_node, &material))
+			.expect("Textured material should produce valid BESL.");
+		let main = shader
+			.get_main()
+			.expect("Textured material should have a compute entry point.");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
+
+		let glsl = GLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Textured material should lower to GLSL.");
+		let hlsl = HLSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Textured material should lower to HLSL.");
+		let msl = MSLShaderGenerator::new()
+			.generate(&settings, &main)
+			.expect("Textured material should lower to MSL.");
+
+		assert!(glsl.contains("textureGrad(textures[nonuniformEXT("));
+		assert!(glsl.contains("vertex_uv, uv_derivative_x, uv_derivative_y"));
+		assert!(hlsl.contains(".SampleGrad(textures_sampler, vertex_uv, uv_derivative_x, uv_derivative_y)"));
+		assert!(msl.contains("metal::gradient2d(uv_derivative_x, uv_derivative_y)"));
+		assert!(!hlsl.contains(".SampleLevel(textures_sampler"));
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&msl,
+			"visibility-material-gradient-sampling",
+		)
+		.await
+		.expect("Gradient-sampled visibility material should compile with Metal.");
 	}
 
 	/// Verifies generated material reconstruction includes only the UV and tangent work required by the material body.

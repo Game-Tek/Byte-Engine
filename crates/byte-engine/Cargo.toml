@@ -63,4 +63,5 @@ half = "2.4.1"
 bitflags = "2.11.1"
 bumpalo = { version = "3", features = ["allocator_api", "collections"] }
 compio = { version = "0.19.1", features = ["fs", "io", "macros", "time"] }
+crossbeam-queue = "0.3.12"
 kanal = "0.1.1"

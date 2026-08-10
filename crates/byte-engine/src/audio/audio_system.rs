@@ -9,7 +9,7 @@ use ahi::{
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
 	graph::{AudioGraphTime, PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
-	sample_loader::{LoadedAudioSample, AUDIO_GRAPH_CAPACITY},
+	sample_loader::{AudioSampleLease, AudioSampleLeaseId, AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY},
 };
 use crate::core::{factory::Handle, Entity};
 
@@ -48,7 +48,7 @@ pub struct DefaultAudioSystem {
 	mix_buffer: Vec<f32>,
 	graph_buffer: Vec<f32>,
 	last_reported_underrun_count: usize,
-	sample_cache_prune_requested: bool,
+	released_sample_leases: Vec<AudioSampleLeaseId>,
 }
 
 impl DefaultAudioSystem {
@@ -74,7 +74,7 @@ impl DefaultAudioSystem {
 			mix_buffer: vec![0.0; period_size],
 			graph_buffer: vec![0.0; period_size],
 			last_reported_underrun_count: 0,
-			sample_cache_prune_requested: false,
+			released_sample_leases: Vec::with_capacity(AUDIO_SAMPLE_RELEASE_CAPACITY),
 		})
 	}
 
@@ -106,7 +106,7 @@ impl DefaultAudioSystem {
 	pub(crate) fn create_audio_graph(
 		&mut self,
 		handle: Handle,
-		sample: Arc<LoadedAudioSample>,
+		sample: AudioSampleLease,
 		render_plan: PreparedAudioGraphRenderPlan,
 	) {
 		self.remove_audio_graph(handle);
@@ -115,7 +115,7 @@ impl DefaultAudioSystem {
 				"Audio graph was not created. The audio worker already has the maximum of {} active graphs.",
 				AUDIO_GRAPH_CAPACITY
 			);
-			self.sample_cache_prune_requested = true;
+			self.released_sample_leases.push(sample.into_id());
 			return;
 		}
 		self.audio_graphs.push(AudioGraphPlayer::new(handle, sample, render_plan));
@@ -125,8 +125,7 @@ impl DefaultAudioSystem {
 	pub(crate) fn remove_audio_graph(&mut self, handle: Handle) {
 		if let Some(index) = self.audio_graphs.iter().position(|graph| graph.handle == handle) {
 			let graph = self.audio_graphs.swap_remove(index);
-			drop(graph);
-			self.sample_cache_prune_requested = true;
+			self.released_sample_leases.push(graph.into_sample_lease_id());
 		}
 	}
 
@@ -134,8 +133,14 @@ impl DefaultAudioSystem {
 		self.audio_graphs.len()
 	}
 
-	pub(crate) fn take_sample_cache_prune_request(&mut self) -> bool {
-		std::mem::take(&mut self.sample_cache_prune_requested)
+	/// Flushes returned lease IDs while retaining any that do not fit yet.
+	pub(crate) fn flush_sample_lease_releases(&mut self, mut release: impl FnMut(AudioSampleLeaseId) -> bool) {
+		while let Some(id) = self.released_sample_leases.last().copied() {
+			if !release(id) {
+				break;
+			}
+			self.released_sample_leases.pop();
+		}
 	}
 }
 
@@ -248,9 +253,15 @@ impl AudioSystem for DefaultAudioSystem {
 				!playing_sound.generator.done(settings, state)
 			});
 		}
-		let audio_graph_count = self.audio_graphs.len();
-		self.audio_graphs.retain(|graph| !graph.finished());
-		self.sample_cache_prune_requested |= self.audio_graphs.len() != audio_graph_count;
+		let mut index = 0;
+		while index < self.audio_graphs.len() {
+			if self.audio_graphs[index].finished() {
+				let graph = self.audio_graphs.swap_remove(index);
+				self.released_sample_leases.push(graph.into_sample_lease_id());
+			} else {
+				index += 1;
+			}
+		}
 
 		true
 	}
@@ -266,7 +277,7 @@ struct Source {
 /// The `SampleNode` struct retains resampling state for one immutable loaded
 /// sample within an audio graph.
 struct SampleNode {
-	sample: Arc<LoadedAudioSample>,
+	sample: AudioSampleLease,
 	playback_mode: SamplePlaybackMode,
 	playback_rate: PlaybackRate,
 	source_frame: u64,
@@ -275,7 +286,7 @@ struct SampleNode {
 }
 
 impl SampleNode {
-	fn new(sample: Arc<LoadedAudioSample>, playback_mode: SamplePlaybackMode, playback_rate: PlaybackRate) -> Self {
+	fn new(sample: AudioSampleLease, playback_mode: SamplePlaybackMode, playback_rate: PlaybackRate) -> Self {
 		Self {
 			sample,
 			playback_mode,
@@ -406,7 +417,7 @@ struct AudioGraphPlayer {
 }
 
 impl AudioGraphPlayer {
-	fn new(handle: Handle, sample: Arc<LoadedAudioSample>, render_plan: PreparedAudioGraphRenderPlan) -> Self {
+	fn new(handle: Handle, sample: AudioSampleLease, render_plan: PreparedAudioGraphRenderPlan) -> Self {
 		Self {
 			handle,
 			sample: SampleNode::new(sample, render_plan.playback_mode, render_plan.playback_rate),
@@ -474,6 +485,10 @@ impl AudioGraphPlayer {
 	fn finished(&self) -> bool {
 		self.sample.finished && (self.drain_latency == 0 || self.drain_remaining == Some(0))
 	}
+
+	fn into_sample_lease_id(self) -> AudioSampleLeaseId {
+		self.sample.sample.into_id()
+	}
 }
 
 #[cfg(test)]
@@ -494,7 +509,7 @@ mod tests {
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
 			graph::{AudioGraphRenderPlan, AudioProcessor, PlaybackRate, SamplePlaybackMode},
-			sample_loader::LoadedAudioSample,
+			sample_loader::AudioSampleLease,
 		},
 		core::{factory::Factory, listener::Listener},
 	};
@@ -564,11 +579,7 @@ mod tests {
 
 	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {
 		SampleNode::new(
-			Arc::new(LoadedAudioSample::from_normalized_samples(
-				source_rate,
-				1,
-				samples.to_vec().into_boxed_slice(),
-			)),
+			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
 			playback_mode,
 			PlaybackRate::UNITY,
 		)
@@ -596,11 +607,7 @@ mod tests {
 		let _ = listener.read();
 		AudioGraphPlayer::new(
 			handle,
-			Arc::new(LoadedAudioSample::from_normalized_samples(
-				source_rate,
-				1,
-				samples.to_vec().into_boxed_slice(),
-			)),
+			AudioSampleLease::for_test(source_rate, 1, samples.to_vec().into_boxed_slice()),
 			AudioGraphRenderPlan {
 				playback_mode,
 				playback_rate,
@@ -772,15 +779,15 @@ mod tests {
 			denominator: 2,
 		};
 		let mut expected = SampleNode::new(
-			Arc::new(LoadedAudioSample::from_normalized_samples(
-				5,
-				1,
-				vec![0.0; 7].into_boxed_slice(),
-			)),
+			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
 			SamplePlaybackMode::Once,
 			rate,
 		);
-		let mut actual = SampleNode::new(expected.sample.clone(), SamplePlaybackMode::Once, rate);
+		let mut actual = SampleNode::new(
+			AudioSampleLease::for_test(5, 1, vec![0.0; 7].into_boxed_slice()),
+			SamplePlaybackMode::Once,
+			rate,
+		);
 
 		let expected_count = (0..16).take_while(|_| expected.next(8).is_some()).count();
 		let actual_count = actual.advance_muted(8, 16);

@@ -33,6 +33,7 @@ pub use audio_system::{AudioSystem, DefaultAudioSystem};
 pub use emitter::Emitter;
 pub use generator::{Generator, PlaybackSettings, PlaybackState};
 pub use round_robin::RoundRobin;
+pub use sample_loader::{AudioSamplePoolConfig, DEFAULT_AUDIO_SAMPLE_POOL_BYTE_BUDGET};
 pub use sound::Sound;
 pub use source::Source;
 pub use synthesizer::Synthesizer;

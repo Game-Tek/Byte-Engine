@@ -196,8 +196,8 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	input_system.create_device(&gamepad);
 }
 
-/// Starts the audio worker, its async resource loader, and the standard audio
-/// entity listeners.
+/// Starts the audio worker, its byte-bounded global sample pool, and the
+/// standard audio entity listeners.
 ///
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
@@ -215,7 +215,8 @@ pub fn setup_default_audio(
 	}
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 	let mut deletions_listener = application.world.delete_channel().listener();
-	let (mut sample_loader_client, sample_loader) = AudioSampleLoader::new(application.resource_manager.clone());
+	let (mut sample_loader_client, sample_loader) =
+		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());
 
 	spawn_loading_task(Box::new(move |runtime| {
 		runtime.spawn(sample_loader.run()).detach();
@@ -260,9 +261,7 @@ pub fn setup_default_audio(
 						audio_system.remove_audio_graph(handle);
 					}
 
-					if audio_system.take_sample_cache_prune_request() {
-						sample_loader_client.request_cache_prune();
-					}
+					audio_system.flush_sample_lease_releases(|id| sample_loader_client.return_lease(id));
 					sample_loader_client.update(|handle, sample, render_plan| {
 						audio_system.create_audio_graph(handle, sample, render_plan);
 					});
@@ -290,6 +289,8 @@ impl<T, E: std::fmt::Display> LogResult for Result<T, E> {
 	}
 }
 
+use std::num::{NonZero, NonZeroUsize};
+
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 #[cfg(debug_assertions)]
 use resource_management::asset::{
@@ -315,7 +316,7 @@ use crate::{
 	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
 	audio::{
 		audio_system::{AudioSystem, DefaultAudioSystem},
-		sample_loader::AudioSampleLoader,
+		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
 	},
 	core::listener::Listener as _,
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},

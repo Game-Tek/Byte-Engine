@@ -236,6 +236,7 @@ dependencies = [
  "byte-engine-utils",
  "colored",
  "compio",
+ "crossbeam-queue",
  "ctrlc",
  "downcast-rs 2.0.2",
  "dual_quaternion",

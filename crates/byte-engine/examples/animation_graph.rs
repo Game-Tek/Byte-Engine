@@ -18,6 +18,7 @@ use byte_engine::{
 		},
 		Application, Parameter,
 	},
+	audio::AudioSamplePoolConfig,
 	core::{channel::Channel as _, EntityHandle},
 	gameplay::{Object, Transform, TransformationUpdate},
 	rendering::{window::Window, Camera, UpdatePose},
@@ -88,7 +89,7 @@ fn main() {
 		);
 	}
 	setup_default_input(&mut app);
-	setup_default_audio(&mut app, |task| loading_tasks.push(task));
+	setup_default_audio(&mut app, AudioSamplePoolConfig::default(), |task| loading_tasks.push(task));
 	setup_pbr_visibility_shading_render_pipeline(&mut app, |task| loading_tasks.push(task));
 
 	let graph = locomotion_graph();

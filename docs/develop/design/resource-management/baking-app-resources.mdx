@@ -61,7 +61,18 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   'character.fbx#animations/Walk'
 ```
 
-The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
+The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads.
+
+Use packed storage when you want all binary payloads in one `resources.pack` file:
+
+```bash
+beld --source "$PWD/assets" --destination "$PWD/resources" \
+  --storage-mode packed bake
+```
+
+The default `files` mode writes one hash-named payload file per resource. BELD records the selected mode in `resources.db`, and the application discovers it when opening the store. Clear the destination before changing its mode.
+
+Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
 ## Check the baked output
 

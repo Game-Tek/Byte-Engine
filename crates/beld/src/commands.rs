@@ -4,7 +4,7 @@ use resource_management::{
 	asset::{asset_manager::AssetManager, FileStorageBackend, ResourceId},
 	resource::{
 		storage_backend::{Query, QueryCursor, QueryError},
-		ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid, WriteStorageBackend,
+		ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid, ResourceStorageMode, WriteStorageBackend,
 	},
 	QueryableValue,
 };
@@ -508,11 +508,23 @@ fn open_read_only_storage(destination_path: String, operation: &str) -> Result<R
 	})
 }
 
-pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> Result<(), i32> {
+pub fn bake(
+	source_path: String,
+	destination_path: String,
+	ids: Vec<String>,
+	storage_mode: Option<ResourceStorageMode>,
+) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
 	let asset_storage_backend = FileStorageBackend::new(source_path.clone());
 
-	let resource_storage_backend = RedbStorageBackend::new_writable(destination_path.into());
+	let destination_path = destination_path.into();
+	let resource_storage_backend = match storage_mode {
+		Some(mode) => RedbStorageBackend::new_writable_with_mode(destination_path, mode).map_err(|error| {
+			log::error!("Failed to bake resources. {error}");
+			1
+		})?,
+		None => RedbStorageBackend::new_writable(destination_path),
+	};
 	let asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);
 	let ids = if ids.is_empty() {
 		discover_asset_ids(&source_path, &asset_manager)?
@@ -960,6 +972,7 @@ mod tests {
 				assets_path.to_string_lossy().into_owned(),
 				resources_path.to_string_lossy().into_owned(),
 				Vec::new(),
+				None,
 			),
 			Err(1)
 		);

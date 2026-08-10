@@ -12,12 +12,21 @@ pub struct FileResourceReader {
 }
 
 impl FileResourceReader {
-	/// Maps an asynchronously opened payload file for direct reads into caller-provided memory.
+	/// Maps a complete payload file for direct reads into caller-provided memory.
 	pub fn new(file: impl memmap2::MmapAsRawDesc, size: u64) -> Result<Self, ()> {
+		Self::new_range(file, size, 0, size)
+	}
+
+	/// Maps one resource range from a shared payload file.
+	pub fn new_range(file: impl memmap2::MmapAsRawDesc, file_size: u64, offset: u64, size: u64) -> Result<Self, ()> {
+		let end = offset.checked_add(size).ok_or(())?;
+		if end > file_size {
+			return Err(());
+		}
 		let backing = if size == 0 {
 			ResourceReaderBacking::Buffer(Box::new([]))
 		} else {
-			ResourceReaderBacking::MappedFile(MappedFileBacking::new(file)?)
+			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, size)?)
 		};
 		Ok(Self { backing })
 	}
@@ -99,16 +108,17 @@ mod tests {
 		fs,
 		io::Write,
 		path::PathBuf,
-		time::{SystemTime, UNIX_EPOCH},
+		sync::atomic::{AtomicUsize, Ordering},
 	};
 
 	use super::*;
 
 	fn temporary_file_path() -> PathBuf {
+		static NEXT_FILE_ID: AtomicUsize = AtomicUsize::new(0);
 		std::env::temp_dir().join(format!(
 			"byte-engine-file-resource-reader-{}-{}.bin",
 			std::process::id(),
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+			NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed)
 		))
 	}
 
@@ -153,6 +163,19 @@ mod tests {
 
 		assert_eq!(loaded.buffer(), Some(&expected[7..15]));
 		assert_eq!(&destination, &expected[7..15]);
+		fs::remove_file(path).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn ranged_file_resource_reader_exposes_only_the_requested_resource() {
+		let path = temporary_file_path();
+		fs::write(&path, b"firstsecondthird").unwrap();
+
+		let reader: Box<dyn ResourceReader> =
+			Box::new(FileResourceReader::new_range(&fs::File::open(&path).unwrap(), 16, 5, 6).unwrap());
+		let backing = reader.into_backing_storage().await.unwrap();
+
+		assert_eq!(backing.as_slice(), b"second");
 		fs::remove_file(path).unwrap();
 	}
 

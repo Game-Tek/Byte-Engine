@@ -32,6 +32,11 @@ struct Cli {
 	#[arg(long, global = true, value_enum, default_value_t = clap::ColorChoice::Auto)]
 	color: clap::ColorChoice,
 
+	/// How a new resource store persists binary payloads.
+	/// Existing stores keep their persisted mode.
+	#[arg(long, global = true, value_enum)]
+	storage_mode: Option<StorageMode>,
+
 	#[command(subcommand)]
 	command: Commands,
 }
@@ -87,6 +92,21 @@ enum Commands {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum StorageMode {
+	Files,
+	Packed,
+}
+
+impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
+	fn from(value: StorageMode) -> Self {
+		match value {
+			StorageMode::Files => Self::Files,
+			StorageMode::Packed => Self::Packed,
+		}
+	}
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 pub enum InspectFormat {
 	Human,
 	Json,
@@ -112,6 +132,7 @@ fn main() -> Result<(), i32> {
 
 	let source_path = cli.source;
 	let destination_path = cli.destination;
+	let storage_mode = cli.storage_mode.map(Into::into);
 	let _color = cli.color;
 
 	let executor = resource_management::r#async::Executor::new().map_err(|error| {
@@ -133,7 +154,7 @@ fn main() -> Result<(), i32> {
 			format,
 		} => executor.block_on(commands::query(destination_path, class, properties, limit, cursor, format)),
 		Commands::Inspect { id, format } => executor.block_on(commands::inspect(destination_path, id, format)),
-		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids),
+		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids, storage_mode),
 		Commands::Delete { ids } => commands::delete(destination_path, ids),
 	}
 }
@@ -163,7 +184,7 @@ fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoi
 mod tests {
 	use clap::Parser as _;
 
-	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat};
+	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat, StorageMode};
 
 	fn args(values: &[&str]) -> Vec<String> {
 		values.iter().map(|value| (*value).to_string()).collect()
@@ -231,11 +252,13 @@ mod tests {
 	}
 
 	#[test]
-	fn cli_bake_allows_no_ids_and_still_parses_explicit_ids() {
+	fn cli_bake_allows_no_ids_and_selects_payload_storage() {
 		let cli = Cli::try_parse_from(["beld", "bake"]).unwrap();
+		assert!(cli.storage_mode.is_none());
 		assert!(matches!(cli.command, Commands::Bake { ids } if ids.is_empty()));
 
-		let cli = Cli::try_parse_from(["beld", "bake", "mesh.gltf", "mesh.gltf#skeleton"]).unwrap();
+		let cli = Cli::try_parse_from(["beld", "--storage-mode", "packed", "bake", "mesh.gltf", "mesh.gltf#skeleton"]).unwrap();
+		assert!(matches!(cli.storage_mode, Some(StorageMode::Packed)));
 		assert!(matches!(cli.command, Commands::Bake { ids } if ids == ["mesh.gltf", "mesh.gltf#skeleton"]));
 	}
 

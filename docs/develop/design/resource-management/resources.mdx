@@ -31,7 +31,15 @@ A mesh reference resolves primitive materials and exposes stream descriptions fo
 
 ## Storage
 
-The Redb storage backend stores metadata in `resources.db` and stores payload files beside the database.
+The Redb storage backend stores metadata in `resources.db`. It supports two payload storage modes:
+
+- `files` stores each resource payload in a separate hash-named file. This mode is the default.
+- `packed` appends every payload to `resources.pack` and stores each resource offset in `resources.db`.
+
+One mode applies to the whole resource store. The backend records that mode when it creates the store and discovers it when the store is reopened. It rejects a conflicting mode instead of mixing payload layouts.
+
+Packed replacements append a new payload range, and deletion makes the old range unreachable. The pack does not shrink automatically. Clear and rebake the store when you need to reclaim that space.
+
 Resource URLs are converted into stable resource IDs for storage lookup.
 The backend also maintains class and property indexes so BELD and editor tools can query resources without scanning and deserializing everything.
 

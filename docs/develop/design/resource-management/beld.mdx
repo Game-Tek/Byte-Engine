@@ -29,6 +29,14 @@ To bake only selected assets, provide their IDs explicitly:
 beld --source assets --destination resources bake mesh.glb character.fbx material.bema
 ```
 
+By default, BELD stores each binary payload in a separate file. Use packed storage when you want one payload file for packaging or distribution:
+
+```bash
+beld --source assets --destination resources --storage-mode packed bake
+```
+
+BELD records the selected mode in the resource database. Later bake, inspect, query, and delete commands discover that mode automatically. If the destination already exists, `--storage-mode` must match it. Clear the destination before selecting another mode.
+
 Quote glTF or FBX subresource IDs so the shell does not treat their fragment as a comment:
 
 ```bash

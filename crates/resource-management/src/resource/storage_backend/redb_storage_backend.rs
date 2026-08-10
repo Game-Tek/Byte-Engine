@@ -4,25 +4,38 @@
 //! database keys and archives [`SerializableResource`]
 //! metadata with rkyv.
 
-use std::{hash::Hasher, path::Path};
+/// Selects how one resource store persists binary payloads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResourceStorageMode {
+	/// Stores each resource payload in its own hash-named file.
+	#[default]
+	Files,
+	/// Appends every resource payload to one shared file.
+	Packed,
+}
 
-use redb::{ReadableDatabase as _, ReadableTable};
-use utils::sync::{remove_file, File as SyncFile, Write};
+impl ResourceStorageMode {
+	fn as_bytes(self) -> &'static [u8] {
+		match self {
+			Self::Files => b"files",
+			Self::Packed => b"packed",
+		}
+	}
 
-use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
-#[cfg(debug_assertions)]
-use crate::ResourceTraceItem;
-use crate::{
-	asset,
-	r#async::{self, BoxedFuture, File as AsyncFile},
-	resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId},
-	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource,
-};
+	fn from_bytes(bytes: &[u8]) -> Option<Self> {
+		match bytes {
+			b"files" => Some(Self::Files),
+			b"packed" => Some(Self::Packed),
+			_ => None,
+		}
+	}
+}
 
 /// The `RedbStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
 pub struct RedbStorageBackend {
 	db: RedbDatabase,
 	base_path: std::path::PathBuf,
+	storage_mode: ResourceStorageMode,
 }
 
 /// The `RedbDatabase` enum keeps the runtime database read-only while allowing explicit resource producers to write.
@@ -32,6 +45,9 @@ enum RedbDatabase {
 }
 
 const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resources");
+const STORE_CONFIGURATION_TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("store-configuration");
+const PACKED_RESOURCE_OFFSETS_TABLE: redb::TableDefinition<[u8; 16], u64> =
+	redb::TableDefinition::new("packed-resource-offsets");
 const RESOURCE_CLASS_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> = redb::TableDefinition::new("resource-class-index");
 const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 	redb::TableDefinition::new("resource-property-index");
@@ -39,6 +55,8 @@ const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 const RESOURCE_TRACES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-traces");
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
+const STORAGE_MODE_KEY: &str = "payload-storage-mode";
+const PACKED_RESOURCES_FILE: &str = "resources.pack";
 
 fn read_resource_cache_signature(base_path: &Path, signature_file: &str) -> Option<String> {
 	std::fs::read_to_string(base_path.join(signature_file))
@@ -211,21 +229,37 @@ impl RedbStorageBackend {
 		let db = redb::ReadOnlyDatabase::open(&database_path)
 			.map(RedbDatabase::ReadOnly)
 			.map_err(|error| format!("resource database '{}' could not be opened: {error}", database_path.display()))?;
-
-		Ok(Self { db, base_path })
+		let mut backend = Self {
+			db,
+			base_path,
+			storage_mode: ResourceStorageMode::Files,
+		};
+		backend.storage_mode = backend.persisted_storage_mode()?;
+		Ok(backend)
 	}
 
-	/// Opens a resource database with write access for tools that produce baked resources.
+	/// Opens a writable resource store and preserves its persisted payload mode.
+	///
+	/// New stores use [`ResourceStorageMode::Files`]. Use [`Self::new_writable_with_mode`] to select another mode.
 	pub fn new_writable(base_path: std::path::PathBuf) -> Self {
-		let mut memory_only = false;
+		Self::open_writable(base_path, None).unwrap_or_else(|error| panic!("Failed to open resource store. {error}"))
+	}
 
-		if cfg!(test) {
-			memory_only = true;
-		}
+	/// Opens a writable resource store with the selected payload mode.
+	///
+	/// Existing stores must already use `storage_mode`. This prevents a bake from mixing incompatible payload layouts.
+	///
+	/// # Errors
+	///
+	/// Returns an error when an existing store uses another payload mode.
+	pub fn new_writable_with_mode(base_path: std::path::PathBuf, storage_mode: ResourceStorageMode) -> Result<Self, String> {
+		Self::open_writable(base_path, Some(storage_mode))
+	}
 
+	/// Opens the database and establishes one payload mode before callers can store resources.
+	fn open_writable(base_path: std::path::PathBuf, requested_mode: Option<ResourceStorageMode>) -> Result<Self, String> {
 		std::fs::create_dir_all(&base_path).unwrap();
-
-		let db = if memory_only {
+		let db = if cfg!(test) {
 			log::info!("Using memory database instead of file database.");
 			RedbDatabase::Writable(
 				redb::Database::builder()
@@ -242,17 +276,44 @@ impl RedbStorageBackend {
 			RedbDatabase::Writable(db)
 		};
 
-		if let RedbDatabase::Writable(db) = &db {
-			let write = db.begin_write().unwrap();
-			let _ = write.open_table(RESOURCES_TABLE);
-			let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
-			let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
-			#[cfg(debug_assertions)]
-			let _ = write.open_table(RESOURCE_TRACES_TABLE);
-			let _ = write.commit();
-		}
+		let RedbDatabase::Writable(writable_db) = &db else {
+			unreachable!();
+		};
+		let write = writable_db.begin_write().unwrap();
+		let _ = write.open_table(RESOURCES_TABLE);
+		let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
+		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
+		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
+		#[cfg(debug_assertions)]
+		let _ = write.open_table(RESOURCE_TRACES_TABLE);
+		let storage_mode = {
+			let mut configuration = write.open_table(STORE_CONFIGURATION_TABLE).unwrap();
+			let stored_mode = configuration.get(STORAGE_MODE_KEY).unwrap().map(|value| {
+				ResourceStorageMode::from_bytes(value.value()).unwrap_or_else(|| {
+					panic!("Failed to open resource store. The most likely cause is an unknown persisted payload storage mode.")
+				})
+			});
+			match (stored_mode, requested_mode) {
+				(Some(stored), Some(requested)) if stored != requested => {
+					return Err(format!(
+						"Resource store mode does not match. The destination already uses '{stored:?}', but '{requested:?}' was requested."
+					));
+				}
+				(Some(stored), _) => stored,
+				(None, requested) => {
+					let selected = requested.unwrap_or_default();
+					configuration.insert(STORAGE_MODE_KEY, selected.as_bytes()).unwrap();
+					selected
+				}
+			}
+		};
+		write.commit().unwrap();
 
-		RedbStorageBackend { db, base_path }
+		Ok(RedbStorageBackend {
+			db,
+			base_path,
+			storage_mode,
+		})
 	}
 
 	fn begin_read(&self) -> Result<redb::ReadTransaction, redb::TransactionError> {
@@ -262,21 +323,61 @@ impl RedbStorageBackend {
 		}
 	}
 
-	async fn open_reader(&self, id: [u8; 16]) -> Option<MultiResourceReader> {
-		let file_id = resource_key_hex(id);
-		let file = AsyncFile::open(self.base_path.join(file_id)).await.ok()?;
-		let size = file.metadata().await.ok()?.len();
-		Some(Box::new(FileResourceReader::new(&file, size).ok()?))
+	/// Reads the store-wide payload mode before any resource locations are interpreted.
+	fn persisted_storage_mode(&self) -> Result<ResourceStorageMode, String> {
+		let read = self
+			.begin_read()
+			.map_err(|error| format!("resource database read failed: {error}"))?;
+		let table = read
+			.open_table(STORE_CONFIGURATION_TABLE)
+			.map_err(|error| format!("resource store configuration is missing: {error}"))?;
+		let mode = table
+			.get(STORAGE_MODE_KEY)
+			.map_err(|error| format!("resource payload mode could not be read: {error}"))?
+			.ok_or_else(|| "resource payload mode is missing".to_string())?;
+		ResourceStorageMode::from_bytes(mode.value()).ok_or_else(|| "resource payload mode is not recognized".to_string())
+	}
+
+	/// Opens one reader whose byte zero is the start of the requested resource.
+	async fn open_reader(&self, id: [u8; 16], resource_size: usize, packed_offset: Option<u64>) -> Option<MultiResourceReader> {
+		match self.storage_mode {
+			ResourceStorageMode::Files => {
+				let file = AsyncFile::open(self.base_path.join(resource_key_hex(id))).await.ok()?;
+				let size = file.metadata().await.ok()?.len();
+				Some(Box::new(FileResourceReader::new(&file, size).ok()?))
+			}
+			ResourceStorageMode::Packed => {
+				let file = AsyncFile::open(self.base_path.join(PACKED_RESOURCES_FILE)).await.ok()?;
+				let file_size = file.metadata().await.ok()?.len();
+				let resource_size = u64::try_from(resource_size).ok()?;
+				Some(Box::new(
+					FileResourceReader::new_range(&file, file_size, packed_offset?, resource_size).ok()?,
+				))
+			}
+		}
 	}
 
 	pub fn read_uid(&self, id: ResourceId) -> BoxedFuture<'_, Option<(SerializableResource, MultiResourceReader)>> {
 		r#async::future(async move {
-			let resource = {
-				let read = self.begin_read().unwrap();
-				let table = read.open_table(RESOURCES_TABLE).unwrap();
-				table.get(&id).unwrap().map(|data| crate::from_slice(data.value()).unwrap())
-			}?;
-			let resource_reader = self.open_reader(id.0).await?;
+			let (resource, packed_offset) = {
+				let read = self.begin_read().ok()?;
+				let table = read.open_table(RESOURCES_TABLE).ok()?;
+				let resource = table
+					.get(&id)
+					.ok()?
+					.map(|data| crate::from_slice::<SerializableResource>(data.value()).ok())??;
+				let packed_offset = if self.storage_mode == ResourceStorageMode::Packed {
+					read.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
+						.ok()?
+						.get(&id)
+						.ok()?
+						.map(|value| value.value())
+				} else {
+					None
+				};
+				(resource, packed_offset)
+			};
+			let resource_reader = self.open_reader(id.0, resource.size(), packed_offset).await?;
 
 			Some((resource, resource_reader))
 		})
@@ -413,12 +514,25 @@ impl ReadStorageBackend for RedbStorageBackend {
 	fn read<'a>(&'a self, id: asset::ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
 		r#async::future(async move {
 			let id = ResourceId::from(id.as_ref());
-			let resource = {
-				let read = self.begin_read().unwrap();
-				let table = read.open_table(RESOURCES_TABLE).unwrap();
-				table.get(&id).unwrap().map(|data| crate::from_slice(data.value()).unwrap())
-			}?;
-			let resource_reader = self.open_reader(id.0).await?;
+			let (resource, packed_offset) = {
+				let read = self.begin_read().ok()?;
+				let table = read.open_table(RESOURCES_TABLE).ok()?;
+				let resource = table
+					.get(&id)
+					.ok()?
+					.map(|data| crate::from_slice::<SerializableResource>(data.value()).ok())??;
+				let packed_offset = if self.storage_mode == ResourceStorageMode::Packed {
+					read.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
+						.ok()?
+						.get(&id)
+						.ok()?
+						.map(|value| value.value())
+				} else {
+					None
+				};
+				(resource, packed_offset)
+			};
+			let resource_reader = self.open_reader(id.0, resource.size(), packed_offset).await?;
 
 			Some((resource, resource_reader))
 		})
@@ -445,7 +559,25 @@ impl ReadStorageBackend for RedbStorageBackend {
 			let page = self.query_index(&query, query.first_indexed_predicate().is_some())?;
 			let mut items = Vec::with_capacity(page.items.len());
 			for (resource, resource_key) in page.items {
-				let reader = self.open_reader(resource_key).await.ok_or(QueryError::StorageFailure)?;
+				let packed_offset = if self.storage_mode == ResourceStorageMode::Packed {
+					let read = self.begin_read().map_err(|_| QueryError::StorageFailure)?;
+					let offsets = read
+						.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
+						.map_err(|_| QueryError::StorageFailure)?;
+					Some(
+						offsets
+							.get(&resource_key)
+							.map_err(|_| QueryError::StorageFailure)?
+							.ok_or(QueryError::StorageFailure)?
+							.value(),
+					)
+				} else {
+					None
+				};
+				let reader = self
+					.open_reader(resource_key, resource.size(), packed_offset)
+					.await
+					.ok_or(QueryError::StorageFailure)?;
 				items.push((resource, reader));
 			}
 
@@ -491,6 +623,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
 			#[cfg(debug_assertions)]
 			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
 
@@ -500,15 +633,17 @@ impl WriteStorageBackend for RedbStorageBackend {
 			}
 
 			let _ = resources_table.remove(&id);
+			let _ = packed_offsets.remove(&id);
 			#[cfg(debug_assertions)]
 			let _ = traces_table.remove(&id);
 		}
 
 		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
 
-		let id: String = id.into();
-		let resource_path = self.base_path.join(id);
-		let _ = remove_file(&resource_path);
+		if self.storage_mode == ResourceStorageMode::Files {
+			let id: String = id.into();
+			let _ = remove_file(self.base_path.join(id));
+		}
 
 		Ok(())
 	}
@@ -533,35 +668,53 @@ impl WriteStorageBackend for RedbStorageBackend {
 
 		let rid = ResourceId::from(resource.id.as_ref());
 
-		let resource = {
-			let resource = resource.into_serializable(hash, size);
-
-			{
-				let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
-				let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
-				let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
-
-				if let Some(existing) = resources_table.get(&rid).unwrap() {
-					let existing: SerializableResource = crate::from_slice(existing.value()).unwrap();
-					remove_indexes(&mut class_table, &mut property_table, &existing, rid.0);
-				}
-
-				let serialized_resource = crate::to_vec_in(&resource, allocator).unwrap();
-				resources_table.insert(&rid, serialized_resource.as_slice()).unwrap();
-				insert_indexes(&mut class_table, &mut property_table, &resource, rid.0);
-			}
-
-			write.commit().map_err(|_| ())?;
-
-			resource
+		// Holding the Redb write transaction serializes pack appends across writers and processes.
+		let packed_offset = if self.storage_mode == ResourceStorageMode::Packed {
+			let mut file = std::fs::OpenOptions::new()
+				.create(true)
+				.read(true)
+				.append(true)
+				.open(self.base_path.join(PACKED_RESOURCES_FILE))
+				.map_err(|_| ())?;
+			let offset = file.seek(SeekFrom::End(0)).map_err(|_| ())?;
+			file.write_all(data).map_err(|_| ())?;
+			file.flush().map_err(|_| ())?;
+			file.sync_data().map_err(|_| ())?;
+			Some(offset)
+		} else {
+			None
 		};
 
-		let id: String = rid.into();
-		let resource_path = self.base_path.join(id);
-		let mut file = SyncFile::create(resource_path).unwrap();
+		let resource = resource.into_serializable(hash, size);
+		{
+			let mut resources_table = write.open_table(RESOURCES_TABLE).map_err(|_| ())?;
+			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).map_err(|_| ())?;
+			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).map_err(|_| ())?;
+			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).map_err(|_| ())?;
 
-		file.write_all(data).or(Err(()))?;
-		file.flush().or(Err(()))?;
+			if let Some(existing) = resources_table.get(&rid).map_err(|_| ())? {
+				let existing: SerializableResource = crate::from_slice(existing.value()).map_err(|_| ())?;
+				remove_indexes(&mut class_table, &mut property_table, &existing, rid.0);
+			}
+
+			let serialized_resource = crate::to_vec_in(&resource, allocator).map_err(|_| ())?;
+			resources_table.insert(&rid, serialized_resource.as_slice()).map_err(|_| ())?;
+			if let Some(offset) = packed_offset {
+				packed_offsets.insert(&rid, offset).map_err(|_| ())?;
+			} else {
+				let _ = packed_offsets.remove(&rid);
+			}
+			insert_indexes(&mut class_table, &mut property_table, &resource, rid.0);
+		}
+
+		write.commit().map_err(|_| ())?;
+
+		if self.storage_mode == ResourceStorageMode::Files {
+			let id: String = rid.into();
+			let mut file = SyncFile::create(self.base_path.join(id)).map_err(|_| ())?;
+			file.write_all(data).map_err(|_| ())?;
+			file.flush().map_err(|_| ())?;
+		}
 
 		Ok(resource)
 	}
@@ -599,54 +752,74 @@ impl WriteStorageBackend for RedbStorageBackend {
 		let RedbDatabase::Writable(db) = &self.db else {
 			return;
 		};
+		let Some(other) = other.downcast_ref::<RedbStorageBackend>() else {
+			return;
+		};
+		if std::ptr::eq(self, other) || self.base_path == other.base_path {
+			return;
+		}
+		if self.storage_mode != other.storage_mode {
+			log::error!(
+				"Failed to synchronize resource stores. The most likely cause is that the source and destination use different payload storage modes."
+			);
+			return;
+		}
 
-		if let Some(other) = other.downcast_ref::<RedbStorageBackend>() {
-			{
-				let write = db.begin_write().unwrap();
-				write.delete_table(RESOURCES_TABLE).expect("Failed to delete table");
-				write.open_table(RESOURCES_TABLE).expect("Failed to open table");
-				write
-					.delete_table(RESOURCE_CLASS_INDEX_TABLE)
-					.expect("Failed to delete table");
-				write.open_table(RESOURCE_CLASS_INDEX_TABLE).expect("Failed to open table");
-				write
-					.delete_table(RESOURCE_PROPERTY_INDEX_TABLE)
-					.expect("Failed to delete table");
-				write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).expect("Failed to open table");
-			}
-
-			{
-				let read = other.begin_read().unwrap();
-				let source_resources = read.open_table(RESOURCES_TABLE).unwrap();
-				let source_classes = read.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
-				let source_properties = read.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
-
-				let write = db.begin_write().unwrap();
-
-				{
-					let mut dest_resources = write.open_table(RESOURCES_TABLE).unwrap();
-					let mut dest_classes = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
-					let mut dest_properties = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
-
-					for doc in source_resources.iter().unwrap() {
-						let doc = doc.unwrap();
-						dest_resources.insert(doc.0.value(), doc.1.value()).unwrap();
-					}
-
-					for doc in source_classes.iter().unwrap() {
-						let doc = doc.unwrap();
-						dest_classes.insert(doc.0.value(), doc.1.value()).unwrap();
-					}
-
-					for doc in source_properties.iter().unwrap() {
-						let doc = doc.unwrap();
-						dest_properties.insert(doc.0.value(), doc.1.value()).unwrap();
-					}
+		let read = other.begin_read().unwrap();
+		let source_resources = read.open_table(RESOURCES_TABLE).unwrap();
+		// Copy payloads before metadata so readers never receive a location that has not been copied.
+		match self.storage_mode {
+			ResourceStorageMode::Files => {
+				for doc in source_resources.iter().unwrap() {
+					let file_name = resource_key_hex(doc.unwrap().0.value());
+					std::fs::copy(other.base_path.join(&file_name), self.base_path.join(file_name)).unwrap();
 				}
-
-				write.commit().expect("Failed to commit transaction");
+			}
+			ResourceStorageMode::Packed => {
+				let source = other.base_path.join(PACKED_RESOURCES_FILE);
+				let destination = self.base_path.join(PACKED_RESOURCES_FILE);
+				if source.exists() {
+					std::fs::copy(source, destination).unwrap();
+				} else {
+					SyncFile::create(destination).unwrap();
+				}
 			}
 		}
+
+		let source_classes = read.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
+		let source_properties = read.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+		let source_offsets = read.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
+		let clear = db.begin_write().unwrap();
+		clear.delete_table(RESOURCES_TABLE).unwrap();
+		clear.delete_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
+		clear.delete_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+		clear.delete_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
+		clear.commit().unwrap();
+
+		let write = db.begin_write().unwrap();
+		{
+			let mut dest_resources = write.open_table(RESOURCES_TABLE).unwrap();
+			let mut dest_classes = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
+			let mut dest_properties = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+			let mut dest_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
+			for doc in source_resources.iter().unwrap() {
+				let doc = doc.unwrap();
+				dest_resources.insert(doc.0.value(), doc.1.value()).unwrap();
+			}
+			for doc in source_classes.iter().unwrap() {
+				let doc = doc.unwrap();
+				dest_classes.insert(doc.0.value(), doc.1.value()).unwrap();
+			}
+			for doc in source_properties.iter().unwrap() {
+				let doc = doc.unwrap();
+				dest_properties.insert(doc.0.value(), doc.1.value()).unwrap();
+			}
+			for doc in source_offsets.iter().unwrap() {
+				let doc = doc.unwrap();
+				dest_offsets.insert(doc.0.value(), doc.1.value()).unwrap();
+			}
+		}
+		write.commit().unwrap();
 	}
 }
 
@@ -657,8 +830,8 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use super::{
-		validate_resource_management_signature, RedbStorageBackend, RESOURCE_MANAGEMENT_CODE_HASH,
-		RESOURCE_MANAGEMENT_SIGNATURE_FILE,
+		validate_resource_management_signature, RedbStorageBackend, ResourceStorageMode, PACKED_RESOURCES_FILE,
+		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE,
 	};
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
@@ -720,7 +893,7 @@ mod tests {
 		}
 	}
 
-	fn backend() -> RedbStorageBackend {
+	fn backend_with_mode(storage_mode: ResourceStorageMode) -> RedbStorageBackend {
 		static NEXT_BACKEND_ID: AtomicUsize = AtomicUsize::new(0);
 
 		let unique = format!(
@@ -728,7 +901,70 @@ mod tests {
 			std::process::id(),
 			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
 		);
-		RedbStorageBackend::new(std::env::temp_dir().join(unique))
+		RedbStorageBackend::new_writable_with_mode(std::env::temp_dir().join(unique), storage_mode).unwrap()
+	}
+
+	fn backend() -> RedbStorageBackend {
+		backend_with_mode(ResourceStorageMode::Files)
+	}
+
+	#[crate::r#async::test]
+	async fn packed_storage_reads_resource_ranges_and_appends_replacements() {
+		let backend = backend_with_mode(ResourceStorageMode::Packed);
+		let first_id = crate::asset::ResourceId::new("first.test");
+		let second_id = crate::asset::ResourceId::new("second.test");
+		backend
+			.store(
+				ProcessedAsset::new(first_id, MockShaderModel { stage: "first".into() }),
+				b"first-payload",
+			)
+			.unwrap();
+		backend
+			.store(
+				ProcessedAsset::new(second_id, MockShaderModel { stage: "second".into() }),
+				b"second-payload",
+			)
+			.unwrap();
+
+		{
+			let (_, reader) = backend.read(first_id).await.unwrap();
+			let backing = reader.into_backing_storage().await.unwrap();
+			assert_eq!(backing.as_slice(), b"first-payload");
+		}
+		{
+			let (_, reader) = backend.read(second_id).await.unwrap();
+			let backing = reader.into_backing_storage().await.unwrap();
+			assert_eq!(backing.as_slice(), b"second-payload");
+		}
+
+		// Replacement appends a new extent so readers holding an old map remain valid.
+		backend
+			.store(
+				ProcessedAsset::new(
+					first_id,
+					MockShaderModel {
+						stage: "replacement".into(),
+					},
+				),
+				b"replacement",
+			)
+			.unwrap();
+		let (_, reader) = backend.read(first_id).await.unwrap();
+		let backing = reader.into_backing_storage().await.unwrap();
+		assert_eq!(backing.as_slice(), b"replacement");
+		drop(backing);
+
+		let expected_pack_size = b"first-payload".len() + b"second-payload".len() + b"replacement".len();
+		assert_eq!(
+			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
+				.unwrap()
+				.len(),
+			expected_pack_size as u64
+		);
+
+		backend.delete(second_id).unwrap();
+		assert!(backend.read(second_id).await.is_none());
+		std::fs::remove_dir_all(&backend.base_path).unwrap();
 	}
 
 	#[test]
@@ -972,3 +1208,22 @@ mod tests {
 		assert_eq!(error, QueryError::InvalidCursor);
 	}
 }
+
+use std::{
+	hash::Hasher,
+	io::{Seek as _, SeekFrom},
+	path::Path,
+};
+
+use redb::{ReadableDatabase as _, ReadableTable};
+use utils::sync::{remove_file, File as SyncFile, Write};
+
+use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
+#[cfg(debug_assertions)]
+use crate::ResourceTraceItem;
+use crate::{
+	asset,
+	r#async::{self, BoxedFuture, File as AsyncFile},
+	resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId},
+	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource,
+};

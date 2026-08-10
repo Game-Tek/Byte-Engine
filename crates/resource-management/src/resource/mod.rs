@@ -14,7 +14,7 @@ pub mod reader;
 pub use read_target::ReadTargets;
 pub use read_target::ReadTargetsMut;
 pub use resource_id::ResourceId;
-pub use storage_backend::redb_storage_backend::RedbStorageBackend;
+pub use storage_backend::redb_storage_backend::{RedbStorageBackend, ResourceStorageMode};
 pub use storage_backend::ReadStorageBackend;
 pub use storage_backend::StorageBackend;
 pub use storage_backend::WriteStorageBackend;

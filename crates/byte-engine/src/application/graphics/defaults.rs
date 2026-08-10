@@ -131,11 +131,7 @@ pub fn setup_default_resource_and_asset_management(
 	#[cfg(debug_assertions)]
 	{
 		let generator = std::sync::Arc::new(generator);
-		let assets_path: std::path::PathBuf = application
-			.get_parameter("assets-path")
-			.map(|parameter| parameter.value.clone())
-			.unwrap_or_else(|| "assets".into())
-			.into();
+		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());

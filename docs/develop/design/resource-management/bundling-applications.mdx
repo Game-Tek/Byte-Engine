@@ -42,9 +42,9 @@ Use a reverse-DNS identifier that you own before distributing the application. T
 
 ## 4. Find bundled resources at runtime
 
-`GraphicsApplication` reads the `resources.path` parameter and otherwise defaults to a working-directory-relative `resources/`. A packaged application must instead select the resource directory beside its executable.
+`GraphicsApplication` reads the `resources.path` parameter and otherwise looks for `resources/` beside the executable. This default does not depend on the directory from which you launch the application. A relative `--resources.path` override remains relative to the current working directory so you can select a local resource store explicitly.
 
-For a macOS application bundle, the executable lives in `Contents/MacOS` and cargo-bundle places the resource directory in `Contents/Resources/resources`. Set the default path during application startup:
+For a macOS application bundle, the executable lives in `Contents/MacOS` while cargo-bundle places the resource directory in `Contents/Resources/resources`. Select that bundle-specific directory during application startup:
 
 ```rust
 use std::path::PathBuf;
@@ -62,7 +62,12 @@ fn default_resources_path() -> PathBuf {
                 .join("resources");
             bundled.is_dir().then_some(bundled)
         })
-        .unwrap_or_else(|| PathBuf::from("resources"))
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|executable| executable.parent().map(|directory| directory.join("resources")))
+                .unwrap_or_else(|| PathBuf::from("resources"))
+        })
 }
 
 let resources_path = default_resources_path();
@@ -75,7 +80,7 @@ let app = GraphicsApplication::new(
 );
 ```
 
-The fallback keeps a normal `cargo run --release` using the local `resources/` directory. A command-line `--resources.path=/custom/resources` parameter still overrides this default when needed.
+The fallback selects `resources/` beside a normal release executable. Use an absolute command-line path to select a fixed location, or a relative `--resources.path=custom/resources` path to select a directory from the current working directory.
 
 ## 5. Build the application bundle
 

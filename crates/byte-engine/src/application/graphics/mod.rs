@@ -25,7 +25,8 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
-/// - `resources.path`: Selects the resource directory. The default is `./resources`.
+/// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. The default is `assets` beside the executable.
+/// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. The default is `resources` beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
@@ -86,11 +87,7 @@ impl Application for GraphicsApplication {
 
 		let application = BaseApplication::new(name, parameters);
 
-		let resources_path: std::path::PathBuf = application
-			.get_parameter("resources.path")
-			.map(|p| p.value.clone())
-			.unwrap_or_else(|| "resources".into())
-			.into();
+		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
 		// Debug applications can update individual stale assets in their local resource database.
 		#[cfg(debug_assertions)]
@@ -528,6 +525,30 @@ fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration:
 
 const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
+/// Resolves an explicit path as supplied while anchoring the default beside the executable.
+fn resolve_application_directory(parameter: Option<&Parameter>, default_directory: &str) -> std::path::PathBuf {
+	parameter.map(|parameter| parameter.value().into()).unwrap_or_else(|| {
+		let executable = std::env::current_exe().unwrap_or_else(|error| {
+			panic!(
+				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
+			)
+		});
+		default_directory_beside_executable(&executable, default_directory)
+	})
+}
+
+/// Builds a default application directory from an executable path.
+fn default_directory_beside_executable(executable: &std::path::Path, directory: &str) -> std::path::PathBuf {
+	executable
+		.parent()
+		.unwrap_or_else(|| {
+			panic!(
+				"Application directory could not be resolved. The most likely cause is that the executable path has no parent."
+			)
+		})
+		.join(directory)
+}
+
 /// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	defaults::setup_default_pipeline_compilation(application);
@@ -937,6 +958,26 @@ mod tests {
 
 		assert_eq!(adopted, vec![1, 2]);
 		assert!(listener.read().is_none());
+	}
+
+	#[test]
+	fn application_directories_default_beside_the_executable() {
+		let executable = std::path::Path::new("app/target/debug/game");
+
+		assert_eq!(
+			default_directory_beside_executable(executable, "resources"),
+			std::path::Path::new("app/target/debug/resources")
+		);
+	}
+
+	#[test]
+	fn explicit_application_directories_remain_working_directory_relative() {
+		let parameter = Parameter::new("resources.path", "custom/resources");
+
+		assert_eq!(
+			resolve_application_directory(Some(&parameter), "resources"),
+			std::path::Path::new("custom/resources")
+		);
 	}
 
 	#[test]

@@ -263,32 +263,65 @@ impl VisibilityPipelineResourceManager {
 		let format = resource_image_format_to_ghi(texture.format);
 		let extent = Extent::from(texture.extent);
 
-		let layout = texture_upload_layout(format, extent, 1).ok_or(())?;
-		let mut staging = upload_staging.allocate(layout.padded_size, 256).await.ok_or_else(|| {
+		let mip_count = texture.mip_count.max(1);
+		let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
+		let mut upload_byte_count = 0usize;
+		for level in 0..mip_count {
+			let mip_extent = texture_mip_extent(extent, level);
+			let mut layout = texture_upload_layout(format, mip_extent, 1).ok_or(())?;
+			layout.offset = upload_byte_count;
+			upload_byte_count = upload_byte_count.checked_add(layout.padded_size).ok_or(())?;
+			layouts.push(layout);
+		}
+		let mut staging = upload_staging.allocate(upload_byte_count, 256).await.ok_or_else(|| {
 			log::error!(
-				"Visibility texture exceeds the GPU upload arena. The most likely cause is that its padded data is larger than the configured upload capacity."
+				"Visibility texture exceeds the GPU upload arena. The most likely cause is that its complete padded mip chain is larger than the configured upload capacity."
 			);
 		})?;
-		let bytes = staging.bytes_mut();
-		// Image resources may append mips or baked IBL streams after the base image; material textures upload only mip zero.
-		let load_target = reference
-			.load((&mut bytes[..layout.compact_size]).into())
-			.await
-			.map_err(|_| {
+
+		if mip_count == 1 {
+			let layout = layouts[0];
+			let loaded = reference
+				.load((&mut staging.bytes_mut()[..layout.compact_size]).into())
+				.await
+				.map_err(|_| {
+					log::error!(
+						"Visibility texture load failed for {}. The most likely cause is that the texture payload could not be read from storage.", id
+					);
+				})?;
+			if loaded.buffer().is_none() {
 				log::error!(
-					"Visibility texture load failed for {}. The most likely cause is that the texture payload could not be read from storage.",
-					id
+					"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.", id
+				);
+				return Err(());
+			}
+		} else {
+			// Named reads keep every offline-generated level aligned with its independently padded GPU upload region.
+			let mip_stream_names: [MipStreamName; u32::BITS as usize] =
+				std::array::from_fn(|level| MipStreamName::new(level as u32));
+			let mut streams = Vec::with_capacity(mip_count as usize);
+			let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
+			for (name, layout) in mip_stream_names.iter().zip(&layouts) {
+				let region = allocator.take(layout.padded_size);
+				streams.push(resource_management::stream::StreamMut::new(
+					name.as_str(),
+					&mut region[..layout.compact_size],
+				));
+			}
+			let loaded = reference.load(streams.into()).await.map_err(|_| {
+				log::error!(
+					"Visibility texture mip load failed for {}. The most likely cause is that the baked image payload is missing one or more named mip streams.", id
 				);
 			})?;
-		load_target.buffer().ok_or_else(|| {
-			log::error!(
-				"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.",
-				id
-			);
-		})?;
-		drop(load_target);
-		pack_texture_rows_in_place(staging.bytes_mut(), &layout);
-		let upload = TextureUpload { staging, layout };
+			if !matches!(loaded, ReadTargets::Streams(_)) {
+				return Err(());
+			}
+		}
+		for layout in &layouts {
+			let range = layout.offset..layout.offset + layout.padded_size;
+			pack_texture_rows_in_place(&mut staging.bytes_mut()[range], layout);
+		}
+		let upload = TextureUpload { staging, layouts };
 
 		Ok(PreparedTexture {
 			key,
@@ -296,6 +329,7 @@ impl VisibilityPipelineResourceManager {
 			name: reference.id().to_string(),
 			format,
 			extent,
+			mip_count,
 			upload,
 		})
 	}
@@ -308,6 +342,7 @@ impl VisibilityPipelineResourceManager {
 			name,
 			format,
 			extent,
+			mip_count,
 			upload,
 		} = texture;
 		let Some(device) = self.resource_factory.as_mut() else {
@@ -325,11 +360,12 @@ impl VisibilityPipelineResourceManager {
 			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(&name)
 				.extent(extent)
+				.mip_levels(mip_count)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
 
-		let sampler = device.build_sampler(default_material_sampler_builder());
+		let sampler = device.build_sampler(default_material_sampler_builder().max_lod((mip_count - 1) as f32));
 
 		self.send_completion(VisibilityResourceCompletion::ImageReady {
 			index,
@@ -1212,14 +1248,15 @@ impl VisibilityPipelineResourceManagerWorker {
 					sampler,
 					upload,
 				} => {
-					transfer.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
-						staging_data_buffer,
-						upload.staging.offset() + upload.layout.offset,
-						upload.layout.source_bytes_per_row,
-						upload.layout.source_bytes_per_image,
-						image,
-						0,
-					)]);
+					let copies = upload
+						.layouts
+						.iter()
+						.enumerate()
+						.map(|(level, layout)| {
+							staged_texture_copy(staging_data_buffer, upload.staging.offset(), image, layout, level as u32)
+						})
+						.collect::<SmallVec<[ghi::BufferImageCopyDescriptor; 16]>>();
+					transfer.copy_buffer_to_images(&copies);
 					completions.push(VisibilityResourceCompletion::TextureUploadReady { index, image, sampler });
 					leases.push(upload.staging);
 					recorded_work = true;
@@ -1462,6 +1499,7 @@ struct PreparedTexture {
 	name: String,
 	format: ghi::Formats,
 	extent: Extent,
+	mip_count: u32,
 	upload: TextureUpload,
 }
 
@@ -1543,7 +1581,41 @@ impl MaterialPipelineConfig {
 /// The `TextureUpload` struct carries row-padded texture bytes until the transfer queue copies them.
 pub(crate) struct TextureUpload {
 	staging: super::upload_staging::StagingLease,
-	layout: TextureUploadLayout,
+	layouts: SmallVec<[TextureUploadLayout; 16]>,
+}
+
+struct MipStreamName {
+	bytes: [u8; 16],
+	len: usize,
+}
+
+impl MipStreamName {
+	/// Formats one bounded mip stream identifier into inline storage.
+	fn new(level: u32) -> Self {
+		let mut bytes = [0_u8; 16];
+		bytes[..4].copy_from_slice(b"mip[");
+		let mut digits = [0_u8; 10];
+		let mut value = level;
+		let mut digit_count = 0usize;
+		loop {
+			digits[digit_count] = b'0' + (value % 10) as u8;
+			digit_count += 1;
+			value /= 10;
+			if value == 0 {
+				break;
+			}
+		}
+		for index in 0..digit_count {
+			bytes[4 + index] = digits[digit_count - index - 1];
+		}
+		let len = 5 + digit_count;
+		bytes[len - 1] = b']';
+		Self { bytes, len }
+	}
+
+	fn as_str(&self) -> &str {
+		std::str::from_utf8(&self.bytes[..self.len]).expect("Mip stream names contain only ASCII bytes.")
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -1556,6 +1628,15 @@ struct TextureUploadLayout {
 	source_bytes_per_row: usize,
 	source_bytes_per_image: usize,
 	padded_size: usize,
+}
+
+/// Computes the independently uploaded extent for one material texture mip level.
+fn texture_mip_extent(base_extent: Extent, level: u32) -> Extent {
+	Extent::new(
+		(base_extent.width() >> level).max(1),
+		(base_extent.height() >> level).max(1),
+		base_extent.depth().max(1),
+	)
 }
 
 /// Computes the independently uploaded 2D extent for one baked specular roughness level.

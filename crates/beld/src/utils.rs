@@ -6,6 +6,7 @@ use resource_management::{
 		png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
 	},
 	ibl::IBLGenerator,
+	resources::mips::{gpu::MaterialMipGenerator, CPUMipGenerationBackend, MipGenerationBackend},
 };
 
 pub fn get_asset_manager<AS, RS>(storage_backend: AS, resource_storage_backend: RS) -> AssetManager
@@ -35,6 +36,18 @@ where
 		.set_shader_generator(byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new());
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 	{
+		#[cfg(not(test))]
+		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> = MaterialMipGenerator::try_with_default_gpu()
+			.map(|generator| std::sync::Arc::new(generator) as std::sync::Arc<dyn MipGenerationBackend>)
+			.unwrap_or_else(|error| {
+				log::warn!(
+					"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+				);
+				std::sync::Arc::new(CPUMipGenerationBackend)
+			});
+		#[cfg(test)]
+		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> = std::sync::Arc::new(CPUMipGenerationBackend);
+
 		let mut material_asset_handler = BEMAAssetHandler::new();
 		let shader_generator = std::sync::Arc::new({
 			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
@@ -48,10 +61,12 @@ where
 
 		let mut fbx_asset_handler = FBXAssetHandler::new();
 		fbx_asset_handler.set_shader_generator(shader_generator.clone());
+		fbx_asset_handler.set_material_mip_generator(material_mip_generator.clone());
 		asset_manager.add_asset_handler(fbx_asset_handler);
 
 		let mut gltf_asset_handler = GLTFAssetHandler::new();
 		gltf_asset_handler.set_shader_generator(shader_generator);
+		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
 		asset_manager.add_asset_handler(gltf_asset_handler);
 	}
 

@@ -22,7 +22,7 @@ use crate::{
 		BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
 	},
 	processors::{
-		image_processor::{gamma_from_semantic, process_image_in, ImageDescription, Semantic},
+		image_processor::{gamma_from_semantic, process_image_with_mip_backend_in, ImageDescription, Semantic},
 		mesh_processor::{
 			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
 			TriangleFrontFaceWinding,
@@ -34,6 +34,7 @@ use crate::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
 		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},
@@ -81,6 +82,7 @@ fn select_unfragmented_fbx_resource(
 pub struct FBXAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
 
 impl FBXAssetHandler {
@@ -108,6 +110,11 @@ impl FBXAssetHandler {
 	/// Installs the renderer-specific shader transformation used for generated FBX materials.
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
 		self.generator = Some(Arc::new(generator));
+	}
+
+	/// Selects the offline backend used only for image resources generated from FBX materials.
+	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
+		self.material_mip_generator = Some(generator);
 	}
 }
 
@@ -211,7 +218,15 @@ impl AssetHandler for FBXAssetHandler {
 			(None, Vec::new())
 		};
 
-		let materials = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, self.generator.clone()).await?;
+		let materials = resolve_fbx_materials(
+			context,
+			spec.as_ref(),
+			source_id,
+			&scene,
+			self.generator.clone(),
+			self.material_mip_generator.as_deref(),
+		)
+		.await?;
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 		let source = import_fbx_meshes(
 			&scene,
@@ -478,6 +493,7 @@ async fn resolve_fbx_materials(
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ResolvedFbxMaterials, LoadErrors> {
 	let allocator = context.allocator();
 	let keys = used_material_keys(scene, allocator);
@@ -491,7 +507,7 @@ async fn resolve_fbx_materials(
 		let resolved = if let Some(override_id) = fbx_material_override(spec, material) {
 			context.bake_dependency::<VariantModel>(&override_id).await?
 		} else {
-			generate_fbx_material(context, url, key, material, generator.clone()).await?
+			generate_fbx_material(context, url, key, material, generator.clone(), mip_backend).await?
 		};
 		materials.insert(key, resolved);
 	}
@@ -589,6 +605,7 @@ async fn generate_fbx_material(
 	key: MaterialKey,
 	material: Option<&ufbx::Material>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or_else(|| {
 		context.error(
@@ -598,7 +615,7 @@ async fn generate_fbx_material(
 	})?;
 	let brdf = fbx_brdf_material(material);
 	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
-	let texture_variables = store_fbx_texture_variables(context, mesh_url, material).await?;
+	let texture_variables = store_fbx_texture_variables(context, mesh_url, material, mip_backend).await?;
 	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
 	let base_id = generated_fbx_material_base_id(mesh_url, key, material);
 	let shader_id = format!("{base_id}.shader");
@@ -645,13 +662,14 @@ async fn store_fbx_texture_variables(
 	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
 	material: Option<&ufbx::Material>,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<Vec<VariantVariableModel>, LoadErrors> {
 	let Some(texture) = material.and_then(fbx_base_color_texture) else {
 		return Ok(Vec::new());
 	};
 
 	let image_id = generated_fbx_image_id(mesh_url, texture);
-	let image = load_and_store_fbx_texture(context, mesh_url, &image_id, texture).await?;
+	let image = load_and_store_fbx_texture(context, mesh_url, &image_id, texture, mip_backend).await?;
 	Ok(vec![VariantVariableModel {
 		name: material_texture_variable_name(texture.element.typed_id),
 		r#type: "Texture2D".to_string(),
@@ -665,6 +683,7 @@ async fn load_and_store_fbx_texture(
 	mesh_url: ResourceId<'_>,
 	id: &str,
 	texture: &ufbx::Texture,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<Image>, LoadErrors> {
 	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
 	let description = ImageDescription {
@@ -672,9 +691,10 @@ async fn load_and_store_fbx_texture(
 		extent: Extent::rectangle(width, height),
 		semantic: Semantic::Albedo,
 		gamma: gamma_from_semantic(Semantic::Albedo),
-		generate_mipmaps: false,
+		generate_mipmaps: mip_backend.is_some(),
 	};
-	let (resource, data) = process_image_in(ResourceId::new(id), description, pixels, context.allocator())?;
+	let (resource, data) =
+		process_image_with_mip_backend_in(ResourceId::new(id), description, pixels, context.allocator(), mip_backend)?;
 	context.store_resource(resource, &data).map(Into::into)
 }
 

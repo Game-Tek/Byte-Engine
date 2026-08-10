@@ -7,12 +7,134 @@ use std::{
 
 use crate::types::Formats;
 
+#[cfg(feature = "gpu-mips")]
+pub mod gpu;
+
 /// The `MipLevel` struct exposes one mip level so upload code can consume borrowed image data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MipLevel<'a> {
 	pub width: u32,
 	pub height: u32,
 	pub data: &'a [u8],
+}
+
+const MAX_MIP_LEVELS: usize = u32::BITS as usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnedMipRange {
+	width: u32,
+	height: u32,
+	offset: usize,
+	size: usize,
+}
+
+impl OwnedMipRange {
+	const EMPTY: Self = Self {
+		width: 0,
+		height: 0,
+		offset: 0,
+		size: 0,
+	};
+}
+
+/// The `OwnedMipChain` struct carries packed generated levels across a processing backend boundary.
+///
+/// The chain uses one allocation for all texels and keeps its bounded level metadata inline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedMipChain {
+	levels: [OwnedMipRange; MAX_MIP_LEVELS],
+	level_count: usize,
+	data: Box<[u8]>,
+}
+
+impl OwnedMipChain {
+	/// Returns the number of lower levels in this chain.
+	pub fn len(&self) -> usize {
+		self.level_count
+	}
+
+	/// Returns whether this chain contains no lower levels.
+	pub fn is_empty(&self) -> bool {
+		self.level_count == 0
+	}
+
+	/// Returns each generated level in order without allocating view metadata.
+	pub fn levels(&self) -> impl ExactSizeIterator<Item = MipLevel<'_>> + '_ {
+		self.levels[..self.level_count].iter().map(|level| MipLevel {
+			width: level.width,
+			height: level.height,
+			data: &self.data[level.offset..level.offset + level.size],
+		})
+	}
+
+	fn empty() -> Self {
+		Self {
+			levels: [OwnedMipRange::EMPTY; MAX_MIP_LEVELS],
+			level_count: 0,
+			data: Box::new([]),
+		}
+	}
+
+	#[cfg(feature = "gpu-mips")]
+	pub(super) fn from_packed_rgba8_lower_levels(width: u32, height: u32, data: Box<[u8]>) -> Result<Self, MipGenerationError> {
+		let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
+		let (mut level_width, mut level_height) = (width, height);
+		let mut level_count = 0usize;
+		let mut offset = 0usize;
+		while level_width > 1 || level_height > 1 {
+			level_width = (level_width / 2).max(1);
+			level_height = (level_height / 2).max(1);
+			let size = expected_size(level_width, level_height, 4).ok_or(MipGenerationError::DimensionsTooLarge)?;
+			levels[level_count] = OwnedMipRange {
+				width: level_width,
+				height: level_height,
+				offset,
+				size,
+			};
+			offset = offset.checked_add(size).ok_or(MipGenerationError::DimensionsTooLarge)?;
+			level_count += 1;
+		}
+		if data.len() != offset {
+			return Err(MipGenerationError::BufferSizeMismatch {
+				expected: offset,
+				got: data.len(),
+			});
+		}
+		Ok(Self {
+			levels,
+			level_count,
+			data,
+		})
+	}
+}
+
+/// The `MipGenerationBackend` trait provides alternate offline mip generation for image processors.
+///
+/// Implement this trait when generated material textures should use an accelerator. Return only levels after the base
+/// level; [`crate::processors::image_processor::process_image_with_mip_backend_in`] stores the original base level first.
+pub trait MipGenerationBackend: Send + Sync {
+	fn generate_lower_levels(
+		&self,
+		format: Formats,
+		width: u32,
+		height: u32,
+		base_level: &[u8],
+	) -> Result<OwnedMipChain, MipGenerationError>;
+}
+
+/// The `CPUMipGenerationBackend` struct preserves offline material mip generation when GPU setup is unavailable.
+pub struct CPUMipGenerationBackend;
+
+impl MipGenerationBackend for CPUMipGenerationBackend {
+	fn generate_lower_levels(
+		&self,
+		format: Formats,
+		width: u32,
+		height: u32,
+		base_level: &[u8],
+	) -> Result<OwnedMipChain, MipGenerationError> {
+		generate_owned_lower_mip_chain(format, width, height, base_level)
+	}
 }
 
 /// The `MipChain` struct owns generated levels while exposing each level as a borrowed slice.
@@ -133,6 +255,81 @@ pub fn generate_mip_chain<'a>(
 	base_level: &'a [u8],
 ) -> Result<MipChain<'a>, MipGenerationError> {
 	generate_mip_chain_in(format, width, height, base_level, Global)
+}
+
+/// Generates packed lower mip levels using one output allocation.
+fn generate_owned_lower_mip_chain(
+	format: Formats,
+	width: u32,
+	height: u32,
+	base_level: &[u8],
+) -> Result<OwnedMipChain, MipGenerationError> {
+	if width == 0 || height == 0 {
+		return Err(MipGenerationError::ZeroDimensions);
+	}
+	let bytes_per_pixel = bytes_per_pixel(format).ok_or(MipGenerationError::UnsupportedFormat(format))?;
+	let expected_base_size = expected_size(width, height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
+	if base_level.len() != expected_base_size {
+		return Err(MipGenerationError::BufferSizeMismatch {
+			expected: expected_base_size,
+			got: base_level.len(),
+		});
+	}
+	if width == 1 && height == 1 {
+		return Ok(OwnedMipChain::empty());
+	}
+
+	let mut total_size = 0usize;
+	let (mut level_width, mut level_height) = (width, height);
+	while level_width > 1 || level_height > 1 {
+		level_width = (level_width / 2).max(1);
+		level_height = (level_height / 2).max(1);
+		total_size = total_size
+			.checked_add(
+				expected_size(level_width, level_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?,
+			)
+			.ok_or(MipGenerationError::DimensionsTooLarge)?;
+	}
+
+	let mut data = vec![0_u8; total_size];
+	let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
+	let (mut source_width, mut source_height) = (width, height);
+	let mut source_range = None;
+	let mut offset = 0usize;
+	let mut level_count = 0usize;
+	while source_width > 1 || source_height > 1 {
+		let destination_width = (source_width / 2).max(1);
+		let destination_height = (source_height / 2).max(1);
+		let destination_size = expected_size(destination_width, destination_height, bytes_per_pixel)
+			.ok_or(MipGenerationError::DimensionsTooLarge)?;
+		let (completed, destination) = data.split_at_mut(offset);
+		let source = source_range
+			.map(|range: std::ops::Range<usize>| &completed[range])
+			.unwrap_or(base_level);
+		downsample_level(
+			format,
+			source_width,
+			source_height,
+			source,
+			&mut destination[..destination_size],
+		)?;
+		levels[level_count] = OwnedMipRange {
+			width: destination_width,
+			height: destination_height,
+			offset,
+			size: destination_size,
+		};
+		source_range = Some(offset..offset + destination_size);
+		offset += destination_size;
+		level_count += 1;
+		(source_width, source_height) = (destination_width, destination_height);
+	}
+
+	Ok(OwnedMipChain {
+		levels,
+		level_count,
+		data: data.into_boxed_slice(),
+	})
 }
 
 /// Generates a full mip chain using the provided allocator for generated levels.

@@ -20,7 +20,7 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [features]
 default = ["headed", "network"]
-headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:flate2", "resource-management/gpu-ibl"]
+headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:flate2", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
 network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]

@@ -19,7 +19,9 @@ name = "resource_management"
 
 [features]
 default = []
-gpu-ibl = ["dep:ghi"]
+gpu-processing = ["dep:ghi"]
+gpu-ibl = ["gpu-processing"]
+gpu-mips = ["gpu-processing"]
 
 [package.metadata.docs.rs]
 rustc-args = ["-C", "target-feature=+aes,+sse2"]

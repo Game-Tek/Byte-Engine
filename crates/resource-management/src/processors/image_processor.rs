@@ -4,7 +4,10 @@ use utils::Extent;
 
 use crate::{
 	asset::{asset_handler::LoadErrors, resource_id::ResourceIdBase, ResourceId},
-	resources::{image::Image, mips::generate_mip_chain_in},
+	resources::{
+		image::Image,
+		mips::{generate_mip_chain_in, MipGenerationBackend},
+	},
 	types::{Formats, Gamma},
 	Description, ProcessedAsset, StreamDescription,
 };
@@ -54,7 +57,21 @@ pub fn process_image_in<'a, A: Allocator + Clone, B: Allocator>(
 	buffer: Box<[u8], B>,
 	allocator: A,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image_in(&description, buffer, allocator)?;
+	process_image_with_mip_backend_in(id, description, buffer, allocator, None)
+}
+
+/// Processes image pixels and delegates requested lower mip levels to an optional offline backend.
+///
+/// Material importers pass their GPU backend here. Standalone image handlers should call [`process_image_in`] so their
+/// authored texture payload remains unchanged.
+pub fn process_image_with_mip_backend_in<'a, A: Allocator + Clone, B: Allocator>(
+	id: ResourceId<'a>,
+	description: ImageDescription,
+	buffer: Box<[u8], B>,
+	allocator: A,
+	mip_backend: Option<&dyn MipGenerationBackend>,
+) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
+	let (resource, buffer, streams) = produce_image_in(&description, buffer, allocator, mip_backend)?;
 	let asset = ProcessedAsset::new(id, resource);
 	let asset = if let Some(streams) = streams {
 		asset.with_streams(streams)
@@ -199,6 +216,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 	description: &ImageDescription,
 	buffer: Box<[u8], B>,
 	allocator: A,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<(Image, Box<[u8], A>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
 		format,
@@ -290,29 +308,65 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 	};
 
 	let (mip_count, data, streams) = if *generate_mipmaps {
-		let chain = generate_mip_chain_in(
-			intermediate_format,
-			extent.width(),
-			extent.height(),
-			&intermediate,
-			allocator.clone(),
-		)
-		.map_err(|_| LoadErrors::FailedToProcess)?;
-		let mip_count = chain.len() as u32;
-
-		let mut all_data = Vec::new_in(allocator.clone());
-		let mut streams = Vec::new();
+		let level_count = crate::resources::mips::mip_level_count(extent.width(), extent.height())
+			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let encoded_size = encoded_mip_chain_size(output_format, *extent).ok_or(LoadErrors::FailedToProcess)?;
+		let mut all_data = Vec::with_capacity_in(encoded_size, allocator.clone());
+		let mut streams = Vec::with_capacity(level_count as usize);
 		let mut offset: usize = 0;
 
-		for (index, level) in chain.levels().enumerate() {
-			let level_extent = Extent::rectangle(level.width, level.height);
-			let level_data = compress_bc_level_in(output_format, level_extent, level.data, allocator.clone());
-			let size = level_data.len();
-			streams.push(StreamDescription::new(format!("mip[{index}]"), size, offset));
-			all_data.extend_from_slice(&level_data);
-			offset += size;
+		// GPU backends return owned lower levels because generation runs on a context-owning worker. Keep the base borrowed
+		// from the converted intermediate so the common path still avoids another full-resolution allocation.
+		if let Some(mip_backend) = mip_backend {
+			let lower_levels = mip_backend
+				.generate_lower_levels(intermediate_format, extent.width(), extent.height(), &intermediate)
+				.map_err(|_| LoadErrors::FailedToProcess)?;
+			append_encoded_mip(
+				output_format,
+				*extent,
+				&intermediate,
+				0,
+				&mut all_data,
+				&mut streams,
+				&mut offset,
+				allocator.clone(),
+			);
+			for (lower_index, level) in lower_levels.levels().enumerate() {
+				append_encoded_mip(
+					output_format,
+					Extent::rectangle(level.width, level.height),
+					level.data,
+					lower_index + 1,
+					&mut all_data,
+					&mut streams,
+					&mut offset,
+					allocator.clone(),
+				);
+			}
+			(1 + lower_levels.len() as u32, all_data.into_boxed_slice(), Some(streams))
+		} else {
+			let chain = generate_mip_chain_in(
+				intermediate_format,
+				extent.width(),
+				extent.height(),
+				&intermediate,
+				allocator.clone(),
+			)
+			.map_err(|_| LoadErrors::FailedToProcess)?;
+			for (index, level) in chain.levels().enumerate() {
+				append_encoded_mip(
+					output_format,
+					Extent::rectangle(level.width, level.height),
+					level.data,
+					index,
+					&mut all_data,
+					&mut streams,
+					&mut offset,
+					allocator.clone(),
+				);
+			}
+			(chain.len() as u32, all_data.into_boxed_slice(), Some(streams))
 		}
-		(mip_count, all_data.into_boxed_slice(), Some(streams))
 	} else {
 		let data = compress_bc_level_in(output_format, *extent, &intermediate, allocator.clone());
 		let streams = Some(vec![StreamDescription::new("mip[0]", data.len(), 0)]);
@@ -330,6 +384,54 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 		data,
 		streams,
 	))
+}
+
+/// Appends one persisted mip without allocating an intermediate copy for uncompressed formats.
+fn append_encoded_mip<A: Allocator + Clone>(
+	output_format: Formats,
+	extent: Extent,
+	data: &[u8],
+	index: usize,
+	output: &mut Vec<u8, A>,
+	streams: &mut Vec<StreamDescription>,
+	offset: &mut usize,
+	allocator: A,
+) {
+	let start = output.len();
+	if matches!(
+		output_format,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB
+	) {
+		let compressed = compress_bc_level_in(output_format, extent, data, allocator);
+		output.extend_from_slice(&compressed);
+	} else {
+		output.extend_from_slice(data);
+	}
+	let size = output.len() - start;
+	streams.push(StreamDescription::new(format!("mip[{index}]"), size, *offset));
+	*offset += size;
+}
+
+/// Calculates exact persisted storage for a complete encoded mip chain.
+fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> {
+	let (mut width, mut height) = (extent.width(), extent.height());
+	let mut total = 0usize;
+	loop {
+		let level_size = match format {
+			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => (width.div_ceil(4) as usize)
+				.checked_mul(height.div_ceil(4) as usize)?
+				.checked_mul(16)?,
+			Formats::RGBA8 => (width as usize).checked_mul(height as usize)?.checked_mul(4)?,
+			Formats::RGBA16 | Formats::RGBA16F => (width as usize).checked_mul(height as usize)?.checked_mul(8)?,
+			_ => return None,
+		};
+		total = total.checked_add(level_size)?;
+		if width == 1 && height == 1 {
+			return Some(total);
+		}
+		width = (width / 2).max(1);
+		height = (height / 2).max(1);
+	}
 }
 
 fn image_resource_extent(format: Formats, extent: Extent) -> [u32; 3] {

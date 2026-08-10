@@ -34,6 +34,7 @@ fn select_unfragmented_gltf_resource(
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
 
 impl GLTFAssetHandler {
@@ -56,6 +57,11 @@ impl GLTFAssetHandler {
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
 		self.generator = Some(Arc::new(generator));
+	}
+
+	/// Selects the offline backend used only for image resources generated from glTF materials.
+	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
+		self.material_mip_generator = Some(generator);
 	}
 }
 
@@ -156,7 +162,7 @@ impl AssetHandler for GLTFAssetHandler {
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
 			let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers, allocator).await?;
 			let semantic = guess_semantic_from_name(url.get_base());
-			store_gltf_image(context, url, image, semantic)?;
+			store_gltf_image(context, url, image, semantic, None)?;
 			return Ok(());
 		}
 
@@ -281,8 +287,17 @@ impl AssetHandler for GLTFAssetHandler {
 		let (unique_materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
 		let mut resolved_materials = Vec::with_capacity(unique_materials.len());
 		for material in unique_materials {
-			let material =
-				material_for_gltf_primitive(context, spec, url, &gltf, &buffers, material, self.generator.clone()).await?;
+			let material = material_for_gltf_primitive(
+				context,
+				spec,
+				url,
+				&gltf,
+				&buffers,
+				material,
+				self.generator.clone(),
+				self.material_mip_generator.as_deref(),
+			)
+			.await?;
 			resolved_materials.push(material);
 		}
 
@@ -1332,12 +1347,13 @@ async fn material_for_gltf_primitive(
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	if let Some(override_asset) = material_override(spec, &material) {
 		return context.bake_dependency::<VariantModel>(&override_asset).await;
 	}
 
-	generate_gltf_material_variant(context, mesh_url, gltf, buffers, material, generator).await
+	generate_gltf_material_variant(context, mesh_url, gltf, buffers, material, generator, mip_backend).await
 }
 
 async fn generate_gltf_material_variant(
@@ -1347,12 +1363,14 @@ async fn generate_gltf_material_variant(
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
 	let brdf = brdf_material_from_gltf(&material);
 	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
 	let texture_dependencies = collect_gltf_texture_dependencies(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
-	let texture_variables = store_gltf_texture_dependencies(context, mesh_url, gltf, buffers, &texture_dependencies).await?;
+	let texture_variables =
+		store_gltf_texture_dependencies(context, mesh_url, gltf, buffers, &texture_dependencies, mip_backend).await?;
 	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
 	let base_id = generated_material_base_id(mesh_url, &material);
 	let shader_id = format!("{base_id}.shader");
@@ -1599,6 +1617,7 @@ fn store_gltf_image(
 	id: ResourceId<'_>,
 	image: gltf::image::Data,
 	semantic: Semantic,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<crate::SerializableResource, LoadErrors> {
 	let format = gltf_image_format(image.format)?;
 	let image_description = ImageDescription {
@@ -1606,10 +1625,16 @@ fn store_gltf_image(
 		extent: Extent::rectangle(image.width, image.height),
 		semantic,
 		gamma: gamma_from_semantic(semantic),
-		generate_mipmaps: false,
+		generate_mipmaps: mip_backend.is_some(),
 	};
 
-	let (resource, data) = process_image_in(id, image_description, image.pixels.into_boxed_slice(), context.allocator())?;
+	let (resource, data) = process_image_with_mip_backend_in(
+		id,
+		image_description,
+		image.pixels.into_boxed_slice(),
+		context.allocator(),
+		mip_backend,
+	)?;
 	context.store_resource(resource, &data)
 }
 
@@ -1716,6 +1741,7 @@ async fn store_gltf_texture_dependencies(
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	dependencies: &[GltfTextureDependency],
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<Vec<VariantVariableModel>, LoadErrors> {
 	let mut variables = Vec::with_capacity(dependencies.len());
 
@@ -1725,7 +1751,8 @@ async fn store_gltf_texture_dependencies(
 			.find(|image| image.index() == dependency.image_index as usize)
 			.ok_or(LoadErrors::FailedToProcess)?;
 		let id = generated_gltf_image_id(mesh_url, image.index() as u32, image.name());
-		let image_ref = load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic).await?;
+		let image_ref =
+			load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic, mip_backend).await?;
 
 		variables.push(VariantVariableModel {
 			name: material_texture_variable_name(dependency.image_index),
@@ -1745,10 +1772,11 @@ async fn load_and_store_gltf_image(
 	image: gltf::Image<'_>,
 	buffers: &[gltf::buffer::Data],
 	semantic: Semantic,
+	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<Image>, LoadErrors> {
 	let image_data =
 		load_gltf_image_data(context.asset_storage_backend(), mesh_url, image, buffers, context.allocator()).await?;
-	store_gltf_image(context, ResourceId::new(id), image_data, semantic).map(Into::into)
+	store_gltf_image(context, ResourceId::new(id), image_data, semantic, mip_backend).map(Into::into)
 }
 
 fn generated_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {
@@ -2784,6 +2812,10 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(
+			image.mip_count, 1,
+			"explicit image fragments are not material-generated textures"
+		);
 	}
 
 	#[r#async::test]
@@ -2805,6 +2837,10 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(
+			image.mip_count, 1,
+			"explicit image fragments are not material-generated textures"
+		);
 	}
 }
 
@@ -2830,7 +2866,9 @@ use crate::{
 		BrdfMaterialValidationError, BrdfNode, BrdfNodeId,
 	},
 	processors::{
-		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},
+		image_processor::{
+			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, Semantic,
+		},
 		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
 	},
 	r#async::spawn_cpu_task,
@@ -2839,6 +2877,7 @@ use crate::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
 		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},

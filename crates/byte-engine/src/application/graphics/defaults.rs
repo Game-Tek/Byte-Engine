@@ -140,16 +140,28 @@ pub fn setup_default_resource_and_asset_management(
 		let storage_backend = FileStorageBackend::new(assets_path);
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
+		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> =
+			MaterialMipGenerator::try_with_default_gpu()
+				.map(|generator| std::sync::Arc::new(generator) as std::sync::Arc<dyn MipGenerationBackend>)
+				.unwrap_or_else(|error| {
+					log::warn!(
+						"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+					);
+					std::sync::Arc::new(CPUMipGenerationBackend)
+				});
+
 		let mut material_asset_handler = BEMAAssetHandler::new();
 		material_asset_handler.set_shader_generator(generator.clone());
 		asset_manager.add_asset_handler(material_asset_handler);
 
 		let mut fbx_asset_handler = FBXAssetHandler::new();
 		fbx_asset_handler.set_shader_generator(generator.clone());
+		fbx_asset_handler.set_material_mip_generator(material_mip_generator.clone());
 		asset_manager.add_asset_handler(fbx_asset_handler);
 
 		let mut gltf_asset_handler = GLTFAssetHandler::new();
 		gltf_asset_handler.set_shader_generator(generator);
+		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
 		asset_manager.add_asset_handler(gltf_asset_handler);
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 		asset_manager.add_asset_handler(resource_management::asset::pipeline_asset_handler::PipelineAssetHandler);
@@ -291,7 +303,10 @@ use resource_management::asset::{
 	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
 };
 #[cfg(debug_assertions)]
-use resource_management::ibl::IBLGenerator;
+use resource_management::{
+	ibl::IBLGenerator,
+	resources::mips::{gpu::MaterialMipGenerator, CPUMipGenerationBackend, MipGenerationBackend},
+};
 use tracing::debug_span;
 use utils::Extent;
 

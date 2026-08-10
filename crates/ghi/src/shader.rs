@@ -131,8 +131,31 @@ pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource,
 
 #[cfg(target_os = "linux")]
 fn compile_glsl(name: &str, source: &str) -> Result<CompiledShaderSource, String> {
-	resource_management::shader::glsl_compile::compile(source, name)
-		.map(|artifact| CompiledShaderSource::SPIRV(artifact.as_ref().to_vec()))
+	let compiler = shaderc::Compiler::new().map_err(|error| {
+		format!(
+			"GLSL compiler initialization failed. The most likely cause is unavailable shaderc runtime support. Error: {error}"
+		)
+	})?;
+	let mut options = shaderc::CompileOptions::new().map_err(|error| {
+		format!(
+			"GLSL compiler options could not be created. The most likely cause is unavailable shaderc runtime support. Error: {error}"
+		)
+	})?;
+	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
+	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
+	if cfg!(debug_assertions) {
+		options.set_generate_debug_info();
+	}
+
+	compiler
+		.compile_into_spirv(source, shaderc::ShaderKind::InferFromSource, name, "main", Some(&options))
+		.map(|artifact| CompiledShaderSource::SPIRV(artifact.as_binary_u8().to_vec()))
+		.map_err(|error| {
+			format!(
+				"GLSL shader compilation failed for '{name}'. The most likely cause is invalid or unsupported shader source. Error: {error}"
+			)
+		})
 }
 
 #[cfg(not(target_os = "linux"))]

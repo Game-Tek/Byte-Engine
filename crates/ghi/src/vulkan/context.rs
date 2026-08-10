@@ -619,22 +619,34 @@ impl Context {
 		(image, format)
 	}
 
+	/// Invalidates one completed image readback allocation before exposing its mapped bytes.
 	pub(crate) fn get_image_data<'a>(
 		&'a self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
 	) -> &'a [u8] {
 		let image = &self.images[texture_copy_handle.0 as usize];
-
-		let pointer = image.pointer.unwrap();
-		let size = image.size;
-
-		if pointer.is_null() {
-			panic!("Texture data was requested but texture has no memory associated.");
+		let pointer = image.pointer.expect(
+			"Texture data is unavailable. The most likely cause is that the image was not created with CPU read access.",
+		);
+		let allocation_handle = image.staging_allocation.expect(
+			"Texture readback allocation is unavailable. The most likely cause is that the image staging buffer was not created.",
+		);
+		let allocation = &self.allocations[allocation_handle.0 as usize];
+		let mapped_range = vk::MappedMemoryRange::default()
+			.memory(allocation.memory)
+			.offset(0)
+			.size(vk::WHOLE_SIZE);
+		unsafe {
+			self.device.invalidate_mapped_memory_ranges(&[mapped_range]).expect(
+				"Vulkan image readback invalidation failed. The most likely cause is device loss or an invalid staging allocation.",
+			);
 		}
 
-		let slice = unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, size) };
-
-		slice
+		assert!(
+			!pointer.is_null(),
+			"Texture data pointer is null. The most likely cause is that Vulkan failed to map the readback allocation."
+		);
+		unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, image.size) }
 	}
 
 	pub(crate) fn start_frame<'a>(
@@ -1388,6 +1400,7 @@ impl Context {
 				next: None,
 				size: 0,
 				staging_buffer: None,
+				staging_allocation: None,
 				pointer: None,
 				image: vk_image,
 				full_image_view: vk::ImageView::null(),
@@ -1683,6 +1696,7 @@ impl Context {
 				next,
 				size: 0,
 				staging_buffer: None,
+				staging_allocation: None,
 				pointer: None,
 				image: vk::Image::null(),
 				full_image_view: vk::ImageView::null(),
@@ -1737,30 +1751,31 @@ impl Context {
 
 		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
-		let (staging_buffer, pointer) = if uses_cpu_staging {
-			let vk_buffer_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
+		let (staging_buffer, staging_allocation, pointer) = if uses_cpu_staging {
+			let reads_on_cpu = device_accesses.intersects(crate::DeviceAccesses::CpuRead);
+			let vk_buffer_usage_flags = if reads_on_cpu {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
 				vk::BufferUsageFlags::TRANSFER_SRC
 			};
-
-			let device_accesses = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-				crate::DeviceAccesses::DeviceToHost
+			// Readback needs host visibility and explicit invalidation. Uploads use coherent host memory so writes are visible.
+			let allocation_accesses = if reads_on_cpu {
+				crate::DeviceAccesses::CpuRead
 			} else {
-				crate::DeviceAccesses::HostToDevice
+				crate::DeviceAccesses::HostOnly
 			};
 
 			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
 			let (allocation_handle, _) = self.create_allocation_internal(
 				buffer_creation_result.size,
 				buffer_creation_result.memory_flags.into(),
-				device_accesses,
+				allocation_accesses,
 			);
 			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-			(Some(buffer_creation_result.resource), Some(pointer))
+			(Some(buffer_creation_result.resource), Some(allocation_handle), Some(pointer))
 		} else {
-			(None, None)
+			(None, None, None)
 		};
 
 		let image_usage_flags = into_vk_image_usage_flags(resource_uses | transfer_uses, format);
@@ -1820,6 +1835,7 @@ impl Context {
 			next,
 			size,
 			staging_buffer,
+			staging_allocation,
 			pointer,
 			image: texture_creation_result.resource,
 			full_image_view: full_image_view.unwrap_or(vk::ImageView::null()),
@@ -3067,6 +3083,10 @@ impl crate::context::Context for Context {
 
 	fn end_frame_capture(&mut self) {
 		self.device.end_frame_capture();
+	}
+
+	fn wait_for_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		Context::wait_for_synchronizer(self, synchronizer);
 	}
 
 	fn wait(&self) {

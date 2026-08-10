@@ -10631,6 +10631,10 @@ impl crate::context::Context for Device {
 		Device::end_frame_capture(self);
 	}
 
+	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle) {
+		Device::wait_for_synchronizer(self, synchronizer);
+	}
+
 	fn wait(&self) {
 		Device::wait(self);
 	}

@@ -65,6 +65,7 @@ pub mod resources;
 
 pub mod shader;
 
+pub mod ibl;
 pub mod pbr;
 
 pub mod processors;
@@ -246,9 +247,10 @@ pub struct StreamDescription {
 }
 
 impl StreamDescription {
-	pub fn new(name: &str, size: usize, offset: usize) -> Self {
+	/// Creates a stream description while preserving ownership of a generated name.
+	pub fn new(name: impl Into<String>, size: usize, offset: usize) -> Self {
 		StreamDescription {
-			name: name.to_string(),
+			name: name.into(),
 			size,
 			offset,
 		}

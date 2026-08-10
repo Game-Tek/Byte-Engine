@@ -35,11 +35,11 @@ fn default_array_layers() -> u32 {
 	1
 }
 
-/// The `ImageIbl` struct groups the baked image-based-lighting maps derived from an environment image.
+/// The `ImageIBL` struct groups the baked image-based-lighting maps derived from an environment image.
 #[derive(
 	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, PartialEq, Eq,
 )]
-pub struct ImageIbl {
+pub struct ImageIBL {
 	pub diffuse_irradiance: ImageSubresource,
 	/// Roughness maps linearly to mip level from zero through `mip_count - 1`.
 	pub prefiltered_specular: ImageSubresource,
@@ -57,7 +57,7 @@ pub struct Image {
 	pub mip_count: u32,
 	/// Baked lighting maps stored as named binary subresources of this image.
 	#[serde(default)]
-	pub ibl: Option<ImageIbl>,
+	pub ibl: Option<ImageIBL>,
 }
 
 fn default_mip_count() -> u32 {
@@ -68,7 +68,7 @@ super::impl_direct_resource!(Image, "Image");
 
 #[cfg(test)]
 mod tests {
-	use super::{Image, ImageIbl, ImageSubresource};
+	use super::{Image, ImageIBL, ImageSubresource};
 	use crate::{
 		asset::ResourceId,
 		resource::{storage_backend::tests::TestStorageBackend, WriteStorageBackend},
@@ -84,7 +84,7 @@ mod tests {
 			gamma: Gamma::SRGB,
 			extent: [8, 4, 1],
 			mip_count: 4,
-			ibl: Some(ImageIbl {
+			ibl: Some(ImageIBL {
 				diffuse_irradiance: ImageSubresource {
 					format: Formats::RGBA16F,
 					gamma: Gamma::Linear,

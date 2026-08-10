@@ -2175,6 +2175,10 @@ impl crate::context::Context for Context {
 		Context::end_frame_capture(self);
 	}
 
+	fn wait_for_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		Context::wait_for_synchronizer(self, synchronizer);
+	}
+
 	fn wait(&self) {
 		Context::wait(self);
 	}

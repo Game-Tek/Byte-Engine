@@ -308,7 +308,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 			let level_extent = Extent::rectangle(level.width, level.height);
 			let level_data = compress_bc_level_in(output_format, level_extent, level.data, allocator.clone());
 			let size = level_data.len();
-			streams.push(StreamDescription::new(&format!("mip[{index}]"), size, offset));
+			streams.push(StreamDescription::new(format!("mip[{index}]"), size, offset));
 			all_data.extend_from_slice(&level_data);
 			offset += size;
 		}

@@ -303,7 +303,6 @@ version = "0.1.1"
 dependencies = [
  "ash",
  "bitflags 2.13.0",
- "byte-engine-resource-management",
  "byte-engine-utils",
  "dispatch2",
  "objc2",
@@ -312,6 +311,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "renderdoc",
+ "shaderc",
  "smallvec",
  "wayland-backend",
  "wayland-client",
@@ -336,6 +336,7 @@ dependencies = [
  "base64",
  "bumpalo",
  "byte-engine-besl",
+ "byte-engine-ghi",
  "byte-engine-utils",
  "colored",
  "compio",

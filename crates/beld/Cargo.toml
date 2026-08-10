@@ -20,7 +20,7 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 byte-engine = { path = "../byte-engine", version = "0.1.1" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
-resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1" }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1", features = ["gpu-ibl"] }
 
 clap = { version = "4.5.32", features = ["derive"] }
 simple_logger = "5.0.0"

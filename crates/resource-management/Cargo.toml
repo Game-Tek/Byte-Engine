@@ -17,6 +17,10 @@ build = "build.rs"
 [lib]
 name = "resource_management"
 
+[features]
+default = []
+gpu-ibl = ["dep:ghi"]
+
 [package.metadata.docs.rs]
 rustc-args = ["-C", "target-feature=+aes,+sse2"]
 rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
@@ -27,6 +31,7 @@ md5 = "0.8.0"
 [dependencies]
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
+ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.1", optional = true }
 
 png = "0.18.0"
 exr = "1.74.2"

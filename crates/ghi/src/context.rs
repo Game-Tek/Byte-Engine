@@ -119,6 +119,11 @@ pub trait Context: ContextCreate {
 	/// Ends capturing the underlying's API calls if the application is attached to a graphics debugger.
 	fn end_frame_capture(&mut self);
 
+	/// Waits for operations associated with one synchronizer to complete.
+	///
+	/// Call this after submitting a command buffer when later CPU work depends only on that submission.
+	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle);
+
 	/// Waits for all pending operations to complete.
 	fn wait(&self);
 }

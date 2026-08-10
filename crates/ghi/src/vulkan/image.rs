@@ -13,6 +13,7 @@ use crate::{image::ImageHandle, DeviceAccesses, Formats, HandleLike, Next, Uses}
 pub(crate) struct Image {
 	pub(crate) next: Option<ImageHandle>,
 	pub(crate) staging_buffer: Option<vk::Buffer>,
+	pub(crate) staging_allocation: Option<crate::AllocationHandle>,
 	pub(crate) pointer: Option<*mut u8>,
 	pub(crate) image: vk::Image,
 	pub(crate) full_image_view: vk::ImageView,

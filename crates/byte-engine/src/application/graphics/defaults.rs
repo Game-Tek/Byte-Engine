@@ -153,7 +153,13 @@ pub fn setup_default_resource_and_asset_management(
 		asset_manager.add_asset_handler(gltf_asset_handler);
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 		asset_manager.add_asset_handler(resource_management::asset::pipeline_asset_handler::PipelineAssetHandler);
-		asset_manager.add_asset_handler(EXRAssetHandler::new());
+		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
+			log::warn!(
+				"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+			);
+			IBLGenerator::new()
+		});
+		asset_manager.add_asset_handler(EXRAssetHandler::new(ibl_generator));
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
 		asset_manager.add_asset_handler(WAVAssetHandler::new());
 		asset_manager.add_asset_handler(OGGAssetHandler::new());
@@ -284,6 +290,8 @@ use resource_management::asset::{
 	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
 	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
 };
+#[cfg(debug_assertions)]
+use resource_management::ibl::IBLGenerator;
 use tracing::debug_span;
 use utils::Extent;
 

@@ -98,7 +98,8 @@ pub struct VisibilityPipelineManager {
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
 	loaded_textures: HashSet<u32>,
-	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
+	/// Renderable handles whose complete material dependency closure is not resident yet.
+	incomplete_renderables: HashSet<Handle>,
 	/// Requested environment resource retained until its asynchronous upload completes.
 	environment_resource_id: Option<String>,
 	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
@@ -235,6 +236,7 @@ impl VisibilityPipelineManager {
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
 			vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 			context.create_factory(),
+			pipeline_manager.clone(),
 		));
 		Self {
 			pipeline_manager,
@@ -251,7 +253,7 @@ impl VisibilityPipelineManager {
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
-			loaded_pipelines: HashMap::new(),
+			incomplete_renderables: HashSet::new(),
 			environment_resource_id: None,
 			environment_texture,
 			cone_shadow_map_pool_capacity: settings.cone_shadow_map_pool_capacity,
@@ -350,27 +352,14 @@ impl VisibilityPipelineManager {
 					self.loaded_meshes.insert(key.clone(), mesh);
 					self.resolve_pending_renderables_for_mesh(&key);
 				}
-				VisibilityResourceCompletion::PipelineReady { name, pipeline } => {
-					let pipeline = frame.intern_compute_pipeline(pipeline);
-					log::debug!("Visibility material pipeline adopted: name={}", name);
-					self.loaded_pipelines.insert(name.clone(), pipeline);
-					for material in self.loaded_materials.values_mut() {
-						if material.name == name {
-							material.pipeline = Some(pipeline);
-						}
-					}
-					self.rebuild_material_lists();
-				}
 				VisibilityResourceCompletion::MaterialReady {
 					id,
 					index,
 					pipeline,
-					pending_pipeline,
 					alpha_mode,
 					textures,
-				} => self.adopt_material_completion(id, index, pipeline, pending_pipeline, alpha_mode, textures),
+				} => self.adopt_material_completion(id, index, pipeline, alpha_mode, textures),
 				VisibilityResourceCompletion::ImageReady {
-					key: _,
 					index,
 					image,
 					sampler,
@@ -458,12 +447,11 @@ impl VisibilityPipelineManager {
 		&mut self,
 		id: String,
 		index: u32,
-		pipeline: Option<ghi::PipelineHandle>,
-		pending_pipeline: Option<PendingMaterialPipeline>,
+		pipeline_ref: crate::rendering::PipelineRef,
 		alpha_mode: AlphaMode,
 		textures: Vec<Option<(String, u32)>>,
 	) {
-		let pipeline = pipeline.or_else(|| self.loaded_pipelines.get(&id).copied());
+		let pipeline = self.pipeline_manager.pipeline(pipeline_ref);
 		let material_data = self.materials_data.get_mut(index as usize).unwrap_or_else(|| {
 			panic!(
 				"Visibility material index is out of range. The most likely cause is that the resource manager assigned more than MAX_MATERIALS material indices."
@@ -497,12 +485,29 @@ impl VisibilityPipelineManager {
 			RenderDescription {
 				index,
 				pipeline,
+				pipeline_ref,
 				name: id,
 				alpha_mode,
 				texture_indices,
 			},
 		);
 		self.rebuild_material_lists();
+	}
+
+	/// Publishes material pipeline handles resolved by the shared compiler since the previous frame.
+	fn refresh_material_pipelines(&mut self) {
+		let mut changed = false;
+		for material in self.loaded_materials.values_mut() {
+			if material.pipeline.is_none() {
+				if let Some(pipeline) = self.pipeline_manager.pipeline(material.pipeline_ref) {
+					material.pipeline = Some(pipeline);
+					changed = true;
+				}
+			}
+		}
+		if changed {
+			self.rebuild_material_lists();
+		}
 	}
 
 	/// Copies canonical material metadata into the current frame-local buffer before rendering.
@@ -565,10 +570,11 @@ impl VisibilityPipelineManager {
 		);
 	}
 
-	/// Rebuilds the active instance list from scene entities whose material pipeline is ready.
+	/// Rebuilds the active instance list from whole renderables whose material dependencies are ready.
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
 		self.scene.render_info.clear_active_instances();
 		let loaded_materials = &self.loaded_materials;
+		let loaded_textures = &self.loaded_textures;
 		let render_entities = &self.scene.render_entities;
 		let skinning_poses = &self.scene.skinning_poses;
 		let palette_scratch = &mut self.skinning_palette_scratch;
@@ -576,6 +582,21 @@ impl VisibilityPipelineManager {
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
 		// Frame caches retain capacity but never retain entity or resource pointers beyond this rebuild.
 		palette_cache.clear();
+		collect_incomplete_renderables(
+			render_entities
+				.iter()
+				.map(|render_entity| (render_entity.handle, render_entity.shader_mesh.material_index)),
+			|material_index| {
+				loaded_materials.get(&material_index).is_some_and(|material| {
+					material.pipeline.is_some()
+						&& material
+							.texture_indices
+							.iter()
+							.all(|texture_index| loaded_textures.contains(texture_index))
+				})
+			},
+			&mut self.incomplete_renderables,
+		);
 
 		let mut active_index = 0;
 		let mut skipped_missing_material = 0usize;
@@ -584,6 +605,12 @@ impl VisibilityPipelineManager {
 		let mut pose_matrix_count = 0usize;
 		let mut palette_matrix_count = 0usize;
 		for render_entity in render_entities.iter() {
+			// A renderable enters a frame as one object. Never expose the subset whose
+			// materials happened to become resident first.
+			if self.incomplete_renderables.contains(&render_entity.handle) {
+				skipped_missing_material += 1;
+				continue;
+			}
 			let Some(material) = loaded_materials.get(&render_entity.shader_mesh.material_index) else {
 				skipped_missing_material += 1;
 				continue;
@@ -1097,6 +1124,7 @@ impl PipelineManager for VisibilityPipelineManager {
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
 		self.adopt_resource_completions(frame);
+		self.refresh_material_pipelines();
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
 
@@ -1655,9 +1683,24 @@ struct PendingRenderableInstance {
 struct RenderDescription {
 	index: u32,
 	pipeline: Option<ghi::PipelineHandle>,
+	pipeline_ref: crate::rendering::PipelineRef,
 	name: String,
 	alpha_mode: AlphaMode,
 	texture_indices: Vec<u32>,
+}
+
+/// Collects every renderable that has at least one unavailable primitive dependency.
+fn collect_incomplete_renderables(
+	primitive_materials: impl IntoIterator<Item = (Handle, u32)>,
+	mut material_is_ready: impl FnMut(u32) -> bool,
+	incomplete_renderables: &mut HashSet<Handle>,
+) {
+	incomplete_renderables.clear();
+	for (handle, material_index) in primitive_materials {
+		if !material_is_ready(material_index) {
+			incomplete_renderables.insert(handle);
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1776,16 +1819,17 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		cached_skin_palette_base, cone_light_has_brightness, cone_shadow_is_visible, make_cone_shadow_view,
-		make_point_shadow_view, point_light_has_brightness, point_shadow_is_visible, reserve_deformed_vertex_range,
-		resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights, write_material_texture_indices, Instance,
-		LightData, LightingData, MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry,
-		VisibilityPipelineSettings, AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX,
-		CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL,
-		DEFAULT_POINT_SHADOW_POOL_CAPACITY, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING,
-		LIGHTING_DATA_BINDING, LIT_BINDING, MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY,
-		MAX_POINT_SHADOW_POOL_CAPACITY, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX,
-		POINT_SHADOW_NEAR_M, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_is_visible,
+		make_cone_shadow_view, make_point_shadow_view, point_light_has_brightness, point_shadow_is_visible,
+		reserve_deformed_vertex_range, resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights,
+		write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh,
+		ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings, AO_MAP_BINDING,
+		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
+		DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
+		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY,
+		POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX, POINT_SHADOW_NEAR_M, SHADOW_MAP_BINDING,
+		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
@@ -1798,6 +1842,47 @@ mod tests {
 		VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
 	use crate::rendering::{Sink, View};
+
+	#[test]
+	fn renderable_admission_waits_for_every_primitive_dependency() {
+		let mut handles = Factory::new();
+		let incomplete = handles.create("incomplete");
+		let independent = handles.create("independent");
+		let primitives = [(incomplete, 0), (incomplete, 1), (independent, 0)];
+		let mut ready_materials = std::collections::HashSet::from([0u32]);
+		let mut incomplete_renderables = std::collections::HashSet::new();
+
+		collect_incomplete_renderables(
+			primitives,
+			|material_index| ready_materials.contains(&material_index),
+			&mut incomplete_renderables,
+		);
+
+		assert!(incomplete_renderables.contains(&incomplete));
+		assert!(!incomplete_renderables.contains(&independent));
+		let admitted = primitives
+			.iter()
+			.filter(|(handle, _)| !incomplete_renderables.contains(handle))
+			.copied()
+			.collect::<Vec<_>>();
+		assert_eq!(admitted, [(independent, 0)]);
+
+		ready_materials.insert(1);
+		collect_incomplete_renderables(
+			primitives,
+			|material_index| ready_materials.contains(&material_index),
+			&mut incomplete_renderables,
+		);
+
+		assert!(incomplete_renderables.is_empty());
+		assert_eq!(
+			primitives
+				.iter()
+				.filter(|(handle, _)| !incomplete_renderables.contains(handle))
+				.count(),
+			3
+		);
+	}
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
 	fn cone(position_x: f32) -> ConeLight {
@@ -2429,8 +2514,8 @@ use crate::rendering::pipelines::visibility::render_pass::{
 	VisibilityPipelineRenderPass, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT,
 };
 use crate::rendering::pipelines::visibility::resource_manager::{
-	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
-	VisibilityResourceCompletion, IBL_SPECULAR_LEVEL_COUNT,
+	MaterialPipelineConfig, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
+	IBL_SPECULAR_LEVEL_COUNT,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{

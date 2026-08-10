@@ -22,6 +22,37 @@ impl PipelineKey {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PipelineRef(PipelineKey);
 
+/// The `SpecializedComputePipelineRequest` struct packages one material variant's compute pipeline inputs.
+///
+/// The material variant ID must change whenever its shader, push constants, or
+/// specialization values change. Pass this request to
+/// [`PipelineManagerClient::request_specialized_compute_pipeline`] to reuse the
+/// renderer's existing pipeline compilation workers.
+#[derive(Clone)]
+pub(crate) struct SpecializedComputePipelineRequest {
+	material_variant_id: String,
+	shader_resource_id: String,
+	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
+	specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
+}
+
+impl SpecializedComputePipelineRequest {
+	/// Creates a specialized compute request whose stable variant ID controls request coalescing.
+	pub(crate) fn new(
+		material_variant_id: impl Into<String>,
+		shader_resource_id: impl Into<String>,
+		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
+		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
+	) -> Self {
+		Self {
+			material_variant_id: material_variant_id.into(),
+			shader_resource_id: shader_resource_id.into(),
+			push_constant_ranges,
+			specialization_map_entries,
+		}
+	}
+}
+
 /// The `PipelineState` enum reports the published state of a pipeline request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PipelineState {
@@ -52,11 +83,16 @@ pub struct PipelineManagerClient {
 impl PipelineManagerClient {
 	/// Requests a pipeline resource without waiting for storage or compilation.
 	pub fn request_pipeline(&self, id: &str) -> PipelineRef {
-		use std::hash::{Hash as _, Hasher as _};
+		self.request(
+			pipeline_key(PipelineRequestNamespace::Resource, id),
+			PipelineRequestKind::Resource { id: id.to_string() },
+		)
+	}
 
-		let mut hasher = std::collections::hash_map::DefaultHasher::new();
-		id.hash(&mut hasher);
-		self.request(PipelineKey::new(hasher.finish()), id.to_string())
+	/// Requests a material-specialized compute pipeline without waiting for shader loading or compilation.
+	pub(crate) fn request_specialized_compute_pipeline(&self, request: SpecializedComputePipelineRequest) -> PipelineRef {
+		let key = pipeline_key(PipelineRequestNamespace::SpecializedCompute, &request.material_variant_id);
+		self.request(key, PipelineRequestKind::SpecializedCompute(request))
 	}
 
 	/// Returns the state published for a pipeline without draining worker results.
@@ -83,7 +119,7 @@ impl PipelineManagerClient {
 	}
 
 	/// Coalesces a request before placing compilation work on the shared queue.
-	fn request(&self, key: PipelineKey, id: String) -> PipelineRef {
+	fn request(&self, key: PipelineKey, kind: PipelineRequestKind) -> PipelineRef {
 		let reference = PipelineRef(key);
 		{
 			let mut entries = self.shared.entries.write();
@@ -93,7 +129,7 @@ impl PipelineManagerClient {
 			entries.insert(key, PipelineState::Pending);
 		}
 
-		if self.requests.send(PipelineRequest { key, id }).is_err() {
+		if self.requests.send(PipelineRequest { key, kind }).is_err() {
 			self.shared.entries.write().insert(key, PipelineState::Failed);
 			log::error!(
 				"Pipeline request failed. The most likely cause is that every pipeline compilation server has stopped."
@@ -120,8 +156,11 @@ impl PipelineManagerServer {
 	/// Compiles requests until every client sender is dropped.
 	pub async fn run(mut self) {
 		while let Ok(request) = self.requests.recv().await {
-			let key = request.key;
-			let result = self.compile(&request.id).await;
+			let PipelineRequest { key, kind } = request;
+			let result = match kind {
+				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&id).await,
+				PipelineRequestKind::SpecializedCompute(request) => self.compile_specialized_compute_pipeline(request).await,
+			};
 			if self.completions.send(PipelineCompletion { key, result }).is_err() {
 				break;
 			}
@@ -137,7 +176,7 @@ impl PipelineManagerServer {
 	}
 
 	/// Loads one complete pipeline dependency graph before performing native compilation.
-	async fn compile(&mut self, id: &str) -> Result<DetachedPipeline, String> {
+	async fn compile_resource_pipeline(&mut self, id: &str) -> Result<DetachedPipeline, String> {
 		use ghi::Device as _;
 		use resource_management::resources::pipeline::PipelineKind;
 
@@ -220,6 +259,47 @@ impl PipelineManagerServer {
 				Ok(DetachedPipeline::Raster(self.factory.create_raster_pipeline(builder)))
 			}
 		}
+	}
+
+	/// Loads one shader resource and creates its material-specialized detached compute pipeline.
+	async fn compile_specialized_compute_pipeline(
+		&mut self,
+		request: SpecializedComputePipelineRequest,
+	) -> Result<DetachedPipeline, String> {
+		use ghi::Device as _;
+
+		let resources = self.resource_manager.as_ref().ok_or_else(|| {
+			"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager."
+				.to_string()
+		})?;
+		let SpecializedComputePipelineRequest {
+			material_variant_id,
+			shader_resource_id,
+			push_constant_ranges,
+			specialization_map_entries,
+		} = request;
+		let prepared = prepare_shader(resources, &shader_resource_id).await?;
+		if !matches!(prepared.stage, ghi::ShaderTypes::Compute) {
+			return Err(format!(
+				"Specialized compute pipeline '{material_variant_id}' uses non-compute shader '{shader_resource_id}'. The most likely cause is that the material variant references the wrong shader stage."
+			));
+		}
+		let workgroup = prepared.workgroup.ok_or_else(|| {
+			format!(
+				"Specialized compute pipeline '{material_variant_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
+			)
+		})?;
+		let bindings = prepared.bindings.clone();
+		let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
+		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(&specialization_map_entries);
+
+		Ok(DetachedPipeline::Compute {
+			pipeline: self.factory.create_compute_pipeline(
+				ghi::pipelines::compute::Builder::new(&push_constant_ranges, shader).name(&material_variant_id),
+			),
+			workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
+			bindings,
+		})
 	}
 }
 
@@ -339,6 +419,22 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 	descriptor
 }
 
+#[derive(Clone, Copy, Hash)]
+enum PipelineRequestNamespace {
+	Resource,
+	SpecializedCompute,
+}
+
+/// Hashes one caller-provided identity within its request kind so distinct pipeline workflows never coalesce.
+fn pipeline_key(namespace: PipelineRequestNamespace, id: &str) -> PipelineKey {
+	use std::hash::{Hash as _, Hasher as _};
+
+	let mut hasher = std::collections::hash_map::DefaultHasher::new();
+	namespace.hash(&mut hasher);
+	id.hash(&mut hasher);
+	PipelineKey::new(hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -368,6 +464,68 @@ mod tests {
 		assert!(matches!(client.get(first), PipelineState::Pending));
 		assert!(matches!(requests.try_recv(), Ok(Some(_))));
 		assert!(matches!(requests.try_recv(), Ok(None)));
+	}
+
+	#[test]
+	fn duplicate_specialized_compute_requests_enqueue_one_compilation() {
+		let (client, requests) = client();
+		let request = SpecializedComputePipelineRequest::new(
+			"material/test",
+			"shader/test",
+			vec![ghi::pipelines::PushConstantRange::new(0, 16)],
+			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 0.5f32)],
+		);
+
+		let first = client.request_specialized_compute_pipeline(request.clone());
+		let second = client.request_specialized_compute_pipeline(request);
+
+		assert_eq!(first, second);
+		assert!(matches!(client.get(first), PipelineState::Pending));
+		let queued = requests
+			.try_recv()
+			.expect("specialized request receive")
+			.expect("specialized request");
+		let PipelineRequestKind::SpecializedCompute(request) = queued.kind else {
+			panic!(
+				"Unexpected pipeline request kind. The most likely cause is that the specialized client route sent a resource request."
+			);
+		};
+		assert_eq!(request.material_variant_id, "material/test");
+		assert_eq!(request.shader_resource_id, "shader/test");
+		assert_eq!(request.push_constant_ranges.len(), 1);
+		assert_eq!(request.specialization_map_entries.len(), 1);
+		assert!(matches!(requests.try_recv(), Ok(None)));
+	}
+
+	#[test]
+	fn specialized_and_resource_requests_use_distinct_namespaces() {
+		let (client, requests) = client();
+		let resource = client.request_pipeline("shared/id");
+		let specialized = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+			"shared/id",
+			"shader/test",
+			Vec::new(),
+			Vec::new(),
+		));
+
+		assert_ne!(resource, specialized);
+		let resource_request = requests
+			.try_recv()
+			.expect("resource request receive")
+			.expect("resource request");
+		assert!(matches!(
+			resource_request.kind,
+			PipelineRequestKind::Resource { ref id } if id == "shared/id"
+		));
+		let specialized_request = requests
+			.try_recv()
+			.expect("specialized request receive")
+			.expect("specialized request");
+		assert!(matches!(
+			specialized_request.kind,
+			PipelineRequestKind::SpecializedCompute(ref request)
+				if request.material_variant_id == "shared/id"
+		));
 	}
 
 	#[test]
@@ -461,7 +619,12 @@ struct PipelineManagerShared {
 
 struct PipelineRequest {
 	key: PipelineKey,
-	id: String,
+	kind: PipelineRequestKind,
+}
+
+enum PipelineRequestKind {
+	Resource { id: String },
+	SpecializedCompute(SpecializedComputePipelineRequest),
 }
 
 struct PipelineCompletion {

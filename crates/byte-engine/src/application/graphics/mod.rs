@@ -644,11 +644,16 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	> = context.build_buffer(
 		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 			.name("Renderer Async Upload Buffer")
-			.device_accesses(ghi::DeviceAccesses::HostToDevice),
+			// The upload arena is itself the GPU copy source. Host-only access keeps
+			// backends from inserting a second full-buffer staging copy.
+			.device_accesses(ghi::DeviceAccesses::HostOnly),
+	);
+	let upload_staging = rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(
+		context.get_mut_buffer_slice(upload_buffer).as_mut_slice(),
 	);
 
 	let (resource_manager_client, resource_manager) =
-		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
+		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager, upload_staging);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
 		runtime

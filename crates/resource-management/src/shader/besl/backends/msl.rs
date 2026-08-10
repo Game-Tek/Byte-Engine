@@ -2583,18 +2583,36 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	fn emit_visibility_texture_sample(
+	/// Emits a resource passed to an intrinsic using the active stage's resource context.
+	fn emit_intrinsic_resource_reference(&mut self, string: &mut String, resource: &besl::NodeReference) {
+		let resource_node = resource.borrow();
+		if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = resource_node.node() {
+			if self.in_compute_body || self.task_stage_context.is_some() {
+				self.emit_compute_binding_reference(string, name);
+			} else {
+				self.emit_raster_binding_reference(string, name);
+			}
+			return;
+		}
+		drop(resource_node);
+		self.emit_node_string(string, resource);
+	}
+
+	fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
+		texture_array: &besl::NodeReference,
 		texture_index: &besl::NodeReference,
 		uv: &besl::NodeReference,
 		uv_derivative_x: &besl::NodeReference,
 		uv_derivative_y: &besl::NodeReference,
-		xy_only: bool,
 	) {
-		string.push_str("resources.textures[");
+		self.emit_intrinsic_resource_reference(string, texture_array);
+		string.push('[');
 		self.emit_node_string(string, texture_index);
-		string.push_str("].sample(resources.textures_sampler[");
+		string.push_str("].sample(");
+		self.emit_intrinsic_resource_reference(string, texture_array);
+		string.push_str("_sampler[");
 		self.emit_node_string(string, texture_index);
 		string.push_str("],");
 		if !self.minified {
@@ -2609,9 +2627,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		self.emit_node_string(string, uv_derivative_y);
 		string.push_str("))");
-		if xy_only {
-			string.push_str(".xy");
-		}
 	}
 
 	fn emit_intrinsic_call(
@@ -2644,14 +2659,15 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push(')');
 				return;
 			}
-			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], false);
-				return;
-			}
-			"sample_normal" => {
-				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], true);
-				string.push(')');
+			"sample_texture_2d_array_grad" => {
+				self.emit_texture_2d_array_grad_sample(
+					string,
+					&arguments[0],
+					&arguments[1],
+					&arguments[2],
+					&arguments[3],
+					&arguments[4],
+				);
 				return;
 			}
 			"texture_lod" => {

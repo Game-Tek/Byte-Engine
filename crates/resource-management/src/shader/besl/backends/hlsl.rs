@@ -385,18 +385,21 @@ impl Generator {
 			|| name.ends_with(".view")
 	}
 
-	fn emit_visibility_texture_sample(
+	fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
+		texture_array: &besl::NodeReference,
 		texture_index: &besl::NodeReference,
 		uv: &besl::NodeReference,
 		uv_derivative_x: &besl::NodeReference,
 		uv_derivative_y: &besl::NodeReference,
-		xy_only: bool,
 	) {
-		string.push_str("textures[");
+		self.emit_node_string(string, texture_array);
+		string.push('[');
 		self.emit_node_string(string, texture_index);
-		string.push_str("].SampleGrad(textures_sampler,");
+		string.push_str("].SampleGrad(");
+		self.emit_node_string(string, texture_array);
+		string.push_str("_sampler,");
 		if !self.minified {
 			string.push(' ');
 		}
@@ -412,9 +415,6 @@ impl Generator {
 		}
 		self.emit_node_string(string, uv_derivative_y);
 		string.push(')');
-		if xy_only {
-			string.push_str(".xy");
-		}
 	}
 
 	fn hlsl_array_type(source: &str) -> Option<(&str, &str)> {
@@ -907,14 +907,15 @@ impl Generator {
 				string.push(')');
 				return;
 			}
-			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], false);
-				return;
-			}
-			"sample_normal" => {
-				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], true);
-				string.push(')');
+			"sample_texture_2d_array_grad" => {
+				self.emit_texture_2d_array_grad_sample(
+					string,
+					&arguments[0],
+					&arguments[1],
+					&arguments[2],
+					&arguments[3],
+					&arguments[4],
+				);
 				return;
 			}
 			_ => {}

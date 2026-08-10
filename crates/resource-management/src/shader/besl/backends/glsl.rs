@@ -226,16 +226,18 @@ impl Generator {
 		)
 	}
 
-	fn emit_visibility_texture_sample(
+	fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
+		texture_array: &besl::NodeReference,
 		texture_index: &besl::NodeReference,
 		uv: &besl::NodeReference,
 		uv_derivative_x: &besl::NodeReference,
 		uv_derivative_y: &besl::NodeReference,
-		xy_only: bool,
 	) {
-		string.push_str("textureGrad(textures[nonuniformEXT(");
+		string.push_str("textureGrad(");
+		self.emit_node_string(string, texture_array);
+		string.push_str("[nonuniformEXT(");
 		self.emit_node_string(string, texture_index);
 		string.push_str(")],");
 		if !self.minified {
@@ -253,9 +255,6 @@ impl Generator {
 		}
 		self.emit_node_string(string, uv_derivative_y);
 		string.push(')');
-		if xy_only {
-			string.push_str(".xy");
-		}
 	}
 
 	fn emit_intrinsic_call(
@@ -291,14 +290,15 @@ impl Generator {
 				string.push(')');
 				return;
 			}
-			"sample_material" => {
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], false);
-				return;
-			}
-			"sample_normal" => {
-				string.push_str("unit_vector_from_xy(");
-				self.emit_visibility_texture_sample(string, &arguments[0], &arguments[1], &arguments[2], &arguments[3], true);
-				string.push(')');
+			"sample_texture_2d_array_grad" => {
+				self.emit_texture_2d_array_grad_sample(
+					string,
+					&arguments[0],
+					&arguments[1],
+					&arguments[2],
+					&arguments[3],
+					&arguments[4],
+				);
 				return;
 			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {

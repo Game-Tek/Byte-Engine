@@ -416,6 +416,14 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 				return;
 			}
 
+			// Material sampling is visibility-pipeline shorthand. Lower it here so the
+			// portable BESL backends only need to know the bindless sampling operation.
+			*name = match *name {
+				"sample_material" => "sample_texture_2d_array_grad",
+				"sample_normal" => "sample_visibility_normal",
+				_ => unreachable!(),
+			};
+
 			let slot = parameters.remove(0);
 			let slot = match slot.node() {
 				besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) => texture_slots
@@ -425,6 +433,9 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 				_ => slot,
 			};
 			let material_textures = Node::accessor(Node::member_expression("material"), Node::member_expression("textures"));
+			// Pass the resource explicitly. The BESL backend must not know which
+			// pipeline owns the texture array or what that resource is named.
+			parameters.push(Node::member_expression("textures"));
 			// Index access has an expression on its right side. Preserve that shape so
 			// the linked backend AST can distinguish `textures[slot]` from `.field`.
 			parameters.push(Node::accessor(material_textures, Node::sentence(vec![slot])));
@@ -1907,8 +1918,9 @@ impl VisibilityShaderScope {
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]);
 
 		let sample_function = Node::intrinsic_with_parameters(
-			"sample_material",
+			"sample_texture_2d_array_grad",
 			vec![
+				Node::parameter("texture_array", "Texture2D"),
 				Node::parameter("texture_index", "u32"),
 				Node::parameter("uv", "vec2f"),
 				Node::parameter("uv_derivative_x", "vec2f"),
@@ -1918,19 +1930,24 @@ impl VisibilityShaderScope {
 			"vec4f",
 		);
 
-		let sample_normal_function = Node::intrinsic_with_parameters(
-			"sample_normal",
-			vec![
-				Node::parameter("texture_index", "u32"),
-				Node::parameter("uv", "vec2f"),
-				Node::parameter("uv_derivative_x", "vec2f"),
-				Node::parameter("uv_derivative_y", "vec2f"),
-			],
-			Node::sentence(vec![
-				Node::member_expression("textures"),
-				Node::member_expression("unit_vector_from_xy"),
-			]),
-			"vec3f",
+		// Keep normal-map decoding in the visibility material module. BESL only
+		// lowers the general texture-array gradient sample used by this helper.
+		let sample_normal_function = parse_besl_function(
+			r#"
+			sample_visibility_normal: fn (
+				texture_array: Texture2D,
+				texture_index: u32,
+				uv: vec2f,
+				uv_derivative_x: vec2f,
+				uv_derivative_y: vec2f
+			) -> vec3f {
+				let encoded: vec4f = sample_texture_2d_array_grad(
+					texture_array, texture_index, uv, uv_derivative_x, uv_derivative_y
+				);
+				return unit_vector_from_xy(vec2f(encoded.x, encoded.y));
+			}
+			"#,
+			"sample_visibility_normal",
 		);
 		// Lighting helpers are authored once. Texture operations that differ by API remain typed intrinsics below.
 		let shadow_receiver_plane_depth_gradient =

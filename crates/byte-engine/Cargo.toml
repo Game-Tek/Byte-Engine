@@ -39,7 +39,6 @@ math = { package = "byte-engine-math", path = "../math", version = "0.1.0" }
 maths-rs = "1.0.0"
 betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.1", optional = true }
 
-dual_quaternion = "0.3.0"
 serde = "1.0.219"
 log = "0.4.26"
 env_logger = "0.11.10"

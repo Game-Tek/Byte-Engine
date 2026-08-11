@@ -790,10 +790,69 @@ struct PendingPlayerTransition {
 	duration: Option<MediaTime>,
 }
 
+/// The `RootMotionTranslation` struct selects node-local translation axes for root motion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMotionTranslation(u8);
+
+impl RootMotionTranslation {
+	/// Keeps all translation in the visual pose.
+	pub const NONE: Self = Self(0);
+	/// Extracts translation along the node's local X axis.
+	pub const X: Self = Self(1 << 0);
+	/// Extracts translation along the node's local Y axis.
+	pub const Y: Self = Self(1 << 1);
+	/// Extracts translation along the node's local Z axis.
+	pub const Z: Self = Self(1 << 2);
+	/// Extracts translation along every node-local axis.
+	pub const XYZ: Self = Self(Self::X.0 | Self::Y.0 | Self::Z.0);
+
+	/// Combines translation axes for clips that move along more than one local axis.
+	pub const fn union(self, other: Self) -> Self {
+		Self(self.0 | other.0)
+	}
+
+	const fn contains(self, component: usize) -> bool {
+		self.0 & (1 << component) != 0
+	}
+}
+
+/// The `RootMotionRotation` enum selects whether node-local rotation drives the owning object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootMotionRotation {
+	/// Keeps rotation in the visual pose.
+	None,
+	/// Extracts the node's full rotation.
+	Full,
+}
+
+/// The `RootMotionSettings` struct defines which motion a target-skeleton node contributes to its owning object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMotionSettings<'a> {
+	/// Names the unique node that contains the authored motion.
+	pub node_name: &'a str,
+	/// Selects node-local translation axes to extract.
+	pub translation: RootMotionTranslation,
+	/// Selects whether to extract node-local rotation.
+	pub rotation: RootMotionRotation,
+}
+
+impl<'a> RootMotionSettings<'a> {
+	/// Selects all translation and rotation from a dedicated authored root node.
+	pub const fn full(node_name: &'a str) -> Self {
+		Self {
+			node_name,
+			translation: RootMotionTranslation::XYZ,
+			rotation: RootMotionRotation::Full,
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 struct RootMotionTarget {
 	node: usize,
 	reference: LocalTransform,
+	translation: RootMotionTranslation,
+	rotation: RootMotionRotation,
 }
 
 /// Keeps a player target borrowed from an asset owner or directly owned by the player.
@@ -866,25 +925,25 @@ pub struct AnimationGraphPlayer<'graph, 'target, I> {
 impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 	/// Creates a player with retained pose storage sized for the target skeleton.
 	///
-	/// `root_motion_node_name` selects a uniquely named target-skeleton node whose
-	/// object-space translation and rotation are delivered separately and removed
-	/// from the visual pose. Prefer a dedicated authored root-motion node. If the
-	/// rig stores locomotion on its hips, pass that hips node's stable name.
+	/// `root_motion` selects a uniquely named target-skeleton node and the node-local
+	/// channels delivered in object space and removed from the visual pose. Prefer
+	/// all channels from a dedicated root. For locomotion authored on hips, select
+	/// only the travel axes so the pose retains its vertical sway and rotation.
 	pub fn new(
 		graph: &'graph AnimationGraph<I>,
 		target: &'target Skeleton,
-		root_motion_node_name: Option<&str>,
+		root_motion: Option<RootMotionSettings<'_>>,
 	) -> Result<Self, AnimationGraphPlayerError> {
-		Self::with_target(graph, PlayerTargetSkeleton::Borrowed(target), root_motion_node_name)
+		Self::with_target(graph, PlayerTargetSkeleton::Borrowed(target), root_motion)
 	}
 
 	/// Initializes a player after selecting its borrowed or owned skeleton storage.
 	fn with_target(
 		graph: &'graph AnimationGraph<I>,
 		target: PlayerTargetSkeleton<'target>,
-		root_motion_node_name: Option<&str>,
+		root_motion: Option<RootMotionSettings<'_>>,
 	) -> Result<Self, AnimationGraphPlayerError> {
-		let root_motion = resolve_root_motion_target(&target, root_motion_node_name)?;
+		let root_motion = resolve_root_motion_target(&target, root_motion)?;
 		let node_count = target.nodes.len();
 		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
 		let mut global_pose = Vec::with_capacity(node_count);
@@ -1154,8 +1213,14 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		let Some(root_motion) = self.root_motion else {
 			return;
 		};
-		self.local_pose[root_motion.node].translation = root_motion.reference.translation;
-		self.local_pose[root_motion.node].rotation = root_motion.reference.rotation;
+		for component in 0..3 {
+			if root_motion.translation.contains(component) {
+				self.local_pose[root_motion.node].translation[component] = root_motion.reference.translation[component];
+			}
+		}
+		if root_motion.rotation == RootMotionRotation::Full {
+			self.local_pose[root_motion.node].rotation = root_motion.reference.rotation;
+		}
 	}
 
 	fn write_global_pose(&mut self) {
@@ -1173,9 +1238,9 @@ impl<'graph, I> AnimationGraphPlayer<'graph, 'static, I> {
 	pub fn new_owned(
 		graph: &'graph AnimationGraph<I>,
 		target: Skeleton,
-		root_motion_node_name: Option<&str>,
+		root_motion: Option<RootMotionSettings<'_>>,
 	) -> Result<Self, AnimationGraphPlayerError> {
-		Self::with_target(graph, PlayerTargetSkeleton::Owned(target), root_motion_node_name)
+		Self::with_target(graph, PlayerTargetSkeleton::Owned(target), root_motion)
 	}
 }
 
@@ -1211,11 +1276,12 @@ impl std::error::Error for AnimationGraphPlayerError {}
 /// Resolves the stable root-motion name once so steady-state sampling retains a numeric node index.
 fn resolve_root_motion_target(
 	target: &Skeleton,
-	root_motion_node_name: Option<&str>,
+	root_motion: Option<RootMotionSettings<'_>>,
 ) -> Result<Option<RootMotionTarget>, AnimationGraphPlayerError> {
-	let Some(name) = root_motion_node_name else {
+	let Some(settings) = root_motion else {
 		return Ok(None);
 	};
+	let name = settings.node_name;
 	let mut matches = target
 		.nodes
 		.iter()
@@ -1230,6 +1296,8 @@ fn resolve_root_motion_target(
 	Ok(Some(RootMotionTarget {
 		node,
 		reference: root.rest_local,
+		translation: settings.translation,
+		rotation: settings.rotation,
 	}))
 }
 
@@ -1300,15 +1368,37 @@ fn object_space_root_delta(
 	previous: &[LocalTransform],
 	current: &[LocalTransform],
 ) -> RootMotionDelta {
+	// Replace unselected channels with their reference values before hierarchy
+	// composition. The selected local axes then inherit authored parent scale and
+	// rotation while pose-only hip motion cannot leak into the owning object.
+	let previous_root = extracted_root_transform(root_motion, previous[root_motion.node]);
+	let current_root = extracted_root_transform(root_motion, current[root_motion.node]);
 	RootMotionDelta::between(
-		object_space_transform(target, previous, root_motion.node),
-		object_space_transform(target, current, root_motion.node),
+		object_space_transform_with_node(target, previous, root_motion.node, previous_root),
+		object_space_transform_with_node(target, current, root_motion.node, current_root),
 	)
 }
 
-/// Composes a node with its ancestors without allocating a temporary global pose.
-fn object_space_transform(skeleton: &Skeleton, local_pose: &[LocalTransform], node: usize) -> LocalTransform {
-	let mut result = local_pose[node];
+/// Keeps selected root-motion channels and restores all other channels to the reference pose.
+fn extracted_root_transform(root_motion: RootMotionTarget, mut transform: LocalTransform) -> LocalTransform {
+	for component in 0..3 {
+		if !root_motion.translation.contains(component) {
+			transform.translation[component] = root_motion.reference.translation[component];
+		}
+	}
+	if root_motion.rotation == RootMotionRotation::None {
+		transform.rotation = root_motion.reference.rotation;
+	}
+	transform
+}
+
+/// Composes a substituted node transform with its unchanged ancestors.
+fn object_space_transform_with_node(
+	skeleton: &Skeleton,
+	local_pose: &[LocalTransform],
+	node: usize,
+	mut result: LocalTransform,
+) -> LocalTransform {
 	let mut parent = skeleton.nodes[node].parent;
 	while let Some(parent_index) = parent {
 		let parent_node = parent_index as usize;
@@ -1351,7 +1441,7 @@ mod tests {
 
 	use resource_management::{
 		resources::{
-			animation::{Animation, NodeTrack, Vector3Curve},
+			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
 		Reference,
@@ -1359,7 +1449,8 @@ mod tests {
 
 	use super::{
 		AnimationClip, AnimationGraph, AnimationGraphBuildError, AnimationGraphPlayer, AnimationPool, AnimationPoolConfig,
-		AnimationPoolEvent, AnimationPoolRequest, AnimationTransition,
+		AnimationPoolEvent, AnimationPoolRequest, AnimationTransition, RootMotionRotation, RootMotionSettings,
+		RootMotionTranslation,
 	};
 	use crate::MediaTime;
 
@@ -1511,7 +1602,8 @@ mod tests {
 		let run = builder.state("run", AnimationClip::looping("run.animation"));
 		builder.transition(idle, run, AnimationTransition::when(|running| *running));
 		let graph = builder.build(idle).expect("graph should build");
-		let mut player = AnimationGraphPlayer::new(&graph, &target, Some("root")).expect("player should build");
+		let mut player =
+			AnimationGraphPlayer::new(&graph, &target, Some(RootMotionSettings::full("root"))).expect("player should build");
 
 		let initial = player.advance(MediaTime::ZERO, &false, &mut pool).expect("initial pose");
 		assert_eq!(initial.local_pose()[0], LocalTransform::identity());
@@ -1558,7 +1650,7 @@ mod tests {
 		let target = test_skeleton();
 
 		assert!(matches!(
-			AnimationGraphPlayer::new(&graph, &target, Some("Hips")),
+			AnimationGraphPlayer::new(&graph, &target, Some(RootMotionSettings::full("Hips"))),
 			Err(super::AnimationGraphPlayerError::RootMotionNodeNotFound { name }) if name == "Hips"
 		));
 
@@ -1577,13 +1669,13 @@ mod tests {
 			],
 		};
 		assert!(matches!(
-			AnimationGraphPlayer::new(&graph, &duplicate_target, Some("Hips")),
+			AnimationGraphPlayer::new(&graph, &duplicate_target, Some(RootMotionSettings::full("Hips"))),
 			Err(super::AnimationGraphPlayerError::DuplicateRootMotionNodeName { name }) if name == "Hips"
 		));
 	}
 
 	#[test]
-	fn player_returns_object_space_root_motion_across_a_remapped_scaled_loop() {
+	fn player_selectively_extracts_object_space_root_motion_across_a_remapped_scaled_loop() {
 		let root_rotation = crate::animation::math::quaternion_exp([0.0, std::f32::consts::FRAC_PI_2, 0.0]);
 		let source = Skeleton {
 			nodes: vec![
@@ -1647,9 +1739,12 @@ mod tests {
 				node: 1,
 				translation: Some(Vector3Curve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0, 100.0, 0.0], [0.0, 100.0, -100.0]],
+					values: vec![[0.0, 100.0, 0.0], [20.0, 110.0, -100.0]],
 				}),
-				rotation: None,
+				rotation: Some(QuaternionCurve::Linear {
+					times: vec![0.0, 1.0],
+					values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.382_683_43, 0.0, 0.923_879_5]],
+				}),
 				scale: None,
 			}],
 		};
@@ -1658,7 +1753,16 @@ mod tests {
 		let mut builder = AnimationGraph::<()>::builder();
 		let walk = builder.state("walk", AnimationClip::looping("walk.animation"));
 		let graph = builder.build(walk).expect("graph should build");
-		let mut player = AnimationGraphPlayer::new(&graph, &target, Some("Hips")).expect("player should build");
+		let mut player = AnimationGraphPlayer::new(
+			&graph,
+			&target,
+			Some(RootMotionSettings {
+				node_name: "Hips",
+				translation: RootMotionTranslation::Z,
+				rotation: RootMotionRotation::None,
+			}),
+		)
+		.expect("player should build");
 
 		let initial = player.advance(MediaTime::ZERO, &(), &mut pool).expect("initial pose");
 		assert_eq!(initial.root_motion().translation, [0.0; 3]);
@@ -1668,7 +1772,8 @@ mod tests {
 		math::assert_float_eq!(first.root_motion().translation[0], -0.75);
 		math::assert_float_eq!(first.root_motion().translation[1], 0.0);
 		math::assert_float_eq!(first.root_motion().translation[2], 0.0);
-		assert_eq!(first.local_pose()[3].translation, [0.0, 100.0, 0.0]);
+		assert_eq!(first.local_pose()[3].translation, [15.0, 107.5, 0.0]);
+		assert_ne!(first.local_pose()[3].rotation, LocalTransform::identity().rotation);
 
 		let wrapped = player
 			.advance(MediaTime::from_millis(500), &(), &mut pool)
@@ -1676,6 +1781,7 @@ mod tests {
 		math::assert_float_eq!(wrapped.root_motion().translation[0], -0.5);
 		math::assert_float_eq!(wrapped.root_motion().translation[1], 0.0);
 		math::assert_float_eq!(wrapped.root_motion().translation[2], 0.0);
-		assert_eq!(wrapped.local_pose()[3].translation, [0.0, 100.0, 0.0]);
+		assert_eq!(wrapped.local_pose()[3].translation, [5.0, 102.5, 0.0]);
+		assert_ne!(wrapped.local_pose()[3].rotation, LocalTransform::identity().rotation);
 	}
 }

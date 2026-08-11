@@ -1,1 +1,1 @@
-{"name":"Visibility Skinning","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/skinning.besl","push_constants":[{"offset":0,"size":20}]}}
+{"name":"Visibility Skinning","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/skinning.besl","push_constants":[{"offset":0,"size":24}]}}

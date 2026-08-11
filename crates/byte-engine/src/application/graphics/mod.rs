@@ -25,8 +25,8 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
-/// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. The default is `assets` beside the executable.
-/// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. The default is `resources` beside the executable.
+/// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
+/// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
@@ -525,25 +525,35 @@ fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration:
 
 const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
-/// Resolves an explicit path as supplied while anchoring the default beside the executable.
+/// Resolves an explicit path as supplied while anchoring the development default to its Cargo application.
 fn resolve_application_directory(parameter: Option<&Parameter>, default_directory: &str) -> std::path::PathBuf {
 	parameter.map(|parameter| parameter.value().into()).unwrap_or_else(|| {
+		// Cargo provides the application manifest directory while running development binaries.
+		#[cfg(debug_assertions)]
+		if let Some(manifest_directory) = std::env::var_os("CARGO_MANIFEST_DIR") {
+			return default_application_directory(Some(std::path::Path::new(&manifest_directory)), None, default_directory);
+		}
+
 		let executable = std::env::current_exe().unwrap_or_else(|error| {
 			panic!(
 				"Application directory could not be resolved. The most likely cause is that the current executable path is unavailable: {error}"
 			)
 		});
-		default_directory_beside_executable(&executable, default_directory)
+		default_application_directory(None, Some(&executable), default_directory)
 	})
 }
 
-/// Builds a default application directory from an executable path.
-fn default_directory_beside_executable(executable: &std::path::Path, directory: &str) -> std::path::PathBuf {
-	executable
-		.parent()
+/// Builds a default directory from a Cargo manifest when available, then from the executable.
+fn default_application_directory(
+	manifest_directory: Option<&std::path::Path>,
+	executable: Option<&std::path::Path>,
+	directory: &str,
+) -> std::path::PathBuf {
+	manifest_directory
+		.or_else(|| executable.and_then(std::path::Path::parent))
 		.unwrap_or_else(|| {
 			panic!(
-				"Application directory could not be resolved. The most likely cause is that the executable path has no parent."
+				"Application directory could not be resolved. The most likely cause is that neither a Cargo manifest directory nor an executable parent is available."
 			)
 		})
 		.join(directory)
@@ -795,6 +805,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
 		let mesh_delete_receiver = application.world().delete_channel().listener();
+		let transforms_listener = application.world().transforms_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();
 		let pending_environments = application
 			.world_mut()
@@ -813,6 +824,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				resource_manager_client,
 				visibility_shader_resources,
 				pipeline_manager,
+				transforms_listener,
 				gtao_configuration,
 				visibility_pipeline_settings,
 			),
@@ -961,11 +973,22 @@ mod tests {
 	}
 
 	#[test]
-	fn application_directories_default_beside_the_executable() {
+	fn application_directories_prefer_the_cargo_manifest() {
+		let manifest = std::path::Path::new("app");
+		let executable = std::path::Path::new("target/debug/game");
+
+		assert_eq!(
+			default_application_directory(Some(manifest), Some(executable), "resources"),
+			std::path::Path::new("app/resources")
+		);
+	}
+
+	#[test]
+	fn application_directories_fall_back_beside_the_executable() {
 		let executable = std::path::Path::new("app/target/debug/game");
 
 		assert_eq!(
-			default_directory_beside_executable(executable, "resources"),
+			default_application_directory(None, Some(executable), "resources"),
 			std::path::Path::new("app/target/debug/resources")
 		);
 	}

@@ -3,6 +3,8 @@ pub struct VisibilitySceneManager {
 	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Retained global poses keyed by the renderable handle used by this scene.
 	pub(crate) skinning_poses: HashMap<Handle, Vec<AffineMatrix4x3Columns>>,
+	/// Scene-instance slots grouped by their renderable handle.
+	pub(crate) render_entity_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	/// Shared views data buffer used by every visibility sink.
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
 	/// Shared base descriptor set used by every visibility pass.
@@ -21,6 +23,27 @@ pub struct VisibilitySceneManager {
 }
 
 impl VisibilitySceneManager {
+	/// Registers a renderable primitive and records its scene-instance slot.
+	pub(crate) fn add_render_entity(&mut self, render_entity: RenderEntity) {
+		let renderable_handle = render_entity.handle;
+		let scene_handle = self.render_entities.push(render_entity);
+		self.render_entity_handles
+			.entry(renderable_handle)
+			.or_default()
+			.push(scene_handle);
+	}
+
+	/// Applies the latest transform update to every primitive owned by `handle`.
+	pub(crate) fn update_renderable_transform(&mut self, handle: Handle, transform: &Transform) {
+		let model = transform.get_matrix().into();
+		update_renderable_instances(
+			&self.render_entity_handles,
+			&mut self.render_entities,
+			handle,
+			|render_entity| render_entity.set_model_transform(model),
+		);
+	}
+
 	/// Retains one global transform per skeleton node for the renderable identified by `handle`.
 	///
 	/// Rewriting an existing pose reuses its allocation when the skeleton size is unchanged. A
@@ -38,16 +61,10 @@ impl VisibilitySceneManager {
 	pub(crate) fn remove_renderable(&mut self, handle: Handle) {
 		self.skinning_poses.remove(&handle);
 
-		let render_entity_handles = self
-			.render_entities
-			.handled_iter()
-			.filter_map(|(render_entity_handle, render_entity)| {
-				(render_entity.handle == handle).then_some(render_entity_handle)
-			})
-			.collect::<Vec<_>>();
-
-		for render_entity_handle in render_entity_handles {
-			self.render_entities.remove(render_entity_handle);
+		if let Some(render_entity_handles) = self.render_entity_handles.remove(&handle) {
+			for render_entity_handle in render_entity_handles {
+				self.render_entities.remove(render_entity_handle);
+			}
 		}
 	}
 
@@ -184,12 +201,35 @@ fn assert_affine_matrix(matrix: &Matrix) {
 	);
 }
 
+/// Applies one update to every live scene instance registered for one renderable.
+fn update_renderable_instances<T>(
+	render_entity_handles: &HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
+	render_entities: &mut StableVec<T>,
+	handle: Handle,
+	mut update: impl FnMut(&mut T),
+) {
+	let Some(scene_handles) = render_entity_handles.get(&handle) else {
+		return;
+	};
+
+	for scene_handle in scene_handles {
+		if let Some(render_entity) = render_entities.get_mut(*scene_handle) {
+			update(render_entity);
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use math::{Matrix, Point, UnitVector};
 	use maths_rs::{mat::MatNew4 as _, Vec3f};
+	use smallvec::SmallVec;
+	use utils::{hash::HashMap, StableVec};
 
-	use super::{affine_matrix4x3_from_matrix4, assert_affine_matrix, LightShadow, VisibilitySceneManager};
+	use super::{
+		affine_matrix4x3_from_matrix4, assert_affine_matrix, update_renderable_instances, LightShadow, VisibilitySceneManager,
+	};
+	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::pipeline_manager::{LightData, LightingData, ShaderVec3};
 
@@ -211,6 +251,28 @@ mod tests {
 		assert_affine_matrix(&Matrix::new(
 			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		));
+	}
+
+	#[test]
+	fn transform_updates_write_each_registered_primitive_without_retaining_transform_state() {
+		let mut renderable_factory = Factory::new();
+		let handle = renderable_factory.create(());
+		let other_handle = renderable_factory.create(());
+		let mut render_entities = StableVec::new();
+		let first_primitive = render_entities.push(0u32);
+		let second_primitive = render_entities.push(0u32);
+		let other_primitive = render_entities.push(0u32);
+		let mut render_entity_handles = HashMap::default();
+		render_entity_handles.insert(handle, SmallVec::from_slice(&[first_primitive, second_primitive]));
+		render_entity_handles.insert(other_handle, SmallVec::from_slice(&[other_primitive]));
+
+		update_renderable_instances(&render_entity_handles, &mut render_entities, handle, |primitive| {
+			*primitive += 1
+		});
+
+		assert_eq!(render_entities[first_primitive], 1);
+		assert_eq!(render_entities[second_primitive], 1);
+		assert_eq!(render_entities[other_primitive], 0);
 	}
 
 	#[test]
@@ -314,9 +376,11 @@ use ghi::Frame as _;
 use log::warn;
 use math::Matrix;
 use resource_management::resources::skeleton::AffineMatrix4x3Columns;
-use utils::{hash::HashMap, StableVec};
+use smallvec::SmallVec;
+use utils::{hash::HashMap, StableVec, StableVecHandle};
 
 use crate::core::factory::Handle;
+use crate::gameplay::transform::Transform;
 use crate::rendering::lights::Lights;
 use crate::rendering::pipelines::visibility::pipeline_manager::LightData;
 use crate::rendering::pipelines::visibility::pipeline_manager::LightingData;

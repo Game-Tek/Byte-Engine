@@ -1072,7 +1072,7 @@ impl<'a> FbxMeshImportContext<'a> {
 	}
 }
 
-/// Selects the single linear or rigid deformer supported by the fixed matrix-palette contract.
+/// Selects one deformer whose joint weights can use the engine's automatic skinning path.
 fn select_fbx_skin(mesh: &ufbx::Mesh) -> Result<Option<&ufbx::SkinDeformer>, FbxImportError> {
 	if mesh.skin_deformers.len() > 1 {
 		return Err(FbxImportError::MultipleSkinDeformers);
@@ -1080,12 +1080,11 @@ fn select_fbx_skin(mesh: &ufbx::Mesh) -> Result<Option<&ufbx::SkinDeformer>, Fbx
 	let Some(skin) = mesh.skin_deformers.as_ref().first().map(AsRef::as_ref) else {
 		return Ok(None);
 	};
-	if matches!(
-		skin.skinning_method,
-		ufbx::SkinningMethod::DualQuaternion | ufbx::SkinningMethod::BlendedDqLinear
-	) || skin.vertices.iter().any(|vertex| vertex.dq_weight > 0.0)
+	if skin.skinning_method == ufbx::SkinningMethod::BlendedDqLinear
+		|| (skin.skinning_method != ufbx::SkinningMethod::DualQuaternion
+			&& skin.vertices.iter().any(|vertex| vertex.dq_weight > 0.0))
 	{
-		return Err(FbxImportError::UnsupportedDualQuaternionSkinning);
+		return Err(FbxImportError::UnsupportedBlendedDualQuaternionSkinning);
 	}
 	Ok(Some(skin))
 }
@@ -1939,7 +1938,7 @@ enum FbxImportError {
 	TooManyJoints,
 	TooManySkinBindings,
 	MultipleSkinDeformers,
-	UnsupportedDualQuaternionSkinning,
+	UnsupportedBlendedDualQuaternionSkinning,
 	NonInvertibleSkinTransform,
 	NonInvertibleAnimatedMeshTransform,
 	InvalidSkeletonNode,
@@ -2025,9 +2024,9 @@ impl fmt::Display for FbxImportError {
 				formatter,
 				"FBX mesh has multiple skin deformers. The most likely cause is layered skinning that cannot be represented by one matrix palette."
 			),
-			Self::UnsupportedDualQuaternionSkinning => write!(
+			Self::UnsupportedBlendedDualQuaternionSkinning => write!(
 				formatter,
-				"FBX dual-quaternion skinning is unsupported. The most likely cause is a dual-quaternion or blended skin deformer authored on the mesh."
+				"FBX blended dual-quaternion skinning is unsupported. The most likely cause is a blended DQ/linear deformer or per-vertex DQ blend weights authored on the mesh."
 			),
 			Self::NonInvertibleSkinTransform => write!(
 				formatter,
@@ -2522,16 +2521,25 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_dual_quaternion_and_multiple_skin_deformers_explicitly() {
+	fn accepts_pure_dual_quaternion_and_rejects_blended_or_multiple_skin_deformers() {
 		let fixture = std::str::from_utf8(SKINNED_TRIANGLE_FBX).expect("skinned fixture should be UTF-8");
 		let dual_quaternion = fixture.replace("SkinningType: \"Linear\"", "SkinningType: \"DualQuaternion\"");
 		assert_ne!(dual_quaternion, fixture);
 		let scene = load_fbx_scene(dual_quaternion.as_bytes(), "dual_quaternion.fbx")
 			.expect("dual-quaternion fixture variant should parse");
 		let mesh = scene.meshes.first().expect("fixture should contain a mesh");
+		assert!(select_fbx_skin(mesh)
+			.expect("pure dual-quaternion skin should be supported")
+			.is_some());
+
+		let blended = fixture.replace("SkinningType: \"Linear\"", "SkinningType: \"Blend\"");
+		assert_ne!(blended, fixture);
+		let scene = load_fbx_scene(blended.as_bytes(), "blended_dual_quaternion.fbx")
+			.expect("blended dual-quaternion fixture variant should parse");
+		let mesh = scene.meshes.first().expect("fixture should contain a mesh");
 		assert!(matches!(
 			select_fbx_skin(mesh),
-			Err(FbxImportError::UnsupportedDualQuaternionSkinning)
+			Err(FbxImportError::UnsupportedBlendedDualQuaternionSkinning)
 		));
 
 		let extra_skin = r#"    Deformer: 1300, "Deformer::ExtraSkin", "Skin" {

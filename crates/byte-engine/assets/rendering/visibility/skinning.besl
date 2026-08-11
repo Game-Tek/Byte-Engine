@@ -23,6 +23,15 @@ MatrixPalette: struct {
 	values: mat4x3f[65536],
 }
 
+DualQuaternion: struct {
+	real: vec4f,
+	dual: vec4f,
+}
+
+DualQuaternionPalette: struct {
+	values: DualQuaternion[65536],
+}
+
 SkinnedVertices: struct {
 	values: SkinnedVertex[262144],
 }
@@ -33,6 +42,7 @@ source_joints: descriptor<SourceJoints, 2, read, device>;
 source_weights: descriptor<SourceWeights, 3, read, device>;
 matrix_palette: descriptor<MatrixPalette, 4, read, device>;
 skinned_vertices: descriptor<SkinnedVertices, 5, write, device>;
+dual_quaternion_palette: descriptor<DualQuaternionPalette, 6, read, device>;
 
 push_constant: push_constant {
 	source_vertex_base: u32,
@@ -40,6 +50,7 @@ push_constant: push_constant {
 	palette_base: u32,
 	palette_count: u32,
 	vertex_count: u32,
+	palette_kind: u32,
 }
 
 transform_normal: fn(column0: vec3f, column1: vec3f, column2: vec3f, normal: vec3f) -> vec3f {
@@ -61,6 +72,25 @@ safe_normalize: fn(value: vec3f, fallback: vec3f) -> vec3f {
 		return value * inversesqrt(length_squared);
 	}
 	return fallback;
+}
+
+rotate_by_quaternion: fn(rotation: vec4f, value: vec3f) -> vec3f {
+	let vector: vec3f = vec3f(rotation.x, rotation.y, rotation.z);
+	return value + cross(vector, cross(vector, value) + value * rotation.w) * 2.0;
+}
+
+dual_quaternion_translation: fn(real: vec4f, dual: vec4f) -> vec3f {
+	let real_vector: vec3f = vec3f(real.x, real.y, real.z);
+	let dual_vector: vec3f = vec3f(dual.x, dual.y, dual.z);
+	return (dual_vector * real.w - real_vector * dual.w + cross(real_vector, dual_vector)) * 2.0;
+}
+
+antipodal_sign: fn(reference_rotation: vec4f, value: vec4f) -> f32 {
+	let alignment: f32 = dot(reference_rotation, value);
+	if (alignment < 0.0) {
+		return 0.0 - 1.0;
+	}
+	return 1.0;
 }
 
 main: fn () -> void {
@@ -107,37 +137,83 @@ main: fn () -> void {
 	if (u32(joints.w) < push_constant.palette_count) {
 		joint3 = u32(joints.w);
 	}
-	let matrix0: mat4x3f = matrix_palette.values[push_constant.palette_base + joint0];
-	let matrix1: mat4x3f = matrix_palette.values[push_constant.palette_base + joint1];
-	let matrix2: mat4x3f = matrix_palette.values[push_constant.palette_base + joint2];
-	let matrix3: mat4x3f = matrix_palette.values[push_constant.palette_base + joint3];
 	let total_weight: f32 = weights.x + weights.y + weights.z + weights.w;
 
 	let fallback_normal: vec3f = safe_normalize(source_normal, vec3f(0.0, 0.0, 1.0));
 	let position: vec4f = vec4f(source_position.x, source_position.y, source_position.z, 1.0);
 	let normal: vec3f = fallback_normal;
 	if (total_weight > 0.00000001) {
-		let inverse_total_weight: f32 = 1.0 / total_weight;
-		// Blend columns explicitly so every backend and the validation VM use the same affine matrix representation.
-		let blended_column0: vec3f = (
-			matrix0[0] * weights.x + matrix1[0] * weights.y + matrix2[0] * weights.z + matrix3[0] * weights.w
-		) * inverse_total_weight;
-		let blended_column1: vec3f = (
-			matrix0[1] * weights.x + matrix1[1] * weights.y + matrix2[1] * weights.z + matrix3[1] * weights.w
-		) * inverse_total_weight;
-		let blended_column2: vec3f = (
-			matrix0[2] * weights.x + matrix1[2] * weights.y + matrix2[2] * weights.z + matrix3[2] * weights.w
-		) * inverse_total_weight;
-		let blended_column3: vec3f = (
-			matrix0[3] * weights.x + matrix1[3] * weights.y + matrix2[3] * weights.z + matrix3[3] * weights.w
-		) * inverse_total_weight;
-		let matrix: mat4x3f = mat4x3f(blended_column0, blended_column1, blended_column2, blended_column3);
-		let skinned_position: vec3f = matrix * position;
-		position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
-		normal = safe_normalize(
-			transform_normal(matrix[0], matrix[1], matrix[2], source_normal),
-			fallback_normal
-		);
+		if (push_constant.palette_kind == 1) {
+			let dual0: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint0];
+			let dual1: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint1];
+			let dual2: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint2];
+			let dual3: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint3];
+			let reference_rotation: vec4f = dual0.real;
+			if (weights.x <= 0.00000001 && weights.y > 0.00000001) {
+				reference_rotation = dual1.real;
+			}
+			if (weights.x <= 0.00000001 && weights.y <= 0.00000001 && weights.z > 0.00000001) {
+				reference_rotation = dual2.real;
+			}
+			if (
+				weights.x <= 0.00000001
+				&& weights.y <= 0.00000001
+				&& weights.z <= 0.00000001
+				&& weights.w > 0.00000001
+			) {
+				reference_rotation = dual3.real;
+			}
+
+			let signed_weight0: f32 = weights.x * antipodal_sign(reference_rotation, dual0.real);
+			let signed_weight1: f32 = weights.y * antipodal_sign(reference_rotation, dual1.real);
+			let signed_weight2: f32 = weights.z * antipodal_sign(reference_rotation, dual2.real);
+			let signed_weight3: f32 = weights.w * antipodal_sign(reference_rotation, dual3.real);
+			let blended_real: vec4f = dual0.real * signed_weight0
+				+ dual1.real * signed_weight1
+				+ dual2.real * signed_weight2
+				+ dual3.real * signed_weight3;
+			let blended_dual: vec4f = dual0.dual * signed_weight0
+				+ dual1.dual * signed_weight1
+				+ dual2.dual * signed_weight2
+				+ dual3.dual * signed_weight3;
+			let real_length_squared: f32 = dot(blended_real, blended_real);
+			if (real_length_squared > 0.00000001) {
+				let inverse_real_length: f32 = inversesqrt(real_length_squared);
+				let real: vec4f = blended_real * inverse_real_length;
+				let dual: vec4f = blended_dual * inverse_real_length;
+				let skinned_position: vec3f = rotate_by_quaternion(real, source_position)
+					+ dual_quaternion_translation(real, dual);
+				position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
+				normal = safe_normalize(rotate_by_quaternion(real, source_normal), fallback_normal);
+			}
+		}
+		if (push_constant.palette_kind != 1) {
+			let matrix0: mat4x3f = matrix_palette.values[push_constant.palette_base + joint0];
+			let matrix1: mat4x3f = matrix_palette.values[push_constant.palette_base + joint1];
+			let matrix2: mat4x3f = matrix_palette.values[push_constant.palette_base + joint2];
+			let matrix3: mat4x3f = matrix_palette.values[push_constant.palette_base + joint3];
+			let inverse_total_weight: f32 = 1.0 / total_weight;
+			// Blend columns explicitly so every backend and the validation VM use the same affine matrix representation.
+			let blended_column0: vec3f = (
+				matrix0[0] * weights.x + matrix1[0] * weights.y + matrix2[0] * weights.z + matrix3[0] * weights.w
+			) * inverse_total_weight;
+			let blended_column1: vec3f = (
+				matrix0[1] * weights.x + matrix1[1] * weights.y + matrix2[1] * weights.z + matrix3[1] * weights.w
+			) * inverse_total_weight;
+			let blended_column2: vec3f = (
+				matrix0[2] * weights.x + matrix1[2] * weights.y + matrix2[2] * weights.z + matrix3[2] * weights.w
+			) * inverse_total_weight;
+			let blended_column3: vec3f = (
+				matrix0[3] * weights.x + matrix1[3] * weights.y + matrix2[3] * weights.z + matrix3[3] * weights.w
+			) * inverse_total_weight;
+			let matrix: mat4x3f = mat4x3f(blended_column0, blended_column1, blended_column2, blended_column3);
+			let skinned_position: vec3f = matrix * position;
+			position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
+			normal = safe_normalize(
+				transform_normal(matrix[0], matrix[1], matrix[2], source_normal),
+				fallback_normal
+			);
+		}
 	}
 
 	skinned_vertices.values[destination_vertex_index] = SkinnedVertex(

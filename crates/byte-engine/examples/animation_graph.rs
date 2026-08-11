@@ -10,6 +10,7 @@ use std::num::NonZeroUsize;
 use byte_engine::{
 	animation::graph::{
 		AnimationClip, AnimationGraph, AnimationGraphPlayer, AnimationPool, AnimationPoolConfig, AnimationTransition,
+		RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	},
 	application::{
 		graphics::{
@@ -31,7 +32,11 @@ use utils::Extent;
 const MODEL_RESOURCE: &str = "replace/with/skinned-model.fbx";
 const IDLE_ANIMATION: &str = "replace/with-idle-animation.fbx";
 const WALK_ANIMATION: &str = "replace/with-walk-animation.fbx";
-const ROOT_MOTION_NODE_NAME: Option<&str> = Some("Hips");
+const ROOT_MOTION: Option<RootMotionSettings<'static>> = Some(RootMotionSettings {
+	node_name: "Hips",
+	translation: RootMotionTranslation::Z,
+	rotation: RootMotionRotation::None,
+});
 const ANIMATION_POOL_BYTES: usize = 32 * 1024 * 1024;
 
 /// The `LocomotionInput` struct holds the game-owned facts used by graph predicates.
@@ -133,7 +138,7 @@ fn main() {
 							.expect("the model resource must contain a skeleton")
 							.into_resource();
 						player = Some(
-							AnimationGraphPlayer::new_owned(&graph, skeleton, ROOT_MOTION_NODE_NAME)
+							AnimationGraphPlayer::new_owned(&graph, skeleton, ROOT_MOTION)
 								.expect("the configured root node must exist in the model skeleton"),
 						);
 					}

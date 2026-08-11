@@ -4,6 +4,7 @@ struct SkinningPaletteCacheEntry {
 	handle: Handle,
 	binding: *const SkinBinding,
 	palette_base: u32,
+	palette_kind: SkinningPaletteKind,
 }
 
 /// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
@@ -88,8 +89,12 @@ pub struct VisibilityPipelineManager {
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	/// Application-owned baked resources used by the fixed visibility shader set.
 	shader_resources: EntityHandle<ResourceManager>,
+	/// Transform updates consumed after asynchronous resource completions and before instance rebuilds.
+	transforms_listener: DefaultListener<crate::gameplay::transform::TransformationUpdate>,
 	/// Reused palette upload storage prevents per-frame matrix allocations.
 	skinning_palette_scratch: Vec<AffineMatrix4x3Columns>,
+	/// Reused rigid palette upload storage prevents per-frame dual-quaternion allocations.
+	skinning_dual_quaternion_palette_scratch: Vec<DualQuaternion>,
 	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
 	skinning_palette_cache: Vec<SkinningPaletteCacheEntry>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
@@ -114,6 +119,18 @@ pub struct VisibilityPipelineManager {
 }
 
 impl VisibilityPipelineManager {
+	/// Applies a renderable's current world transform to every registered primitive.
+	fn update_transform(&mut self, handle: Handle, transform: &crate::gameplay::transform::Transform) {
+		self.scene.update_renderable_transform(handle, transform);
+	}
+
+	/// Applies transform messages after resource completions have registered their scene instances.
+	fn process_transform_updates(&mut self) {
+		while let Some(message) = self.transforms_listener.read() {
+			self.update_transform(*message.handle(), message.transform());
+		}
+	}
+
 	/// Retains a renderable's global skeleton pose for palette generation during frame preparation.
 	pub fn update_pose(&mut self, handle: Handle, global_matrices: &[math::Matrix]) {
 		self.scene.write_skinned_pose(handle, global_matrices);
@@ -124,6 +141,7 @@ impl VisibilityPipelineManager {
 		resource_manager: VisibilityPipelineResourceManagerClient,
 		shader_resources: EntityHandle<ResourceManager>,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
+		transforms_listener: DefaultListener<crate::gameplay::transform::TransformationUpdate>,
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
@@ -245,7 +263,9 @@ impl VisibilityPipelineManager {
 			mesh_dispatch_work,
 			skinning_pass,
 			shader_resources,
+			transforms_listener,
 			skinning_palette_scratch: Vec::new(),
+			skinning_dual_quaternion_palette_scratch: Vec::new(),
 			skinning_palette_cache: Vec::new(),
 			resource_manager,
 			requested_meshes: std::collections::HashSet::new(),
@@ -263,6 +283,7 @@ impl VisibilityPipelineManager {
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::new(),
+				render_entity_handles: HashMap::new(),
 				views_data_buffer_handle,
 				descriptor_set,
 				meshes_data_buffer,
@@ -578,10 +599,13 @@ impl VisibilityPipelineManager {
 		let render_entities = &self.scene.render_entities;
 		let skinning_poses = &self.scene.skinning_poses;
 		let palette_scratch = &mut self.skinning_palette_scratch;
+		let dual_quaternion_palette_scratch = &mut self.skinning_dual_quaternion_palette_scratch;
 		let palette_cache = &mut self.skinning_palette_cache;
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
 		// Frame caches retain capacity but never retain entity or resource pointers beyond this rebuild.
 		palette_cache.clear();
+		palette_scratch.clear();
+		dual_quaternion_palette_scratch.clear();
 		collect_incomplete_renderables(
 			render_entities
 				.iter()
@@ -604,6 +628,7 @@ impl VisibilityPipelineManager {
 		let mut deformed_vertex_count = 0usize;
 		let mut pose_matrix_count = 0usize;
 		let mut palette_matrix_count = 0usize;
+		let mut palette_dual_quaternion_count = 0usize;
 		for render_entity in render_entities.iter() {
 			// A renderable enters a frame as one object. Never expose the subset whose
 			// materials happened to become resident first.
@@ -626,7 +651,6 @@ impl VisibilityPipelineManager {
 			}
 
 			let mut shader_mesh = render_entity.shader_mesh;
-			shader_mesh.model = render_entity.entity.transform().get_matrix().into();
 			shader_mesh.skinned_base_vertex_index = u32::MAX;
 
 			if let Some(skinning) = render_entity.skinning.as_ref() {
@@ -643,35 +667,57 @@ impl VisibilityPipelineManager {
 
 				if let Some(pose) = pose.filter(|_| skinning.vertex_count > 0) {
 					let binding_ptr = Arc::as_ptr(&skinning.binding);
-					let palette_base = match cached_skin_palette_base(palette_cache, render_entity.handle, binding_ptr) {
-						Some(palette_base) => Some(palette_base),
+					let palette = match cached_skin_palette(palette_cache, render_entity.handle, binding_ptr) {
+						Some(palette) => Some(palette),
 						_ => {
-							let palette_end = palette_matrix_count.checked_add(skinning.binding.len()).expect(
+							let matrix_candidate_end = palette_matrix_count.checked_add(skinning.binding.len()).expect(
 								"Visibility skin palette count overflowed. The most likely cause is corrupted skin binding metadata.",
 							);
-							if palette_end > MAX_SKINNING_MATRICES {
-								panic!(
-									"Visibility skin palette limit exceeded. The most likely cause is that active animated instances require more joint matrices than the visibility pipeline supports."
-								);
-							}
 							// Grow only to the scene's high-water mark, then reuse this palette storage on later frames.
-							palette_scratch.resize(palette_end, identity_affine_matrix4x3_columns());
+							palette_scratch.resize(matrix_candidate_end, identity_affine_matrix4x3_columns());
 
-							let palette_base = palette_matrix_count as u32;
 							match skinning
 								.binding
-								.write_matrix_palette(pose, &mut palette_scratch[palette_matrix_count..palette_end])
+								.write_matrix_palette(pose, &mut palette_scratch[palette_matrix_count..matrix_candidate_end])
 							{
 								Ok(()) => {
-									palette_matrix_count = palette_end;
+									let rigid_palette_start = dual_quaternion_palette_scratch.len();
+									let palette_kind = if append_dual_quaternion_palette(
+										&palette_scratch[palette_matrix_count..matrix_candidate_end],
+										dual_quaternion_palette_scratch,
+									) {
+										let rigid_palette_end = dual_quaternion_palette_scratch.len();
+										if rigid_palette_end > MAX_SKINNING_MATRICES {
+											panic!(
+												"Visibility dual-quaternion palette limit exceeded. The most likely cause is that active rigid skins require more joint transforms than the visibility pipeline supports."
+											);
+										}
+										palette_dual_quaternion_count = rigid_palette_end;
+										palette_scratch.truncate(palette_matrix_count);
+										SkinningPaletteKind::DualQuaternion
+									} else {
+										if matrix_candidate_end > MAX_SKINNING_MATRICES {
+											panic!(
+												"Visibility matrix palette limit exceeded. The most likely cause is that active non-rigid skins require more joint matrices than the visibility pipeline supports."
+											);
+										}
+										palette_matrix_count = matrix_candidate_end;
+										SkinningPaletteKind::Matrix
+									};
+									let palette_base = match palette_kind {
+										SkinningPaletteKind::Matrix => palette_matrix_count - skinning.binding.len(),
+										SkinningPaletteKind::DualQuaternion => rigid_palette_start,
+									} as u32;
 									palette_cache.push(SkinningPaletteCacheEntry {
 										handle: render_entity.handle,
 										binding: binding_ptr,
 										palette_base,
+										palette_kind,
 									});
-									Some(palette_base)
+									Some((palette_base, palette_kind))
 								}
 								Err(error) => {
+									palette_scratch.truncate(palette_matrix_count);
 									error!("Visibility skin palette could not be written: {error}");
 									None
 								}
@@ -679,7 +725,7 @@ impl VisibilityPipelineManager {
 						}
 					};
 
-					if let Some(palette_base) = palette_base {
+					if let Some((palette_base, palette_kind)) = palette {
 						// Output is dense per active primitive, so shared meshes never overwrite another instance's pose.
 						shader_mesh.skinned_base_vertex_index =
 							reserve_deformed_vertex_range(&mut deformed_vertex_count, skinning.vertex_count);
@@ -690,6 +736,7 @@ impl VisibilityPipelineManager {
 							u32::try_from(skinning.binding.len())
 								.expect("Skin palette size exceeds u32. The most likely cause is a corrupted skin binding."),
 							skinning.vertex_count,
+							palette_kind,
 						));
 					}
 				}
@@ -711,9 +758,13 @@ impl VisibilityPipelineManager {
 			self.skinning_pass
 				.write_matrix_palette(frame, &palette_scratch[..palette_matrix_count]);
 		}
+		if palette_dual_quaternion_count > 0 {
+			self.skinning_pass
+				.write_dual_quaternion_palette(frame, &dual_quaternion_palette_scratch[..palette_dual_quaternion_count]);
+		}
 
 		log::debug!(
-			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}, opaque_primitives={}, transparent_primitives={}, skinning_dispatches={}, deformed_vertices={}, pose_matrices={}, palette_matrices={}",
+			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}, opaque_primitives={}, transparent_primitives={}, skinning_dispatches={}, deformed_vertices={}, pose_matrices={}, palette_matrices={}, palette_dual_quaternions={}",
 			render_entities.len(),
 			self.scene.render_info.active_instance_count(),
 			skipped_missing_material,
@@ -724,6 +775,7 @@ impl VisibilityPipelineManager {
 			deformed_vertex_count,
 			pose_matrix_count,
 			palette_matrix_count,
+			palette_dual_quaternion_count,
 		);
 	}
 
@@ -752,7 +804,7 @@ impl VisibilityPipelineManager {
 			for primitive in &mesh.primitives {
 				added_primitives += 1;
 				added_meshlets += primitive.meshlet_count;
-				self.scene.render_entities.push(RenderEntity {
+				self.scene.add_render_entity(RenderEntity {
 					handle: pending_renderable.handle,
 					entity: pending_renderable.entity.clone(),
 					shader_mesh: ShaderMesh {
@@ -1064,11 +1116,15 @@ fn create_fallback_environment_texture(context: &mut ghi::implementation::Contex
 }
 
 /// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
-fn cached_skin_palette_base(cache: &[SkinningPaletteCacheEntry], handle: Handle, binding: *const SkinBinding) -> Option<u32> {
+fn cached_skin_palette(
+	cache: &[SkinningPaletteCacheEntry],
+	handle: Handle,
+	binding: *const SkinBinding,
+) -> Option<(u32, SkinningPaletteKind)> {
 	cache
 		.iter()
 		.find(|entry| entry.handle == handle && entry.binding == binding)
-		.map(|entry| entry.palette_base)
+		.map(|entry| (entry.palette_base, entry.palette_kind))
 }
 
 /// Reserves a non-overlapping frame-local vertex range for one active skinned primitive.
@@ -1124,6 +1180,7 @@ impl PipelineManager for VisibilityPipelineManager {
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
 		self.adopt_resource_completions(frame);
+		self.process_transform_updates();
 		self.refresh_material_pipelines();
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
@@ -1664,6 +1721,13 @@ pub struct RenderEntity {
 	skinning: Option<RenderSkin>,
 }
 
+impl RenderEntity {
+	/// Replaces the model matrix used by this primitive's visibility instance.
+	pub(crate) fn set_model_transform(&mut self, model: AffineShaderMatrix) {
+		self.shader_mesh.model = model;
+	}
+}
+
 /// The `RenderSkin` struct keeps one primitive's immutable skin source and palette mapping beside its scene instance.
 struct RenderSkin {
 	binding: Arc<SkinBinding>,
@@ -1819,7 +1883,7 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		cached_skin_palette_base, collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_is_visible,
+		cached_skin_palette, collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_is_visible,
 		make_cone_shadow_view, make_point_shadow_view, point_light_has_brightness, point_shadow_is_visible,
 		reserve_deformed_vertex_range, resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights,
 		write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh,
@@ -1834,6 +1898,7 @@ mod tests {
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
+	use crate::rendering::pipelines::visibility::skinning::SkinningPaletteKind;
 	use crate::rendering::pipelines::visibility::{
 		INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
 		MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MESHLET_DATA_BINDING,
@@ -2355,30 +2420,33 @@ mod tests {
 				handle: first_handle,
 				binding: Arc::as_ptr(&first_binding),
 				palette_base: 7,
+				palette_kind: SkinningPaletteKind::DualQuaternion,
 			},
 			SkinningPaletteCacheEntry {
 				handle: first_handle,
 				binding: Arc::as_ptr(&second_binding),
 				palette_base: 11,
+				palette_kind: SkinningPaletteKind::Matrix,
 			},
 			SkinningPaletteCacheEntry {
 				handle: second_handle,
 				binding: Arc::as_ptr(&first_binding),
 				palette_base: 17,
+				palette_kind: SkinningPaletteKind::Matrix,
 			},
 		];
 
 		assert_eq!(
-			cached_skin_palette_base(&palette_cache, first_handle, Arc::as_ptr(&first_binding)),
-			Some(7)
+			cached_skin_palette(&palette_cache, first_handle, Arc::as_ptr(&first_binding)),
+			Some((7, SkinningPaletteKind::DualQuaternion))
 		);
 		assert_eq!(
-			cached_skin_palette_base(&palette_cache, first_handle, Arc::as_ptr(&second_binding)),
-			Some(11)
+			cached_skin_palette(&palette_cache, first_handle, Arc::as_ptr(&second_binding)),
+			Some((11, SkinningPaletteKind::Matrix))
 		);
 		assert_eq!(
-			cached_skin_palette_base(&palette_cache, second_handle, Arc::as_ptr(&first_binding)),
-			Some(17)
+			cached_skin_palette(&palette_cache, second_handle, Arc::as_ptr(&first_binding)),
+			Some((17, SkinningPaletteKind::Matrix))
 		);
 	}
 
@@ -2504,7 +2572,11 @@ use utils::sync::{Rc, RwLock};
 use utils::{Box, Extent, StableVec, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::core::{factory::Handle, Entity, EntityHandle};
+use crate::core::{
+	factory::Handle,
+	listener::{DefaultListener, Listener as _},
+	Entity, EntityHandle,
+};
 use crate::ghi;
 use crate::rendering::lights::{ConeLight, DirectionalLight, Light, Lights, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
@@ -2519,7 +2591,8 @@ use crate::rendering::pipelines::visibility::resource_manager::{
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{
-	SkinningDispatch, SkinningPass, SkinningSourceBuffers, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
+	append_dual_quaternion_palette, DualQuaternion, SkinningDispatch, SkinningPaletteKind, SkinningPass, SkinningSourceBuffers,
+	MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
 };
 use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, ShaderMeshletData, CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY,

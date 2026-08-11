@@ -133,6 +133,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = compiler
 			.compile(&id_string, &source, settings, source_hash, generator.as_deref())
+			.await
 			.map_err(|error| {
 				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
 				LoadErrors::FailedToProcess
@@ -143,31 +144,29 @@ impl AssetHandler for BESLShaderAssetHandler {
 }
 
 trait ShaderCompiler: Send + Sync {
-	fn compile(
-		&self,
-		id: &str,
-		source: &str,
+	fn compile<'a>(
+		&'a self,
+		id: &'a str,
+		source: &'a str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
-		generator: Option<&dyn ProgramGenerator>,
-	) -> Result<(Shader, Box<[u8]>), String>;
+		generator: Option<&'a dyn ProgramGenerator>,
+	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
 
 /// The `PlatformShaderCompiler` struct keeps standalone asset baking on the platform compiler selected by resource management.
 struct PlatformShaderCompiler;
 
 impl ShaderCompiler for PlatformShaderCompiler {
-	fn compile(
-		&self,
-		id: &str,
-		source: &str,
+	fn compile<'a>(
+		&'a self,
+		id: &'a str,
+		source: &'a str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
-		generator: Option<&dyn ProgramGenerator>,
-	) -> Result<(Shader, Box<[u8]>), String> {
-		compio::runtime::Runtime::new()
-			.map_err(|e| format!("Failed to create runtime for shader compilation: {e}"))?
-			.block_on(compile_shader(id, source, settings, source_hash, generator))
+		generator: Option<&'a dyn ProgramGenerator>,
+	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
+		Box::pin(compile_shader(id, source, settings, source_hash, generator))
 	}
 }
 
@@ -621,36 +620,38 @@ mod tests {
 	}
 
 	impl ShaderCompiler for TestShaderCompiler {
-		fn compile(
-			&self,
-			id: &str,
-			source: &str,
+		fn compile<'a>(
+			&'a self,
+			id: &'a str,
+			source: &'a str,
 			settings: BESLShaderSettings,
 			source_hash: u64,
-			generator: Option<&dyn crate::asset::bema_asset_handler::ProgramGenerator>,
-		) -> Result<(Shader, Box<[u8]>), String> {
-			assert_eq!(id, "passes/resolve.besl");
-			assert!(source.contains("main"));
-			assert_eq!(settings.stage, ShaderTypes::Compute);
-			assert_eq!(settings.workgroup_size, Some((8, 8, 1)));
-			assert_eq!(settings.maximum_mesh_threadgroups, None);
-			assert_eq!(settings.maximum_vertices, None);
-			assert_eq!(settings.maximum_primitives, None);
-			prepare_shader(source, settings.workgroup_size, generator)?;
+			generator: Option<&'a dyn crate::asset::bema_asset_handler::ProgramGenerator>,
+		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
+			Box::pin(async move {
+				assert_eq!(id, "passes/resolve.besl");
+				assert!(source.contains("main"));
+				assert_eq!(settings.stage, ShaderTypes::Compute);
+				assert_eq!(settings.workgroup_size, Some((8, 8, 1)));
+				assert_eq!(settings.maximum_mesh_threadgroups, None);
+				assert_eq!(settings.maximum_vertices, None);
+				assert_eq!(settings.maximum_primitives, None);
+				prepare_shader(source, settings.workgroup_size, generator)?;
 
-			Ok((
-				Shader {
-					id: id.to_string(),
-					stage: settings.stage,
-					interface: ShaderInterface {
-						workgroup_size: settings.workgroup_size,
-						bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
+				Ok((
+					Shader {
+						id: id.to_string(),
+						stage: settings.stage,
+						interface: ShaderInterface {
+							workgroup_size: settings.workgroup_size,
+							bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
+						},
+						artifact: ShaderArtifact::Spirv,
+						source_hash,
 					},
-					artifact: ShaderArtifact::Spirv,
-					source_hash,
-				},
-				b"compiled-shader".to_vec().into_boxed_slice(),
-			))
+					b"compiled-shader".to_vec().into_boxed_slice(),
+				))
+			})
 		}
 	}
 

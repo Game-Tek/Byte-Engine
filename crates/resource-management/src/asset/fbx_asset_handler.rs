@@ -624,12 +624,9 @@ async fn generate_fbx_material(
 	let shader_name = shader_id.clone();
 	let material_json = generated_fbx_material_json(&texture_variables);
 
-	let (shader, shader_bytes) = compio::runtime::Runtime::new()
-		.map_err(|_| {
-			context.error("Failed to create runtime for FBX shader compilation.");
-			LoadErrors::FailedToProcess
-		})?
-		.block_on(compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute"))
+	let (shader, shader_bytes) =
+		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
+			.await
 		.map_err(|_| {
 			context.error(format_args!(
 				"Failed to compile generated FBX material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."

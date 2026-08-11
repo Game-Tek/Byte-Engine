@@ -1379,17 +1379,10 @@ async fn generate_gltf_material_variant(
 	let shader_name = shader_id.clone();
 	let material_json = generated_material_json(&texture_variables);
 
-	let (shader, shader_bytes) = compio::runtime::Runtime::new()
-		.map_err(|_| LoadErrors::FailedToProcess)?
-		.block_on(compile_shader_program(
-			generator.as_ref(),
-			&shader_name,
-			program,
-			"World",
-			&material_json,
-			"Compute",
-		))
-		.map_err(|_| LoadErrors::FailedToProcess)?;
+	let (shader, shader_bytes) =
+		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
+			.await
+			.map_err(|_| LoadErrors::FailedToProcess)?;
 
 	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
 	let material = MaterialModel {

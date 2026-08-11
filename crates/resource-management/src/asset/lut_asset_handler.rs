@@ -41,25 +41,27 @@ impl LUTAssetHandler {
 				continue;
 			}
 
-			let tokens = line.split_whitespace().collect::<Vec<_>>();
-			match tokens[0] {
+			// Parse directly from the line so large LUTs do not allocate a token vector for every sample.
+			let mut tokens = line.split_whitespace();
+			let first = tokens.next().expect("non-empty LUT lines contain at least one token");
+			match first {
 				"TITLE" => {}
 				"LUT_1D_SIZE" => {
-					let parsed_size = parse_size_directive(&tokens, line_number, "LUT_1D_SIZE")?;
+					let parsed_size = parse_size_directive(tokens, line_number, "LUT_1D_SIZE")?;
 					assign_kind_and_size(&mut kind, &mut size, LutKind::OneDimensional, parsed_size, line_number)?;
 				}
 				"LUT_3D_SIZE" => {
-					let parsed_size = parse_size_directive(&tokens, line_number, "LUT_3D_SIZE")?;
+					let parsed_size = parse_size_directive(tokens, line_number, "LUT_3D_SIZE")?;
 					assign_kind_and_size(&mut kind, &mut size, LutKind::ThreeDimensional, parsed_size, line_number)?;
 				}
 				"DOMAIN_MIN" => {
-					domain_min = parse_triplet_tokens(&tokens, line_number, "DOMAIN_MIN")?;
+					domain_min = parse_triplet_tokens(tokens, line_number, "DOMAIN_MIN")?;
 				}
 				"DOMAIN_MAX" => {
-					domain_max = parse_triplet_tokens(&tokens, line_number, "DOMAIN_MAX")?;
+					domain_max = parse_triplet_tokens(tokens, line_number, "DOMAIN_MAX")?;
 				}
 				_ => {
-					entries.push(parse_entry_tokens(&tokens, line_number)?);
+					entries.push(parse_entry_tokens(first, tokens, line_number)?);
 				}
 			}
 		}
@@ -112,14 +114,16 @@ impl AssetHandler for LUTAssetHandler {
 	}
 }
 
-fn parse_size_directive(tokens: &[&str], line_number: usize, keyword: &str) -> Result<u32, String> {
-	if tokens.len() != 2 {
+fn parse_size_directive(mut tokens: std::str::SplitWhitespace<'_>, line_number: usize, keyword: &str) -> Result<u32, String> {
+	let value = tokens.next();
+	if value.is_none() || tokens.next().is_some() {
 		return Err(format!(
 			"Invalid {keyword} directive on line {line_number}. The most likely cause is that the size value is missing."
 		));
 	}
+	let value = value.expect("the LUT size token was checked above");
 
-	let size = tokens[1].parse::<u32>().map_err(|error| {
+	let size = value.parse::<u32>().map_err(|error| {
 		format!(
 			"Invalid {keyword} directive on line {line_number}. The most likely cause is that the size is not a positive integer: {error}"
 		)
@@ -153,21 +157,29 @@ fn assign_kind_and_size(
 	Ok(())
 }
 
-fn parse_triplet_tokens(tokens: &[&str], line_number: usize, context: &str) -> Result<[f32; 3], String> {
-	if tokens.len() != 4 {
-		return Err(format!(
-			"Invalid LUT {context} on line {line_number}. The most likely cause is that the line does not contain exactly three float values."
-		));
-	}
-
+fn parse_triplet_tokens(
+	mut tokens: std::str::SplitWhitespace<'_>,
+	line_number: usize,
+	context: &str,
+) -> Result<[f32; 3], String> {
 	let mut values = [0.0; 3];
 
-	for (index, value) in values.iter_mut().enumerate() {
-		*value = tokens[index + 1].parse::<f32>().map_err(|error| {
+	for value in &mut values {
+		let token = tokens.next().ok_or_else(|| {
+			format!(
+				"Invalid LUT {context} on line {line_number}. The most likely cause is that the line does not contain exactly three float values."
+			)
+		})?;
+		*value = token.parse::<f32>().map_err(|error| {
 			format!(
 				"Invalid LUT {context} on line {line_number}. The most likely cause is that one of the values is not a valid float: {error}"
 			)
 		})?;
+	}
+	if tokens.next().is_some() {
+		return Err(format!(
+			"Invalid LUT {context} on line {line_number}. The most likely cause is that the line does not contain exactly three float values."
+		));
 	}
 
 	if values.into_iter().any(|value| !value.is_finite()) {
@@ -179,17 +191,18 @@ fn parse_triplet_tokens(tokens: &[&str], line_number: usize, context: &str) -> R
 	Ok(values)
 }
 
-fn parse_entry_tokens(tokens: &[&str], line_number: usize) -> Result<[f32; 3], String> {
-	if tokens.len() != 3 {
+fn parse_entry_tokens(first: &str, mut tokens: std::str::SplitWhitespace<'_>, line_number: usize) -> Result<[f32; 3], String> {
+	let second = tokens.next();
+	let third = tokens.next();
+	if second.is_none() || third.is_none() || tokens.next().is_some() {
 		return Err(format!(
 			"Invalid LUT entry on line {line_number}. The most likely cause is that the line does not contain exactly three float values."
 		));
 	}
 
 	let mut values = [0.0; 3];
-
-	for (index, value) in values.iter_mut().enumerate() {
-		*value = tokens[index].parse::<f32>().map_err(|error| {
+	for (value, token) in values.iter_mut().zip([first, second.unwrap(), third.unwrap()]) {
+		*value = token.parse::<f32>().map_err(|error| {
 			format!(
 				"Invalid LUT entry on line {line_number}. The most likely cause is that one of the values is not a valid float: {error}"
 			)

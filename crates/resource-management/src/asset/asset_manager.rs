@@ -1,6 +1,4 @@
 const ASSETS_DOCS_PATH: &str = "develop/design/resource-management/assets";
-const DEFAULT_BAKE_ARENA_CAPACITY: usize = 64 * 1024 * 1024;
-
 trait AbstractAssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
 	fn should_discover(&self, id: ResourceId<'_>, has_sidecar: bool) -> bool;
@@ -221,8 +219,8 @@ impl AssetManagerState {
 		let task = self
 			.dispatcher
 			.dispatch(move || async move {
-				// Each request releases all transient processing memory together when its bake completes.
-				let arena = bumpalo::Bump::with_capacity(DEFAULT_BAKE_ARENA_CAPACITY);
+				// Grow each request's arena with its workload instead of reserving large address ranges for every concurrent bake.
+				let arena = bumpalo::Bump::new();
 				let allocator = &arena;
 				let result = if only_when_stale {
 					state.ensure_baked_uncoalesced(&id, &allocator).await

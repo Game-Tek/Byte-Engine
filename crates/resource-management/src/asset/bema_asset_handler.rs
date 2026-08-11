@@ -12,35 +12,35 @@ impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
 
 /// The `ShaderCompiler` trait isolates BEMA resource orchestration from platform shader toolchains.
 trait ShaderCompiler: Send + Sync {
-	fn compile(
-		&self,
-		generator: &dyn ProgramGenerator,
-		name: &str,
-		shader_code: &str,
-		format: &str,
-		domain: &str,
-		material: &JsonObject,
-		shader_json: &Value,
-		stage: &str,
-	) -> Result<(Shader, Box<[u8]>), ()>;
+	fn compile<'a>(
+		&'a self,
+		generator: &'a dyn ProgramGenerator,
+		name: &'a str,
+		shader_code: &'a str,
+		format: &'a str,
+		domain: &'a str,
+		material: &'a JsonObject,
+		shader_json: &'a Value,
+		stage: &'a str,
+	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), ()>>;
 }
 
 /// The `PlatformShaderCompiler` struct routes production BEMA shaders through the active platform compiler.
 struct PlatformShaderCompiler;
 
 impl ShaderCompiler for PlatformShaderCompiler {
-	fn compile(
-		&self,
-		generator: &dyn ProgramGenerator,
-		name: &str,
-		shader_code: &str,
-		format: &str,
-		domain: &str,
-		material: &JsonObject,
-		shader_json: &Value,
-		stage: &str,
-	) -> Result<(Shader, Box<[u8]>), ()> {
-		compio::runtime::Runtime::new().map_err(|_| ())?.block_on(compile_shader(
+	fn compile<'a>(
+		&'a self,
+		generator: &'a dyn ProgramGenerator,
+		name: &'a str,
+		shader_code: &'a str,
+		format: &'a str,
+		domain: &'a str,
+		material: &'a JsonObject,
+		shader_json: &'a Value,
+		stage: &'a str,
+	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), ()>> {
+		Box::pin(compile_shader(
 			generator,
 			name,
 			shader_code,
@@ -403,6 +403,7 @@ async fn compile_and_store_shader(
 			&shader_json,
 			&stage,
 		)
+		.await
 		.map_err(|_| LoadErrors::FailedToProcess)?;
 
 	context
@@ -465,47 +466,49 @@ pub mod tests {
 	struct TestShaderCompiler;
 
 	impl super::ShaderCompiler for TestShaderCompiler {
-		fn compile(
-			&self,
-			_generator: &dyn ProgramGenerator,
-			name: &str,
-			_shader_code: &str,
-			format: &str,
-			_domain: &str,
-			_material: &JsonObject,
-			_shader_json: &Value,
-			stage: &str,
-		) -> Result<(crate::resources::material::Shader, Box<[u8]>), ()> {
-			assert_eq!(format, "besl");
-			let stage = match stage {
-				"Vertex" => crate::types::ShaderTypes::Vertex,
-				"Fragment" => crate::types::ShaderTypes::Fragment,
-				"Compute" => crate::types::ShaderTypes::Compute,
-				_ => return Err(()),
-			};
+		fn compile<'a>(
+			&'a self,
+			_generator: &'a dyn ProgramGenerator,
+			name: &'a str,
+			_shader_code: &'a str,
+			format: &'a str,
+			_domain: &'a str,
+			_material: &'a JsonObject,
+			_shader_json: &'a Value,
+			stage: &'a str,
+		) -> crate::r#async::BoxedFuture<'a, Result<(crate::resources::material::Shader, Box<[u8]>), ()>> {
+			Box::pin(async move {
+				assert_eq!(format, "besl");
+				let stage = match stage {
+					"Vertex" => crate::types::ShaderTypes::Vertex,
+					"Fragment" => crate::types::ShaderTypes::Fragment,
+					"Compute" => crate::types::ShaderTypes::Compute,
+					_ => return Err(()),
+				};
 
-			Ok((
-				crate::resources::material::Shader {
-					id: name.to_string(),
-					stage,
-					interface: crate::resources::material::ShaderInterface {
-						workgroup_size: Some((128, 0, 0)),
-						bindings: vec![crate::resources::material::Binding::new(
-							0,
-							crate::resources::material::BindingKind::StorageBuffer,
-							1,
-							Some(4),
-							true,
-							false,
-						)],
+				Ok((
+					crate::resources::material::Shader {
+						id: name.to_string(),
+						stage,
+						interface: crate::resources::material::ShaderInterface {
+							workgroup_size: Some((128, 0, 0)),
+							bindings: vec![crate::resources::material::Binding::new(
+								0,
+								crate::resources::material::BindingKind::StorageBuffer,
+								1,
+								Some(4),
+								true,
+								false,
+							)],
+						},
+						artifact: crate::resources::material::ShaderArtifact::Msl {
+							entry_point: "test_main".to_string(),
+						},
+						source_hash: 42,
 					},
-					artifact: crate::resources::material::ShaderArtifact::Msl {
-						entry_point: "test_main".to_string(),
-					},
-					source_hash: 42,
-				},
-				b"compiled-test-shader".to_vec().into_boxed_slice(),
-			))
+					b"compiled-test-shader".to_vec().into_boxed_slice(),
+				))
+			})
 		}
 	}
 

@@ -35,10 +35,14 @@ use resource_management::{
 		animation::Animation,
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
+	Reference,
 };
 
 use super::{
-	inertialization::PoseInertializer, math::multiply_quaternion, packed::RuntimeAnimation, root_motion::RootMotionDelta,
+	inertialization::PoseInertializer,
+	math::multiply_quaternion,
+	packed::{PackedAnimation, PackedAnimationData},
+	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,
 };
 use crate::{
@@ -63,10 +67,30 @@ pub enum AnimationPlayback {
 	Once,
 }
 
-/// The `AnimationClip` struct identifies the resource and playback behavior used by one state.
+/// The `AnimationLease` struct keeps a stable clip identity across arena residency and eviction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationLease {
+	resource_id: String,
+}
+
+impl AnimationLease {
+	/// Creates a lease handle for a clip that the pool may load, evict, and load again.
+	pub fn new(resource_id: impl Into<String>) -> Self {
+		Self {
+			resource_id: resource_id.into(),
+		}
+	}
+
+	/// Returns the resource ID used when an evicted lease needs another asynchronous load.
+	pub fn resource_id(&self) -> &str {
+		&self.resource_id
+	}
+}
+
+/// The `AnimationClip` struct identifies the leased resource and playback behavior used by one state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnimationClip {
-	resource_id: String,
+	lease: AnimationLease,
 	playback: AnimationPlayback,
 }
 
@@ -74,7 +98,7 @@ impl AnimationClip {
 	/// Creates a clip that restarts from its first sample after reaching its duration.
 	pub fn looping(resource_id: impl Into<String>) -> Self {
 		Self {
-			resource_id: resource_id.into(),
+			lease: AnimationLease::new(resource_id),
 			playback: AnimationPlayback::Loop,
 		}
 	}
@@ -82,14 +106,14 @@ impl AnimationClip {
 	/// Creates a clip that holds its final sample after reaching its duration.
 	pub fn once(resource_id: impl Into<String>) -> Self {
 		Self {
-			resource_id: resource_id.into(),
+			lease: AnimationLease::new(resource_id),
 			playback: AnimationPlayback::Once,
 		}
 	}
 
 	/// Returns the resource ID requested by an [`AnimationPool`].
 	pub fn resource_id(&self) -> &str {
-		&self.resource_id
+		self.lease.resource_id()
 	}
 
 	/// Returns the playback behavior used after the clip reaches its duration.
@@ -265,7 +289,7 @@ impl<I> AnimationGraphBuilder<I> {
 			if state.name.trim().is_empty() {
 				return Err(AnimationGraphBuildError::EmptyStateName { state: state_index });
 			}
-			if state.clip.resource_id.trim().is_empty() {
+			if state.clip.resource_id().trim().is_empty() {
 				return Err(AnimationGraphBuildError::EmptyResourceId { state: state_index });
 			}
 			if self.states[..state_index].iter().any(|other| other.name == state.name) {
@@ -371,12 +395,53 @@ impl AnimationPoolConfig {
 	}
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AnimationArenaRegion {
+	offset: usize,
+	word_count: usize,
+}
+
+impl AnimationArenaRegion {
+	fn end(self) -> usize {
+		self.offset + self.word_count
+	}
+}
+
 #[derive(Debug)]
 struct CachedAnimation {
 	resource_id: String,
-	animation: Arc<RuntimeAnimation>,
-	resident_bytes: usize,
-	last_used: u64,
+	skeleton: Reference<Skeleton>,
+	region: AnimationArenaRegion,
+	last_used: std::cell::Cell<u64>,
+	lease_count: std::cell::Cell<usize>,
+}
+
+/// Pins one resident arena region for the duration of an animation evaluation.
+struct ResidentAnimationLease<'a> {
+	entry: &'a CachedAnimation,
+	words: &'a [u32],
+}
+
+impl ResidentAnimationLease<'_> {
+	fn packed(&self) -> PackedAnimation<'_> {
+		PackedAnimation::from_words(self.words)
+	}
+
+	fn skeleton(&self) -> &Skeleton {
+		self.entry.skeleton.resource()
+	}
+}
+
+impl Drop for ResidentAnimationLease<'_> {
+	fn drop(&mut self) {
+		self.entry.lease_count.set(
+			self.entry
+				.lease_count
+				.get()
+				.checked_sub(1)
+				.expect("Resident animation lease count must match evaluation borrows."),
+		);
+	}
 }
 
 struct PendingAnimationLoad {
@@ -391,6 +456,7 @@ struct FailedAnimationLoad {
 struct BlockedAnimationLoad {
 	resource_id: String,
 	resident_bytes: usize,
+	animation: Animation,
 }
 
 enum AnimationLoadCommand {
@@ -402,10 +468,10 @@ enum AnimationLoadCompletion {
 	Failed { resource_id: String, error: String },
 }
 
-/// The `AnimationPoolRequest` enum reports whether a requested clip can be sampled immediately.
-#[derive(Debug)]
+/// The `AnimationPoolRequest` enum reports whether a lease can be sampled immediately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnimationPoolRequest {
-	Ready(Arc<RuntimeAnimation>),
+	Ready,
 	Loading,
 	WaitingForCapacity,
 	Failed,
@@ -428,16 +494,16 @@ pub enum AnimationPoolEvent {
 	},
 }
 
-/// The `AnimationPool` struct owns a byte-bounded LRU cache of asynchronously loaded clips.
+/// The `AnimationPool` struct owns a preallocated word arena and byte-bounded LRU clip cache.
 ///
-/// [`AnimationGraphPlayer::advance`] updates the pool before evaluating, so a
-/// normal player loop needs no separate update call. Call [`Self::update`] only
-/// when preloading clips during a frame without a player. Spawn the
-/// [`AnimationLoadWorker`] returned by [`Self::new`] on the application runtime
-/// that owns resource loading.
+/// Graph clips keep stable [`AnimationLease`] handles across eviction. During
+/// evaluation, the player pins resident arena regions so admission cannot reuse
+/// their words until sampling completes.
 pub struct AnimationPool {
 	commands: kanal::Sender<AnimationLoadCommand>,
 	completions: kanal::Receiver<AnimationLoadCompletion>,
+	storage: Box<[u32]>,
+	free_regions: Vec<AnimationArenaRegion>,
 	cache: Vec<CachedAnimation>,
 	pending: Vec<PendingAnimationLoad>,
 	failed: Vec<FailedAnimationLoad>,
@@ -445,28 +511,38 @@ pub struct AnimationPool {
 	events: VecDeque<AnimationPoolEvent>,
 	byte_budget: usize,
 	resident_bytes: usize,
-	next_use: u64,
+	next_use: std::cell::Cell<u64>,
 	commands_closed: bool,
 	completions_closed: bool,
 }
 
 impl AnimationPool {
-	/// Creates the pool and its worker with bounded request and completion queues.
+	/// Creates the pool, preallocates its complete word arena, and returns its load worker.
 	pub fn new(resource_manager: EntityHandle<ResourceManager>, config: AnimationPoolConfig) -> (Self, AnimationLoadWorker) {
 		let (commands, command_receiver) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
 		let (completion_sender, completions) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
+		let word_capacity = config.byte_budget() / std::mem::size_of::<u32>();
+		let free_regions = (word_capacity > 0)
+			.then_some(AnimationArenaRegion {
+				offset: 0,
+				word_count: word_capacity,
+			})
+			.into_iter()
+			.collect();
 		(
 			Self {
 				commands: commands.to_sync(),
 				completions: completions.to_sync(),
-				cache: Vec::new(),
+				storage: vec![0; word_capacity].into_boxed_slice(),
+				free_regions,
+				cache: Vec::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
 				pending: Vec::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
 				failed: Vec::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
 				blocked: Vec::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
 				events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 				byte_budget: config.byte_budget(),
 				resident_bytes: 0,
-				next_use: 0,
+				next_use: std::cell::Cell::new(0),
 				commands_closed: false,
 				completions_closed: false,
 			},
@@ -484,7 +560,6 @@ impl AnimationPool {
 		if self.completions_closed {
 			return;
 		}
-
 		loop {
 			match self.completions.try_recv_realtime() {
 				Ok(Some(completion)) => self.process_completion(completion),
@@ -497,12 +572,11 @@ impl AnimationPool {
 		}
 	}
 
-	/// Returns a loaded clip or queues its asynchronous load without waiting.
-	pub fn request(&mut self, resource_id: &str) -> AnimationPoolRequest {
-		let use_stamp = self.next_use();
-		if let Some(entry) = self.cache.iter_mut().find(|entry| entry.resource_id == resource_id) {
-			entry.last_used = use_stamp;
-			return AnimationPoolRequest::Ready(entry.animation.clone());
+	/// Returns lease residency or queues an asynchronous reload after eviction.
+	pub fn request(&mut self, lease: &AnimationLease) -> AnimationPoolRequest {
+		let resource_id = lease.resource_id();
+		if self.cache.iter().any(|entry| entry.resource_id == resource_id) {
+			return AnimationPoolRequest::Ready;
 		}
 		if self.failed.iter().any(|failure| failure.resource_id == resource_id) {
 			return AnimationPoolRequest::Failed;
@@ -512,47 +586,51 @@ impl AnimationPool {
 			if !self.make_room(resident_bytes) {
 				return AnimationPoolRequest::WaitingForCapacity;
 			}
-			self.blocked.swap_remove(index);
+			let blocked = self.blocked.swap_remove(index);
+			self.write_animation(blocked.resource_id, blocked.animation);
+			return AnimationPoolRequest::Ready;
 		} else if self.blocked.len() == ANIMATION_LOAD_QUEUE_CAPACITY {
-			// Existing blocked requests get the next admission opportunity. Do not
-			// start more work that cannot be retained under the strict byte budget.
 			return AnimationPoolRequest::WaitingForCapacity;
 		}
 		if self.pending.iter().any(|pending| pending.resource_id == resource_id) {
 			return AnimationPoolRequest::Loading;
 		}
-
 		if self.queue_load(resource_id) {
 			AnimationPoolRequest::Loading
 		} else {
-			// The queue is bounded. The next player update retries without growing
-			// a second unbounded waiting list.
 			AnimationPoolRequest::WaitingForCapacity
 		}
 	}
 
-	/// Marks a player-held clip as recently used without cloning or moving it.
-	fn touch(&mut self, animation: &Arc<RuntimeAnimation>) {
-		let use_stamp = self.next_use();
-		if let Some(entry) = self.cache.iter_mut().find(|entry| Arc::ptr_eq(&entry.animation, animation)) {
-			entry.last_used = use_stamp;
-		}
+	/// Pins a resident clip until the returned evaluation lease is dropped.
+	fn acquire(&self, lease: &AnimationLease) -> Option<ResidentAnimationLease<'_>> {
+		let entry = self.cache.iter().find(|entry| entry.resource_id == lease.resource_id())?;
+		entry.last_used.set(self.next_use());
+		entry.lease_count.set(entry.lease_count.get() + 1);
+		Some(ResidentAnimationLease {
+			entry,
+			words: &self.storage[entry.region.offset..entry.region.end()],
+		})
 	}
 
-	/// Clears one recorded load failure and requests that resource again.
-	pub fn retry(&mut self, resource_id: &str) -> AnimationPoolRequest {
-		if let Some(index) = self.failed.iter().position(|failure| failure.resource_id == resource_id) {
+	/// Clears one recorded load failure and requests that lease again.
+	pub fn retry(&mut self, lease: &AnimationLease) -> AnimationPoolRequest {
+		if let Some(index) = self
+			.failed
+			.iter()
+			.position(|failure| failure.resource_id == lease.resource_id())
+		{
 			self.failed.swap_remove(index);
 		}
-		self.request(resource_id)
+		self.request(lease)
 	}
 
-	/// Returns the cache bytes currently retained by the pool.
+	/// Returns bytes occupied by resident packed clip regions.
 	pub const fn resident_bytes(&self) -> usize {
 		self.resident_bytes
 	}
 
-	/// Returns the configured cache byte budget.
+	/// Returns the configured arena byte budget.
 	pub const fn byte_budget(&self) -> usize {
 		self.byte_budget
 	}
@@ -562,10 +640,10 @@ impl AnimationPool {
 		self.events.drain(..)
 	}
 
-	fn next_use(&mut self) -> u64 {
-		let use_stamp = self.next_use;
-		self.next_use = self.next_use.wrapping_add(1);
-		use_stamp
+	fn next_use(&self) -> u64 {
+		let value = self.next_use.get();
+		self.next_use.set(value.wrapping_add(1));
+		value
 	}
 
 	fn queue_load(&mut self, resource_id: &str) -> bool {
@@ -582,21 +660,17 @@ impl AnimationPool {
 		true
 	}
 
-	/// Records a load failure until the caller deliberately retries that resource.
 	fn remember_failure(&mut self, resource_id: String) {
 		self.failed.push(FailedAnimationLoad { resource_id });
 	}
-
-	/// Retains the bounded set of clips that completed while every cache entry was in use.
-	fn block_admission(&mut self, resource_id: String, resident_bytes: usize) {
+	fn block_admission(&mut self, resource_id: String, resident_bytes: usize, animation: Animation) {
 		debug_assert!(self.blocked.len() < ANIMATION_LOAD_QUEUE_CAPACITY);
 		self.blocked.push(BlockedAnimationLoad {
 			resource_id,
 			resident_bytes,
+			animation,
 		});
 	}
-
-	/// Records the newest pool outcomes without making event consumption a memory requirement.
 	fn push_event(&mut self, event: AnimationPoolEvent) {
 		if self.events.len() == ANIMATION_POOL_EVENT_CAPACITY {
 			self.events.pop_front();
@@ -608,13 +682,12 @@ impl AnimationPool {
 		if self.commands_closed {
 			return;
 		}
-
 		for pending in &mut self.pending {
-			let Some(_) = pending.command else {
+			if pending.command.is_none() {
 				continue;
-			};
+			}
 			match self.commands.try_send_option_realtime(&mut pending.command) {
-				Ok(true) | Ok(false) => {}
+				Ok(_) => {}
 				Err(_) => {
 					self.commands_closed = true;
 					break;
@@ -632,7 +705,6 @@ impl AnimationPool {
 		if let Some(index) = self.pending.iter().position(|pending| pending.resource_id == resource_id) {
 			self.pending.swap_remove(index);
 		}
-
 		match completion {
 			AnimationLoadCompletion::Ready { resource_id, animation } => self.admit(resource_id, animation),
 			AnimationLoadCompletion::Failed { resource_id, error } => {
@@ -643,10 +715,8 @@ impl AnimationPool {
 	}
 
 	fn admit(&mut self, resource_id: String, animation: Animation) {
-		// Resource curves stay serialization-oriented. Pack them only when the engine adopts the completed load.
-		let animation = RuntimeAnimation::from_resource(animation);
-		let resident_bytes = animation.estimated_resident_bytes();
-		if resident_bytes > self.byte_budget {
+		let resident_bytes = PackedAnimationData::resident_bytes(&animation);
+		if resident_bytes > self.byte_budget || resident_bytes / std::mem::size_of::<u32>() > self.storage.len() {
 			self.remember_failure(resource_id.clone());
 			self.push_event(AnimationPoolEvent::Oversized {
 				resource_id,
@@ -657,43 +727,90 @@ impl AnimationPool {
 		}
 		if !self.make_room(resident_bytes) {
 			if self.blocked.len() < ANIMATION_LOAD_QUEUE_CAPACITY {
-				self.block_admission(resource_id, resident_bytes);
+				self.block_admission(resource_id, resident_bytes, animation);
 			}
 			return;
 		}
+		self.write_animation(resource_id, animation);
+	}
 
-		self.resident_bytes = self.resident_bytes.saturating_add(resident_bytes);
-		let last_used = self.next_use();
+	/// Packs a completed load only after admission owns a contiguous arena range.
+	fn write_animation(&mut self, resource_id: String, animation: Animation) {
+		let packed = PackedAnimationData::from_resource(animation);
+		let resident_bytes = packed.data.len() * std::mem::size_of::<u32>();
+		let region = self
+			.take_region(packed.data.len())
+			.expect("Animation admission reserved one contiguous arena region.");
+		self.storage[region.offset..region.end()].copy_from_slice(&packed.data);
+		self.resident_bytes += resident_bytes;
 		self.cache.push(CachedAnimation {
 			resource_id,
-			animation: Arc::new(animation),
-			resident_bytes,
-			last_used,
+			skeleton: packed.skeleton,
+			region,
+			last_used: std::cell::Cell::new(self.next_use()),
+			lease_count: std::cell::Cell::new(0),
 		});
 	}
 
-	/// Evicts inactive least-recently-used entries until a new clip fits.
+	/// Evicts unleased LRU entries until one contiguous arena range can hold the requested words.
 	fn make_room(&mut self, required_bytes: usize) -> bool {
-		if required_bytes > self.byte_budget {
+		let required_words = required_bytes.div_ceil(std::mem::size_of::<u32>());
+		if required_bytes > self.byte_budget || required_words > self.storage.len() {
 			return false;
 		}
-		while self.resident_bytes.saturating_add(required_bytes) > self.byte_budget {
+		while !self.free_regions.iter().any(|region| region.word_count >= required_words) {
 			let Some((index, _)) = self
 				.cache
 				.iter()
 				.enumerate()
-				.filter(|(_, entry)| Arc::strong_count(&entry.animation) == 1)
-				.min_by_key(|(_, entry)| entry.last_used)
+				.filter(|(_, entry)| entry.lease_count.get() == 0)
+				.min_by_key(|(_, entry)| entry.last_used.get())
 			else {
 				return false;
 			};
 			let evicted = self.cache.swap_remove(index);
-			self.resident_bytes = self.resident_bytes.saturating_sub(evicted.resident_bytes);
+			self.resident_bytes = self
+				.resident_bytes
+				.saturating_sub(evicted.region.word_count * std::mem::size_of::<u32>());
+			self.return_region(evicted.region);
 			self.push_event(AnimationPoolEvent::Evicted {
 				resource_id: evicted.resource_id,
 			});
 		}
 		true
+	}
+
+	fn take_region(&mut self, word_count: usize) -> Option<AnimationArenaRegion> {
+		let index = self.free_regions.iter().position(|region| region.word_count >= word_count)?;
+		let available = self.free_regions[index];
+		let region = AnimationArenaRegion {
+			offset: available.offset,
+			word_count,
+		};
+		if available.word_count == word_count {
+			self.free_regions.swap_remove(index);
+		} else {
+			self.free_regions[index] = AnimationArenaRegion {
+				offset: available.offset + word_count,
+				word_count: available.word_count - word_count,
+			};
+		}
+		Some(region)
+	}
+
+	/// Returns and coalesces an arena region so fragmented evictions can satisfy later clips.
+	fn return_region(&mut self, region: AnimationArenaRegion) {
+		let index = self.free_regions.partition_point(|free| free.offset < region.offset);
+		self.free_regions.insert(index, region);
+		let mut index = index.saturating_sub(1);
+		while index + 1 < self.free_regions.len() {
+			if self.free_regions[index].end() != self.free_regions[index + 1].offset {
+				index += 1;
+				continue;
+			}
+			let right = self.free_regions.remove(index + 1);
+			self.free_regions[index].word_count += right.word_count;
+		}
 	}
 }
 
@@ -727,31 +844,41 @@ impl AnimationLoadWorker {
 
 struct RuntimeClip {
 	state: AnimationStateId,
-	animation: Arc<RuntimeAnimation>,
+	lease: AnimationLease,
 	pose_map: SkeletonPoseMap,
 	playback: AnimationPlayback,
+	duration: f32,
+	source_node_count: usize,
 	time_seconds: f32,
 }
 
 impl RuntimeClip {
-	fn new(state: AnimationStateId, animation: Arc<RuntimeAnimation>, playback: AnimationPlayback, target: &Skeleton) -> Self {
-		let pose_map = SkeletonPoseMap::by_name(animation.skeleton(), target);
+	fn new(
+		state: AnimationStateId,
+		lease: AnimationLease,
+		resident: &ResidentAnimationLease<'_>,
+		playback: AnimationPlayback,
+		target: &Skeleton,
+	) -> Self {
+		let pose_map = SkeletonPoseMap::by_name(resident.skeleton(), target);
 		Self {
 			state,
-			animation,
+			lease,
 			pose_map,
 			playback,
+			duration: resident.packed().duration(),
+			source_node_count: resident.skeleton().nodes.len(),
 			time_seconds: 0.0,
 		}
 	}
 
 	fn is_finished(&self) -> bool {
-		self.playback == AnimationPlayback::Once && self.time_seconds >= self.animation.packed().duration()
+		self.playback == AnimationPlayback::Once && self.time_seconds >= self.duration
 	}
 
 	fn advance(&mut self, delta: MediaTime) -> ClipAdvance {
 		let previous_time = self.time_seconds;
-		let duration = self.animation.packed().duration();
+		let duration = self.duration;
 		if duration <= 0.0 {
 			self.time_seconds = 0.0;
 			return ClipAdvance { wrapped_loops: 0 };
@@ -999,17 +1126,36 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		}
 		pool.update();
 		self.start_pending(pool);
-		self.touch_active_clips(pool);
 
 		if self.transition.is_none() && self.active.is_some() && self.pending.is_none() {
 			self.select_transition(input);
 			self.start_pending(pool);
 		}
 
-		let root_motion = if self.transition.is_some() {
-			self.advance_transition(delta)
-		} else if self.active.is_some() {
-			self.advance_active(delta)
+		// Resolve every clip before borrowing arena regions. The resulting leases
+		// pin those regions until this evaluation and all root-motion samples finish.
+		let root_motion = if let Some(transition) = &self.transition {
+			let source_handle = transition.source.lease.clone();
+			let destination_handle = transition.destination.lease.clone();
+			let source_ready = pool.request(&source_handle) == AnimationPoolRequest::Ready;
+			let destination_ready = pool.request(&destination_handle) == AnimationPoolRequest::Ready;
+			if source_ready && destination_ready {
+				let source = pool.acquire(&source_handle).expect("ready source lease must remain resident");
+				let destination = pool
+					.acquire(&destination_handle)
+					.expect("ready destination lease must remain resident");
+				self.advance_transition(delta, &source, &destination)
+			} else {
+				RootMotionDelta::IDENTITY
+			}
+		} else if let Some(active) = &self.active {
+			let handle = active.lease.clone();
+			if pool.request(&handle) == AnimationPoolRequest::Ready {
+				let resident = pool.acquire(&handle).expect("ready active lease must remain resident");
+				self.advance_active(delta, &resident)
+			} else {
+				RootMotionDelta::IDENTITY
+			}
 		} else {
 			self.write_rest_pose();
 			RootMotionDelta::IDENTITY
@@ -1022,26 +1168,18 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		})
 	}
 
-	/// Refreshes LRU state for clips retained by this player without cloning their resources.
-	fn touch_active_clips(&self, pool: &mut AnimationPool) {
-		if let Some(transition) = &self.transition {
-			pool.touch(&transition.source.animation);
-			pool.touch(&transition.destination.animation);
-		} else if let Some(active) = &self.active {
-			pool.touch(&active.animation);
-		}
-	}
-
 	fn start_pending(&mut self, pool: &mut AnimationPool) {
 		let Some(pending) = self.pending.as_ref() else {
 			return;
 		};
 		let target_state = self.graph.state(pending.target);
-		let AnimationPoolRequest::Ready(animation) = pool.request(target_state.clip.resource_id()) else {
+		let lease = target_state.clip.lease.clone();
+		if pool.request(&lease) != AnimationPoolRequest::Ready {
 			return;
-		};
+		}
+		let resident = pool.acquire(&lease).expect("ready pending lease must remain resident");
 		let pending = self.pending.take().expect("pending state transition was checked above");
-		let destination = RuntimeClip::new(pending.target, animation, target_state.clip.playback(), &self.target);
+		let destination = RuntimeClip::new(pending.target, lease, &resident, target_state.clip.playback(), &self.target);
 
 		if let Some(duration) = pending.duration {
 			let source = self.active.take().expect("only a loaded state can start a graph transition");
@@ -1049,6 +1187,7 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 			reserve_source_pose(&destination, &mut self.destination_source);
 			sample_target_pose(
 				&destination,
+				&resident,
 				&self.target,
 				&mut self.destination_source,
 				&mut self.destination_current,
@@ -1064,7 +1203,13 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		} else {
 			reserve_source_pose(&destination, &mut self.active_source);
 			reserve_source_pose(&destination, &mut self.loop_source);
-			sample_target_pose(&destination, &self.target, &mut self.active_source, &mut self.active_current);
+			sample_target_pose(
+				&destination,
+				&resident,
+				&self.target,
+				&mut self.active_source,
+				&mut self.active_current,
+			);
 			self.active_previous.copy_from_slice(&self.active_current);
 			self.active = Some(destination);
 		}
@@ -1087,17 +1232,24 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		});
 	}
 
-	fn advance_active(&mut self, delta: MediaTime) -> RootMotionDelta {
+	fn advance_active(&mut self, delta: MediaTime, resident: &ResidentAnimationLease<'_>) -> RootMotionDelta {
 		let active = self.active.as_mut().expect("active clip was checked before advancing");
 		let advance = active.advance(delta);
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
-		sample_target_pose(active, &self.target, &mut self.active_source, &mut self.active_current);
+		sample_target_pose(
+			active,
+			resident,
+			&self.target,
+			&mut self.active_source,
+			&mut self.active_current,
+		);
 		let root_motion = root_delta(
 			self.root_motion,
 			active,
 			&self.active_previous,
 			&self.active_current,
 			advance,
+			resident,
 			&self.target,
 			&mut self.loop_source,
 			&mut self.loop_start,
@@ -1109,7 +1261,12 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		root_motion
 	}
 
-	fn advance_transition(&mut self, delta: MediaTime) -> RootMotionDelta {
+	fn advance_transition(
+		&mut self,
+		delta: MediaTime,
+		source_resident: &ResidentAnimationLease<'_>,
+		destination_resident: &ResidentAnimationLease<'_>,
+	) -> RootMotionDelta {
 		let root_motion_target = self.root_motion;
 		let target = &self.target;
 		let (root_motion, completed) = {
@@ -1118,9 +1275,16 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 			let destination_advance = transition.destination.advance(delta);
 			std::mem::swap(&mut self.active_previous, &mut self.active_current);
 			std::mem::swap(&mut self.destination_previous, &mut self.destination_current);
-			sample_target_pose(&transition.source, target, &mut self.active_source, &mut self.active_current);
+			sample_target_pose(
+				&transition.source,
+				source_resident,
+				target,
+				&mut self.active_source,
+				&mut self.active_current,
+			);
 			sample_target_pose(
 				&transition.destination,
+				destination_resident,
 				target,
 				&mut self.destination_source,
 				&mut self.destination_current,
@@ -1132,6 +1296,7 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 				&self.active_previous,
 				&self.active_current,
 				source_advance,
+				source_resident,
 				target,
 				&mut self.loop_source,
 				&mut self.loop_start,
@@ -1143,6 +1308,7 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 				&self.destination_previous,
 				&self.destination_current,
 				destination_advance,
+				destination_resident,
 				target,
 				&mut self.loop_source,
 				&mut self.loop_start,
@@ -1304,13 +1470,14 @@ fn resolve_root_motion_target(
 /// Samples one loaded clip into target-skeleton local transforms using retained scratch buffers.
 fn sample_target_pose(
 	clip: &RuntimeClip,
+	resident: &ResidentAnimationLease<'_>,
 	target: &Skeleton,
 	source_output: &mut Vec<LocalTransform>,
 	target_output: &mut Vec<LocalTransform>,
 ) {
-	clip.animation
+	resident
 		.packed()
-		.sample_local_pose(clip.animation.skeleton(), clip.time_seconds, source_output);
+		.sample_local_pose(resident.skeleton(), clip.time_seconds, source_output);
 	clip.pose_map
 		.write_target_local_pose(source_output, target, target_output)
 		.expect("animation pose maps are built from the source clip skeleton");
@@ -1318,7 +1485,7 @@ fn sample_target_pose(
 
 /// Reserves source-skeleton sampling storage when a clip becomes active, never during steady evaluation.
 fn reserve_source_pose(clip: &RuntimeClip, output: &mut Vec<LocalTransform>) {
-	let node_count = clip.animation.skeleton().nodes.len();
+	let node_count = clip.source_node_count;
 	if output.capacity() < node_count {
 		output.reserve(node_count - output.capacity());
 	}
@@ -1332,6 +1499,7 @@ fn root_delta(
 	previous: &[LocalTransform],
 	current: &[LocalTransform],
 	advance: ClipAdvance,
+	resident: &ResidentAnimationLease<'_>,
 	target: &Skeleton,
 	loop_source: &mut Vec<LocalTransform>,
 	loop_start: &mut Vec<LocalTransform>,
@@ -1346,15 +1514,13 @@ fn root_delta(
 
 	// Sample the clip ends only for a loop crossing. This keeps the common
 	// steady-state path to one clip sample while preserving forward root motion.
-	clip.animation
+	resident
 		.packed()
-		.sample_local_pose(clip.animation.skeleton(), clip.animation.packed().duration(), loop_source);
+		.sample_local_pose(resident.skeleton(), clip.duration, loop_source);
 	clip.pose_map
 		.write_target_local_pose(loop_source, target, loop_end)
 		.expect("animation pose maps are built from the source clip skeleton");
-	clip.animation
-		.packed()
-		.sample_local_pose(clip.animation.skeleton(), 0.0, loop_source);
+	resident.packed().sample_local_pose(resident.skeleton(), 0.0, loop_source);
 	clip.pose_map
 		.write_target_local_pose(loop_source, target, loop_start)
 		.expect("animation pose maps are built from the source clip skeleton");
@@ -1454,9 +1620,9 @@ mod tests {
 	};
 
 	use super::{
-		AnimationClip, AnimationGraph, AnimationGraphBuildError, AnimationGraphPlayer, AnimationPool, AnimationPoolConfig,
-		AnimationPoolEvent, AnimationPoolRequest, AnimationTransition, RootMotionRotation, RootMotionSettings,
-		RootMotionTranslation, RuntimeAnimation,
+		AnimationArenaRegion, AnimationClip, AnimationGraph, AnimationGraphBuildError, AnimationGraphPlayer, AnimationLease,
+		AnimationPool, AnimationPoolConfig, AnimationPoolEvent, AnimationPoolRequest, AnimationTransition, PackedAnimationData,
+		RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	};
 	use crate::MediaTime;
 
@@ -1489,15 +1655,21 @@ mod tests {
 
 	/// Measures the representation retained by the pool rather than the transient resource representation.
 	fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
-		RuntimeAnimation::from_resource(test_animation(name, end_translation)).estimated_resident_bytes()
+		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
 	}
 
 	fn pool(byte_budget: usize) -> AnimationPool {
 		let (commands, _command_receiver) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
 		let (_completion_sender, completions) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
+		let word_capacity = byte_budget / std::mem::size_of::<u32>();
 		AnimationPool {
 			commands: commands.to_sync(),
 			completions: completions.to_sync(),
+			storage: vec![0; word_capacity].into_boxed_slice(),
+			free_regions: vec![AnimationArenaRegion {
+				offset: 0,
+				word_count: word_capacity,
+			}],
 			cache: Vec::new(),
 			pending: Vec::with_capacity(super::ANIMATION_LOAD_QUEUE_CAPACITY),
 			failed: Vec::with_capacity(super::ANIMATION_LOAD_QUEUE_CAPACITY),
@@ -1505,7 +1677,7 @@ mod tests {
 			events: VecDeque::with_capacity(super::ANIMATION_POOL_EVENT_CAPACITY),
 			byte_budget,
 			resident_bytes: 0,
-			next_use: 0,
+			next_use: std::cell::Cell::new(0),
 			commands_closed: false,
 			completions_closed: false,
 		}
@@ -1547,7 +1719,7 @@ mod tests {
 	}
 
 	#[test]
-	fn pool_evicts_lru_entries_but_keeps_clips_pinned_by_players() {
+	fn pool_evicts_lru_entries_and_evaluation_leases_pin_arena_regions() {
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
 		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
@@ -1560,26 +1732,39 @@ mod tests {
 		assert!(first_pool
 			.drain_events()
 			.any(|event| matches!(event, AnimationPoolEvent::Evicted { resource_id } if resource_id == "idle.animation")));
+		let evicted_idle = AnimationLease::new("idle.animation");
+		assert_eq!(first_pool.request(&evicted_idle), AnimationPoolRequest::Loading);
 
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
 		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
 		let mut pool = pool(budget);
 		pool.admit("idle.animation".into(), idle);
-		let pinned = match pool.request("idle.animation") {
-			AnimationPoolRequest::Ready(animation) => animation,
-			_ => panic!("expected cached idle animation"),
-		};
-		pool.admit("walk.animation".into(), walk);
-		assert!(pool.cache.iter().any(|entry| entry.resource_id == "idle.animation"));
-		assert!(matches!(
-			pool.request("walk.animation"),
-			AnimationPoolRequest::WaitingForCapacity
-		));
-
+		let idle_lease = AnimationLease::new("idle.animation");
+		let walk_lease = AnimationLease::new("walk.animation");
+		assert_eq!(pool.request(&idle_lease), AnimationPoolRequest::Ready);
+		let pinned = pool.acquire(&idle_lease).expect("expected cached idle animation");
+		assert_eq!(pinned.entry.lease_count.get(), 1);
 		drop(pinned);
-		assert!(matches!(pool.request("walk.animation"), AnimationPoolRequest::Loading));
+		assert_eq!(pool.cache[0].lease_count.get(), 0);
+
+		pool.admit("walk.animation".into(), walk);
 		assert!(pool.cache.iter().all(|entry| entry.resource_id != "idle.animation"));
+		assert_eq!(pool.request(&walk_lease), AnimationPoolRequest::Ready);
+	}
+
+	#[test]
+	fn resident_clips_occupy_disjoint_ranges_of_one_preallocated_arena() {
+		let clip_bytes = packed_test_animation_bytes("first", 1.0);
+		let mut pool = pool(clip_bytes * 2);
+		pool.admit("first.animation".into(), test_animation("first", 1.0));
+		pool.admit("second.animation".into(), test_animation("second", 2.0));
+
+		assert_eq!(pool.storage.len() * std::mem::size_of::<u32>(), clip_bytes * 2);
+		assert_eq!(pool.cache.len(), 2);
+		let first = pool.cache[0].region;
+		let second = pool.cache[1].region;
+		assert!(first.end() <= second.offset || second.end() <= first.offset);
 	}
 
 	#[test]
@@ -1588,7 +1773,10 @@ mod tests {
 		let mut pool = pool(packed_test_animation_bytes("oversized", 1.0) - 1);
 		pool.admit("oversized.animation".into(), animation);
 
-		assert!(matches!(pool.request("oversized.animation"), AnimationPoolRequest::Failed));
+		assert!(matches!(
+			pool.request(&AnimationLease::new("oversized.animation")),
+			AnimationPoolRequest::Failed
+		));
 		assert!(pool.drain_events().any(|event| matches!(
 			event,
 			AnimationPoolEvent::Oversized {

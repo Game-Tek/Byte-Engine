@@ -35,78 +35,64 @@ struct TrackDescriptor {
 	scale: Option<u32>,
 }
 
-/// The `RuntimeAnimation` struct owns clip metadata and one packed CPU animation buffer.
-///
-/// The animation pool creates this type when it adopts a loaded resource. Use
-/// [`Self::packed`] to borrow the allocation-free sampling interface.
+/// The `PackedAnimationData` struct stages one packed clip before the animation pool copies it into its arena.
 #[derive(Debug)]
-pub struct RuntimeAnimation {
-	pub name: Option<String>,
-	skeleton: Reference<Skeleton>,
-	data: Box<[u32]>,
+pub(crate) struct PackedAnimationData {
+	pub(crate) skeleton: Reference<Skeleton>,
+	pub(crate) data: Box<[u32]>,
 }
 
-impl RuntimeAnimation {
+impl PackedAnimationData {
+	/// Returns the exact arena bytes needed after packing without allocating staging arrays.
+	pub(crate) fn resident_bytes(animation: &Animation) -> usize {
+		let curve_count = animation
+			.tracks
+			.iter()
+			.map(|track| {
+				usize::from(track.translation.is_some())
+					+ usize::from(track.rotation.is_some())
+					+ usize::from(track.scale.is_some())
+			})
+			.sum::<usize>();
+		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
+			total
+				+ track.translation.as_ref().map_or(0, |curve| vector3_curve_words(curve))
+				+ track.rotation.as_ref().map_or(0, quaternion_curve_words)
+				+ track.scale.as_ref().map_or(0, |curve| vector3_curve_words(curve))
+		});
+		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
+			* std::mem::size_of::<u32>()
+	}
+
 	/// Consumes a loaded resource and combines all curve descriptors, times, and values into one allocation.
-	pub fn from_resource(animation: Animation) -> Self {
+	pub(crate) fn from_resource(animation: Animation) -> Self {
+		let expected_bytes = Self::resident_bytes(&animation);
 		let Animation {
-			name,
+			name: _,
 			skeleton,
 			duration,
 			tracks,
 		} = animation;
 		let data = pack_data(duration, tracks);
-		Self { name, skeleton, data }
-	}
-
-	/// Borrows the packed clip interface used during graph evaluation.
-	pub fn packed(&self) -> PackedAnimation<'_> {
-		PackedAnimation { words: &self.data }
-	}
-
-	/// Returns the source skeleton used to produce complete local poses.
-	pub fn skeleton(&self) -> &Skeleton {
-		self.skeleton.resource()
-	}
-
-	/// Estimates heap storage retained while this clip is resident in the animation pool.
-	pub fn estimated_resident_bytes(&self) -> usize {
-		let skeleton = self.skeleton.resource();
-		let skeleton_bytes = self
-			.skeleton
-			.id
-			.capacity()
-			.saturating_add(
-				skeleton
-					.nodes
-					.capacity()
-					.saturating_mul(std::mem::size_of::<resource_management::resources::skeleton::SkeletonNode>()),
-			)
-			.saturating_add(
-				skeleton
-					.nodes
-					.iter()
-					.filter_map(|node| node.name.as_ref())
-					.map(String::capacity)
-					.sum::<usize>(),
-			);
-		std::mem::size_of::<Self>()
-			.saturating_add(self.name.as_ref().map_or(0, String::capacity))
-			.saturating_add(self.data.len().saturating_mul(std::mem::size_of::<u32>()))
-			.saturating_add(skeleton_bytes)
+		debug_assert_eq!(data.len() * std::mem::size_of::<u32>(), expected_bytes);
+		Self { skeleton, data }
 	}
 }
 
 /// The `PackedAnimation` struct provides a borrowing interface over one packed CPU animation buffer.
 ///
-/// Borrow this view from [`RuntimeAnimation::packed`]. It contains no owned
-/// storage and is cheap to recreate for each animation evaluation.
+/// Resident evaluation leases create this view over their pinned arena range.
+/// It contains no owned storage and is cheap to recreate for each sample.
 #[derive(Clone, Copy)]
 pub struct PackedAnimation<'a> {
 	words: &'a [u32],
 }
 
-impl PackedAnimation<'_> {
+impl<'a> PackedAnimation<'a> {
+	pub(crate) fn from_words(words: &'a [u32]) -> Self {
+		Self { words }
+	}
+
 	/// Returns the clip duration encoded in the packed buffer header.
 	pub fn duration(self) -> f32 {
 		f32::from_bits(self.words[0])
@@ -335,6 +321,20 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	words.extend(vector3_values.into_iter().flatten().map(f32::to_bits));
 	words.extend(quaternion_values.into_iter().flatten().map(f32::to_bits));
 	words.into_boxed_slice()
+}
+
+fn vector3_curve_words(curve: &Vector3Curve) -> usize {
+	match curve {
+		Vector3Curve::Step { times, .. } | Vector3Curve::Linear { times, .. } => times.len() * 4,
+		Vector3Curve::CubicSpline { times, .. } => times.len() * 10,
+	}
+}
+
+fn quaternion_curve_words(curve: &QuaternionCurve) -> usize {
+	match curve {
+		QuaternionCurve::Step { times, .. } | QuaternionCurve::Linear { times, .. } => times.len() * 5,
+		QuaternionCurve::CubicSpline { times, .. } => times.len() * 13,
+	}
 }
 
 fn pack_vector3_curve(

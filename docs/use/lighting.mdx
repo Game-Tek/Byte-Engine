@@ -204,8 +204,11 @@ does not limit inverse-square lighting. Use `with_shadow_near`, `with_shadow_far
 The visibility pipeline reuses up to four cone maps and four point-light cube maps per sink by
 default. Set `render.cone-shadow-map-pool.capacity` or `render.point-shadow-map-pool.capacity` at
 application startup to change either limit. A point-shadow capacity uses one cube map per light;
-each cube map has six 1024 by 1024 depth faces. When a visible pool is full, later local lights stay
-lit but do not cast shadows.
+each cube map has six 1024 by 1024 depth faces. For each pool, the renderer ranks visible lights by
+their projected sink coverage. It first reserves a slot for each sink's most important light when
+capacity allows, then continues through each sink's next-ranked light in sink order. The
+sinks reached before a partial final round fills the pool receive the remaining slots. Other visible
+local lights stay lit but do not cast shadows.
 
 ## Understand the rendering result
 

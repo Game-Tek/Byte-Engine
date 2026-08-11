@@ -396,15 +396,15 @@ impl AssetManagerState {
 	}
 
 	/// Bakes an asset with the provided allocator when the resource is missing or stale.
-	pub(crate) async fn bake_if_not_exists_in<M: Model>(
+	pub(crate) async fn bake_if_not_exists_in(
 		&self,
 		id: &str,
 		allocator: &dyn Allocator,
-	) -> Result<ReferenceModel<M>, LoadMessages> {
+	) -> Result<crate::SerializableResource, LoadMessages> {
 		self.ensure_baked_in(id, allocator).await?;
 
 		if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await {
-			return Ok(resource.into());
+			return Ok(resource);
 		}
 
 		Err(LoadMessages::NoAsset)
@@ -443,14 +443,18 @@ impl AssetManagerState {
 
 	/// Returns whether any source version recorded by a stored resource differs from the current asset backend.
 	async fn resource_is_stale(&self, resource: &crate::SerializableResource) -> bool {
-		for dependency in resource.asset_dependencies() {
-			let current = self.storage_backend.version(ResourceId::new(dependency.id())).await;
-			if current.as_ref().ok() != Some(dependency.version()) {
-				return true;
-			}
-		}
+		use utils::r#async::StreamExt as _;
 
-		false
+		let checks = resource.asset_dependencies().iter().map(|dependency| async move {
+			let current = self.storage_backend.version(ResourceId::new(dependency.id())).await;
+			current.as_ref().ok() != Some(dependency.version())
+		});
+
+		// Provenance entries are independent; bound metadata pressure and stop after the first stale source.
+		utils::r#async::stream::iter(checks)
+			.buffer_unordered(8)
+			.any(|stale| async move { stale })
+			.await
 	}
 }
 

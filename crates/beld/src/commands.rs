@@ -557,13 +557,19 @@ pub fn bake(
 		}
 	});
 
-	let tasks = utils::r#async::stream::iter(tasks);
-	let tasks = tasks.buffer_unordered(16).collect::<Vec<_>>();
+	let tasks = utils::r#async::stream::iter(tasks).buffer_unordered(16).fold(
+		(0usize, 0usize),
+		|(successful, failed), result| async move {
+			if result {
+				(successful + 1, failed)
+			} else {
+				(successful, failed + 1)
+			}
+		},
+	);
 
 	let bake_start = Instant::now();
-	let results = executor.block_on(tasks);
-	let failed_count = results.iter().filter(|result| !**result).count();
-	let successful_count = results.len() - failed_count;
+	let (successful_count, failed_count) = executor.block_on(tasks);
 	log::info!(
 		"Processed {} assets in {:?}: {} succeeded, {} failed",
 		resource_count,

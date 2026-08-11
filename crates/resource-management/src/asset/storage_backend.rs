@@ -10,9 +10,12 @@ use gxhash::GxHasher;
 
 use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
 use crate::{
-	r#async::{future, BoxedFuture},
+	r#async::{future, BoxedFuture, File as AsyncFile},
 	resource::reader::MappedFileBacking,
 };
+
+/// The metadata implementation used to version local source files.
+pub type AssetMetadata = compio::fs::Metadata;
 
 /// The `AssetStorageBytes` enum owns asset source storage while exposing it as a borrowed byte slice.
 #[derive(Debug)]
@@ -59,7 +62,7 @@ pub(crate) struct AssetFileVersion {
 
 impl AssetFileVersion {
 	/// Creates a version from file metadata for inexpensive debug freshness checks.
-	fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+	fn from_metadata(metadata: &AssetMetadata) -> Self {
 		let modified = metadata
 			.modified()
 			.ok()
@@ -99,7 +102,7 @@ pub struct AssetVersion {
 
 impl AssetVersion {
 	/// Creates a version from local file metadata without reading either file.
-	pub fn from_metadata(source: &std::fs::Metadata, sidecar: Option<&std::fs::Metadata>) -> Self {
+	pub fn from_metadata(source: &AssetMetadata, sidecar: Option<&AssetMetadata>) -> Self {
 		Self {
 			source: AssetFileVersion::from_metadata(source),
 			sidecar: sidecar.map(AssetFileVersion::from_metadata),
@@ -213,9 +216,10 @@ impl StorageBackend for FileStorageBackend {
 			let source_path = self.base_path.join(url.get_base().as_ref());
 			let sidecar_path = source_path.with_added_extension("bead");
 
-			let source = std::fs::metadata(&source_path).map_err(|_| ())?;
-			let sidecar = match std::fs::metadata(sidecar_path) {
-				Ok(metadata) => Some(metadata),
+			let source = AsyncFile::open(source_path).await.map_err(|_| ())?;
+			let source = source.metadata().await.map_err(|_| ())?;
+			let sidecar = match AsyncFile::open(sidecar_path).await {
+				Ok(file) => Some(file.metadata().await.map_err(|_| ())?),
 				Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
 				Err(_) => return Err(()),
 			};

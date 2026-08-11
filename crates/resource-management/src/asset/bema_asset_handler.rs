@@ -83,6 +83,8 @@ impl AssetHandler for BEMAAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		use utils::r#async::StreamExt as _;
+
 		if let Some(dt) = context.resource_type(url) {
 			if dt != "bema" {
 				return Err(LoadErrors::UnsupportedType);
@@ -112,20 +114,24 @@ impl AssetHandler for BEMAAssetHandler {
 				}
 			};
 
-			let mut shaders = Vec::with_capacity(asset_shaders.len());
-			for (s_type, shader_json) in asset_shaders.iter() {
-				let shader = compile_and_store_shader(
+			// Compile independent stages together while preserving declaration order in the material model.
+			let shader_requests = asset_shaders.iter().map(|(shader_type, shader_json)| {
+				compile_and_store_shader(
 					context,
 					self.compiler.clone(),
 					generator.clone(),
 					material_domain,
 					asset_object,
 					shader_json,
-					s_type,
+					shader_type,
 				)
-				.await?;
-				shaders.push(shader);
-			}
+			});
+			let shaders = utils::r#async::stream::iter(shader_requests)
+				.buffered(4)
+				.collect::<Vec<_>>()
+				.await
+				.into_iter()
+				.collect::<Result<Vec<_>, _>>()?;
 
 			let asset_variables = match asset["variables"].as_array() {
 				Some(v) => v,
@@ -134,14 +140,18 @@ impl AssetHandler for BEMAAssetHandler {
 				}
 			};
 
-			let mut values = Vec::with_capacity(asset_variables.len());
-			for v in asset_variables.iter() {
-				let data_type = v["data_type"].as_str().unwrap().to_string();
-				let value = v["value"].as_str().unwrap().to_string();
-
-				let value = resolve_value(context, &data_type, &value).await?;
-				values.push(value);
-			}
+			// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
+			let value_requests = asset_variables.iter().map(|variable| async move {
+				let data_type = variable["data_type"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+				let value = variable["value"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+				resolve_value(context, data_type, value).await
+			});
+			let values = utils::r#async::stream::iter(value_requests)
+				.buffered(8)
+				.collect::<Vec<_>>()
+				.await
+				.into_iter()
+				.collect::<Result<Vec<_>, _>>()?;
 
 			let parameters = asset_variables
 				.iter()
@@ -179,23 +189,21 @@ impl AssetHandler for BEMAAssetHandler {
 
 			let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
-			let mut values = Vec::with_capacity(material_repr.parameters.len());
-			for v in material_repr.parameters.iter() {
-				let value = match asset["variables"].as_array() {
-					Some(variables) => match variables.iter().find(|v2| v2["name"].as_str().unwrap() == v.name) {
-						Some(v) => v["value"].as_str().unwrap().to_string(),
-						None => {
-							return Err(LoadErrors::FailedToProcess);
-						}
-					},
-					None => {
-						return Err(LoadErrors::FailedToProcess);
-					}
-				};
-
-				let resolved = resolve_value(context, &v.r#type, &value).await?;
-				values.push(resolved);
-			}
+			let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
+			let value_requests = material_repr.parameters.iter().map(|parameter| async move {
+				let value = authored_variables
+					.iter()
+					.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
+					.and_then(|variable| variable["value"].as_str())
+					.ok_or(LoadErrors::FailedToProcess)?;
+				resolve_value(context, &parameter.r#type, value).await
+			});
+			let values = utils::r#async::stream::iter(value_requests)
+				.buffered(8)
+				.collect::<Vec<_>>()
+				.await
+				.into_iter()
+				.collect::<Result<Vec<_>, _>>()?;
 
 			let variables = material_repr
 				.parameters

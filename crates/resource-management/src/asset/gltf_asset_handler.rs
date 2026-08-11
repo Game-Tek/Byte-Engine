@@ -1438,54 +1438,72 @@ async fn load_gltf_buffers(
 	required: Option<&[bool]>,
 	allocator: &dyn std::alloc::Allocator,
 ) -> Result<Vec<gltf::buffer::Data>, LoadErrors> {
-	let mut buffers = Vec::with_capacity(gltf.buffers().len());
-	for buffer in gltf.buffers() {
-		if required.is_some_and(|required| !required.get(buffer.index()).copied().unwrap_or(false)) {
-			buffers.push(gltf::buffer::Data(Vec::new()));
-			continue;
-		}
-		let mut data = match buffer.source() {
-			gltf::buffer::Source::Bin => binary_blob.take().map(std::borrow::Cow::into_owned).ok_or_else(|| {
-				log::error!("glTF binary buffer is missing. The most likely cause is a GLB without its required BIN chunk.");
-				LoadErrors::FailedToProcess
-			})?,
-			gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => decode_gltf_buffer_data_uri(uri)?,
-			gltf::buffer::Source::Uri(uri) => {
-				let buffer_url = resolve_gltf_uri(source, uri)?;
-				let (bytes, ..) = asset_storage_backend
-					.resolve_in(ResourceId::new(&buffer_url), allocator)
-					.await
-					.map_err(|_| {
-						log::error!(
-							"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
-						);
-						LoadErrors::AssetCouldNotBeLoaded
-					})?;
-				copy_gltf_buffer_bytes(&bytes)?
-			}
+	use utils::r#async::StreamExt as _;
+
+	let requests = gltf.buffers().map(|buffer| {
+		let skipped = required.is_some_and(|required| !required.get(buffer.index()).copied().unwrap_or(false));
+		let binary_data = if !skipped && matches!(buffer.source(), gltf::buffer::Source::Bin) {
+			binary_blob.take()
+		} else {
+			None
 		};
 
-		let raw_length = data.len();
-		if raw_length < buffer.length() {
-			log::error!(
-				"glTF buffer is shorter than declared. The most likely cause is truncated data for buffer {}: expected at least {} bytes but loaded {}.",
-				buffer.index(),
-				buffer.length(),
-				raw_length
-			);
-			return Err(LoadErrors::FailedToProcess);
-		}
+		async move {
+			if skipped {
+				return Ok((buffer.index(), gltf::buffer::Data(Vec::new())));
+			}
 
-		// Reserve once before adding the alignment bytes required by glTF buffer-view access.
-		let aligned_length = aligned_gltf_buffer_length(raw_length)?;
-		if data.capacity() < aligned_length {
-			data.reserve_exact(aligned_length - raw_length);
-		}
-		data.resize(aligned_length, 0);
-		buffers.push(gltf::buffer::Data(data));
-	}
+			let mut data = match buffer.source() {
+				gltf::buffer::Source::Bin => binary_data.map(std::borrow::Cow::into_owned).ok_or_else(|| {
+					log::error!("glTF binary buffer is missing. The most likely cause is a GLB without its required BIN chunk.");
+					LoadErrors::FailedToProcess
+				})?,
+				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => decode_gltf_buffer_data_uri(uri)?,
+				gltf::buffer::Source::Uri(uri) => {
+					let buffer_url = resolve_gltf_uri(source, uri)?;
+					let (bytes, ..) = asset_storage_backend
+						.resolve_in(ResourceId::new(&buffer_url), allocator)
+						.await
+						.map_err(|_| {
+							log::error!(
+								"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
+							);
+							LoadErrors::AssetCouldNotBeLoaded
+						})?;
+					copy_gltf_buffer_bytes(&bytes)?
+				}
+			};
 
-	Ok(buffers)
+			let raw_length = data.len();
+			if raw_length < buffer.length() {
+				log::error!(
+					"glTF buffer is shorter than declared. The most likely cause is truncated data for buffer {}: expected at least {} bytes but loaded {}.",
+					buffer.index(),
+					buffer.length(),
+					raw_length
+				);
+				return Err(LoadErrors::FailedToProcess);
+			}
+
+			// Reserve once before adding the alignment bytes required by glTF buffer-view access.
+			let aligned_length = aligned_gltf_buffer_length(raw_length)?;
+			if data.capacity() < aligned_length {
+				data.reserve_exact(aligned_length - raw_length);
+			}
+			data.resize(aligned_length, 0);
+			Ok((buffer.index(), gltf::buffer::Data(data)))
+		}
+	});
+
+	// External files are independent; cap open reads while retaining document buffer order.
+	let mut buffers = utils::r#async::stream::iter(requests)
+		.buffer_unordered(8)
+		.collect::<Vec<_>>()
+		.await
+		.into_iter()
+		.collect::<Result<Vec<_>, _>>()?;
+	buffers.sort_unstable_by_key(|(index, _)| *index);
+	Ok(buffers.into_iter().map(|(_, data)| data).collect())
 }
 
 /// Decodes a glTF data URI into storage with enough capacity for final four-byte alignment.
@@ -1736,9 +1754,9 @@ async fn store_gltf_texture_dependencies(
 	dependencies: &[GltfTextureDependency],
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<Vec<VariantVariableModel>, LoadErrors> {
-	let mut variables = Vec::with_capacity(dependencies.len());
+	use utils::r#async::StreamExt as _;
 
-	for dependency in dependencies {
+	let requests = dependencies.iter().map(|dependency| async move {
 		let image = gltf
 			.images()
 			.find(|image| image.index() == dependency.image_index as usize)
@@ -1747,14 +1765,20 @@ async fn store_gltf_texture_dependencies(
 		let image_ref =
 			load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic, mip_backend).await?;
 
-		variables.push(VariantVariableModel {
+		Ok(VariantVariableModel {
 			name: material_texture_variable_name(dependency.image_index),
 			r#type: "Texture2D".to_string(),
 			value: ValueModel::Image(image_ref),
-		});
-	}
+		})
+	});
 
-	Ok(variables)
+	// Distinct image dependencies can overlap file I/O; ordered buffering keeps material variables deterministic.
+	utils::r#async::stream::iter(requests)
+		.buffered(4)
+		.collect::<Vec<_>>()
+		.await
+		.into_iter()
+		.collect()
 }
 
 /// Loads one glTF image dependency and stores its processed resource.

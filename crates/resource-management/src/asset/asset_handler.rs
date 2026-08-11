@@ -197,7 +197,7 @@ impl<'a> BakeContext<'a> {
 
 	/// Bakes a referenced source asset when necessary and returns its stored model.
 	pub async fn bake_dependency<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadErrors> {
-		let dependency = self
+		let resource = self
 			.asset_manager
 			.bake_if_not_exists_in(id, self.allocator)
 			.await
@@ -206,15 +206,15 @@ impl<'a> BakeContext<'a> {
 				_ => LoadErrors::FailedToProcess,
 			})?;
 
-		self.inherit_dependency_provenance(id).await;
+		self.inherit_dependency_provenance(&resource);
 
-		Ok(dependency)
+		Ok(resource.into())
 	}
 
 	/// Bakes independent dependencies on the shared worker pool while bounding active requests.
 	///
-	/// Results preserve the input order. Use this method when a source format exposes
-	/// several dependencies before any one dependency result is needed.
+	/// Results preserve the input order. Each completed request returns its already-read
+	/// resource so provenance does not require another serialized storage pass.
 	pub async fn bake_dependencies<M: Model>(
 		&self,
 		ids: &[String],
@@ -223,15 +223,18 @@ impl<'a> BakeContext<'a> {
 		use utils::r#async::StreamExt as _;
 
 		let max_concurrency = max_concurrency.max(1);
-		let requests = ids.iter().cloned().enumerate().map(|(index, id)| async move {
+		let requests = ids.iter().enumerate().map(|(index, id)| async move {
 			self.asset_manager
-				.dispatch_bake(&id, true)
+				.dispatch_bake(id, true)
 				.await
 				.map_err(|error| match error {
 					super::asset_manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
 					_ => LoadErrors::FailedToProcess,
 				})?;
-			Ok::<_, LoadErrors>((index, id))
+			let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await else {
+				return Err(LoadErrors::FailedToProcess);
+			};
+			Ok((index, resource))
 		});
 		let completed = utils::r#async::stream::iter(requests)
 			.buffer_unordered(max_concurrency)
@@ -241,27 +244,22 @@ impl<'a> BakeContext<'a> {
 		completed.sort_unstable_by_key(|(index, _)| *index);
 
 		let mut dependencies = Vec::with_capacity(completed.len());
-		for (_, id) in completed {
-			let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await else {
-				return Err(LoadErrors::FailedToProcess);
-			};
+		for (_, resource) in completed {
+			self.inherit_dependency_provenance(&resource);
 			dependencies.push(resource.into());
-			self.inherit_dependency_provenance(&id).await;
 		}
 
 		Ok(dependencies)
 	}
 
 	/// Adds one stored dependency's transitive source versions to the parent bake.
-	async fn inherit_dependency_provenance(&self, id: &str) {
-		if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await {
-			let mut dependencies = self.asset_dependencies.lock();
-			for dependency in resource.asset_dependencies() {
-				if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-					*existing = dependency.clone();
-				} else {
-					dependencies.push(dependency.clone());
-				}
+	fn inherit_dependency_provenance(&self, resource: &SerializableResource) {
+		let mut dependencies = self.asset_dependencies.lock();
+		for dependency in resource.asset_dependencies() {
+			if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
+				*existing = dependency.clone();
+			} else {
+				dependencies.push(dependency.clone());
 			}
 		}
 	}

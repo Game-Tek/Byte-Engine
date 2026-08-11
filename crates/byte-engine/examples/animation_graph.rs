@@ -18,13 +18,12 @@ use byte_engine::{
 		},
 		Application, Parameter,
 	},
-	audio::AudioSamplePoolConfig,
 	core::{channel::Channel as _, EntityHandle},
 	gameplay::{Object, Transform, TransformationUpdate},
 	rendering::{window::Window, Camera, UpdatePose},
 	MediaTime,
 };
-use math::{Point, Vector};
+use math::{Orientation, Point, Quaternion, Scale, Vector};
 use resource_management::resources::mesh::Mesh;
 use utils::Extent;
 
@@ -32,7 +31,7 @@ use utils::Extent;
 const MODEL_RESOURCE: &str = "replace/with/skinned-model.fbx";
 const IDLE_ANIMATION: &str = "replace/with-idle-animation.fbx";
 const WALK_ANIMATION: &str = "replace/with-walk-animation.fbx";
-const ROOT_MOTION_NODE: Option<usize> = Some(0);
+const ROOT_MOTION_NODE_NAME: Option<&str> = Some("Hips");
 const ANIMATION_POOL_BYTES: usize = 32 * 1024 * 1024;
 
 /// The `LocomotionInput` struct holds the game-owned facts used by graph predicates.
@@ -89,7 +88,7 @@ fn main() {
 		);
 	}
 	setup_default_input(&mut app);
-	setup_default_audio(&mut app, AudioSamplePoolConfig::default(), |task| loading_tasks.push(task));
+	setup_default_audio(&mut app, |task| loading_tasks.push(task));
 	setup_pbr_visibility_shading_render_pipeline(&mut app, |task| loading_tasks.push(task));
 
 	let graph = locomotion_graph();
@@ -120,6 +119,7 @@ fn main() {
 	let animated_handle = create_scene(&mut app);
 	let mut player = None;
 	let mut root_position = Point::origin();
+	let mut root_orientation = Orientation::identity();
 
 	while app
 		.tick_with(|app, time| {
@@ -133,7 +133,7 @@ fn main() {
 							.expect("the model resource must contain a skeleton")
 							.into_resource();
 						player = Some(
-							AnimationGraphPlayer::new_owned(&graph, skeleton, ROOT_MOTION_NODE)
+							AnimationGraphPlayer::new_owned(&graph, skeleton, ROOT_MOTION_NODE_NAME)
 								.expect("the configured root node must exist in the model skeleton"),
 						);
 					}
@@ -155,9 +155,8 @@ fn main() {
 				.advance(time.delta(), &input, &mut pool)
 				.expect("application frame time is never negative");
 
-			// Apply root motion before submitting the pose. The simple harness moves
-			// only translation; turning clips should also compose `root_motion.rotation`
-			// with the object's orientation using the application's transform convention.
+			// Compose object-space root motion into the owning transform before
+			// submitting the in-place visual pose.
 			let root_motion = pose.root_motion();
 			root_position = root_position
 				+ Vector::new(
@@ -165,11 +164,15 @@ fn main() {
 					root_motion.translation[1],
 					root_motion.translation[2],
 				);
+			let [x, y, z, w] = root_motion.rotation;
+			let delta_orientation = Orientation::try_from_maths(Quaternion::new(x, y, z, w))
+				.expect("animation root motion always returns a normalized finite rotation");
+			root_orientation = delta_orientation.compose(root_orientation);
 
 			let world = app.world_mut();
 			world.transforms_channel_mut().send(TransformationUpdate::new(
 				animated_handle,
-				Transform::from_position(root_position),
+				Transform::new(root_position, Scale::identity(), root_orientation),
 			));
 			// `UpdatePose` crosses into renderer-owned state, so it owns a matrix
 			// vector. Graph evaluation itself continues to reuse its retained buffers.

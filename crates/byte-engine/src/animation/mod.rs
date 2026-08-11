@@ -9,6 +9,7 @@ pub mod blend;
 pub mod graph;
 pub mod inertialization;
 mod math;
+pub mod packed;
 pub mod root_motion;
 pub mod skeletal;
 

@@ -38,10 +38,8 @@ use resource_management::{
 };
 
 use super::{
-	inertialization::PoseInertializer,
-	math::multiply_quaternion,
-	root_motion::RootMotionDelta,
-	skeletal::{sample_local_pose, write_global_pose},
+	inertialization::PoseInertializer, math::multiply_quaternion, packed::RuntimeAnimation, root_motion::RootMotionDelta,
+	skeletal::write_global_pose,
 };
 use crate::{
 	core::{async_runtime, EntityHandle},
@@ -376,7 +374,7 @@ impl AnimationPoolConfig {
 #[derive(Debug)]
 struct CachedAnimation {
 	resource_id: String,
-	animation: Arc<Animation>,
+	animation: Arc<RuntimeAnimation>,
 	resident_bytes: usize,
 	last_used: u64,
 }
@@ -407,7 +405,7 @@ enum AnimationLoadCompletion {
 /// The `AnimationPoolRequest` enum reports whether a requested clip can be sampled immediately.
 #[derive(Debug)]
 pub enum AnimationPoolRequest {
-	Ready(Arc<Animation>),
+	Ready(Arc<RuntimeAnimation>),
 	Loading,
 	WaitingForCapacity,
 	Failed,
@@ -534,7 +532,7 @@ impl AnimationPool {
 	}
 
 	/// Marks a player-held clip as recently used without cloning or moving it.
-	fn touch(&mut self, animation: &Arc<Animation>) {
+	fn touch(&mut self, animation: &Arc<RuntimeAnimation>) {
 		let use_stamp = self.next_use();
 		if let Some(entry) = self.cache.iter_mut().find(|entry| Arc::ptr_eq(&entry.animation, animation)) {
 			entry.last_used = use_stamp;
@@ -645,6 +643,8 @@ impl AnimationPool {
 	}
 
 	fn admit(&mut self, resource_id: String, animation: Animation) {
+		// Resource curves stay serialization-oriented. Pack them only when the engine adopts the completed load.
+		let animation = RuntimeAnimation::from_resource(animation);
 		let resident_bytes = animation.estimated_resident_bytes();
 		if resident_bytes > self.byte_budget {
 			self.remember_failure(resource_id.clone());
@@ -727,15 +727,15 @@ impl AnimationLoadWorker {
 
 struct RuntimeClip {
 	state: AnimationStateId,
-	animation: Arc<Animation>,
+	animation: Arc<RuntimeAnimation>,
 	pose_map: SkeletonPoseMap,
 	playback: AnimationPlayback,
 	time_seconds: f32,
 }
 
 impl RuntimeClip {
-	fn new(state: AnimationStateId, animation: Arc<Animation>, playback: AnimationPlayback, target: &Skeleton) -> Self {
-		let pose_map = SkeletonPoseMap::by_name(animation.skeleton.resource(), target);
+	fn new(state: AnimationStateId, animation: Arc<RuntimeAnimation>, playback: AnimationPlayback, target: &Skeleton) -> Self {
+		let pose_map = SkeletonPoseMap::by_name(animation.skeleton(), target);
 		Self {
 			state,
 			animation,
@@ -746,12 +746,12 @@ impl RuntimeClip {
 	}
 
 	fn is_finished(&self) -> bool {
-		self.playback == AnimationPlayback::Once && self.time_seconds >= self.animation.duration
+		self.playback == AnimationPlayback::Once && self.time_seconds >= self.animation.packed().duration()
 	}
 
 	fn advance(&mut self, delta: MediaTime) -> ClipAdvance {
 		let previous_time = self.time_seconds;
-		let duration = self.animation.duration;
+		let duration = self.animation.packed().duration();
 		if duration <= 0.0 {
 			self.time_seconds = 0.0;
 			return ClipAdvance { wrapped_loops: 0 };
@@ -1308,7 +1308,9 @@ fn sample_target_pose(
 	source_output: &mut Vec<LocalTransform>,
 	target_output: &mut Vec<LocalTransform>,
 ) {
-	sample_local_pose(&clip.animation, clip.time_seconds, source_output);
+	clip.animation
+		.packed()
+		.sample_local_pose(clip.animation.skeleton(), clip.time_seconds, source_output);
 	clip.pose_map
 		.write_target_local_pose(source_output, target, target_output)
 		.expect("animation pose maps are built from the source clip skeleton");
@@ -1316,7 +1318,7 @@ fn sample_target_pose(
 
 /// Reserves source-skeleton sampling storage when a clip becomes active, never during steady evaluation.
 fn reserve_source_pose(clip: &RuntimeClip, output: &mut Vec<LocalTransform>) {
-	let node_count = clip.animation.skeleton.resource().nodes.len();
+	let node_count = clip.animation.skeleton().nodes.len();
 	if output.capacity() < node_count {
 		output.reserve(node_count - output.capacity());
 	}
@@ -1344,11 +1346,15 @@ fn root_delta(
 
 	// Sample the clip ends only for a loop crossing. This keeps the common
 	// steady-state path to one clip sample while preserving forward root motion.
-	sample_local_pose(&clip.animation, clip.animation.duration, loop_source);
+	clip.animation
+		.packed()
+		.sample_local_pose(clip.animation.skeleton(), clip.animation.packed().duration(), loop_source);
 	clip.pose_map
 		.write_target_local_pose(loop_source, target, loop_end)
 		.expect("animation pose maps are built from the source clip skeleton");
-	sample_local_pose(&clip.animation, 0.0, loop_source);
+	clip.animation
+		.packed()
+		.sample_local_pose(clip.animation.skeleton(), 0.0, loop_source);
 	clip.pose_map
 		.write_target_local_pose(loop_source, target, loop_start)
 		.expect("animation pose maps are built from the source clip skeleton");
@@ -1450,7 +1456,7 @@ mod tests {
 	use super::{
 		AnimationClip, AnimationGraph, AnimationGraphBuildError, AnimationGraphPlayer, AnimationPool, AnimationPoolConfig,
 		AnimationPoolEvent, AnimationPoolRequest, AnimationTransition, RootMotionRotation, RootMotionSettings,
-		RootMotionTranslation,
+		RootMotionTranslation, RuntimeAnimation,
 	};
 	use crate::MediaTime;
 
@@ -1479,6 +1485,11 @@ mod tests {
 				scale: None,
 			}],
 		}
+	}
+
+	/// Measures the representation retained by the pool rather than the transient resource representation.
+	fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
+		RuntimeAnimation::from_resource(test_animation(name, end_translation)).estimated_resident_bytes()
 	}
 
 	fn pool(byte_budget: usize) -> AnimationPool {
@@ -1539,7 +1550,7 @@ mod tests {
 	fn pool_evicts_lru_entries_but_keeps_clips_pinned_by_players() {
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
-		let budget = idle.estimated_resident_bytes().max(walk.estimated_resident_bytes());
+		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
 		let mut first_pool = pool(budget);
 
 		first_pool.admit("idle.animation".into(), idle);
@@ -1552,7 +1563,7 @@ mod tests {
 
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
-		let budget = idle.estimated_resident_bytes().max(walk.estimated_resident_bytes());
+		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
 		let mut pool = pool(budget);
 		pool.admit("idle.animation".into(), idle);
 		let pinned = match pool.request("idle.animation") {
@@ -1574,7 +1585,7 @@ mod tests {
 	#[test]
 	fn oversized_clips_fail_once_until_the_caller_explicitly_retries_them() {
 		let animation = test_animation("oversized", 1.0);
-		let mut pool = pool(animation.estimated_resident_bytes() - 1);
+		let mut pool = pool(packed_test_animation_bytes("oversized", 1.0) - 1);
 		pool.admit("oversized.animation".into(), animation);
 
 		assert!(matches!(pool.request("oversized.animation"), AnimationPoolRequest::Failed));
@@ -1592,7 +1603,7 @@ mod tests {
 		let target = test_skeleton();
 		let idle = test_animation("idle", 1.0);
 		let run = test_animation("run", 3.0);
-		let byte_budget = idle.estimated_resident_bytes().saturating_add(run.estimated_resident_bytes());
+		let byte_budget = packed_test_animation_bytes("idle", 1.0).saturating_add(packed_test_animation_bytes("run", 3.0));
 		let mut pool = pool(byte_budget);
 		pool.admit("idle.animation".into(), idle);
 		pool.admit("run.animation".into(), run);

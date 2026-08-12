@@ -15,14 +15,6 @@ enum FrameOutcome {
 	Complete(Option<Value>),
 }
 
-/// The `ExecutionFrame` struct lets one invocation resume after a scheduled barrier without replaying earlier instructions.
-struct ExecutionFrame {
-	function_index: usize,
-	registers: Vec<Option<Value>>,
-	locals: Vec<Option<Value>>,
-	instruction_index: usize,
-}
-
 /// The `WorkgroupLane` struct gives the scheduler one resumable frame and execution budget per invocation.
 struct WorkgroupLane<'a> {
 	frame: ExecutionFrame,
@@ -70,8 +62,9 @@ impl ExecutableProgram {
 	) -> Result<(), VmError> {
 		let mut state = ExecutionState::new(config);
 		state.enter_call()?;
-		let mut frame = self.create_frame(self.main_function, &[])?;
+		let mut frame = self.create_frame(descriptors, self.main_function)?;
 		let outcome = self.execute_frame(&mut frame, descriptors, &mut state, CollectiveBehavior::Ignore);
+		descriptors.release_execution_frame(frame);
 		state.leave_call();
 		let FrameOutcome::Complete(return_value) = outcome? else {
 			unreachable!(
@@ -110,20 +103,31 @@ impl ExecutableProgram {
 		let subgroups = subgroup_lane_groups(configs, subgroup_size);
 
 		descriptors.begin_workgroup();
-		let mut lanes = configs
-			.iter()
-			.map(|config| {
-				let mut state = ExecutionState::new(config);
-				state.enter_call()?;
-				Ok(WorkgroupLane {
-					frame: self.create_frame(self.main_function, &[])?,
+		let mut lanes: Vec<WorkgroupLane<'_>> = Vec::with_capacity(configs.len());
+		for config in configs {
+			let mut state = ExecutionState::new(config);
+			if let Err(error) = state.enter_call() {
+				for lane in lanes {
+					descriptors.release_execution_frame(lane.frame);
+				}
+				return Err(error);
+			}
+			match self.create_frame(descriptors, self.main_function) {
+				Ok(frame) => lanes.push(WorkgroupLane {
+					frame,
 					state,
 					status: WorkgroupLaneStatus::Running,
-				})
-			})
-			.collect::<Result<Vec<_>, VmError>>()?;
+				}),
+				Err(error) => {
+					for lane in lanes {
+						descriptors.release_execution_frame(lane.frame);
+					}
+					return Err(error);
+				}
+			}
+		}
 
-		loop {
+		let result = (|| loop {
 			for lane in &mut lanes {
 				if lane.status != WorkgroupLaneStatus::Running {
 					continue;
@@ -160,7 +164,11 @@ impl ExecutableProgram {
 			return Err(VmError::UnsupportedStatement {
 				message: "Workgroup execution stalled without a resolvable collective".to_string(),
 			});
+		})();
+		for lane in lanes {
+			descriptors.release_execution_frame(lane.frame);
 		}
+		result
 	}
 
 	/// Resumes every subgroup whose active lanes reached the same collective instruction.
@@ -376,15 +384,19 @@ impl ExecutableProgram {
 	fn execute_function(
 		&self,
 		function_index: usize,
-		arguments: &[Value],
+		argument_registers: &[usize],
+		caller_registers: &[Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 		state: &mut ExecutionState<'_>,
 		collective_behavior: CollectiveBehavior,
 	) -> Result<Option<Value>, VmError> {
 		state.enter_call()?;
 		let result = (|| {
-			let mut frame = self.create_frame(function_index, arguments)?;
-			match self.execute_frame(&mut frame, descriptors, state, collective_behavior)? {
+			let mut frame =
+				self.create_frame_from_registers(descriptors, function_index, argument_registers, caller_registers)?;
+			let outcome = self.execute_frame(&mut frame, descriptors, state, collective_behavior);
+			descriptors.release_execution_frame(frame);
+			match outcome? {
 				FrameOutcome::Complete(value) => Ok(value),
 				FrameOutcome::WorkgroupBarrier(_) | FrameOutcome::SubgroupCollective(_) => unreachable!(
 					"Unexpected nested collective suspension. The most likely cause is that nested execution stopped rejecting shader collectives."
@@ -395,30 +407,45 @@ impl ExecutableProgram {
 		result
 	}
 
-	/// Creates a resumable function frame with initialized argument locals.
-	fn create_frame(&self, function_index: usize, arguments: &[Value]) -> Result<ExecutionFrame, VmError> {
-		let function = self
-			.functions
+	/// Reuses one retained frame for a parameterless entry function.
+	fn create_frame(&self, descriptors: &mut DescriptorBindings<'_>, function_index: usize) -> Result<ExecutionFrame, VmError> {
+		let function = self.function(function_index)?;
+		let mut frame = descriptors.take_execution_frame();
+		match frame.reset(function_index, function) {
+			Ok(()) => Ok(frame),
+			Err(error) => {
+				descriptors.release_execution_frame(frame);
+				Err(error)
+			}
+		}
+	}
+
+	/// Reuses one retained frame and populates its parameter locals from caller registers.
+	fn create_frame_from_registers(
+		&self,
+		descriptors: &mut DescriptorBindings<'_>,
+		function_index: usize,
+		argument_registers: &[usize],
+		caller_registers: &[Option<Value>],
+	) -> Result<ExecutionFrame, VmError> {
+		let function = self.function(function_index)?;
+		let mut frame = descriptors.take_execution_frame();
+		match frame.reset_from_registers(function_index, function, argument_registers, caller_registers) {
+			Ok(()) => Ok(frame),
+			Err(error) => {
+				descriptors.release_execution_frame(frame);
+				Err(error)
+			}
+		}
+	}
+
+	/// Resolves one compiled function before its frame borrows the function's storage requirements.
+	fn function(&self, function_index: usize) -> Result<&ExecutableFunction, VmError> {
+		self.functions
 			.get(function_index)
 			.ok_or_else(|| VmError::UnsupportedExpression {
 				message: format!("Unknown function index {}", function_index),
-			})?;
-		if arguments.len() != function.parameter_count {
-			return Err(VmError::CallArgumentMismatch {
-				expected: function.parameter_count,
-				found: arguments.len(),
-			});
-		}
-		let mut locals = vec![None; function.local_types.len()];
-		for (index, argument) in arguments.iter().enumerate() {
-			locals[index] = Some(argument.clone());
-		}
-		Ok(ExecutionFrame {
-			function_index,
-			registers: vec![None; function.register_count],
-			locals,
-			instruction_index: 0,
-		})
+			})
 	}
 
 	/// Runs one function frame until it returns or reaches a scheduler-visible collective.
@@ -437,6 +464,7 @@ impl ExecutableProgram {
 			})?;
 		let registers = &mut frame.registers;
 		let locals = &mut frame.locals;
+		let constructor_values = &mut frame.constructor_values;
 
 		while frame.instruction_index < function.instructions.len() {
 			state.consume_instruction()?;
@@ -450,11 +478,12 @@ impl ExecutableProgram {
 					value_type,
 					components,
 				} => {
-					let values = components
-						.iter()
-						.map(|component| read_register(registers, *component))
-						.collect::<Result<Vec<_>, _>>()?;
-					registers[*register] = Some(construct_value(value_type, &values)?);
+					// Constructors are frequent in shader code. Retain this frame-local scratch vector instead of allocating per instruction.
+					constructor_values.clear();
+					for component in components {
+						constructor_values.push(read_register(registers, *component)?);
+					}
+					registers[*register] = Some(construct_value(value_type, constructor_values)?);
 				}
 				Instruction::Extract {
 					register,
@@ -1155,16 +1184,19 @@ impl ExecutableProgram {
 					function,
 					arguments,
 				} => {
-					let arguments = arguments
-						.iter()
-						.map(|argument| read_register(registers, *argument))
-						.collect::<Result<Vec<_>, _>>()?;
 					// Scheduled task lanes cannot preserve a nested call stack across a rendezvous; ordinary invocations may ignore it.
 					let nested_collective_behavior = match collective_behavior {
 						CollectiveBehavior::Ignore => CollectiveBehavior::Ignore,
 						CollectiveBehavior::Suspend | CollectiveBehavior::Reject => CollectiveBehavior::Reject,
 					};
-					let value = self.execute_function(*function, &arguments, descriptors, state, nested_collective_behavior)?;
+					let value = self.execute_function(
+						*function,
+						arguments,
+						registers,
+						descriptors,
+						state,
+						nested_collective_behavior,
+					)?;
 					if let Some(register) = register {
 						registers[*register] = value;
 					}

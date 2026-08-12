@@ -702,7 +702,14 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 
 	let slot = ResourceSlot::new(5);
 	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot, &mut buffer);
+	for _ in 0..2 {
+		executable
+			.run_main(&mut descriptors)
+			.expect("Expected repeated function-call execution to succeed");
+	}
+	drop(descriptors);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
 }
@@ -2911,6 +2918,32 @@ fn descriptor_binding_errors_report_resource_kinds_consistently() {
 	assert!(VmError::UnboundDescriptor { slot }
 		.to_string()
 		.contains("no resource was bound"));
+}
+
+#[test]
+fn rebinding_a_descriptor_slot_replaces_its_previous_resource() {
+	let slot = ResourceSlot::new(2);
+	let mut previous = Texture::new(1, 1).expect("Expected previous texture");
+	let mut replacement = Texture::new(1, 1).expect("Expected replacement texture");
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(slot, &mut previous);
+		descriptors.bind_image(slot, &mut replacement);
+		descriptors
+			.image_mut(slot)
+			.expect("Expected replacement image binding")
+			.write([0, 0], [1.0, 2.0, 3.0, 4.0])
+			.expect("Expected replacement image write");
+	}
+
+	assert_eq!(
+		previous.fetch([0, 0]).expect("Expected previous image texel"),
+		Value::Vec4F([0.0; 4])
+	);
+	assert_eq!(
+		replacement.fetch([0, 0]).expect("Expected replacement image texel"),
+		Value::Vec4F([1.0, 2.0, 3.0, 4.0])
+	);
 }
 
 #[test]

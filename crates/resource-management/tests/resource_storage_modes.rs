@@ -24,6 +24,32 @@ fn temporary_store() -> std::path::PathBuf {
 	))
 }
 
+#[test]
+fn application_opener_discards_a_store_with_a_mismatched_resource_management_signature() {
+	let path = temporary_store();
+	let stale_resource = path.join("stale-resource");
+	std::fs::create_dir_all(&path).unwrap();
+	std::fs::write(path.join(".resource-management-version"), "stale-signature").unwrap();
+	std::fs::write(path.join("resources.db"), "stale database").unwrap();
+	std::fs::write(&stale_resource, "stale data").unwrap();
+
+	// This is the public opener used by applications. It must synchronize the marker before any stale value can be read.
+	{
+		let _storage = RedbStorageBackend::new(path.clone());
+	}
+	assert!(
+		!stale_resource.exists(),
+		"a stale resource must be removed before an application can read it"
+	);
+	assert_ne!(
+		std::fs::read_to_string(path.join(".resource-management-version"))
+			.unwrap()
+			.trim(),
+		"stale-signature"
+	);
+	std::fs::remove_dir_all(&path).unwrap();
+}
+
 #[resource_management::r#async::test]
 async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	let path = temporary_store();

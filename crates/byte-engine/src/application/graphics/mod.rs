@@ -89,11 +89,7 @@ impl Application for GraphicsApplication {
 
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
-		// Debug applications can update individual stale assets in their local resource database.
-		#[cfg(debug_assertions)]
-		let resource_storage = RedbStorageBackend::new_writable(resources_path);
-		// Release resource directories are prepared by BELD and keep the resource-management signature it writes today.
-		#[cfg(not(debug_assertions))]
+		// Opening an application store first removes resources baked by an incompatible engine revision.
 		let resource_storage = RedbStorageBackend::new(resources_path);
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 

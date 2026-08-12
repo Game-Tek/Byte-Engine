@@ -34,6 +34,9 @@ The caller receives a resource tree that is already connected through typed refe
 The Redb storage backend writes a `.resource-management-version` marker in the resources directory.
 That marker is derived from the resource-management code hash.
 When the signature changes, the backend deletes stale resources so old processed data does not silently survive processor changes.
+Release applications open a matching store without writing to it.
+If the marker does not match, the application clears the store before it reads resources.
+Rebuild the directory with the matching BELD build before packaging.
 
 Each baked resource also records the source versions used to produce it.
 For local files, a version includes the file size and modification time.

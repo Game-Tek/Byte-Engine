@@ -38,7 +38,7 @@ pub struct RedbStorageBackend {
 	storage_mode: ResourceStorageMode,
 }
 
-/// The `RedbDatabase` enum keeps the runtime database read-only while allowing explicit resource producers to write.
+/// The `RedbDatabase` enum lets applications read compatible stores without writes while tools and cache recovery can update them.
 enum RedbDatabase {
 	Writable(redb::Database),
 	ReadOnly(redb::ReadOnlyDatabase),
@@ -57,6 +57,7 @@ const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH"
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
 const STORAGE_MODE_KEY: &str = "payload-storage-mode";
 const PACKED_RESOURCES_FILE: &str = "resources.pack";
+const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
 fn read_resource_cache_signature(base_path: &Path, signature_file: &str) -> Option<String> {
 	std::fs::read_to_string(base_path.join(signature_file))
@@ -203,17 +204,20 @@ fn insert_indexes(
 }
 
 impl RedbStorageBackend {
-	/// Opens the resource database with the access required by the current engine build.
+	/// Opens an application resource store and synchronizes its resource-management signature.
 	///
-	/// Debug builds can update their resource cache. Release builds only read resources that have a matching
-	/// resource-management signature. Use [`Self::new_writable`] for an explicit resource-producing workflow.
+	/// Debug applications can update their resource cache. Release applications keep a compatible
+	/// store read-only, but discard a mismatched store before reading stale values. Use
+	/// [`Self::open_read_only`] when a tool must inspect a store without changing it. Use
+	/// [`Self::new_writable_with_mode`] when a producer must select a payload storage mode.
 	pub fn new(base_path: std::path::PathBuf) -> Self {
-		if cfg!(debug_assertions) {
+		if cfg!(debug_assertions) || validate_resource_management_signature(&base_path).is_err() {
 			Self::new_writable(base_path)
 		} else {
 			Self::open_read_only(base_path).unwrap_or_else(|error| {
 				panic!(
-					"Failed to open resources database in read-only mode. The baked resources are incompatible or incomplete; rerun BELD with the matching engine revision. Error: {error}"
+					"Failed to open a compatible resources database in read-only mode. The most likely cause is an incomplete or corrupt resource store. Rebuild the resource directory with BELD. See {}. Error: {error}",
+					crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 				)
 			})
 		}

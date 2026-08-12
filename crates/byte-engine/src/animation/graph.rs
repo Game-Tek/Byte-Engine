@@ -3,7 +3,9 @@
 //! Build an [`AnimationGraph`] with [`AnimationGraphBuilder`], then create an
 //! [`AnimationGraphPlayer`] for each animated skeleton. The player evaluates
 //! synchronously from retained pose buffers while [`AnimationPool`] loads clip
-//! resources on an application-owned async worker.
+//! resources on an application-owned async worker. Use
+//! [`AnimationGraphBuilder::transition_state`] for a one-shot authored clip,
+//! such as a locomotion start or stop, that completes into its configured successor state.
 //!
 //! # Connection order
 //!
@@ -184,10 +186,40 @@ struct StateTransition<I> {
 	transition: AnimationTransition<I>,
 }
 
+/// Distinguishes persistent clips from one-shot clips that complete into another state.
+enum AnimationGraphStateKind {
+	Persistent,
+	Transition { completion: AnimationStateId },
+}
+
 struct AnimationGraphState<I> {
 	name: String,
 	clip: AnimationClip,
+	kind: AnimationGraphStateKind,
 	transitions: Vec<StateTransition<I>>,
+}
+
+impl<I> AnimationGraphState<I> {
+	/// Returns the fallback target entered after a transition-state clip finishes.
+	fn completion_target(&self) -> Option<AnimationStateId> {
+		match self.kind {
+			AnimationGraphStateKind::Persistent => None,
+			AnimationGraphStateKind::Transition { completion } => Some(completion),
+		}
+	}
+
+	/// Selects the first authored exit, then falls back to transition-state completion.
+	fn select_transition(&self, input: &I, source_finished: bool) -> Option<(AnimationStateId, MediaTime)> {
+		self.transitions
+			.iter()
+			.find(|transition| transition.transition.matches(input, source_finished))
+			.map(|transition| (transition.target, transition.transition.duration))
+			.or_else(|| {
+				source_finished
+					.then(|| self.completion_target().map(|target| (target, MediaTime::ZERO)))
+					.flatten()
+			})
+	}
 }
 
 /// The `AnimationGraph` struct stores an immutable, typed animation state machine.
@@ -254,6 +286,29 @@ impl<I> AnimationGraphBuilder<I> {
 		self.states.push(AnimationGraphState {
 			name: name.into(),
 			clip,
+			kind: AnimationGraphStateKind::Persistent,
+			transitions: Vec::new(),
+		});
+		id
+	}
+
+	/// Adds a one-shot state that falls through to `completion` after it finishes.
+	///
+	/// Use this for authored movement starts, stops, turns, and other clips that
+	/// bridge states. `clip` must use [`AnimationPlayback::Once`]. Authored
+	/// transitions from this state run before its completion, so they can cancel
+	/// or redirect the transient animation.
+	pub fn transition_state(
+		&mut self,
+		name: impl Into<String>,
+		clip: AnimationClip,
+		completion: AnimationStateId,
+	) -> AnimationStateId {
+		let id = AnimationStateId(self.states.len());
+		self.states.push(AnimationGraphState {
+			name: name.into(),
+			clip,
+			kind: AnimationGraphStateKind::Transition { completion },
 			transitions: Vec::new(),
 		});
 		id
@@ -297,6 +352,18 @@ impl<I> AnimationGraphBuilder<I> {
 					name: state.name.clone(),
 				});
 			}
+			if let AnimationGraphStateKind::Transition { completion } = state.kind {
+				if state.clip.playback() != AnimationPlayback::Once {
+					return Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: state_index });
+				}
+				if completion.0 >= self.states.len() {
+					return Err(AnimationGraphBuildError::TransitionStateCompletionOutOfRange {
+						state: state_index,
+						completion: completion.0,
+						state_count: self.states.len(),
+					});
+				}
+			}
 		}
 
 		for pending in self.transitions {
@@ -331,12 +398,35 @@ impl<I> AnimationGraphBuilder<I> {
 /// The `AnimationGraphBuildError` enum reports invalid graph authoring input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnimationGraphBuildError {
-	InitialStateOutOfRange { state: usize, state_count: usize },
-	EmptyStateName { state: usize },
-	EmptyResourceId { state: usize },
-	DuplicateStateName { name: String },
-	TransitionSourceOutOfRange { state: usize, state_count: usize },
-	TransitionTargetOutOfRange { state: usize, state_count: usize },
+	InitialStateOutOfRange {
+		state: usize,
+		state_count: usize,
+	},
+	EmptyStateName {
+		state: usize,
+	},
+	EmptyResourceId {
+		state: usize,
+	},
+	DuplicateStateName {
+		name: String,
+	},
+	TransitionSourceOutOfRange {
+		state: usize,
+		state_count: usize,
+	},
+	TransitionTargetOutOfRange {
+		state: usize,
+		state_count: usize,
+	},
+	TransitionStateMustPlayOnce {
+		state: usize,
+	},
+	TransitionStateCompletionOutOfRange {
+		state: usize,
+		completion: usize,
+		state_count: usize,
+	},
 	NegativeTransitionDuration,
 }
 
@@ -366,6 +456,18 @@ impl fmt::Display for AnimationGraphBuildError {
 			Self::TransitionTargetOutOfRange { state, state_count } => write!(
 				formatter,
 				"Animation transition target is missing. The most likely cause is selecting state {state} in a graph with {state_count} states."
+			),
+			Self::TransitionStateMustPlayOnce { state } => write!(
+				formatter,
+				"Animation transition state does not play once. The most likely cause is state {state} using a looping clip."
+			),
+			Self::TransitionStateCompletionOutOfRange {
+				state,
+				completion,
+				state_count,
+			} => write!(
+				formatter,
+				"Animation transition-state completion is missing. The most likely cause is state {state} selecting completion state {completion} in a graph with {state_count} states."
 			),
 			Self::NegativeTransitionDuration => write!(
 				formatter,
@@ -1113,6 +1215,8 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 	///
 	/// This first adopts any completed pool loads, then selects the first matching
 	/// transition, evaluates the pose, and returns root motion for the same frame.
+	/// While a selected target loads, the player retains the source clip and
+	/// reevaluates its exits so stale input can cancel or retarget that request.
 	/// Next, apply [`AnimationGraphPose::root_motion`] to the owning object and
 	/// submit [`AnimationGraphPose::global_pose`] to the rendering system.
 	pub fn advance(
@@ -1125,6 +1229,7 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 			return Err(AnimationGraphPlayerError::NegativeDelta);
 		}
 		pool.update();
+		self.refresh_pending_transition(input);
 		self.start_pending(pool);
 
 		if self.transition.is_none() && self.active.is_some() && self.pending.is_none() {
@@ -1215,21 +1320,35 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		}
 	}
 
-	fn select_transition(&mut self, input: &I) {
-		let active = self.active.as_ref().expect("transition selection requires an active clip");
-		let source_state = self.graph.state(active.state);
-		let source_finished = active.is_finished();
-		let Some(transition) = source_state
-			.transitions
-			.iter()
-			.find(|transition| transition.transition.matches(input, source_finished))
-		else {
+	/// Cancels or retargets a loading state when its source's selected edge changes.
+	fn refresh_pending_transition(&mut self, input: &I) {
+		let Some(pending) = self.pending.as_ref() else {
 			return;
 		};
-		self.pending = Some(PendingPlayerTransition {
-			target: transition.target,
-			duration: Some(transition.transition.duration),
-		});
+		if pending.duration.is_none() || self.transition.is_some() {
+			return;
+		}
+		let selected = self
+			.active
+			.as_ref()
+			.and_then(|active| self.selected_transition(active, input));
+		self.pending = selected;
+	}
+
+	fn select_transition(&mut self, input: &I) {
+		let selected = self.active.as_ref().expect("transition selection requires an active clip");
+		self.pending = self.selected_transition(selected, input);
+	}
+
+	/// Resolves one source state to its highest-priority current destination.
+	fn selected_transition(&self, active: &RuntimeClip, input: &I) -> Option<PendingPlayerTransition> {
+		let source_state = self.graph.state(active.state);
+		source_state
+			.select_transition(input, active.is_finished())
+			.map(|(target, duration)| PendingPlayerTransition {
+				target,
+				duration: Some(duration),
+			})
 	}
 
 	fn advance_active(&mut self, delta: MediaTime, resident: &ResidentAnimationLease<'_>) -> RootMotionDelta {
@@ -1708,6 +1827,51 @@ mod tests {
 	}
 
 	#[test]
+	fn transition_states_complete_after_authored_exits_and_validate_their_configuration() {
+		let mut builder = AnimationGraph::<bool>::builder();
+		let idle = builder.state("idle", AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk", AnimationClip::looping("walk.animation"));
+		let start_walk = builder.transition_state("start walk", AnimationClip::once("start.animation"), walk);
+		builder.transition(start_walk, idle, AnimationTransition::when(|moving: &bool| !*moving));
+		let graph = builder.build(idle).expect("transition state should be valid");
+
+		assert_eq!(
+			graph.state(start_walk).select_transition(&false, true),
+			Some((idle, MediaTime::ZERO)),
+			"authored cancellation must take priority over completion"
+		);
+		assert_eq!(
+			graph.state(start_walk).select_transition(&true, true),
+			Some((walk, MediaTime::ZERO)),
+			"a finished transition state must fall through to its completion"
+		);
+
+		let mut looping_state = AnimationGraph::<()>::builder();
+		let idle = looping_state.state("idle", AnimationClip::looping("idle.animation"));
+		looping_state.transition_state("invalid", AnimationClip::looping("invalid.animation"), idle);
+		assert!(matches!(
+			looping_state.build(idle),
+			Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: 1 })
+		));
+
+		let mut missing_completion = AnimationGraph::<()>::builder();
+		let idle = missing_completion.state("idle", AnimationClip::looping("idle.animation"));
+		missing_completion.transition_state(
+			"invalid",
+			AnimationClip::once("invalid.animation"),
+			super::AnimationStateId(2),
+		);
+		assert!(matches!(
+			missing_completion.build(idle),
+			Err(AnimationGraphBuildError::TransitionStateCompletionOutOfRange {
+				state: 1,
+				completion: 2,
+				state_count: 2,
+			})
+		));
+	}
+
+	#[test]
 	fn pool_configuration_exposes_its_strict_byte_budget() {
 		let config = AnimationPoolConfig::new(NonZeroUsize::new(128).expect("non-zero budget"));
 		assert_eq!(config.byte_budget(), 128);
@@ -1839,6 +2003,52 @@ mod tests {
 				.translation,
 			[2.25, 0.0, 0.0]
 		);
+	}
+
+	#[test]
+	fn player_cancels_loading_transition_states_and_completes_loaded_ones() {
+		let idle_animation = test_animation("idle", 0.0);
+		let start_animation = test_animation("start", 1.0);
+		let walk_animation = test_animation("walk", 2.0);
+		let byte_budget = packed_test_animation_bytes("idle", 0.0)
+			+ packed_test_animation_bytes("start", 1.0)
+			+ packed_test_animation_bytes("walk", 2.0);
+		let mut pool = pool(byte_budget);
+		pool.admit("idle.animation".into(), idle_animation);
+
+		let mut builder = AnimationGraph::<bool>::builder();
+		let idle = builder.state("idle", AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk", AnimationClip::looping("walk.animation"));
+		let start_walk = builder.transition_state("start walk", AnimationClip::once("start.animation"), walk);
+		builder.transition(idle, start_walk, AnimationTransition::when(|moving| *moving));
+		let graph = builder.build(idle).expect("graph should build");
+		let target = test_skeleton();
+		let mut player = AnimationGraphPlayer::new(&graph, &target, None).expect("player should build");
+
+		player.advance(MediaTime::ZERO, &false, &mut pool).expect("initial idle pose");
+		player
+			.advance(MediaTime::ZERO, &true, &mut pool)
+			.expect("queues start-walk clip");
+		assert_eq!(player.state(), Some(idle));
+		player
+			.advance(MediaTime::ZERO, &false, &mut pool)
+			.expect("cancels stale start-walk request");
+		assert_eq!(player.state(), Some(idle));
+
+		pool.admit("start.animation".into(), start_animation);
+		pool.admit("walk.animation".into(), walk_animation);
+		player
+			.advance(MediaTime::ZERO, &true, &mut pool)
+			.expect("starts transition state");
+		assert_eq!(player.state(), Some(start_walk));
+		player
+			.advance(MediaTime::from_seconds(1), &true, &mut pool)
+			.expect("finishes transition-state clip");
+		assert_eq!(player.state(), Some(start_walk));
+		player
+			.advance(MediaTime::ZERO, &true, &mut pool)
+			.expect("enters completion state");
+		assert_eq!(player.state(), Some(walk));
 	}
 
 	#[test]

@@ -82,6 +82,110 @@ pub fn sample_pose(
 		.expect("A skeleton pose map always writes one local transform per target node");
 }
 
+/// The `BonePositionDifference` struct reports one bone's global-position difference between two sampled poses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BonePositionDifference {
+	/// Identifies the bone in the shared skeleton node order.
+	pub node: usize,
+	/// Stores the first animation's global bone position.
+	pub first: [f32; 3],
+	/// Stores the second animation's global bone position.
+	pub second: [f32; 3],
+	/// Stores the Euclidean distance between [`Self::first`] and [`Self::second`].
+	pub distance: f32,
+}
+
+/// The `AnimationBonePositionComparison` struct reports global bone-position differences for two sampled animations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationBonePositionComparison {
+	/// Stores one position comparison for every bone, in skeleton node order.
+	pub differences: Vec<BonePositionDifference>,
+}
+
+impl AnimationBonePositionComparison {
+	/// Returns the bone with the largest global-position difference.
+	pub fn largest_difference(&self) -> Option<&BonePositionDifference> {
+		self.differences
+			.iter()
+			.max_by(|first, second| first.distance.total_cmp(&second.distance))
+	}
+}
+
+/// Compares global bone positions from two animations sampled at independent times.
+///
+/// The clips must use skeletons with the same node order, names, and parent links.
+/// Sampling follows [`sample_local_pose`], so times outside authored key ranges use
+/// the sampler's endpoint behavior. Use [`AnimationBonePositionComparison::largest_difference`]
+/// to inspect the most discontinuous bone, or [`AnimationBonePositionComparison::differences`]
+/// to inspect every bone.
+pub fn compare_animation_bone_positions(
+	first_animation: &Animation,
+	first_time: f32,
+	second_animation: &Animation,
+	second_time: f32,
+) -> Result<AnimationBonePositionComparison, AnimationComparisonError> {
+	if !first_time.is_finite() || !second_time.is_finite() {
+		return Err(AnimationComparisonError::NonFiniteTime);
+	}
+
+	let first_skeleton = first_animation.skeleton.resource();
+	let second_skeleton = second_animation.skeleton.resource();
+	validate_skeleton_layout(first_skeleton, second_skeleton)?;
+
+	let node_count = first_skeleton.nodes.len();
+	let mut first_local_pose = Vec::with_capacity(node_count);
+	let mut second_local_pose = Vec::with_capacity(node_count);
+	let mut first_global_pose = Vec::with_capacity(node_count);
+	let mut second_global_pose = Vec::with_capacity(node_count);
+
+	sample_local_pose(first_animation, first_time, &mut first_local_pose);
+	sample_local_pose(second_animation, second_time, &mut second_local_pose);
+	write_global_pose(first_skeleton, &first_local_pose, &mut first_global_pose)
+		.expect("sampled first animation pose must match its skeleton");
+	write_global_pose(second_skeleton, &second_local_pose, &mut second_global_pose)
+		.expect("sampled second animation pose must match its skeleton");
+
+	let differences = first_global_pose
+		.iter()
+		.zip(&second_global_pose)
+		.enumerate()
+		.map(|(node, (first, second))| {
+			let first = matrix_translation(first);
+			let second = matrix_translation(second);
+			let delta = [first[0] - second[0], first[1] - second[1], first[2] - second[2]];
+			BonePositionDifference {
+				node,
+				first,
+				second,
+				distance: (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt(),
+			}
+		})
+		.collect();
+
+	Ok(AnimationBonePositionComparison { differences })
+}
+
+fn validate_skeleton_layout(first: &Skeleton, second: &Skeleton) -> Result<(), AnimationComparisonError> {
+	if first.nodes.len() != second.nodes.len() {
+		return Err(AnimationComparisonError::SkeletonNodeCountMismatch {
+			first: first.nodes.len(),
+			second: second.nodes.len(),
+		});
+	}
+
+	for (node, (first, second)) in first.nodes.iter().zip(&second.nodes).enumerate() {
+		if first.name != second.name || first.parent != second.parent {
+			return Err(AnimationComparisonError::SkeletonLayoutMismatch { node });
+		}
+	}
+	Ok(())
+}
+
+/// Extracts translation from the row-major matrix slots used by [`local_matrix`].
+fn matrix_translation(matrix: &Matrix) -> [f32; 3] {
+	[matrix[3], matrix[7], matrix[11]]
+}
+
 /// Converts a blendable local transform into the matrix convention used by render pose updates.
 fn local_matrix(local: LocalTransform) -> Matrix {
 	let [x, y, z, w] = local.rotation;
@@ -239,11 +343,80 @@ impl std::fmt::Display for PoseError {
 
 impl std::error::Error for PoseError {}
 
+/// The `AnimationComparisonError` enum identifies invalid inputs to bone-position comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnimationComparisonError {
+	NonFiniteTime,
+	SkeletonNodeCountMismatch { first: usize, second: usize },
+	SkeletonLayoutMismatch { node: usize },
+}
+
+impl std::fmt::Display for AnimationComparisonError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::NonFiniteTime => write!(
+				formatter,
+				"Animation comparison time is invalid. The most likely cause is passing a non-finite sample time."
+			),
+			Self::SkeletonNodeCountMismatch { first, second } => write!(
+				formatter,
+				"Animation comparison skeletons have different node counts. The most likely cause is comparing clips from different rigs: {first} versus {second}."
+			),
+			Self::SkeletonLayoutMismatch { node } => write!(
+				formatter,
+				"Animation comparison skeleton layouts differ. The most likely cause is that node {node} has a different name or parent link."
+			),
+		}
+	}
+}
+
+impl std::error::Error for AnimationComparisonError {}
+
 #[cfg(test)]
 mod tests {
-	use resource_management::resources::animation::{QuaternionCurve, Vector3Curve};
+	use resource_management::{
+		resources::{
+			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+			skeleton::{LocalTransform, Skeleton, SkeletonNode},
+		},
+		Reference,
+	};
 
-	use super::{sample_rotation, sample_vector3};
+	use super::{compare_animation_bone_positions, sample_rotation, sample_vector3, AnimationComparisonError};
+
+	fn comparison_skeleton(child_name: &str) -> Skeleton {
+		Skeleton {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("root".to_string()),
+					parent: None,
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some(child_name.to_string()),
+					parent: Some(0),
+					rest_local: LocalTransform::identity(),
+				},
+			],
+		}
+	}
+
+	fn comparison_animation(skeleton: Skeleton, child_end_x: f32) -> Animation {
+		Animation {
+			name: None,
+			skeleton: Reference::in_memory("comparison-skeleton", skeleton),
+			duration: 1.0,
+			tracks: vec![NodeTrack {
+				node: 1,
+				translation: Some(Vector3Curve::Linear {
+					times: vec![0.0, 1.0],
+					values: vec![[0.0; 3], [child_end_x, 0.0, 0.0]],
+				}),
+				rotation: None,
+				scale: None,
+			}],
+		}
+	}
 
 	#[test]
 	fn linear_vector_sampling_clamps_and_interpolates() {
@@ -283,5 +456,34 @@ mod tests {
 			values: vec![[3.0; 3], [4.0; 3]],
 		};
 		assert_eq!(sample_vector3(&curve, 0.0), [3.0; 3]);
+	}
+
+	#[test]
+	fn compares_global_bone_positions_at_independent_times() {
+		let first = comparison_animation(comparison_skeleton("child"), 2.0);
+		let second = comparison_animation(comparison_skeleton("child"), 0.0);
+
+		let comparison = compare_animation_bone_positions(&first, 0.5, &second, 0.0).expect("comparison should succeed");
+		let child = comparison.largest_difference().expect("the child should differ");
+
+		assert_eq!(child.node, 1);
+		assert_eq!(child.first, [1.0, 0.0, 0.0]);
+		assert_eq!(child.second, [0.0, 0.0, 0.0]);
+		assert_eq!(child.distance, 1.0);
+	}
+
+	#[test]
+	fn rejects_incompatible_skeleton_layouts_and_non_finite_times() {
+		let first = comparison_animation(comparison_skeleton("child"), 1.0);
+		let second = comparison_animation(comparison_skeleton("other"), 1.0);
+
+		assert_eq!(
+			compare_animation_bone_positions(&first, 0.0, &second, 0.0),
+			Err(AnimationComparisonError::SkeletonLayoutMismatch { node: 1 })
+		);
+		assert_eq!(
+			compare_animation_bone_positions(&first, f32::NAN, &first, 0.0),
+			Err(AnimationComparisonError::NonFiniteTime)
+		);
 	}
 }

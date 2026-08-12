@@ -10,6 +10,7 @@ pub mod sync;
 pub mod r#async;
 pub mod bit_array;
 pub mod copy_fn;
+pub mod smoothed_value;
 pub mod stable_vec;
 pub mod stale_map;
 

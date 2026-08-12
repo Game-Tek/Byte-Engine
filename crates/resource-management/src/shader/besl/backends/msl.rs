@@ -1,3 +1,17 @@
+use std::{
+	alloc::{Allocator, Global},
+	cell::RefCell,
+	fmt::Write as _,
+	vec::Vec,
+};
+
+pub use Generator as MSLShaderGenerator;
+
+use crate::shader::generator::{
+	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in, MatrixLayouts, NodeEmitter, ShaderFormatting,
+	ShaderGenerationSettings, ShaderGenerator, Stages,
+};
+
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
 /// Raster-stage IO uses conventional BESL names for Metal semantics. Vertex inputs named
@@ -90,6 +104,18 @@ struct RasterStageContext {
 	has_resources: bool,
 }
 
+/// The `IntrinsicRequirements` struct records the generated helpers and Metal builtins a shader needs.
+#[derive(Default)]
+struct IntrinsicRequirements {
+	uses_atomic_compare_exchange: bool,
+	uses_sincos: bool,
+	uses_subgroup_intrinsics: bool,
+	uses_simd_lane_id: bool,
+	uses_downsample_min: bool,
+	uses_downsample_max: bool,
+	uses_render_target_array_index: bool,
+}
+
 struct ClassifiedNodes<'a, A: Allocator + Clone> {
 	bindings: Vec<&'a besl::NodeReference, A>,
 	inputs: Vec<&'a besl::NodeReference, A>,
@@ -180,7 +206,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				} => {
-					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+					intrinsic.borrow().get_name() == Some(intrinsic_name)
 						|| arguments
 							.iter()
 							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
@@ -188,9 +214,14 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Expressions::Operator { left, right, .. } => {
 					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
 				}
-				besl::Expressions::FunctionCall { parameters, .. } => parameters
-					.iter()
-					.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name)),
+				besl::Expressions::FunctionCall {
+					function, parameters, ..
+				} => {
+					Self::uses_intrinsic(function, intrinsic_name)
+						|| parameters
+							.iter()
+							.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name))
+				}
 				besl::Expressions::Expression { elements } => {
 					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
 				}
@@ -210,23 +241,101 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
-	fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-		const SUBGROUP_INTRINSICS: [&str; 8] = [
-			"subgroup_lane_index",
-			"subgroup_ballot",
-			"subgroup_ballot_any",
-			"subgroup_ballot_find_lsb",
-			"subgroup_ballot_count",
-			"subgroup_ballot_and_not",
-			"subgroup_broadcast_u32",
-			"subgroup_broadcast_f32",
-		];
-		order.iter().any(|node| {
-			SUBGROUP_INTRINSICS
-				.iter()
-				.any(|intrinsic| Self::uses_intrinsic(node, intrinsic))
-		})
+	/// Collects source requirements while walking emitted function bodies once instead of rescanning them for each helper.
+	fn collect_intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
+		fn record(requirements: &mut IntrinsicRequirements, name: &str) {
+			match name {
+				"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
+				"sincos" => requirements.uses_sincos = true,
+				"subgroup_lane_index" => {
+					requirements.uses_subgroup_intrinsics = true;
+					requirements.uses_simd_lane_id = true;
+				}
+				"subgroup_ballot"
+				| "subgroup_ballot_any"
+				| "subgroup_ballot_find_lsb"
+				| "subgroup_ballot_count"
+				| "subgroup_ballot_and_not"
+				| "subgroup_broadcast_u32"
+				| "subgroup_broadcast_f32" => requirements.uses_subgroup_intrinsics = true,
+				"downsample_min" => requirements.uses_downsample_min = true,
+				"downsample_max" => requirements.uses_downsample_max = true,
+				"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
+				_ => {}
+			}
+		}
+
+		fn visit(node: &besl::NodeReference, requirements: &mut IntrinsicRequirements) {
+			match node.borrow().node() {
+				besl::Nodes::Function { statements, .. } => {
+					for statement in statements {
+						visit(statement, requirements);
+					}
+				}
+				besl::Nodes::Conditional { condition, statements } => {
+					visit(condition, requirements);
+					for statement in statements {
+						visit(statement, requirements);
+					}
+				}
+				besl::Nodes::ForLoop {
+					initializer,
+					condition,
+					update,
+					statements,
+				} => {
+					visit(initializer, requirements);
+					visit(condition, requirements);
+					visit(update, requirements);
+					for statement in statements {
+						visit(statement, requirements);
+					}
+				}
+				besl::Nodes::Expression(expression) => match expression {
+					besl::Expressions::IntrinsicCall {
+						intrinsic, arguments, ..
+					} => {
+						if let Some(name) = intrinsic.borrow().get_name() {
+							record(requirements, name);
+						}
+						for argument in arguments {
+							visit(argument, requirements);
+						}
+					}
+					besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+						visit(left, requirements);
+						visit(right, requirements);
+					}
+					besl::Expressions::FunctionCall { parameters, .. } => {
+						for parameter in parameters {
+							visit(parameter, requirements);
+						}
+					}
+					besl::Expressions::Expression { elements } => {
+						for element in elements {
+							visit(element, requirements);
+						}
+					}
+					besl::Expressions::Macro { body, .. } => visit(body, requirements),
+					besl::Expressions::Member { source, .. } => visit(source, requirements),
+					besl::Expressions::Return { value } => {
+						if let Some(value) = value {
+							visit(value, requirements);
+						}
+					}
+					besl::Expressions::VariableDeclaration { .. }
+					| besl::Expressions::Literal { .. }
+					| besl::Expressions::Continue => {}
+				},
+				_ => {}
+			}
+		}
+
+		let mut requirements = IntrinsicRequirements::default();
+		for node in order {
+			visit(node, &mut requirements);
+		}
+		requirements
 	}
 
 	/// Detects whether a function's reachable AST needs backend resource parameters.
@@ -387,11 +496,13 @@ impl<A: Allocator + Clone> Generator<A> {
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
-		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
-		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
+		let intrinsic_requirements = Self::collect_intrinsic_requirements(&order);
+		if intrinsic_requirements.uses_subgroup_intrinsics
+			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })
+		{
 			return Err(());
 		}
-		Self::validate_reachable_binding_layout(&order)?;
+		Self::validate_reachable_binding_layout(&order, self.allocator.clone())?;
 		self.collect_packed_mat4x3_members(&order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
@@ -399,17 +510,16 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 		}
 
-		let mut string = String::with_capacity(2048);
+		let fallback_helper_capacity = if self.downsample_strategy == DownsampleStrategy::ShaderGather
+			&& (intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max)
+		{
+			4096
+		} else {
+			0
+		};
+		let mut string = String::with_capacity(2048 + fallback_helper_capacity);
 
-		let uses_atomic_compare_exchange = order.iter().any(|node| Self::uses_intrinsic(node, "atomic_compare_exchange"));
-		let uses_sincos = order.iter().any(|node| Self::uses_intrinsic(node, "sincos"));
-		self.generate_msl_header_block(
-			&mut string,
-			shader_compilation_settings,
-			uses_atomic_compare_exchange,
-			uses_sincos,
-			uses_subgroup_intrinsics,
-		);
+		self.generate_msl_header_block(&mut string, shader_compilation_settings, &intrinsic_requirements);
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(&order) => {
@@ -418,7 +528,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			Stages::Fragment if Self::has_raster_interface(&order) || Self::has_non_void_return(main_function_node) => {
 				self.generate_fragment_shader(&mut string, &order, main_function_node)
 			}
-			Stages::Compute { .. } => self.generate_compute_shader(&mut string, &order, main_function_node),
+			Stages::Compute { .. } => self.generate_compute_shader(
+				&mut string,
+				&order,
+				main_function_node,
+				intrinsic_requirements.uses_simd_lane_id,
+			),
 			Stages::Task {
 				maximum_mesh_threadgroups,
 				..
@@ -427,7 +542,14 @@ impl<A: Allocator + Clone> Generator<A> {
 				maximum_vertices,
 				maximum_primitives,
 				..
-			} => self.generate_mesh_shader(&mut string, &order, main_function_node, maximum_vertices, maximum_primitives),
+			} => self.generate_mesh_shader(
+				&mut string,
+				&order,
+				main_function_node,
+				maximum_vertices,
+				maximum_primitives,
+				intrinsic_requirements.uses_render_target_array_index,
+			),
 			_ => {
 				for node in order {
 					self.emit_node_string(&mut string, &node);
@@ -658,25 +780,27 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Validates logical flat-slot intervals and the packed Metal argument-ID space before source emission.
-	fn validate_reachable_binding_layout(order: &[besl::NodeReference]) -> Result<(), ()> {
-		let mut dense_argument_end = 0u32;
+	fn validate_reachable_binding_layout(order: &[besl::NodeReference], allocator: A) -> Result<(), ()> {
+		let mut dense_argument_count = 0u32;
+		let binding_count = order
+			.iter()
+			.filter(|node| matches!(node.borrow().node(), besl::Nodes::Binding { .. }))
+			.count();
+		let mut ranges = Vec::with_capacity_in(binding_count, allocator);
 
-		for (index, binding) in order.iter().enumerate() {
+		for binding in order {
 			let Some((start, end, dense_count)) = Self::binding_layout(binding)? else {
 				continue;
 			};
 
-			dense_argument_end = dense_argument_end.checked_add(dense_count).ok_or(())?;
+			dense_argument_count = dense_argument_count.checked_add(dense_count).ok_or(())?;
+			ranges.push((start, end));
+		}
 
-			// Graph construction already removes repeated references, so any overlapping node here is a distinct declaration.
-			for other in &order[index + 1..] {
-				let Some((other_start, other_end, _)) = Self::binding_layout(other)? else {
-					continue;
-				};
-				if start < other_end && other_start < end {
-					return Err(());
-				}
-			}
+		// After sorting, adjacent ranges are enough to detect every overlap.
+		ranges.sort_unstable_by_key(|(start, _)| *start);
+		if ranges.windows(2).any(|ranges| ranges[1].0 < ranges[0].1) {
+			return Err(());
 		}
 
 		Ok(())
@@ -1210,6 +1334,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		string: &mut String,
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
+		uses_simd_lane_id: bool,
 	) {
 		let nodes = self.classify_nodes(order);
 		self.emit_declarations(string, &nodes.declarations);
@@ -1267,6 +1392,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					!bindings.is_empty(),
 					nodes.push_constant,
 					&nodes.workgroups,
+					uses_simd_lane_id,
 				);
 			}
 			ComputeBindingMode::BareResources => {
@@ -1276,6 +1402,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					nodes.bindings.as_slice(),
 					nodes.push_constant,
 					&nodes.workgroups,
+					uses_simd_lane_id,
 				);
 			}
 		}
@@ -1357,6 +1484,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
+		uses_render_target_array_index: bool,
 	) {
 		let nodes = self.classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
@@ -1382,9 +1510,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
-			uses_render_target_array_index: order
-				.iter()
-				.any(|node| Self::uses_intrinsic(node, "set_mesh_primitive_render_target_array_index")),
+			uses_render_target_array_index,
 			primitive_output_fields,
 			maximum_vertices,
 			maximum_primitives,
@@ -1491,7 +1617,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	fn sort_bindings_by_slot<'a>(&self, bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference, A> {
 		let mut sorted = Vec::with_capacity_in(bindings.len(), self.allocator.clone());
 		sorted.extend_from_slice(bindings);
-		sorted.sort_by_key(|binding| match binding.borrow().node() {
+		sorted.sort_unstable_by_key(|binding| match binding.borrow().node() {
 			besl::Nodes::Binding { slot, .. } => *slot,
 			_ => u32::MAX,
 		});
@@ -1679,6 +1805,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		bindings: &[&besl::NodeReference],
 		push_constant: Option<&besl::NodeReference>,
 		workgroups: &[&besl::NodeReference],
+		uses_simd_lane_id: bool,
 	) {
 		let node = RefCell::borrow(main_function_node);
 
@@ -1700,8 +1827,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
-		self.emit_separator(string);
-		string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
+		if uses_simd_lane_id {
+			self.emit_separator(string);
+			string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
+		}
 		if !workgroups.is_empty() {
 			self.emit_separator(string);
 			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -1736,6 +1865,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
 		workgroups: &[&besl::NodeReference],
+		uses_simd_lane_id: bool,
 	) {
 		let node = RefCell::borrow(main_function_node);
 
@@ -1757,8 +1887,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
-		self.emit_separator(string);
-		string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
+		if uses_simd_lane_id {
+			self.emit_separator(string);
+			string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
+		}
 		if !workgroups.is_empty() {
 			self.emit_separator(string);
 			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
@@ -2250,7 +2382,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("out_mesh");
 	}
 
-	fn emit_compute_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
+	fn emit_compute_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool, uses_simd_lane_id: bool) {
 		if self.mesh_stage_context.is_some() {
 			self.emit_mesh_hidden_parameters(string, has_previous_parameter);
 			return;
@@ -2271,6 +2403,11 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push_str("uint2 gid");
 		has_previous_parameter = true;
+
+		if uses_simd_lane_id {
+			self.emit_separator(string);
+			string.push_str("uint simd_lane_id");
+		}
 
 		if compute_stage_context.has_push_constant {
 			self.emit_separator(string);
@@ -2324,7 +2461,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	fn emit_compute_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
+	fn emit_compute_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool, uses_simd_lane_id: bool) {
 		if self.mesh_stage_context.is_some() {
 			self.emit_mesh_hidden_call_arguments(string, has_previous_parameter);
 			return;
@@ -2345,6 +2482,11 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push_str("gid");
 		has_previous_parameter = true;
+
+		if uses_simd_lane_id {
+			self.emit_separator(string);
+			string.push_str("simd_lane_id");
+		}
 
 		if compute_stage_context.has_push_constant {
 			self.emit_separator(string);
@@ -2415,8 +2557,11 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		if self.task_stage_context.is_some() {
 			self.emit_task_hidden_parameters(string, !params.is_empty());
-		} else if self.in_compute_body && self.function_requires_resource_context(function_node, true) {
-			self.emit_compute_hidden_parameters(string, !params.is_empty());
+		} else if self.in_compute_body {
+			let uses_simd_lane_id = Self::uses_intrinsic(function_node, "subgroup_lane_index");
+			if uses_simd_lane_id || self.function_requires_resource_context(function_node, true) {
+				self.emit_compute_hidden_parameters(string, !params.is_empty(), uses_simd_lane_id);
+			}
 		} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false) {
 			self.emit_raster_hidden_parameters(string, !params.is_empty());
 		}
@@ -2438,7 +2583,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let [index, array_index] = arguments.as_slice() else {
 				return None;
 			};
-			if intrinsic.borrow().get_name().as_deref() == Some("set_mesh_primitive_render_target_array_index") {
+			if intrinsic.borrow().get_name() == Some("set_mesh_primitive_render_target_array_index") {
 				return Some(("render_target_array_index".to_string(), index.clone(), array_index.clone()));
 			}
 			return None;
@@ -2910,19 +3055,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str("})");
 			}
 			"set_mesh_triangle" => {
-				string.push_str("out_mesh.set_index(");
+				// Materialize each argument once because Metal needs three index writes for one triangle.
+				string.push_str("{uint _besl_triangle_index=");
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str(" * 3 + 0, ");
+				string.push_str(";uint3 _besl_triangle=");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(".x);out_mesh.set_index(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(" * 3 + 1, ");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(".y);out_mesh.set_index(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(" * 3 + 2, ");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(".z)");
+				string.push_str(";out_mesh.set_index(_besl_triangle_index*3+0,_besl_triangle.x);out_mesh.set_index(_besl_triangle_index*3+1,_besl_triangle.y);out_mesh.set_index(_besl_triangle_index*3+2,_besl_triangle.z);}");
 			}
 			"set_mesh_primitive_render_target_array_index" => {
 				string.push_str("out_mesh.set_primitive(");
@@ -3295,15 +3433,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		&self,
 		msl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
-		uses_atomic_compare_exchange: bool,
-		uses_sincos: bool,
-		uses_subgroup_intrinsics: bool,
+		requirements: &IntrinsicRequirements,
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
-		// Metal gather has no explicit-LOD overload. Use it for mip zero and preserve explicit
-		// pyramid levels with four reads. Native reduction remains a generator strategy choice.
-		msl_block.push_str(
+		if self.downsample_strategy == DownsampleStrategy::ShaderGather
+			&& (requirements.uses_downsample_min || requirements.uses_downsample_max)
+		{
+			// Metal gather has no explicit-LOD overload. Use it for mip zero and preserve explicit
+			// pyramid levels with four reads. Native reduction needs no fallback source.
+			msl_block.push_str(
 			"inline float _besl_downsample_min(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
 			 \tfloat4 samples;\n\
 			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, int2(0), component::x); }\n\
@@ -3317,14 +3456,15 @@ impl<A: Allocator + Clone> Generator<A> {
 			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
 			 }\n",
 		);
-		msl_block.push_str(
+			msl_block.push_str(
 			"inline float _besl_downsample_max(texture2d_array<float> texture, sampler texture_sampler, float2 uv, uint layer, float lod) {\n\
 			 \tfloat4 samples;\n\
 			 \tif (lod < 0.5) { samples = texture.gather(texture_sampler, uv, layer, int2(0), component::x); }\n\
 			 \telse { uint level = uint(lod); uint2 extent(texture.get_width(level), texture.get_height(level)); int2 base = int2(floor(uv * float2(extent) - 0.5)); uint2 a = uint2(clamp(base, int2(0), int2(extent) - 1)); uint2 b = uint2(clamp(base + int2(1, 0), int2(0), int2(extent) - 1)); uint2 c = uint2(clamp(base + int2(0, 1), int2(0), int2(extent) - 1)); uint2 d = uint2(clamp(base + int2(1), int2(0), int2(extent) - 1)); samples = float4(texture.read(a, layer, level).x, texture.read(b, layer, level).x, texture.read(c, layer, level).x, texture.read(d, layer, level).x); }\n\
 			 \treturn metal::max(metal::max(samples.x, samples.y), metal::max(samples.z, samples.w));\n\
 			 }\n",
-		);
+			);
+		}
 		if !self.packed_mat4x3_members.is_empty() {
 			// MSL has no packed matrix type. Keep native float4x3 values in expressions and
 			// convert only where a logical mat4x3f crosses a buffer-storage boundary.
@@ -3338,7 +3478,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				 inline void _besl_store_mat4x3(device _besl_packed_float4x3& target, float4x3 value) { target.columns[0] = packed_float3(value[0]); target.columns[1] = packed_float3(value[1]); target.columns[2] = packed_float3(value[2]); target.columns[3] = packed_float3(value[3]); }\n",
 			);
 		}
-		if uses_atomic_compare_exchange {
+		if requirements.uses_atomic_compare_exchange {
 			// Metal returns compare-exchange success as a bool, so these helpers preserve BESL's previous-value contract.
 			msl_block.push_str(
 				"inline uint _besl_atomic_compare_exchange(device atomic_uint& value, uint expected, uint desired) {\n\
@@ -3357,7 +3497,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				 }\n",
 			);
 		}
-		if uses_sincos {
+		if requirements.uses_sincos {
 			// Metal's two-result intrinsic returns sine and writes cosine through the second argument.
 			msl_block.push_str(
 				"inline float2 _besl_sincos(float value) {\n\
@@ -3367,7 +3507,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				 }\n",
 			);
 		}
-		if uses_subgroup_intrinsics {
+		if requirements.uses_subgroup_intrinsics {
 			// Metal exposes ballot bits through simd_vote; unused high words preserve BESL's fixed 128-bit mask shape.
 			msl_block.push_str(
 				"inline uint4 _besl_subgroup_ballot(bool predicate) { ulong vote = ulong(simd_vote::vote_t(simd_ballot(predicate))); return uint4(uint(vote), uint(vote >> 32), 0u, 0u); }\n\
@@ -3447,8 +3587,11 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	) {
 		if self.task_stage_context.is_some() && name != "main" {
 			self.emit_task_hidden_parameters(string, has_previous_parameter);
-		} else if self.in_compute_body && self.function_requires_resource_context(node, true) {
-			self.emit_compute_hidden_parameters(string, has_previous_parameter);
+		} else if self.in_compute_body {
+			let uses_simd_lane_id = Self::uses_intrinsic(node, "subgroup_lane_index");
+			if uses_simd_lane_id || self.function_requires_resource_context(node, true) {
+				self.emit_compute_hidden_parameters(string, has_previous_parameter, uses_simd_lane_id);
+			}
 		} else if self.raster_stage_context.is_some() && name != "main" && self.function_requires_resource_context(node, false)
 		{
 			self.emit_raster_hidden_parameters(string, has_previous_parameter);
@@ -3470,8 +3613,11 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		if matches!(function_node.node(), besl::Nodes::Function { name, .. } if name != "main") {
 			if self.task_stage_context.is_some() {
 				self.emit_task_hidden_call_arguments(string, has_previous_argument);
-			} else if self.in_compute_body && self.function_requires_resource_context(function, true) {
-				self.emit_compute_hidden_call_arguments(string, has_previous_argument);
+			} else if self.in_compute_body {
+				let uses_simd_lane_id = Self::uses_intrinsic(function, "subgroup_lane_index");
+				if uses_simd_lane_id || self.function_requires_resource_context(function, true) {
+					self.emit_compute_hidden_call_arguments(string, has_previous_argument, uses_simd_lane_id);
+				}
 			} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function, false) {
 				self.emit_raster_hidden_call_arguments(string, has_previous_argument);
 			}
@@ -3863,6 +4009,27 @@ mod tests {
 			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
+		assert!(
+			!shader.contains("_besl_downsample_"),
+			"Native sampler reduction must not emit unused gather fallback helpers: {shader}"
+		);
+	}
+
+	#[test]
+	fn unused_shader_gather_fallback_helpers_are_not_emitted() {
+		let shader = Generator::new()
+			.minified(true)
+			.downsample_strategy(DownsampleStrategy::ShaderGather)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+				&generator::tests::bindings(),
+			)
+			.expect("Expected MSL without downsampling to generate");
+
+		assert!(
+			!shader.contains("_besl_downsample_"),
+			"Unused shader-gather fallbacks increased generated MSL size: {shader}"
+		);
 	}
 
 	#[compio::test]
@@ -4320,6 +4487,40 @@ mod tests {
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 		assert_string_contains!(shader, "threadgroup uint scratch[1]");
+	}
+
+	#[test]
+	fn subgroup_lane_id_is_forwarded_only_to_helpers_that_use_it() {
+		let root = besl::compile_to_besl(
+			r#"
+			lane: fn () -> u32 {
+				return subgroup_lane_index();
+			}
+			ordinary: fn () -> u32 {
+				return 1;
+			}
+			main: fn () -> void {
+				let lane_index: u32 = lane();
+				if (lane_index == ordinary()) {
+					lane_index;
+				}
+			}
+		"#,
+			None,
+		)
+		.expect("Expected subgroup helper fixture to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(32)),
+				&root.get_main().expect("Expected subgroup helper main function"),
+			)
+			.expect("Expected subgroup helper MSL generation");
+
+		assert_string_contains!(shader, "uint lane(uint2 gid,uint simd_lane_id)");
+		assert_string_contains!(shader, "lane(gid,simd_lane_id)");
+		assert_string_contains!(shader, "uint ordinary()");
+		assert_string_contains!(shader, "uint simd_lane_id [[thread_index_in_simdgroup]]");
 	}
 
 	#[test]
@@ -5194,9 +5395,15 @@ struct PrimitiveOutput {
 			shader,
 			"out_mesh.set_vertex(0, VertexOutput{.position = float4(1.0,2.0,3.0,1.0)})"
 		);
+		assert_string_contains!(shader, "uint _besl_triangle_index=0;uint3 _besl_triangle=uint3(0,1,2)");
 		assert_string_contains!(
 			shader,
-			"out_mesh.set_index(0 * 3 + 0, uint3(0,1,2).x);out_mesh.set_index(0 * 3 + 1, uint3(0,1,2).y);out_mesh.set_index(0 * 3 + 2, uint3(0,1,2).z)"
+			"out_mesh.set_index(_besl_triangle_index*3+0,_besl_triangle.x);out_mesh.set_index(_besl_triangle_index*3+1,_besl_triangle.y);out_mesh.set_index(_besl_triangle_index*3+2,_besl_triangle.z)"
+		);
+		assert_eq!(
+			shader.matches("uint3(0,1,2)").count(),
+			1,
+			"Mesh triangle vectors must be evaluated once: {shader}"
 		);
 	}
 
@@ -5567,17 +5774,3 @@ struct PrimitiveOutput {
 		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
 	}
 }
-
-use std::{
-	alloc::{Allocator, Global},
-	cell::RefCell,
-	fmt::Write as _,
-	vec::Vec,
-};
-
-pub use Generator as MSLShaderGenerator;
-
-use crate::shader::generator::{
-	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in, MatrixLayouts, NodeEmitter, ShaderFormatting,
-	ShaderGenerationSettings, ShaderGenerator, Stages,
-};

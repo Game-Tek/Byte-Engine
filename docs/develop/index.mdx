@@ -41,11 +41,21 @@ This Divan report compares callback-time evaluation for direct playback,
 sample-rate conversion, custom processing, and pitch shifting. Graph setup,
 sample loading, and buffer allocation happen before each measured loop.
 
-To check that this benchmark target builds and starts without collecting timing
-data, run:
+To compare animation graph playback and inertialized transitions across
+different skeleton sizes, run:
 
 ```bash
-cargo bench -p byte-engine --bench audio_graph -- --test
+cargo bench -p byte-engine --bench animation_graph
+```
+
+This benchmark also prepares graphs, resident clips, and retained pose buffers
+before each measured loop.
+
+To check that one benchmark target builds and starts without collecting timing
+data, pass `--test` to Divan. For example:
+
+```bash
+cargo bench -p byte-engine --bench animation_graph -- --test
 ```
 
 ## Measure code coverage

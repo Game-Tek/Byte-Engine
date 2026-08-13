@@ -608,6 +608,8 @@ use resource_management::{
 	},
 	Reference,
 };
+#[doc(hidden)]
+pub use runtime::benchmarks;
 pub use runtime::{
 	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, AnimationLoadWorker, AnimationPool,
 	AnimationPoolConfig, AnimationPoolEvent, AnimationPoolRequest, RootMotionRotation, RootMotionSettings,

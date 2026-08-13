@@ -27,6 +27,10 @@ dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [[bench]]
+name = "animation_graph"
+harness = false
+
+[[bench]]
 name = "audio_graph"
 harness = false
 required-features = ["headed"]

@@ -486,6 +486,9 @@ impl AnimationLoadWorker {
 
 mod player;
 
+#[doc(hidden)]
+pub mod benchmarks;
+
 pub use player::{
 	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, RootMotionRotation, RootMotionSettings,
 	RootMotionTranslation,

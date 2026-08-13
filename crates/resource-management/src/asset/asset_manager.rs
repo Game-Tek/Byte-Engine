@@ -1069,5 +1069,9 @@ use super::{
 	StorageBackend,
 };
 use crate::{
-	Model, ProcessedAsset, ReferenceModel, asset::{self, DynStorageBackend, ResourceId, asset_handler::LoadErrors}, r#async::BoxedFuture, online_docs_url, resource::{self, StorageBackend as ResourceStorageBackend}
+	asset::{self, asset_handler::LoadErrors, DynStorageBackend, ResourceId},
+	online_docs_url,
+	r#async::BoxedFuture,
+	resource::{self, StorageBackend as ResourceStorageBackend},
+	Model, ProcessedAsset, ReferenceModel,
 };

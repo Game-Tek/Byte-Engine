@@ -48,22 +48,15 @@ struct LocomotionInput {
 /// Builds the reusable graph once during application setup.
 fn locomotion_graph() -> AnimationGraph<LocomotionInput> {
 	let mut builder = AnimationGraph::builder();
-	let idle = builder.state("idle", AnimationClip::looping(IDLE_ANIMATION));
-	let walk = builder.state("walk", AnimationClip::looping(WALK_ANIMATION));
+	let idle = builder.state("idle").with(AnimationClip::looping(IDLE_ANIMATION));
+	let walk = builder.state("walk").with(AnimationClip::looping(WALK_ANIMATION));
 
 	// The player checks transitions in authoring order. Each transition keeps the
 	// current clip visible while its target clip loads in the shared pool.
-	builder
-		.transition(
-			idle,
-			walk,
-			AnimationTransition::when(|input: &LocomotionInput| input.moving).inertialize(MediaTime::from_millis(150)),
-		)
-		.transition(
-			walk,
-			idle,
-			AnimationTransition::when(|input: &LocomotionInput| !input.moving).inertialize(MediaTime::from_millis(150)),
-		);
+	idle.to(walk)
+		.when(AnimationTransition::when(|input: &LocomotionInput| input.moving).inertialize(MediaTime::from_millis(150)));
+	walk.to(idle)
+		.when(AnimationTransition::when(|input: &LocomotionInput| !input.moving).inertialize(MediaTime::from_millis(150)));
 
 	builder
 		.build(idle)

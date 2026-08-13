@@ -311,6 +311,21 @@ impl<'builder, I> AnimationGraphState<'builder, I> {
 }
 
 impl<'builder, I> AnimationGraphTransitionBuilder<'builder, I> {
+	/// Adds a direct transition without playing an intermediate clip.
+	///
+	/// The returned handle is the target state, so it can start another fluent
+	/// transition when that keeps the graph definition easier to read.
+	pub fn when(self, transition: AnimationTransition<I>) -> AnimationGraphState<'builder, I> {
+		let mut builder = self.source.data.borrow_mut();
+		let builder = builder.as_mut().expect("the animation graph has already been built");
+		builder.transitions.push(PendingStateTransition {
+			source: self.source.id,
+			target: self.target.id,
+			transition,
+		});
+		self.target
+	}
+
 	/// Assigns the one-shot clip played between the source and target states.
 	pub fn with(self, clip: AnimationClip) -> AnimationGraphTransitionConditionBuilder<'builder, I> {
 		AnimationGraphTransitionConditionBuilder {
@@ -620,14 +635,12 @@ mod tests {
 		let builder = AnimationGraph::<bool>::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
-		idle.to(walk)
-			.with(AnimationClip::once("start.animation"))
-			.when(AnimationTransition::when(|input| *input));
+		idle.to(walk).when(AnimationTransition::when(|input| *input));
 		idle.to(idle)
 			.with(AnimationClip::once("restart.animation"))
 			.when(AnimationTransition::always().inertialize(MediaTime::from_millis(100)));
 		let graph = builder.build(idle).expect("expected graph value");
-		assert_eq!(graph.state_count(), 4);
+		assert_eq!(graph.state_count(), 3);
 		assert_eq!(graph.state(idle.id).transitions.len(), 2);
 
 		let invalid = AnimationGraph::<()>::builder();

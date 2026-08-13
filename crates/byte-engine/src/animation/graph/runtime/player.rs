@@ -813,7 +813,7 @@ mod tests {
 		let builder = AnimationGraph::<bool>::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let run = builder.state("run").with(AnimationClip::looping("run.animation"));
-		builder.transition(idle.id, run.id, AnimationTransition::when(|running| *running));
+		idle.to(run).when(AnimationTransition::when(|running| *running));
 		let graph = builder.build(idle).expect("graph should build");
 		let mut player =
 			AnimationGraphPlayer::new(&graph, &target, Some(RootMotionSettings::full("root"))).expect("player should build");

@@ -10,7 +10,11 @@ pub trait StorageBackend: Send + Sync {
 	}
 
 	/// Resolves an asset while using the provided allocator for source bytes.
-	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> impl Future<Output = ResolveResult<'a>> + 'a {
+	fn resolve_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> impl Future<Output = ResolveResult<'a>> + 'a {
 		read_asset_from_source(url, None, allocator)
 	}
 
@@ -493,7 +497,12 @@ pub mod tests {
 }
 
 use std::{
-	alloc::Allocator, future::Future, hash::Hasher, ops::Deref, path::{Path, PathBuf}, time::UNIX_EPOCH
+	alloc::Allocator,
+	future::Future,
+	hash::Hasher,
+	ops::Deref,
+	path::{Path, PathBuf},
+	time::UNIX_EPOCH,
 };
 
 use gxhash::GxHasher;

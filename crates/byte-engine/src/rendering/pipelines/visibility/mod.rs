@@ -239,6 +239,7 @@ mod tests {
 	const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
 	const MESH_DISPATCH_WORK_SLOT: ResourceSlot = ResourceSlot::new(1063);
 	const VERTEX_POSITIONS_SLOT: ResourceSlot = ResourceSlot::new(2);
+	const VERTEX_UVS_SLOT: ResourceSlot = ResourceSlot::new(5);
 	const SKINNED_VERTICES_SLOT: ResourceSlot = ResourceSlot::new(4);
 	const VERTEX_INDICES_SLOT: ResourceSlot = ResourceSlot::new(6);
 	const PRIMITIVE_INDICES_SLOT: ResourceSlot = ResourceSlot::new(7);
@@ -725,6 +726,7 @@ mod tests {
 		besl::vm::Buffer,
 		besl::vm::Buffer,
 		besl::vm::Buffer,
+		besl::vm::Buffer,
 	) {
 		let mut views = buffer(program, VIEWS_SLOT);
 		views
@@ -760,6 +762,12 @@ mod tests {
 				.expect("Failed to initialize a mesh vertex. The most likely cause is a drifted position layout.");
 		}
 		let skinned_vertices = buffer(program, SKINNED_VERTICES_SLOT);
+		let mut vertex_uvs = buffer(program, VERTEX_UVS_SLOT);
+		for index in 0..3 {
+			vertex_uvs
+				.write_indexed("uvs", index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+				.expect("Failed to initialize a mesh UV. The most likely cause is a drifted VertexUVs layout.");
+		}
 
 		let mut vertex_indices = buffer(program, VERTEX_INDICES_SLOT);
 		let mut primitive_indices = buffer(program, PRIMITIVE_INDICES_SLOT);
@@ -789,6 +797,7 @@ mod tests {
 			meshes,
 			positions,
 			skinned_vertices,
+			vertex_uvs,
 			vertex_indices,
 			primitive_indices,
 			meshlets,
@@ -809,6 +818,7 @@ mod tests {
 			mut meshes,
 			mut positions,
 			mut skinned_vertices,
+			mut vertex_uvs,
 			mut vertex_indices,
 			mut primitive_indices,
 			mut meshlets,
@@ -859,6 +869,7 @@ mod tests {
 
 		let mut out_instance_indices = buffer(&program, output_slot(0));
 		let mut out_primitive_indices = buffer(&program, output_slot(1));
+		let mut out_uvs = buffer(&program, output_slot(2));
 		let mut mesh_outputs = MeshOutputs::new();
 		{
 			let mut descriptors = DescriptorBindings::new();
@@ -872,12 +883,14 @@ mod tests {
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 			descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
+			descriptors.bind_buffer(VERTEX_UVS_SLOT, &mut vertex_uvs);
 			descriptors.bind_buffer(SKINNED_VERTICES_SLOT, &mut skinned_vertices);
 			descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut vertex_indices);
 			descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut primitive_indices);
 			descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
 			descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
 			descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
+			descriptors.bind_buffer(output_slot(2), &mut out_uvs);
 			descriptors.bind_push_constant(&mut push_constant);
 			descriptors.bind_mesh_outputs(&mut mesh_outputs);
 

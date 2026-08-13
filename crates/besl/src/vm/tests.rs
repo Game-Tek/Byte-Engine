@@ -94,6 +94,45 @@ fn executable_program_runs_main_and_writes_a_bound_buffer_member() {
 }
 
 #[test]
+fn discard_terminates_the_current_invocation_across_function_calls() {
+	let script = r#"
+	discard_after_write: fn () -> void {
+		buff.value = 1.0;
+		discard;
+		buff.value = 2.0;
+	}
+
+	main: fn () -> void {
+		buff.value = 3.0;
+		discard_after_write();
+		buff.value = 4.0;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let float_type = root.get_child("f32").expect("Expected f32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("value", float_type).into()],
+			},
+			0,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(0);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 1.0);
+}
+
+#[test]
 fn executable_program_reads_locals_before_writing_to_a_bound_buffer_member() {
 	let script = r#"
 	main: fn () -> void {

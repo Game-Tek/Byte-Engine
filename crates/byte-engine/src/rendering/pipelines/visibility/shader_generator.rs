@@ -232,7 +232,8 @@ fn collect_material_expression_features(
 		besl::parser::Expressions::Literal { .. }
 		| besl::parser::Expressions::VariableDeclaration { .. }
 		| besl::parser::Expressions::RawCode { .. }
-		| besl::parser::Expressions::Continue => {}
+		| besl::parser::Expressions::Continue
+		| besl::parser::Expressions::Discard => {}
 	}
 }
 
@@ -366,7 +367,8 @@ fn narrow_material_property_assignment_expression(expression: &mut besl::parser:
 		| besl::parser::Expressions::Literal { .. }
 		| besl::parser::Expressions::VariableDeclaration { .. }
 		| besl::parser::Expressions::RawCode { .. }
-		| besl::parser::Expressions::Continue => {}
+		| besl::parser::Expressions::Continue
+		| besl::parser::Expressions::Discard => {}
 	}
 }
 
@@ -462,7 +464,8 @@ fn add_material_sample_context_to_expression(expression: &mut besl::parser::Expr
 		| besl::parser::Expressions::Literal { .. }
 		| besl::parser::Expressions::VariableDeclaration { .. }
 		| besl::parser::Expressions::RawCode { .. }
-		| besl::parser::Expressions::Continue => {}
+		| besl::parser::Expressions::Continue
+		| besl::parser::Expressions::Discard => {}
 	}
 }
 
@@ -1676,7 +1679,16 @@ impl VisibilityShaderScope {
 				Node::member("shadow_layer", "u32"),
 			],
 		);
-		let material_struct = Node::r#struct("Material", vec![Node::member("textures", material_texture_array_type())]);
+		let material_struct = Node::r#struct(
+			"Material",
+			vec![
+				Node::member("textures", material_texture_array_type()),
+				Node::member("coverage_factor", "f32"),
+				Node::member("coverage_texture_slot", "u32"),
+				Node::member("alpha_cutoff", "f32"),
+				Node::member("padding", "u32"),
+			],
+		);
 
 		let views_binding = Node::constant_buffer_binding(
 			"views",
@@ -2121,7 +2133,8 @@ mod tests {
 			besl::parser::Expressions::Member { .. }
 			| besl::parser::Expressions::Literal { .. }
 			| besl::parser::Expressions::VariableDeclaration { .. }
-			| besl::parser::Expressions::Continue => false,
+			| besl::parser::Expressions::Continue
+			| besl::parser::Expressions::Discard => false,
 		}
 	}
 

@@ -200,6 +200,7 @@ impl VisibilityPipelineResourceManager {
 		id: String,
 		index: u32,
 		alpha_mode: AlphaMode,
+		coverage: resource_management::resources::material::MaterialCoverage,
 		texture_keys: Vec<Option<VisibilityTextureKey>>,
 		pipeline: crate::rendering::PipelineRef,
 	) {
@@ -217,6 +218,7 @@ impl VisibilityPipelineResourceManager {
 			index,
 			pipeline,
 			alpha_mode,
+			coverage,
 			textures,
 		});
 	}
@@ -676,6 +678,7 @@ impl VisibilityPipelineResourceManager {
 						})
 						.collect::<Vec<_>>();
 					let material = variant.material.resource_mut();
+					let coverage = material.coverage;
 					if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 						log::error!(
 							"Unsupported visibility material model for {}. The most likely cause is that this material targets a different render model or pass.",
@@ -704,6 +707,7 @@ impl VisibilityPipelineResourceManager {
 						id: id.clone(),
 						index,
 						alpha_mode,
+						coverage,
 						texture_keys,
 						pipeline,
 					})
@@ -1153,11 +1157,12 @@ impl VisibilityPipelineResourceManagerWorker {
 				id,
 				index,
 				alpha_mode,
+				coverage,
 				texture_keys,
 				pipeline,
 			} => {
 				self.resource_manager
-					.adopt_prepared_material(id, index, alpha_mode, texture_keys, pipeline);
+					.adopt_prepared_material(id, index, alpha_mode, coverage, texture_keys, pipeline);
 			}
 			VisibilityTransferCommand::RequestImage { key } => {
 				let (index, inserted) = self.resource_manager.reserve_texture_slot(key.as_str());
@@ -1364,6 +1369,7 @@ pub(crate) enum VisibilityResourceCompletion {
 		index: u32,
 		pipeline: crate::rendering::PipelineRef,
 		alpha_mode: AlphaMode,
+		coverage: resource_management::resources::material::MaterialCoverage,
 		textures: Vec<Option<(String, u32)>>,
 	},
 	ImageReady {
@@ -1410,6 +1416,7 @@ pub(crate) enum VisibilityTransferCommand {
 		id: String,
 		index: u32,
 		alpha_mode: AlphaMode,
+		coverage: resource_management::resources::material::MaterialCoverage,
 		texture_keys: Vec<Option<VisibilityTextureKey>>,
 		pipeline: crate::rendering::PipelineRef,
 	},

@@ -150,6 +150,7 @@ fn collect_called_functions_in_expression(
 		}
 		Expressions::Macro { body, .. } => collect_called_functions(body, functions, visited),
 		Expressions::Continue
+		| Expressions::Discard
 		| Expressions::Literal { .. }
 		| Expressions::Member { .. }
 		| Expressions::VariableDeclaration { .. } => {}
@@ -204,7 +205,7 @@ fn cull_unreachable_statements_in_nested_block(statement: &NodeReference, report
 fn is_block_terminator(statement: &NodeReference) -> bool {
 	matches!(
 		cloned_node(statement),
-		Nodes::Expression(Expressions::Return { .. } | Expressions::Continue)
+		Nodes::Expression(Expressions::Return { .. } | Expressions::Continue | Expressions::Discard)
 	)
 }
 
@@ -330,7 +331,10 @@ fn uses_declaration_in_expression(expression: &Expressions, declaration: &NodeRe
 			node_uses_declaration(left, declaration, visited) || node_uses_declaration(right, declaration, visited)
 		}
 		Expressions::Macro { body, .. } => node_uses_declaration(body, declaration, visited),
-		Expressions::Continue | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } => false,
+		Expressions::Continue
+		| Expressions::Discard
+		| Expressions::Literal { .. }
+		| Expressions::VariableDeclaration { .. } => false,
 	}
 }
 
@@ -423,7 +427,7 @@ impl EffectAnalysis {
 
 	fn is_pure_expression(&mut self, expression: &Expressions) -> bool {
 		match expression {
-			Expressions::Continue => false,
+			Expressions::Continue | Expressions::Discard => false,
 			Expressions::Return { value } => value.as_ref().is_none_or(|value| self.is_pure(value)),
 			Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } => true,
 			Expressions::Expression { elements } => elements.iter().all(|element| self.is_pure(element)),

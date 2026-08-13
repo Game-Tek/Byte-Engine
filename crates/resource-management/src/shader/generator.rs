@@ -514,6 +514,10 @@ pub(crate) trait NodeEmitter {
 		ShaderFormatting::new(self.minified()).push_statement_end(string);
 	}
 
+	fn emit_discard(&mut self, string: &mut String) {
+		string.push_str("discard");
+	}
+
 	fn emit_function_extra_parameters(
 		&mut self,
 		_string: &mut String,
@@ -707,6 +711,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::Continue => string.push_str("continue"),
+			besl::Expressions::Discard => self.emit_discard(string),
 			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
 		}
 	}

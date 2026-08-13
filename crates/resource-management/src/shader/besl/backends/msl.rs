@@ -235,7 +235,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
-				| besl::Expressions::Continue => false,
+				| besl::Expressions::Continue
+				| besl::Expressions::Discard => false,
 			},
 			_ => false,
 		}
@@ -325,7 +326,8 @@ impl<A: Allocator + Clone> Generator<A> {
 					}
 					besl::Expressions::VariableDeclaration { .. }
 					| besl::Expressions::Literal { .. }
-					| besl::Expressions::Continue => {}
+					| besl::Expressions::Continue
+					| besl::Expressions::Discard => {}
 				},
 				_ => {}
 			}
@@ -421,7 +423,15 @@ impl<A: Allocator + Clone> Generator<A> {
 								.iter()
 								.any(|parameter| node_requires_resource_context(parameter, visited, include_push_constant))
 					}
-					besl::Expressions::IntrinsicCall { elements, .. } | besl::Expressions::Expression { elements } => elements
+					besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
+						arguments
+							.iter()
+							.any(|argument| node_requires_resource_context(argument, visited, include_push_constant))
+							|| elements
+								.iter()
+								.any(|element| node_requires_resource_context(element, visited, include_push_constant))
+					}
+					besl::Expressions::Expression { elements } => elements
 						.iter()
 						.any(|element| node_requires_resource_context(element, visited, include_push_constant)),
 					besl::Expressions::Macro { body, .. } => {
@@ -440,7 +450,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						node_requires_resource_context(left, visited, include_push_constant)
 							|| node_requires_resource_context(right, visited, include_push_constant)
 					}
-					besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
+					besl::Expressions::Literal { .. } | besl::Expressions::Continue | besl::Expressions::Discard => false,
 				},
 				_ => false,
 			};
@@ -1268,10 +1278,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		let formatting = ShaderFormatting::new(self.minified);
 		let return_type_name = return_type.borrow().get_name().unwrap_or("void").to_string();
 		let returns_explicit_output = return_type_name != "void";
+		let has_outputs = !outputs.is_empty();
 		let entry_return_type = if returns_explicit_output {
 			Self::translate_type(&return_type_name).to_string()
-		} else {
+		} else if has_outputs {
 			"FragmentOutput".to_string()
+		} else {
+			"void".to_string()
 		};
 
 		string.push_str("fragment ");
@@ -1297,7 +1310,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		if returns_explicit_output {
 			self.emit_statement_block(string, statements, 1);
-		} else {
+		} else if has_outputs {
 			formatting.push_indentation(string, 1);
 			string.push_str("FragmentOutput out");
 			formatting.push_statement_end(string);
@@ -1309,6 +1322,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, 1);
 			string.push_str("return out");
 			formatting.push_statement_end(string);
+		} else {
+			self.emit_statement_block(string, statements, 1);
 		}
 
 		self.emit_block_end(string);
@@ -2739,6 +2754,17 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			return;
 		}
+		if let besl::Nodes::Expression(besl::Expressions::Accessor { left, .. }) = resource_node.node() {
+			let left = left.borrow();
+			if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left.node() {
+				if self.in_compute_body || self.task_stage_context.is_some() {
+					self.emit_compute_binding_reference(string, name);
+				} else {
+					self.emit_raster_binding_reference(string, name);
+				}
+				return;
+			}
+		}
 		drop(resource_node);
 		self.emit_node_string(string, resource);
 	}
@@ -2796,6 +2822,28 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match name.as_str() {
 			"sample" => {
+				let sampled = arguments[0].borrow();
+				if let besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) = sampled.node() {
+					let left_node = left.borrow();
+					if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left_node.node() {
+						self.emit_intrinsic_resource_reference(string, left);
+						string.push('[');
+						self.emit_node_string(string, right);
+						string.push_str("].sample(");
+						if self.in_compute_body || self.task_stage_context.is_some() {
+							self.emit_compute_binding_reference(string, &format!("{name}_sampler"));
+						} else {
+							self.emit_raster_binding_reference(string, &format!("{name}_sampler"));
+						}
+						string.push('[');
+						self.emit_node_string(string, right);
+						string.push_str("], ");
+						self.emit_node_string(string, &arguments[1]);
+						string.push(')');
+						return;
+					}
+				}
+				drop(sampled);
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
 				self.emit_node_string(string, &arguments[0]);
@@ -3569,6 +3617,9 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	fn minified(&self) -> bool {
 		self.minified
 	}
+	fn emit_discard(&mut self, string: &mut String) {
+		string.push_str("discard_fragment()");
+	}
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -3764,6 +3815,64 @@ mod tests {
 			write,
 		)
 		.into()
+	}
+
+	#[test]
+	fn sampled_binding_array_argument_is_emitted_in_resources() {
+		let mut root = besl::Node::root();
+		root.add_child(
+			besl::Node::binding_array(
+				"textures",
+				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				9,
+				true,
+				false,
+				4,
+			)
+			.into(),
+		);
+		let root = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", Some(root))
+			.expect("Expected sampled binding array source to link");
+		let main = root.get_main().expect("Expected main");
+		crate::shader::besl::evaluation::ProgramEvaluation::from_main(&main)
+			.expect("Expected sampled binding array reflection");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected sampled binding array MSL generation");
+
+		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
+		assert_string_contains!(shader, "sampler textures_sampler [[id(4)]][4];");
+		assert_string_contains!(shader, "resources.textures[0].sample(resources.textures_sampler[0]");
+	}
+
+	#[test]
+	fn sampled_binding_array_argument_uses_bare_compute_resources() {
+		let mut root = besl::Node::root();
+		root.add_child(
+			besl::Node::binding_array(
+				"textures",
+				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				9,
+				true,
+				false,
+				4,
+			)
+			.into(),
+		);
+		let root = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", Some(root))
+			.expect("Expected sampled binding array source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.compute_binding_mode(ComputeBindingMode::BareResources)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected bare-resource sampled binding array MSL generation");
+
+		assert_string_contains!(shader, "textures[0].sample(textures_sampler[0]");
+		assert!(!shader.contains("resources.textures"));
 	}
 
 	fn main_with(statements: Vec<besl::NodeReference>) -> besl::NodeReference {

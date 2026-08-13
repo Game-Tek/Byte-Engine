@@ -46,6 +46,10 @@ VertexPositions: struct {
 	positions: vec3f[262144],
 }
 
+VertexUVs: struct {
+	uvs: vec2f16[262144],
+}
+
 SkinnedVertices: struct {
 	vertices: SkinnedVertex[262144],
 }
@@ -65,6 +69,7 @@ Meshlets: struct {
 views: descriptor<Views, 0, read, constant>;
 meshes: descriptor<Meshes, 1, read, device>;
 vertex_positions: descriptor<VertexPositions, 2, read, device>;
+vertex_uvs: descriptor<VertexUVs, 5, read, device>;
 skinned_vertices: descriptor<SkinnedVertices, 4, read, device>;
 vertex_indices: descriptor<VertexIndices, 6, read, device>;
 primitive_indices: descriptor<PrimitiveIndices, 7, read, device>;
@@ -73,6 +78,7 @@ meshlets: descriptor<Meshlets, 8, read, device>;
 meshlet_instances: task_payload<u32, 32>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
+out_uv: output<vec2f16, 2, 64>;
 
 push_constant: push_constant {
 	work_item_base: u32,
@@ -115,6 +121,7 @@ main: fn() -> void {
 			primitive_index,
 			view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0)
 		);
+		out_uv[primitive_index] = vertex_uvs.uvs[vertex_index];
 	}
 
 	if (primitive_index < meshlet.triangle_count) {

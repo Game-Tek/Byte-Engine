@@ -203,6 +203,11 @@ impl<'a> Compiler<'a> {
 					.push(jump_index);
 				Ok(())
 			}
+			Nodes::Expression(Expressions::Discard) => {
+				drop(borrowed);
+				self.instructions.push(Instruction::Discard);
+				Ok(())
+			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.clone();
 				let parameters = parameters.clone();
@@ -1835,6 +1840,9 @@ impl<'a> Compiler<'a> {
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
 				message: "`continue` is only valid as a statement".to_string(),
 			}),
+			Nodes::Expression(Expressions::Discard) => Err(VmError::UnsupportedExpression {
+				message: "`discard` is only valid as a statement".to_string(),
+			}),
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
 			}),
@@ -3060,6 +3068,7 @@ fn extract_access_chain(expression: &NodeReference) -> Result<(NodeReference, Ve
 				match expression {
 					Expressions::Return { .. } => "return",
 					Expressions::Continue => "continue",
+					Expressions::Discard => "discard",
 					Expressions::Member { .. } => "member",
 					Expressions::Expression { .. } => "multi-element expression group",
 					Expressions::Literal { .. } => "literal",

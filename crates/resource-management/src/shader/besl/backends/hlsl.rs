@@ -757,7 +757,8 @@ impl Generator {
 				}
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
-				| besl::Expressions::Continue => false,
+				| besl::Expressions::Continue
+				| besl::Expressions::Discard => false,
 			},
 			_ => false,
 		}

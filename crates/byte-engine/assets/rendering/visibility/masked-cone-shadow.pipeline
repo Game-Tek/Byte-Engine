@@ -1,0 +1,1 @@
+{"name":"Masked Local Shadow Pass","kind":{"type":"raster","shaders":["byte-engine/rendering/visibility/shadow-task.besl","byte-engine/rendering/visibility/shadow-mesh.besl","byte-engine/rendering/visibility/masked-depth-fragment.besl"],"push_constants":[{"offset":0,"size":12}],"attachments":[{"format":"depth16"}]}}

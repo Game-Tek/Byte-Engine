@@ -1027,7 +1027,12 @@ impl Node {
 				children.extend(statements.iter().cloned());
 				Some(children)
 			}
-			Nodes::Expression(Expressions::IntrinsicCall { elements: children, .. }) => Some(children.clone()),
+			Nodes::Expression(Expressions::IntrinsicCall { arguments, elements, .. }) => {
+				let mut children = Vec::with_capacity(arguments.len() + elements.len());
+				children.extend(arguments.iter().cloned());
+				children.extend(elements.iter().cloned());
+				Some(children)
+			}
 			_ => None,
 		}
 	}
@@ -1455,6 +1460,7 @@ pub enum Expressions {
 		value: Option<NodeReference>,
 	},
 	Continue,
+	Discard,
 	Member {
 		name: String,
 		source: NodeReference,
@@ -2285,6 +2291,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 					},
 				}),
 				parser::Expressions::Continue => Node::expression(Expressions::Continue),
+				parser::Expressions::Discard => Node::expression(Expressions::Discard),
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left)?;
 

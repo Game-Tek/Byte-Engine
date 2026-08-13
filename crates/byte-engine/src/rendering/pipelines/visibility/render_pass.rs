@@ -197,6 +197,7 @@ fn fast_gtao_view_data(sink: &Sink, extent: Extent) -> FastGtaoViewData {
 pub(crate) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	pipeline: crate::rendering::PipelineRef,
+	masked_pipeline: crate::rendering::PipelineRef,
 	opaque_attachments: [ghi::AttachmentInformation; 3],
 	transparent_attachments: [ghi::AttachmentInformation; 3],
 }
@@ -234,10 +235,12 @@ impl VisibilityPass {
 		depth_target: ghi::BaseImageHandle,
 	) -> Self {
 		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline");
+		let masked_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-visibility.pipeline");
 
 		VisibilityPass {
 			descriptor_set,
 			pipeline,
+			masked_pipeline,
 			opaque_attachments: [
 				ghi::AttachmentInformation::new(
 					primitive_index,
@@ -287,7 +290,7 @@ impl VisibilityPass {
 		}
 	}
 
-	/// Records one visibility phase.
+	/// Records the solid and masked visibility layers in one pass so depth and IDs are cleared once.
 	///
 	/// The transparent phase loads opaque depth, then writes the nearest transparent
 	/// surface into it. This preserves opaque occlusion while resolving overlapping
@@ -298,22 +301,33 @@ impl VisibilityPass {
 		extent: Extent,
 		instances: &[Instance],
 		mesh_dispatch: MeshDispatch,
+		masked_instances: &[Instance],
+		masked_mesh_dispatch: MeshDispatch,
 		phase: VisibilityPhase,
 		pipeline: ghi::PipelineHandle,
+		masked_pipeline: ghi::PipelineHandle,
 	) {
 		let attachments: &[ghi::AttachmentInformation] = match phase {
 			VisibilityPhase::Opaque => &self.opaque_attachments,
 			VisibilityPhase::Transparent => &self.transparent_attachments,
 		};
-		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
-		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
+		let drawable_instances = instances
+			.iter()
+			.chain(masked_instances)
+			.filter(|instance| instance.meshlet_count > 0)
+			.count();
+		let meshlet_count = instances
+			.iter()
+			.chain(masked_instances)
+			.map(|instance| instance.meshlet_count)
+			.sum::<u32>();
 
 		log::debug!(
 			"{} visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
 			phase.label(),
 			extent.width(),
 			extent.height(),
-			instances.len(),
+			instances.len() + masked_instances.len(),
 			drawable_instances,
 			meshlet_count,
 			mesh_dispatch.workgroup_count(),
@@ -331,6 +345,14 @@ impl VisibilityPass {
 			c.write_push_constant(4, 0u32);
 			c.write_push_constant(8, 0u32);
 			c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
+		}
+		if !masked_mesh_dispatch.is_empty() {
+			let c = c.bind_raster_pipeline(masked_pipeline);
+			c.bind_descriptor_sets(&[self.descriptor_set]);
+			c.write_push_constant(0, masked_mesh_dispatch.work_item_base());
+			c.write_push_constant(4, 0u32);
+			c.write_push_constant(8, 0u32);
+			c.dispatch_meshes(masked_mesh_dispatch.workgroup_count(), 1, 1);
 		}
 
 		c.end_render_pass();
@@ -353,6 +375,8 @@ pub struct ShadowPass {
 	directional_shadow_pass_pipeline: crate::rendering::PipelineRef,
 	directional_shadow_depth_pyramid_pipeline: crate::rendering::PipelineRef,
 	cone_shadow_pass_pipeline: crate::rendering::PipelineRef,
+	masked_directional_shadow_pass_pipeline: crate::rendering::PipelineRef,
+	masked_cone_shadow_pass_pipeline: crate::rendering::PipelineRef,
 	directional_shadow_map: ghi::BaseImageHandle,
 	cone_shadow_map: ghi::BaseImageHandle,
 	point_shadow_map: ghi::BaseImageHandle,
@@ -402,6 +426,10 @@ impl ShadowPass {
 			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/directional-shadow-depth-pyramid.pipeline");
 		let cone_shadow_pass_pipeline =
 			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/cone-shadow.pipeline");
+		let masked_directional_shadow_pass_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-directional-shadow.pipeline");
+		let masked_cone_shadow_pass_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-cone-shadow.pipeline");
 
 		Self {
 			descriptor_set,
@@ -409,6 +437,8 @@ impl ShadowPass {
 			directional_shadow_pass_pipeline,
 			directional_shadow_depth_pyramid_pipeline,
 			cone_shadow_pass_pipeline,
+			masked_directional_shadow_pass_pipeline,
+			masked_cone_shadow_pass_pipeline,
 			directional_shadow_map,
 			cone_shadow_map,
 			point_shadow_map,
@@ -421,12 +451,16 @@ impl ShadowPass {
 		frame: &mut ghi::implementation::Frame,
 		instances: &'a [Instance],
 		mesh_dispatch: MeshDispatch,
+		masked_instances: &'a [Instance],
+		masked_mesh_dispatch: MeshDispatch,
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
 		point_shadow_count: usize,
 		directional_pipeline: ghi::PipelineHandle,
+		masked_directional_pipeline: ghi::PipelineHandle,
 		directional_shadow_depth_pyramid_pipeline: ghi::PipelineHandle,
 		cone_pipeline: ghi::PipelineHandle,
+		masked_cone_pipeline: ghi::PipelineHandle,
 	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
 		let directional_shadow_depth_pyramid_descriptor_set = self.directional_shadow_depth_pyramid_descriptor_set;
@@ -483,6 +517,16 @@ impl ShadowPass {
 					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
 					c.end_region();
 				}
+				if !masked_mesh_dispatch.is_empty() {
+					let c = c.bind_raster_pipeline(masked_directional_pipeline);
+					c.bind_descriptor_sets(&[descriptor_set]);
+					for view_index in directional_shadow_view_indices(masked_mesh_dispatch) {
+						c.write_push_constant(0, masked_mesh_dispatch.work_item_base());
+						c.write_push_constant(4, view_index);
+						c.write_push_constant(8, view_index - 1);
+						c.dispatch_meshes(masked_mesh_dispatch.workgroup_count(), 1, 1);
+					}
+				}
 				c.end_render_pass();
 				c.end_region();
 
@@ -526,6 +570,16 @@ impl ShadowPass {
 					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
 					c.end_region();
 				}
+				if !masked_mesh_dispatch.is_empty() {
+					let c = c.bind_raster_pipeline(masked_cone_pipeline);
+					c.bind_descriptor_sets(&[descriptor_set]);
+					for (view_index, layer) in cone_shadow_view_indices(masked_mesh_dispatch, cone_shadow_count) {
+						c.write_push_constant(0, masked_mesh_dispatch.work_item_base());
+						c.write_push_constant(4, view_index);
+						c.write_push_constant(8, layer);
+						c.dispatch_meshes(masked_mesh_dispatch.workgroup_count(), 1, 1);
+					}
+				}
 				c.end_render_pass();
 				c.end_region();
 			}
@@ -559,6 +613,16 @@ impl ShadowPass {
 					c.write_push_constant(8, layer);
 					c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
 					c.end_region();
+				}
+				if !masked_mesh_dispatch.is_empty() {
+					let c = c.bind_raster_pipeline(masked_cone_pipeline);
+					c.bind_descriptor_sets(&[descriptor_set]);
+					for (view_index, layer) in point_shadow_view_indices(masked_mesh_dispatch, point_shadow_count) {
+						c.write_push_constant(0, masked_mesh_dispatch.work_item_base());
+						c.write_push_constant(4, view_index);
+						c.write_push_constant(8, layer);
+						c.dispatch_meshes(masked_mesh_dispatch.workgroup_count(), 1, 1);
+					}
 				}
 				c.end_render_pass();
 				c.end_region();
@@ -1238,9 +1302,11 @@ impl VisibilityPipelineRenderPass {
 		sink: &Sink,
 		skinning_pass: Option<&'a SkinningPass>,
 		opaque_mesh_dispatch: MeshDispatch,
+		masked_mesh_dispatch: MeshDispatch,
 		transparent_mesh_dispatch: MeshDispatch,
 		skinning_dispatches: &'a [SkinningDispatch],
 		opaque_instances: &'a [Instance],
+		masked_instances: &'a [Instance],
 		transparent_instances: &'a [Instance],
 		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
@@ -1255,6 +1321,7 @@ impl VisibilityPipelineRenderPass {
 			None => None,
 		};
 		let visibility_pipeline = self.pipeline_manager.pipeline(self.visibility_pass.pipeline)?;
+		let masked_visibility_pipeline = self.pipeline_manager.pipeline(self.visibility_pass.masked_pipeline)?;
 		let directional_shadow_pipeline = self
 			.pipeline_manager
 			.pipeline(self.shadow_pass.directional_shadow_pass_pipeline)?;
@@ -1262,6 +1329,12 @@ impl VisibilityPipelineRenderPass {
 			.pipeline_manager
 			.pipeline(self.shadow_pass.directional_shadow_depth_pyramid_pipeline)?;
 		let cone_shadow_pipeline = self.pipeline_manager.pipeline(self.shadow_pass.cone_shadow_pass_pipeline)?;
+		let masked_directional_shadow_pipeline = self
+			.pipeline_manager
+			.pipeline(self.shadow_pass.masked_directional_shadow_pass_pipeline)?;
+		let masked_cone_shadow_pipeline = self
+			.pipeline_manager
+			.pipeline(self.shadow_pass.masked_cone_shadow_pass_pipeline)?;
 		let material_count_pipeline = self.pipeline_manager.pipeline(self.material_count_pass.pipeline)?;
 		let material_offset_pipeline = self
 			.pipeline_manager
@@ -1278,12 +1351,16 @@ impl VisibilityPipelineRenderPass {
 			frame,
 			opaque_instances,
 			opaque_mesh_dispatch,
+			masked_instances,
+			masked_mesh_dispatch,
 			directional_shadow_enabled,
 			cone_shadow_count,
 			point_shadow_count,
 			directional_shadow_pipeline,
+			masked_directional_shadow_pipeline,
 			directional_shadow_depth_pyramid_pipeline,
 			cone_shadow_pipeline,
+			masked_cone_shadow_pipeline,
 		);
 		let visibility_pass = &self.visibility_pass;
 		// The offset pass consumes and resets every counter before the optional transparent layer runs.
@@ -1310,7 +1387,7 @@ impl VisibilityPipelineRenderPass {
 			VisibilityPhase::Transparent,
 		);
 		let extent = sink.extent();
-		let instance_count = opaque_instances.len() + transparent_instances.len();
+		let instance_count = opaque_instances.len() + masked_instances.len() + transparent_instances.len();
 		let meshlet_count = opaque_instances
 			.iter()
 			.chain(transparent_instances)
@@ -1349,8 +1426,11 @@ impl VisibilityPipelineRenderPass {
 					extent,
 					opaque_instances,
 					opaque_mesh_dispatch,
+					masked_instances,
+					masked_mesh_dispatch,
 					VisibilityPhase::Opaque,
 					visibility_pipeline,
+					masked_visibility_pipeline,
 				);
 				opaque_material_count_pass(c, t);
 				material_offset_pass(c, t);
@@ -1366,7 +1446,10 @@ impl VisibilityPipelineRenderPass {
 						extent,
 						transparent_layer,
 						transparent_mesh_dispatch,
+						&[],
+						MeshDispatch::default(),
 						VisibilityPhase::Transparent,
+						visibility_pipeline,
 						visibility_pipeline,
 					);
 					transparent_material_count_pass(c, t);

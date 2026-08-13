@@ -572,14 +572,34 @@ impl CommonShaderScope {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
+	use resource_management::asset::bema_asset_handler::ProgramGenerator as _;
+	use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
+	use resource_management::shader::generator::ShaderGenerationSettings;
 
-	use super::CommonShaderScope;
+	use super::{CommonShaderGenerator, CommonShaderScope};
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
 	const DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1);
 	const EMPTY_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(2);
 	const SAMPLE_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(3);
+
+	#[test]
+	fn transformed_array_sample_retains_texture_resources() {
+		let parsed = besl::parse(include_str!("../../assets/rendering/visibility/masked-fragment.besl"))
+			.expect("Expected masked fragment source to parse");
+		let context = serde_json::json!({ "variables": [] }).as_object().unwrap().clone();
+		let parsed = CommonShaderGenerator::new().transform(parsed, &context);
+		let program = besl::lex(parsed).expect("Expected transformed array sample source to link");
+		let main = program.get_main().expect("Expected main");
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Expected transformed array sample MSL generation");
+
+		assert!(shader.contains("material_textures [[id(1)]][1024]"), "{shader}");
+		assert!(shader.contains("material_textures_sampler [[id(1025)]][1024]"), "{shader}");
+	}
 
 	/// Compiles a synthetic main that exposes common-function values through one result buffer.
 	fn compile_common_main(

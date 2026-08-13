@@ -33,7 +33,7 @@ use crate::{
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
-		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		material::{MaterialCoverage, MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
 		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
@@ -638,6 +638,7 @@ async fn generate_fbx_material(
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
 		alpha_mode: alpha_mode.clone(),
+		coverage: fbx_material_coverage(&brdf),
 		model: RenderModel {
 			name: "Visibility".to_string(),
 			pass: "MaterialEvaluation".to_string(),
@@ -652,6 +653,33 @@ async fn generate_fbx_material(
 		alpha_mode,
 	};
 	store_model::<VariantModel>(context, &variant_id, variant, &[])
+}
+
+fn fbx_material_coverage(material: &crate::pbr::BrdfMaterialDescription) -> MaterialCoverage {
+	let BrdfNode::MetallicRoughness(surface) = material.node(material.surface).expect("validated FBX material surface") else {
+		return MaterialCoverage {
+			factor: 1.0,
+			texture_slot: None,
+		};
+	};
+	let factor = base_color_alpha_factor(material, surface.base_color);
+	let texture_slot = material
+		.nodes
+		.iter()
+		.any(|node| matches!(node, BrdfNode::Texture(_)))
+		.then_some(0);
+	MaterialCoverage { factor, texture_slot }
+}
+
+fn base_color_alpha_factor(material: &crate::pbr::BrdfMaterialDescription, node: crate::pbr::BrdfNodeId) -> f32 {
+	match material.node(node).expect("validated base-color node") {
+		BrdfNode::Constant(BrdfValue::Vector4(value)) => value[3],
+		BrdfNode::Multiply { left, right } => {
+			base_color_alpha_factor(material, *left) * base_color_alpha_factor(material, *right)
+		}
+		BrdfNode::Texture(_) => 1.0,
+		_ => 1.0,
+	}
 }
 
 /// Stores the diffuse texture selected by the FBX BRDF graph as a generated material variable.

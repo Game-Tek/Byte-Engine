@@ -12,6 +12,7 @@ use crate::{
 pub struct Material {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
+	pub coverage: MaterialCoverage,
 
 	pub shaders: Vec<Reference<Shader>>,
 
@@ -25,6 +26,7 @@ pub struct Material {
 pub struct MaterialModel {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
+	pub coverage: MaterialCoverage,
 
 	pub(crate) shaders: Vec<ReferenceModel<Shader>>,
 
@@ -64,6 +66,7 @@ impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 			let MaterialModel {
 				double_sided,
 				alpha_mode,
+				coverage,
 				shaders,
 				model,
 				parameters,
@@ -83,6 +86,7 @@ impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 				Material {
 					double_sided,
 					alpha_mode,
+					coverage,
 					shaders: resolved_shaders,
 					model,
 					parameters: resolved_parameters,
@@ -90,6 +94,22 @@ impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 				reader,
 			))
 		})
+	}
+}
+
+/// The `MaterialCoverage` struct provides the minimal base-color alpha expression needed by masked raster passes.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MaterialCoverage {
+	pub factor: f32,
+	pub texture_slot: Option<u32>,
+}
+
+impl Default for MaterialCoverage {
+	fn default() -> Self {
+		Self {
+			factor: 1.0,
+			texture_slot: None,
+		}
 	}
 }
 

@@ -1388,6 +1388,7 @@ async fn generate_gltf_material_variant(
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
 		alpha_mode: alpha_mode.clone(),
+		coverage: material_coverage(&brdf, &texture_dependencies),
 		model: RenderModel {
 			name: "Visibility".to_string(),
 			pass: "MaterialEvaluation".to_string(),
@@ -1403,6 +1404,43 @@ async fn generate_gltf_material_variant(
 	};
 
 	store_model::<VariantModel>(context, &variant_id, variant, &[])
+}
+
+/// Extracts the glTF base-color alpha expression into the compact masked-raster contract.
+fn material_coverage(material: &BrdfMaterialDescription, dependencies: &[GltfTextureDependency]) -> MaterialCoverage {
+	let Ok(BrdfNode::MetallicRoughness(surface)) = material.node(material.surface) else {
+		return MaterialCoverage {
+			factor: 1.0,
+			texture_slot: None,
+		};
+	};
+	let mut factor = 1.0;
+	let mut image_index = None;
+	collect_base_color_coverage(material, surface.base_color, &mut factor, &mut image_index);
+	let texture_slot = image_index.and_then(|image_index| {
+		dependencies
+			.iter()
+			.position(|dependency| dependency.image_index == image_index)
+			.map(|slot| slot as u32)
+	});
+	MaterialCoverage { factor, texture_slot }
+}
+
+fn collect_base_color_coverage(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+	factor: &mut f32,
+	image_index: &mut Option<u32>,
+) {
+	match material.node(node) {
+		Ok(BrdfNode::Constant(BrdfValue::Vector4(value))) => *factor *= value[3],
+		Ok(BrdfNode::Texture(texture)) => *image_index = Some(texture.image_index),
+		Ok(BrdfNode::Multiply { left, right }) => {
+			collect_base_color_coverage(material, *left, factor, image_index);
+			collect_base_color_coverage(material, *right, factor, image_index);
+		}
+		_ => {}
+	}
 }
 
 fn material_override(spec: Option<&serde_json::Value>, material: &gltf::Material<'_>) -> Option<String> {
@@ -2880,7 +2918,7 @@ use crate::{
 	asset::{self},
 	pbr::{
 		brdf_material_from_gltf, generate_textured_brdf_program, material_texture_variable_name, BrdfMaterialDescription,
-		BrdfMaterialValidationError, BrdfNode, BrdfNodeId,
+		BrdfMaterialValidationError, BrdfNode, BrdfNodeId, BrdfValue,
 	},
 	processors::{
 		image_processor::{
@@ -2893,7 +2931,7 @@ use crate::{
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
-		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		material::{MaterialCoverage, MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
 		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,

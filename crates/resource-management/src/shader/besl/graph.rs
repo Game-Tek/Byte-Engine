@@ -250,10 +250,8 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 							build_graph_impl(node.clone(), parameter.clone(), graph, expanded, active, allocator.clone());
 						}
 					}
-					besl::Expressions::IntrinsicCall {
-						elements: parameters, ..
-					} => {
-						for e in parameters {
+					besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
+						for e in arguments.iter().chain(elements) {
 							build_graph_impl(node.clone(), e.clone(), graph, expanded, active, allocator.clone());
 						}
 					}
@@ -265,12 +263,9 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 					besl::Expressions::Macro { body, .. } => {
 						build_graph_impl(node.clone(), body.clone(), graph, expanded, active, allocator.clone());
 					}
-					besl::Expressions::Member { source, .. } => match source.borrow().node() {
-						besl::Nodes::Expression { .. } | besl::Nodes::Member { .. } => {}
-						_ => {
-							build_graph_impl(node.clone(), source.clone(), graph, expanded, active, allocator.clone());
-						}
-					},
+					besl::Expressions::Member { source, .. } => {
+						build_graph_impl(node.clone(), source.clone(), graph, expanded, active, allocator.clone());
+					}
 					besl::Expressions::VariableDeclaration { r#type, .. } => {
 						build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
 					}
@@ -282,7 +277,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 							build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator.clone());
 						}
 					}
-					besl::Expressions::Continue => {}
+					besl::Expressions::Continue | besl::Expressions::Discard => {}
 					besl::Expressions::Accessor { left, right } => {
 						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
 						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator.clone());

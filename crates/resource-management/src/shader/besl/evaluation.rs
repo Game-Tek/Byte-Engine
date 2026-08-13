@@ -486,9 +486,9 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					build_bindings(bindings, argument, state);
 				}
 			}
-			besl::Expressions::IntrinsicCall { elements, .. } => {
+			besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
 				// Intrinsic lowering emits the instantiated elements, not the definition template.
-				for element in elements {
+				for element in arguments.iter().chain(elements) {
 					build_bindings(bindings, element, state);
 				}
 			}
@@ -516,7 +516,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					build_bindings(bindings, value, state);
 				}
 			}
-			besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
+			besl::Expressions::Literal { .. } | besl::Expressions::Continue | besl::Expressions::Discard => {}
 		},
 		besl::Nodes::Binding {
 			name,
@@ -714,7 +714,10 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			besl::Expressions::Macro { body, .. } => {
 				collect_local_output_symbols(body, local_output_symbols);
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
+			besl::Expressions::Return { .. }
+			| besl::Expressions::Literal { .. }
+			| besl::Expressions::Continue
+			| besl::Expressions::Discard => {}
 		},
 		besl::Nodes::Raw { input, output, .. } => {
 			for value in input.iter().chain(output.iter()) {
@@ -819,7 +822,10 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				references_non_local_output(nested, local_output_symbols)
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
+			besl::Expressions::Return { .. }
+			| besl::Expressions::Literal { .. }
+			| besl::Expressions::Continue
+			| besl::Expressions::Discard => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input
 			.iter()
@@ -921,7 +927,10 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				writes_non_opaque_vec4f_to_non_local_output(nested, local_output_symbols)
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
+			besl::Expressions::Return { .. }
+			| besl::Expressions::Literal { .. }
+			| besl::Expressions::Continue
+			| besl::Expressions::Discard => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input
 			.iter()

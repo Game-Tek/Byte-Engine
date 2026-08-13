@@ -171,6 +171,10 @@ impl AssetHandler for BEMAAssetHandler {
 			let resource = MaterialModel {
 				double_sided: false,
 				alpha_mode: AlphaMode::Opaque,
+				coverage: MaterialCoverage {
+					factor: 1.0,
+					texture_slot: None,
+				},
 				model: RenderModel {
 					name: "Visibility".to_string(),
 					pass: "MaterialEvaluation".to_string(),
@@ -799,8 +803,8 @@ use crate::{
 	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
-		VariantVariableModel,
+		Binding, MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel,
+		VariantModel, VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
 	types::{AlphaMode, ShaderTypes},

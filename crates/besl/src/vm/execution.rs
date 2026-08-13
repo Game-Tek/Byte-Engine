@@ -539,6 +539,10 @@ impl ExecutableProgram {
 					frame.instruction_index = *target;
 					continue;
 				}
+				Instruction::Discard => {
+					state.discarded = true;
+					return Ok(FrameOutcome::Complete(None));
+				}
 				Instruction::DotProduct { register, left, right } => {
 					let left = read_register(registers, *left)?;
 					let right = read_register(registers, *right)?;
@@ -1197,6 +1201,9 @@ impl ExecutableProgram {
 						state,
 						nested_collective_behavior,
 					)?;
+					if state.discarded {
+						return Ok(FrameOutcome::Complete(None));
+					}
 					if let Some(register) = register {
 						registers[*register] = value;
 					}

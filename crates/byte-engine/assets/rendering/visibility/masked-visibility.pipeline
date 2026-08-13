@@ -1,0 +1,1 @@
+{"name":"Masked Visibility Pass","kind":{"type":"raster","shaders":["byte-engine/rendering/visibility/visibility-task.besl","byte-engine/rendering/visibility/visibility-mesh.besl","byte-engine/rendering/visibility/masked-fragment.besl"],"push_constants":[{"offset":0,"size":12}],"attachments":[{"format":"u32"},{"format":"u32"},{"format":"depth32"}]}}

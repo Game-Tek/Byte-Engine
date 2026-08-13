@@ -224,6 +224,11 @@ impl VisibilityPipelineManager {
 				primitive_indices_buffer.into(),
 			),
 			ghi::DescriptorWrite::buffer(descriptor_set, MESHLET_DATA_BINDING.slot(), meshlets_data_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				MATERIALS_DATA_BINDING.slot(),
+				materials_data_buffer_handle.into(),
+			),
 		]);
 
 		let light_data_buffer = context.build_dynamic_buffer::<LightingData>(
@@ -291,6 +296,7 @@ impl VisibilityPipelineManager {
 				lights: StableVec::new(),
 				render_info: RenderInfo {
 					opaque_instances: Vec::new(),
+					masked_instances: Vec::new(),
 					transparent_instances: Vec::new(),
 					skinning_dispatches: Vec::with_capacity(MAX_INSTANCES),
 					opaque_materials: Vec::new(),
@@ -378,8 +384,9 @@ impl VisibilityPipelineManager {
 					index,
 					pipeline,
 					alpha_mode,
+					coverage,
 					textures,
-				} => self.adopt_material_completion(id, index, pipeline, alpha_mode, textures),
+				} => self.adopt_material_completion(id, index, pipeline, alpha_mode, coverage, textures),
 				VisibilityResourceCompletion::ImageReady {
 					index,
 					image,
@@ -470,6 +477,7 @@ impl VisibilityPipelineManager {
 		index: u32,
 		pipeline_ref: crate::rendering::PipelineRef,
 		alpha_mode: AlphaMode,
+		coverage: resource_management::resources::material::MaterialCoverage,
 		textures: Vec<Option<(String, u32)>>,
 	) {
 		let pipeline = self.pipeline_manager.pipeline(pipeline_ref);
@@ -487,6 +495,12 @@ impl VisibilityPipelineManager {
 				id
 			);
 		}
+		material_data.coverage_factor = coverage.factor;
+		material_data.coverage_texture_slot = coverage.texture_slot.unwrap_or(u32::MAX);
+		material_data.alpha_cutoff = match alpha_mode {
+			AlphaMode::Mask(cutoff) => cutoff,
+			AlphaMode::Opaque | AlphaMode::Blend => 0.0,
+		};
 
 		let texture_indices = textures
 			.iter()
@@ -1370,10 +1384,11 @@ impl PipelineManager for VisibilityPipelineManager {
 				self.point_shadow_map_pool_capacity,
 			);
 		}
-		let [opaque_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
+		let [opaque_mesh_dispatch, masked_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
 			frame,
 			[
 				self.scene.render_info.opaque_instances.as_slice(),
+				self.scene.render_info.masked_instances.as_slice(),
 				self.scene.render_info.transparent_instances.as_slice(),
 			],
 		);
@@ -1450,9 +1465,11 @@ impl PipelineManager for VisibilityPipelineManager {
 					v,
 					(command_index == 0).then_some(skinning_pass),
 					opaque_mesh_dispatch,
+					masked_mesh_dispatch,
 					transparent_mesh_dispatch,
 					skinning_dispatches,
 					&self.scene.render_info.opaque_instances,
+					&self.scene.render_info.masked_instances,
 					&self.scene.render_info.transparent_instances,
 					&self.scene.render_info.opaque_materials,
 					&self.scene.render_info.transparent_materials,
@@ -1833,12 +1850,20 @@ pub struct LightData {
 #[derive(Copy, Clone)]
 struct MaterialData {
 	textures: [u32; MAX_MATERIAL_TEXTURES],
+	coverage_factor: f32,
+	coverage_texture_slot: u32,
+	alpha_cutoff: f32,
+	_padding: u32,
 }
 
 impl Default for MaterialData {
 	fn default() -> Self {
 		Self {
 			textures: [u32::MAX; MAX_MATERIAL_TEXTURES],
+			coverage_factor: 1.0,
+			coverage_texture_slot: u32::MAX,
+			alpha_cutoff: 0.0,
+			_padding: 0,
 		}
 	}
 }
@@ -1944,6 +1969,7 @@ pub struct Instance {
 /// The `RenderInfo` struct groups frame-local visibility work by the phase that will consume it.
 pub struct RenderInfo {
 	opaque_instances: Vec<Instance>,
+	masked_instances: Vec<Instance>,
 	transparent_instances: Vec<Instance>,
 	skinning_dispatches: Vec<SkinningDispatch>,
 	opaque_materials: Vec<(String, u32, ghi::PipelineHandle)>,
@@ -1956,6 +1982,7 @@ impl RenderInfo {
 	/// Clears frame-local instance work while retaining the allocations used by prior frames.
 	fn clear_active_instances(&mut self) {
 		self.opaque_instances.clear();
+		self.masked_instances.clear();
 		self.transparent_instances.clear();
 		self.skinning_dispatches.clear();
 		self.opaque_material_mask.fill(0);
@@ -1974,6 +2001,9 @@ impl RenderInfo {
 		if is_transparent(alpha_mode) {
 			self.transparent_instances.push(instance);
 			self.transparent_material_mask[material_word] |= material_bit;
+		} else if matches!(alpha_mode, AlphaMode::Mask(_)) {
+			self.masked_instances.push(instance);
+			self.opaque_material_mask[material_word] |= material_bit;
 		} else {
 			self.opaque_instances.push(instance);
 			self.opaque_material_mask[material_word] |= material_bit;
@@ -1981,7 +2011,7 @@ impl RenderInfo {
 	}
 
 	fn active_instance_count(&self) -> usize {
-		self.opaque_instances.len() + self.transparent_instances.len()
+		self.opaque_instances.len() + self.masked_instances.len() + self.transparent_instances.len()
 	}
 }
 
@@ -2499,6 +2529,7 @@ mod tests {
 	fn material_texture_updates_replace_the_complete_canonical_record() {
 		let mut material_data = MaterialData {
 			textures: [41; MAX_MATERIAL_TEXTURES],
+			..MaterialData::default()
 		};
 
 		assert!(!write_material_texture_indices(&mut material_data, [Some(7), None, Some(11)]));
@@ -2525,11 +2556,12 @@ mod tests {
 		assert!(material_data.textures.iter().all(|texture_index| *texture_index == 5));
 	}
 
-	/// Verifies authored blend primitives are deferred while opaque and masked work stays in the first phase.
+	/// Verifies authored alpha modes partition solid, clipped, and blended raster work.
 	#[test]
 	fn active_instances_partition_by_authored_alpha_mode() {
 		let mut render_info = RenderInfo {
 			opaque_instances: Vec::new(),
+			masked_instances: Vec::new(),
 			transparent_instances: Vec::new(),
 			skinning_dispatches: Vec::new(),
 			opaque_materials: Vec::new(),
@@ -2554,7 +2586,8 @@ mod tests {
 		render_info.push_active_instance(opaque, 11, &AlphaMode::Opaque);
 		render_info.push_active_instance(masked, 68, &AlphaMode::Mask(0.5));
 
-		assert_eq!(render_info.opaque_instances, [opaque, masked]);
+		assert_eq!(render_info.opaque_instances, [opaque]);
+		assert_eq!(render_info.masked_instances, [masked]);
 		assert_eq!(render_info.transparent_instances, [blended]);
 		assert_eq!(render_info.opaque_material_mask[0], 1 << 11);
 		assert_eq!(render_info.opaque_material_mask[1], 1 << 4);
@@ -2719,7 +2752,7 @@ const MATERIALS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourc
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(64);
+.buffer_stride(std::mem::size_of::<MaterialData>() as u32);
 const AO_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1051),
 	ghi::ResourceKind::CombinedImageSampler,

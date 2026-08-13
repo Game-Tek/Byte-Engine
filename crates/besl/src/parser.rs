@@ -713,12 +713,14 @@ pub enum Expressions<'a> {
 		value: Option<Box<Node<'a>>>,
 	},
 	Continue,
+	Discard,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum Atoms<'a> {
 	Keyword,
 	Continue,
+	Discard,
 	Accessor,
 	GroupedExpression(Vec<Atoms<'a>>),
 	Member {
@@ -809,6 +811,7 @@ impl Precedence for Atoms<'_> {
 		match self {
 			Atoms::Keyword => 0,
 			Atoms::Continue => 0,
+			Atoms::Discard => 0,
 			Atoms::Accessor => 1,
 			Atoms::GroupedExpression { .. } => 0,
 			Atoms::Member { .. } => 0,
@@ -1586,6 +1589,15 @@ fn parse_continue<'i, 'a: 'i>(
 	Ok((expressions, iterator))
 }
 
+fn parse_discard<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("discard")?;
+	expressions.push(Atoms::Discard);
+	Ok((expressions, iterator))
+}
+
 fn parse_variable<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
@@ -1719,6 +1731,11 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			node: Nodes::Expression(Expressions::Continue),
 		};
 	}
+	if matches!(atoms.first(), Some(Atoms::Discard)) {
+		return Node {
+			node: Nodes::Expression(Expressions::Discard),
+		};
+	}
 
 	let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
 
@@ -1729,6 +1746,9 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			},
 			Atoms::Continue => Node {
 				node: Nodes::Expression(Expressions::Continue),
+			},
+			Atoms::Discard => Node {
+				node: Nodes::Expression(Expressions::Discard),
 			},
 			Atoms::Operator { name } => {
 				let left = expression_atoms_to_node(&atoms[..i]);
@@ -1820,6 +1840,7 @@ fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 	let statement_parsers = vec![
 		parse_keywords,
 		parse_continue,
+		parse_discard,
 		parse_var_decl,
 		parse_function_call,
 		parse_variable,
@@ -1935,6 +1956,7 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> Featu
 	let parsers = vec![
 		parse_keywords,
 		parse_continue,
+		parse_discard,
 		parse_var_decl,
 		parse_function_call,
 		parse_variable,
@@ -3011,6 +3033,19 @@ main: fn () -> void {
 			Nodes::Expression(Expressions::Operator { name, .. }) if *name == ">="
 		));
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Continue)));
+	}
+
+	#[test]
+	fn parse_discard_in_conditional() {
+		let tokens = tokenize("main: fn () -> void { if (true) { discard; } }").expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected function");
+		};
+		let Nodes::Conditional { statements, .. } = &statements[0].node else {
+			panic!("Expected conditional");
+		};
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
 	}
 
 	#[test]

@@ -178,6 +178,7 @@ pub(super) struct ExecutionState<'a> {
 	pub(super) config: &'a ExecutionConfig,
 	remaining_instructions: usize,
 	call_depth: usize,
+	pub(super) discarded: bool,
 }
 
 impl<'a> ExecutionState<'a> {
@@ -186,6 +187,7 @@ impl<'a> ExecutionState<'a> {
 			config,
 			remaining_instructions: config.instruction_limit(),
 			call_depth: 0,
+			discarded: false,
 		}
 	}
 

@@ -45,6 +45,7 @@ pub(super) enum Instruction {
 	Jump {
 		target: usize,
 	},
+	Discard,
 	DotProduct {
 		register: usize,
 		left: usize,

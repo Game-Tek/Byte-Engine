@@ -32,6 +32,37 @@ pub(crate) struct AssetManagerState {
 	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>,
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
+	#[cfg(debug_assertions)]
+	hot_reload: Mutex<HotReloadState>,
+}
+
+#[cfg(debug_assertions)]
+struct HotReloadState {
+	watcher: Option<
+		notify_debouncer_full::Debouncer<
+			notify_debouncer_full::notify::RecommendedWatcher,
+			notify_debouncer_full::RecommendedCache,
+		>,
+	>,
+	resources_by_source: HashMap<String, std::collections::HashSet<String>>,
+	sources_by_resource: HashMap<String, Vec<String>>,
+	in_flight: std::collections::HashSet<String>,
+	pending: std::collections::HashSet<String>,
+	updates: Option<Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for HotReloadState {
+	fn default() -> Self {
+		Self {
+			watcher: None,
+			resources_by_source: HashMap::new(),
+			sources_by_resource: HashMap::new(),
+			in_flight: std::collections::HashSet::new(),
+			pending: std::collections::HashSet::new(),
+			updates: None,
+		}
+	}
 }
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
@@ -103,6 +134,8 @@ impl AssetManager {
 				self_weak: std::sync::OnceLock::new(),
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
+				#[cfg(debug_assertions)]
+				hot_reload: Mutex::new(HotReloadState::default()),
 			}),
 		}
 	}
@@ -186,13 +219,71 @@ impl AssetManager {
 
 	/// Returns the stored asset, or bakes it when it is missing or its recorded source versions changed.
 	pub async fn bake_if_not_exists<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
+		self.bake_if_not_exists_serialized(id).await.map(Into::into)
+	}
+
+	/// Returns the stored resource after ensuring its complete source provenance is current.
+	pub(crate) async fn bake_if_not_exists_serialized(&self, id: &str) -> Result<crate::SerializableResource, LoadMessages> {
 		self.dispatch_bake(id, true).await?;
+		self.state
+			.resource_storage_backend
+			.read(ResourceId::new(id))
+			.await
+			.map(|(resource, _)| resource)
+			.ok_or(LoadMessages::NoAsset)
+	}
 
-		if let Some((resource, _)) = self.state.resource_storage_backend.read(ResourceId::new(id)).await {
-			return Ok(resource.into());
+	/// Adds a requested root resource to the development dependency index.
+	#[cfg(debug_assertions)]
+	pub(crate) fn track_resource(&self, resource: &crate::SerializableResource) {
+		self.state.track_resource(resource);
+	}
+
+	/// Starts recursive debounced watching when the source backend exposes a local root.
+	#[cfg(debug_assertions)]
+	pub(crate) fn start_watching(&self, updates: Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>) {
+		let Some(root) = self.state.storage_backend.watch_root() else {
+			return;
+		};
+		let _ = self.state.self_weak.set(Arc::downgrade(&self.state));
+		let weak = Arc::downgrade(&self.state);
+		let watched_root = root.clone();
+		let mut watcher = match notify_debouncer_full::new_debouncer(
+			std::time::Duration::from_millis(250),
+			None,
+			move |result: notify_debouncer_full::DebounceEventResult| {
+				match result {
+				Ok(events) => {
+					let Some(state) = weak.upgrade() else { return };
+					let paths = events
+						.iter()
+						.flat_map(|event| event.paths.iter())
+						.filter_map(|path| source_id_from_path(&watched_root, &path))
+						.collect::<std::collections::HashSet<_>>();
+					state.reload_sources(paths);
+				}
+				Err(errors) => log::warn!(
+					"Asset watching reported an error. The most likely cause is that the development asset directory became inaccessible: {errors:?}"
+				),
+			}
+			},
+		) {
+			Ok(watcher) => watcher,
+			Err(error) => {
+				log::warn!("Asset watching could not start. The most likely cause is that the platform watcher is unavailable: {error}");
+				return;
+			}
+		};
+		if let Err(error) = watcher.watch(&root, notify_debouncer_full::notify::RecursiveMode::Recursive) {
+			log::warn!(
+				"Asset watching could not watch '{}'. The most likely cause is that the directory is inaccessible: {error}",
+				root.display()
+			);
+			return;
 		}
-
-		Err(LoadMessages::NoAsset)
+		let mut hot_reload = self.state.hot_reload.lock();
+		hot_reload.updates = Some(updates);
+		hot_reload.watcher = Some(watcher);
 	}
 
 	/// Runs one owned bake request on the asset worker pool.
@@ -203,6 +294,111 @@ impl AssetManager {
 }
 
 impl AssetManagerState {
+	/// Replaces one root resource's entries in the inverse source dependency index.
+	#[cfg(debug_assertions)]
+	fn track_resource(&self, resource: &crate::SerializableResource) {
+		let mut hot_reload = self.hot_reload.lock();
+		if let Some(previous) = hot_reload.sources_by_resource.remove(resource.id()) {
+			for source in previous {
+				if let Some(resources) = hot_reload.resources_by_source.get_mut(&source) {
+					resources.remove(resource.id());
+					if resources.is_empty() {
+						hot_reload.resources_by_source.remove(&source);
+					}
+				}
+			}
+		}
+		let sources = resource
+			.asset_dependencies()
+			.iter()
+			.map(|dependency| dependency.id().to_string())
+			.collect::<Vec<_>>();
+		for source in &sources {
+			hot_reload
+				.resources_by_source
+				.entry(source.clone())
+				.or_default()
+				.insert(resource.id().to_string());
+		}
+		hot_reload.sources_by_resource.insert(resource.id().to_string(), sources);
+	}
+
+	/// Schedules one rebake for every tracked root affected by a debounced source batch.
+	#[cfg(debug_assertions)]
+	fn reload_sources(self: &Arc<Self>, sources: std::collections::HashSet<String>) {
+		let roots = {
+			let mut hot_reload = self.hot_reload.lock();
+			let roots = sources
+				.iter()
+				.flat_map(|source| hot_reload.resources_by_source.get(source).into_iter().flatten())
+				.cloned()
+				.collect::<std::collections::HashSet<_>>();
+			roots
+				.into_iter()
+				.filter(|root| {
+					if hot_reload.in_flight.insert(root.clone()) {
+						true
+					} else {
+						hot_reload.pending.insert(root.clone());
+						false
+					}
+				})
+				.collect::<Vec<_>>()
+		};
+		for root in roots {
+			let state = Arc::clone(self);
+			let root_for_error = root.clone();
+			if self
+				.dispatcher
+				.dispatch(move || async move { state.reload_resource(root).await })
+				.is_err()
+			{
+				self.hot_reload.lock().in_flight.remove(&root_for_error);
+			}
+		}
+	}
+
+	/// Rebakes one affected root and publishes it only after replacement storage succeeds.
+	#[cfg(debug_assertions)]
+	async fn reload_resource(self: Arc<Self>, id: String) {
+		let stale = match self.resource_storage_backend.read(ResourceId::new(&id)).await {
+			Some((resource, _)) => self.resource_is_stale(&resource).await,
+			None => true,
+		};
+		let result = if stale {
+			let arena = bumpalo::Bump::new();
+			// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
+			self.ensure_baked_in(&id, &&arena).await
+		} else {
+			Ok(())
+		};
+		if stale && result.is_ok() {
+			if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
+				self.track_resource(&resource);
+				let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
+				if let Some(updates) = self.hot_reload.lock().updates.clone() {
+					updates.send(update);
+				}
+			}
+		}
+		let retry = {
+			let mut hot_reload = self.hot_reload.lock();
+			hot_reload.in_flight.remove(&id);
+			hot_reload.pending.remove(&id)
+		};
+		if retry {
+			let state = Arc::clone(&self);
+			let retry_id = id.clone();
+			self.hot_reload.lock().in_flight.insert(id.clone());
+			if self
+				.dispatcher
+				.dispatch(move || async move { state.reload_resource(retry_id).await })
+				.is_err()
+			{
+				self.hot_reload.lock().in_flight.remove(&id);
+			}
+		}
+	}
 	/// Runs one owned bake request on the asset worker pool.
 	pub(crate) async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
 		let notification = match self.register_bake(id) {
@@ -461,6 +657,17 @@ impl AssetManagerState {
 	}
 }
 
+/// Converts a watcher path, including BEAD sidecars, into its source asset ID.
+#[cfg(debug_assertions)]
+fn source_id_from_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+	let relative = path.strip_prefix(root).ok()?;
+	let mut id = relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+	if let Some(source) = id.strip_suffix(".bead") {
+		id = source.to_string();
+	}
+	Some(id)
+}
+
 #[cfg(test)]
 pub mod tests {
 	use std::{
@@ -689,6 +896,64 @@ pub mod tests {
 		assert!(asset_manager.should_discover("nested/example.test", false));
 		assert!(asset_manager.should_discover("nested/example.test", true));
 		assert!(!asset_manager.should_discover("nested/example.unknown", true));
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn watcher_paths_normalize_sidecars_to_their_source_ids() {
+		let root = std::path::Path::new("/assets");
+		assert_eq!(
+			source_id_from_path(root, std::path::Path::new("/assets/rendering/pass.pipeline")),
+			Some("rendering/pass.pipeline".to_string())
+		);
+		assert_eq!(
+			source_id_from_path(root, std::path::Path::new("/assets/rendering/pass.besl.bead")),
+			Some("rendering/pass.besl".to_string())
+		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn tracked_transitive_sources_publish_the_requested_root_after_rebaking() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("parent.test", b"parent");
+		asset_storage.add_file("child.test", b"child");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (manager, _) = versioned_asset_manager(asset_storage.clone(), resource_storage);
+		let updates = Arc::new(crate::resource::resource_manager::ResourceUpdateBroadcaster::default());
+		let listener = updates.listener();
+		manager.state.hot_reload.lock().updates = Some(updates);
+
+		let resource = manager.bake_if_not_exists_serialized("parent.test").await.unwrap();
+		manager.track_resource(&resource);
+		asset_storage.add_file("child.test", b"changed child");
+		manager.state.clone().reload_resource("parent.test".to_string()).await;
+
+		assert_eq!(
+			listener.read(),
+			Some(crate::resource::ResourceUpdate::new(
+				"parent.test".into(),
+				"TestResource".into()
+			))
+		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn unchanged_watcher_events_do_not_publish_resource_updates() {
+		let asset_storage = TestStorageBackend::new();
+		asset_storage.add_file("stable.test", b"stable");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let (manager, _) = versioned_asset_manager(asset_storage, resource_storage);
+		let updates = Arc::new(crate::resource::resource_manager::ResourceUpdateBroadcaster::default());
+		let listener = updates.listener();
+		manager.state.hot_reload.lock().updates = Some(updates);
+
+		let resource = manager.bake_if_not_exists_serialized("stable.test").await.unwrap();
+		manager.track_resource(&resource);
+		manager.state.clone().reload_resource("stable.test".to_string()).await;
+
+		assert_eq!(listener.read(), None);
 	}
 
 	#[r#async::test]

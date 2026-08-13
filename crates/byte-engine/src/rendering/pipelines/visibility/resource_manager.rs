@@ -643,32 +643,6 @@ impl VisibilityPipelineResourceManager {
 					})?;
 					let variant = reference.resource_mut();
 					let alpha_mode = variant.alpha_mode.clone();
-					let specialization_map_entries = variant
-						.variables
-						.iter()
-						.enumerate()
-						.filter_map(|(index, variable)| match &variable.value {
-							Value::Scalar(value) => ghi::pipelines::SpecializationMapEntry::new(
-								index as u32,
-								"f32".to_string(),
-								*value,
-							)
-							.into(),
-							Value::Vector3(value) => ghi::pipelines::SpecializationMapEntry::new(
-								index as u32,
-								"vec3f".to_string(),
-								*value,
-							)
-							.into(),
-							Value::Vector4(value) => ghi::pipelines::SpecializationMapEntry::new(
-								index as u32,
-								"vec4f".to_string(),
-								*value,
-							)
-							.into(),
-							Value::Image(_) => None,
-						})
-						.collect::<Vec<_>>();
 					let texture_keys = variant
 						.variables
 						.iter()
@@ -698,9 +672,7 @@ impl VisibilityPipelineResourceManager {
 					let pipeline = pipeline_manager.request_specialized_compute_pipeline(
 						crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest::new(
 							id.clone(),
-							shader_resource_id,
 							push_constant_ranges,
-							specialization_map_entries,
 						),
 					);
 					Ok(VisibilityTransferCommand::MaterialPrepared {

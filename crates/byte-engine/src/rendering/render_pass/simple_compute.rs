@@ -99,6 +99,7 @@ impl Pipeline {
 			descriptor_set_name,
 			resources: resources.to_vec(),
 			ready: None,
+			revision: 0,
 			failed: false,
 			label: self.label,
 		})
@@ -186,6 +187,7 @@ pub struct Pass {
 	descriptor_set_name: &'static str,
 	resources: Vec<Resource>,
 	ready: Option<ReadyPass>,
+	revision: u64,
 	failed: bool,
 	label: &'static str,
 }
@@ -196,8 +198,15 @@ impl Pass {
 		use ghi::context::Context as _;
 		use ghi::context::ContextCreate as _;
 
-		if let Some(ready) = self.ready {
-			return Some(ready);
+		let revision = self.pipeline_manager.revision(self.pipeline);
+		if self.revision == revision {
+			if let Some(ready) = self.ready {
+				return Some(ready);
+			}
+		}
+		if self.revision != revision {
+			self.ready = None;
+			self.failed = false;
 		}
 		if self.failed {
 			return None;
@@ -251,6 +260,7 @@ impl Pass {
 			workgroup: compiled.workgroup,
 		};
 		self.ready = Some(ready);
+		self.revision = revision;
 		Some(ready)
 	}
 

@@ -24,31 +24,25 @@ pub struct PipelineRef(PipelineKey);
 
 /// The `SpecializedComputePipelineRequest` struct packages one material variant's compute pipeline inputs.
 ///
-/// The material variant ID must change whenever its shader, push constants, or
-/// specialization values change. Pass this request to
+/// The material variant resource supplies its current shader and specialization
+/// values each time the request is compiled. Pass this request to
 /// [`PipelineManagerClient::request_specialized_compute_pipeline`] to reuse the
 /// renderer's existing pipeline compilation workers.
 #[derive(Clone)]
 pub(crate) struct SpecializedComputePipelineRequest {
 	material_variant_id: String,
-	shader_resource_id: String,
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
 }
 
 impl SpecializedComputePipelineRequest {
 	/// Creates a specialized compute request whose stable variant ID controls request coalescing.
 	pub(crate) fn new(
 		material_variant_id: impl Into<String>,
-		shader_resource_id: impl Into<String>,
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
 	) -> Self {
 		Self {
 			material_variant_id: material_variant_id.into(),
-			shader_resource_id: shader_resource_id.into(),
 			push_constant_ranges,
-			specialization_map_entries,
 		}
 	}
 }
@@ -101,8 +95,46 @@ impl PipelineManagerClient {
 			.entries
 			.read()
 			.get(&pipeline.0)
-			.copied()
+			.map(|entry| entry.state)
 			.unwrap_or(PipelineState::Failed)
+	}
+
+	/// Returns the revision most recently published for a stable pipeline reference.
+	pub(crate) fn revision(&self, pipeline: PipelineRef) -> u64 {
+		self.shared
+			.entries
+			.read()
+			.get(&pipeline.0)
+			.map_or(0, |entry| entry.published_revision)
+	}
+
+	/// Recompiles requests rooted at a resource replaced by development asset baking.
+	#[cfg(debug_assertions)]
+	pub(crate) fn resource_updated(&self, id: &str) {
+		let requests = {
+			let mut entries = self.shared.entries.write();
+			entries
+				.iter_mut()
+				.filter_map(|(key, entry)| {
+					entry.kind.depends_on(id).then(|| {
+						entry.requested_revision += 1;
+						PipelineRequest {
+							key: *key,
+							revision: entry.requested_revision,
+							kind: entry.kind.clone(),
+						}
+					})
+				})
+				.collect::<Vec<_>>()
+		};
+
+		for request in requests {
+			if self.requests.send(request).is_err() {
+				log::error!(
+					"Pipeline rebuild request failed. The most likely cause is that every pipeline compilation server has stopped."
+				);
+			}
+		}
 	}
 
 	/// Returns a published pipeline handle, or `None` while it is unavailable.
@@ -126,11 +158,19 @@ impl PipelineManagerClient {
 			if entries.contains_key(&key) {
 				return reference;
 			}
-			entries.insert(key, PipelineState::Pending);
+			entries.insert(
+				key,
+				PipelineEntry {
+					state: PipelineState::Pending,
+					requested_revision: 0,
+					published_revision: 0,
+					kind: kind.clone(),
+				},
+			);
 		}
 
-		if self.requests.send(PipelineRequest { key, kind }).is_err() {
-			self.shared.entries.write().insert(key, PipelineState::Failed);
+		if self.requests.send(PipelineRequest { key, revision: 0, kind }).is_err() {
+			self.shared.entries.write().get_mut(&key).unwrap().state = PipelineState::Failed;
 			log::error!(
 				"Pipeline request failed. The most likely cause is that every pipeline compilation server has stopped."
 			);
@@ -156,12 +196,12 @@ impl PipelineManagerServer {
 	/// Compiles requests until every client sender is dropped.
 	pub async fn run(mut self) {
 		while let Ok(request) = self.requests.recv().await {
-			let PipelineRequest { key, kind } = request;
+			let PipelineRequest { key, revision, kind } = request;
 			let result = match kind {
 				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&id).await,
 				PipelineRequestKind::SpecializedCompute(request) => self.compile_specialized_compute_pipeline(request).await,
 			};
-			if self.completions.send(PipelineCompletion { key, result }).is_err() {
+			if self.completions.send(PipelineCompletion { key, revision, result }).is_err() {
 				break;
 			}
 		}
@@ -274,10 +314,44 @@ impl PipelineManagerServer {
 		})?;
 		let SpecializedComputePipelineRequest {
 			material_variant_id,
-			shader_resource_id,
 			push_constant_ranges,
-			specialization_map_entries,
 		} = request;
+		let variant: resource_management::Reference<resource_management::resources::material::Variant> =
+			resources.request(&material_variant_id).await.map_err(|_| {
+				format!(
+					"Material variant '{material_variant_id}' could not be loaded. The most likely cause is that the material asset was not baked."
+				)
+			})?;
+		let shader_resource_id = variant
+			.resource()
+			.material
+			.resource()
+			.shaders()
+			.first()
+			.map(|shader| shader.id().to_string())
+			.ok_or_else(|| {
+				format!(
+					"Specialized compute pipeline '{material_variant_id}' has no shader. The most likely cause is that the material was baked without a compute shader."
+				)
+			})?;
+		let specialization_map_entries = variant
+			.resource()
+			.variables
+			.iter()
+			.enumerate()
+			.filter_map(|(index, variable)| match &variable.value {
+				resource_management::resources::material::Value::Scalar(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "f32".to_string(), *value).into()
+				}
+				resource_management::resources::material::Value::Vector3(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec3f".to_string(), *value).into()
+				}
+				resource_management::resources::material::Value::Vector4(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec4f".to_string(), *value).into()
+				}
+				resource_management::resources::material::Value::Image(_) => None,
+			})
+			.collect::<Vec<_>>();
 		let prepared = prepare_shader(resources, &shader_resource_id).await?;
 		if !matches!(prepared.stage, ghi::ShaderTypes::Compute) {
 			return Err(format!(
@@ -469,12 +543,8 @@ mod tests {
 	#[test]
 	fn duplicate_specialized_compute_requests_enqueue_one_compilation() {
 		let (client, requests) = client();
-		let request = SpecializedComputePipelineRequest::new(
-			"material/test",
-			"shader/test",
-			vec![ghi::pipelines::PushConstantRange::new(0, 16)],
-			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 0.5f32)],
-		);
+		let request =
+			SpecializedComputePipelineRequest::new("material/test", vec![ghi::pipelines::PushConstantRange::new(0, 16)]);
 
 		let first = client.request_specialized_compute_pipeline(request.clone());
 		let second = client.request_specialized_compute_pipeline(request);
@@ -491,9 +561,7 @@ mod tests {
 			);
 		};
 		assert_eq!(request.material_variant_id, "material/test");
-		assert_eq!(request.shader_resource_id, "shader/test");
 		assert_eq!(request.push_constant_ranges.len(), 1);
-		assert_eq!(request.specialization_map_entries.len(), 1);
 		assert!(matches!(requests.try_recv(), Ok(None)));
 	}
 
@@ -501,12 +569,8 @@ mod tests {
 	fn specialized_and_resource_requests_use_distinct_namespaces() {
 		let (client, requests) = client();
 		let resource = client.request_pipeline("shared/id");
-		let specialized = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-			"shared/id",
-			"shader/test",
-			Vec::new(),
-			Vec::new(),
-		));
+		let specialized =
+			client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new("shared/id", Vec::new()));
 
 		assert_ne!(resource, specialized);
 		let resource_request = requests
@@ -533,6 +597,24 @@ mod tests {
 		let (client, _requests) = client();
 
 		assert_eq!(client.get(PipelineRef(PipelineKey::new(7))), PipelineState::Failed);
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn resource_updates_keep_stable_references_and_enqueue_new_revisions() {
+		let (client, requests) = client();
+		let reference = client.request_pipeline("pipeline/test");
+		let initial = requests.try_recv().unwrap().unwrap();
+		assert_eq!(initial.revision, 0);
+
+		client.resource_updated("unrelated");
+		assert!(matches!(requests.try_recv(), Ok(None)));
+		client.resource_updated("pipeline/test");
+
+		let rebuilt = requests.try_recv().unwrap().unwrap();
+		assert_eq!(rebuilt.key, reference.0);
+		assert_eq!(rebuilt.revision, 1);
+		assert!(matches!(client.get(reference), PipelineState::Pending));
 	}
 }
 
@@ -584,6 +666,16 @@ impl PipelineManager {
 	/// Interns all completed work and publishes one stable availability snapshot.
 	pub(crate) fn publish(&mut self, frame: &mut ghi::implementation::Frame) {
 		while let Ok(Some(completion)) = self.completions.try_recv() {
+			if self
+				.shared
+				.entries
+				.read()
+				.get(&completion.key)
+				.is_none_or(|entry| entry.requested_revision != completion.revision)
+			{
+				continue;
+			}
+			let succeeded = completion.result.is_ok();
 			let state = match completion.result {
 				Ok(DetachedPipeline::Compute {
 					pipeline,
@@ -601,34 +693,66 @@ impl PipelineManager {
 					);
 					PipelineState::Ready(handle)
 				}
-				Ok(DetachedPipeline::Raster(pipeline)) => PipelineState::Ready(frame.intern_raster_pipeline(pipeline)),
+				Ok(DetachedPipeline::Raster(pipeline)) => {
+					self.shared.compute_pipelines.write().remove(&completion.key);
+					PipelineState::Ready(frame.intern_raster_pipeline(pipeline))
+				}
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
-					PipelineState::Failed
+					match self.shared.entries.read().get(&completion.key).map(|entry| entry.state) {
+						Some(ready @ PipelineState::Ready(_)) => ready,
+						_ => PipelineState::Failed,
+					}
 				}
 			};
-			self.shared.entries.write().insert(completion.key, state);
+			let mut entries = self.shared.entries.write();
+			let entry = entries.get_mut(&completion.key).unwrap();
+			if succeeded {
+				entry.published_revision = completion.revision;
+			}
+			entry.state = state;
 		}
 	}
 }
 
 struct PipelineManagerShared {
-	entries: RwLock<HashMap<PipelineKey, PipelineState>>,
+	entries: RwLock<HashMap<PipelineKey, PipelineEntry>>,
 	compute_pipelines: RwLock<HashMap<PipelineKey, ComputePipeline>>,
+}
+
+struct PipelineEntry {
+	state: PipelineState,
+	requested_revision: u64,
+	published_revision: u64,
+	kind: PipelineRequestKind,
 }
 
 struct PipelineRequest {
 	key: PipelineKey,
+	revision: u64,
 	kind: PipelineRequestKind,
 }
 
+#[derive(Clone)]
 enum PipelineRequestKind {
 	Resource { id: String },
 	SpecializedCompute(SpecializedComputePipelineRequest),
 }
 
+impl PipelineRequestKind {
+	/// Returns whether a replaced root resource supplies this request's compilation inputs.
+	#[cfg(debug_assertions)]
+	fn depends_on(&self, id: &str) -> bool {
+		match self {
+			Self::Resource { id: pipeline_id } => pipeline_id == id,
+			Self::SpecializedCompute(request) => request.material_variant_id == id,
+		}
+	}
+}
+
 struct PipelineCompletion {
 	key: PipelineKey,
+	revision: u64,
 	result: Result<DetachedPipeline, String>,
 }
 

@@ -533,11 +533,10 @@ impl VisibilityPipelineManager {
 	fn refresh_material_pipelines(&mut self) {
 		let mut changed = false;
 		for material in self.loaded_materials.values_mut() {
-			if material.pipeline.is_none() {
-				if let Some(pipeline) = self.pipeline_manager.pipeline(material.pipeline_ref) {
-					material.pipeline = Some(pipeline);
-					changed = true;
-				}
+			let pipeline = self.pipeline_manager.pipeline(material.pipeline_ref);
+			if material.pipeline != pipeline {
+				material.pipeline = pipeline;
+				changed = true;
 			}
 		}
 		if changed {

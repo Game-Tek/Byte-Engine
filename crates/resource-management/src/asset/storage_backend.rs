@@ -1,5 +1,11 @@
 /// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
 pub trait StorageBackend: Send + Sync {
+	/// Returns the local directory that can be watched for development asset changes.
+	#[cfg(debug_assertions)]
+	fn watch_root(&self) -> Option<PathBuf> {
+		None
+	}
+
 	/// Reports whether a source directory exists and can be read when the backend exposes paths.
 	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
 		None
@@ -30,6 +36,8 @@ pub trait StorageBackend: Send + Sync {
 }
 
 pub trait DynStorageBackend: Send + Sync {
+	#[cfg(debug_assertions)]
+	fn watch_root(&self) -> Option<PathBuf>;
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
@@ -37,6 +45,11 @@ pub trait DynStorageBackend: Send + Sync {
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
+	#[cfg(debug_assertions)]
+	fn watch_root(&self) -> Option<PathBuf> {
+		self.watch_root()
+	}
+
 	fn directory_accessible(&self, path: &Path) -> Option<bool> {
 		self.directory_accessible(path)
 	}
@@ -211,6 +224,11 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
+	#[cfg(debug_assertions)]
+	fn watch_root(&self) -> Option<PathBuf> {
+		Some(self.base_path.clone())
+	}
+
 	fn directory_accessible(&self, path: &Path) -> Option<bool> {
 		let path = self.base_path.join(path);
 		Some(path.is_dir() && std::fs::read_dir(path).is_ok())

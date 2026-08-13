@@ -35,6 +35,8 @@ pub struct Renderer {
 
 	render_targets: RenderTargets,
 	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
+	#[cfg(debug_assertions)]
+	resource_updates: Option<resource_management::resource::ResourceUpdateListener>,
 
 	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
@@ -211,6 +213,8 @@ impl Renderer {
 
 			render_targets: RenderTargets::new(),
 			resource_manager: None,
+			#[cfg(debug_assertions)]
+			resource_updates: None,
 
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
@@ -247,6 +251,10 @@ impl Renderer {
 	/// passes before creating windows.
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
 		self.resource_manager = Some(resource_manager.weak());
+		#[cfg(debug_assertions)]
+		{
+			self.resource_updates = Some(resource_manager.resource_updates());
+		}
 		for server in &mut self.pipeline_compilation_servers {
 			server.set_resource_manager(resource_manager.clone());
 		}
@@ -501,7 +509,10 @@ impl Renderer {
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
+		let pipeline_compilation_client = &self.pipeline_compilation_client;
 		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
+		#[cfg(debug_assertions)]
+		let resource_updates = &self.resource_updates;
 		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
@@ -513,6 +524,12 @@ impl Renderer {
 			let _enter = span.enter();
 			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 				let completed_graphics_frame = execution.completed_frame();
+				#[cfg(debug_assertions)]
+				if let Some(resource_updates) = resource_updates {
+					while let Some(update) = resource_updates.read() {
+						pipeline_compilation_client.resource_updated(update.id());
+					}
+				}
 				pipeline_compilation_manager.publish(execution.frame().expect(
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));

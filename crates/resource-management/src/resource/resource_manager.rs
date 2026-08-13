@@ -10,6 +10,61 @@ use crate::asset::{
 };
 use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
+/// The `ResourceUpdate` struct identifies a successfully rebaked development resource.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceUpdate {
+	id: String,
+	class: String,
+}
+
+#[cfg(debug_assertions)]
+impl ResourceUpdate {
+	pub(crate) fn new(id: String, class: String) -> Self {
+		Self { id, class }
+	}
+
+	/// Returns the stable ID of the replaced resource.
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+
+	/// Returns the resource class used to select interested systems.
+	pub fn class(&self) -> &str {
+		&self.class
+	}
+}
+
+/// The `ResourceUpdateListener` struct receives successful development resource replacements.
+#[cfg(debug_assertions)]
+pub struct ResourceUpdateListener(std::sync::mpsc::Receiver<ResourceUpdate>);
+
+#[cfg(debug_assertions)]
+impl ResourceUpdateListener {
+	/// Returns the next queued update without blocking the consuming system.
+	pub fn read(&self) -> Option<ResourceUpdate> {
+		self.0.try_recv().ok()
+	}
+}
+
+/// The `ResourceUpdateBroadcaster` struct connects development asset baking to resource consumers.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+pub(crate) struct ResourceUpdateBroadcaster(utils::sync::Mutex<Vec<std::sync::mpsc::Sender<ResourceUpdate>>>);
+
+#[cfg(debug_assertions)]
+impl ResourceUpdateBroadcaster {
+	pub(crate) fn listener(&self) -> ResourceUpdateListener {
+		let (sender, receiver) = std::sync::mpsc::channel();
+		self.0.lock().push(sender);
+		ResourceUpdateListener(receiver)
+	}
+
+	pub(crate) fn send(&self, update: ResourceUpdate) {
+		self.0.lock().retain(|listener| listener.send(update.clone()).is_ok());
+	}
+}
+
 #[cfg(debug_assertions)]
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
@@ -49,6 +104,8 @@ fn asset_lookup_error(message: &str, id: &str, error: &LoadMessages, asset_manag
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,
+	#[cfg(debug_assertions)]
+	resource_updates: std::sync::Arc<ResourceUpdateBroadcaster>,
 
 	storage_backend: std::sync::Arc<dyn DynStorageBackend>,
 }
@@ -67,6 +124,8 @@ impl ResourceManager {
 		ResourceManager {
 			#[cfg(debug_assertions)]
 			asset_manager: std::sync::OnceLock::new(),
+			#[cfg(debug_assertions)]
+			resource_updates: std::sync::Arc::new(ResourceUpdateBroadcaster::default()),
 			storage_backend,
 		}
 	}
@@ -95,7 +154,18 @@ impl ResourceManager {
 		if !asset_manager.uses_resource_storage(&self.storage_backend) {
 			return Err(asset_manager);
 		}
-		self.asset_manager.set(asset_manager)
+		self.asset_manager.set(asset_manager)?;
+		self.asset_manager
+			.get()
+			.unwrap()
+			.start_watching(std::sync::Arc::clone(&self.resource_updates));
+		Ok(())
+	}
+
+	/// Subscribes to resources replaced after successful development rebakes.
+	#[cfg(debug_assertions)]
+	pub fn resource_updates(&self) -> ResourceUpdateListener {
+		self.resource_updates.listener()
 	}
 
 	/// Returns the development trace for asset-backed resource bakes when asset management is installed.
@@ -130,14 +200,16 @@ impl ResourceManager {
 			#[cfg(debug_assertions)]
 			{
 				if let Some(asset_manager) = self.asset_manager.get() {
-					asset_manager.bake_if_not_exists(id).await.map_err(|error| {
+					let resource = asset_manager.bake_if_not_exists_serialized(id).await.map_err(|error| {
 						asset_lookup_error(
 							"Failed to load asset. The asset manager could not bake the resource.",
 							id,
 							&error,
 							asset_manager,
 						)
-					})?
+					})?;
+					asset_manager.track_resource(&resource);
+					resource.into()
 				} else if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
 					resource.into()
 				} else {

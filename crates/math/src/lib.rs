@@ -1,6 +1,28 @@
 //! Branded, allocation-free three-dimensional geometry for Byte-Engine.
 //!
 //! Use [`Point`] for locations, [`Vector`] for displacements, and [`UnitVector`] for normals and directions. Space brands prevent accidental operations across coordinate systems; game domains define their own brands and use them as the `Space` parameter.
+//!
+//! # Direction and rotation conversions
+//!
+//! Choose the path that matches the information you have:
+//!
+//! - [`Vector`] → [`UnitVector`]: call [`Vector::normalized`] when an arbitrary displacement must become a checked direction.
+//! - [`UnitVector`] → [`Orientation`]: call [`orientation_from_direction`] or [`Orientation::from`]. The result turns the engine's +Z forward axis toward the direction and has no roll.
+//! - [`Orientation`] → [`UnitVector`]: call [`direction_from_orientation`] to rotate the engine's +Z forward axis. This returns the facing direction and discards roll.
+//! - [`Quaternion`] → [`Orientation`]: call [`Orientation::try_from_maths`] to validate and normalize quaternion data from an integration boundary.
+//! - [`Orientation`] → [`Quaternion`]: call [`Orientation::into_maths`] when an integration requires the raw quaternion.
+//! - [`Orientation`] → [`Matrix`]: call [`Orientation::into_matrix`] when rendering or physics requires a homogeneous rotation matrix.
+//! - axis and angle → [`Orientation`]: call [`Orientation::try_from_axis_angle`]. Use [`from_rotation`] only when the destination specifically requires a matrix.
+//!
+//! A direction does not contain roll, so converting an [`Orientation`] to a [`UnitVector`] and back cannot preserve the original orientation. Keep an [`Orientation`] when you need the complete rotation.
+//!
+//! ## One-way conversions
+//!
+//! The crate does not decompose a [`Matrix`] into an [`Orientation`], [`UnitVector`], or axis and
+//! angle. A matrix can also contain translation, scale, shear, or projection state, so those
+//! conversions need validation and choices that the current API does not make. Retain the source
+//! [`Orientation`], [`UnitVector`], or axis and angle if you will need it after building a matrix.
+//! The crate also does not extract an axis and angle from an [`Orientation`].
 
 mod geometry;
 mod orientation;
@@ -15,7 +37,22 @@ pub mod sphere;
 pub use aabb::AABB;
 pub use geometry::{NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace};
 use maths_rs::mat::{MatNew4, MatTranspose as _};
-pub use maths_rs::{Mat4f as Matrix, Quatf as Quaternion};
+/// Raw 4-by-4 matrix storage for transforms and projection boundaries.
+///
+/// Use [`Orientation::into_matrix`] to convert a checked rotation, [`from_rotation`] to build a
+/// rotation directly from an axis and angle, or [`from_normal`] to align the +Z basis with a
+/// [`UnitVector`]. Prefer [`Orientation`] while composing rotations because it preserves the
+/// rotation invariant without carrying translation, scale, or projection state.
+///
+/// There is no checked `Matrix` → [`Orientation`] or `Matrix` → [`UnitVector`] conversion. Retain
+/// the source representation if you will need to recover it later.
+pub use maths_rs::Mat4f as Matrix;
+/// Raw quaternion storage for serialization and `maths-rs` integration boundaries.
+///
+/// Convert raw data to a checked [`Orientation`] with [`Orientation::try_from_maths`]. Convert an
+/// orientation back with [`Orientation::into_maths`]. If you only have a facing [`UnitVector`], use
+/// [`orientation_from_direction`] instead of constructing quaternion components directly.
+pub use maths_rs::Quatf as Quaternion;
 pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;
@@ -137,7 +174,12 @@ pub fn are_colinear<Space>(first: UnitVector<Space>, second: UnitVector<Space>) 
 	first.dot(second.into_vector()).abs() > 0.99
 }
 
-/// Returns an orthonormal transform whose forward basis follows `normal`.
+/// Returns an orthonormal matrix whose +Z forward basis follows `normal`.
+///
+/// Use [`orientation_from_direction`] instead when you need an [`Orientation`]. Both conversions
+/// choose a deterministic upright basis because a single direction does not contain roll.
+/// There is no matching [`Matrix`] → [`UnitVector`] conversion, so retain `normal` if you will need
+/// the direction later.
 pub fn from_normal<Space>(normal: UnitVector<Space>) -> Matrix {
 	let up = UnitVector::y_axis();
 	let reference = if are_colinear(normal, up) { UnitVector::z_axis() } else { up };
@@ -154,6 +196,12 @@ pub fn from_normal<Space>(normal: UnitVector<Space>) -> Matrix {
 }
 
 /// Builds a rotation matrix around a checked axis.
+///
+/// Use [`Orientation::try_from_axis_angle`] when you need to compose or retain the rotation. Call
+/// this function when the destination specifically requires a [`Matrix`].
+///
+/// There is no matching matrix-to-axis-angle conversion. Retain `axis` and `theta` if you will
+/// need them later.
 pub fn from_rotation<Space>(axis: UnitVector<Space>, theta: f32) -> Matrix {
 	let c = theta.cos();
 	let s = -theta.sin();
@@ -182,7 +230,11 @@ pub fn from_rotation<Space>(axis: UnitVector<Space>, theta: f32) -> Matrix {
 	)
 }
 
-/// Returns the shortest checked orientation from the engine forward axis to `direction`.
+/// Returns the shortest checked orientation from the engine +Z forward axis to `direction`.
+///
+/// The direction does not specify roll, so this conversion chooses the shortest rotation. Use
+/// [`Orientation::try_from_axis_angle`] when you must control the rotation axis, or retain an
+/// existing [`Orientation`] when roll must survive. Convert back with [`direction_from_orientation`].
 pub fn orientation_from_direction<Space>(direction: UnitVector<Space>) -> Orientation {
 	let forward = UnitVector::z_axis();
 	let alignment = forward.dot(direction.into_vector()).clamp(-1.0, 1.0);
@@ -199,7 +251,11 @@ pub fn orientation_from_direction<Space>(direction: UnitVector<Space>) -> Orient
 	Orientation::try_from_maths(quaternion).expect("checked directions produce valid orientations")
 }
 
-/// Returns the checked world-space direction produced by rotating the engine forward axis.
+/// Returns the checked world-space direction produced by rotating the engine +Z forward axis.
+///
+/// This extracts facing but not roll. Use [`Orientation::into_matrix`] or
+/// [`Orientation::into_maths`] when the complete rotation must survive the conversion. Convert a
+/// facing direction back with [`orientation_from_direction`].
 pub fn direction_from_orientation(orientation: Orientation) -> UnitVector {
 	let rotated_forward = orientation.rotate_vector(UnitVector::<WorldSpace>::z_axis().into_vector());
 

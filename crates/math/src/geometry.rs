@@ -266,7 +266,16 @@ impl<Space> From<UnitVector<Space>> for Vector<Space> {
 	}
 }
 
-/// The `UnitVector` struct represents a checked unit-length direction for normals, rays, and orientation APIs.
+/// The `UnitVector` struct provides a checked unit-length direction for normals, rays, and orientation APIs.
+///
+/// Create one from an arbitrary [`Vector`] with [`Self::try_from_vector`] or
+/// [`Vector::normalized`]. Convert it to a facing [`crate::Orientation`] with
+/// [`crate::orientation_from_direction`] or [`crate::Orientation::from`], or to an orthonormal
+/// [`crate::Matrix`] with [`crate::from_normal`]. Use [`Self::into_vector`] when an operation needs
+/// a displacement instead of a checked direction.
+///
+/// A direction does not contain roll. Keep an [`crate::Orientation`] when you need the complete
+/// rotation.
 #[repr(transparent)]
 pub struct UnitVector<Space = WorldSpace> {
 	value: Vec3f,
@@ -295,6 +304,9 @@ impl<Space> PartialEq for UnitVector<Space> {
 
 impl<Space> UnitVector<Space> {
 	/// Validates and normalizes `vector` so it can be used as a direction or normal.
+	///
+	/// Use [`crate::orientation_from_direction`] next when the direction must become a facing
+	/// [`crate::Orientation`].
 	pub fn try_from_vector(vector: Vector<Space>) -> Result<Self, NormalizationError> {
 		vector.normalized()
 	}
@@ -323,7 +335,9 @@ impl<Space> UnitVector<Space> {
 		}
 	}
 
-	/// Returns this direction as an unnormalized vector when an affine operation needs a displacement.
+	/// Returns this direction as an unnormalized [`Vector`] when an affine operation needs a displacement.
+	///
+	/// Call [`Vector::normalized`] to validate an arbitrary vector in the reverse direction.
 	pub fn into_vector(self) -> Vector<Space> {
 		Vector::from_maths(self.value)
 	}

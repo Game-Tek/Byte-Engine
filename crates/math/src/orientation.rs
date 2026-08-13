@@ -4,10 +4,16 @@ use maths_rs::Quatf;
 
 use crate::{orientation_from_direction, Matrix, UnitVector, Vector};
 
-/// The `Orientation` struct represents a normalized, finite rotation for transforms.
+/// The `Orientation` struct provides a normalized, finite rotation for engine transforms.
 ///
-/// Create an orientation with [`Self::try_from_axis_angle`] or [`Self::try_from_maths`], then use
-/// [`Self::rotate_vector`] to apply it to a displacement in any coordinate space.
+/// Create one from an axis and angle with [`Self::try_from_axis_angle`], from a facing
+/// [`UnitVector`] with [`orientation_from_direction`] or [`Self::from`], or from a raw quaternion
+/// with [`Self::try_from_maths`]. Use [`Self::rotate_vector`] to rotate a displacement,
+/// [`Self::into_matrix`] at a matrix boundary, or [`crate::direction_from_orientation`] to extract
+/// the +Z facing direction.
+///
+/// Keep an `Orientation` when roll matters. A [`UnitVector`] contains only a direction, so a
+/// direction round trip cannot preserve roll.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orientation {
@@ -49,7 +55,10 @@ impl Orientation {
 		}
 	}
 
-	/// Validates and normalizes an explicit raw quaternion from a maths integration boundary.
+	/// Validates and normalizes an explicit raw [`crate::Quaternion`] from a maths integration boundary.
+	///
+	/// Use [`Self::into_maths`] for the reverse conversion. If the source is a facing direction
+	/// rather than quaternion components, use [`orientation_from_direction`].
 	pub fn try_from_maths(value: Quatf) -> Result<Self, OrientationError> {
 		Ok(Self {
 			value: normalize(value)?,
@@ -57,6 +66,8 @@ impl Orientation {
 	}
 
 	/// Creates a rotation around a checked axis by a finite angle in radians.
+	///
+	/// Use [`crate::from_rotation`] only when the destination specifically requires a [`Matrix`].
 	pub fn try_from_axis_angle<Space>(axis: UnitVector<Space>, angle: f32) -> Result<Self, OrientationError> {
 		if !angle.is_finite() {
 			return Err(OrientationError::NonFiniteAngle);
@@ -66,12 +77,19 @@ impl Orientation {
 		Self::try_from_maths(Quatf::from_axis_angle(axis.into_maths(), angle))
 	}
 
-	/// Returns this orientation as an explicit raw quaternion for a maths integration boundary.
+	/// Returns this orientation as an explicit raw [`crate::Quaternion`] for a maths integration boundary.
+	///
+	/// Use [`Self::try_from_maths`] for the reverse checked conversion.
 	pub fn into_maths(self) -> Quatf {
 		self.value
 	}
 
-	/// Returns this orientation as a homogeneous rotation matrix for rendering or physics boundaries.
+	/// Returns this orientation as a homogeneous rotation [`Matrix`] for rendering or physics boundaries.
+	///
+	/// Keep the `Orientation` for further rotation composition. Use
+	/// [`crate::direction_from_orientation`] instead when the destination only needs facing.
+	/// There is no checked [`Matrix`] → `Orientation` conversion, so retain this value if you will
+	/// need the rotation after crossing the matrix boundary.
 	pub fn into_matrix(self) -> Matrix {
 		Matrix::from(self.value)
 	}

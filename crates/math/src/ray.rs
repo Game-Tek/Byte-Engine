@@ -10,7 +10,7 @@ pub struct Ray<Space = WorldSpace> {
 impl<Space> Ray<Space> {
 	/// Creates a ray from an origin and a checked direction.
 	///
-	/// Use [`Vector::normalize`] to turn an unnormalized displacement into `direction`.
+	/// Use [`crate::Vector::normalized`] to turn an unnormalized displacement into `direction`.
 	pub fn new(origin: Point<Space>, direction: UnitVector<Space>) -> Self {
 		Self { origin, direction }
 	}

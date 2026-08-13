@@ -1,18 +1,54 @@
-use std::{
-	alloc::Allocator,
-	hash::Hasher,
-	ops::Deref,
-	path::{Path, PathBuf},
-	time::UNIX_EPOCH,
-};
+/// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
+pub trait StorageBackend: Send + Sync {
+	/// Reports whether a source directory exists and can be read when the backend exposes paths.
+	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
+		None
+	}
 
-use gxhash::GxHasher;
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = ResolveResult<'a>> + 'a {
+		read_asset_from_source(url, None, &std::alloc::Global)
+	}
 
-use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
-use crate::{
-	r#async::{future, BoxedFuture, File as AsyncFile},
-	resource::reader::MappedFileBacking,
-};
+	/// Resolves an asset while using the provided allocator for source bytes.
+	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> impl Future<Output = ResolveResult<'a>> + 'a {
+		read_asset_from_source(url, None, allocator)
+	}
+
+	/// Returns the source version used to decide whether an existing baked resource is still fresh.
+	///
+	/// Backends with native metadata should override this method to avoid reading source bytes.
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
+		async move {
+			let (source, sidecar, _) = self.resolve(url).await?;
+			AssetVersion::from_resolved(&source, sidecar.as_ref())
+		}
+	}
+}
+
+pub trait DynStorageBackend: Send + Sync {
+	fn directory_accessible(&self, path: &Path) -> Option<bool>;
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
+	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
+}
+
+impl<T: StorageBackend> DynStorageBackend for T {
+	fn directory_accessible(&self, path: &Path) -> Option<bool> {
+		self.directory_accessible(path)
+	}
+
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
+		Box::pin(self.resolve(url))
+	}
+
+	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
+		Box::pin(self.resolve_in(url, allocator))
+	}
+
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+		Box::pin(self.version(url))
+	}
+}
 
 /// The metadata implementation used to version local source files.
 pub type AssetMetadata = compio::fs::Metadata;
@@ -155,33 +191,6 @@ impl AssetDependency {
 }
 
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
-
-/// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
-pub trait StorageBackend: Send + Sync {
-	/// Reports whether a source directory exists and can be read when the backend exposes paths.
-	fn directory_accessible(&self, _path: &Path) -> Option<bool> {
-		None
-	}
-
-	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
-		future(read_asset_from_source(url, None, &std::alloc::Global))
-	}
-
-	/// Resolves an asset while using the provided allocator for source bytes.
-	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
-		future(read_asset_from_source(url, None, allocator))
-	}
-
-	/// Returns the source version used to decide whether an existing baked resource is still fresh.
-	///
-	/// Backends with native metadata should override this method to avoid reading source bytes.
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
-		Box::pin(async move {
-			let (source, sidecar, _) = self.resolve(url).await?;
-			AssetVersion::from_resolved(&source, sidecar.as_ref())
-		})
-	}
-}
 
 /// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
@@ -482,3 +491,15 @@ pub mod tests {
 		fs::remove_dir_all(directory).unwrap();
 	}
 }
+
+use std::{
+	alloc::Allocator, future::Future, hash::Hasher, ops::Deref, path::{Path, PathBuf}, time::UNIX_EPOCH
+};
+
+use gxhash::GxHasher;
+
+use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
+use crate::{
+	r#async::{future, BoxedFuture, File as AsyncFile},
+	resource::reader::MappedFileBacking,
+};

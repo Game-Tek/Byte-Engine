@@ -25,7 +25,7 @@ pub struct AssetManager {
 /// The `AssetManagerState` struct keeps shared bake state independent from the worker runtimes that execute requests.
 pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
-	storage_backend: Box<dyn StorageBackend>,
+	storage_backend: Box<dyn DynStorageBackend>,
 	resource_storage_backend: Arc<dyn ResourceStorageBackend>,
 	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
 	dispatcher: compio::dispatcher::Dispatcher,
@@ -131,7 +131,7 @@ impl AssetManager {
 			.push(Box::new(AssetHandlerWrapper(asset_handler)));
 	}
 
-	pub fn get_storage_backend(&self) -> &dyn StorageBackend {
+	pub fn get_storage_backend(&self) -> &dyn DynStorageBackend {
 		self.state.storage_backend.as_ref()
 	}
 
@@ -1069,9 +1069,5 @@ use super::{
 	StorageBackend,
 };
 use crate::{
-	asset::{self, asset_handler::LoadErrors, ResourceId},
-	online_docs_url,
-	r#async::BoxedFuture,
-	resource::{self, StorageBackend as ResourceStorageBackend},
-	Model, ProcessedAsset, ReferenceModel,
+	Model, ProcessedAsset, ReferenceModel, asset::{self, DynStorageBackend, ResourceId, asset_handler::LoadErrors}, r#async::BoxedFuture, online_docs_url, resource::{self, StorageBackend as ResourceStorageBackend}
 };

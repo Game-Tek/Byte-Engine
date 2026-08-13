@@ -1431,7 +1431,7 @@ struct GltfTextureDependency {
 
 /// Loads every declared glTF buffer in source order so accessor indices remain valid for meshes, skins, and clips.
 async fn load_gltf_buffers(
-	asset_storage_backend: &dyn asset::StorageBackend,
+	asset_storage_backend: &dyn asset::DynStorageBackend,
 	source: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	mut binary_blob: Option<std::borrow::Cow<'_, [u8]>>,
@@ -1572,7 +1572,7 @@ fn generated_image_fragment_index(fragment: &str) -> Option<u32> {
 /// Loads a glTF image from embedded buffer data, data URIs, or file-local URI references.
 /// File-local references are resolved through the engine asset backend so ad-hoc textures inside `.gltf` assets do not need to be standalone engine resources.
 async fn load_gltf_image_data(
-	asset_storage_backend: &dyn asset::StorageBackend,
+	asset_storage_backend: &dyn asset::DynStorageBackend,
 	mesh_url: ResourceId<'_>,
 	image: gltf::Image<'_>,
 	buffers: &[gltf::buffer::Data],

@@ -26,13 +26,13 @@ pub enum LoadErrors {
 
 /// The `TrackingStorageBackend` struct records every source resolved during one asset bake.
 pub(crate) struct TrackingStorageBackend<'a> {
-	inner: &'a dyn asset::StorageBackend,
+	inner: &'a dyn asset::DynStorageBackend,
 	dependencies: &'a Mutex<Vec<AssetDependency>>,
 }
 
 impl<'a> TrackingStorageBackend<'a> {
 	/// Creates a source backend that records stable versions after successful reads.
-	pub(crate) fn new(inner: &'a dyn asset::StorageBackend, dependencies: &'a Mutex<Vec<AssetDependency>>) -> Self {
+	pub(crate) fn new(inner: &'a dyn asset::DynStorageBackend, dependencies: &'a Mutex<Vec<AssetDependency>>) -> Self {
 		Self { inner, dependencies }
 	}
 
@@ -106,7 +106,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 pub struct BakeContext<'a> {
 	asset_manager: &'a AssetManagerState,
 	resource_storage_backend: &'a dyn resource::StorageBackend,
-	asset_storage_backend: &'a dyn asset::StorageBackend,
+	asset_storage_backend: &'a dyn asset::DynStorageBackend,
 	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
 	allocator: &'a dyn Allocator,
 	primary_id: ResourceId<'a>,
@@ -119,7 +119,7 @@ impl<'a> BakeContext<'a> {
 	pub(crate) fn new(
 		asset_manager: &'a AssetManagerState,
 		resource_storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
+		asset_storage_backend: &'a dyn asset::DynStorageBackend,
 		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
 		allocator: &'a dyn Allocator,
 		primary_id: ResourceId<'a>,
@@ -301,7 +301,7 @@ impl<'a> BakeContext<'a> {
 		dependencies
 	}
 
-	pub(crate) fn asset_storage_backend(&self) -> &'a dyn asset::StorageBackend {
+	pub(crate) fn asset_storage_backend(&self) -> &'a dyn asset::DynStorageBackend {
 		self.asset_storage_backend
 	}
 

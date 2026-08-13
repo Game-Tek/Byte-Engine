@@ -1,7 +1,7 @@
 use resource_management::{
 	resources::{
 		animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
-		skeleton::{LocalTransform, Skeleton},
+		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
 	Reference,
 };
@@ -104,16 +104,33 @@ impl<'a> PackedAnimation<'a> {
 		output.extend(skeleton.nodes.iter().map(|node| node.rest_local));
 		for track_index in 0..self.track_count() {
 			let track = self.track(track_index);
-			let local = &mut output[track.node as usize];
-			if let Some(curve) = track.translation {
-				local.translation = self.sample_vector3(curve, time);
-			}
-			if let Some(curve) = track.rotation {
-				local.rotation = self.sample_rotation(curve, time);
-			}
-			if let Some(curve) = track.scale {
-				local.scale = self.sample_vector3(curve, time);
-			}
+			let node = track.node as usize;
+			self.sample_track(track, time, &mut output[node]);
+		}
+	}
+
+	/// Samples directly into a mapped target pose, avoiding a transient complete source pose.
+	pub(crate) fn sample_target_local_pose(self, pose_map: &SkeletonPoseMap, time: f32, output: &mut [LocalTransform]) {
+		output.copy_from_slice(pose_map.target_rest_pose());
+		for track_index in 0..self.track_count() {
+			let track = self.track(track_index);
+			let Some(target) = pose_map.direct_target_node(track.node as usize) else {
+				continue;
+			};
+			self.sample_track(track, time, &mut output[target]);
+		}
+	}
+
+	/// Applies the sampled channels from one packed track to a local transform.
+	fn sample_track(self, track: PackedTrack, time: f32, local: &mut LocalTransform) {
+		if let Some(curve) = track.translation {
+			local.translation = self.sample_vector3(curve, time);
+		}
+		if let Some(curve) = track.rotation {
+			local.rotation = self.sample_rotation(curve, time);
+		}
+		if let Some(curve) = track.scale {
+			local.scale = self.sample_vector3(curve, time);
 		}
 	}
 
@@ -427,4 +444,69 @@ fn hermite<const N: usize>(
 			+ end[component] * end_value_weight
 			+ end_tangent[component] * span * end_tangent_weight
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use resource_management::{
+		resources::{
+			animation::{Animation, NodeTrack, Vector3Curve},
+			skeleton::{LocalTransform, Skeleton, SkeletonNode, SkeletonPoseMap},
+		},
+		Reference,
+	};
+
+	use super::{PackedAnimation, PackedAnimationData};
+
+	#[test]
+	fn direct_sampling_preserves_the_last_duplicate_source_node() {
+		let source = Skeleton {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform {
+						translation: [1.0, 0.0, 0.0],
+						..LocalTransform::identity()
+					},
+				},
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform {
+						translation: [2.0, 0.0, 0.0],
+						..LocalTransform::identity()
+					},
+				},
+			],
+		};
+		let target = Skeleton {
+			nodes: vec![SkeletonNode {
+				name: Some("Hips".into()),
+				parent: None,
+				rest_local: LocalTransform::identity(),
+			}],
+		};
+		let animation = Animation {
+			name: None,
+			skeleton: Reference::in_memory("duplicate-source.skeleton", source),
+			duration: 1.0,
+			tracks: vec![NodeTrack {
+				node: 0,
+				translation: Some(Vector3Curve::Step {
+					times: vec![0.0],
+					values: vec![[3.0, 0.0, 0.0]],
+				}),
+				rotation: None,
+				scale: None,
+			}],
+		};
+		let packed = PackedAnimationData::from_resource(animation);
+		let map = SkeletonPoseMap::by_name(packed.skeleton.resource(), &target);
+		let mut output = [LocalTransform::identity()];
+
+		PackedAnimation::from_words(&packed.data).sample_target_local_pose(&map, 0.0, &mut output);
+
+		assert_eq!(output[0].translation, [2.0, 0.0, 0.0]);
+	}
 }

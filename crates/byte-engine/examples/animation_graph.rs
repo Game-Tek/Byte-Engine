@@ -128,6 +128,9 @@ fn main() {
 
 	while app
 		.tick_with(|app, time| {
+			// Advance shared loading once per application tick, not once per player.
+			pool.update();
+
 			// Wait without blocking rendering until the target skeleton arrives. The
 			// owned constructor lets this player retain that skeleton safely.
 			if player.is_none() {

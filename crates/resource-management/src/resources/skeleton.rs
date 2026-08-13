@@ -179,6 +179,8 @@ pub struct Skeleton {
 /// The `SkeletonPoseMap` struct preserves a reusable source-to-target node mapping for compatible animation-pack rigs.
 pub struct SkeletonPoseMap {
 	target_by_source: Vec<Option<usize>>,
+	direct_target_by_source: Vec<Option<usize>>,
+	target_rest_pose: Vec<LocalTransform>,
 }
 
 impl SkeletonPoseMap {
@@ -194,21 +196,57 @@ impl SkeletonPoseMap {
 				.and_modify(|target| *target = None)
 				.or_insert(Some(index));
 		}
+		let target_by_source: Vec<_> = source
+			.nodes
+			.iter()
+			.map(|node| {
+				node.name
+					.as_deref()
+					.and_then(|name| target_by_name.get(name).copied().flatten())
+			})
+			.collect();
+		// Direct sampling starts from the final rest pose, so only the final source
+		// writer for each target may apply animated channels.
+		let mut direct_target_by_source = target_by_source.clone();
+		let mut final_source_by_target = vec![None; target.nodes.len()];
+		for (source, target) in target_by_source.iter().enumerate() {
+			if let Some(target) = target {
+				if let Some(previous) = final_source_by_target[*target].replace(source) {
+					direct_target_by_source[previous] = None;
+				}
+			}
+		}
+		let mut target_rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
+		for (source, target) in source.nodes.iter().zip(&target_by_source) {
+			if let Some(target) = target {
+				target_rest_pose[*target] = source.rest_local;
+			}
+		}
 		Self {
-			target_by_source: source
-				.nodes
-				.iter()
-				.map(|node| {
-					node.name
-						.as_deref()
-						.and_then(|name| target_by_name.get(name).copied().flatten())
-				})
-				.collect(),
+			target_by_source,
+			direct_target_by_source,
+			target_rest_pose,
 		}
 	}
 
+	/// Returns the target node mapped from one source node.
 	pub fn target_node(&self, source_node: usize) -> Option<usize> {
 		self.target_by_source.get(source_node).copied().flatten()
+	}
+
+	/// Returns the target node written by direct mapped sampling for one source node.
+	///
+	/// When multiple source nodes map to one target, only the last source node
+	/// writes that target. This matches [`Self::write_target_local_pose`].
+	pub fn direct_target_node(&self, source_node: usize) -> Option<usize> {
+		self.direct_target_by_source.get(source_node).copied().flatten()
+	}
+
+	/// Returns the complete target rest pose after compatible source rest transforms replace matching target nodes.
+	///
+	/// Use this as the base pose before directly sampling mapped animation tracks.
+	pub fn target_rest_pose(&self) -> &[LocalTransform] {
+		&self.target_rest_pose
 	}
 
 	/// Writes a complete target-local pose without allocating after caller storage reaches the target skeleton size.
@@ -225,8 +263,9 @@ impl SkeletonPoseMap {
 			});
 		}
 
+		debug_assert_eq!(target.nodes.len(), self.target_rest_pose.len());
 		output.clear();
-		output.extend(target.nodes.iter().map(|node| node.rest_local));
+		output.extend_from_slice(&self.target_rest_pose);
 		for (source, target) in source_pose.iter().zip(&self.target_by_source) {
 			if let Some(target) = target {
 				output[*target] = *source;
@@ -499,6 +538,45 @@ mod tests {
 		assert_eq!(map.target_node(1), Some(2));
 		assert_eq!(output[0], helper_rest);
 		assert_eq!(output[1], animated_hips);
+	}
+
+	#[test]
+	fn direct_pose_map_keeps_the_last_duplicate_source_node() {
+		let source = Skeleton {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform {
+						translation: [1.0, 0.0, 0.0],
+						..LocalTransform::identity()
+					},
+				},
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform {
+						translation: [2.0, 0.0, 0.0],
+						..LocalTransform::identity()
+					},
+				},
+			],
+		};
+		let target = Skeleton {
+			nodes: vec![SkeletonNode {
+				name: Some("Hips".into()),
+				parent: None,
+				rest_local: LocalTransform::identity(),
+			}],
+		};
+
+		let map = SkeletonPoseMap::by_name(&source, &target);
+
+		assert_eq!(map.target_node(0), Some(0));
+		assert_eq!(map.target_node(1), Some(0));
+		assert_eq!(map.direct_target_node(0), None);
+		assert_eq!(map.direct_target_node(1), Some(0));
+		assert_eq!(map.target_rest_pose()[0].translation, [2.0, 0.0, 0.0]);
 	}
 
 	#[test]

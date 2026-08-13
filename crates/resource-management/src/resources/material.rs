@@ -57,7 +57,7 @@ super::impl_resource_model!(Material, MaterialModel, "Material");
 impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveErrors>> {
 		crate::r#async::future(async move {
 			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
@@ -125,7 +125,7 @@ pub struct VariantVariableModel {
 impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<VariantVariable, SolveErrors>> {
 		crate::r#async::future(async move {
 			Ok(VariantVariable {
@@ -160,7 +160,7 @@ super::impl_resource_model!(Variant, VariantModel, "Variant");
 impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveErrors>> {
 		crate::r#async::future(async move {
 			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
@@ -328,7 +328,7 @@ pub struct ParameterModel {
 impl<'de> Solver<'de, Parameter> for ParameterModel {
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Parameter, SolveErrors>> {
 		crate::r#async::future(async move {
 			Ok(Parameter {

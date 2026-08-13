@@ -251,7 +251,7 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 	/// Resolves the target skeleton and rejects clip data that a CPU graph could not evaluate deterministically.
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Animation, SolveErrors>> {
 		crate::r#async::future(async move {
 			let skeleton = self.skeleton.solve(storage_backend).await?;
@@ -270,7 +270,7 @@ impl<'de> Solver<'de, Reference<Animation>> for ReferenceModel<AnimationModel> {
 	/// Resolves a stored clip and its skeleton dependency for CPU pose sampling and blending.
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Animation>, SolveErrors>> {
 		crate::r#async::future(async move {
 			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;

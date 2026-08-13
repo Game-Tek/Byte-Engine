@@ -305,7 +305,7 @@ super::impl_resource_model!(Skeleton, SkeletonModel, "Skeleton");
 impl<'de> Solver<'de, Skeleton> for SkeletonModel {
 	fn solve(
 		self,
-		_storage_backend: &'de dyn resource::ReadStorageBackend,
+		_storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Skeleton, SolveErrors>> {
 		crate::r#async::future(async move {
 			validate_nodes(&self.nodes)?;
@@ -318,7 +318,7 @@ impl<'de> Solver<'de, Reference<Skeleton>> for ReferenceModel<SkeletonModel> {
 	/// Resolves a stored hierarchy for animation graphs after validating its serialized node model.
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Skeleton>, SolveErrors>> {
 		crate::r#async::future(async move {
 			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;

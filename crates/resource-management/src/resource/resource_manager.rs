@@ -1,6 +1,6 @@
 use super::{
-	storage_backend::{Query, QueryError, QueryPage},
-	StorageBackend,
+	storage_backend::{Query, QueryError, QueryPage, StorageBackendHarness},
+	DynStorageBackend, StorageBackend,
 };
 #[cfg(debug_assertions)]
 use crate::asset::{
@@ -50,7 +50,7 @@ pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,
 
-	storage_backend: std::sync::Arc<dyn StorageBackend>,
+	storage_backend: std::sync::Arc<dyn DynStorageBackend>,
 }
 
 impl ResourceManager {
@@ -58,12 +58,12 @@ impl ResourceManager {
 	///
 	/// In debug builds, optionally install an asset manager before the first
 	/// request. Next, call [`Self::request`] for each typed runtime resource.
-	pub fn new<SB: StorageBackend>(storage_backend: SB) -> Self {
-		Self::new_shared(std::sync::Arc::new(storage_backend))
+	pub fn new<SB: StorageBackend + 'static>(storage_backend: SB) -> Self {
+		Self::new_shared(StorageBackendHarness::new(storage_backend).into_shared())
 	}
 
 	/// Creates a resource manager that shares its store with an asset manager.
-	pub fn new_shared(storage_backend: std::sync::Arc<dyn StorageBackend>) -> Self {
+	pub fn new_shared(storage_backend: std::sync::Arc<dyn DynStorageBackend>) -> Self {
 		ResourceManager {
 			#[cfg(debug_assertions)]
 			asset_manager: std::sync::OnceLock::new(),
@@ -72,7 +72,7 @@ impl ResourceManager {
 	}
 
 	/// Returns the shared destination store used for resource reads and asset bakes.
-	pub fn storage_backend(&self) -> std::sync::Arc<dyn StorageBackend> {
+	pub fn storage_backend(&self) -> std::sync::Arc<dyn DynStorageBackend> {
 		std::sync::Arc::clone(&self.storage_backend)
 	}
 
@@ -107,7 +107,7 @@ impl ResourceManager {
 		self.asset_manager.get().map(AssetManager::resource_trace)
 	}
 
-	fn get_storage_backend(&self) -> &dyn StorageBackend {
+	fn get_storage_backend(&self) -> &dyn DynStorageBackend {
 		self.storage_backend.as_ref()
 	}
 
@@ -283,7 +283,7 @@ mod debug_tests {
 			ResourceId, ResourceTraceLevel,
 		},
 		r#async,
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::{storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend, StorageBackendHarness},
 		resources::material::{Shader, ShaderArtifact, ShaderInterface},
 		types::ShaderTypes,
 		ProcessedAsset,
@@ -383,7 +383,7 @@ mod debug_tests {
 	}
 
 	fn resource_manager_with_file_assets(path: std::path::PathBuf) -> ResourceManager {
-		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
 		let mut asset_manager = AssetManager::new_shared(FileStorageBackend::new(path), Arc::clone(&storage));
 		asset_manager.add_asset_handler(ResolvingAssetHandler);
 		let resource_manager = ResourceManager::new_shared(storage);
@@ -393,7 +393,7 @@ mod debug_tests {
 
 	#[test]
 	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
-		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
 		let resource_manager = Arc::new(ResourceManager::new_shared(Arc::clone(&storage)));
 		let renderer_reference = Arc::downgrade(&resource_manager);
 
@@ -446,7 +446,7 @@ mod debug_tests {
 		let invocations = Arc::new(AtomicUsize::new(0));
 		let (started, started_announcement) = announcement::Announcement::new();
 		let (release, release_announcement) = announcement::Announcement::new();
-		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
 		let mut asset_manager = AssetManager::new_shared(AssetTestStorageBackend::new(), Arc::clone(&storage));
 		asset_manager.add_asset_handler(CoordinatingShaderHandler {
 			invocations: Arc::clone(&invocations),
@@ -483,7 +483,7 @@ mod debug_tests {
 		let invocations = Arc::new(AtomicUsize::new(0));
 		let asset_storage = AssetTestStorageBackend::new();
 		asset_storage.add_file("versioned.test", b"first shader");
-		let storage: Arc<dyn crate::resource::StorageBackend> = Arc::new(ResourceTestStorageBackend::new());
+		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
 		let mut asset_manager = AssetManager::new_shared(asset_storage.clone(), Arc::clone(&storage));
 		asset_manager.add_asset_handler(VersionedShaderHandler {
 			invocations: Arc::clone(&invocations),

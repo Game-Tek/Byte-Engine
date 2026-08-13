@@ -1,11 +1,11 @@
-use crate::{r#async::BoxedFuture, resource::ReadStorageBackend};
+use crate::{r#async::BoxedFuture, resource::storage_backend::DynReadStorageBackend};
 
 /// The `Solver` trait provides the dependency-aware conversion from stored models to typed runtime resources.
 ///
 /// [`ResourceManager`](crate::ResourceManager) starts resolution for the requested
 /// resource. Nested models await [`Solver::solve`] to resolve their dependencies.
 pub trait Solver<'de, T> {
-	fn solve(self, storage_backend: &'de dyn ReadStorageBackend) -> BoxedFuture<'de, Result<T, SolveErrors>>
+	fn solve(self, storage_backend: &'de dyn DynReadStorageBackend) -> BoxedFuture<'de, Result<T, SolveErrors>>
 	where
 		Self: 'de;
 }

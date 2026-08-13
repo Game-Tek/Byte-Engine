@@ -105,7 +105,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 #[derive(Clone, Copy)]
 pub struct BakeContext<'a> {
 	asset_manager: &'a AssetManagerState,
-	resource_storage_backend: &'a dyn resource::StorageBackend,
+	resource_storage_backend: &'a dyn resource::DynStorageBackend,
 	asset_storage_backend: &'a dyn asset::DynStorageBackend,
 	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
 	allocator: &'a dyn Allocator,
@@ -118,7 +118,7 @@ pub struct BakeContext<'a> {
 impl<'a> BakeContext<'a> {
 	pub(crate) fn new(
 		asset_manager: &'a AssetManagerState,
-		resource_storage_backend: &'a dyn resource::StorageBackend,
+		resource_storage_backend: &'a dyn resource::DynStorageBackend,
 		asset_storage_backend: &'a dyn asset::DynStorageBackend,
 		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
 		allocator: &'a dyn Allocator,

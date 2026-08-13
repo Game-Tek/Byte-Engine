@@ -2,6 +2,8 @@
 
 pub mod redb_storage_backend;
 
+use std::future::Future;
+
 use super::resource_handler::MultiResourceReader;
 use crate::{
 	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
@@ -116,19 +118,20 @@ pub enum QueryError {
 	StorageFailure,
 }
 
-pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
-	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
-	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
+pub trait ReadStorageBackend: Sync + Send {
+	fn list(&self) -> impl Future<Output = Result<Vec<String>, String>>;
+	fn read<'a>(&'a self, id: ResourceId<'a>)
+		-> impl Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a;
 
 	fn query(
 		&self,
 		query: Query,
-	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
+	) -> impl Future<Output = Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
 
 	/// Returns development-time bake messages even when the requested resource was not stored.
 	#[cfg(debug_assertions)]
-	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
-		crate::r#async::future(async { Ok(Vec::new()) })
+	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> impl Future<Output = Result<Vec<crate::ResourceTraceItem>, String>> + 'a {
+		async { Ok(Vec::new()) }
 	}
 
 	/// Returns the asset type from its URL when the backend can determine it.
@@ -138,12 +141,29 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 		Some(url.get_extension())
 	}
 
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
-		crate::r#async::future(async move { self.read(id).await.is_some() })
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = bool> + 'a {
+		async move { self.read(id).await.is_some() }
 	}
 }
 
-pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
+pub trait DynReadStorageBackend: Send + Sync {
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
+	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>>;
+	#[cfg(debug_assertions)]
+	fn read_trace<'a>(&'a self, _id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		Box::pin(async { Ok(Vec::new()) })
+	}
+
+	fn get_type<'a>(&'a self, id: ResourceId<'a>) -> Option<&'a str>;
+
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool>;
+}
+
+pub trait WriteStorageBackend: Sync + Send {
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
 	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
 		self.store_in(resource, data, &std::alloc::Global)
@@ -154,7 +174,8 @@ pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 		data: &[u8],
 		allocator: &dyn std::alloc::Allocator,
 	) -> Result<SerializableResource, ()>;
-	fn sync(&self, _: &dyn ReadStorageBackend) {}
+
+	fn sync<T: ReadStorageBackend>(&self, _: &T) {}
 
 	/// Replaces development-time bake messages without creating a resource entry.
 	#[cfg(debug_assertions)]
@@ -165,12 +186,176 @@ pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn start(&self, _: ResourceId<'_>) {}
 }
 
-downcast_rs::impl_downcast!(ReadStorageBackend);
-downcast_rs::impl_downcast!(WriteStorageBackend);
+pub trait DynWriteStorageBackend: Send + Sync {
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
+	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()>;
+	fn store_in(
+		&self,
+		resource: ProcessedAsset,
+		data: &[u8],
+		allocator: &dyn std::alloc::Allocator,
+	) -> Result<SerializableResource, ()>;
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
+		Ok(())
+	}
+	fn start(&self, _: ResourceId<'_>) {}
+}
+
+// downcast_rs::impl_downcast!(ReadStorageBackend);
+// downcast_rs::impl_downcast!(WriteStorageBackend);
 
 pub trait StorageBackend: ReadStorageBackend + WriteStorageBackend {}
+pub trait DynStorageBackend: DynReadStorageBackend + DynWriteStorageBackend {}
 
-downcast_rs::impl_downcast!(StorageBackend);
+/// The `StorageBackendHarness` struct owns a native storage backend behind an object-compatible interface.
+///
+/// Use [`Self::into_boxed`] or [`Self::into_shared`] when a component must retain a
+/// [`DynStorageBackend`] without knowing the concrete backend type.
+pub struct StorageBackendHarness<T> {
+	backend: T,
+}
+
+impl<T> StorageBackendHarness<T> {
+	/// Creates a harness for a native storage backend.
+	pub fn new(backend: T) -> Self {
+		Self { backend }
+	}
+}
+
+impl<T: StorageBackend + 'static> StorageBackendHarness<T> {
+	/// Stores this backend in a boxed object-compatible interface.
+	pub fn into_boxed(self) -> Box<dyn DynStorageBackend> {
+		Box::new(self)
+	}
+
+	/// Stores this backend in a shared object-compatible interface.
+	pub fn into_shared(self) -> std::sync::Arc<dyn DynStorageBackend> {
+		std::sync::Arc::new(self)
+	}
+}
+
+// downcast_rs::impl_downcast!(StorageBackend);
+
+impl<T: ReadStorageBackend> DynReadStorageBackend for T {
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+		Box::pin(self.list())
+	}
+
+	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+		Box::pin(self.read(id))
+	}
+
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+		Box::pin(self.query(query))
+	}
+
+	#[cfg(debug_assertions)]
+	fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		Box::pin(self.read_trace(id))
+	}
+
+	fn get_type<'a>(&'a self, id: ResourceId<'a>) -> Option<&'a str> {
+		self.get_type(id)
+	}
+
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
+		Box::pin(self.exists(id))
+	}
+}
+
+impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
+		self.delete(id)
+	}
+
+	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
+		self.store(resource, data)
+	}
+
+	fn store_in(
+		&self,
+		resource: ProcessedAsset,
+		data: &[u8],
+		allocator: &dyn std::alloc::Allocator,
+	) -> Result<SerializableResource, ()> {
+		self.store_in(resource, data, allocator)
+	}
+
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
+		self.replace_trace(id, items)
+	}
+
+	fn start(&self, id: ResourceId<'_>) {
+		self.start(id)
+	}
+}
+
+impl<T: ReadStorageBackend + WriteStorageBackend> DynStorageBackend for T {}
+
+impl<T: StorageBackend> DynReadStorageBackend for StorageBackendHarness<T> {
+	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+		Box::pin(self.backend.list())
+	}
+
+	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+		Box::pin(self.backend.read(id))
+	}
+
+	fn query(
+		&self,
+		query: Query,
+	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+		Box::pin(self.backend.query(query))
+	}
+
+	#[cfg(debug_assertions)]
+	fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		Box::pin(self.backend.read_trace(id))
+	}
+
+	fn get_type<'a>(&'a self, id: ResourceId<'a>) -> Option<&'a str> {
+		self.backend.get_type(id)
+	}
+
+	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
+		Box::pin(self.backend.exists(id))
+	}
+}
+
+impl<T: StorageBackend> DynWriteStorageBackend for StorageBackendHarness<T> {
+	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
+		self.backend.delete(id)
+	}
+
+	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
+		self.backend.store(resource, data)
+	}
+
+	fn store_in(
+		&self,
+		resource: ProcessedAsset,
+		data: &[u8],
+		allocator: &dyn std::alloc::Allocator,
+	) -> Result<SerializableResource, ()> {
+		self.backend.store_in(resource, data, allocator)
+	}
+
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
+		self.backend.replace_trace(id, items)
+	}
+
+	fn start(&self, id: ResourceId<'_>) {
+		self.backend.start(id)
+	}
+}
+
+impl<T: StorageBackend> DynStorageBackend for StorageBackendHarness<T> {}
 
 #[cfg(test)]
 pub mod tests {
@@ -336,10 +521,11 @@ pub mod tests {
 			Ok(())
 		}
 
-		fn sync<'s, 'a>(&'s self, _: &'a dyn ReadStorageBackend) -> () {
+		fn sync<'s, 'a, T: ReadStorageBackend>(&'s self, _: &'a T) -> () {
 			{}
 		}
 	}
 
 	impl StorageBackend for TestStorageBackend {}
+
 }

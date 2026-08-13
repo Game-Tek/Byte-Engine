@@ -46,7 +46,7 @@ super::impl_resource_model!(Primitive, PrimitiveModel, "Primitive");
 impl<'de> Solver<'de, Primitive> for PrimitiveModel {
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Primitive, SolveErrors>> {
 		crate::r#async::future(async move {
 			let PrimitiveModel {
@@ -170,7 +170,7 @@ impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 	/// Resolves mesh dependencies only after confirming its skin tables are safe for CPU pose and GPU palette workflows.
 	fn solve(
 		self,
-		storage_backend: &'de dyn resource::ReadStorageBackend,
+		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Mesh>, SolveErrors>> {
 		crate::r#async::future(async move {
 			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;

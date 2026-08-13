@@ -26,7 +26,7 @@ pub struct AssetManager {
 pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn DynStorageBackend>,
-	resource_storage_backend: Arc<dyn ResourceStorageBackend>,
+	resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>,
@@ -63,7 +63,10 @@ impl AssetManager {
 		AS: StorageBackend + 'static,
 		RS: ResourceStorageBackend + 'static,
 	{
-		Self::new_shared(storage_backend, Arc::new(resource_storage_backend))
+		Self::new_shared(
+			storage_backend,
+			StorageBackendHarness::new(resource_storage_backend).into_shared(),
+		)
 	}
 
 	/// Creates an asset manager that shares an existing destination resource store.
@@ -72,7 +75,7 @@ impl AssetManager {
 	/// installing the manager or starting a bake.
 	pub fn new_shared<AS: StorageBackend + 'static>(
 		storage_backend: AS,
-		resource_storage_backend: Arc<dyn ResourceStorageBackend>,
+		resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	) -> AssetManager {
 		#[cfg(test)]
 		let worker_count = std::num::NonZeroUsize::new(2).unwrap();
@@ -143,7 +146,7 @@ impl AssetManager {
 
 	/// Returns whether this manager writes to the same shared store as a resource manager.
 	#[cfg(debug_assertions)]
-	pub(crate) fn uses_resource_storage(&self, storage: &Arc<dyn ResourceStorageBackend>) -> bool {
+	pub(crate) fn uses_resource_storage(&self, storage: &Arc<dyn DynResourceStorageBackend>) -> bool {
 		Arc::ptr_eq(&self.state.resource_storage_backend, storage)
 	}
 
@@ -1072,6 +1075,8 @@ use crate::{
 	asset::{self, asset_handler::LoadErrors, DynStorageBackend, ResourceId},
 	online_docs_url,
 	r#async::BoxedFuture,
-	resource::{self, StorageBackend as ResourceStorageBackend},
+	resource::{
+		self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend, StorageBackendHarness,
+	},
 	Model, ProcessedAsset, ReferenceModel,
 };

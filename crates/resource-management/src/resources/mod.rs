@@ -26,7 +26,7 @@ macro_rules! impl_direct_resource {
 			/// Restores direct resource metadata while retaining its binary-data reader.
 			fn solve(
 				self,
-				storage_backend: &'de dyn $crate::resource::ReadStorageBackend,
+				storage_backend: &'de dyn $crate::resource::DynReadStorageBackend,
 			) -> $crate::r#async::BoxedFuture<'de, Result<$crate::Reference<$resource>, $crate::solver::SolveErrors>> {
 				$crate::r#async::future(async move {
 					let (stored, reader) = storage_backend

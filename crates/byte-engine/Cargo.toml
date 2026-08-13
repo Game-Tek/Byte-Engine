@@ -26,6 +26,11 @@ client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
+[[bench]]
+name = "audio_graph"
+harness = false
+required-features = ["headed"]
+
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 flate2 = { version = "1.1.9", optional = true }
@@ -52,6 +57,7 @@ tracing-tracy = { version = "0.11.4", optional = true }
 smallvec = "1.15.1"
 smallbox = "0.8"
 rustfft = "6.4.1"
+realfft = "3.5.0"
 hidapi = "2.6.1"
 trotcast = "0.5.0"
 ctrlc = "3.5.1"
@@ -64,3 +70,6 @@ bumpalo = { version = "3", features = ["allocator_api", "collections"] }
 compio = { version = "0.19.1", features = ["fs", "io", "macros", "time"] }
 crossbeam-queue = "0.3.12"
 kanal = "0.1.1"
+
+[dev-dependencies]
+divan = "0.1.21"

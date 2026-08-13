@@ -1,6 +1,10 @@
-use std::{f32::consts::TAU, sync::Arc};
+use std::{
+	f32::consts::TAU,
+	sync::{Arc, OnceLock},
+};
 
-use rustfft::{num_complex::Complex32, Fft, FftPlanner};
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use rustfft::num_complex::Complex32;
 
 use super::{AudioGraphTime, RuntimeAudioProcessor};
 
@@ -8,52 +12,107 @@ const WINDOW_SIZE: usize = 1024;
 pub(super) const PITCH_SHIFT_LATENCY: usize = WINDOW_SIZE;
 const HOP_SIZE: usize = WINDOW_SIZE / 8;
 const BIN_COUNT: usize = WINDOW_SIZE / 2 + 1;
+const WINDOW_MASK: usize = WINDOW_SIZE - 1;
+const _: () = assert!(WINDOW_SIZE.is_power_of_two());
+static SHARED: OnceLock<PitchShiftShared> = OnceLock::new();
+
+/// The `PitchShiftShared` struct avoids rebuilding immutable FFT plans for
+/// every pitch-shift playback.
+struct PitchShiftShared {
+	forward: Arc<dyn RealToComplex<f32>>,
+	inverse: Arc<dyn ComplexToReal<f32>>,
+	scratch_len: usize,
+}
+
+impl PitchShiftShared {
+	/// Builds the reusable real forward and inverse transforms once.
+	fn new() -> Self {
+		let mut planner = RealFftPlanner::new();
+		let forward = planner.plan_fft_forward(WINDOW_SIZE);
+		let inverse = planner.plan_fft_inverse(WINDOW_SIZE);
+		let scratch_len = forward.get_scratch_len().max(inverse.get_scratch_len());
+		Self {
+			forward,
+			inverse,
+			scratch_len,
+		}
+	}
+}
+
+/// The `PitchBinMapping` struct retains frequency-independent work for one
+/// source bin throughout a pitch-shift playback.
+struct PitchBinMapping {
+	expected_advance: f32,
+	target_bin: usize,
+	fraction: f32,
+	magnitude_scale: f32,
+}
 
 /// The `PitchShiftProcessor` struct owns reusable phase-vocoder state for one
 /// real-time pitch-shift node.
 pub(crate) struct PitchShiftProcessor {
 	ratio: f32,
-	forward: Arc<dyn Fft<f32>>,
-	inverse: Arc<dyn Fft<f32>>,
+	forward: Arc<dyn RealToComplex<f32>>,
+	inverse: Arc<dyn ComplexToReal<f32>>,
 	input: Box<[f32]>,
 	output: Box<[f32]>,
 	normalization: Box<[f32]>,
 	window: Box<[f32]>,
+	transform_buffer: Box<[f32]>,
 	spectrum: Box<[Complex32]>,
 	shifted_spectrum: Box<[Complex32]>,
 	scratch: Box<[Complex32]>,
+	bin_mappings: Box<[PitchBinMapping]>,
 	previous_phase: Box<[f32]>,
 	output_phase: Box<[f32]>,
 	cursor: usize,
-	samples_seen: usize,
+	samples_until_transform: usize,
 }
 
 impl PitchShiftProcessor {
+	/// Precomputes ratio-specific bin mappings and allocates all mutable DSP
+	/// state before this processor reaches the audio worker.
 	pub(super) fn new(ratio: f32) -> Self {
-		let mut planner = FftPlanner::new();
-		let forward = planner.plan_fft_forward(WINDOW_SIZE);
-		let inverse = planner.plan_fft_inverse(WINDOW_SIZE);
-		let scratch_len = forward.get_inplace_scratch_len().max(inverse.get_inplace_scratch_len());
+		let shared = SHARED.get_or_init(PitchShiftShared::new);
 		let window = (0..WINDOW_SIZE)
 			.map(|index| 0.5 - 0.5 * (TAU * index as f32 / WINDOW_SIZE as f32).cos())
 			.collect::<Vec<_>>()
 			.into_boxed_slice();
+		// The ratio never changes during playback. Retain only source bins that
+		// can contribute below Nyquist and precompute their fixed mapping work.
+		let mut bin_mappings = Vec::with_capacity(BIN_COUNT);
+		for bin in 0..BIN_COUNT {
+			let target = bin as f32 * ratio;
+			let target_bin = target.floor() as usize;
+			if target_bin >= BIN_COUNT {
+				break;
+			}
+			bin_mappings.push(PitchBinMapping {
+				expected_advance: TAU * HOP_SIZE as f32 * bin as f32 / WINDOW_SIZE as f32,
+				target_bin,
+				fraction: target - target_bin as f32,
+				magnitude_scale: nyquist_taper(target, ratio),
+			});
+		}
+		let active_bin_count = bin_mappings.len();
 
 		Self {
 			ratio,
-			forward,
-			inverse,
+			forward: Arc::clone(&shared.forward),
+			inverse: Arc::clone(&shared.inverse),
 			input: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			output: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			normalization: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			window,
-			spectrum: vec![Complex32::ZERO; WINDOW_SIZE].into_boxed_slice(),
-			shifted_spectrum: vec![Complex32::ZERO; WINDOW_SIZE].into_boxed_slice(),
-			scratch: vec![Complex32::ZERO; scratch_len].into_boxed_slice(),
-			previous_phase: vec![0.0; BIN_COUNT].into_boxed_slice(),
-			output_phase: vec![0.0; BIN_COUNT].into_boxed_slice(),
+			transform_buffer: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
+			spectrum: vec![Complex32::ZERO; BIN_COUNT].into_boxed_slice(),
+			shifted_spectrum: vec![Complex32::ZERO; BIN_COUNT].into_boxed_slice(),
+			scratch: vec![Complex32::ZERO; shared.scratch_len].into_boxed_slice(),
+			bin_mappings: bin_mappings.into_boxed_slice(),
+			previous_phase: vec![0.0; active_bin_count].into_boxed_slice(),
+			output_phase: vec![0.0; active_bin_count].into_boxed_slice(),
 			cursor: 0,
-			samples_seen: 0,
+			samples_until_transform: WINDOW_SIZE,
 		}
 	}
 
@@ -77,11 +136,12 @@ impl PitchShiftProcessor {
 		self.output[self.cursor] = 0.0;
 		self.normalization[self.cursor] = 0.0;
 		self.input[self.cursor] = sample;
-		self.cursor = (self.cursor + 1) % WINDOW_SIZE;
-		self.samples_seen += 1;
+		self.cursor = (self.cursor + 1) & WINDOW_MASK;
+		self.samples_until_transform -= 1;
 
-		if self.samples_seen >= WINDOW_SIZE && (self.samples_seen - WINDOW_SIZE) % HOP_SIZE == 0 {
+		if self.samples_until_transform == 0 {
 			self.transform_frame();
+			self.samples_until_transform = HOP_SIZE;
 		}
 		output
 	}
@@ -90,47 +150,44 @@ impl PitchShiftProcessor {
 	/// ratio, and overlap-adds the reconstructed frame into the output ring.
 	fn transform_frame(&mut self) {
 		for index in 0..WINDOW_SIZE {
-			let source_index = (self.cursor + index) % WINDOW_SIZE;
-			self.spectrum[index] = Complex32::new(self.input[source_index] * self.window[index], 0.0);
-			self.shifted_spectrum[index] = Complex32::ZERO;
+			let source_index = (self.cursor + index) & WINDOW_MASK;
+			self.transform_buffer[index] = self.input[source_index] * self.window[index];
 		}
-		self.forward.process_with_scratch(&mut self.spectrum, &mut self.scratch);
+		self.shifted_spectrum.fill(Complex32::ZERO);
+		self.forward
+			.process_with_scratch(&mut self.transform_buffer, &mut self.spectrum, &mut self.scratch)
+			.expect("Preallocated real FFT buffers must retain their planned lengths.");
 
-		for bin in 0..BIN_COUNT {
+		for (bin, mapping) in self.bin_mappings.iter().enumerate() {
 			let value = self.spectrum[bin];
 			let phase = value.arg();
-			let expected_advance = TAU * HOP_SIZE as f32 * bin as f32 / WINDOW_SIZE as f32;
-			let residual = wrap_phase(phase - self.previous_phase[bin] - expected_advance);
+			let residual = wrap_phase(phase - self.previous_phase[bin] - mapping.expected_advance);
 			self.previous_phase[bin] = phase;
-			let true_advance = expected_advance + residual;
-			let target = bin as f32 * self.ratio;
-			let target_bin = target.floor() as usize;
-			if target_bin >= BIN_COUNT {
-				continue;
-			}
+			let true_advance = mapping.expected_advance + residual;
 			// Track synthesis phase per source bin. Several source bins map to
 			// one destination while pitching down, so destination-owned phase
 			// would advance several times during the same analysis frame.
 			self.output_phase[bin] += true_advance * self.ratio;
-			let magnitude = value.norm() * nyquist_taper(target, self.ratio);
+			let magnitude = value.norm() * mapping.magnitude_scale;
 			let shifted = Complex32::from_polar(magnitude, self.output_phase[bin]);
-			let fraction = target - target_bin as f32;
-			self.shifted_spectrum[target_bin] += shifted * (1.0 - fraction);
-			if fraction > 0.0 && target_bin + 1 < BIN_COUNT {
-				self.shifted_spectrum[target_bin + 1] += shifted * fraction;
+			self.shifted_spectrum[mapping.target_bin] += shifted * (1.0 - mapping.fraction);
+			if mapping.fraction > 0.0 && mapping.target_bin + 1 < BIN_COUNT {
+				self.shifted_spectrum[mapping.target_bin + 1] += shifted * mapping.fraction;
 			}
 		}
 
-		for bin in 1..WINDOW_SIZE / 2 {
-			self.shifted_spectrum[WINDOW_SIZE - bin] = self.shifted_spectrum[bin].conj();
-		}
+		// A real inverse transform requires real DC and Nyquist values. The old
+		// complex transform discarded their imaginary output components too.
+		self.shifted_spectrum[0].im = 0.0;
+		self.shifted_spectrum[BIN_COUNT - 1].im = 0.0;
 		self.inverse
-			.process_with_scratch(&mut self.shifted_spectrum, &mut self.scratch);
+			.process_with_scratch(&mut self.shifted_spectrum, &mut self.transform_buffer, &mut self.scratch)
+			.expect("Preallocated inverse real FFT buffers must retain their planned lengths and real endpoints.");
 		let fft_scale = 1.0 / WINDOW_SIZE as f32;
 		for index in 0..WINDOW_SIZE {
-			let destination = (self.cursor + index) % WINDOW_SIZE;
+			let destination = (self.cursor + index) & WINDOW_MASK;
 			let window = self.window[index];
-			self.output[destination] += self.shifted_spectrum[index].re * fft_scale * window;
+			self.output[destination] += self.transform_buffer[index] * fft_scale * window;
 			self.normalization[destination] += window * window;
 		}
 	}
@@ -203,6 +260,15 @@ mod tests {
 
 	fn render(ratio: f32, chunks: &[usize]) -> Vec<f32> {
 		render_samples(&sine_wave(), ratio, chunks)
+	}
+
+	#[test]
+	fn processors_share_immutable_fft_plans() {
+		let first = PitchShiftProcessor::new(0.5);
+		let second = PitchShiftProcessor::new(2.0);
+
+		assert!(std::sync::Arc::ptr_eq(&first.forward, &second.forward));
+		assert!(std::sync::Arc::ptr_eq(&first.inverse, &second.inverse));
 	}
 
 	fn magnitude_at(samples: &[f32], frequency: f32) -> f32 {

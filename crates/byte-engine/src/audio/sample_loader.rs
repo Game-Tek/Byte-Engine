@@ -249,12 +249,49 @@ impl AudioSampleLease {
 		}
 	}
 
+	/// Borrows fixture-owned PCM for the external runtime benchmark.
+	///
+	/// The benchmark state must retain `samples` until this lease is dropped.
+	pub(crate) fn for_benchmark(sample_rate: u32, channel_count: u16, samples: &[f32]) -> Self {
+		assert!(sample_rate > 0);
+		assert!(channel_count == 1 || channel_count == 2);
+		assert!(!samples.is_empty());
+		assert_eq!(samples.len() % usize::from(channel_count), 0);
+		let layout = AudioSampleLayout {
+			channel_count,
+			sample_rate,
+			frame_count: samples.len() / usize::from(channel_count),
+			scalar_count: samples.len(),
+		};
+		Self::new(
+			AudioSampleLeaseId {
+				slot: u8::MAX,
+				generation: 0,
+			},
+			samples,
+			layout,
+		)
+	}
+
 	pub(crate) const fn sample_rate(&self) -> u32 {
 		self.layout.sample_rate
 	}
 
 	pub(crate) const fn frame_count(&self) -> usize {
 		self.layout.frame_count
+	}
+
+	pub(crate) const fn channel_count(&self) -> u16 {
+		self.layout.channel_count
+	}
+
+	/// Returns the complete immutable interleaved PCM region retained by this
+	/// lease.
+	#[allow(unsafe_code)]
+	pub(crate) fn samples(&self) -> &[f32] {
+		// The pool keeps this region stable until the audio worker returns the
+		// lease ID. Test leases retain the same allocation in `owned_samples`.
+		unsafe { std::slice::from_raw_parts(self.samples.as_ptr(), self.layout.scalar_count) }
 	}
 
 	/// Returns one mono frame from the stable arena region.

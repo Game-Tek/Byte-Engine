@@ -338,6 +338,9 @@ impl SampleNode {
 		}
 		let phase_denominator = output_sample_rate * self.playback_rate.denominator;
 		let phase_increment = source_sample_rate * self.playback_rate.numerator;
+		if phase_increment == phase_denominator && self.rate_phase == 0 {
+			return self.process_unity_block(sample_count, consume);
+		}
 		let mut rendered = 0;
 
 		for index in 0..sample_count {
@@ -367,6 +370,45 @@ impl SampleNode {
 			}
 		}
 
+		rendered
+	}
+
+	/// Reads exact-rate PCM in contiguous runs without interpolation or phase
+	/// arithmetic. This is the normal path when an asset matches the device rate.
+	fn process_unity_block(&mut self, sample_count: usize, mut consume: impl FnMut(usize, f32)) -> usize {
+		let frame_count = self.sample.frame_count();
+		let channel_count = usize::from(self.sample.channel_count());
+		let samples = self.sample.samples();
+		let mut source_frame = self.source_frame as usize;
+		let mut rendered = 0;
+
+		while rendered < sample_count {
+			let run_length = (frame_count - source_frame).min(sample_count - rendered);
+			if channel_count == 1 {
+				for (offset, &sample) in samples[source_frame..source_frame + run_length].iter().enumerate() {
+					consume(rendered + offset, sample);
+				}
+			} else {
+				let start = source_frame * channel_count;
+				let end = (source_frame + run_length) * channel_count;
+				for (offset, frame) in samples[start..end].chunks_exact(2).enumerate() {
+					consume(rendered + offset, (frame[0] + frame[1]) * 0.5);
+				}
+			}
+			rendered += run_length;
+			source_frame += run_length;
+
+			if source_frame == frame_count {
+				if self.playback_mode == SamplePlaybackMode::Loop {
+					source_frame = 0;
+				} else {
+					self.finished = true;
+					break;
+				}
+			}
+		}
+
+		self.source_frame = source_frame as u64;
 		rendered
 	}
 
@@ -498,6 +540,98 @@ fn i16_to_f32(sample: i16) -> f32 {
 
 fn f32_to_i16(sample: f32) -> i16 {
 	(sample * 32768.0) as i16
+}
+
+/// Callback-only fixtures used by the external audio graph benchmark target.
+#[doc(hidden)]
+pub mod benchmarks {
+	use super::AudioGraphPlayer;
+	use crate::{
+		audio::{
+			graph::{AudioGraphRenderPlan, AudioProcessor, PlaybackRate, SamplePlaybackMode},
+			sample_loader::AudioSampleLease,
+		},
+		core::{factory::Factory, listener::Listener},
+	};
+
+	pub const PERIOD_SIZE: usize = 256;
+
+	/// The `AudioGraphBenchmark` enum selects one representative runtime graph.
+	#[derive(Clone, Copy)]
+	pub enum AudioGraphBenchmark {
+		DirectUnity,
+		Resample44100To48000,
+		CustomProcessor,
+		PitchShiftUp,
+		PitchShiftDown,
+	}
+
+	/// The `AudioGraphBenchmarkState` struct owns one prepared graph and its
+	/// reusable callback buffers.
+	pub struct AudioGraphBenchmarkState {
+		player: AudioGraphPlayer,
+		_samples: Box<[f32]>,
+		output: [f32; PERIOD_SIZE],
+		graph_buffer: [f32; PERIOD_SIZE],
+	}
+
+	impl AudioGraphBenchmarkState {
+		/// Prepares all graph state outside Divan's measured callback loop.
+		pub fn new(benchmark: AudioGraphBenchmark) -> Self {
+			let samples = (0..65_536)
+				.map(|index| (index as f32 * 0.017).sin() * 0.25)
+				.collect::<Vec<_>>()
+				.into_boxed_slice();
+			let (source_rate, render_plan) = match benchmark {
+				AudioGraphBenchmark::DirectUnity => (48_000, render_plan([])),
+				AudioGraphBenchmark::Resample44100To48000 => (44_100, render_plan([])),
+				AudioGraphBenchmark::CustomProcessor => {
+					let graph = crate::audio::graph::fns::custom(
+						crate::audio::graph::fns::r#loop(crate::audio::graph::fns::sample("benchmark")),
+						|_, samples| {
+							for sample in samples {
+								*sample = sample.mul_add(0.75, 0.01);
+							}
+						},
+					);
+					let (_, plan) = graph.compile().expect("valid benchmark graph").into_parts();
+					(48_000, plan.prepare())
+				}
+				AudioGraphBenchmark::PitchShiftUp => (48_000, render_plan([AudioProcessor::PitchShift(1.5)])),
+				AudioGraphBenchmark::PitchShiftDown => (48_000, render_plan([AudioProcessor::PitchShift(0.5)])),
+			};
+			let mut factory = Factory::new();
+			let mut listener = factory.listener();
+			let handle = factory.create(());
+			let _ = listener.read();
+			let sample = AudioSampleLease::for_benchmark(source_rate, 1, &samples);
+			let mut state = Self {
+				player: AudioGraphPlayer::new(handle, sample, render_plan),
+				_samples: samples,
+				output: [0.0; PERIOD_SIZE],
+				graph_buffer: [0.0; PERIOD_SIZE],
+			};
+			// Populate cold processor and sample state before Divan measures it.
+			state.render_period();
+			state
+		}
+
+		/// Evaluates and mixes one 256-sample hardware-style period.
+		pub fn render_period(&mut self) {
+			self.player.render(48_000, &mut self.output, &mut self.graph_buffer);
+		}
+	}
+
+	fn render_plan(processors: impl IntoIterator<Item = AudioProcessor>) -> crate::audio::graph::PreparedAudioGraphRenderPlan {
+		AudioGraphRenderPlan {
+			playback_mode: SamplePlaybackMode::Loop,
+			playback_rate: PlaybackRate::UNITY,
+			processors: processors.into_iter().collect(),
+			muted: false,
+			muted_drain_latency: 0,
+		}
+		.prepare()
+	}
 }
 
 #[cfg(test)]
@@ -656,6 +790,21 @@ mod tests {
 		assert_eq!(first, [0.0, 1.0]);
 		assert_eq!(second, [2.0, 0.0, 1.0, 2.0, 0.0]);
 		assert!(!player.finished);
+	}
+
+	#[test]
+	fn unity_rate_stereo_uses_the_direct_path_and_downmixes_each_frame() {
+		let mut player = SampleNode::new(
+			AudioSampleLease::for_test(48_000, 2, vec![1.0, 3.0, -2.0, 2.0].into_boxed_slice()),
+			SamplePlaybackMode::Once,
+			PlaybackRate::UNITY,
+		);
+		let mut output = [0.0; 3];
+
+		player.render(48_000, &mut output);
+
+		assert_eq!(output, [2.0, 0.0, 0.0]);
+		assert!(player.finished);
 	}
 
 	#[test]

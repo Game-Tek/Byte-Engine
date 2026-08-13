@@ -22,6 +22,32 @@ whose names contain `render` or `graphics`:
 cargo test -- --skip render --skip graphics
 ```
 
+## Run benchmarks
+
+Run all available benchmarks from the repository root:
+
+```bash
+cargo bench --workspace
+```
+
+To run one benchmark target, pass its name and any required features. For
+example, run the audio graph benchmarks with:
+
+```bash
+cargo bench -p byte-engine --bench audio_graph
+```
+
+This Divan report compares callback-time evaluation for direct playback,
+sample-rate conversion, custom processing, and pitch shifting. Graph setup,
+sample loading, and buffer allocation happen before each measured loop.
+
+To check that this benchmark target builds and starts without collecting timing
+data, run:
+
+```bash
+cargo bench -p byte-engine --bench audio_graph -- --test
+```
+
 ## Measure code coverage
 
 Install `cargo-llvm-cov`:

@@ -33,6 +33,7 @@ When an error or warning has a documented recovery workflow, include a direct li
 - If I ask you to defer any task, write that into the todo.md file
 - Always leave comments for any non-trivial code
 - Always prefer breaking APIs to ad-hoc changes. The app is not shipped yet. We can make all breaking changes.
+- If modifying performance sensitive code, run any existing benchmarks and ensure they do not regress (or they improve) before and after your changes.
 
 # Tests
 - Write tests at their appropriate seam. (E.G: don't test material evaluation shaders correctly lower to MSL. MSL lowering is responsability of the BESL MSL shader generator. Material evaluation must only ensure their BESL shader correctly executes, which is asserted with a BESL VM supported test).

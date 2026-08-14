@@ -20,6 +20,15 @@ pub struct Factory<T: Clone + ?Sized> {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// The `Creator` trait provides direct creation through an owning API boundary.
+///
+/// Use this trait when an owner exposes a [`Factory`] without requiring callers to select that
+/// factory themselves.
+pub trait Creator<T> {
+	/// Creates a value in the owner's matching factory and returns its stable handle.
+	fn create(&mut self, value: T) -> Handle;
+}
+
 impl<T: Clone> Default for Factory<T> {
 	fn default() -> Self {
 		Self::new()

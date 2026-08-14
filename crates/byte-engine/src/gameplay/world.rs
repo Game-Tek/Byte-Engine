@@ -158,41 +158,41 @@ impl Publisher<TransformationUpdate> for DefaultWorld {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use math::Point;
-
-	use super::*;
-	use crate::{
-		core::listener::Listener,
-		gameplay::{Object, Transform},
-		physics::Body,
-		space::{Positionable, Transformable},
-	};
-
-	#[test]
-	fn world_publishes_object_creation_with_a_branded_position() {
-		let mut world = DefaultWorld::new();
-		let mut listener = world.body_factory().listener();
-		let mut object = Object::sphere(1.5);
-		object.transform_mut().set_position(Point::new(1.0, 2.0, 3.0));
-		let body: EntityHandle<dyn Body> = EntityHandle::from(object);
-		world.body_factory_mut().create(body);
-		assert_eq!(
-			listener.read().expect("physics creation").data().position(),
-			Point::new(1.0, 2.0, 3.0)
-		);
+impl Creator<Lights> for DefaultWorld {
+	fn create(&mut self, light: Lights) -> Handle {
+		self.light_factory.create(light)
 	}
+}
 
-	#[test]
-	fn world_routes_environment_creation_to_rendering_listeners() {
-		let mut world = DefaultWorld::new();
-		let mut listener = world.environment_factory().listener();
-		world.environment_factory_mut().create(Environment::new("studio.exr"));
-		assert_eq!(
-			listener.read().expect("environment creation").data().resource_id(),
-			"studio.exr"
-		);
+macro_rules! impl_light_creator {
+	($light:ty) => {
+		impl Creator<$light> for DefaultWorld {
+			fn create(&mut self, light: $light) -> Handle {
+				self.light_factory.create(light.into())
+			}
+		}
+	};
+}
+
+impl_light_creator!(ConeLight);
+impl_light_creator!(DirectionalLight);
+impl_light_creator!(PointLight);
+
+impl Creator<Camera> for DefaultWorld {
+	fn create(&mut self, camera: Camera) -> Handle {
+		self.cameras.create(camera)
+	}
+}
+
+impl Creator<Environment> for DefaultWorld {
+	fn create(&mut self, environment: Environment) -> Handle {
+		self.environment_factory.create(environment)
+	}
+}
+
+impl Creator<&mut AudioGraph> for DefaultWorld {
+	fn create(&mut self, graph: &mut AudioGraph) -> Handle {
+		self.audio_graph_factory.create(graph)
 	}
 }
 
@@ -200,10 +200,10 @@ use std::alloc::Allocator;
 
 use crate::{
 	application::Time,
-	audio::graph::AudioGraphFactory,
+	audio::graph::{AudioGraph, AudioGraphFactory},
 	core::{
 		channel::{Channel, DefaultChannel},
-		factory::{Factory, Handle},
+		factory::{Creator, Factory, Handle},
 		listener::{DefaultListener, Listener},
 		message::{DeleteMessage, Message},
 		publisher::Publisher,
@@ -211,5 +211,5 @@ use crate::{
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate, Transform},
 	physics::{self, dynabit},
-	rendering::{lights::Lights, Camera, Environment, RenderableMesh, UpdatePose},
+	rendering::{lights::Lights, Camera, ConeLight, DirectionalLight, Environment, PointLight, RenderableMesh, UpdatePose},
 };

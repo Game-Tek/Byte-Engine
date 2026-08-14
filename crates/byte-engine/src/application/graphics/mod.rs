@@ -671,7 +671,7 @@ use crate::{
 	configuration::Configuration,
 	core::{
 		channel::{Channel, DefaultChannel},
-		factory::{CreateMessage, Factory},
+		factory::{CreateMessage, Creator, Factory},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
 		task, Entity, EntityHandle,
@@ -705,6 +705,12 @@ use crate::{
 	time::MediaTime,
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
+impl Creator<Window> for GraphicsApplication {
+	fn create(&mut self, window: Window) -> crate::core::factory::Handle {
+		self.window_factory.0.create(window)
+	}
+}
+
 use crate::{
 	gameplay::anchor::AnchorSystem,
 	input, physics,

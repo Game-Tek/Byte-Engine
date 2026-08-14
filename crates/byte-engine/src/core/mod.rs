@@ -29,6 +29,7 @@ use std::ops::Deref;
 
 pub use entity::Entity;
 pub use entity::EntityHandle;
+pub use factory::Creator;
 pub use task::Task;
 use utils::sync::{Arc, RwLock};
 

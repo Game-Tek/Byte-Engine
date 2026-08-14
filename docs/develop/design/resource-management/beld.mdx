@@ -65,6 +65,21 @@ bake `trace`. Release builds omit trace storage and output.
 
 BELD continues baking after an individual asset fails, but the command exits with status `1` if any selected asset failed. A successful command logs the total elapsed bake time and success/failure counts.
 
+## Control bake memory
+
+BELD limits how much memory concurrent bake work can reserve. By default, the soft memory budget is half of the system memory available when `beld bake` starts. For example, BELD uses a 6 GiB budget when 12 GiB is available at startup.
+
+Set an explicit budget in MiB when you need predictable behavior in CI, on a shared workstation, or on a dedicated bake machine:
+
+```bash
+beld --source assets --destination resources bake \
+  --memory-budget-mib 4096
+```
+
+When the budget is full, BELD pauses new independent bake work. Active bakes and their dependencies continue so they can finish and release memory. BELD logs when it pauses and resumes.
+
+The budget is soft rather than a strict process-memory cap. One large asset or active work can temporarily exceed it. This avoids a deadlock where every worker holds memory while waiting for another worker to release memory. Use a lower value to leave more memory for other applications, or a higher value when the bake machine has dedicated capacity.
+
 ## Query examples
 
 ```bash

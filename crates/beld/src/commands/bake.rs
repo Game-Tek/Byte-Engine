@@ -1,4 +1,4 @@
-use std::{path::Path, time::Instant};
+use std::{num::NonZeroUsize, path::Path, time::Instant};
 
 use resource_management::{
 	asset::{asset_manager::AssetManager, FileStorageBackend},
@@ -13,6 +13,7 @@ pub fn bake(
 	destination_path: String,
 	ids: Vec<String>,
 	storage_mode: Option<ResourceStorageMode>,
+	memory_budget: NonZeroUsize,
 ) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
 	let asset_storage_backend = FileStorageBackend::new(source_path.clone());
@@ -25,7 +26,12 @@ pub fn bake(
 		})?,
 		None => RedbStorageBackend::new_writable(destination_path),
 	};
-	let asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);
+	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);
+	asset_manager.set_bake_memory_budget(memory_budget);
+	log::info!(
+		"Using a {} MiB soft memory budget for concurrent asset bakes.",
+		memory_budget.get() / (1024 * 1024)
+	);
 	let ids = if ids.is_empty() {
 		discover_asset_ids(&source_path, &asset_manager)?
 	} else {

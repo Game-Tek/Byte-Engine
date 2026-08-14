@@ -11,6 +11,27 @@ enum InFlightBakeRole {
 	Follower(announcement::Listener<Result<(), LoadMessages>>),
 }
 
+/// The `InFlightBakeCleanup` struct removes a leader entry when its future completes, is canceled, or unwinds.
+struct InFlightBakeCleanup {
+	registry: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
+	id: String,
+}
+
+impl InFlightBakeCleanup {
+	fn new(registry: &Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>, id: &str) -> Self {
+		Self {
+			registry: Arc::clone(registry),
+			id: id.to_owned(),
+		}
+	}
+}
+
+impl Drop for InFlightBakeCleanup {
+	fn drop(&mut self) {
+		self.registry.lock().remove(&self.id);
+	}
+}
+
 /// The `AssetManager` struct selects asset handlers and bakes source assets into resource storage.
 ///
 /// Register each source format with [`Self::add_asset_handler`], then install the
@@ -27,7 +48,8 @@ pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn DynStorageBackend>,
 	resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
-	in_flight_bakes: Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>,
+	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
+	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>,
 	#[cfg(debug_assertions)]
@@ -129,7 +151,8 @@ impl AssetManager {
 				asset_handlers: Vec::with_capacity(8),
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
-				in_flight_bakes: Mutex::new(HashMap::with_capacity(32)),
+				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity(32))),
+				bake_memory_budget: None,
 				dispatcher,
 				self_weak: std::sync::OnceLock::new(),
 				#[cfg(debug_assertions)]
@@ -138,6 +161,17 @@ impl AssetManager {
 				hot_reload: Mutex::new(HotReloadState::default()),
 			}),
 		}
+	}
+
+	/// Sets the soft memory budget shared by concurrent asset bakes.
+	///
+	/// The manager reserves capacity for each independent bake tree and charges retained arena growth
+	/// to this budget. Active work can exceed the budget so it can finish and release memory without deadlocking.
+	/// Configure the budget before calling [`Self::bake`] or sharing the manager.
+	pub fn set_bake_memory_budget(&mut self, byte_budget: NonZeroUsize) {
+		Arc::get_mut(&mut self.state)
+			.expect("The bake memory budget must be configured before the asset manager starts processing requests.")
+			.bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
 	}
 
 	/// Registers a handler for one family of source assets.
@@ -366,9 +400,9 @@ impl AssetManagerState {
 			None => true,
 		};
 		let result = if stale {
-			let arena = bumpalo::Bump::new();
+			let allocator = BakeAllocator::new(self.bake_memory_budget.as_ref()).await;
 			// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
-			self.ensure_baked_in(&id, &&arena).await
+			self.ensure_baked_in(&id, &allocator).await
 		} else {
 			Ok(())
 		};
@@ -401,26 +435,49 @@ impl AssetManagerState {
 	}
 	/// Runs one owned bake request on the asset worker pool.
 	pub(crate) async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
-		let notification = match self.register_bake(id) {
-			InFlightBakeRole::Leader(notification) => notification,
-			InFlightBakeRole::Follower(notification) => {
-				return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
-			}
-		};
+		self.dispatch_bake_in_scope(id, only_when_stale, None).await
+	}
 
-		let id = id.to_owned();
-		let registry_id = id.clone();
+	/// Runs one dependency request in its root bake's memory scope.
+	pub(super) async fn dispatch_bake_in_scope(
+		&self,
+		id: &str,
+		only_when_stale: bool,
+		memory_scope: Option<Arc<BakeMemoryScope>>,
+	) -> Result<(), LoadMessages> {
 		let state = self
 			.self_weak
 			.get()
 			.and_then(std::sync::Weak::upgrade)
 			.ok_or(LoadMessages::ExecutionUnavailable)?;
+		if let Some(notification) = self.bake_listener(id) {
+			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+		}
+
+		// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
+		// instead of following a root that cannot start until the parent releases memory.
+		let memory_scope = match (memory_scope, &self.bake_memory_budget) {
+			(Some(memory_scope), _) => Some(memory_scope),
+			(None, Some(memory_budget)) => Some(memory_budget.acquire().await),
+			(None, None) => None,
+		};
+		let notification = match self.register_bake(id) {
+			InFlightBakeRole::Leader(notification) => notification,
+			InFlightBakeRole::Follower(notification) => {
+				drop(memory_scope);
+				return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
+			}
+		};
+
+		let id = id.to_owned();
+		let registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, &id);
 		let task = self
 			.dispatcher
 			.dispatch(move || async move {
-				// Grow each request's arena with its workload instead of reserving large address ranges for every concurrent bake.
-				let arena = bumpalo::Bump::new();
-				let allocator = &arena;
+				// The future owns cleanup before its first poll, so queued cancellation cannot leave a closed registry entry.
+				let _registry_cleanup = registry_cleanup;
+				// Dependencies inherit their admitted root scope and use separate arenas without another admission wait.
+				let allocator = BakeAllocator::in_scope(memory_scope);
 				let result = if only_when_stale {
 					state.ensure_baked_uncoalesced(&id, &allocator).await
 				} else {
@@ -428,15 +485,16 @@ impl AssetManagerState {
 				};
 
 				let _ = notification.announce(result.clone());
-				state.in_flight_bakes.lock().remove(&id);
 				result
 			})
-			.map_err(|_| {
-				self.in_flight_bakes.lock().remove(registry_id.as_str());
-				LoadMessages::ExecutionUnavailable
-			})?;
+			.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 
 		task.await.map_err(|_| LoadMessages::ExecutionUnavailable)?
+	}
+
+	/// Returns a listener when the requested resource is already being baked.
+	fn bake_listener(&self, id: &str) -> Option<announcement::Listener<Result<(), LoadMessages>>> {
+		self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener)
 	}
 
 	/// Registers one requested resource before it is submitted to a worker.
@@ -471,7 +529,7 @@ impl AssetManagerState {
 	/// Runs one asset handler invocation without consulting the in-flight registry.
 	///
 	/// Call this method directly when no coalescing is desired.
-	async fn bake_uncoalesced(&self, id: &str, allocator: &dyn Allocator) -> Result<(), LoadMessages> {
+	async fn bake_uncoalesced(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		#[cfg(debug_assertions)]
@@ -595,10 +653,10 @@ impl AssetManagerState {
 	}
 
 	/// Bakes an asset with the provided allocator when the resource is missing or stale.
-	pub(crate) async fn bake_if_not_exists_in(
+	pub(super) async fn bake_if_not_exists_in(
 		&self,
 		id: &str,
-		allocator: &dyn Allocator,
+		allocator: &BakeAllocator,
 	) -> Result<crate::SerializableResource, LoadMessages> {
 		self.ensure_baked_in(id, allocator).await?;
 
@@ -610,20 +668,22 @@ impl AssetManagerState {
 	}
 
 	/// Ensures that the requested resource exists and reflects its current source versions.
-	async fn ensure_baked_in(&self, id: &str, allocator: &dyn Allocator) -> Result<(), LoadMessages> {
+	async fn ensure_baked_in(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		match self.register_bake(id) {
 			InFlightBakeRole::Leader(notification) => {
+				let _registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, id);
 				let result = self.ensure_baked_uncoalesced(id, allocator).await;
 				let _ = notification.announce(result.clone());
-				self.in_flight_bakes.lock().remove(id);
 				result
 			}
-			InFlightBakeRole::Follower(notification) => notification.listen().await.unwrap(),
+			InFlightBakeRole::Follower(notification) => {
+				notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?
+			}
 		}
 	}
 
 	/// Checks freshness and runs one bake without consulting the in-flight registry.
-	async fn ensure_baked_uncoalesced(&self, id: &str, allocator: &dyn Allocator) -> Result<(), LoadMessages> {
+	async fn ensure_baked_uncoalesced(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		if let Some((resource, _)) = self.resource_storage_backend.read(id).await {
@@ -676,6 +736,7 @@ pub mod tests {
 			atomic::{AtomicUsize, Ordering},
 			Arc,
 		},
+		time::Duration,
 	};
 
 	use super::*;
@@ -754,6 +815,34 @@ pub mod tests {
 	}
 
 	struct BatchedDependencyAssetHandler;
+
+	struct DelayedDependencyAssetHandler {
+		started: Mutex<Option<announcement::Announcer<()>>>,
+		release: announcement::Listener<()>,
+	}
+
+	impl AssetHandler for DelayedDependencyAssetHandler {
+		fn can_handle(&self, id: &str) -> bool {
+			id == "parent" || id == "test"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			if id.get_extension() == "parent" {
+				self.started
+					.lock()
+					.take()
+					.expect("the parent should announce one invocation")
+					.announce(())
+					.expect("the parent-start announcement should remain open");
+				self.release
+					.listen()
+					.await
+					.expect("the dependency release announcement should remain open");
+				context.bake_dependency::<TestResource>("child.test").await?;
+			}
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+		}
+	}
 
 	impl AssetHandler for BatchedDependencyAssetHandler {
 		fn can_handle(&self, id: &str) -> bool {
@@ -1180,8 +1269,45 @@ pub mod tests {
 	}
 
 	#[r#async::test]
+	async fn admitted_parent_can_claim_a_dependency_before_a_memory_waiting_root() {
+		let (started, started_announcement) = announcement::Announcement::new();
+		let (release, release_announcement) = announcement::Announcement::new();
+		let parent_started_for_root = started_announcement.listener();
+		let parent_started_for_release = started_announcement.listener();
+		let mut asset_manager = AssetManager::new(TestStorageBackend::new(), ResourceTestStorageBackend::new());
+		asset_manager.set_bake_memory_budget(NonZeroUsize::MIN);
+		asset_manager.add_asset_handler(DelayedDependencyAssetHandler {
+			started: Mutex::new(Some(started)),
+			release: release_announcement.listener(),
+		});
+
+		let parent = asset_manager.bake("root.parent");
+		let competing_root = async {
+			parent_started_for_root.listen().await.unwrap();
+			asset_manager.bake("child.test").await
+		};
+		let release_parent = async {
+			parent_started_for_release.listen().await.unwrap();
+			compio::time::sleep(Duration::from_millis(10)).await;
+			release.announce(()).unwrap();
+		};
+		let (parent, competing_root) = compio::time::timeout(Duration::from_secs(1), async {
+			let ((parent, competing_root), ()) =
+				std::future::join!(async { std::future::join!(parent, competing_root).await }, release_parent).await;
+			(parent, competing_root)
+		})
+		.await
+		.expect("the admitted parent and competing root should not deadlock");
+
+		assert_eq!(parent, Ok(()));
+		assert_eq!(competing_root, Ok(()));
+	}
+
+	#[r#async::test]
 	async fn batched_dependencies_start_before_parent_continues() {
 		let (mut asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
+		// A one-byte budget proves child requests inherit the parent's scope instead of waiting behind it.
+		asset_manager.set_bake_memory_budget(NonZeroUsize::MIN);
 		asset_manager.add_asset_handler(BatchedDependencyAssetHandler);
 
 		let release_handler = async {
@@ -1319,9 +1445,9 @@ pub mod tests {
 }
 
 use std::{
-	alloc::Allocator,
 	cell::Cell,
 	collections::hash_map::Entry::{Occupied, Vacant},
+	num::NonZeroUsize,
 	ops::Deref,
 	sync::Arc,
 };
@@ -1334,6 +1460,7 @@ use utils::{hash::HashMap, sync::Mutex};
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
 	asset_handler::{AssetHandler, BakeContext, TrackingStorageBackend},
+	bake_memory::{BakeAllocator, BakeMemoryBudget, BakeMemoryScope},
 	StorageBackend,
 };
 use crate::{

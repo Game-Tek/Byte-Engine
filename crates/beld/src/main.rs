@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use clap::{
 	builder::styling::{AnsiColor, Effects, Styles},
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
@@ -77,6 +79,10 @@ enum Commands {
 	},
 	/// Bake source assets into resources.
 	Bake {
+		/// The soft memory budget for concurrent bake arenas, in MiB.
+		/// By default, BELD uses half of the system memory available when the command starts.
+		#[arg(long = "memory-budget-mib", value_parser = parse_memory_budget_mib)]
+		memory_budget: Option<NonZeroUsize>,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]
@@ -154,9 +160,38 @@ fn main() -> Result<(), i32> {
 			format,
 		} => executor.block_on(commands::query(destination_path, class, properties, limit, cursor, format)),
 		Commands::Inspect { id, format } => executor.block_on(commands::inspect(destination_path, id, format)),
-		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids, storage_mode),
+		Commands::Bake { ids, memory_budget } => commands::bake(
+			source_path,
+			destination_path,
+			ids,
+			storage_mode,
+			bake_memory_budget(memory_budget),
+		),
 		Commands::Delete { ids } => commands::delete(destination_path, ids),
 	}
+}
+
+/// Parses a positive MiB count and converts it to bytes without silently saturating.
+fn parse_memory_budget_mib(value: &str) -> Result<NonZeroUsize, String> {
+	let invalid =
+		|| "Invalid memory budget. The value must be a positive MiB count that fits this platform's address size.".to_string();
+	let mib = value.parse::<usize>().ok().and_then(NonZeroUsize::new).ok_or_else(invalid)?;
+	mib.get()
+		.checked_mul(1024 * 1024)
+		.and_then(NonZeroUsize::new)
+		.ok_or_else(invalid)
+}
+
+/// Returns the configured bake budget or preserves half of currently available system memory as headroom.
+fn bake_memory_budget(configured: Option<NonZeroUsize>) -> NonZeroUsize {
+	if let Some(configured) = configured {
+		return configured;
+	}
+
+	let mut system = sysinfo::System::new();
+	system.refresh_memory();
+	let available_bytes = usize::try_from(system.available_memory()).unwrap_or(usize::MAX);
+	NonZeroUsize::new(available_bytes / 2).unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Reads `--color` before the full parse so help and parser errors use the selected color mode.
@@ -255,11 +290,45 @@ mod tests {
 	fn cli_bake_allows_no_ids_and_selects_payload_storage() {
 		let cli = Cli::try_parse_from(["beld", "bake"]).unwrap();
 		assert!(cli.storage_mode.is_none());
-		assert!(matches!(cli.command, Commands::Bake { ids } if ids.is_empty()));
+		assert!(matches!(
+			cli.command,
+			Commands::Bake {
+				ids,
+				memory_budget: None
+			} if ids.is_empty()
+		));
 
-		let cli = Cli::try_parse_from(["beld", "--storage-mode", "packed", "bake", "mesh.gltf", "mesh.gltf#skeleton"]).unwrap();
+		let cli = Cli::try_parse_from([
+			"beld",
+			"--storage-mode",
+			"packed",
+			"bake",
+			"--memory-budget-mib",
+			"1536",
+			"mesh.gltf",
+			"mesh.gltf#skeleton",
+		])
+		.unwrap();
 		assert!(matches!(cli.storage_mode, Some(StorageMode::Packed)));
-		assert!(matches!(cli.command, Commands::Bake { ids } if ids == ["mesh.gltf", "mesh.gltf#skeleton"]));
+		assert!(matches!(
+			cli.command,
+			Commands::Bake {
+				ids,
+				memory_budget: Some(memory_budget)
+			} if ids == ["mesh.gltf", "mesh.gltf#skeleton"] && memory_budget.get() == 1536 * 1024 * 1024
+		));
+	}
+
+	#[test]
+	fn cli_bake_rejects_zero_and_overflowing_memory_budgets() {
+		assert!(Cli::try_parse_from(["beld", "bake", "--memory-budget-mib", "0"]).is_err());
+		assert!(Cli::try_parse_from([
+			"beld".to_string(),
+			"bake".to_string(),
+			"--memory-budget-mib".to_string(),
+			usize::MAX.to_string(),
+		])
+		.is_err());
 	}
 
 	#[test]

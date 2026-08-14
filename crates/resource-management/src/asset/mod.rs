@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 pub mod asset_handler;
 pub mod asset_manager;
 mod audio_utils;
+mod bake_memory;
 
 pub mod bema_asset_handler;
 pub mod besl_shader_asset_handler;

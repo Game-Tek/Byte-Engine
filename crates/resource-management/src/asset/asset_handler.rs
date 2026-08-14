@@ -108,7 +108,7 @@ pub struct BakeContext<'a> {
 	resource_storage_backend: &'a dyn resource::DynStorageBackend,
 	asset_storage_backend: &'a dyn asset::DynStorageBackend,
 	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
-	allocator: &'a dyn Allocator,
+	allocator: &'a BakeAllocator,
 	primary_id: ResourceId<'a>,
 	primary_stored: &'a Cell<bool>,
 	#[cfg(debug_assertions)]
@@ -116,12 +116,12 @@ pub struct BakeContext<'a> {
 }
 
 impl<'a> BakeContext<'a> {
-	pub(crate) fn new(
+	pub(super) fn new(
 		asset_manager: &'a AssetManagerState,
 		resource_storage_backend: &'a dyn resource::DynStorageBackend,
 		asset_storage_backend: &'a dyn asset::DynStorageBackend,
 		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
-		allocator: &'a dyn Allocator,
+		allocator: &'a BakeAllocator,
 		primary_id: ResourceId<'a>,
 		primary_stored: &'a Cell<bool>,
 		#[cfg(debug_assertions)] resource_trace: &'a ResourceTrace,
@@ -225,7 +225,7 @@ impl<'a> BakeContext<'a> {
 		let max_concurrency = max_concurrency.max(1);
 		let requests = ids.iter().enumerate().map(|(index, id)| async move {
 			self.asset_manager
-				.dispatch_bake(id, true)
+				.dispatch_bake_in_scope(id, true, self.allocator.memory_scope().cloned())
 				.await
 				.map_err(|error| match error {
 					super::asset_manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
@@ -319,6 +319,7 @@ use utils::sync::Mutex;
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
 	asset_manager::AssetManagerState,
+	bake_memory::BakeAllocator,
 	storage_backend::{AssetDependency, AssetVersion},
 	AssetStorageBytes, BEADType, ResourceId,
 };

@@ -2,13 +2,10 @@
 //!
 //! These types do not require a specific render-pipeline architecture.
 
-#[path = "graphics_hardware_interface/descriptors.rs"]
-mod descriptor_templates;
 mod handles;
 mod queue;
 mod resources;
 
-pub use descriptor_templates::*;
 pub use handles::*;
 pub use queue::*;
 pub use resources::*;

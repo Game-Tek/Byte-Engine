@@ -100,9 +100,7 @@ pub(crate) enum VisibilityTransferCommand {
 		texture_keys: Vec<Option<VisibilityTextureKey>>,
 		pipeline: crate::rendering::PipelineRef,
 	},
-	RequestImage {
-		key: VisibilityTextureKey,
-	},
+
 	TexturePrepared {
 		texture: PreparedTexture,
 	},

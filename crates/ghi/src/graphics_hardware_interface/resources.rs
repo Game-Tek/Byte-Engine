@@ -60,27 +60,18 @@ pub struct BottomLevelAccelerationStructure {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TextureViewTypes {
+	Texture2D,
+	Texture2DArray,
+	TextureCube,
+	TextureCubeArray,
+	Texture3D,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ranges {
 	Size(usize),
 	Whole,
-}
-
-pub struct BufferSplitter<'a, T: Copy> {
-	buffer: &'a mut [T],
-	offset: usize,
-}
-
-impl<'a, T: Copy> BufferSplitter<'a, T> {
-	pub fn new(buffer: &'a mut [T], offset: usize) -> Self {
-		Self { buffer, offset }
-	}
-
-	pub fn take(&mut self, size: usize) -> &'a mut [T] {
-		let buffer = &mut self.buffer[self.offset..][..size];
-		self.offset += size;
-		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
-		unsafe { std::mem::transmute(buffer) }
-	}
 }
 
 /// The `FrameKey` struct identifies a submitted frame while selecting its reusable GPU sequence.

@@ -22,9 +22,6 @@ use super::expressions::{
 };
 use crate::{lexer::BufferMemoryClass, tokenizer};
 
-/// A shared syntax node in a parsed BESL tree.
-pub type NodeReference<'a> = &'a Node<'a>;
-
 /// The `TypeName` enum preserves type structure while the parser still borrows source text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeName<'a> {

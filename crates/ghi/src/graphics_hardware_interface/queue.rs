@@ -1,6 +1,6 @@
 //! Backend-independent GHI queue types.
 
-use crate::{DataTypes, WorkloadTypes};
+use crate::WorkloadTypes;
 
 /// The `ImageSubresourceLayout` struct defines how one image subresource maps to memory.
 pub struct ImageSubresourceLayout {
@@ -25,18 +25,6 @@ pub enum SwapchainStates {
 	Suboptimal,
 	/// The swapchain can't be used for presentation.
 	Invalid,
-}
-
-pub enum AccelerationStructureTypes {
-	TopLevel {
-		instance_count: u32,
-	},
-	BottomLevel {
-		vertex_count: u32,
-		triangle_count: u32,
-		vertex_position_format: DataTypes,
-		index_format: DataTypes,
-	},
 }
 
 pub struct QueueSelection {

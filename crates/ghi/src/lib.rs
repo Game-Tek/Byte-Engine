@@ -48,11 +48,6 @@ pub use crate::graphics_hardware_interface::{
 	SamplerHandle, ShaderHandle, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes,
 	TopLevelAccelerationStructureHandle,
 };
-// DX12 still uses these legacy backend-only handles internally.
-#[cfg(target_os = "windows")]
-pub(crate) use crate::graphics_hardware_interface::{
-	BindingConstructor, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetTemplateHandle,
-};
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle, Ranges};
 pub use crate::window::Window;
 
@@ -194,7 +189,6 @@ pub mod swapchain;
 pub mod synchronizer;
 
 pub mod types;
-mod utils;
 
 pub use context::{Context, ContextCreate};
 pub use descriptors::DescriptorWrite;

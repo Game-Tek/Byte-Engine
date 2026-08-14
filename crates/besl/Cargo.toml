@@ -18,5 +18,4 @@ name = "besl"
 
 [dependencies]
 besl-derive = { package = "byte-engine-besl-derive", path = "../besl-derive", version = "0.1.0" }
-colored = "3.0.0"
 half = "2.7.1"

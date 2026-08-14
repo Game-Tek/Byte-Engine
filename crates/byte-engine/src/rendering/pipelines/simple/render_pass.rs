@@ -48,9 +48,6 @@ pub struct RenderPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
-const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
-	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
-
 impl RenderPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,

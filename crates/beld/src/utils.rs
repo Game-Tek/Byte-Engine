@@ -1,3 +1,5 @@
+#[cfg(not(test))]
+use resource_management::resources::mips::gpu::MaterialMipGenerator;
 use resource_management::{
 	asset::{
 		asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
@@ -6,7 +8,7 @@ use resource_management::{
 		png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
 	},
 	ibl::IBLGenerator,
-	resources::mips::{gpu::MaterialMipGenerator, CPUMipGenerationBackend, MipGenerationBackend},
+	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
 };
 
 pub fn get_asset_manager<AS, RS>(storage_backend: AS, resource_storage_backend: RS) -> AssetManager

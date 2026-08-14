@@ -47,7 +47,7 @@ struct LocomotionInput {
 
 /// Builds the reusable graph once during application setup.
 fn locomotion_graph() -> AnimationGraph<LocomotionInput> {
-	let mut builder = AnimationGraph::builder();
+	let builder = AnimationGraph::builder();
 	let idle = builder.state("idle").with(AnimationClip::looping(IDLE_ANIMATION));
 	let walk = builder.state("walk").with(AnimationClip::looping(WALK_ANIMATION));
 

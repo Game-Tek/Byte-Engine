@@ -379,7 +379,6 @@ mod tests {
 		let f32_type = root.get_child("f32").expect("Expected f32");
 		let u32_type = root.get_child("u32").expect("Expected u32");
 		let vec2f = root.get_child("vec2f").expect("Expected vec2f");
-		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
 		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
 		let packed_vec4f = root.get_child("packed_vec4f").expect("Expected packed_vec4f");
 		let vec2u16 = root.get_child("vec2u16").expect("Expected vec2u16");

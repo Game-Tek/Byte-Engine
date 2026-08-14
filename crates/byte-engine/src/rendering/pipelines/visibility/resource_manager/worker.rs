@@ -32,11 +32,6 @@ impl VisibilityPipelineResourceManagerClient {
 		self.send(VisibilityTransferCommand::RequestMesh { key, source });
 	}
 
-	/// Requests an image from the asynchronous resource task.
-	pub(crate) fn request_image(&self, key: VisibilityTextureKey) {
-		self.send(VisibilityTransferCommand::RequestImage { key });
-	}
-
 	/// Requests the baked lighting subresources stored with one environment image.
 	pub(crate) fn request_environment(&self, id: String) {
 		self.send(VisibilityTransferCommand::RequestEnvironment { id });
@@ -411,12 +406,7 @@ impl VisibilityPipelineResourceManagerWorker {
 				self.resource_manager
 					.adopt_prepared_material(id, index, alpha_mode, coverage, texture_keys, pipeline);
 			}
-			VisibilityTransferCommand::RequestImage { key } => {
-				let (index, inserted) = self.resource_manager.reserve_texture_slot(key.as_str());
-				if inserted {
-					self.resource_manager.request_image_preparation(key, index);
-				}
-			}
+
 			VisibilityTransferCommand::TexturePrepared { texture } => {
 				self.resource_manager.adopt_prepared_texture(texture);
 			}

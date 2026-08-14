@@ -38,7 +38,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-engine-betp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "byte-engine-utils",
  "tinyvec",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-utils"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "gxhash",

@@ -128,7 +128,7 @@ impl UploadStagingArena {
 
 /// Reconstructs the original mapped slice after both adjacent exclusive slices return to the arena.
 #[allow(unsafe_code)]
-fn join_adjacent_regions(mut left: StagingRegion, mut right: StagingRegion) -> StagingRegion {
+fn join_adjacent_regions(left: StagingRegion, right: StagingRegion) -> StagingRegion {
 	let left_len = left.bytes.len();
 	let total_len = left_len + right.bytes.len();
 	let left_pointer = left.bytes.as_mut_ptr();

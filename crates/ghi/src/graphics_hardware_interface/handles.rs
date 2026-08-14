@@ -97,14 +97,8 @@ impl MasterHandle for SynchronizerHandle {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct DescriptorSetTemplateHandle(pub(crate) u64);
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 /// The `DescriptorSetHandle` struct identifies a retained group of flat shader resource writes.
 pub struct DescriptorSetHandle(pub(crate) u64);
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct DescriptorSetBindingHandle(pub(crate) u64);
 
 /// The `PipelineLayoutHandle` struct identifies a pipeline resource layout.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -152,7 +146,7 @@ pub enum Handles {
 	Image(ImageHandle),
 	Mesh(MeshHandle),
 	Synchronizer(SynchronizerHandle),
-	DescriptorSetLayout(DescriptorSetTemplateHandle),
+
 	DescriptorSet(DescriptorSetHandle),
 	PipelineLayout(PipelineLayoutHandle),
 	Sampler(SamplerHandle),

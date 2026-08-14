@@ -119,26 +119,6 @@ pub(crate) fn write_material_texture_indices(
 	false
 }
 
-#[derive(Clone)]
-pub(crate) struct PendingMeshPrimitive {
-	pub(crate) material_id: String,
-	pub(crate) meshlet_count: u32,
-	pub(crate) meshlet_offset: u32,
-	pub(crate) vertex_offset: u32,
-	pub(crate) primitive_offset: u32,
-	pub(crate) triangle_offset: u32,
-}
-
-#[derive(Clone)]
-pub(crate) struct PendingMeshData {
-	pub(crate) vertex_offset: u32,
-	pub(crate) primitive_offset: u32,
-	pub(crate) triangle_offset: u32,
-	pub(crate) meshlet_offset: u32,
-	pub(crate) acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
-	pub(crate) primitives: Vec<PendingMeshPrimitive>,
-}
-
 /// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
 pub struct RenderEntity {
 	pub(crate) handle: Handle,

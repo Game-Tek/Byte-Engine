@@ -51,7 +51,6 @@ betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.1", opti
 serde = "1.0.219"
 log = "0.4.26"
 env_logger = "0.11.10"
-colored = "3.0.0"
 downcast-rs = "2.0.1"
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
 tracing = { version = "0.1.41" }
@@ -65,7 +64,6 @@ realfft = "3.5.0"
 hidapi = "2.6.1"
 trotcast = "0.5.0"
 ctrlc = "3.5.1"
-mid = "5.0.1"
 fontdue = "0.9.3"
 artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"

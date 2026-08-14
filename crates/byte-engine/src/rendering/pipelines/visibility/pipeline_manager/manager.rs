@@ -755,7 +755,7 @@ impl VisibilityPipelineManager {
 	}
 }
 /// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
-fn cached_skin_palette(
+pub(super) fn cached_skin_palette(
 	cache: &[SkinningPaletteCacheEntry],
 	handle: Handle,
 	binding: *const SkinBinding,
@@ -767,7 +767,7 @@ fn cached_skin_palette(
 }
 
 /// Reserves a non-overlapping frame-local vertex range for one active skinned primitive.
-fn reserve_deformed_vertex_range(cursor: &mut usize, vertex_count: u32) -> u32 {
+pub(super) fn reserve_deformed_vertex_range(cursor: &mut usize, vertex_count: u32) -> u32 {
 	let base = *cursor;
 	let end = base
 		.checked_add(vertex_count as usize)

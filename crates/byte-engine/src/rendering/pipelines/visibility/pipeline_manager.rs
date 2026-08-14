@@ -551,14 +551,14 @@ mod tests {
 	use resource_management::types::AlphaMode;
 	use utils::Extent;
 
+	use super::manager::{cached_skin_palette, reserve_deformed_vertex_range};
 	use super::{
-		cached_skin_palette, collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_importance,
-		make_cone_shadow_view, make_point_shadow_view, point_light_has_brightness, point_shadow_importance,
-		reserve_deformed_vertex_range, resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights,
-		write_material_texture_indices, Instance, LightData, LightingData, MaterialData, RenderInfo, ShaderMesh,
-		ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings, AO_MAP_BINDING,
-		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
-		DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+		collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_importance, make_cone_shadow_view,
+		make_point_shadow_view, point_light_has_brightness, point_shadow_importance, resolve_cone_shadow_range,
+		resolve_point_shadow_range, select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData,
+		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings,
+		AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING,
+		CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
 		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY,
 		POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX, POINT_SHADOW_NEAR_M, SHADOW_MAP_BINDING,

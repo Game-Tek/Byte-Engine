@@ -27,7 +27,7 @@ use crate::{
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
-	use utils::Box;
+	use utils::{hash::HashMapExt as _, Box};
 
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;

@@ -24,11 +24,11 @@ pub(crate) use stream_index_validation::{prepared_mesh_counts_match, validated_g
 /// The `PreparedGpuMeshCounts` struct defines the aggregate geometry contract that primitive metadata must satisfy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedGpuMeshCounts {
-	vertices: usize,
-	primitive_indices: usize,
-	triangles: usize,
-	meshlets: usize,
-	skinning_vertices: usize,
+	pub(super) vertices: usize,
+	pub(super) primitive_indices: usize,
+	pub(super) triangles: usize,
+	pub(super) meshlets: usize,
+	pub(super) skinning_vertices: usize,
 }
 
 /// The `PreparedGpuMesh` struct retains validated mesh ranges in their leased GPU upload-buffer region.

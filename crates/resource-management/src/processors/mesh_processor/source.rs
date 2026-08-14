@@ -1,13 +1,13 @@
 use std::alloc::{Allocator, Global};
 
 use crate::{
-	ReferenceModel, StreamDescription,
 	resources::{
 		material::VariantModel,
 		mesh::{MeshModel, PrimitiveModel},
 		skeleton::{SkeletonModel, SkinBinding, SkinJoint},
 	},
 	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
+	ReferenceModel, StreamDescription,
 };
 
 /// The `MeshAttributeData` enum provides borrowed attribute payloads to the mesh processor.

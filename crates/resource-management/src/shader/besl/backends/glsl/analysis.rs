@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use crate::shader::generator::{
-	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, ordered_shader_nodes,
+	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 };
 
 /// The `Generator` struct exists to produce GLSL source for Vulkan-backed shader pipelines.

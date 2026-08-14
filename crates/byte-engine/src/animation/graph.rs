@@ -4,8 +4,11 @@
 //! [`AnimationGraphPlayer`] for each animated skeleton. The player evaluates
 //! synchronously from retained pose buffers while [`AnimationPool`] loads clip
 //! resources on an application-owned async worker. Connect state handles with
-//! [`AnimationGraphState::to`], then assign the one-shot clip and its trigger.
-//! The clip completes into the target state.
+//! [`AnimationGraphState::to`], then assign the one-shot clip and choose
+//! [`AnimationGraphTransitionConditionBuilder::when`] or
+//! [`AnimationGraphTransitionConditionBuilder::anytime`] as its trigger policy.
+//! The clip completes into the target state unless another any-time transition
+//! interrupts it.
 //!
 //! # Connection order
 //!
@@ -161,6 +164,8 @@ impl<I> AnimationTransition<I> {
 struct StateTransition<I> {
 	target: AnimationStateId,
 	transition: AnimationTransition<I>,
+	// Only `.anytime` edges can interrupt an active transition clip.
+	can_interrupt_transition: bool,
 }
 
 /// Distinguishes persistent clips from one-shot clips that complete into another state.
@@ -185,17 +190,20 @@ impl<I> AnimationGraphStateData<I> {
 		}
 	}
 
-	/// Selects the first authored exit, then falls back to transition-state completion.
-	fn select_transition(&self, input: &I, source_finished: bool) -> Option<(AnimationStateId, MediaTime)> {
+	/// Selects the first authored exit that matches the active state's input and playback state.
+	fn select_authored_transition(&self, input: &I, source_finished: bool) -> Option<(AnimationStateId, MediaTime)> {
 		self.transitions
 			.iter()
 			.find(|transition| transition.transition.matches(input, source_finished))
 			.map(|transition| (transition.target, transition.transition.duration))
-			.or_else(|| {
-				source_finished
-					.then(|| self.completion_target().map(|target| (target, MediaTime::ZERO)))
-					.flatten()
-			})
+	}
+
+	/// Selects the first any-time exit that can interrupt another active transition clip.
+	fn select_anytime_transition(&self, input: &I) -> Option<(AnimationStateId, MediaTime)> {
+		self.transitions
+			.iter()
+			.find(|transition| transition.can_interrupt_transition && transition.transition.matches(input, false))
+			.map(|transition| (transition.target, transition.transition.duration))
 	}
 }
 
@@ -228,12 +236,34 @@ impl<I> AnimationGraph<I> {
 		// Builder validation keeps every runtime state ID in range.
 		&self.states[id.0]
 	}
+
+	/// Selects a state-specific exit, then an interrupting exit from a transition clip's completion state.
+	fn select_transition(
+		&self,
+		source: AnimationStateId,
+		input: &I,
+		source_finished: bool,
+	) -> Option<(AnimationStateId, MediaTime)> {
+		let source_state = self.state(source);
+		if let Some(transition) = source_state.select_authored_transition(input, source_finished) {
+			return Some(transition);
+		}
+
+		let completion = source_state.completion_target()?;
+		if let Some(transition) = self.state(completion).select_anytime_transition(input) {
+			return Some(transition);
+		}
+
+		source_finished.then_some((completion, MediaTime::ZERO))
+	}
 }
 
 struct PendingStateTransition<I> {
 	source: AnimationStateId,
 	target: AnimationStateId,
 	transition: AnimationTransition<I>,
+	// This value becomes `StateTransition::can_interrupt_transition` during graph construction.
+	can_interrupt_transition: bool,
 }
 
 /// The `AnimationGraphBuilder` struct assembles named clip states and their ordered transitions.
@@ -275,7 +305,7 @@ pub struct AnimationGraphTransitionBuilder<'builder, I> {
 	target: AnimationGraphState<'builder, I>,
 }
 
-/// The `AnimationGraphTransitionConditionBuilder` struct assigns the condition that starts a transition.
+/// The `AnimationGraphTransitionConditionBuilder` struct holds unfinished one-shot transition authoring so callers can choose its trigger policy.
 pub struct AnimationGraphTransitionConditionBuilder<'builder, I> {
 	source: AnimationGraphState<'builder, I>,
 	target: AnimationGraphState<'builder, I>,
@@ -294,7 +324,6 @@ impl<'builder, I> AnimationGraphStateBuilder<'builder, I> {
 			kind: AnimationGraphStateKind::Persistent,
 			transitions: Vec::new(),
 		});
-		drop(builder);
 		AnimationGraphState { data: self.data, id }
 	}
 }
@@ -322,6 +351,7 @@ impl<'builder, I> AnimationGraphTransitionBuilder<'builder, I> {
 			source: self.source.id,
 			target: self.target.id,
 			transition,
+			can_interrupt_transition: false,
 		});
 		self.target
 	}
@@ -337,8 +367,25 @@ impl<'builder, I> AnimationGraphTransitionBuilder<'builder, I> {
 }
 
 impl<'builder, I> AnimationGraphTransitionConditionBuilder<'builder, I> {
-	/// Adds the transition and returns its transient state.
+	/// Adds a transition that can begin only while its source state is active.
+	///
+	/// The transition clip runs through to its target unless it has an authored
+	/// exit. Use [`Self::anytime`] when another transition can interrupt the clip.
 	pub fn when(self, transition: AnimationTransition<I>) -> AnimationGraphState<'builder, I> {
+		self.add(transition, false)
+	}
+
+	/// Adds a transition that can interrupt another active transition clip.
+	///
+	/// While this clip is active, matching any-time transitions authored from its
+	/// completion state take priority over its normal completion. Use [`Self::when`]
+	/// when the clip must run through to its target.
+	pub fn anytime(self, transition: AnimationTransition<I>) -> AnimationGraphState<'builder, I> {
+		self.add(transition, true)
+	}
+
+	/// Adds the one-shot state and its source edge with the selected interruption policy.
+	fn add(self, transition: AnimationTransition<I>, can_interrupt_transition: bool) -> AnimationGraphState<'builder, I> {
 		let mut builder = self.source.data.borrow_mut();
 		let builder = builder.as_mut().expect("the animation graph has already been built");
 		let id = AnimationStateId(builder.states.len());
@@ -360,8 +407,8 @@ impl<'builder, I> AnimationGraphTransitionConditionBuilder<'builder, I> {
 			source: self.source.id,
 			target: id,
 			transition,
+			can_interrupt_transition,
 		});
-		drop(builder);
 		AnimationGraphState {
 			data: self.source.data,
 			id,
@@ -411,23 +458,6 @@ impl<I> AnimationGraphBuilder<I> {
 			transitions: Vec::new(),
 		});
 		id
-	}
-
-	/// Adds a transition after previously added transitions from the same source state.
-	///
-	/// The player checks transitions in this order and takes the first one that matches.
-	fn transition(&self, source: AnimationStateId, target: AnimationStateId, transition: AnimationTransition<I>) -> &Self {
-		self.data
-			.borrow_mut()
-			.as_mut()
-			.expect("the animation graph has already been built")
-			.transitions
-			.push(PendingStateTransition {
-				source,
-				target,
-				transition,
-			});
-		self
 	}
 
 	/// Validates the graph and selects the initial state.
@@ -494,6 +524,7 @@ impl<I> AnimationGraphBuilder<I> {
 			data.states[pending.source.0].transitions.push(StateTransition {
 				target: pending.target,
 				transition: pending.transition,
+				can_interrupt_transition: pending.can_interrupt_transition,
 			});
 		}
 
@@ -654,26 +685,39 @@ mod tests {
 	}
 
 	#[test]
-	fn transition_states_complete_after_authored_exits_and_validate_their_configuration() {
+	fn anytime_transition_states_interrupt_toward_their_completion_state() {
 		let builder = AnimationGraph::<bool>::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
 		let start_walk = idle
 			.to(walk)
 			.with(AnimationClip::once("start.animation"))
-			.when(AnimationTransition::always());
-		builder.transition(start_walk.id, idle.id, AnimationTransition::when(|moving: &bool| !*moving));
+			.anytime(AnimationTransition::when(|moving| *moving));
+		let stop_walk = walk
+			.to(idle)
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(AnimationTransition::when(|moving: &bool| !*moving));
 		let graph = builder.build(idle).expect("transition state should be valid");
 
 		assert_eq!(
-			graph.state(start_walk.id).select_transition(&false, true),
-			Some((idle.id, MediaTime::ZERO)),
-			"authored cancellation must take priority over completion"
+			graph.select_transition(start_walk.id, &false, false),
+			Some((stop_walk.id, MediaTime::ZERO)),
+			"a matching any-time transition must interrupt an active transition clip"
 		);
 		assert_eq!(
-			graph.state(start_walk.id).select_transition(&true, true),
+			graph.select_transition(start_walk.id, &true, false),
+			None,
+			"the active any-time transition must not restart itself"
+		);
+		assert_eq!(
+			graph.select_transition(start_walk.id, &true, true),
 			Some((walk.id, MediaTime::ZERO)),
-			"a finished transition state must fall through to its completion"
+			"an uninterrupted transition state must fall through to its completion"
+		);
+		assert_eq!(
+			graph.select_transition(start_walk.id, &false, true),
+			Some((stop_walk.id, MediaTime::ZERO)),
+			"a matching any-time transition must take priority over completion"
 		);
 
 		let looping_state = AnimationGraph::<()>::builder();
@@ -701,5 +745,29 @@ mod tests {
 				state_count: 2,
 			})
 		));
+	}
+
+	#[test]
+	fn transition_states_prioritize_authored_exits_over_completion() {
+		let builder = AnimationGraph::<bool>::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.when(AnimationTransition::always());
+		start_walk.to(idle).when(AnimationTransition::when(|moving: &bool| !*moving));
+		let graph = builder.build(idle).expect("transition state should be valid");
+
+		assert_eq!(
+			graph.select_transition(start_walk.id, &false, true),
+			Some((idle.id, MediaTime::ZERO)),
+			"an authored exit must take priority over transition-state completion"
+		);
+		assert_eq!(
+			graph.select_transition(start_walk.id, &true, true),
+			Some((walk.id, MediaTime::ZERO)),
+			"a transition state without a matching exit must complete normally"
+		);
 	}
 }

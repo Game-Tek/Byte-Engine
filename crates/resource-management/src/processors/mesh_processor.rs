@@ -4,7 +4,7 @@ mod validation;
 
 #[cfg(test)]
 use packing::MESHLET_STREAM_STRIDE;
-pub use packing::{MeshProcessor, ProcessedMesh, TriangleFrontFaceWinding, orient_triangle_indices_for_front_face};
+pub use packing::{orient_triangle_indices_for_front_face, MeshProcessor, ProcessedMesh, TriangleFrontFaceWinding};
 pub use source::{
 	MeshAttributeData, MeshIndexData, MeshPrimitiveSource, MeshSource, OwnedMeshAttribute, OwnedMeshAttributeData,
 	OwnedMeshPrimitive, OwnedMeshSource,
@@ -19,15 +19,15 @@ mod tests {
 	};
 	use crate::types::VertexSemantics;
 	use crate::{
-		ReferenceModel,
 		resources::{
 			material::VariantModel,
 			skeleton::{
-				LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-				identity_affine_matrix4x3_columns,
+				identity_affine_matrix4x3_columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
+				SkinPaletteEntry,
 			},
 		},
 		types::{AlphaMode, VertexComponent},
+		ReferenceModel,
 	};
 
 	#[test]
@@ -125,18 +125,14 @@ mod tests {
 		assert_eq!(processed.mesh.skins.len(), 1);
 		assert_eq!(processed.mesh.primitives[0].transform_node, Some(0));
 		assert_eq!(processed.mesh.primitives[0].skin, Some(0));
-		assert!(
-			processed.mesh.primitives[0]
-				.streams
-				.iter()
-				.any(|stream| stream.stream_type == crate::types::Streams::Vertices(VertexSemantics::Joints))
-		);
-		assert!(
-			processed.mesh.primitives[0]
-				.streams
-				.iter()
-				.any(|stream| stream.stream_type == crate::types::Streams::Vertices(VertexSemantics::Weights))
-		);
+		assert!(processed.mesh.primitives[0]
+			.streams
+			.iter()
+			.any(|stream| stream.stream_type == crate::types::Streams::Vertices(VertexSemantics::Joints)));
+		assert!(processed.mesh.primitives[0]
+			.streams
+			.iter()
+			.any(|stream| stream.stream_type == crate::types::Streams::Vertices(VertexSemantics::Weights)));
 	}
 
 	#[test]
@@ -353,13 +349,11 @@ mod tests {
 
 		assert_eq!(processed.mesh.vertex_components.len(), 1);
 		assert_eq!(processed.mesh.vertex_components[0].semantic, VertexSemantics::Position);
-		assert!(
-			processed
-				.mesh
-				.streams
-				.iter()
-				.all(|stream| stream.stream_type != crate::types::Streams::Vertices(VertexSemantics::BiTangent))
-		);
+		assert!(processed
+			.mesh
+			.streams
+			.iter()
+			.all(|stream| stream.stream_type != crate::types::Streams::Vertices(VertexSemantics::BiTangent)));
 	}
 
 	fn test_material() -> ReferenceModel<VariantModel> {

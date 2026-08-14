@@ -2,8 +2,8 @@ mod analysis;
 mod generator;
 mod header;
 
-pub use Generator as GLSLShaderGenerator;
 pub use analysis::Generator;
+pub use Generator as GLSLShaderGenerator;
 
 #[cfg(test)]
 mod tests {

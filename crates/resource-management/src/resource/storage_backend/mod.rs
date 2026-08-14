@@ -527,5 +527,4 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {}
-
 }

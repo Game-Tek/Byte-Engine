@@ -168,7 +168,6 @@ fn swap_16_bit_png_samples(buffer: &mut [u8]) {
 	}
 }
 
-
 fn grayscale8_to_rgb8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
 	let mut output = Vec::with_capacity_in(buffer.len() * 3, allocator);
 	for value in buffer {

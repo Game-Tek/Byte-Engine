@@ -387,11 +387,10 @@ impl<'graph, 'target, I> AnimationGraphPlayer<'graph, 'target, I> {
 		self.pending = self.selected_transition(selected, input);
 	}
 
-	/// Resolves one source state to its highest-priority current destination.
+	/// Resolves the active clip to its highest-priority current destination.
 	fn selected_transition(&self, active: &RuntimeClip, input: &I) -> Option<PendingPlayerTransition> {
-		let source_state = self.graph.state(active.state);
-		source_state
-			.select_transition(input, active.is_finished())
+		self.graph
+			.select_transition(active.state, input, active.is_finished())
 			.map(|(target, duration)| PendingPlayerTransition {
 				target,
 				duration: Some(duration),
@@ -894,13 +893,62 @@ mod tests {
 			.expect("starts transition state");
 		assert_eq!(player.state(), Some(start_walk.id));
 		player
-			.advance(MediaTime::from_seconds(1), &true, &mut pool)
+			.advance(MediaTime::from_seconds(1), &false, &mut pool)
 			.expect("finishes transition-state clip");
 		assert_eq!(player.state(), Some(start_walk.id));
 		player
-			.advance(MediaTime::ZERO, &true, &mut pool)
-			.expect("enters completion state");
+			.advance(MediaTime::ZERO, &false, &mut pool)
+			.expect("enters completion state despite its entry condition changing");
 		assert_eq!(player.state(), Some(walk.id));
+	}
+
+	#[test]
+	fn player_interrupts_active_anytime_transition_states() {
+		let idle_animation = test_animation("idle", 0.0);
+		let start_animation = test_animation("start", 1.0);
+		let stop_animation = test_animation("stop", 1.0);
+		let walk_animation = test_animation("walk", 2.0);
+		let byte_budget = packed_test_animation_bytes("idle", 0.0)
+			+ packed_test_animation_bytes("start", 1.0)
+			+ packed_test_animation_bytes("stop", 1.0)
+			+ packed_test_animation_bytes("walk", 2.0);
+		let mut pool = pool(byte_budget);
+		pool.admit("idle.animation".into(), idle_animation);
+		pool.admit("start.animation".into(), start_animation);
+		pool.admit("stop.animation".into(), stop_animation);
+		pool.admit("walk.animation".into(), walk_animation);
+
+		let builder = AnimationGraph::<bool>::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.anytime(AnimationTransition::when(|moving| *moving));
+		let stop_walk = walk
+			.to(idle)
+			.with(AnimationClip::once("stop.animation"))
+			.anytime(AnimationTransition::when(|moving: &bool| !*moving));
+		let graph = builder.build(idle).expect("graph should build");
+		let target = test_skeleton();
+		let mut player = AnimationGraphPlayer::new(&graph, &target, None).expect("player should build");
+
+		player.advance(MediaTime::ZERO, &false, &mut pool).expect("initial idle pose");
+		player
+			.advance(MediaTime::ZERO, &true, &mut pool)
+			.expect("starts the walk transition clip");
+		assert_eq!(player.state(), Some(start_walk.id));
+		player
+			.advance(MediaTime::ZERO, &false, &mut pool)
+			.expect("interrupts the walk transition clip");
+		assert_eq!(player.state(), Some(stop_walk.id));
+		player
+			.advance(MediaTime::from_seconds(1), &false, &mut pool)
+			.expect("finishes the stop transition clip");
+		player
+			.advance(MediaTime::ZERO, &false, &mut pool)
+			.expect("enters idle after the stop transition clip");
+		assert_eq!(player.state(), Some(idle.id));
 	}
 
 	#[test]

@@ -2,15 +2,15 @@ use std::alloc::Allocator;
 
 use super::{
 	source::{MeshAttributeData, MeshPrimitiveSource, MeshSource, OwnedMeshSource},
-	validation::{MeshProcessingError, validate_skin_source, validate_vertex_layout},
+	validation::{validate_skin_source, validate_vertex_layout, MeshProcessingError},
 };
 use crate::{
-	ReferenceModel, StreamDescription,
 	resources::{
 		mesh::{MeshModel, PrimitiveModel},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
 	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
+	ReferenceModel, StreamDescription,
 };
 
 /// The `TriangleFrontFaceWinding` enum identifies the triangle winding used as the processed mesh front face.

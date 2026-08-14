@@ -150,4 +150,11 @@ elif [ "$PKG_MANAGER" == "brew" ]; then
 fi
 
 install_packages "${DEPENDENCIES[@]}"
+
+# Nextest is the engine's standard test harness. Skip installation when the
+# requested Cargo subcommand is already available.
+if ! cargo nextest --version >/dev/null 2>&1; then
+    cargo install cargo-nextest --version 0.9.140 --locked || error_exit "Failed to install cargo-nextest. The most likely cause is a network error or an incompatible Rust toolchain."
+fi
+
 success "All dependencies installed successfully!"

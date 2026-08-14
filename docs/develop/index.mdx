@@ -9,17 +9,25 @@ development, start with [Develop with Byte](/docs/use).
 
 ## Test your changes
 
-Run the full test suite:
+Install and run the engine's default test harness from the workspace root:
 
 ```bash
-cargo test
+cargo install cargo-nextest --version 0.9.140 --locked
+cargo nextest run --workspace
+```
+
+Nextest does not run Rust documentation tests. If you add or change an example
+in API documentation, run it separately:
+
+```bash
+cargo test --doc --workspace
 ```
 
 Some rendering tests need a local GPU. For a quick logic-only pass, skip tests
 whose names contain `render` or `graphics`:
 
 ```bash
-cargo test -- --skip render --skip graphics
+cargo nextest run --workspace -E 'not test(/render|graphics/)'
 ```
 
 ## Run benchmarks

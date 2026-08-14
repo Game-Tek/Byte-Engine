@@ -1,0 +1,5 @@
+[profile.default]
+# Run every selected test so one failure does not hide unrelated regressions.
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"

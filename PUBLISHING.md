@@ -24,7 +24,8 @@ Run these checks before publishing:
 ```sh
 cargo fmt --check
 cargo check -q --workspace
-cargo test -q --workspace
+cargo nextest run --workspace
+cargo test -q --doc --workspace
 cargo clippy -q --workspace
 cargo doc -q -p byte-engine --no-deps
 cargo doc -q -p byte-engine --no-default-features --no-deps

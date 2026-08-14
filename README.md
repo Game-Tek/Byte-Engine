@@ -39,7 +39,11 @@ nightly-2026-05-31
 ```
 
 Install Rust with `rustup`. When you run Cargo inside the checkout, it uses the
-pinned nightly automatically.
+pinned nightly automatically. Install the engine's default test harness:
+
+```sh
+cargo install cargo-nextest --version 0.9.140 --locked
+```
 
 Platform requirements:
 
@@ -262,7 +266,8 @@ Common checks from the workspace root:
 ```sh
 cargo fmt --check
 cargo check --workspace
-cargo test --workspace
+cargo nextest run --workspace
+cargo test --doc --workspace
 cargo clippy --workspace
 cargo doc -p byte-engine --no-deps
 ```

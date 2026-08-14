@@ -74,5 +74,11 @@ jobs:
           throw "dxcompiler.dll was not found in the DirectX Shader Compiler archive."
         }
         Add-Content $env:GITHUB_PATH $bin
-    - name: Build & Test
-      run: cargo test --workspace --profile ${{ matrix.profile }} --no-default-features --features ${{ matrix.feature }} -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.
+    - name: Install nextest
+      uses: taiki-e/install-action@nextest
+    - name: Build and test
+      # Rendering tests require a local GPU and have "render" in their names.
+      run: cargo nextest run --workspace --cargo-profile ${{ matrix.profile }} --no-default-features --features ${{ matrix.feature }} -E 'not test(/render/)'
+    - name: Run documentation tests
+      if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
+      run: cargo test --doc --workspace --no-default-features --features headed

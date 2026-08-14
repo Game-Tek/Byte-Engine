@@ -8,7 +8,7 @@
 use std::{
 	collections::VecDeque,
 	sync::{
-		mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError},
+		mpsc::{sync_channel, Receiver, SyncSender, TrySendError},
 		Arc,
 	},
 };
@@ -263,10 +263,7 @@ pub struct ConfigurationPort {
 impl ConfigurationPort {
 	/// Returns the next queued update without waiting for a producer.
 	pub fn read(&self) -> Option<ConfigurationUpdate> {
-		match self.receiver.try_recv() {
-			Ok(update) => Some(update),
-			Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
-		}
+		self.receiver.try_recv().ok()
 	}
 
 	/// Reports the effective value applied by the consuming system.

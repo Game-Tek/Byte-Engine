@@ -152,7 +152,7 @@ impl HttpInspectorServer {
 mod tests {
 	use std::{
 		io::{Read, Write},
-		net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+		net::{Ipv4Addr, TcpListener, TcpStream},
 		time::Duration,
 	};
 
@@ -167,7 +167,7 @@ mod tests {
 		drop(reservation);
 
 		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
-		let _server = HttpInspectorServer::spawn(inspector, [SocketAddr::from(address)]).expect("start inspector test server");
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
 		stream
@@ -194,7 +194,7 @@ mod tests {
 		let _port = configuration.register("render.pass.");
 		configuration.update("render.pass.bloom", "bypassed");
 		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), configuration));
-		let _server = HttpInspectorServer::spawn(inspector, [SocketAddr::from(address)]).expect("start inspector test server");
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
 		stream

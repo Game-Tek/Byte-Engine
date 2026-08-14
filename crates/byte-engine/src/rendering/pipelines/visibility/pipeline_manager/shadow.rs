@@ -187,11 +187,12 @@ pub(crate) const POINT_SHADOW_EXPOSURE_THRESHOLD_LUX: f32 = 0.125;
 /// valid perspective projection.
 pub(crate) fn resolve_cone_shadow_range(light: ConeLight, exposure_scale: f32) -> (f32, f32) {
 	let peak_candela = cone_light_peak_candela(light);
-	let exposure_scale = exposure_scale
-		.is_finite()
-		.then_some(exposure_scale)
-		.unwrap_or(CONE_SHADOW_DEFAULT_EXPOSURE_SCALE)
-		.max(0.0);
+	let exposure_scale = if exposure_scale.is_finite() {
+		exposure_scale
+	} else {
+		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE
+	}
+	.max(0.0);
 	let automatic_far = (peak_candela * exposure_scale / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX)
 		.sqrt()
 		.max(CONE_SHADOW_NEAR_M + CONE_SHADOW_NEAR_M);
@@ -223,11 +224,12 @@ pub(crate) fn cone_light_peak_candela(light: ConeLight) -> f32 {
 /// Resolves the clipping range for one point-light cube shadow map.
 pub(crate) fn resolve_point_shadow_range(light: PointLight, exposure_scale: f32) -> (f32, f32) {
 	let peak_candela = point_light_peak_candela(light);
-	let exposure_scale = exposure_scale
-		.is_finite()
-		.then_some(exposure_scale)
-		.unwrap_or(POINT_SHADOW_DEFAULT_EXPOSURE_SCALE)
-		.max(0.0);
+	let exposure_scale = if exposure_scale.is_finite() {
+		exposure_scale
+	} else {
+		POINT_SHADOW_DEFAULT_EXPOSURE_SCALE
+	}
+	.max(0.0);
 	let automatic_far = (peak_candela * exposure_scale / POINT_SHADOW_EXPOSURE_THRESHOLD_LUX)
 		.sqrt()
 		.max(POINT_SHADOW_NEAR_M + POINT_SHADOW_NEAR_M);

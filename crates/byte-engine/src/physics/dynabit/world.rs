@@ -231,7 +231,7 @@ impl World {
 				a.position = a.position - separation * (a.inv_mass / inverse_mass_sum);
 			}
 			if let Some(b) = self.bodies.get_slot_mut(contact.b.object) {
-				b.position = b.position + separation * (b.inv_mass / inverse_mass_sum);
+				b.position += separation * (b.inv_mass / inverse_mass_sum);
 			}
 		}
 	}

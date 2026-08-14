@@ -46,7 +46,7 @@ impl PhysicsBody {
 	/// Applies a world-space linear impulse.
 	pub fn apply_linear_impulse(&mut self, impulse: Vector) {
 		if self.inv_mass != 0.0 {
-			self.linear_velocity = self.linear_velocity + impulse * self.inv_mass;
+			self.linear_velocity += impulse * self.inv_mass;
 		}
 	}
 
@@ -55,8 +55,7 @@ impl PhysicsBody {
 		if self.inv_mass == 0.0 {
 			return;
 		}
-		self.angular_velocity =
-			self.angular_velocity + Vector::from_maths(self.inverse_world_space_inertia_tensor() * impulse.into_maths());
+		self.angular_velocity += Vector::from_maths(self.inverse_world_space_inertia_tensor() * impulse.into_maths());
 		const MAX_ANGULAR_SPEED: f32 = 30.0;
 		if self.angular_velocity.length_squared() > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED {
 			self.angular_velocity = self.angular_velocity.normalized().expect("finite angular velocity") * MAX_ANGULAR_SPEED;
@@ -90,7 +89,7 @@ impl PhysicsBody {
 	/// Advances the body by `dt` using its current linear and angular velocities.
 	pub fn update(&mut self, dt: MediaTime) {
 		let seconds = dt.as_seconds_f32();
-		self.position = self.position + self.linear_velocity * seconds;
+		self.position += self.linear_velocity * seconds;
 
 		let center_of_mass = self.world_space_center_of_mass();
 		let center_offset = self.position - center_of_mass;
@@ -99,7 +98,7 @@ impl PhysicsBody {
 		let angular_momentum = Vector::from_maths(inertia * self.angular_velocity.into_maths());
 		let angular_acceleration =
 			Vector::from_maths(inertia.inverse() * self.angular_velocity.cross(angular_momentum).into_maths());
-		self.angular_velocity = self.angular_velocity + angular_acceleration * seconds;
+		self.angular_velocity += angular_acceleration * seconds;
 
 		let angular_step = self.angular_velocity * seconds;
 		// Check the axis and measure its rotation in one operation.

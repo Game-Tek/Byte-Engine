@@ -98,7 +98,7 @@ impl VisibilityPipelineResourceManager {
 		let resource_manager = self.resource_manager.clone();
 		self.spawn_preparation(async move {
 			match source {
-				MeshSource::Resource(id) => match resource_manager.request::<ResourceMesh>(&id).await {
+				MeshSource::Resource(id) => match resource_manager.request::<ResourceMesh>(id).await {
 					Ok(resource) => VisibilityTransferCommand::ResourceMeshLoaded {
 						key,
 						resource,
@@ -303,7 +303,8 @@ impl VisibilityPipelineResourceManager {
 				})?;
 			if loaded.buffer().is_none() {
 				log::error!(
-					"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.", id
+					"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.",
+					id
 				);
 				return Err(());
 			}

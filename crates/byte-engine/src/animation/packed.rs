@@ -56,9 +56,9 @@ impl PackedAnimationData {
 			.sum::<usize>();
 		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
 			total
-				+ track.translation.as_ref().map_or(0, |curve| vector3_curve_words(curve))
+				+ track.translation.as_ref().map_or(0, vector3_curve_words)
 				+ track.rotation.as_ref().map_or(0, quaternion_curve_words)
-				+ track.scale.as_ref().map_or(0, |curve| vector3_curve_words(curve))
+				+ track.scale.as_ref().map_or(0, vector3_curve_words)
 		});
 		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
 			* std::mem::size_of::<u32>()

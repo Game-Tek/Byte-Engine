@@ -49,9 +49,9 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Float(f64::from(settings.radius))))
 			}
 			"samples-per-ray" => {
-				let samples_per_ray = configuration_u32(value).ok_or_else(|| {
-					"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number."
-				})?;
+				let samples_per_ray = configuration_u32(value).ok_or(
+					"GTAO samples-per-ray was not set. The most likely cause is that the value is not a whole number.",
+				)?;
 				if !(GTAO_MIN_SAMPLES_PER_RAY..=GTAO_MAX_SAMPLES_PER_RAY).contains(&samples_per_ray) {
 					return Err(format!(
 						"GTAO samples-per-ray was not set. The most likely cause is that the value is outside the supported range {}..={}.",
@@ -62,9 +62,8 @@ impl GtaoSettings {
 				Ok((settings, ConfigurationValue::Integer(i64::from(samples_per_ray))))
 			}
 			"radial-rays" => {
-				let radial_rays = configuration_u32(value).ok_or_else(|| {
-					"GTAO radial-rays was not set. The most likely cause is that the value is not a whole number."
-				})?;
+				let radial_rays = configuration_u32(value)
+					.ok_or("GTAO radial-rays was not set. The most likely cause is that the value is not a whole number.")?;
 				if !(GTAO_MIN_RADIAL_RAYS..=GTAO_MAX_RADIAL_RAYS).contains(&radial_rays) || radial_rays % 2 != 0 {
 					return Err(format!(
 						"GTAO radial-rays was not set. The most likely cause is that the value must be an even number in the range {}..={}.",

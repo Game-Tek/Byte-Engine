@@ -97,7 +97,7 @@ impl Generator {
 				besl::Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				} => {
-					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+					intrinsic.borrow().get_name() == Some(intrinsic_name)
 						|| arguments
 							.iter()
 							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))

@@ -896,7 +896,7 @@ mod tests {
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
 		run_at(&executable, &mut descriptors, [0, 0]);
 
-		for (name, expected) in [("y_over_x", -0.2509765625), ("z_over_x", 0.1005859375)] {
+		for (name, expected) in [("y_over_x", -0.25097656), ("z_over_x", 0.10058594)] {
 			let Value::F32(actual) = results.read(name).expect("point-shadow texel-center result") else {
 				panic!("Unexpected point-shadow texel-center result type for {name}.");
 			};

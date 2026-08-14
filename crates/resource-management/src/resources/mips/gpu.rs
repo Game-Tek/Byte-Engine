@@ -1,28 +1,3 @@
-use std::{
-	any::Any,
-	error::Error,
-	fmt,
-	sync::{
-		mpsc::{self, SyncSender},
-		Mutex,
-	},
-	thread::JoinHandle,
-};
-
-use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBuffer as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
-	device::Device as _,
-	queue::Queue as _,
-};
-use utils::Extent;
-
-use super::{generate_owned_lower_mip_chain, MipGenerationBackend, MipGenerationError, OwnedMipChain};
-use crate::types::Formats;
-
 const SOURCE_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 const OUTPUT_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
 
@@ -491,7 +466,7 @@ mod tests {
 	fn gpu_worker_generates_complete_uniform_mip_chain() {
 		let generator = MaterialMipGenerator::try_with_default_gpu()
 			.expect("A compatible GPU is required for the offline GPU mip integration test");
-		let base = vec![64_u8, 128, 192, 255].repeat(8 * 4);
+		let base = [64_u8, 128, 192, 255].repeat(8 * 4);
 		let levels = generator
 			.generate_lower_levels(Formats::RGBA8, 8, 4, &base)
 			.expect("GPU mip generation should succeed");
@@ -542,3 +517,28 @@ ConstantBuffer<PushConstants> pc : register(b0,space0);
 	float2 uv=float2(p*2u+1u)/float2(pc.source_width,pc.source_height);
 	destination_image[p]=source_image.SampleLevel(source_sampler,uv,0.0);
 }"#;
+
+use std::{
+	any::Any,
+	error::Error,
+	fmt,
+	sync::{
+		mpsc::{self, SyncSender},
+		Mutex,
+	},
+	thread::JoinHandle,
+};
+
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBuffer as _, CommandBufferRecording as _,
+		CommonCommandBufferMode as _,
+	},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
+	queue::Queue as _,
+};
+use utils::Extent;
+
+use super::{generate_owned_lower_mip_chain, MipGenerationBackend, MipGenerationError, OwnedMipChain};
+use crate::types::Formats;

@@ -801,28 +801,28 @@ mod tests {
 		assert_eq!(fixture.f32("squared_vec2"), 25.0);
 		assert_eq!(fixture.f32("squared_vec3"), 9.0);
 		assert_eq!(fixture.f32("squared_vec4"), 25.0);
-		assert_eq!(read_vec3f(&results, "min_a"), [1.0, 0.0, 0.0]);
-		assert_eq!(read_vec3f(&results, "min_b"), [-2.0, 0.0, 0.0]);
-		assert_eq!(read_vec3f(&results, "min_tie"), [0.0, -1.0, 0.0]);
-		assert_floats_close(read_vec2f(&results, "oct_encoded"), [0.5, 0.5], 0.00001);
-		assert_floats_close(read_vec3f(&results, "oct_decoded"), [0.0, 0.0, 1.0], 0.00001);
+		assert_eq!(read_vec3f(results, "min_a"), [1.0, 0.0, 0.0]);
+		assert_eq!(read_vec3f(results, "min_b"), [-2.0, 0.0, 0.0]);
+		assert_eq!(read_vec3f(results, "min_tie"), [0.0, -1.0, 0.0]);
+		assert_floats_close(read_vec2f(results, "oct_encoded"), [0.5, 0.5], 0.00001);
+		assert_floats_close(read_vec3f(results, "oct_decoded"), [0.0, 0.0, 1.0], 0.00001);
 
 		let wrapped_frame = 1.0_f32;
 		let x = 10.0 + 5.588238 * wrapped_frame;
 		let y = 20.0 + 5.588238 * wrapped_frame;
-		let expected_noise = (52.9829189 * (0.06711056 * x + 0.00583715 * y).fract()).fract();
-		assert_f32_close(read_f32(&results, "noise"), expected_noise, 0.00001);
-		assert_eq!(read_f32(&results, "noise"), read_f32(&results, "periodic_noise"));
+		let expected_noise = (52.982_918 * (0.06711056 * x + 0.00583715 * y).fract()).fract();
+		assert_f32_close(read_f32(results, "noise"), expected_noise, 0.00001);
+		assert_eq!(read_f32(results, "noise"), read_f32(results, "periodic_noise"));
 		fixture.assert_f32("sine", 0.8660254);
 		fixture.assert_f32("tangent_value", -1.0);
-		assert_floats_close(read_vec3f(&results, "normal"), [0.0, 0.0, 1.0], 0.00001);
-		assert_floats_close(read_vec3f(&results, "perpendicular_x"), [-0.8944272, 0.4472136, 0.0], 0.00001);
-		assert_floats_close(read_vec3f(&results, "perpendicular_z"), [0.0, -0.4472136, 0.8944272], 0.00001);
+		assert_floats_close(read_vec3f(results, "normal"), [0.0, 0.0, 1.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "perpendicular_x"), [-0.8944272, 0.4472136, 0.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "perpendicular_z"), [0.0, -0.4472136, 0.8944272], 0.00001);
 		fixture.assert_vec2("snapped_uv", [0.25, 0.75]);
-		assert_floats_close(read_vec3f(&results, "hemisphere"), [-0.5, 0.0, 0.8660254], 0.00001);
-		assert_floats_close(read_vec3f(&results, "hemisphere_normal"), [0.0, 0.0, 1.0], 0.00001);
-		assert_floats_close(read_vec2f(&results, "pixel_uv"), [0.375, 0.75], 0.00001);
-		assert_floats_close(read_vec2f(&results, "rotated"), [0.0, 1.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "hemisphere"), [-0.5, 0.0, 0.8660254], 0.00001);
+		assert_floats_close(read_vec3f(results, "hemisphere_normal"), [0.0, 0.0, 1.0], 0.00001);
+		assert_floats_close(read_vec2f(results, "pixel_uv"), [0.375, 0.75], 0.00001);
+		assert_floats_close(read_vec2f(results, "rotated"), [0.0, 1.0], 0.00001);
 	}
 
 	/// Verifies the PBR distribution, geometry, and Fresnel contracts at analytically known inputs.
@@ -872,24 +872,24 @@ mod tests {
 		let results = &fixture.results;
 
 		let expected_geometry = 0.5 / (0.5 * (1.0 - 0.28125) + 0.28125);
-		assert_f32_close(read_f32(&results, "distribution"), 16.0 / std::f32::consts::PI, 0.00001);
+		assert_f32_close(read_f32(results, "distribution"), 16.0 / std::f32::consts::PI, 0.00001);
 		assert_f32_close(
-			read_f32(&results, "distribution_from_terms"),
+			read_f32(results, "distribution_from_terms"),
 			16.0 / std::f32::consts::PI,
 			0.00001,
 		);
 		fixture.assert_f32("distribution_roughness_one", 1.0 / std::f32::consts::PI);
-		assert_f32_close(read_f32(&results, "geometry"), expected_geometry, 0.00001);
-		assert_eq!(read_f32(&results, "geometry_zero"), 0.0);
-		assert_eq!(read_f32(&results, "geometry_one"), 1.0);
+		assert_f32_close(read_f32(results, "geometry"), expected_geometry, 0.00001);
+		assert_eq!(read_f32(results, "geometry_zero"), 0.0);
+		assert_eq!(read_f32(results, "geometry_one"), 1.0);
 		fixture.assert_f32("geometry_smith", expected_geometry * expected_geometry);
 		fixture.assert_f32("geometry_smith_from_terms", expected_geometry * expected_geometry);
-		assert_floats_close(read_vec3f(&results, "fresnel"), [0.07; 3], 0.00001);
-		assert_floats_close(read_vec3f(&results, "fresnel_from_factor"), [0.07; 3], 0.00001);
-		assert_floats_close(read_vec3f(&results, "fresnel_normal"), [0.04; 3], 0.00001);
-		assert_floats_close(read_vec3f(&results, "fresnel_grazing"), [1.0; 3], 0.00001);
-		assert_floats_close(read_vec3f(&results, "rough_fresnel"), [0.054375; 3], 0.00001);
-		assert_floats_close(read_vec3f(&results, "rough_fresnel_grazing"), [0.5; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "fresnel"), [0.07; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "fresnel_from_factor"), [0.07; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "fresnel_normal"), [0.04; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "fresnel_grazing"), [1.0; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "rough_fresnel"), [0.054375; 3], 0.00001);
+		assert_floats_close(read_vec3f(results, "rough_fresnel_grazing"), [0.5; 3], 0.00001);
 	}
 
 	/// Verifies barycentric coordinates, derivatives, interpolation, raster mapping, and normal decoding.
@@ -962,23 +962,23 @@ mod tests {
 		let results = &fixture.results;
 
 		fixture.assert_vec3("barycentric", [0.5, 0.25, 0.25]);
-		assert_eq!(read_vec3f(&results, "degenerate"), [1.0, 0.0, 0.0]);
-		assert_floats_close(read_vec3f(&results, "full_lambda"), [0.5, 0.25, 0.25], 0.00001);
-		assert_floats_close(read_vec3f(&results, "full_ddx"), [-0.25, 0.25, 0.0], 0.00001);
-		assert_floats_close(read_vec3f(&results, "full_ddy"), [-0.25, 0.0, 0.25], 0.00001);
-		assert_floats_close(read_vec3f(&results, "interpolated_vec3"), [0.25, 0.25, 0.0], 0.00001);
-		assert_floats_close(read_vec2f(&results, "interpolated_vec2"), [0.25, 0.25], 0.00001);
-		assert_floats_close(read_vec2f(&results, "raster_ndc"), [-0.75, 0.5], 0.00001);
-		assert_floats_close(read_vec2f(&results, "raster_ndc_last"), [0.75, -0.5], 0.00001);
-		assert_floats_close(read_vec3f(&results, "unit_vector"), [0.0, 0.0, 1.0], 0.00001);
-		assert_floats_close(read_vec3f(&results, "unit_vector_edge"), [1.0, 0.0, 0.0], 0.00001);
+		assert_eq!(read_vec3f(results, "degenerate"), [1.0, 0.0, 0.0]);
+		assert_floats_close(read_vec3f(results, "full_lambda"), [0.5, 0.25, 0.25], 0.00001);
+		assert_floats_close(read_vec3f(results, "full_ddx"), [-0.25, 0.25, 0.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "full_ddy"), [-0.25, 0.0, 0.25], 0.00001);
+		assert_floats_close(read_vec3f(results, "interpolated_vec3"), [0.25, 0.25, 0.0], 0.00001);
+		assert_floats_close(read_vec2f(results, "interpolated_vec2"), [0.25, 0.25], 0.00001);
+		assert_floats_close(read_vec2f(results, "raster_ndc"), [-0.75, 0.5], 0.00001);
+		assert_floats_close(read_vec2f(results, "raster_ndc_last"), [0.75, -0.5], 0.00001);
+		assert_floats_close(read_vec3f(results, "unit_vector"), [0.0, 0.0, 1.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "unit_vector_edge"), [1.0, 0.0, 0.0], 0.00001);
 		assert_floats_close(
-			read_vec3f(&results, "unit_vector_outside"),
+			read_vec3f(results, "unit_vector_outside"),
 			[std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0],
 			0.00001,
 		);
-		assert_floats_close(read_vec3f(&results, "decoded_normal"), [1.0, 0.0, 0.0], 0.00001);
-		assert_floats_close(read_vec3f(&results, "scaled_unit_vector"), [0.5, 0.0, 0.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "decoded_normal"), [1.0, 0.0, 0.0], 0.00001);
+		assert_floats_close(read_vec3f(results, "scaled_unit_vector"), [0.5, 0.0, 0.0], 0.00001);
 	}
 
 	/// Verifies direct, fetched, sampled, and neighborhood depth reconstruction through VM textures.

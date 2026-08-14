@@ -60,8 +60,7 @@ impl CubemapIBLLayout {
 
 		let specular_face_size = (source_width / 4)
 			.min(source_height / 2)
-			.min(MAX_SPECULAR_CUBE_FACE_SIZE)
-			.max(1);
+			.clamp(1, MAX_SPECULAR_CUBE_FACE_SIZE);
 		let specular_face_sizes = std::array::from_fn(|level| specular_face_size.checked_shr(level as u32).unwrap_or(0).max(1));
 		let cube_size = |face_size| {
 			image_byte_size(face_size, face_size)?

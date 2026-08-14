@@ -1,9 +1,3 @@
-use std::cell::RefCell;
-
-use crate::shader::generator::{
-	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
-};
-
 /// The `Generator` struct exists to produce GLSL source for Vulkan-backed shader pipelines.
 ///
 /// # Parameters
@@ -63,7 +57,7 @@ impl Generator {
 				besl::Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				} => {
-					intrinsic.borrow().get_name().as_deref() == Some(intrinsic_name)
+					intrinsic.borrow().get_name() == Some(intrinsic_name)
 						|| arguments
 							.iter()
 							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
@@ -124,3 +118,9 @@ impl Generator {
 				.any(|node| F16_TYPES.iter().any(|name| Self::uses_intrinsic(node, name)))
 	}
 }
+
+use std::cell::RefCell;
+
+use crate::shader::generator::{
+	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+};

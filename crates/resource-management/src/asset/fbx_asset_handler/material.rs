@@ -1,4 +1,3 @@
-use super::*;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum MaterialKey {
 	Default,
@@ -260,12 +259,11 @@ pub(crate) async fn load_fbx_texture_image(
 	texture: &ufbx::Texture,
 ) -> Result<(Box<[u8]>, u32, u32), LoadErrors> {
 	if !texture.content.is_empty() {
-		return decode_fbx_texture_image(&texture.content).map_err(|error| {
+		return decode_fbx_texture_image(&texture.content).inspect_err(|_| {
 			context.error(format_args!(
 				"Embedded FBX texture '{}' could not be decoded. The most likely cause is unsupported or malformed image data.",
 				texture.element.name
 			));
-			error
 		});
 	}
 
@@ -277,17 +275,15 @@ pub(crate) async fn load_fbx_texture_image(
 		return Err(LoadErrors::FailedToProcess);
 	};
 	let url = resolve_fbx_texture_path(mesh_url, path)?;
-	let (bytes, ..) = context.resolve(ResourceId::new(&url)).await.map_err(|error| {
+	let (bytes, ..) = context.resolve(ResourceId::new(&url)).await.inspect_err(|_| {
 		context.error(format_args!(
 			"FBX texture '{url}' could not be loaded. The most likely cause is a missing file-local image reference."
 		));
-		error
 	})?;
-	decode_fbx_texture_image(&bytes).map_err(|error| {
+	decode_fbx_texture_image(&bytes).inspect_err(|_| {
 		context.error(format_args!(
 			"FBX texture '{url}' could not be decoded. The most likely cause is unsupported or malformed image data."
 		));
-		error
 	})
 }
 
@@ -527,3 +523,5 @@ pub(crate) fn generated_fbx_material_base_id(
 		.unwrap_or_else(|| "material".to_string());
 	format!("{}#materials/{index}_{name}", mesh_url.as_ref())
 }
+
+use super::*;

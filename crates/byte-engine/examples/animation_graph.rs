@@ -159,12 +159,11 @@ fn main() {
 			// Compose object-space root motion into the owning transform before
 			// submitting the in-place visual pose.
 			let root_motion = pose.root_motion();
-			root_position = root_position
-				+ Vector::new(
-					root_motion.translation[0],
-					root_motion.translation[1],
-					root_motion.translation[2],
-				);
+			root_position += Vector::new(
+				root_motion.translation[0],
+				root_motion.translation[1],
+				root_motion.translation[2],
+			);
 			let [x, y, z, w] = root_motion.rotation;
 			let delta_orientation = Orientation::try_from_maths(Quaternion::new(x, y, z, w))
 				.expect("animation root motion always returns a normalized finite rotation");

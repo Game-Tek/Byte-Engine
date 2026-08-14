@@ -144,15 +144,12 @@ impl VisibilityPipelineResourceManagerWorker {
 			.zip(primitive_skins)
 			.zip(mesh.primitives.iter())
 			.map(|((material_index, skin_index), primitive)| {
-				let skin = match skin_index {
-					Some(skin_index) => Some(
-						skin_bindings
-							.get(skin_index as usize)
-							.expect("Visibility skin indices were validated before transfer recording.")
-							.clone(),
-					),
-					None => None,
-				};
+				let skin = skin_index.map(|skin_index| {
+					skin_bindings
+						.get(skin_index as usize)
+						.expect("Visibility skin indices were validated before transfer recording.")
+						.clone()
+				});
 
 				crate::rendering::pipelines::visibility::pipeline_manager::MeshPrimitive {
 					material_index,
@@ -223,15 +220,11 @@ impl VisibilityPipelineResourceManagerWorker {
 	) {
 		let mut started_frame_count = 0;
 
-		loop {
-			// Observe every ready preparation before opening the next transfer frame so
-			// unrelated resources share the earliest batch that has room for them.
-			let Some(drained_command_count) = self.drain_ready_commands(256) else {
-				break;
-			};
-
-			if self.has_active_transfer_work() {
-				if self
+		// Observe every ready preparation before opening the next transfer frame so
+		// unrelated resources share the earliest batch that has room for them.
+		while let Some(drained_command_count) = self.drain_ready_commands(256) {
+			if self.has_active_transfer_work()
+				&& self
 					.advance_transfer_queue(
 						&mut transfer_queue,
 						transfer_finished_synchronizer,
@@ -240,9 +233,8 @@ impl VisibilityPipelineResourceManagerWorker {
 						&mut started_frame_count,
 					)
 					.is_none()
-				{
-					break;
-				}
+			{
+				break;
 			}
 
 			if drained_command_count > 0 {
@@ -278,9 +270,7 @@ impl VisibilityPipelineResourceManagerWorker {
 
 		// Frame acquisition can wait for an in-flight sequence. Adopt resources that
 		// became ready during that wait before deciding what belongs in this batch.
-		if self.drain_ready_commands(256).is_none() {
-			return None;
-		}
+		self.drain_ready_commands(256)?;
 
 		if !self.has_pending_upload_work() {
 			*started_frame_count += 1;

@@ -43,9 +43,7 @@ pub(crate) fn build_prepared_resource_primitives(
 			);
 			return None;
 		};
-		if validated_stream_count(meshlet_stream, "primitive meshlet", RESOURCE_MESHLET_STRIDE).is_none() {
-			return None;
-		}
+		validated_stream_count(meshlet_stream, "primitive meshlet", RESOURCE_MESHLET_STRIDE)?;
 		let Some(meshlet_end) = meshlet_stream.offset.checked_add(meshlet_stream.size) else {
 			log::error!(
 				"Mesh primitive {primitive_index} meshlet range overflows. The most likely cause is corrupted baked primitive metadata."

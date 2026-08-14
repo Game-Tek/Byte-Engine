@@ -1604,7 +1604,7 @@ mod tests {
 						maximum * 0.5
 					};
 					source
-						.write_3d([x, y, layer as u32], [depth, 0.0, 0.0, 1.0])
+						.write_3d([x, y, layer], [depth, 0.0, 0.0, 1.0])
 						.expect("directional shadow source texel");
 				}
 			}

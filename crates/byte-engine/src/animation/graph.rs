@@ -290,10 +290,7 @@ pub struct AnimationGraphState<'builder, I> {
 
 impl<I> Clone for AnimationGraphState<'_, I> {
 	fn clone(&self) -> Self {
-		Self {
-			data: self.data,
-			id: self.id,
-		}
+		*self
 	}
 }
 

@@ -338,7 +338,7 @@ pub(super) fn narrow_material_property_assignments(node: &mut besl::parser::Node
 					_ => None,
 				};
 				if let Some(target_type) = target_type {
-					*right = Box::new(besl::parser::Node::call(target_type, vec![*right.clone()]));
+					**right = besl::parser::Node::call(target_type, vec![*right.clone()]);
 				}
 			}
 			narrow_material_property_assignments(left);

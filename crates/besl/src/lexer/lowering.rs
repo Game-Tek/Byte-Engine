@@ -455,7 +455,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 							Nodes::Intrinsic { elements, .. } => Node::expression(Expressions::IntrinsicCall {
 								intrinsic: r,
 								arguments: parameters.clone(),
-								elements: build_intrinsic(&elements, &parameters)?,
+								elements: build_intrinsic(elements, &parameters)?,
 							}),
 							_ => {
 								return Err(LexError::Undefined {

@@ -267,6 +267,7 @@ name = "byte-engine-besl"
 version = "0.1.0"
 dependencies = [
  "byte-engine-besl-derive",
+ "divan",
  "half",
 ]
 

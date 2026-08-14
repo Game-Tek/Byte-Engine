@@ -16,6 +16,13 @@ rust-version.workspace = true
 [lib]
 name = "besl"
 
+[[bench]]
+name = "vm"
+harness = false
+
 [dependencies]
 besl-derive = { package = "byte-engine-besl-derive", path = "../besl-derive", version = "0.1.0" }
 half = "2.7.1"
+
+[dev-dependencies]
+divan = "0.1.21"

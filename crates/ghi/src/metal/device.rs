@@ -88,29 +88,6 @@ impl crate::device::Device for Device {
 	}
 }
 
-fn metal_command_buffer_status_name(status: mtl::MTLCommandBufferStatus) -> &'static str {
-	match status {
-		mtl::MTLCommandBufferStatus::NotEnqueued => "not_enqueued",
-		mtl::MTLCommandBufferStatus::Enqueued => "enqueued",
-		mtl::MTLCommandBufferStatus::Committed => "committed",
-		mtl::MTLCommandBufferStatus::Scheduled => "scheduled",
-		mtl::MTLCommandBufferStatus::Completed => "completed",
-		mtl::MTLCommandBufferStatus::Error => "error",
-		_ => "unknown",
-	}
-}
-
-fn metal_command_encoder_error_state_name(state: mtl::MTLCommandEncoderErrorState) -> &'static str {
-	match state {
-		mtl::MTLCommandEncoderErrorState::Unknown => "unknown",
-		mtl::MTLCommandEncoderErrorState::Completed => "completed",
-		mtl::MTLCommandEncoderErrorState::Affected => "affected",
-		mtl::MTLCommandEncoderErrorState::Pending => "pending",
-		mtl::MTLCommandEncoderErrorState::Faulted => "faulted",
-		_ => "unknown",
-	}
-}
-
 pub(super) fn select_metal_command_queue_workloads(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	requested: crate::WorkloadTypes,
@@ -189,7 +166,16 @@ fn describe_metal_command_buffer_failure(command_buffer: &ProtocolObject<dyn mtl
 		let _ = write!(report, "\nCommand buffer: {}", label);
 	}
 
-	let _ = write!(report, "\nStatus: {}", metal_command_buffer_status_name(status));
+	let status = match status {
+		mtl::MTLCommandBufferStatus::NotEnqueued => "not_enqueued",
+		mtl::MTLCommandBufferStatus::Enqueued => "enqueued",
+		mtl::MTLCommandBufferStatus::Committed => "committed",
+		mtl::MTLCommandBufferStatus::Scheduled => "scheduled",
+		mtl::MTLCommandBufferStatus::Completed => "completed",
+		mtl::MTLCommandBufferStatus::Error => "error",
+		_ => "unknown",
+	};
+	let _ = write!(report, "\nStatus: {}", status);
 
 	let Some(error) = command_buffer.error() else {
 		return report;
@@ -225,7 +211,14 @@ fn describe_metal_command_buffer_failure(command_buffer: &ProtocolObject<dyn mtl
 			.map(|label| label.to_string())
 			.unwrap_or_default();
 		let label = if label.is_empty() { "<unlabeled>" } else { label.as_str() };
-		let state = metal_command_encoder_error_state_name(encoder_info.errorState());
+		let state = match encoder_info.errorState() {
+			mtl::MTLCommandEncoderErrorState::Unknown => "unknown",
+			mtl::MTLCommandEncoderErrorState::Completed => "completed",
+			mtl::MTLCommandEncoderErrorState::Affected => "affected",
+			mtl::MTLCommandEncoderErrorState::Pending => "pending",
+			mtl::MTLCommandEncoderErrorState::Faulted => "faulted",
+			_ => "unknown",
+		};
 		let _ = write!(report, "\n  {}. {} [{}]", index, label, state);
 
 		if let Some(signposts) =

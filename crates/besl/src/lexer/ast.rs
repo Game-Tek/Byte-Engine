@@ -1052,12 +1052,6 @@ impl Node {
 	pub fn null() -> Node {
 		Self { node: Nodes::Null }
 	}
-
-	pub(super) fn sentence(elements: Vec<NodeReference>) -> Node {
-		Self {
-			node: Nodes::Expression(Expressions::Expression { elements }),
-		}
-	}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

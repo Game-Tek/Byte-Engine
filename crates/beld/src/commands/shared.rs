@@ -149,7 +149,11 @@ pub(super) fn print_human_value(value: &Value, indent: usize) {
 				print_human_field(key, value, indent);
 			}
 		}
-		_ => print_human_scalar(value, indent),
+		_ => {
+			print_indent(indent);
+			print_human_inline(value);
+			println!();
+		}
 	}
 }
 
@@ -198,12 +202,6 @@ fn print_human_array_value(value: &Value, indent: usize) {
 			println!();
 		}
 	}
-}
-
-fn print_human_scalar(value: &Value, indent: usize) {
-	print_indent(indent);
-	print_human_inline(value);
-	println!();
 }
 
 fn print_human_inline(value: &Value) {

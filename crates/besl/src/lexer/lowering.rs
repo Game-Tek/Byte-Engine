@@ -426,12 +426,14 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 				parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
 					value: value.to_string(),
 				}),
-				parser::Expressions::Expression(elements) => Node::sentence(
-					elements
-						.iter()
-						.map(|e| lex_parsed_node(chain.clone(), e))
-						.collect::<Result<Vec<NodeReference>, LexError>>()?,
-				),
+				parser::Expressions::Expression(elements) => Node {
+					node: Nodes::Expression(Expressions::Expression {
+						elements: elements
+							.iter()
+							.map(|e| lex_parsed_node(chain.clone(), e))
+							.collect::<Result<Vec<NodeReference>, LexError>>()?,
+					}),
+				},
 				parser::Expressions::Call { name, parameters } => {
 					let parameters = parameters
 						.iter()

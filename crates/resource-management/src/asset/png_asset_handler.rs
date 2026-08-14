@@ -76,7 +76,8 @@ impl AssetHandler for PNGAssetHandler {
 						return Err(LoadErrors::FailedToProcess);
 					};
 
-					buffer = zeroed_vec_in(size, allocator);
+					buffer = Vec::with_capacity_in(size, allocator);
+					buffer.resize(size, 0);
 
 					let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
 					buffer.truncate(info.buffer_size());
@@ -167,11 +168,6 @@ fn swap_16_bit_png_samples(buffer: &mut [u8]) {
 	}
 }
 
-fn zeroed_vec_in(len: usize, allocator: &dyn Allocator) -> Vec<u8, &dyn Allocator> {
-	let mut output = Vec::with_capacity_in(len, allocator);
-	output.resize(len, 0);
-	output
-}
 
 fn grayscale8_to_rgb8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
 	let mut output = Vec::with_capacity_in(buffer.len() * 3, allocator);

@@ -1,5 +1,5 @@
 use std::{
-	f32::consts::TAU,
+	f32::consts::{PI, TAU},
 	sync::{Arc, OnceLock},
 };
 
@@ -43,6 +43,7 @@ impl PitchShiftShared {
 /// source bin throughout a pitch-shift playback.
 struct PitchBinMapping {
 	expected_advance: f32,
+	synthesis_expected_advance: f32,
 	target_bin: usize,
 	fraction: f32,
 	magnitude_scale: f32,
@@ -87,8 +88,10 @@ impl PitchShiftProcessor {
 			if target_bin >= BIN_COUNT {
 				break;
 			}
+			let expected_advance = TAU * HOP_SIZE as f32 * bin as f32 / WINDOW_SIZE as f32;
 			bin_mappings.push(PitchBinMapping {
-				expected_advance: TAU * HOP_SIZE as f32 * bin as f32 / WINDOW_SIZE as f32,
+				expected_advance,
+				synthesis_expected_advance: wrap_phase(expected_advance * ratio),
 				target_bin,
 				fraction: target - target_bin as f32,
 				magnitude_scale: nyquist_taper(target, ratio),
@@ -163,11 +166,11 @@ impl PitchShiftProcessor {
 			let phase = value.arg();
 			let residual = wrap_phase(phase - self.previous_phase[bin] - mapping.expected_advance);
 			self.previous_phase[bin] = phase;
-			let true_advance = mapping.expected_advance + residual;
+			let synthesis_advance = mapping.synthesis_expected_advance + residual * self.ratio;
 			// Track synthesis phase per source bin. Several source bins map to
 			// one destination while pitching down, so destination-owned phase
 			// would advance several times during the same analysis frame.
-			self.output_phase[bin] += true_advance * self.ratio;
+			self.output_phase[bin] = advance_output_phase(self.output_phase[bin], synthesis_advance);
 			let magnitude = value.norm() * mapping.magnitude_scale;
 			let shifted = Complex32::from_polar(magnitude, self.output_phase[bin]);
 			self.shifted_spectrum[mapping.target_bin] += shifted * (1.0 - mapping.fraction);
@@ -199,8 +202,31 @@ impl RuntimeAudioProcessor for PitchShiftProcessor {
 	}
 }
 
+/// Keeps a source bin's synthesis phase within `[-π, π)` after one analysis frame.
+///
+/// The caller provides an advance in `[-3π, 3π)`. Two conditional corrections
+/// cover the resulting `[-4π, 4π)` range without a remainder operation on the
+/// audio worker.
+#[inline]
+fn advance_output_phase(mut output_phase: f32, advance: f32) -> f32 {
+	output_phase += advance;
+	if output_phase >= PI {
+		output_phase -= TAU;
+	}
+	if output_phase >= PI {
+		output_phase -= TAU;
+	}
+	if output_phase < -PI {
+		output_phase += TAU;
+	}
+	if output_phase < -PI {
+		output_phase += TAU;
+	}
+	output_phase
+}
+
 fn wrap_phase(phase: f32) -> f32 {
-	(phase + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI
+	(phase + PI).rem_euclid(TAU) - PI
 }
 
 /// Softens the upper tenth of the output spectrum only while pitching up.
@@ -221,13 +247,15 @@ fn nyquist_taper(target_bin: f32, ratio: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-	use std::f32::consts::TAU;
+	use std::f32::consts::{PI, TAU};
 
-	use super::{PitchShiftProcessor, WINDOW_SIZE};
+	use super::{advance_output_phase, wrap_phase, PitchShiftProcessor, HOP_SIZE, WINDOW_SIZE};
 
 	const SAMPLE_RATE: f32 = 48_000.0;
 	const SAMPLE_COUNT: usize = 16_384;
 	const SOURCE_FREQUENCY: f32 = 750.0;
+	// The first analysis frame starts after the initial window fills.
+	const FOUR_HOURS_ANALYSIS_FRAMES: usize = 1 + (4 * 60 * 60 * 48_000 - WINDOW_SIZE) / HOP_SIZE;
 
 	fn sine_wave() -> Vec<f32> {
 		(0..SAMPLE_COUNT)
@@ -282,6 +310,56 @@ mod tests {
 			imaginary -= sample * phase.sin();
 		}
 		real.hypot(imaginary)
+	}
+
+	#[test]
+	fn synthesis_phase_retains_its_next_frame_precision_after_four_hours() {
+		const SOURCE_BIN: f32 = 7.0;
+		let true_advance = TAU * HOP_SIZE as f32 * SOURCE_BIN / WINDOW_SIZE as f32;
+		let ratio = 0.5;
+		let output_advance = wrap_phase(true_advance * ratio);
+		let expected = output_advance;
+		let mut phase = 0.0;
+		for _ in 0..FOUR_HOURS_ANALYSIS_FRAMES {
+			phase = advance_output_phase(phase, output_advance);
+		}
+		let next_phase = advance_output_phase(phase, output_advance);
+		let observed = wrap_phase(next_phase - phase);
+
+		assert!(
+			wrap_phase(observed - expected).abs() < 0.01,
+			"expected a {expected:.4} rad phase advance, observed {observed:.4} rad after four hours"
+		);
+	}
+
+	#[test]
+	fn bounded_synthesis_phase_matches_general_phase_wrap() {
+		const EDGE: f32 = 0.01;
+		let phases = [-PI, -PI + EDGE, 0.0, PI - EDGE];
+		let advances = [
+			-3.0 * PI + EDGE,
+			-2.0 * PI + EDGE,
+			-PI + EDGE,
+			0.0,
+			PI - EDGE,
+			2.0 * PI - EDGE,
+			3.0 * PI - EDGE,
+		];
+
+		for &phase in &phases {
+			for &advance in &advances {
+				let actual = advance_output_phase(phase, advance);
+				let expected = wrap_phase(phase + advance);
+				assert!(
+					(-PI..PI).contains(&actual),
+					"phase {actual} is outside the canonical range for phase {phase} and advance {advance}"
+				);
+				assert!(
+					wrap_phase(actual - expected).abs() < 0.0001,
+					"expected {expected} from phase {phase} and advance {advance}, got {actual}"
+				);
+			}
+		}
 	}
 
 	#[test]

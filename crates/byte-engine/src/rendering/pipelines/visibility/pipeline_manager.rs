@@ -422,11 +422,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				LIGHTING_DATA_BINDING.slot(),
 				self.scene.light_data_buffer.into(),
 			),
-			ghi::DescriptorWrite::buffer(
-				material_evaluation_descriptor_set,
-				MATERIALS_DATA_BINDING.slot(),
-				self.materials_data_buffer_handle.into(),
-			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				material_evaluation_descriptor_set,
 				AO_MAP_BINDING.slot(),

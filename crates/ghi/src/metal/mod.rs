@@ -645,7 +645,7 @@ mod flat_binding_tests {
 				crate::Layouts::Read,
 				TEXTURE_INDEX,
 			),
-			crate::DescriptorWrite::buffer(material_set, MATERIAL_SLOT, material_index.into()),
+			crate::DescriptorWrite::buffer(scene_set, MATERIAL_SLOT, material_index.into()),
 			crate::DescriptorWrite::combined_image_sampler(material_set, AO_SLOT, ao_texture, sampler, crate::Layouts::Read),
 			crate::DescriptorWrite::buffer(material_set, OUTPUT_SLOT, output.into()),
 		]);

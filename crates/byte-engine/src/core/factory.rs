@@ -129,6 +129,14 @@ impl<T: Clone> CreateMessage<T> {
 
 impl<T: Clone> Message for CreateMessage<T> {}
 
+impl<T: Clone> TargetedMessage for CreateMessage<T> {
+	type Payload = T;
+
+	fn from_handle_and_payload(handle: Handle, data: Self::Payload) -> Self {
+		CreateMessage::new(handle, data)
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 /// The [`Handle`] struct identifies one creation stream entry across consuming
 /// systems.
@@ -208,4 +216,5 @@ use crate::core::{
 	channel::{Channel as _, DefaultChannel},
 	listener::{DefaultListener, Listener},
 	message::Message,
+	targeted_message::TargetedMessage,
 };

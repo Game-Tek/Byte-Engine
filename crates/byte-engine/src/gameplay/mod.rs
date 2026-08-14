@@ -27,6 +27,6 @@ pub use collider::{Cube, Sphere};
 pub use killer::KillMessage;
 #[cfg(feature = "headed")]
 pub use object::Object;
-pub use transform::{Applicator, Transform, TransformationUpdate};
+pub use transform::{Transform, TransformationUpdate};
 #[cfg(feature = "headed")]
 pub use world::DefaultWorld;

@@ -1,8 +1,3 @@
-use math::Matrix;
-use maths_rs::mat::MatNew4 as _;
-
-use crate::core::{factory::Handle, message::Message};
-
 #[derive(Clone, Debug)]
 /// The `UpdatePose` struct carries one renderable's global skeleton pose from gameplay to rendering.
 pub struct UpdatePose {
@@ -29,6 +24,14 @@ impl UpdatePose {
 
 impl Message for UpdatePose {}
 
+impl TargetedMessage for UpdatePose {
+	type Payload = Vec<Matrix>;
+
+	fn from_handle_and_payload(handle: Handle, pose: Self::Payload) -> Self {
+		Self::new(handle, pose)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -46,3 +49,8 @@ mod tests {
 		assert_eq!(update.global_matrices(), matrices);
 	}
 }
+
+use math::Matrix;
+use maths_rs::mat::MatNew4 as _;
+
+use crate::core::{factory::Handle, message::Message, targeted_message::TargetedMessage};

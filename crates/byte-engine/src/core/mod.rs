@@ -17,6 +17,10 @@ pub mod factory;
 pub mod listener;
 #[doc(hidden)]
 pub mod message;
+#[doc(hidden)]
+pub mod publisher;
+#[doc(hidden)]
+pub mod targeted_message;
 
 #[doc(hidden)]
 pub mod task;

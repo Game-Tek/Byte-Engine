@@ -5,23 +5,6 @@
 //! application updates this world and attaches its listeners to render
 //! pipelines.
 
-use std::alloc::Allocator;
-
-use crate::{
-	application::Time,
-	audio::graph::AudioGraphFactory,
-	core::{
-		channel::{Channel, DefaultChannel},
-		factory::Factory,
-		listener::{DefaultListener, Listener},
-		message::DeleteMessage,
-		EntityHandle,
-	},
-	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
-	physics::{self, dynabit},
-	rendering::{lights::Lights, Camera, Environment, RenderableMesh, UpdatePose},
-};
-
 #[derive(Clone)]
 /// The [`DefaultWorld`] struct owns the standard entity factories and coordinates
 /// transform, physics, anchoring, and deletion updates.
@@ -169,6 +152,12 @@ impl DefaultWorld {
 	}
 }
 
+impl Publisher<TransformationUpdate> for DefaultWorld {
+	fn publish(&self, message: TransformationUpdate) {
+		self.transforms.send(message);
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use math::Point;
@@ -206,3 +195,21 @@ mod tests {
 		);
 	}
 }
+
+use std::alloc::Allocator;
+
+use crate::{
+	application::Time,
+	audio::graph::AudioGraphFactory,
+	core::{
+		channel::{Channel, DefaultChannel},
+		factory::{Factory, Handle},
+		listener::{DefaultListener, Listener},
+		message::{DeleteMessage, Message},
+		publisher::Publisher,
+		EntityHandle,
+	},
+	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate, Transform},
+	physics::{self, dynabit},
+	rendering::{lights::Lights, Camera, Environment, RenderableMesh, UpdatePose},
+};

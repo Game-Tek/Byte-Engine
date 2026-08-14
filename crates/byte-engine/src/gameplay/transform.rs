@@ -1,12 +1,3 @@
-use math::{Matrix, Orientation, Point, Scale};
-use maths_rs::mat::{MatScale as _, MatTranslate as _};
-
-use crate::core::{
-	channel::{Channel as _, DefaultChannel},
-	factory::Handle,
-	message::Message,
-};
-
 /// The `Transform` struct stores an entity's world location, scale, and orientation.
 ///
 /// Use this type for gameplay entities that implement [`crate::space::Transformable`].
@@ -140,14 +131,15 @@ impl TransformationUpdate {
 
 impl Message for TransformationUpdate {}
 
-/// The `Applicator` trait accepts a value that mutates an implementer's state.
-pub trait Applicator {
-	/// The value accepted by this applicator.
-	type Type;
+impl TargetedMessage for TransformationUpdate {
+	type Payload = Transform;
 
-	/// Applies `value` to this instance.
-	fn apply(&mut self, value: Self::Type);
+	fn from_handle_and_payload(handle: Handle, transform: Self::Payload) -> Self {
+		Self::new(handle, transform)
+	}
 }
+
+pub trait Publisher {}
 
 #[cfg(test)]
 mod tests {
@@ -223,3 +215,13 @@ mod tests {
 		assert_eq!(update.transform().get_position(), Point::new(7.0, 8.0, 9.0));
 	}
 }
+
+use math::{Matrix, Orientation, Point, Scale};
+use maths_rs::mat::{MatScale as _, MatTranslate as _};
+
+use crate::core::{
+	channel::{Channel as _, DefaultChannel},
+	factory::Handle,
+	message::Message,
+	targeted_message::TargetedMessage,
+};

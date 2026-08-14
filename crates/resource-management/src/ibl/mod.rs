@@ -127,6 +127,7 @@ fn store_baked_image(
 		extent: root_extent,
 		mip_count: 1,
 		ibl: Some(ibl),
+		photometry: None,
 	};
 	let asset = ProcessedAsset::new(url, image).with_streams(streams);
 	context.store_primary(asset, data)

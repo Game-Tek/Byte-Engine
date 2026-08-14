@@ -14,6 +14,7 @@ pub mod besl_shader_asset_handler;
 pub mod exr_asset_handler;
 pub mod fbx_asset_handler;
 pub mod gltf_asset_handler;
+pub mod ies_asset_handler;
 pub mod lut_asset_handler;
 pub mod ogg_asset_handler;
 pub mod pipeline_asset_handler;

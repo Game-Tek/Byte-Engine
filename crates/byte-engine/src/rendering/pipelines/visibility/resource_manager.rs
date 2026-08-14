@@ -148,6 +148,25 @@ mod tests {
 		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
 	}
 
+	/// Ensures an IES intensity map retains its half-float samples during texture upload.
+	#[test]
+	fn texture_upload_preserves_r16f_intensity_map_rows() {
+		let extent = Extent::rectangle(2, 2);
+		let compact_row = 2 * 2;
+		let source = (0..compact_row * 2).map(|value| value as u8).collect::<Vec<_>>();
+
+		let (data, upload) = staged_texture_bytes(ghi::Formats::R16F, extent, 1, &source);
+
+		assert_eq!(
+			resource_image_format_to_ghi(resource_management::types::Formats::R16F),
+			ghi::Formats::R16F
+		);
+		assert_eq!(upload.source_bytes_per_row, 256);
+		assert_eq!(upload.source_bytes_per_image, 512);
+		assert_eq!(&data[..compact_row], &source[..compact_row]);
+		assert_eq!(&data[256..256 + compact_row], &source[compact_row..]);
+	}
+
 	/// Ensures half-float HDR pixels reach the transfer buffer without normalization or channel conversion.
 	#[test]
 	fn texture_upload_preserves_rgba16f_environment_rows() {

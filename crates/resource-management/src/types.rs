@@ -209,6 +209,8 @@ pub enum Formats {
 	BC5,
 	BC5SNORM,
 	RG8,
+	/// 16-bit floating-point luminous intensity per texel.
+	R16F,
 	RGB8,
 	RGBA8,
 	BC7,

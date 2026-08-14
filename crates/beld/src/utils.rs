@@ -4,8 +4,9 @@ use resource_management::{
 	asset::{
 		asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
 		exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-		lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, pipeline_asset_handler::PipelineAssetHandler,
-		png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
+		ies_asset_handler::IESAssetHandler, lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler,
+		pipeline_asset_handler::PipelineAssetHandler, png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler,
+		StorageBackend,
 	},
 	ibl::IBLGenerator,
 	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
@@ -19,6 +20,7 @@ where
 	let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
 
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	asset_manager.add_asset_handler(IESAssetHandler::new());
 	#[cfg(not(test))]
 	let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
 		log::warn!(
@@ -106,6 +108,7 @@ mod tests {
 
 		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
 		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
+		assert!(asset_manager.supports("lights/office.ies"));
 		assert!(!asset_manager.should_discover("byte-engine/render-passes/resolve.besl", false));
 		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));
 		drop(asset_manager);

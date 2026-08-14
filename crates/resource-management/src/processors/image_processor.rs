@@ -205,6 +205,7 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 				Formats::RGBA16
 			}
 		}
+		Formats::R16F => Formats::R16F,
 		Formats::RGBA16F => Formats::RGBA16F,
 		_ => {
 			panic!("Unsupported format: {:#?}", source_format);
@@ -295,6 +296,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 		(Formats::RGBA16, Formats::RGBA16) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
+		(Formats::R16F, Formats::R16F) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGBA16F, Formats::RGBA16F) => copy_slice_in(&buffer, allocator.clone()),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
@@ -380,6 +382,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 			gamma: *gamma,
 			mip_count,
 			ibl: None,
+			photometry: None,
 		},
 		data,
 		streams,

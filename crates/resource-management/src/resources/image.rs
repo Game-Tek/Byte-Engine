@@ -45,6 +45,17 @@ pub struct ImageIBL {
 	pub prefiltered_specular: ImageSubresource,
 }
 
+/// The `ImagePhotometry` struct preserves the calibration needed to use a normalized intensity map as a physical light profile.
+///
+/// IES intensity maps encode LM-63 Type C angles as `u = horizontal_angle / 360°` and
+/// `v = vertical_angle / 180°`. Multiply the linear `R16F` sample by
+/// [`Self::intensity_scale_candela`] to recover luminous intensity in candela.
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, PartialEq)]
+pub struct ImagePhotometry {
+	/// Candela represented by an intensity-map sample of `1.0`.
+	pub intensity_scale_candela: f32,
+}
+
 /// The `Image` struct stores the metadata needed to upload a baked texture to the GPU.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub struct Image {
@@ -58,6 +69,9 @@ pub struct Image {
 	/// Baked lighting maps stored as named binary subresources of this image.
 	#[serde(default)]
 	pub ibl: Option<ImageIBL>,
+	/// Calibration metadata present when this image is a normalized photometric intensity map.
+	#[serde(default)]
+	pub photometry: Option<ImagePhotometry>,
 }
 
 fn default_mip_count() -> u32 {
@@ -100,6 +114,7 @@ mod tests {
 					array_layers: 1,
 				},
 			}),
+			photometry: None,
 		};
 		let model = ReferenceModel::new("texture.image", 99, 3, &image, None);
 		let storage = TestStorageBackend::new();
@@ -130,6 +145,7 @@ mod tests {
 			extent: [1, 1, 1],
 			mip_count: 1,
 			ibl: None,
+			photometry: None,
 		};
 		let missing = ReferenceModel::new("missing.image", 0, 0, &image, None);
 		assert!(matches!(

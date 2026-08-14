@@ -133,6 +133,7 @@ pub(super) fn pack_texture_rows_in_place(bytes: &mut [u8], layout: &TextureUploa
 pub(super) fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> ghi::Formats {
 	match format {
 		resource_management::types::Formats::RG8 => ghi::Formats::RG8UNORM,
+		resource_management::types::Formats::R16F => ghi::Formats::R16F,
 		resource_management::types::Formats::RGB8 => ghi::Formats::RGB8UNORM,
 		resource_management::types::Formats::RGB16 => ghi::Formats::RGB16UNORM,
 		resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,

@@ -1,0 +1,43 @@
+use super::super::*;
+
+impl Device {
+	pub fn create_command_buffer(&mut self, _name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle {
+		let queue = &self.queues[queue_handle.0 as usize];
+		let allocator = unsafe { self.device.CreateCommandAllocator(queue.queue_type) }.ok();
+		let command_list: Option<ID3D12GraphicsCommandList> = if let Some(allocator) = allocator.as_ref() {
+			unsafe { self.device.CreateCommandList(0, queue.queue_type, allocator, None) }.ok()
+		} else {
+			None
+		};
+		if let Some(command_list) = command_list.as_ref() {
+			let _ = unsafe { command_list.Close() };
+		}
+
+		self.command_buffers.push(CommandBuffer {
+			queue_handle,
+			allocator,
+			command_list,
+			pending_clear_descriptor_copies: Vec::new(),
+			prepared_clear_descriptors: Vec::new(),
+			retained_descriptor_heaps: Vec::new(),
+			retained_resources: Vec::new(),
+			retained_upload_resource_count: 0,
+			cbv_srv_uav_staging_heap: None,
+			sampler_staging_heap: None,
+			is_open: false,
+			recorded_work: false,
+			sequence_index: 0,
+			last_submission: None,
+		});
+
+		CommandBufferHandle((self.command_buffers.len() - 1) as u64)
+	}
+
+	pub fn create_command_buffer_recording<'a>(
+		&'a mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> super::super::super::CommandBufferRecording<'a> {
+		self.begin_command_buffer(command_buffer_handle, 0);
+		super::super::super::CommandBufferRecording::new(self, command_buffer_handle, None)
+	}
+}

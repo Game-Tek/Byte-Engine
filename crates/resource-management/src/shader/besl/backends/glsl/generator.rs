@@ -136,27 +136,15 @@ impl Generator {
 		string.push(')');
 	}
 
-	fn emit_intrinsic_call(
+	// Emits texture intrinsic lowerings, including the special cases that bypass intrinsic bodies.
+	fn emit_texture_intrinsic_call(
 		&mut self,
 		string: &mut String,
-		intrinsic: &besl::NodeReference,
+		name: &str,
 		arguments: &[besl::NodeReference],
-		elements: &[besl::NodeReference],
-	) {
-		let intrinsic = intrinsic.borrow();
-		let besl::Nodes::Intrinsic {
-			name,
-			elements: definition,
-			..
-		} = intrinsic.node()
-		else {
-			for element in elements {
-				self.emit_node_string(string, element);
-			}
-			return;
-		};
-
-		match name.as_str() {
+		has_body: bool,
+	) -> bool {
+		match name {
 			"sample" => {
 				string.push_str("texture(");
 				self.emit_node_string(string, &arguments[0]);
@@ -167,7 +155,6 @@ impl Generator {
 				}
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
-				return;
 			}
 			"sample_texture_2d_array_grad" => {
 				self.emit_texture_2d_array_grad_sample(
@@ -178,7 +165,6 @@ impl Generator {
 					&arguments[3],
 					&arguments[4],
 				);
-				return;
 			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				string.push_str("textureLod(");
@@ -216,7 +202,6 @@ impl Generator {
 				if name != "texture_lod" {
 					string.push_str(".x");
 				}
-				return;
 			}
 			"texture_cube_array_lod" => {
 				string.push_str("textureLod(");
@@ -228,22 +213,140 @@ impl Generator {
 				string.push_str(if self.minified { "))," } else { ")), " });
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
-				return;
 			}
-			_ => {}
-		}
-
-		let has_body = definition
-			.iter()
-			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
-		if has_body {
-			for element in elements {
-				self.emit_node_string(string, element);
+			"fetch_u32" if !has_body => {
+				string.push_str("texelFetch(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("),0).x");
 			}
-			return;
+			"fetch" if !has_body => {
+				string.push_str("texelFetch(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				if arguments.len() == 3 {
+					string.push_str("ivec3(ivec2(");
+				} else {
+					string.push_str("ivec2(");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				if let Some(layer) = arguments.get(2) {
+					string.push_str("),int(");
+					self.emit_node_string(string, layer);
+					string.push_str(")),0)");
+				} else {
+					string.push_str("),0)");
+				}
+			}
+			"texture_size" if !has_body => {
+				string.push_str("uvec2(textureSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(",0))");
+			}
+			_ => return false,
 		}
+		true
+	}
 
-		match name.as_str() {
+	// Emits intrinsic lowerings for GLSL image operations.
+	fn emit_image_intrinsic_call(&mut self, string: &mut String, name: &str, arguments: &[besl::NodeReference]) -> bool {
+		match name {
+			"image_load" => {
+				string.push_str("imageLoad(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("))");
+			}
+			"image_load_u32" => {
+				string.push_str("imageLoad(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(")).x");
+			}
+			"image_size" => {
+				string.push_str("uvec2(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
+			}
+			"write" => {
+				string.push_str("imageStore(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[2]);
+				string.push(')');
+			}
+			"image_atomic_or" => {
+				string.push_str("imageAtomicOr(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[2]);
+				string.push(')');
+			}
+			"guard_image_bounds" => {
+				string.push_str("if(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".x>=uint(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(").x)||");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".y>=uint(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(").y)){return;}");
+			}
+			_ => return false,
+		}
+		true
+	}
+
+	// Emits all non-texture, non-image intrinsic lowerings and the generic GLSL fallback.
+	fn emit_builtin_intrinsic_call(&mut self, string: &mut String, name: &str, arguments: &[besl::NodeReference]) {
+		match name {
 			"pow" if arguments.len() == 2 && is_two(&arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
@@ -409,123 +512,6 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
-			"image_load" => {
-				string.push_str("imageLoad(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				string.push_str("ivec2(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str("))");
-			}
-			"image_load_u32" => {
-				string.push_str("imageLoad(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				string.push_str("ivec2(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(")).x");
-			}
-			"fetch_u32" => {
-				string.push_str("texelFetch(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				string.push_str("ivec2(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str("),0).x");
-			}
-			"fetch" => {
-				string.push_str("texelFetch(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				if arguments.len() == 3 {
-					string.push_str("ivec3(ivec2(");
-				} else {
-					string.push_str("ivec2(");
-				}
-				self.emit_node_string(string, &arguments[1]);
-				if let Some(layer) = arguments.get(2) {
-					string.push_str("),int(");
-					self.emit_node_string(string, layer);
-					string.push_str(")),0)");
-				} else {
-					string.push_str("),0)");
-				}
-			}
-			"texture_size" => {
-				string.push_str("uvec2(textureSize(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(",0))");
-			}
-			"image_size" => {
-				string.push_str("uvec2(imageSize(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("))");
-			}
-			"write" => {
-				string.push_str("imageStore(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				string.push_str("ivec2(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push(')');
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				self.emit_node_string(string, &arguments[2]);
-				string.push(')');
-			}
-			"image_atomic_or" => {
-				string.push_str("imageAtomicOr(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				string.push_str("ivec2(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push(')');
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				self.emit_node_string(string, &arguments[2]);
-				string.push(')');
-			}
-			"guard_image_bounds" => {
-				string.push_str("if(");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(".x>=uint(imageSize(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(").x)||");
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str(".y>=uint(imageSize(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(").y)){return;}");
-			}
 			_ => {
 				string.push_str(name);
 				string.push('(');
@@ -533,6 +519,44 @@ impl Generator {
 				string.push(')');
 			}
 		}
+	}
+
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	) {
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic {
+			name,
+			elements: definition,
+			..
+		} = intrinsic.node()
+		else {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		};
+
+		let has_body = definition
+			.iter()
+			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+		if self.emit_texture_intrinsic_call(string, name, arguments, has_body) {
+			return;
+		}
+		if has_body {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		}
+		if self.emit_image_intrinsic_call(string, name, arguments) {
+			return;
+		}
+		self.emit_builtin_intrinsic_call(string, name, arguments);
 	}
 
 	// This function appends to the `string` parameter the string representation of the node.

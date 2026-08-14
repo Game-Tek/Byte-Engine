@@ -73,7 +73,7 @@ impl crate::queue::Queue for Queue {
 
 	fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: SynchronizerHandle,
 	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 		let frames = self.device_mut().frames;
@@ -97,7 +97,7 @@ impl crate::queue::Queue for Queue {
 		for &wait_synchronizer in _wait_for {
 			device.wait_for_synchronizer(wait_synchronizer);
 		}
-		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % device.frames as u32) as u8);
+		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % u64::from(device.frames)) as u8);
 		let frame = frame.map(|frame| {
 			let frames = device.frames;
 			crate::queue::StartedFrame::new(
@@ -151,7 +151,7 @@ impl crate::queue::Queue for QueueReference<'_> {
 
 	fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: SynchronizerHandle,
 	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 		let frames = self.device.frames;
@@ -175,7 +175,7 @@ impl crate::queue::Queue for QueueReference<'_> {
 			self.device.wait_for_synchronizer(wait_synchronizer);
 		}
 		let frames = self.device.frames;
-		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % frames as u32) as u8);
+		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % u64::from(frames)) as u8);
 		let frame = frame.map(|frame| {
 			crate::queue::StartedFrame::new(
 				self.device.start_frame(frame.index, frame.synchronizer),

@@ -35,12 +35,12 @@ impl Context {
 
 	pub(crate) fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<super::super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
-			sequence_index: (index % self.frames as u32) as u8,
+			sequence_index: (index % u64::from(self.frames)) as u8,
 		};
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
 		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);

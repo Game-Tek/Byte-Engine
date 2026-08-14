@@ -155,6 +155,15 @@ fn render_sources(sources: &[Source], sample_rate: u32, buffer: &mut [f32]) {
 	}
 }
 
+/// Advances generator timelines without wrapping if a process reaches the
+/// maximum representable sample index.
+fn advance_source_timelines(sources: &mut [Source], frames: usize) {
+	let frames = frames as u64;
+	for source in sources {
+		source.current_sample = source.current_sample.saturating_add(frames);
+	}
+}
+
 /// Mixes resource graphs after procedural generators so both source types use
 /// the same output buffer and clipping boundary.
 fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
@@ -236,9 +245,7 @@ impl AudioSystem for DefaultAudioSystem {
 			return true;
 		}
 
-		for e in &mut self.sources {
-			e.current_sample += frames as u32;
-		}
+		advance_source_timelines(&mut self.sources, frames);
 
 		{
 			self.sources.retain(|playing_sound| {
@@ -271,7 +278,7 @@ impl AudioSystem for DefaultAudioSystem {
 /// timeline.
 struct Source {
 	generator: Arc<dyn Generator>,
-	current_sample: u32,
+	current_sample: u64,
 }
 
 /// The `SampleNode` struct retains resampling state for one immutable loaded
@@ -638,7 +645,7 @@ pub mod benchmarks {
 mod tests {
 	use std::sync::{Arc, Mutex};
 
-	use super::{f32_to_i16, i16_to_f32, render_sources, AudioGraphPlayer, SampleNode, Source};
+	use super::{advance_source_timelines, f32_to_i16, i16_to_f32, render_sources, AudioGraphPlayer, SampleNode, Source};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
@@ -650,7 +657,7 @@ mod tests {
 
 	struct ConstantGenerator {
 		value: f32,
-		observed: Arc<Mutex<Vec<(u32, u32)>>>,
+		observed: Arc<Mutex<Vec<(u32, u64)>>>,
 	}
 
 	impl Generator for ConstantGenerator {
@@ -709,6 +716,28 @@ mod tests {
 		render_sources(&sources, 48_000, &mut buffer);
 		assert_eq!(buffer, [0.65; 4]);
 		assert_eq!(*observed.lock().expect("expected test value"), [(48_000, 128), (48_000, 256)]);
+	}
+
+	#[test]
+	fn generator_timeline_continues_past_u32_maximum() {
+		let observed = Arc::new(Mutex::new(Vec::new()));
+		let mut sources = [Source {
+			generator: Arc::new(ConstantGenerator {
+				value: 0.0,
+				observed: observed.clone(),
+			}),
+			current_sample: u64::from(u32::MAX) - 1,
+		}];
+		let mut buffer = [0.0; 4];
+
+		render_sources(&sources, 48_000, &mut buffer);
+		advance_source_timelines(&mut sources, buffer.len());
+		render_sources(&sources, 48_000, &mut buffer);
+
+		assert_eq!(
+			*observed.lock().expect("expected test value"),
+			[(48_000, u64::from(u32::MAX) - 1), (48_000, u64::from(u32::MAX) + 3)]
+		);
 	}
 
 	fn sample_node(samples: &[f32], source_rate: u32, playback_mode: SamplePlaybackMode) -> SampleNode {

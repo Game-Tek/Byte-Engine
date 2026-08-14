@@ -1232,7 +1232,7 @@ pub(super) mod tests {
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
 					Some(FrameRequest {
-						index: i as u32,
+						index: i as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],
@@ -1351,7 +1351,7 @@ pub(super) mod tests {
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
 					Some(FrameRequest {
-						index: i as u32,
+						index: i as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],
@@ -1466,7 +1466,7 @@ pub(super) mod tests {
 
 				queue.execute(
 					Some(FrameRequest {
-						index: i as u32,
+						index: i as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],
@@ -1599,7 +1599,7 @@ pub(super) mod tests {
 				let mut copy_texture_handles = Vec::new();
 				queue.execute(
 					Some(FrameRequest {
-						index: i as u32,
+						index: i as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],
@@ -1765,7 +1765,7 @@ pub(super) mod tests {
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
 					Some(FrameRequest {
-						index: frame_index as u32,
+						index: frame_index as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],
@@ -2750,7 +2750,7 @@ void miss_main(inout Payload payload) {
 				let mut texure_copy_handles = Vec::new();
 				queue.execute(
 					Some(FrameRequest {
-						index: i as u32,
+						index: i as u64,
 						synchronizer: render_finished_synchronizer,
 					}),
 					&[],

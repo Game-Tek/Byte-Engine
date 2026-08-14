@@ -179,10 +179,10 @@ impl Device {
 		master
 	}
 
-	pub fn start_frame<'a>(&'a mut self, index: u32, _synchronizer_handle: SynchronizerHandle) -> super::super::Frame<'a> {
+	pub fn start_frame<'a>(&'a mut self, index: u64, _synchronizer_handle: SynchronizerHandle) -> super::super::Frame<'a> {
 		let frame_key = crate::FrameKey {
 			frame_index: index,
-			sequence_index: (index % self.frames as u32) as u8,
+			sequence_index: (index % u64::from(self.frames)) as u8,
 		};
 		self.wait_for_synchronizer_sequence(_synchronizer_handle, frame_key.sequence_index);
 		super::super::Frame::new(self, frame_key)

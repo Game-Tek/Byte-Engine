@@ -190,7 +190,7 @@ impl Device {
 		SynchronizerHandle(0)
 	}
 
-	pub fn start_frame<'a>(&'a mut self, index: u32, _synchronizer_handle: SynchronizerHandle) -> super::Frame<'a> {
+	pub fn start_frame<'a>(&'a mut self, index: u64, _synchronizer_handle: SynchronizerHandle) -> super::Frame<'a> {
 		let frame_key = crate::FrameKey {
 			frame_index: index,
 			sequence_index: 0,

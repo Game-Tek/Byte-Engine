@@ -276,7 +276,7 @@ impl VisibilityPipelineResourceManagerWorker {
 		upload_buffer: ghi::BufferHandle<[u8; ASYNC_UPLOAD_BUFFER_BYTE_COUNT]>,
 		started_frame_count: &mut u64,
 	) -> Option<()> {
-		let started_frame = transfer_queue.start_frame(*started_frame_count as _, transfer_finished_synchronizer);
+		let started_frame = transfer_queue.start_frame(*started_frame_count, transfer_finished_synchronizer);
 		if let Some(completed_frame) = started_frame.completed_frame {
 			self.signal_completed_frame(completed_frame);
 		}

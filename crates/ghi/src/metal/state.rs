@@ -77,7 +77,7 @@ pub mod queue {
 
 		fn start_frame<'a>(
 			&'a mut self,
-			index: u32,
+			index: u64,
 			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 			self.device_mut().start_frame(index, synchronizer_handle)
@@ -128,7 +128,7 @@ pub mod queue {
 
 		fn start_frame<'a>(
 			&'a mut self,
-			index: u32,
+			index: u64,
 			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 			self.device.start_frame(index, synchronizer_handle)

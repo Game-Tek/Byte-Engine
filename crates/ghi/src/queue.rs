@@ -3,7 +3,8 @@ use crate::{CommandBufferHandle, FrameKey, PresentKey, SynchronizerHandle};
 /// The `FrameRequest` struct identifies a frame that should be opened for queue execution.
 #[derive(Clone, Copy)]
 pub struct FrameRequest {
-	pub index: u32,
+	/// The monotonically increasing identity of this submission frame.
+	pub index: u64,
 	pub synchronizer: SynchronizerHandle,
 }
 
@@ -19,12 +20,39 @@ impl<F> StartedFrame<F> {
 	}
 }
 
-pub fn completed_frame_key(index: u32, frames_in_flight: u8) -> Option<FrameKey> {
-	let frames_in_flight = frames_in_flight as u32;
-	index.checked_sub(frames_in_flight).map(|frame_index| FrameKey {
-		frame_index,
-		sequence_index: (frame_index % frames_in_flight) as u8,
+/// Returns the completed frame after its GPU sequence becomes reusable.
+///
+/// `None` is returned only during startup, before every sequence has been submitted once.
+pub fn completed_frame_key(frame_identity: u64, frames_in_flight: u8) -> Option<FrameKey> {
+	let frames_in_flight = u64::from(frames_in_flight);
+	frame_identity.checked_sub(frames_in_flight).map(|frame_identity| FrameKey {
+		frame_index: frame_identity,
+		sequence_index: (frame_identity % frames_in_flight) as u8,
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::completed_frame_key;
+
+	#[test]
+	fn completed_frame_is_absent_only_while_sequences_are_first_submitted() {
+		assert_eq!(completed_frame_key(0, 2), None);
+		assert_eq!(completed_frame_key(1, 2), None);
+
+		let completed_frame = completed_frame_key(2, 2).unwrap();
+		assert_eq!(completed_frame.frame_index, 0);
+		assert_eq!(completed_frame.sequence_index, 0);
+	}
+
+	#[test]
+	fn completed_frame_identity_survives_the_former_u32_rollover() {
+		let frame_after_u32_max = u64::from(u32::MAX) + 1;
+		let completed_frame = completed_frame_key(frame_after_u32_max, 2).unwrap();
+
+		assert_eq!(completed_frame.frame_index, u64::from(u32::MAX) - 1);
+		assert_eq!(completed_frame.sequence_index, 0);
+	}
 }
 
 /// The `QueueExecution` trait scopes command-buffer recordings created during one queue submission.
@@ -72,7 +100,11 @@ pub trait Queue {
 	/// Starts a frame after waiting for its sequence synchronizers.
 	///
 	/// The returned frame provides safe access to its resources and operations.
-	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> StartedFrame<Self::Frame<'a>>;
+	fn start_frame<'a>(
+		&'a mut self,
+		frame_identity: u64,
+		synchronizer_handle: SynchronizerHandle,
+	) -> StartedFrame<Self::Frame<'a>>;
 
 	/// Opens the requested frame, lets the closure record submission work, and submits it on this queue.
 	fn execute<'a, P>(

@@ -108,9 +108,12 @@ pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 /// Processes each rendered audio block with a user-provided closure.
 ///
 /// The closure receives the block's [`AudioGraphTime`] and the graph's mutable
-/// mono sample block in place. Use [`AudioGraphTime::seconds_at`] to generate
-/// sample-accurate waveforms. Each playback gets an independent clone of the
-/// closure, so captured mutable state is not shared between simultaneous plays.
+/// mono sample block in place. Use [`AudioGraphTime::seconds_at`] for
+/// non-periodic timing. For a periodic waveform, retain its phase in the
+/// closure, calculate [`AudioGraphTime::periodic_phase_step`] once per block,
+/// and advance each sample with [`AudioGraphTime::advance_periodic_phase`].
+/// Each playback gets an independent clone of the closure, so captured mutable
+/// state is not shared between simultaneous plays.
 ///
 /// Custom functions are treated as zero-latency processors and cannot extend a
 /// graph's playback tail. Produce every output sample within the supplied

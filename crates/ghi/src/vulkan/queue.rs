@@ -84,7 +84,7 @@ impl crate::queue::Queue for Queue {
 
 	fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: crate::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 		unsafe { self.device.as_mut() }.start_frame(index, synchronizer_handle)
@@ -141,7 +141,7 @@ impl crate::queue::Queue for QueueReference<'_> {
 
 	fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: crate::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 		self.device.start_frame(index, synchronizer_handle)

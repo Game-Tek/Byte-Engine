@@ -83,10 +83,12 @@ impl<'a, T: Copy> BufferSplitter<'a, T> {
 	}
 }
 
+/// The `FrameKey` struct identifies a submitted frame while selecting its reusable GPU sequence.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FrameKey {
-	/// The index of the frame.
-	pub(crate) frame_index: u32,
+	/// The monotonically increasing identity of the submitted frame.
+	pub(crate) frame_index: u64,
+	/// The bounded GPU sequence selected from the frame identity.
 	pub(crate) sequence_index: u8,
 }
 

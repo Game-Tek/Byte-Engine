@@ -5,7 +5,7 @@
 //! playback settings and state so implementations can remain independent of the
 //! audio device.
 
-/// The [`Generator`] trait defines a source that can fill an audio render buffer.
+/// The [`Generator`] trait provides procedural audio sources for the output mixer.
 pub trait Generator {
 	fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]>;
 
@@ -20,8 +20,8 @@ pub struct PlaybackSettings {
 }
 
 #[derive(Debug, Clone, Copy)]
-/// The [`PlaybackState`] struct identifies the current position in a generator's
-/// playback timeline.
+/// The [`PlaybackState`] struct provides a generator's position in its playback
+/// timeline.
 pub struct PlaybackState {
-	pub current_sample: u32,
+	pub current_sample: u64,
 }

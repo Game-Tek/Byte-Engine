@@ -579,11 +579,11 @@ impl Context {
 
 	pub(crate) fn start_frame<'a>(
 		&'a mut self,
-		index: u32,
+		index: u64,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<Frame<'a>> {
 		let frame_index = index;
-		let sequence_index = (index % self.frames as u32) as u8;
+		let sequence_index = (index % u64::from(self.frames)) as u8;
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
 		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];

@@ -28,7 +28,8 @@ pub struct Renderer {
 	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
 
-	started_frame_count: usize,
+	/// The monotonically increasing identity of the next graphics submission frame.
+	started_frame_count: u64,
 
 	frame_queue_depth: usize,
 
@@ -501,7 +502,7 @@ impl Renderer {
 
 		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {
-			index: self.started_frame_count as u32,
+			index: self.started_frame_count,
 			synchronizer: self.render_finished_synchronizer,
 		};
 

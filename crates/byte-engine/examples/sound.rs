@@ -27,7 +27,7 @@ fn main() {
 struct TestSynthesizer;
 
 impl Synthesizer for TestSynthesizer {
-	fn render<'a>(&self, current_sample: u32, buffer: &'a mut [f32]) -> &'a [f32] {
+	fn render<'a>(&self, current_sample: u64, buffer: &'a mut [f32]) -> &'a [f32] {
 		let pitch = 440f32;
 		let gain = 1f32;
 		let sample_rate = 44100;

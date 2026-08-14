@@ -13,7 +13,7 @@ struct ParsedLut {
 	entries: Vec<[f32; 3]>,
 }
 
-/// The `LUTAssetHandler` struct bakes text lookup-table assets into LUT resources.
+/// The `LUTAssetHandler` struct bakes `.lut` and `.cube` lookup-table assets into LUT resources.
 #[derive(Default)]
 pub struct LUTAssetHandler {}
 
@@ -90,7 +90,7 @@ impl LUTAssetHandler {
 
 impl AssetHandler for LUTAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "lut"
+		matches!(r#type, "lut" | "cube")
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
@@ -227,6 +227,16 @@ mod tests {
 		r#async, resource,
 		resources::lut::{Lut, LutKind},
 	};
+
+	/// Verifies conventional LUT source extensions select the LUT baker.
+	#[test]
+	fn accepts_lut_and_cube_extensions() {
+		let handler = LUTAssetHandler::new();
+
+		assert!(handler.can_handle("lut"));
+		assert!(handler.can_handle("cube"));
+		assert!(!handler.can_handle("png"));
+	}
 
 	#[test]
 	fn parse_lut_supports_domain_directives_and_comments() {

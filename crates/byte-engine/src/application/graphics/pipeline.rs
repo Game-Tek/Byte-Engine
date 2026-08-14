@@ -374,6 +374,31 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs a 3D LUT grading pass from a resource or development asset ID.
+///
+/// Each sink loads an independent reference to the LUT when its pass is created.
+/// Call this after passes that produce the HDR `main` target and before tone mapping.
+pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
+	let resource_manager = application.resource_manager_handle();
+	let lut_id = lut_id.to_owned();
+
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			let lut = crate::rendering::resource_loading::request::<resource_management::resources::lut::Lut>(
+				&resource_manager,
+				&lut_id,
+			)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Failed to load LUT render pass asset '{lut_id}': {error}. The most likely cause is that the LUT asset is missing, unreadable, or could not be baked."
+				)
+			});
+
+			Box::new(crate::rendering::render_passes::lut::LutRenderPass::new(render_pass_builder, lut))
+		});
+}
+
 /// Installs spatial SMAA for every current and future render sink.
 ///
 /// This adds a self-contained post-scene pass without coalescing it with tone mapping

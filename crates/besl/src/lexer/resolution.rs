@@ -1,5 +1,4 @@
-use std::fmt::Write as _;
-use std::ops::Deref;
+use std::{collections::HashMap, fmt::Write as _};
 
 use super::lowering::lex_parsed_node;
 use super::*;
@@ -188,8 +187,9 @@ pub(super) fn lex_child_with_parent(
 	chain: &[NodeReference],
 	parent: &NodeReference,
 	parser_node: &parser::Node,
+	next_intrinsic_expansion_id: &mut usize,
 ) -> Result<NodeReference, LexError> {
-	lex_parsed_node(extend_chain(chain, parent), parser_node)
+	lex_parsed_node(extend_chain(chain, parent), parser_node, next_intrinsic_expansion_id)
 }
 
 /// Resolves raw-code IO references and lowers them into a lexer node.
@@ -397,28 +397,81 @@ pub(super) fn find_in_expression(expression: &Expressions, child_name: &str, mod
 	}
 }
 
+/// The `IntrinsicInstantiation` struct keeps one intrinsic expansion separate from its caller's scope.
+struct IntrinsicInstantiation {
+	arguments: HashMap<NodeReference, NodeReference>,
+	locals: HashMap<NodeReference, IntrinsicLocal>,
+}
+
+/// The `IntrinsicLocal` struct preserves one renamed intrinsic-local declaration and its emitted name.
+#[derive(Clone)]
+struct IntrinsicLocal {
+	declaration: NodeReference,
+	name: String,
+}
+
+/// Instantiates an intrinsic body with its call arguments and fresh local declaration names.
 pub(super) fn build_intrinsic(
 	elements: &[NodeReference],
 	parameters: &[NodeReference],
+	expansion_id: usize,
 ) -> Result<Vec<NodeReference>, LexError> {
-	let expected_parameter_count = elements
+	let definition_parameters = elements
 		.iter()
 		.filter(|element| matches!(element.borrow().node(), Nodes::Parameter { .. }))
-		.count();
+		.collect::<Vec<_>>();
 
-	if expected_parameter_count != parameters.len() {
+	if definition_parameters.len() != parameters.len() {
 		return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 	}
 
-	let has_body = elements
+	let body = elements
 		.iter()
-		.any(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }));
-
-	if !has_body {
+		.filter(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }))
+		.collect::<Vec<_>>();
+	if body.is_empty() {
 		return Ok(parameters.to_vec());
 	}
 
-	build_intrinsic_elements(elements, &mut parameters.iter())
+	let mut locals = Vec::new();
+	for element in &body {
+		collect_intrinsic_local_declarations(element, &mut locals);
+	}
+
+	let mut local_replacements = HashMap::with_capacity(locals.len());
+	for declaration in locals {
+		let (name, r#type) = match declaration.borrow().node() {
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => (name.clone(), r#type.clone()),
+			_ => unreachable!("Intrinsic local collection must return variable declarations"),
+		};
+		let name = format!("_besl_intrinsic_{expansion_id}_{name}");
+		let replacement = Node::expression(Expressions::VariableDeclaration {
+			name: name.clone(),
+			r#type,
+		})
+		.into();
+		local_replacements.insert(
+			declaration,
+			IntrinsicLocal {
+				declaration: replacement,
+				name,
+			},
+		);
+	}
+
+	let instantiation = IntrinsicInstantiation {
+		arguments: definition_parameters
+			.into_iter()
+			.cloned()
+			.zip(parameters.iter().cloned())
+			.collect(),
+		locals: local_replacements,
+	};
+
+	Ok(body
+		.into_iter()
+		.map(|element| instantiate_intrinsic_node(element, &instantiation))
+		.collect())
 }
 
 pub(super) fn intrinsic_matches_parameters(intrinsic: &NodeReference, parameters: &[NodeReference]) -> bool {
@@ -663,38 +716,333 @@ pub(super) fn resolve_call_target_in_node(
 	}
 }
 
-pub(super) fn build_intrinsic_elements<'a>(
-	elements: &[NodeReference],
-	parameters: &mut impl Iterator<Item = &'a NodeReference>,
-) -> Result<Vec<NodeReference>, LexError> {
-	let mut ret = Vec::new();
+/// Collects local declarations that must be renamed before an intrinsic body is inlined.
+fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut Vec<NodeReference>) {
+	match node.borrow().node() {
+		Nodes::Expression(Expressions::VariableDeclaration { .. }) => declarations.push(node.clone()),
+		Nodes::Expression(expression) => match expression {
+			Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
+				collect_intrinsic_local_declarations(left, declarations);
+				collect_intrinsic_local_declarations(right, declarations);
+			}
+			Expressions::FunctionCall { parameters, .. } => {
+				for parameter in parameters {
+					collect_intrinsic_local_declarations(parameter, declarations);
+				}
+			}
+			Expressions::IntrinsicCall { arguments, elements, .. } => {
+				for node in arguments.iter().chain(elements) {
+					collect_intrinsic_local_declarations(node, declarations);
+				}
+			}
+			Expressions::Expression { elements } => {
+				for element in elements {
+					collect_intrinsic_local_declarations(element, declarations);
+				}
+			}
+			Expressions::Macro { body, .. } => collect_intrinsic_local_declarations(body, declarations),
+			Expressions::Return { value } => {
+				if let Some(value) = value {
+					collect_intrinsic_local_declarations(value, declarations);
+				}
+			}
+			Expressions::VariableDeclaration { .. }
+			| Expressions::Member { .. }
+			| Expressions::Literal { .. }
+			| Expressions::Continue
+			| Expressions::Discard => {}
+		},
+		Nodes::Scope { children, .. } => {
+			for child in children {
+				collect_intrinsic_local_declarations(child, declarations);
+			}
+		}
+		Nodes::Conditional { condition, statements } => {
+			collect_intrinsic_local_declarations(condition, declarations);
+			for statement in statements {
+				collect_intrinsic_local_declarations(statement, declarations);
+			}
+		}
+		Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => {
+			collect_intrinsic_local_declarations(initializer, declarations);
+			collect_intrinsic_local_declarations(condition, declarations);
+			collect_intrinsic_local_declarations(update, declarations);
+			for statement in statements {
+				collect_intrinsic_local_declarations(statement, declarations);
+			}
+		}
+		// Raw backend source is opaque. Its declared textual names must remain unchanged.
+		Nodes::Raw { .. }
+		| Nodes::Null
+		| Nodes::Struct { .. }
+		| Nodes::Member { .. }
+		| Nodes::Function { .. }
+		| Nodes::Specialization { .. }
+		| Nodes::Binding { .. }
+		| Nodes::PushConstant { .. }
+		| Nodes::Intrinsic { .. }
+		| Nodes::Input { .. }
+		| Nodes::Output { .. }
+		| Nodes::TaskPayload { .. }
+		| Nodes::Workgroup { .. }
+		| Nodes::Parameter { .. }
+		| Nodes::Literal { .. }
+		| Nodes::Const { .. } => {}
+	}
+}
 
-	for e in elements
-		.iter()
-		.filter(|e| !matches!(e.borrow().node(), Nodes::Parameter { .. }))
-	{
-		let f = e.borrow();
-		let e = match f.node() {
-			Nodes::Expression(expression) => match expression {
-				Expressions::Member { source, .. } => match source.deref().borrow().node() {
-					Nodes::Parameter { .. } => parameters
-						.next()
-						.ok_or(LexError::Undefined {
-							message: Some("Expected parameter".to_string()),
-						})?
-						.clone(),
-					_ => e.clone(),
-				},
-				Expressions::Expression { elements } => NodeReference::from(Node::expression(Expressions::Expression {
-					elements: build_intrinsic_elements(elements, parameters)?,
-				})),
-				_ => e.clone(),
-			},
-			_ => e.clone(),
-		};
-
-		ret.push(e);
+/// Clones one structured intrinsic-body node while preserving links to caller and outer-scope nodes.
+fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicInstantiation) -> NodeReference {
+	let argument = {
+		let node = node.borrow();
+		match node.node() {
+			Nodes::Expression(Expressions::Member { source, .. }) => instantiation.arguments.get(source).cloned(),
+			_ => None,
+		}
+	};
+	if let Some(argument) = argument {
+		return argument;
+	}
+	if let Some(local) = instantiation.locals.get(node) {
+		return local.declaration.clone();
 	}
 
-	Ok(ret)
+	let node = node.borrow();
+	match node.node() {
+		Nodes::Scope { name, children } => {
+			let mut scope = Node::scope(name.clone());
+			for child in children {
+				scope.add_child(instantiate_intrinsic_node(child, instantiation));
+			}
+			scope.into()
+		}
+		Nodes::Expression(expression) => Node::expression(instantiate_intrinsic_expression(expression, instantiation)).into(),
+		Nodes::Conditional { condition, statements } => Node::conditional(
+			instantiate_intrinsic_node(condition, instantiation),
+			statements
+				.iter()
+				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+				.collect(),
+		)
+		.into(),
+		Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => Node::for_loop(
+			instantiate_intrinsic_node(initializer, instantiation),
+			instantiate_intrinsic_node(condition, instantiation),
+			instantiate_intrinsic_node(update, instantiation),
+			statements
+				.iter()
+				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+				.collect(),
+		)
+		.into(),
+		Nodes::Raw {
+			glsl,
+			hlsl,
+			msl,
+			input,
+			output,
+		} => Node::raw(
+			glsl.clone(),
+			hlsl.clone(),
+			msl.clone(),
+			input
+				.iter()
+				.map(|input| instantiate_intrinsic_node(input, instantiation))
+				.collect(),
+			output.clone(),
+		)
+		.into(),
+		// Definition nodes and outer-scope references remain shared. Only structured body nodes can contain
+		// implementation-local values that need a fresh declaration per intrinsic call.
+		_ => node.clone().into(),
+	}
+}
+
+/// Clones one intrinsic-body expression and substitutes linked parameters and locals by identity.
+fn instantiate_intrinsic_expression(expression: &Expressions, instantiation: &IntrinsicInstantiation) -> Expressions {
+	match expression {
+		Expressions::Operator { operator, left, right } => Expressions::Operator {
+			operator: operator.clone(),
+			left: instantiate_intrinsic_node(left, instantiation),
+			right: instantiate_intrinsic_node(right, instantiation),
+		},
+		Expressions::FunctionCall { function, parameters } => Expressions::FunctionCall {
+			function: function.clone(),
+			parameters: parameters
+				.iter()
+				.map(|parameter| instantiate_intrinsic_node(parameter, instantiation))
+				.collect(),
+		},
+		Expressions::IntrinsicCall {
+			intrinsic,
+			arguments,
+			elements,
+		} => Expressions::IntrinsicCall {
+			intrinsic: intrinsic.clone(),
+			arguments: arguments
+				.iter()
+				.map(|argument| instantiate_intrinsic_node(argument, instantiation))
+				.collect(),
+			elements: elements
+				.iter()
+				.map(|element| instantiate_intrinsic_node(element, instantiation))
+				.collect(),
+		},
+		Expressions::Expression { elements } => Expressions::Expression {
+			elements: elements
+				.iter()
+				.map(|element| instantiate_intrinsic_node(element, instantiation))
+				.collect(),
+		},
+		Expressions::Macro { name, body } => Expressions::Macro {
+			name: name.clone(),
+			body: instantiate_intrinsic_node(body, instantiation),
+		},
+		Expressions::Member { source, name } => {
+			if let Some(local) = instantiation.locals.get(source) {
+				Expressions::Member {
+					source: local.declaration.clone(),
+					name: local.name.clone(),
+				}
+			} else {
+				Expressions::Member {
+					source: source.clone(),
+					name: name.clone(),
+				}
+			}
+		}
+		Expressions::VariableDeclaration { name, r#type } => Expressions::VariableDeclaration {
+			name: name.clone(),
+			r#type: r#type.clone(),
+		},
+		Expressions::Literal { value } => Expressions::Literal { value: value.clone() },
+		Expressions::Return { value } => Expressions::Return {
+			value: value.as_ref().map(|value| instantiate_intrinsic_node(value, instantiation)),
+		},
+		Expressions::Continue => Expressions::Continue,
+		Expressions::Discard => Expressions::Discard,
+		Expressions::Accessor { left, right } => Expressions::Accessor {
+			left: instantiate_intrinsic_node(left, instantiation),
+			right: instantiate_intrinsic_node(right, instantiation),
+		},
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn parameter(name: &str, r#type: NodeReference) -> NodeReference {
+		Node::new(Nodes::Parameter {
+			name: name.to_string(),
+			r#type,
+		})
+		.into()
+	}
+
+	fn member(name: &str, source: NodeReference) -> NodeReference {
+		Node::expression(Expressions::Member {
+			name: name.to_string(),
+			source,
+		})
+		.into()
+	}
+
+	fn literal(value: &str) -> NodeReference {
+		Node::expression(Expressions::Literal {
+			value: value.to_string(),
+		})
+		.into()
+	}
+
+	#[test]
+	fn intrinsic_expansion_substitutes_each_parameter_by_identity() {
+		let f32_type = Node::root().get_child("f32").expect("The standard BESL scope defines f32");
+		let left = parameter("left", f32_type.clone());
+		let right = parameter("right", f32_type);
+		let body: NodeReference = Node::expression(Expressions::Operator {
+			operator: Operators::Plus,
+			left: member("left", left.clone()),
+			right: member("left", left.clone()),
+		})
+		.into();
+		let first_argument = literal("1.0");
+		let second_argument = literal("2.0");
+
+		let expanded = build_intrinsic(&[left, right, body], &[first_argument.clone(), second_argument], 0)
+			.expect("The intrinsic arguments match its declaration");
+		let expression = expanded[0].borrow();
+		let Nodes::Expression(Expressions::Operator { left, right, .. }) = expression.node() else {
+			panic!("Expected an expanded operator expression");
+		};
+
+		assert_eq!(left, &first_argument);
+		assert_eq!(right, &first_argument);
+	}
+
+	#[test]
+	fn intrinsic_expansion_mangles_template_locals_per_call() {
+		let f32_type = Node::root().get_child("f32").expect("The standard BESL scope defines f32");
+		let value = parameter("value", f32_type.clone());
+		let template_local: NodeReference = Node::expression(Expressions::VariableDeclaration {
+			name: "temporary".to_string(),
+			r#type: f32_type,
+		})
+		.into();
+		let assignment: NodeReference = Node::expression(Expressions::Operator {
+			operator: Operators::Assignment,
+			left: template_local.clone(),
+			right: member("value", value.clone()),
+		})
+		.into();
+		let body: NodeReference = Node::expression(Expressions::Expression {
+			elements: vec![assignment, member("temporary", template_local)],
+		})
+		.into();
+		let definition = [value, body];
+
+		let first = build_intrinsic(&definition, &[literal("1.0")], 0).expect("The first intrinsic call should expand");
+		let second = build_intrinsic(&definition, &[literal("2.0")], 1).expect("The second intrinsic call should expand");
+		let (first_name, first_declaration, first_reference_source) = expanded_local(&first[0]);
+		let (second_name, ..) = expanded_local(&second[0]);
+
+		assert!(first_name.starts_with("_besl_intrinsic_"));
+		assert_ne!(first_name, "temporary");
+		assert_ne!(first_name, second_name);
+		assert_eq!(first_declaration, first_reference_source);
+	}
+
+	fn expanded_local(body: &NodeReference) -> (String, NodeReference, NodeReference) {
+		let body = body.borrow();
+		let Nodes::Expression(Expressions::Expression { elements }) = body.node() else {
+			panic!("Expected the expanded intrinsic body");
+		};
+		let assignment = elements[0].borrow();
+		let Nodes::Expression(Expressions::Operator { left, .. }) = assignment.node() else {
+			panic!("Expected the expanded intrinsic local assignment");
+		};
+		let name = {
+			let declaration = left.borrow();
+			let Nodes::Expression(Expressions::VariableDeclaration { name, .. }) = declaration.node() else {
+				panic!("Expected a local declaration");
+			};
+			name.clone()
+		};
+		let reference = elements[1].borrow();
+		let Nodes::Expression(Expressions::Member { source, .. }) = reference.node() else {
+			panic!("Expected a reference to the expanded intrinsic local");
+		};
+
+		(name, left.clone(), source.clone())
+	}
 }

@@ -120,8 +120,9 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 		parser::Nodes::Scope { name, children } => {
 			assert_eq!(*name, "root");
 
+			let mut next_intrinsic_expansion_id = 0;
 			for child in children {
-				let c = lex_parsed_node(vec![root.clone()], child)?;
+				let c = lex_parsed_node(vec![root.clone()], child, &mut next_intrinsic_expansion_id)?;
 				root.borrow_mut().add_child(c);
 			}
 

@@ -4,7 +4,11 @@ use super::resolution::*;
 use super::*;
 use crate::parser;
 
-pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
+pub(super) fn lex_parsed_node(
+	chain: Vec<NodeReference>,
+	parser_node: &parser::Node,
+	next_intrinsic_expansion_id: &mut usize,
+) -> Result<NodeReference, LexError> {
 	let node = match &parser_node.node {
 		parser::Nodes::Null => Node::new(Nodes::Null).into(),
 		parser::Nodes::Scope { name, children } => {
@@ -12,7 +16,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 
 			let this: NodeReference = Node::scope(name.to_string()).into();
 			for child in children {
-				let child = lex_child_with_parent(&chain, &this, child)?;
+				let child = lex_child_with_parent(&chain, &this, child, next_intrinsic_expansion_id)?;
 				this.borrow_mut().add_child(child);
 			}
 
@@ -26,7 +30,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 
 			let this: NodeReference = Node::r#struct(name, Vec::new()).into();
 			for field in fields {
-				let field = lex_child_with_parent(&chain, &this, field)?;
+				let field = lex_child_with_parent(&chain, &this, field, next_intrinsic_expansion_id)?;
 				this.borrow_mut().add_child(field);
 			}
 
@@ -186,7 +190,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
 
 			for param in params {
-				let param = lex_child_with_parent(&chain, &this, param)?;
+				let param = lex_child_with_parent(&chain, &this, param, next_intrinsic_expansion_id)?;
 				match this.borrow_mut().node_mut() {
 					Nodes::Function { params, .. } => {
 						params.push(param);
@@ -200,7 +204,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			let mut scoped_chain = extend_chain(&chain, &this);
 
 			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
+				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
 				this.borrow_mut().add_child(statement);
 				scoped_chain.push(
 					this.borrow()
@@ -213,12 +217,12 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			this
 		}
 		parser::Nodes::Conditional { condition, statements } => {
-			let condition = lex_parsed_node(chain.clone(), condition)?;
+			let condition = lex_parsed_node(chain.clone(), condition, next_intrinsic_expansion_id)?;
 			let mut lexed_statements = Vec::with_capacity(statements.len());
 			let mut scoped_chain = chain.clone();
 
 			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
+				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
 				scoped_chain.push(statement.clone());
 				lexed_statements.push(statement);
 			}
@@ -231,15 +235,15 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			update,
 			statements,
 		} => {
-			let initializer = lex_parsed_node(chain.clone(), initializer)?;
+			let initializer = lex_parsed_node(chain.clone(), initializer, next_intrinsic_expansion_id)?;
 			let mut scoped_chain = chain.clone();
 			scoped_chain.push(initializer.clone());
-			let condition = lex_parsed_node(scoped_chain.clone(), condition)?;
-			let update = lex_parsed_node(scoped_chain.clone(), update)?;
+			let condition = lex_parsed_node(scoped_chain.clone(), condition, next_intrinsic_expansion_id)?;
+			let update = lex_parsed_node(scoped_chain.clone(), update, next_intrinsic_expansion_id)?;
 			let mut lexed_statements = Vec::with_capacity(statements.len());
 
 			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
+				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
 				scoped_chain.push(statement.clone());
 				lexed_statements.push(statement);
 			}
@@ -253,7 +257,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 				.iter()
 				.filter(|member| matches!(member.node, parser::Nodes::Member { .. }))
 			{
-				let c = lex_child_with_parent(&chain, &this, member)?;
+				let c = lex_child_with_parent(&chain, &this, member, next_intrinsic_expansion_id)?;
 				this.borrow_mut().add_child(c);
 			}
 
@@ -272,7 +276,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 				parser::Nodes::Type { members, .. } => BindingTypes::Buffer {
 					members: members
 						.iter()
-						.map(|m| lex_parsed_node(chain.clone(), m))
+						.map(|m| lex_parsed_node(chain.clone(), m, next_intrinsic_expansion_id))
 						.collect::<Result<Vec<NodeReference>, LexError>>()?,
 				},
 				parser::Nodes::Image { format } => BindingTypes::Image {
@@ -350,7 +354,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			let mut this = Node::r#struct(name, Vec::new());
 
 			for member in members {
-				let c = lex_parsed_node(chain.clone(), member)?;
+				let c = lex_parsed_node(chain.clone(), member, next_intrinsic_expansion_id)?;
 				this.add_child(c);
 			}
 
@@ -392,21 +396,21 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 		} => lex_raw_code(&chain, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
 		parser::Nodes::Literal { name, body } => Node::new(Nodes::Literal {
 			name: name.to_string(),
-			value: lex_parsed_node(chain, body)?,
+			value: lex_parsed_node(chain, body, next_intrinsic_expansion_id)?,
 		})
 		.into(),
 		parser::Nodes::Expression(expression) => {
 			let this = match expression {
 				parser::Expressions::Return { value } => Node::expression(Expressions::Return {
 					value: match value {
-						Some(value) => Some(lex_parsed_node(chain.clone(), value)?),
+						Some(value) => Some(lex_parsed_node(chain.clone(), value, next_intrinsic_expansion_id)?),
 						None => None,
 					},
 				}),
 				parser::Expressions::Continue => Node::expression(Expressions::Continue),
 				parser::Expressions::Discard => Node::expression(Expressions::Discard),
 				parser::Expressions::Accessor { left, right } => {
-					let left = lex_parsed_node(chain.clone(), left)?;
+					let left = lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?;
 
 					let right = {
 						let left = left.clone();
@@ -414,7 +418,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 						let mut chain = chain.clone();
 						chain.push(left); // Add left to chain to be able to access its members
 
-						lex_parsed_node(chain.clone(), right)?
+						lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?
 					};
 
 					Node::expression(Expressions::Accessor { left, right })
@@ -430,14 +434,14 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 					node: Nodes::Expression(Expressions::Expression {
 						elements: elements
 							.iter()
-							.map(|e| lex_parsed_node(chain.clone(), e))
+							.map(|e| lex_parsed_node(chain.clone(), e, next_intrinsic_expansion_id))
 							.collect::<Result<Vec<NodeReference>, LexError>>()?,
 					}),
 				},
 				parser::Expressions::Call { name, parameters } => {
 					let parameters = parameters
 						.iter()
-						.map(|e| lex_parsed_node(chain.clone(), e))
+						.map(|e| lex_parsed_node(chain.clone(), e, next_intrinsic_expansion_id))
 						.collect::<Result<Vec<NodeReference>, LexError>>()?;
 					let function = resolve_call_target(&chain, name, &parameters)?;
 					let r = function.clone(); // Clone to be able to borrow it in and return it
@@ -455,7 +459,13 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 							Nodes::Intrinsic { elements, .. } => Node::expression(Expressions::IntrinsicCall {
 								intrinsic: r,
 								arguments: parameters.clone(),
-								elements: build_intrinsic(elements, &parameters)?,
+								elements: {
+									let expansion_id = *next_intrinsic_expansion_id;
+									*next_intrinsic_expansion_id = next_intrinsic_expansion_id.checked_add(1).expect(
+										"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
+									);
+									build_intrinsic(elements, &parameters, expansion_id)?
+								},
 							}),
 							_ => {
 								return Err(LexError::Undefined {
@@ -489,8 +499,8 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 							panic!("Invalid operator")
 						}
 					},
-					left: lex_parsed_node(chain.clone(), left)?,
-					right: lex_parsed_node(chain.clone(), right)?,
+					left: lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?,
+					right: lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?,
 				}),
 				parser::Expressions::VariableDeclaration { name, r#type } => {
 					Node::expression(Expressions::VariableDeclaration {
@@ -505,7 +515,9 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 					input,
 					output,
 				} => lex_raw_code(&chain, *glsl, *hlsl, *msl, input, output)?,
-				parser::Expressions::Macro { name, body } => Node::r#macro(name, lex_parsed_node(chain, body)?),
+				parser::Expressions::Macro { name, body } => {
+					Node::r#macro(name, lex_parsed_node(chain, body, next_intrinsic_expansion_id)?)
+				}
 			};
 
 			this.into()
@@ -519,7 +531,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 			let this: NodeReference = Node::intrinsic(name, Vec::new(), resolve_type(&chain, r#return)?).into();
 
 			for element in elements {
-				let element = lex_child_with_parent(&chain, &this, element)?;
+				let element = lex_child_with_parent(&chain, &this, element, next_intrinsic_expansion_id)?;
 				this.borrow_mut().add_child(element);
 			}
 
@@ -528,7 +540,7 @@ pub(super) fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::N
 		parser::Nodes::Const { name, r#type, value } => {
 			let t = resolve_type_name(&chain, r#type)?;
 
-			let v = lex_parsed_node(chain.clone(), value)?;
+			let v = lex_parsed_node(chain.clone(), value, next_intrinsic_expansion_id)?;
 
 			Node::constant(name, t, v).into()
 		}

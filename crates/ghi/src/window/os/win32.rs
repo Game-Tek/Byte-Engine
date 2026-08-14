@@ -146,7 +146,7 @@ impl WindowLike for Window {
 	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
 		// Set WNDPROC, we are ready to handle messages
 		unsafe {
-			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as _);
+			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as *const () as _);
 		}
 
 		WindowIterator {
@@ -173,9 +173,10 @@ impl WindowLike for Window {
 
 impl Drop for Window {
 	fn drop(&mut self) {
+		// Drop cannot report teardown failures, and Windows may have already destroyed the window during shutdown.
 		unsafe {
-			DestroyWindow(self.hwnd);
-			UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
+			let _ = DestroyWindow(self.hwnd);
+			let _ = UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
 		}
 	}
 }

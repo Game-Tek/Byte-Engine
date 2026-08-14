@@ -84,7 +84,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 	fn resolve<'a>(
 		&'a self,
 		url: ResourceId<'a>,
-	) -> crate::r#async::BoxedFuture<'a, Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> {
+	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> + 'a {
 		self.resolve_tracked(url, None)
 	}
 
@@ -92,11 +92,11 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> crate::r#async::BoxedFuture<'a, Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> {
+	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> + 'a {
 		self.resolve_tracked(url, Some(allocator))
 	}
 
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> crate::r#async::BoxedFuture<'a, Result<AssetVersion, ()>> {
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
 		self.inner.version(url)
 	}
 }

@@ -98,6 +98,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 }
 
 /// Selects the minimum DXC shader-model profile needed by one generated shader.
+#[cfg(any(target_os = "windows", test))]
 fn dxil_target_profile(stage: ShaderTypes, source: &str) -> Result<&'static str, String> {
 	let native_16_bit_types = hlsl_uses_native_16_bit_types(source);
 	match (stage, native_16_bit_types) {
@@ -116,6 +117,7 @@ fn dxil_target_profile(stage: ShaderTypes, source: &str) -> Result<&'static str,
 	}
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn hlsl_uses_native_16_bit_types(source: &str) -> bool {
 	source
 		.split(|character: char| character != '_' && !character.is_ascii_alphanumeric())

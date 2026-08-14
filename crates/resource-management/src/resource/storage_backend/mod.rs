@@ -440,11 +440,14 @@ pub mod tests {
 	}
 
 	impl ReadStorageBackend for TestStorageBackend {
-		fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+		fn list(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
 			crate::r#async::future(async { Ok(self.resources.lock().keys().map(|x| x.to_string()).collect()) })
 		}
 
-		fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+		fn read<'a>(
+			&'a self,
+			id: ResourceId<'a>,
+		) -> impl std::future::Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a {
 			crate::r#async::future(async move {
 				let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
 					(e.0.clone(), e.1.clone())
@@ -465,12 +468,15 @@ pub mod tests {
 		fn query(
 			&self,
 			_: Query,
-		) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+		) -> impl std::future::Future<Output = Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
 			crate::r#async::future(async { Err(QueryError::StorageFailure) })
 		}
 
 		#[cfg(debug_assertions)]
-		fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
+		fn read_trace<'a>(
+			&'a self,
+			id: ResourceId<'a>,
+		) -> impl std::future::Future<Output = Result<Vec<crate::ResourceTraceItem>, String>> + 'a {
 			crate::r#async::future(async move { Ok(self.traces.lock().get(id.as_ref()).cloned().unwrap_or_default()) })
 		}
 	}

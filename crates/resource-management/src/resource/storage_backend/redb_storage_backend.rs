@@ -498,7 +498,7 @@ impl RedbStorageBackend {
 }
 
 impl ReadStorageBackend for RedbStorageBackend {
-	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
+	fn list(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
 		r#async::future(async {
 			let mut resources = Vec::new();
 
@@ -515,7 +515,10 @@ impl ReadStorageBackend for RedbStorageBackend {
 		})
 	}
 
-	fn read<'a>(&'a self, id: asset::ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>> {
+	fn read<'a>(
+		&'a self,
+		id: asset::ResourceId<'a>,
+	) -> impl std::future::Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a {
 		r#async::future(async move {
 			let id = ResourceId::from(id.as_ref());
 			let (resource, packed_offset) = {
@@ -545,7 +548,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 	fn query(
 		&self,
 		query: Query,
-	) -> BoxedFuture<'_, Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
+	) -> impl std::future::Future<Output = Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>> {
 		r#async::future(async move {
 			if query.limit == 0 {
 				return Ok(QueryPage {
@@ -593,7 +596,10 @@ impl ReadStorageBackend for RedbStorageBackend {
 	}
 
 	#[cfg(debug_assertions)]
-	fn read_trace<'a>(&'a self, id: asset::ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<ResourceTraceItem>, String>> {
+	fn read_trace<'a>(
+		&'a self,
+		id: asset::ResourceId<'a>,
+	) -> impl std::future::Future<Output = Result<Vec<ResourceTraceItem>, String>> + 'a {
 		r#async::future(async move {
 			let read = self
 				.begin_read()

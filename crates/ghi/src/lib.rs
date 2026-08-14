@@ -38,7 +38,9 @@ pub mod metal;
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) use crate::frame_resources::*;
+#[cfg(target_os = "windows")]
 pub(crate) use crate::graphics_hardware_interface::PipelineLayoutHandle;
 pub use crate::graphics_hardware_interface::{
 	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructure,

@@ -234,15 +234,19 @@ impl StorageBackend for FileStorageBackend {
 		Some(path.is_dir() && std::fs::read_dir(path).is_ok())
 	}
 
-	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = ResolveResult<'a>> + 'a {
 		future(read_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
 	}
 
-	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
+	fn resolve_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> impl Future<Output = ResolveResult<'a>> + 'a {
 		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
 
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		future(async move {
 			let source_path = self.base_path.join(url.get_base().as_ref());
 			let sidecar_path = source_path.with_added_extension("bead");
@@ -305,7 +309,7 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
-		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
+		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = ResolveResult<'a>> + 'a {
 			Box::pin(async move {
 				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
 				if let Some(data) = mocked_data {
@@ -365,7 +369,11 @@ pub mod tests {
 			})
 		}
 
-		fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
+		fn resolve_in<'a>(
+			&'a self,
+			url: ResourceId<'a>,
+			allocator: &'a dyn Allocator,
+		) -> impl std::future::Future<Output = ResolveResult<'a>> + 'a {
 			Box::pin(async move {
 				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
 				if let Some(data) = mocked_data {

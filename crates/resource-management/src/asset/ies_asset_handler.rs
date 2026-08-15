@@ -582,15 +582,21 @@ fn lerp(lower: f32, upper: f32, factor: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use exr::prelude::f16;
 
 	use super::{parse_ies, IESAssetHandler, IES_INTENSITY_MAP_HEIGHT, IES_INTENSITY_MAP_WIDTH};
 	use crate::{
 		asset::{asset_manager::AssetManager, storage_backend::tests::TestStorageBackend, ResourceId},
 		r#async,
-		resource::{storage_backend::tests::TestStorageBackend as TestResourceStorage, ReadStorageBackend as _},
+		resource::{
+			storage_backend::{tests::TestStorageBackend as TestResourceStorage, StorageBackendHarness},
+			ReadStorageBackend as _, ReadTargetsMut,
+		},
 		resources::image::Image,
 		types::{Formats, Gamma},
+		ResourceManager,
 	};
 
 	const QUADRANT_PROFILE: &[u8] = br#"IESNA:LM-63-2002
@@ -663,6 +669,39 @@ TILT=NONE
 		};
 		assert!(error.to_string().starts_with("Unsupported IES photometric type."));
 		assert!(error.to_string().contains("only LM-63 Type C profiles"));
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn resource_manager_lazily_bakes_and_loads_ies_images() {
+		let source_storage = TestStorageBackend::new();
+		source_storage.add_file("lights/quadrant.ies", QUADRANT_PROFILE);
+		let resource_storage = StorageBackendHarness::new(TestResourceStorage::new()).into_shared();
+		let mut asset_manager = AssetManager::new_shared(source_storage, Arc::clone(&resource_storage));
+		asset_manager.add_asset_handler(IESAssetHandler::new());
+		let resource_manager = ResourceManager::new_shared(resource_storage);
+		resource_manager.set_asset_manager(asset_manager);
+
+		let mut reference = resource_manager
+			.request::<Image>("lights/quadrant.ies")
+			.await
+			.expect("the IES source must bake lazily as an image resource");
+
+		assert_eq!(reference.resource().format, Formats::R16F);
+		assert_eq!(reference.resource().gamma, Gamma::Linear);
+		assert_eq!(
+			reference.resource().extent,
+			[IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 1]
+		);
+		assert!(reference.resource().photometry.is_some());
+		let loaded = reference
+			.load(ReadTargetsMut::backing_storage())
+			.await
+			.expect("the lazily baked IES intensity texels must load");
+		assert_eq!(
+			loaded.buffer().map(<[u8]>::len),
+			Some((IES_INTENSITY_MAP_WIDTH * IES_INTENSITY_MAP_HEIGHT * 2) as usize)
+		);
 	}
 
 	#[r#async::test]

@@ -57,7 +57,7 @@ impl PreparedGpuMesh {
 			.chunks_exact_mut(VERTEX_NORMAL_BUFFER_STRIDE as usize)
 			.zip(normals.iter())
 		{
-			let encoded = encode_octahedral_normal(normal);
+			let encoded = encode_octahedral_unit_vector(normal);
 			destination[..2].copy_from_slice(&encoded[0].to_ne_bytes());
 			destination[2..].copy_from_slice(&encoded[1].to_ne_bytes());
 		}

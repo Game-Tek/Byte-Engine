@@ -112,6 +112,8 @@ pub struct VisibilityPipelineManager {
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
 	loaded_textures: HashSet<u32>,
+	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
+	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	/// Renderable handles whose complete material dependency closure is not resident yet.
 	incomplete_renderables: HashSet<Handle>,
 	/// Requested environment resource retained until its asynchronous upload completes.
@@ -141,11 +143,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.write_material_data(frame);
 		self.rebuild_active_instances(frame);
 
-		let shadow_lights = select_shadow_lights(
+		let loaded_ies_profiles = &self.loaded_ies_profiles;
+		let shadow_lights = select_shadow_lights_with_intensity_scale(
 			self.scene.lights.iter().map(|(_, light)| light),
 			sinks,
 			self.cone_shadow_map_pool_capacity,
 			self.point_shadow_map_pool_capacity,
+			|light| manager::ies_intensity_scale(light, loaded_ies_profiles),
 		);
 		if shadow_lights.eligible_cone_count > self.cone_shadow_map_pool_capacity {
 			warn!(
@@ -191,19 +195,27 @@ impl PipelineManager for VisibilityPipelineManager {
 
 			for (layer, shadow_light) in shadow_lights.cones.iter().enumerate() {
 				if let Some((_, light)) = shadow_light {
-					views_data_buffer[CONE_SHADOW_VIEW_OFFSET + layer] =
-						Self::make_shader_view_data(make_cone_shadow_view(*light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE));
+					let intensity_scale_candela =
+						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
+					views_data_buffer[CONE_SHADOW_VIEW_OFFSET + layer] = Self::make_shader_view_data(make_cone_shadow_view(
+						*light,
+						CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
+						intensity_scale_candela,
+					));
 				}
 			}
 
 			for (cube_index, shadow_light) in shadow_lights.points.iter().enumerate() {
 				if let Some((_, light)) = shadow_light {
+					let intensity_scale_candela =
+						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
 					for face in 0..POINT_SHADOW_FACE_COUNT {
 						views_data_buffer[POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT + face] =
 							Self::make_shader_view_data(make_point_shadow_view(
 								*light,
 								face,
 								POINT_SHADOW_DEFAULT_EXPOSURE_SCALE,
+								intensity_scale_candela,
 							));
 					}
 				}
@@ -220,6 +232,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			directional_shadow_light_index,
 			&cone_shadow_light_indices,
 			&point_shadow_light_indices,
+			|light| manager::resolved_ies_profile_texture(light, loaded_ies_profiles),
 		);
 
 		let sink_x_rp = sinks.iter().filter_map(|sink| {
@@ -540,20 +553,23 @@ impl PipelineManager for VisibilityPipelineManager {
 mod tests {
 	use std::sync::Arc;
 
-	use math::{Point, UnitVector};
+	use math::{Orientation, Point, UnitVector};
 	use maths_rs::{Vec3f, Vec4f};
 	use resource_management::resources::skeleton::SkinBinding;
 	use resource_management::types::AlphaMode;
-	use utils::Extent;
+	use utils::{hash::HashMap, Extent};
 
-	use super::manager::{cached_skin_palette, reserve_deformed_vertex_range};
+	use super::manager::{
+		cached_skin_palette, ies_intensity_scale, reserve_deformed_vertex_range, resolved_ies_profile_texture,
+	};
 	use super::{
 		collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_importance, make_cone_shadow_view,
 		make_point_shadow_view, point_light_has_brightness, point_shadow_importance, resolve_cone_shadow_range,
-		resolve_point_shadow_range, select_shadow_lights, write_material_texture_indices, Instance, LightData, LightingData,
-		MaterialData, RenderInfo, ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings,
-		AO_MAP_BINDING, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING,
-		CONE_SHADOW_NEAR_M, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+		resolve_point_shadow_range, select_shadow_lights, select_shadow_lights_with_intensity_scale,
+		write_material_texture_indices, IesProfileTexture, Instance, LightData, LightingData, MaterialData, RenderInfo,
+		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings, AO_MAP_BINDING,
+		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
+		DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_ENVIRONMENT_TEXEL, DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 		DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, ENVIRONMENT_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING,
 		MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY,
 		POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX, POINT_SHADOW_NEAR_M, SHADOW_MAP_BINDING,
@@ -721,15 +737,18 @@ mod tests {
 	fn shadow_selection_keeps_cones_visible_in_any_sink_and_skips_cones_outside_all_sinks() {
 		let visible_in_second_sink = cone(100.0).with_shadow_far(20.0);
 		let outside_all_sinks = cone(500.0).with_shadow_far(20.0);
-		let lights = [Lights::Cone(visible_in_second_sink), Lights::Cone(outside_all_sinks)];
+		let lights = [
+			Lights::Cone(visible_in_second_sink.clone()),
+			Lights::Cone(outside_all_sinks.clone()),
+		];
 		let sinks = [sink(Point::origin()), sink(Point::new(100.0, 0.0, 0.0))];
 
 		assert!(sinks
 			.iter()
-			.any(|sink| cone_shadow_importance(visible_in_second_sink, sink).is_some()));
+			.any(|sink| cone_shadow_importance(&visible_in_second_sink, 1.0, sink).is_some()));
 		assert!(sinks
 			.iter()
-			.all(|sink| cone_shadow_importance(outside_all_sinks, sink).is_none()));
+			.all(|sink| cone_shadow_importance(&outside_all_sinks, 1.0, sink).is_none()));
 
 		let selection = select_shadow_lights(
 			lights.iter(),
@@ -806,10 +825,10 @@ mod tests {
 	fn unlit_cones_yield_pool_layers_to_visible_lit_cones() {
 		let mut unlit = cone(0.0);
 		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
-		let lights = [Lights::Cone(unlit), Lights::Cone(cone(1.0))];
+		let lights = [Lights::Cone(unlit.clone()), Lights::Cone(cone(1.0))];
 		let sinks = [sink(Point::origin())];
 
-		assert!(!cone_light_has_brightness(unlit));
+		assert!(!cone_light_has_brightness(&unlit, 1.0));
 		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
@@ -857,6 +876,74 @@ mod tests {
 	}
 
 	#[test]
+	fn resolved_ies_profile_texture_applies_the_per_light_dimmer() {
+		let profile_light = Lights::Point(
+			PointLight::new_ies(
+				Point::origin(),
+				Orientation::identity(),
+				LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
+				0.5,
+				"lights/office.ies",
+			)
+			.expect("physical IES point light"),
+		);
+		let analytic_light = Lights::Point(point(0.0));
+		let profile = IesProfileTexture {
+			texture_index: 19,
+			intensity_scale_candela: 180.0,
+		};
+		let mut profiles = HashMap::default();
+		assert_eq!(ies_intensity_scale(&profile_light, &profiles), 0.5);
+		assert_eq!(ies_intensity_scale(&analytic_light, &profiles), 1.0);
+		profiles.insert("lights/office.ies".to_string(), profile);
+
+		assert_eq!(ies_intensity_scale(&profile_light, &profiles), 90.0);
+		assert_eq!(
+			resolved_ies_profile_texture(&profile_light, &profiles),
+			Some(IesProfileTexture {
+				texture_index: 19,
+				intensity_scale_candela: 90.0,
+			})
+		);
+		assert_eq!(resolved_ies_profile_texture(&analytic_light, &profiles), None);
+	}
+
+	/// Verifies a resident profile's dimmed peak intensity drives both local-shadow range and selection.
+	#[test]
+	fn ies_profile_scale_expands_point_shadow_coverage() {
+		let light = PointLight::new_ies(
+			Point::new(20.0, 2.0, 3.0),
+			Orientation::identity(),
+			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
+			0.5,
+			"lights/office.ies",
+		)
+		.expect("physical IES point light");
+		let lights = [Lights::Point(light.clone())];
+		let sinks = [sink(Point::origin())];
+		let mut profiles = HashMap::default();
+		profiles.insert(
+			"lights/office.ies".to_string(),
+			IesProfileTexture {
+				texture_index: 19,
+				intensity_scale_candela: 180.0,
+			},
+		);
+		let fallback = select_shadow_lights(lights.iter(), &sinks, 0, 1);
+		let resident = select_shadow_lights_with_intensity_scale(lights.iter(), &sinks, 0, 1, |light| {
+			resolved_ies_profile_texture(light, &profiles).map_or(1.0, |profile| profile.intensity_scale_candela)
+		});
+		let (_, fallback_far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let (_, resident_far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 90.0);
+
+		assert!(fallback.points.iter().all(Option::is_none));
+		assert_eq!(fallback.eligible_point_count, 0);
+		assert_eq!(resident.points[0].map(|(index, _)| index), Some(0));
+		assert_eq!(resident.eligible_point_count, 1);
+		assert!((resident_far / fallback_far - 90.0_f32.sqrt()).abs() < 0.0001);
+	}
+
+	#[test]
 	fn point_shadow_views_cover_every_cube_direction_and_range() {
 		let light = point(1.0).with_shadow_range(0.2, 50.0);
 		let directions = [
@@ -869,7 +956,7 @@ mod tests {
 		];
 
 		for (face, direction) in directions.into_iter().enumerate() {
-			let view = make_point_shadow_view(light, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+			let view = make_point_shadow_view(&light, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 			let point = (light.position + direction * 10.0).into_maths();
 			let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
 			let ndc = clip / clip.w;
@@ -881,7 +968,7 @@ mod tests {
 			assert!((0.0..=1.0).contains(&ndc.z));
 		}
 
-		let positive_y_view = make_point_shadow_view(light, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+		let positive_y_view = make_point_shadow_view(&light, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let right_of_positive_y_face = (light.position + UnitVector::y_axis() * 10.0 + UnitVector::x_axis()).into_maths();
 		let clip = positive_y_view.view_projection()
 			* Vec4f::new(
@@ -896,16 +983,18 @@ mod tests {
 	#[test]
 	fn point_shadow_range_uses_manual_endpoints_and_visibility() {
 		let light = point(500.0).with_shadow_range(-4.0, f32::NAN);
-		let (near, far) = resolve_point_shadow_range(light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE);
+		let (near, far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let automatic_far = (100.0 / POINT_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, POINT_SHADOW_NEAR_M);
 		assert_eq!(far, automatic_far);
-		assert!(point_shadow_importance(light.with_shadow_far(20.0), &sink(Point::origin())).is_none());
-		assert!(point_shadow_importance(point(100.0).with_shadow_far(20.0), &sink(Point::new(100.0, 0.0, 0.0))).is_some());
+		assert!(point_shadow_importance(&light.clone().with_shadow_far(20.0), 1.0, &sink(Point::origin())).is_none());
+		assert!(
+			point_shadow_importance(&point(100.0).with_shadow_far(20.0), 1.0, &sink(Point::new(100.0, 0.0, 0.0))).is_some()
+		);
 		let mut unlit = point(0.0);
 		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
-		assert!(!point_light_has_brightness(unlit));
+		assert!(!point_light_has_brightness(&unlit, 1.0));
 		assert_eq!(POINT_SHADOW_FACE_COUNT, 6);
 	}
 
@@ -933,8 +1022,8 @@ mod tests {
 	#[test]
 	fn cone_shadow_view_uses_the_light_projection_and_automatic_clip_range() {
 		let light = cone(1.0);
-		let view = make_cone_shadow_view(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
-		let point = light.position + light.direction * 10.0;
+		let view = make_cone_shadow_view(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let point = light.position + light.direction() * 10.0;
 		let point = point.into_maths();
 		let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
 		let ndc = clip / clip.w;
@@ -951,7 +1040,7 @@ mod tests {
 	#[test]
 	fn cone_shadow_range_uses_manual_endpoints_and_clamps_invalid_values() {
 		let light = cone(1.0).with_shadow_range(-4.0, f32::NAN);
-		let (near, far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
+		let (near, far) = resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, CONE_SHADOW_NEAR_M);
@@ -959,7 +1048,7 @@ mod tests {
 
 		let light = cone(1.0).with_shadow_near(50.0).with_shadow_far(20.0);
 		assert_eq!(
-			resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE),
+			resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0),
 			(50.0, 50.1)
 		);
 	}
@@ -967,9 +1056,9 @@ mod tests {
 	#[test]
 	fn cone_shadow_range_scales_with_linear_exposure() {
 		let light = cone(1.0);
-		let (_, neutral_far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE);
-		let (_, brighter_far) = resolve_cone_shadow_range(light, 4.0);
-		let (_, invalid_far) = resolve_cone_shadow_range(light, f32::NAN);
+		let (_, neutral_far) = resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let (_, brighter_far) = resolve_cone_shadow_range(&light, 4.0, 1.0);
+		let (_, invalid_far) = resolve_cone_shadow_range(&light, f32::NAN, 1.0);
 
 		assert!((brighter_far - neutral_far * 2.0).abs() < 0.0001);
 		assert!((invalid_far - neutral_far).abs() < 0.0001);
@@ -1175,7 +1264,7 @@ mod tests {
 	fn lighting_data_matches_gpu_buffer_layout() {
 		assert_eq!(
 			std::mem::size_of::<LightData>(),
-			96,
+			112,
 			"Unexpected visibility LightData size. The most likely cause is that the CPU light buffer layout drifted from the generated shader struct."
 		);
 		assert_eq!(
@@ -1190,10 +1279,13 @@ mod tests {
 		assert_eq!(std::mem::offset_of!(LightData, light_type), 56);
 		assert_eq!(std::mem::offset_of!(LightData, shadow_views), 60);
 		assert_eq!(std::mem::offset_of!(LightData, shadow_layer), 92);
+		assert_eq!(std::mem::offset_of!(LightData, ies_profile_texture), 96);
+		assert_eq!(std::mem::offset_of!(LightData, ies_c0_tangent), 100);
+		assert_eq!(std::mem::offset_of!(LightData, _ies_padding), 104);
 
 		assert_eq!(
 			std::mem::size_of::<LightingData>(),
-			1552,
+			1808,
 			"Unexpected visibility LightingData size. The most likely cause is that the CPU lighting buffer no longer matches the shader struct array stride."
 		);
 		assert_eq!(std::mem::align_of::<LightingData>(), 16);
@@ -1213,7 +1305,7 @@ const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResource
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
-.buffer_stride(1552);
+.buffer_stride(std::mem::size_of::<LightingData>() as u32);
 const MATERIALS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1046),
 	ghi::ResourceKind::StorageBuffer,

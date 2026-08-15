@@ -201,12 +201,10 @@ impl ResourceManager {
 			{
 				if let Some(asset_manager) = self.asset_manager.get() {
 					let resource = asset_manager.bake_if_not_exists_serialized(id).await.map_err(|error| {
-						asset_lookup_error(
-							"Failed to load asset. The asset manager could not bake the resource.",
-							id,
-							&error,
-							asset_manager,
-						)
+						let message = format!(
+							"Failed to load asset. The asset manager could not bake the resource. Asset manager error: {error:?}."
+						);
+						asset_lookup_error(&message, id, &error, asset_manager)
 					})?;
 					asset_manager.track_resource(&resource);
 					resource.into()
@@ -503,7 +501,10 @@ mod debug_tests {
 			.await
 			.unwrap_err();
 
-		assert_eq!(error, "Failed to load asset. The asset manager could not bake the resource.");
+		assert_eq!(
+			error,
+			"Failed to load asset. The asset manager could not bake the resource. Asset manager error: FailedToBake { asset: \"byte-engine/missing.test\", error: AssetCouldNotBeLoaded }."
+		);
 		let trace = resource_manager
 			.resource_trace()
 			.expect("installed asset management should expose its trace");

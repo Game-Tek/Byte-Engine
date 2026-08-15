@@ -1,7 +1,9 @@
 //! Light entities consumed by scene rendering pipelines.
 //!
 //! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values and submit them through
-//! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. [`Lights`] is
+//! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. Use [`ConeLight::new_ies`] or
+//! [`PointLight::new_ies`] with an [`math::Orientation`] when a local fixture uses a measured IES
+//! profile. [`Lights`] is
 //! the erased representation used by the world factory.
 //!
 //! Light positions and photometric reference distances use meters. The renderer resolves authored
@@ -14,6 +16,7 @@ use crate::core::Entity;
 
 pub mod cone;
 pub mod directional;
+mod ies_profile;
 mod photometry;
 pub mod point;
 
@@ -21,6 +24,7 @@ pub use cone::ConeLight;
 pub use cone::ConeLight as Cone;
 pub use directional::DirectionalLight;
 pub use directional::DirectionalLight as Directional;
+pub use ies_profile::IesProfile;
 pub use photometry::{LightColor, PhotometricError, PhotometricIntensity};
 pub use point::PointLight;
 pub use point::PointLight as Point;
@@ -111,7 +115,7 @@ mod tests {
 		.expect("physical directional light");
 
 		assert_eq!(cone.position, Point::new(1.0, 2.0, 3.0));
-		assert_eq!(cone.direction, -UnitVector::y_axis());
+		assert_eq!(cone.direction(), -UnitVector::y_axis());
 		assert!(cone.color.x > cone.color.z);
 		assert_eq!(cone.class(), LightClasses::Cone);
 		assert!(cone.as_string().contains("ConeLight"));
@@ -152,9 +156,9 @@ mod tests {
 		)
 		.expect("physical directional light");
 
-		assert!(matches!(Lights::from(cone), Lights::Cone(light) if light == cone));
+		assert!(matches!(Lights::from(cone.clone()), Lights::Cone(light) if light == cone));
 		assert!(
-			matches!(Lights::from(point), Lights::Point(light) if light.position == point.position && light.color == point.color)
+			matches!(Lights::from(point.clone()), Lights::Point(light) if light.position == point.position && light.color == point.color)
 		);
 		assert!(matches!(Lights::from(directional.clone()), Lights::Direction(light) if light == directional));
 	}

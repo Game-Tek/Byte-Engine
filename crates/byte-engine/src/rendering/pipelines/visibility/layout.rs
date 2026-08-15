@@ -22,8 +22,10 @@ pub(crate) const VERTEX_POSITIONS_BINDING: ghi::ShaderResourceDescriptor = ghi::
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(12);
+/// The octahedrally encoded runtime unit-vector element.
+pub(crate) type RuntimeUnitVector = [u16; 2];
 /// The octahedrally encoded runtime normal element.
-pub(crate) type RuntimeVertexNormal = [u16; 2];
+pub(crate) type RuntimeVertexNormal = RuntimeUnitVector;
 pub(crate) const VERTEX_NORMAL_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexNormal>() as u32;
 pub(crate) const VERTEX_NORMAL_SHADER_TYPE: &str = "vec2u16";
 pub(crate) const VERTEX_NORMALS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(

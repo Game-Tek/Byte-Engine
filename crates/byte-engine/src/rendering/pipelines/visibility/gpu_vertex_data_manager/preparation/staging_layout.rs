@@ -23,16 +23,16 @@ pub(crate) enum UvSourceFormat {
 	F32,
 }
 
-/// Octahedrally encodes one unit normal into two UNORM16 components.
-pub(crate) fn encode_octahedral_normal(normal: (f32, f32, f32)) -> RuntimeVertexNormal {
-	let length = normal.0.abs() + normal.1.abs() + normal.2.abs();
+/// Octahedrally encodes one unit vector into two UNORM16 components.
+pub(crate) fn encode_octahedral_unit_vector(vector: (f32, f32, f32)) -> RuntimeUnitVector {
+	let length = vector.0.abs() + vector.1.abs() + vector.2.abs();
 	if !length.is_finite() || length == 0.0 {
 		return [32768, 32768];
 	}
 
-	let mut x = normal.0 / length;
-	let mut y = normal.1 / length;
-	let z = normal.2 / length;
+	let mut x = vector.0 / length;
+	let mut y = vector.1 / length;
+	let z = vector.2 / length;
 	if z < 0.0 {
 		let previous_x = x;
 		let sign_x = if previous_x < 0.0 { -1.0 } else { 1.0 };
@@ -54,7 +54,7 @@ pub(crate) fn pack_f32_normals(source: &[u8], destination: &mut [u8], vertex_cou
 					.expect("A validated f32 normal component is four bytes."),
 			)
 		};
-		let encoded = encode_octahedral_normal((component(0), component(4), component(8)));
+		let encoded = encode_octahedral_unit_vector((component(0), component(4), component(8)));
 		let destination_offset = index * VERTEX_NORMAL_BUFFER_STRIDE as usize;
 		destination[destination_offset..destination_offset + 2].copy_from_slice(&encoded[0].to_ne_bytes());
 		destination[destination_offset + 2..destination_offset + 4].copy_from_slice(&encoded[1].to_ne_bytes());

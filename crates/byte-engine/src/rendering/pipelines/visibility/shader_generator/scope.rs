@@ -117,6 +117,9 @@ impl VisibilityShaderScope {
 				Node::member("type", "u32"),
 				Node::member("shadow_views", "u32[8]"),
 				Node::member("shadow_layer", "u32"),
+				Node::member("ies_profile_texture", "u32"),
+				Node::member("ies_c0_tangent", "vec2u16"),
+				Node::member("_ies_padding", "u32[2]"),
 			],
 		);
 		let material_struct = Node::r#struct(
@@ -383,18 +386,19 @@ impl VisibilityShaderScope {
 		);
 
 		// Keep normal-map decoding in the visibility material module. BESL only
-		// lowers the general texture-array gradient sample used by this helper.
+		// lowers the general texture-array gradient sample used by these helpers.
+		let ies_profile_uv = parse_besl_function(IES_PROFILE_UV_SOURCE, "ies_profile_uv");
+		let sample_ies_profile = parse_besl_function(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile");
 		let sample_normal_function = parse_besl_function(
 			r#"
 			sample_visibility_normal: fn (
-				texture_array: Texture2D,
 				texture_index: u32,
 				uv: vec2f,
 				uv_derivative_x: vec2f,
 				uv_derivative_y: vec2f
 			) -> vec3f {
 				let encoded: vec4f = sample_texture_2d_array_grad(
-					texture_array, texture_index, uv, uv_derivative_x, uv_derivative_y
+					textures, texture_index, uv, uv_derivative_x, uv_derivative_y
 				);
 				return unit_vector_from_xy(vec2f(encoded.x, encoded.y));
 			}
@@ -489,6 +493,8 @@ impl VisibilityShaderScope {
 				environment_specular,
 				push_constant,
 				sample_function,
+				ies_profile_uv,
+				sample_ies_profile,
 				sample_normal_function,
 				sample_environment_irradiance,
 				sample_environment_specular,

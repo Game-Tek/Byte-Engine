@@ -279,6 +279,46 @@ material_evaluation_normal: fn () -> void {
 }
 "#;
 
+pub(crate) const IES_PROFILE_UV_SOURCE: &str = r#"
+// Converts a light-to-surface ray into the full Type C IES texture domain.
+// The orientation-packed C0 tangent defines the horizontal zero plane without a world-axis singularity.
+ies_profile_uv: fn (
+	emission_direction: vec3f,
+	axis: vec3f,
+	encoded_c0_tangent: vec2u16
+) -> vec2f {
+	let axial: f32 = clamp(dot(axis, emission_direction), 0.0 - 1.0, 1.0);
+	let polar_radians: f32 = atan2(sqrt(max(1.0 - axial * axial, 0.0)), axial);
+	let decoded_c0_tangent: vec3f = decode_octahedral_normal(encoded_c0_tangent);
+	// Packing can introduce a small axial component, so restore the orthonormal IES frame before sampling.
+	let c0_tangent: vec3f = normalize(decoded_c0_tangent - axis * dot(axis, decoded_c0_tangent));
+	let c90_tangent: vec3f = cross(axis, c0_tangent);
+	let horizontal_radians: f32 = atan2(
+		dot(emission_direction, c90_tangent),
+		dot(emission_direction, c0_tangent)
+	);
+	return vec2f(
+		fract(horizontal_radians * 0.15915494309189535 + 1.0),
+		polar_radians * 0.3183098861837907
+	);
+}
+"#;
+
+pub(crate) const IES_PROFILE_SAMPLE_SOURCE: &str = r#"
+sample_ies_profile: fn (
+	texture_index: u32,
+	emission_direction: vec3f,
+	axis: vec3f,
+	encoded_c0_tangent: vec2u16
+) -> f32 {
+	let uv: vec2f = ies_profile_uv(emission_direction, axis, encoded_c0_tangent);
+	return max(
+		sample_texture_2d_array_grad(textures, texture_index, uv, vec2f(0.0, 0.0), vec2f(0.0, 0.0)).x,
+		0.0
+	);
+}
+"#;
+
 pub(crate) const MATERIAL_EVALUATION_SUFFIX_SOURCE: &str = r#"
 material_evaluation_suffix: fn () -> void {
 	// Preserve compact material values and normalized vectors through the BRDF.
@@ -428,6 +468,24 @@ material_evaluation_suffix: fn () -> void {
 				}
 			}
 			}
+		}
+		if (light_type != 68 && lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
+			let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
+			let profile_axis: vec3f = vec3f(
+				lighting_data.lights[light_index].direction.x,
+				lighting_data.lights[light_index].direction.y,
+				lighting_data.lights[light_index].direction.z
+			);
+			let intensity_factor: f32 = sample_ies_profile(
+				lighting_data.lights[light_index].ies_profile_texture,
+				emission_direction,
+				profile_axis,
+				lighting_data.lights[light_index].ies_c0_tangent
+			);
+			if (intensity_factor <= 0.0) {
+				continue;
+			}
+			attenuation = attenuation * intensity_factor;
 		}
 
 		let H: vec3f16 = normalize(V_material + L_material);

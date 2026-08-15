@@ -425,8 +425,9 @@ pub(super) fn add_material_sample_context_to_expression(
 				return;
 			}
 
-			// Material sampling is visibility-pipeline shorthand. Lower it here so the
-			// portable BESL backends only need to know the bindless sampling operation.
+			// Material sampling is visibility-pipeline shorthand. The backend intrinsic
+			// consumes the bindless binding directly; helpers capture it from the scope.
+			let passes_bindless_binding = *name == "sample_material";
 			*name = match *name {
 				"sample_material" => "sample_texture_2d_array_grad",
 				"sample_normal" => "sample_visibility_normal",
@@ -442,9 +443,9 @@ pub(super) fn add_material_sample_context_to_expression(
 				_ => slot,
 			};
 			let material_textures = Node::accessor(Node::member_expression("material"), Node::member_expression("textures"));
-			// Pass the resource explicitly. The BESL backend must not know which
-			// pipeline owns the texture array or what that resource is named.
-			parameters.push(Node::member_expression("textures"));
+			if passes_bindless_binding {
+				parameters.push(Node::member_expression("textures"));
+			}
 			// Index access has an expression on its right side. Preserve that shape so
 			// the linked backend AST can distinguish `textures[slot]` from `.field`.
 			parameters.push(Node::accessor(material_textures, Node::sentence(vec![slot])));

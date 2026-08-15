@@ -32,6 +32,13 @@ impl VisibilityPipelineResourceManagerClient {
 		self.send(VisibilityTransferCommand::RequestMesh { key, source });
 	}
 
+	/// Requests one baked image for a non-material consumer such as an IES light profile.
+	pub(crate) fn request_image(&self, id: String) {
+		self.send(VisibilityTransferCommand::RequestImage {
+			key: VisibilityTextureKey::new(id),
+		});
+	}
+
 	/// Requests the baked lighting subresources stored with one environment image.
 	pub(crate) fn request_environment(&self, id: String) {
 		self.send(VisibilityTransferCommand::RequestEnvironment { id });
@@ -54,16 +61,20 @@ impl VisibilityPipelineResourceManagerClient {
 	/// Enqueues a texture upload and reports the descriptor data once the transfer frame completes.
 	pub(crate) fn enqueue_texture_upload(
 		&self,
+		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
 		upload: TextureUpload,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	) {
 		self.send(VisibilityTransferCommand::UploadPrepared(PreparedUpload::Texture {
+			key,
 			index,
 			image,
 			sampler,
 			upload,
+			photometry,
 		}));
 	}
 
@@ -400,6 +411,9 @@ impl VisibilityPipelineResourceManagerWorker {
 			VisibilityTransferCommand::TexturePrepared { texture } => {
 				self.resource_manager.adopt_prepared_texture(texture);
 			}
+			VisibilityTransferCommand::RequestImage { key } => {
+				self.resource_manager.request_image(key);
+			}
 			VisibilityTransferCommand::RequestEnvironment { id } => {
 				self.resource_manager.request_environment_preparation(id);
 			}
@@ -490,10 +504,12 @@ impl VisibilityPipelineResourceManagerWorker {
 					}
 				}
 				PreparedUpload::Texture {
+					key,
 					index,
 					image,
 					sampler,
 					upload,
+					photometry,
 				} => {
 					let copies = upload
 						.layouts
@@ -504,7 +520,13 @@ impl VisibilityPipelineResourceManagerWorker {
 						})
 						.collect::<SmallVec<[ghi::BufferImageCopyDescriptor; 16]>>();
 					transfer.copy_buffer_to_images(&copies);
-					completions.push(VisibilityResourceCompletion::TextureUploadReady { index, image, sampler });
+					completions.push(VisibilityResourceCompletion::TextureUploadReady {
+						key,
+						index,
+						image,
+						sampler,
+						photometry,
+					});
 					leases.push(upload.staging);
 					recorded_work = true;
 				}

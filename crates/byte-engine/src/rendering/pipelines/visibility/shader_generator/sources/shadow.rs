@@ -262,7 +262,8 @@ point_shadow_occlusion: fn (
 		return 1.0;
 	}
 	if (face_distance >= far) {
-		return 0.0;
+		// The cube projection has no valid receiver depth at or beyond its far plane.
+		return 1.0;
 	}
 	return step(closest_depth, receiver_depth + 2.0 / 65535.0);
 }

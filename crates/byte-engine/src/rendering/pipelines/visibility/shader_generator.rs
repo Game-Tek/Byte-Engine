@@ -199,6 +199,94 @@ mod tests {
 	}
 
 	/// Guards the branch order that prevents skinned pixels from loading and decoding static attributes first.
+	/// Verifies the packed C0 tangent defines Type C horizontal angles without a world-axis singularity.
+	#[test]
+	fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
+		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+		let source = r#"
+			main: fn () -> void {
+				for (let index: u32 = 0; index < 5; index = index + 1) {
+					results.values[index] = ies_profile_uv(
+						inputs.emission_directions[index],
+						inputs.axes[index],
+						inputs.c0_tangents[index]
+					);
+				}
+			}
+		"#;
+		let mut root = besl::parse(source)
+			.expect("Failed to parse the IES UV VM test. The most likely cause is invalid BESL test syntax.");
+		root.add(vec![
+			super::parse_besl_function(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
+			super::parse_besl_function(super::IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
+			besl::ParserNode::binding(
+				"inputs",
+				besl::ParserNode::buffer(
+					"IesProfileUvInputs",
+					vec![
+						besl::ParserNode::member("emission_directions", "vec3f[5]"),
+						besl::ParserNode::member("axes", "vec3f[5]"),
+						besl::ParserNode::member("c0_tangents", "vec2u16[5]"),
+					],
+				),
+				INPUT_SLOT.slot(),
+				true,
+				false,
+			),
+			besl::ParserNode::binding(
+				"results",
+				besl::ParserNode::buffer("IesProfileUvResults", vec![besl::ParserNode::member("values", "vec2f[5]")]),
+				RESULT_SLOT.slot(),
+				false,
+				true,
+			),
+		]);
+		let executable = compile(besl::lex(root).expect(
+			"Failed to lex the IES UV VM test. The most likely cause is an unresolved portable IES coordinate operation.",
+		));
+		let mut inputs = buffer(&executable, INPUT_SLOT);
+		let mut results = buffer(&executable, RESULT_SLOT);
+		let cases = [
+			([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [65535, 32768], [0.0, 0.5]),
+			([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [65535, 32768], [0.25, 0.5]),
+			([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [32768, 65535], [0.0, 0.5]),
+			([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [32768, 65535], [0.25, 0.5]),
+			([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [65535, 32768], [0.0, 0.5]),
+		];
+		for (index, (emission_direction, axis, c0_tangent, _)) in cases.iter().enumerate() {
+			inputs
+				.write_indexed("emission_directions", index, Value::Vec3F(*emission_direction))
+				.expect("Failed to initialize an IES emission direction. The most likely cause is a drifted VM vector layout.");
+			inputs
+				.write_indexed("axes", index, Value::Vec3F(*axis))
+				.expect("Failed to initialize an IES axis. The most likely cause is a drifted VM vector layout.");
+			inputs
+				.write_indexed("c0_tangents", index, Value::Vec2U16(*c0_tangent))
+				.expect("Failed to initialize an IES C0 tangent. The most likely cause is a drifted packed-vector layout.");
+		}
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
+		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+		run_at(&executable, &mut descriptors, [0, 0]);
+
+		for (index, (_, _, _, expected)) in cases.iter().enumerate() {
+			let Value::Vec2F(actual) = results
+				.read_indexed("values", index)
+				.expect("Missing IES UV. The most likely cause is a VM output-layout regression.")
+			else {
+				panic!("Unexpected IES UV type. The most likely cause is a VM vector-layout regression.");
+			};
+			// C0 lies on the duplicated horizontal seam, so packed-vector rounding may wrap a value just below zero to one.
+			let horizontal_delta = (actual[0] - expected[0]).abs();
+			let horizontal_delta = horizontal_delta.min(1.0 - horizontal_delta);
+			assert!(
+				horizontal_delta <= 0.0001 && (actual[1] - expected[1]).abs() <= 0.0001,
+				"Unexpected IES UV {actual:?}. The most likely cause is incorrect C0-frame coordinate mapping."
+			);
+		}
+	}
+
 	#[test]
 	fn skinned_material_path_selects_geometry_before_static_attribute_loads() {
 		let material = material_metadata! { "variables": [] };
@@ -245,10 +333,14 @@ mod tests {
 	#[compio::test]
 	async fn material_texture_samples_use_analytic_gradients_on_every_backend() {
 		let material = material_metadata! {
-			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
+			"variables": [
+				{ "name": "base_color", "data_type": "Texture2D" },
+				{ "name": "normal_map", "data_type": "Texture2D" }
+			]
 		};
-		let shader_node = besl::parse("main: fn () -> void { albedo = sample_material(base_color); }")
-			.expect("Textured material should parse.");
+		let shader_node =
+			besl::parse("main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }")
+				.expect("Textured material should parse.");
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = besl::lex(shader_generator.transform(shader_node, &material))
 			.expect("Textured material should produce valid BESL.");
@@ -271,6 +363,7 @@ mod tests {
 		assert!(glsl.contains("vertex_uv, uv_derivative_x, uv_derivative_y"));
 		assert!(hlsl.contains(".SampleGrad(textures_sampler, vertex_uv, uv_derivative_x, uv_derivative_y)"));
 		assert!(msl.contains("metal::gradient2d(uv_derivative_x, uv_derivative_y)"));
+		assert!(msl.contains("sample_visibility_normal("));
 		assert!(!hlsl.contains(".SampleLevel(textures_sampler"));
 
 		#[cfg(target_os = "macos")]
@@ -907,9 +1000,9 @@ mod tests {
 		}
 	}
 
-	/// Verifies a captured point-shadow blocker continues to occlude receivers beyond the projection far plane.
+	/// Verifies receivers beyond a point shadow's projection range remain unshadowed.
 	#[test]
-	fn point_shadow_occlusion_preserves_captured_blockers_beyond_the_far_plane_in_the_besl_vm() {
+	fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
 		let source = r#"
 			main: fn () -> void {
@@ -948,7 +1041,7 @@ mod tests {
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (name, expected) in [
-			("blocker_beyond_far", 0.0),
+			("blocker_beyond_far", 1.0),
 			("clear_beyond_far", 1.0),
 			("blocked_inside", 0.0),
 			("lit_inside", 1.0),
@@ -1007,8 +1100,9 @@ mod tests {
 		assert!(!source.contains("shadow_map.sample(shadow_map_sampler"));
 		assert!(source.contains("texturecube<float> environment_irradiance"));
 		assert!(source.contains("texturecube<float> environment_specular"));
-		assert!(!source.contains("atan2("));
+		assert!(source.contains("atan2("));
 		assert!(!source.contains("asin("));
+		assert!(source.contains("ies_profile_texture"));
 
 		#[cfg(target_os = "macos")]
 		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(

@@ -156,3 +156,14 @@ pub(crate) fn default_material_sampler_builder() -> ghi::sampler::Builder {
 		.min_lod(0f32)
 		.max_lod(0f32)
 }
+
+/// Builds the clamp sampler used by spherical IES profile textures.
+pub(crate) fn photometric_profile_sampler_builder() -> ghi::sampler::Builder {
+	ghi::sampler::Builder::new()
+		.filtering_mode(ghi::FilteringModes::Linear)
+		.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+		.mip_map_mode(ghi::FilteringModes::Linear)
+		.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+		.min_lod(0f32)
+		.max_lod(0f32)
+}

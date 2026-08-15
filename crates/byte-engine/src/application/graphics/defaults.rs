@@ -159,7 +159,7 @@ pub fn setup_default_resource_and_asset_management(
 		gltf_asset_handler.set_shader_generator(generator);
 		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
 		asset_manager.add_asset_handler(gltf_asset_handler);
-		asset_manager.add_asset_handler(PNGAssetHandler::new());
+		register_default_image_asset_handlers(&mut asset_manager);
 		asset_manager.add_asset_handler(resource_management::asset::pipeline_asset_handler::PipelineAssetHandler);
 		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
 			log::warn!(
@@ -177,6 +177,13 @@ pub fn setup_default_resource_and_asset_management(
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
+}
+
+/// Registers source image formats loaded lazily by the default debug application.
+#[cfg(debug_assertions)]
+fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
+	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	asset_manager.add_asset_handler(IESAssetHandler::new());
 }
 
 /// Installs the device classes expected by [`super::process_default_window_input`].
@@ -296,8 +303,8 @@ use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::asset::{
 	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
 	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
-	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
+	ies_asset_handler::IESAssetHandler, lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler,
+	png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, FileStorageBackend,
 };
 #[cfg(debug_assertions)]
 use resource_management::{
@@ -322,3 +329,34 @@ use crate::{
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
 };
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	use resource_management::{
+		asset::{asset_manager::AssetManager, FileStorageBackend},
+		resource::storage_backend::redb_storage_backend::RedbStorageBackend,
+	};
+
+	use super::register_default_image_asset_handlers;
+
+	#[test]
+	fn default_image_handlers_support_ies_profiles() {
+		static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+		let root = std::env::temp_dir().join(format!(
+			"byte-engine-default-image-handlers-{}-{}",
+			std::process::id(),
+			NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
+		));
+		let assets = root.join("assets");
+		let resources = root.join("resources");
+		let mut asset_manager = AssetManager::new(FileStorageBackend::new(assets), RedbStorageBackend::new(resources));
+
+		register_default_image_asset_handlers(&mut asset_manager);
+
+		assert!(asset_manager.supports("lights/profile.ies"));
+		drop(asset_manager);
+		std::fs::remove_dir_all(root).expect("the default image-handler test directory must be removable");
+	}
+}

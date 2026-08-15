@@ -30,10 +30,12 @@ pub(crate) enum PreparedUpload {
 		material_index: u32,
 	},
 	Texture {
+		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
 		upload: TextureUpload,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
 	Environment(PendingEnvironmentUpload),
 }
@@ -53,19 +55,23 @@ pub(crate) enum VisibilityResourceCompletion {
 		textures: Vec<Option<(String, u32)>>,
 	},
 	ImageReady {
+		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::factory::FactoryImage,
 		sampler: ghi::factory::FactorySampler,
 		upload: TextureUpload,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
 	EnvironmentReady {
 		id: String,
 		environment: FactoryEnvironment,
 	},
 	TextureUploadReady {
+		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
 	EnvironmentUploadReady {
 		id: String,
@@ -103,6 +109,9 @@ pub(crate) enum VisibilityTransferCommand {
 
 	TexturePrepared {
 		texture: PreparedTexture,
+	},
+	RequestImage {
+		key: VisibilityTextureKey,
 	},
 	RequestEnvironment {
 		id: String,
@@ -153,7 +162,7 @@ impl From<VisibilityMeshKey> for VisibilityResourceKey {
 	}
 }
 
-/// The `VisibilityTextureKey` struct identifies a material texture resource across materials and instances.
+/// The `VisibilityTextureKey` struct identifies a bindless image resource across materials, local lights, and instances.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct VisibilityTextureKey(String);
 
@@ -166,6 +175,11 @@ impl VisibilityTextureKey {
 	/// Returns the resource id backing this texture key.
 	pub(crate) fn as_str(&self) -> &str {
 		self.0.as_str()
+	}
+
+	/// Moves the stable resource ID into a completion-side lookup table.
+	pub(crate) fn into_string(self) -> String {
+		self.0
 	}
 }
 
@@ -201,6 +215,7 @@ pub(crate) struct PreparedTexture {
 	pub(super) extent: Extent,
 	pub(super) mip_count: u32,
 	pub(super) upload: TextureUpload,
+	pub(super) photometry: Option<resource_management::resources::image::ImagePhotometry>,
 }
 
 /// The `PreparedEnvironment` struct keeps every CPU-ready IBL stream independent from GPU object creation.

@@ -7,7 +7,7 @@ icon: Sun
 Use physical light units when you want lighting that responds predictably to distance, material
 properties, and future camera exposure controls.
 
-Byte Engine provides three analytic light shapes:
+Byte Engine provides three analytic light shapes. Point and cone lights can also use a baked IES profile when you need a measured angular intensity distribution:
 
 | Light | Best intensity unit | Typical use |
 | --- | --- | --- |
@@ -193,6 +193,50 @@ endpoint with `with_shadow_near` or `with_shadow_far`, or override both with `wi
 A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
 shadow map.
 
+## Use an IES profile
+
+Use an IES profile when you have a fixture's measured `.ies` file and want its real angular intensity
+pattern. Bake the source into your resource database, then pass its resource ID to `PointLight::new_ies`
+or `ConeLight::new_ies`.
+
+The IES file supplies the peak candela and the relative intensity in every direction. `LightColor`
+only tints that measured light; do not pass a separate `PhotometricIntensity` value. Set `dimmer` to a
+linear fraction from `0.0` for off through `1.0` for the profile's measured output. For example, `0.01`
+runs the measured fixture at 1% output. The renderer applies the same dimmed intensity to shading,
+automatic shadow coverage, and shadow priority.
+
+The renderer uses a dimmed unit-luminance fallback while the profile uploads asynchronously. If the
+resource is missing or is not a usable baked IES image, the visibility pipeline logs an error and the
+fallback remains active.
+
+Use an `Orientation` to place the profile:
+
+- Local `+Z` is the emission axis.
+- Local `+X` is the IES C0 plane.
+- Local `+Y` is the IES C90 plane.
+
+Keep the orientation when you animate a fixture, because its C0 plane defines the rotation of an
+asymmetric profile. Use `orientation_from_direction` only when a canonical zero-roll frame is enough.
+
+```rust
+use byte_engine::{
+    math::{Orientation, Point},
+    rendering::{LightColor, PointLight},
+};
+
+let office_fixture = PointLight::new_ies(
+    Point::new(0.0, 2.4, 0.0),
+    Orientation::identity(),
+    LightColor::Kelvin(4_000.0),
+    0.5,
+    "lights/office.ies",
+)?;
+```
+
+For a cone fixture, use `ConeLight::new_ies` with the same position, orientation, color, dimmer, and
+resource ID, followed by its inner and outer half angles. After the profile reaches the GPU, its dimmed
+calibrated peak candela also controls automatic shadow coverage and local-shadow priority.
+
 ## Control local-light shadows
 
 Point lights use a cube shadow map, so each selected point light renders six 90-degree shadow
@@ -243,6 +287,7 @@ they require a future spectral-light model.
 - [`DirectionalLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.DirectionalLight.html)
 - [`PointLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.PointLight.html)
 - [`ConeLight`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.ConeLight.html)
+- [`IesProfile`](https://docs.rs/byte-engine/latest/byte_engine/rendering/struct.IesProfile.html)
 - [`LightColor`](https://docs.rs/byte-engine/latest/byte_engine/rendering/enum.LightColor.html)
 - [`PhotometricIntensity`](https://docs.rs/byte-engine/latest/byte_engine/rendering/enum.PhotometricIntensity.html)
 

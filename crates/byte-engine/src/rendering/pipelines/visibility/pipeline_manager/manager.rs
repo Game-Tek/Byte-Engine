@@ -1,4 +1,5 @@
 use super::*;
+use crate::rendering::lights::IesProfile;
 
 impl VisibilityPipelineManager {
 	/// Applies a renderable's current world transform to every registered primitive.
@@ -160,6 +161,7 @@ impl VisibilityPipelineManager {
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
+			loaded_ies_profiles: HashMap::new(),
 			incomplete_renderables: HashSet::new(),
 			environment_resource_id: None,
 			environment_texture,
@@ -192,6 +194,9 @@ impl VisibilityPipelineManager {
 	}
 
 	pub(crate) fn create_light(&mut self, handle: Handle, light: Lights) {
+		if let Some(resource_id) = ies_profile_resource_id(&light) {
+			self.resource_manager.request_image(resource_id.to_owned());
+		}
 		self.scene.lights.push((handle, light));
 	}
 
@@ -270,15 +275,18 @@ impl VisibilityPipelineManager {
 					textures,
 				} => self.adopt_material_completion(id, index, pipeline, alpha_mode, coverage, textures),
 				VisibilityResourceCompletion::ImageReady {
+					key,
 					index,
 					image,
 					sampler,
 					upload,
+					photometry,
 				} => {
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
-					self.resource_manager.enqueue_texture_upload(index, image, sampler, upload);
+					self.resource_manager
+						.enqueue_texture_upload(key, index, image, sampler, upload, photometry);
 				}
 				VisibilityResourceCompletion::EnvironmentReady { id, environment } => {
 					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
@@ -286,11 +294,44 @@ impl VisibilityPipelineManager {
 						self.resource_manager.enqueue_environment_upload(upload);
 					}
 				}
-				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
+				VisibilityResourceCompletion::TextureUploadReady {
+					key,
+					index,
+					image,
+					sampler,
+					photometry,
+				} => {
 					log::debug!("Visibility texture upload adopted: index={}", index);
 					self.write_texture_descriptors(frame, index, image, sampler);
-					self.loaded_textures.insert(index);
-					self.rebuild_material_lists();
+					let profile_texture = photometry.and_then(|photometry| {
+						(photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0).then_some(
+							IesProfileTexture {
+								texture_index: index,
+								intensity_scale_candela: photometry.intensity_scale_candela,
+							},
+						)
+					});
+					if let Some(profile_texture) = profile_texture {
+						self.loaded_ies_profiles.insert(key.into_string(), profile_texture);
+					} else if self
+						.scene
+						.lights
+						.iter()
+						.any(|(_, light)| ies_profile_resource_id(light) == Some(key.as_str()))
+					{
+						warn!(
+							"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See https://byte-engine.0x44491229.dev/docs/use/lighting#use-an-ies-profile",
+							key
+						);
+					}
+					if self.loaded_textures.insert(index)
+						&& self
+							.loaded_materials
+							.values()
+							.any(|material| material.texture_indices.contains(&index))
+					{
+						self.rebuild_material_lists();
+					}
 				}
 				VisibilityResourceCompletion::EnvironmentUploadReady {
 					id,
@@ -754,6 +795,58 @@ impl VisibilityPipelineManager {
 		}
 	}
 }
+
+/// Returns the authored IES profile for a local light.
+fn ies_profile(light: &Lights) -> Option<&IesProfile> {
+	match light {
+		Lights::Cone(light) => light.ies_profile(),
+		Lights::Point(light) => light.ies_profile(),
+		Lights::Direction(_) => None,
+	}
+}
+
+/// Returns the authored IES image ID for a local profile light.
+fn ies_profile_resource_id(light: &Lights) -> Option<&str> {
+	ies_profile(light).map(IesProfile::resource_id)
+}
+
+/// Returns the dimmer while a profile is pending, then its dimmed calibrated scale after residency.
+pub(super) fn ies_intensity_scale_for_profile(
+	profile: Option<&IesProfile>,
+	profiles: &HashMap<String, IesProfileTexture>,
+) -> f32 {
+	let Some(profile) = profile else {
+		return 1.0;
+	};
+	profiles
+		.get(profile.resource_id())
+		.map_or(profile.dimmer(), |texture| texture.intensity_scale_candela * profile.dimmer())
+}
+
+/// Returns one light's analytic, fallback-profile, or calibrated-profile intensity scale.
+pub(super) fn ies_intensity_scale(light: &Lights, profiles: &HashMap<String, IesProfileTexture>) -> f32 {
+	ies_intensity_scale_for_profile(ies_profile(light), profiles)
+}
+
+/// Resolves an authored profile to its resident texture and dimmed calibrated candela scale.
+pub(super) fn resolved_ies_profile_texture_for_profile(
+	profile: Option<&IesProfile>,
+	profiles: &HashMap<String, IesProfileTexture>,
+) -> Option<IesProfileTexture> {
+	let profile = profile?;
+	let mut texture = profiles.get(profile.resource_id()).copied()?;
+	texture.intensity_scale_candela *= profile.dimmer();
+	Some(texture)
+}
+
+/// Resolves a profile light to its resident texture and dimmed calibrated candela scale.
+pub(super) fn resolved_ies_profile_texture(
+	light: &Lights,
+	profiles: &HashMap<String, IesProfileTexture>,
+) -> Option<IesProfileTexture> {
+	resolved_ies_profile_texture_for_profile(ies_profile(light), profiles)
+}
+
 /// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
 pub(super) fn cached_skin_palette(
 	cache: &[SkinningPaletteCacheEntry],

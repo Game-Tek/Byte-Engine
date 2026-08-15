@@ -68,7 +68,7 @@ pub(crate) fn build_prepared_resource_primitives(
 				triangle_count: meshlet.triangle_count,
 				center_radius: meshlet.center_radius,
 				cone_apex_cutoff: meshlet.cone_apex_cutoff,
-				cone_axis: encode_octahedral_normal((meshlet.cone_axis[0], meshlet.cone_axis[1], meshlet.cone_axis[2])),
+				cone_axis: encode_octahedral_unit_vector((meshlet.cone_axis[0], meshlet.cone_axis[1], meshlet.cone_axis[2])),
 			});
 			let (Some(next_local_primitive_offset), Some(next_local_triangle_offset)) = (
 				local_primitive_offset.checked_add(meshlet.primitive_count),

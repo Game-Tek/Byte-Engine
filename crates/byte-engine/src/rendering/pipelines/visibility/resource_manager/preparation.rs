@@ -2,9 +2,9 @@ use super::*;
 
 /// The `VisibilityPipelineResourceManager` struct owns asynchronous visibility resource workloads.
 pub(crate) struct VisibilityPipelineResourceManager {
-	/// Image resources used by material evaluation.
+	/// Image resources used by material evaluation and local-light IES profiles.
 	images: Vec<ResourceStates<(), ()>>,
-	/// Mapping from image resource ID to image index.
+	/// Mapping from shared material-texture or IES-profile resource ID to bindless image index.
 	images_by_resource: HashMap<String, usize>,
 	/// Material pipelines
 	materials: Vec<ResourceStates<String, ()>>,
@@ -18,6 +18,19 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	material_pipeline_config: Option<MaterialPipelineConfig>,
 	work_completions: Sender<VisibilityResourceCompletion>,
 	upload_staging: Arc<super::upload_staging::UploadStagingArena>,
+}
+
+/// Returns whether an image can safely provide the normalized Type C IES intensity-map contract.
+fn photometric_profile_metadata_is_valid(
+	image: &resource_management::resources::image::Image,
+	photometry: &resource_management::resources::image::ImagePhotometry,
+) -> bool {
+	image.format == resource_management::types::Formats::R16F
+		&& image.gamma == resource_management::types::Gamma::Linear
+		&& image.extent[2] == 1
+		&& image.mip_count == 1
+		&& photometry.intensity_scale_candela.is_finite()
+		&& photometry.intensity_scale_candela > 0.0
 }
 
 impl VisibilityPipelineResourceManager {
@@ -227,6 +240,11 @@ impl VisibilityPipelineResourceManager {
 		index
 	}
 
+	/// Requests one image outside material dependency discovery, such as a light's IES profile.
+	pub(super) fn request_image(&mut self, key: VisibilityTextureKey) {
+		self.request_texture_dependency(key);
+	}
+
 	/// Starts one texture's CPU preparation without waiting for sibling textures or its material pipeline.
 	pub(super) fn request_image_preparation(&self, key: VisibilityTextureKey, index: u32) {
 		let resource_manager = self.resource_manager.clone();
@@ -250,15 +268,20 @@ impl VisibilityPipelineResourceManager {
 		index: u32,
 	) -> Result<PreparedTexture, ()> {
 		let id = key.as_str();
-		let mut reference: Reference<ResourceImage> = resource_manager.request(id).await.map_err(|_| {
-				log::error!(
-					"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
-					id
+		let mut reference: Reference<ResourceImage> = resource_manager.request(id).await.map_err(|error| {
+			log::error!(
+				"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {}",
+				id,
+				error
 			);
 		})?;
 		let texture = reference.resource();
 		let format = resource_image_format_to_ghi(texture.format);
 		let extent = Extent::from(texture.extent);
+		let photometry = texture
+			.photometry
+			.clone()
+			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
 
 		let mip_count = texture.mip_count.max(1);
 		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
@@ -344,6 +367,7 @@ impl VisibilityPipelineResourceManager {
 			extent,
 			mip_count,
 			upload,
+			photometry,
 		})
 	}
 
@@ -357,6 +381,7 @@ impl VisibilityPipelineResourceManager {
 			extent,
 			mip_count,
 			upload,
+			photometry,
 		} = texture;
 		let Some(device) = self.resource_factory.as_mut() else {
 			log::error!(
@@ -378,13 +403,20 @@ impl VisibilityPipelineResourceManager {
 				.use_case(ghi::UseCases::STATIC),
 		);
 
-		let sampler = device.build_sampler(default_material_sampler_builder().max_lod((mip_count - 1) as f32));
+		let sampler_builder = if photometry.is_some() {
+			photometric_profile_sampler_builder()
+		} else {
+			default_material_sampler_builder()
+		};
+		let sampler = device.build_sampler(sampler_builder.max_lod((mip_count - 1) as f32));
 
 		self.send_completion(VisibilityResourceCompletion::ImageReady {
+			key,
 			index,
 			image,
 			sampler,
 			upload,
+			photometry,
 		});
 	}
 
@@ -597,7 +629,7 @@ impl VisibilityPipelineResourceManager {
 
 		let idx = self.images.len() as u32;
 
-		if idx as usize >= 1024 {
+		if idx as usize >= crate::rendering::pipelines::visibility::MAX_BINDLESS_TEXTURES {
 			panic!(
 				"Visibility texture limit exceeded. The most likely cause is that the scene created more texture variants than the visibility pipeline supports."
 			);
@@ -718,5 +750,49 @@ impl VisibilityPipelineResourceManager {
 		self.material_by_name.insert(material_id, idx as usize);
 
 		(idx, true)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use resource_management::{
+		resources::image::{Image, ImagePhotometry},
+		types::{Formats, Gamma},
+	};
+
+	use super::photometric_profile_metadata_is_valid;
+
+	fn valid_profile_image() -> Image {
+		Image {
+			format: Formats::R16F,
+			gamma: Gamma::Linear,
+			extent: [721, 361, 1],
+			mip_count: 1,
+			ibl: None,
+			photometry: None,
+		}
+	}
+
+	#[test]
+	fn photometric_profile_metadata_requires_the_baked_ies_contract() {
+		let photometry = ImagePhotometry {
+			intensity_scale_candela: 180.0,
+		};
+		let valid = valid_profile_image();
+		let mut srgb = valid_profile_image();
+		srgb.gamma = Gamma::SRGB;
+		let mut non_profile_format = valid_profile_image();
+		non_profile_format.format = Formats::RGBA16F;
+		let mut mipmapped = valid_profile_image();
+		mipmapped.mip_count = 2;
+		let invalid_scale = ImagePhotometry {
+			intensity_scale_candela: 0.0,
+		};
+
+		assert!(photometric_profile_metadata_is_valid(&valid, &photometry));
+		assert!(!photometric_profile_metadata_is_valid(&srgb, &photometry));
+		assert!(!photometric_profile_metadata_is_valid(&non_profile_format, &photometry));
+		assert!(!photometric_profile_metadata_is_valid(&mipmapped, &photometry));
+		assert!(!photometric_profile_metadata_is_valid(&valid, &invalid_scale));
 	}
 }

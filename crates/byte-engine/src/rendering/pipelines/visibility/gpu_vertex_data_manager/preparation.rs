@@ -13,10 +13,10 @@ pub(super) use skinning_validation::{
 	SKINNING_NORMAL_STRIDE, SKINNING_POSITION_STRIDE, SKINNING_WEIGHTS_STRIDE,
 };
 pub(super) use staging_layout::pack_f32_normals;
-pub(crate) use staging_layout::pack_f32_uvs;
+pub(crate) use staging_layout::{encode_octahedral_unit_vector, pack_f32_uvs};
 pub(super) use staging_layout::{
-	encode_octahedral_normal, take_range, take_range_aligned, UvSourceFormat, NORMAL_F32_SOURCE_STRIDE,
-	RESOURCE_MESHLET_STRIDE, UV_F16_SOURCE_STRIDE, UV_F32_SOURCE_STRIDE,
+	take_range, take_range_aligned, UvSourceFormat, NORMAL_F32_SOURCE_STRIDE, RESOURCE_MESHLET_STRIDE, UV_F16_SOURCE_STRIDE,
+	UV_F32_SOURCE_STRIDE,
 };
 pub(super) use stream_index_validation::{checked_mesh_byte_size, validate_loaded_mesh_indices, validated_stream_count};
 pub(crate) use stream_index_validation::{prepared_mesh_counts_match, validated_generated_indices};

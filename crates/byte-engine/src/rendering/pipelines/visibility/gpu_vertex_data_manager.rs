@@ -12,8 +12,8 @@ pub(super) use super::upload_staging;
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
 	pipelines::visibility::{
-		RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-		MAX_VERTICES, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+		RuntimeUnitVector, RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
+		MAX_TRIANGLES, MAX_VERTICES, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 	},
 	pipelines::visibility::{TRIANGLE_COUNT, VERTEX_COUNT},
 };

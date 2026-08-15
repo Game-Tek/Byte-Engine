@@ -1,4 +1,5 @@
 use super::*;
+use crate::rendering::pipelines::visibility::RuntimeUnitVector;
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone)]
@@ -64,11 +65,24 @@ pub(crate) struct ShaderViewData {
 	pub(crate) far: f32,
 }
 
+/// Sentinel used when a local light has no resident IES profile texture.
+pub(crate) const NO_IES_PROFILE_TEXTURE: u32 = u32::MAX;
+
+/// The `IesProfileTexture` struct carries a resident intensity map's bindless slot and calibrated candela scale.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct IesProfileTexture {
+	pub(crate) texture_index: u32,
+	pub(crate) intensity_scale_candela: f32,
+}
+
 /// The `LightData` struct preserves one 16-byte-aligned, scene-referred light record across shader backends.
 ///
 /// `color` stores RGB illuminance in lux for directional lights and RGB luminous intensity in candela for local lights.
+/// IES-backed local lights resolve their calibrated candela scale into `color` on the CPU, so the shader only samples
+/// a normalized profile when [`Self::ies_profile_texture`] is not [`NO_IES_PROFILE_TEXTURE`]. Their C0 tangent uses
+/// the same compact octahedral encoding as other runtime unit vectors.
 #[repr(C)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct LightData {
 	pub position: ShaderVec3,
 	pub color: ShaderVec3,
@@ -77,6 +91,26 @@ pub struct LightData {
 	pub light_type: u32,
 	pub shadow_views: [u32; 8],
 	pub shadow_layer: u32,
+	pub(crate) ies_profile_texture: u32,
+	pub(crate) ies_c0_tangent: RuntimeUnitVector,
+	pub(crate) _ies_padding: [u32; 2],
+}
+
+impl Default for LightData {
+	fn default() -> Self {
+		Self {
+			position: ShaderVec3::default(),
+			color: ShaderVec3::default(),
+			direction: ShaderVec3::default(),
+			cone_cosines: [0.0; 2],
+			light_type: 0,
+			shadow_views: [0; 8],
+			shadow_layer: 0,
+			ies_profile_texture: NO_IES_PROFILE_TEXTURE,
+			ies_c0_tangent: [32768, 32768],
+			_ies_padding: [0; 2],
+		}
+	}
 }
 
 /// The `MaterialData` struct retains fixed-width material texture indices for frame-local GPU uploads.

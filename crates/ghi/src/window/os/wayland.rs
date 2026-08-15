@@ -171,6 +171,8 @@ mod input;
 mod key_translation;
 mod lifecycle;
 
+use key_translation::{KeyboardState, keysym_to_key};
+
 #[cfg(test)]
 mod tests {
 	use super::*;

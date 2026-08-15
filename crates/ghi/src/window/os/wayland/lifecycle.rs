@@ -195,7 +195,7 @@ impl Drop for Window {
 	}
 }
 impl AppData {
-	fn process_requests(&mut self, qh: &wayland_client::QueueHandle<Self>) {
+	pub(super) fn process_requests(&mut self, qh: &wayland_client::QueueHandle<Self>) {
 		let surface = &self.wl_surface;
 
 		self.requests.retain(|e| match e {

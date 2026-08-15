@@ -15,6 +15,7 @@ pub(crate) mod descriptor_heap;
 pub mod descriptor_set;
 pub mod device;
 pub mod frame;
+pub mod factory;
 pub mod image;
 pub mod instance;
 pub mod queue;
@@ -30,8 +31,7 @@ pub use self::context::*;
 pub(crate) use self::descriptor_heap::*;
 pub use self::descriptor_set::*;
 pub use self::device::*;
-/// The `Factory` type alias keeps Vulkan detached resource creation aligned with the backend device API.
-pub type Factory = Device;
+pub use self::factory::Factory;
 pub use self::frame::*;
 pub(crate) use self::image::*;
 pub use self::instance::*;

@@ -84,8 +84,32 @@ pub struct ComputePipeline {
 
 unsafe impl Send for ComputePipeline {}
 
-/// The `RasterPipeline` struct marks detached Vulkan raster pipelines for future support.
-pub struct RasterPipeline;
+/// The `RasterPipeline` struct carries detached Vulkan raster state until a frame interns it.
+pub struct RasterPipeline {
+	pub(crate) name: Option<String>,
+	pub(crate) push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
+	pub(crate) vertex_elements: Vec<FactoryVertexElement>,
+	pub(crate) shaders: Vec<FactoryShaderParameter>,
+	pub(crate) render_targets: Vec<crate::pipelines::raster::AttachmentDescriptor>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) depth_write: bool,
+	pub(crate) factory_shaders: Vec<crate::vulkan::Shader>,
+}
+
+/// The `FactoryVertexElement` struct owns vertex input metadata used by a detached Vulkan raster pipeline.
+pub(crate) struct FactoryVertexElement {
+	pub(crate) name: String,
+	pub(crate) format: crate::DataTypes,
+	pub(crate) binding: u32,
+}
+
+/// The `FactoryShaderParameter` struct owns shader selection data used by a detached Vulkan raster pipeline.
+pub(crate) struct FactoryShaderParameter {
+	pub(crate) handle_index: usize,
+	pub(crate) stage: crate::ShaderTypes,
+	pub(crate) specialization_map: Vec<crate::pipelines::SpecializationMapEntry>,
+}
 
 /// The `FactoryImage` struct carries Vulkan image parameters until a context interns them.
 pub struct FactoryImage {

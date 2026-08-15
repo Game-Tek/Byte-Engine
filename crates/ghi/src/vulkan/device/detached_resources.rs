@@ -58,8 +58,35 @@ impl crate::device::Device for Device {
 		Ok(handle)
 	}
 
-	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		RasterPipeline
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		// Detached builders borrow caller data, so retain owned state until the render frame interns the pipeline.
+		RasterPipeline {
+			name: crate::debug_name(builder.name),
+			push_constant_ranges: builder.push_constant_ranges.into_owned(),
+			vertex_elements: builder
+				.vertex_elements
+				.iter()
+				.map(|element| FactoryVertexElement {
+					name: element.name.to_owned(),
+					format: element.format,
+					binding: element.binding,
+				})
+				.collect(),
+			shaders: builder
+				.shaders
+				.iter()
+				.map(|shader| FactoryShaderParameter {
+					handle_index: shader.handle.0 as usize,
+					stage: shader.stage,
+					specialization_map: shader.specialization_map.to_vec(),
+				})
+				.collect(),
+			render_targets: builder.render_targets.into_owned(),
+			face_winding: builder.face_winding,
+			cull_mode: builder.cull_mode,
+			depth_write: builder.depth_write,
+			factory_shaders: self.shaders.clone(),
+		}
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {

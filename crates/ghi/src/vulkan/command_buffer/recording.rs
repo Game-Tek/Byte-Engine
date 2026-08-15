@@ -89,11 +89,11 @@ impl CommandBufferRecording<'_> {
 		};
 	}
 
-	fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
+	pub(super) fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
 		self.device.buffers.resource(buffer_handle)
 	}
 
-	fn get_image(&self, image_handle: ImageHandle) -> &Image {
+	pub(super) fn get_image(&self, image_handle: ImageHandle) -> &Image {
 		&self.device.images[image_handle.0 as usize]
 	}
 
@@ -109,14 +109,14 @@ impl CommandBufferRecording<'_> {
 		&self.device.swapchains[swapchain_handle.0 as usize]
 	}
 
-	fn get_internal_top_level_acceleration_structure_handle(
+	pub(super) fn get_internal_top_level_acceleration_structure_handle(
 		&self,
 		acceleration_structure_handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
 	) -> TopLevelAccelerationStructureHandle {
 		TopLevelAccelerationStructureHandle(acceleration_structure_handle.0)
 	}
 
-	fn get_top_level_acceleration_structure(
+	pub(super) fn get_top_level_acceleration_structure(
 		&self,
 		acceleration_structure_handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
 	) -> (
@@ -129,14 +129,14 @@ impl CommandBufferRecording<'_> {
 		)
 	}
 
-	fn get_internal_bottom_level_acceleration_structure_handle(
+	pub(super) fn get_internal_bottom_level_acceleration_structure_handle(
 		&self,
 		acceleration_structure_handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) -> BottomLevelAccelerationStructureHandle {
 		BottomLevelAccelerationStructureHandle(acceleration_structure_handle.0)
 	}
 
-	fn get_bottom_level_acceleration_structure(
+	pub(super) fn get_bottom_level_acceleration_structure(
 		&self,
 		acceleration_structure_handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) -> (
@@ -177,7 +177,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Materializes the retained flat-set union only after its pipeline layout or backing resources change.
-	fn ensure_descriptor_materialization(&mut self) -> Option<super::DescriptorMaterializationHandle> {
+	fn ensure_descriptor_materialization(&mut self) -> Option<DescriptorMaterializationHandle> {
 		let layout_handle = self.bound_pipeline_layout.expect(
 			"No Vulkan pipeline layout is active. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
 		);
@@ -218,7 +218,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	#[must_use]
-	fn consume_resources_current(
+	pub(super) fn consume_resources_current(
 		&mut self,
 		additional_transitions: impl IntoIterator<Item = Consumption>,
 	) -> TransitionStateUpdates {
@@ -257,7 +257,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	#[must_use]
-	fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
+	pub(super) fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
 		// Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
 		let consumptions = consumptions.into_iter().map(|consumption| {
@@ -295,7 +295,10 @@ impl CommandBufferRecording<'_> {
 	/// Flags the passed resources as consumed.
 	/// Consumptions are specified directly in Vulkan terms.
 	#[must_use]
-	fn vulkan_consume_resources(&self, consumptions: impl IntoIterator<Item = VulkanConsumption>) -> TransitionStateUpdates {
+	pub(super) fn vulkan_consume_resources(
+		&self,
+		consumptions: impl IntoIterator<Item = VulkanConsumption>,
+	) -> TransitionStateUpdates {
 		Self::vulkan_consume_resources_impl(self.device, self, &self.states, consumptions)
 	}
 
@@ -422,7 +425,7 @@ impl CommandBufferRecording<'_> {
 		updates
 	}
 
-	fn plan_vulkan_resource_transitions(
+	pub(super) fn plan_vulkan_resource_transitions(
 		states: &HashMap<Handles, TransitionState>,
 		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
@@ -584,11 +587,11 @@ impl CommandBufferRecording<'_> {
 		planned
 	}
 
-	fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
+	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
 		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
+	pub(super) fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
 		if let Some(swapchain) = self
 			.device
 			.swapchains
@@ -602,11 +605,25 @@ impl CommandBufferRecording<'_> {
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
-	fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
+	pub(super) fn get_internal_base_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
 		self.get_internal_image_handle(graphics_hardware_interface::ImageHandle(handle))
 	}
 
-	fn get_attachment_image_handle(&self, attachment: &graphics_hardware_interface::AttachmentInformation) -> ImageHandle {
+	/// Resolves an image-or-swapchain source to the image selected for this recording.
+	pub(super) fn get_image_or_swapchain_handle(&self, source: graphics_hardware_interface::ImageOrSwapchain) -> ImageHandle {
+		match source {
+			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => self.get_internal_base_image_handle(handle),
+			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
+				let swapchain = &self.device.swapchains[handle.0 as usize];
+				swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize]
+			}
+		}
+	}
+
+	pub(super) fn get_attachment_image_handle(
+		&self,
+		attachment: &graphics_hardware_interface::AttachmentInformation,
+	) -> ImageHandle {
 		match attachment.target {
 			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => self.get_internal_base_image_handle(handle),
 			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
@@ -623,7 +640,10 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Selects the native image view declared by one render-pass attachment.
-	fn get_attachment_image_view(&self, attachment: &graphics_hardware_interface::AttachmentInformation) -> vk::ImageView {
+	pub(super) fn get_attachment_image_view(
+		&self,
+		attachment: &graphics_hardware_interface::AttachmentInformation,
+	) -> vk::ImageView {
 		let image = self.get_image(self.get_attachment_image_handle(attachment));
 		let image_layer_count = image.layers.map_or(1, |layer_count| layer_count.get());
 		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
@@ -653,7 +673,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Begins deferred dynamic rendering only after descriptor-backed resources have been transitioned.
-	fn begin_rendering_if_needed(&mut self) {
+	pub(super) fn begin_rendering_if_needed(&mut self) {
 		if self.active_rendering {
 			return;
 		}

@@ -1,7 +1,7 @@
 use super::*;
 
 impl Context {
-	pub(super) fn get_image_subresource_layout(
+	pub(crate) fn get_image_subresource_layout(
 		&self,
 		texture: &graphics_hardware_interface::ImageHandle,
 		mip_level: u32,
@@ -40,7 +40,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn bind_vulkan_buffer_memory(
+	pub(crate) fn bind_vulkan_buffer_memory(
 		&self,
 		info: &MemoryBackedResourceCreationResult<vk::Buffer>,
 		allocation_handle: graphics_hardware_interface::AllocationHandle,
@@ -65,7 +65,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn bind_host_vulkan_buffer_memory(
+	pub(crate) fn bind_host_vulkan_buffer_memory(
 		&self,
 		info: &MemoryBackedResourceCreationResult<vk::Buffer>,
 		allocation_handle: graphics_hardware_interface::AllocationHandle,
@@ -84,7 +84,7 @@ impl Context {
 		unsafe { allocation.pointer.add(offset) }
 	}
 
-	pub(super) fn bind_vulkan_texture_memory(
+	pub(crate) fn bind_vulkan_texture_memory(
 		&self,
 		info: &MemoryBackedResourceCreationResult<vk::Image>,
 		allocation_handle: graphics_hardware_interface::AllocationHandle,
@@ -104,7 +104,7 @@ impl Context {
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
-	pub(super) fn create_swapchain_image(
+	pub(crate) fn create_swapchain_image(
 		&mut self,
 		vk_image: vk::Image,
 		format: crate::Formats,
@@ -148,7 +148,7 @@ impl Context {
 	}
 
 	/// Allocates memory from the device.
-	pub(super) fn create_allocation_internal(
+	pub(crate) fn create_allocation_internal(
 		&mut self,
 		size: usize,
 		memory_bits: Option<u32>,
@@ -157,11 +157,12 @@ impl Context {
 		let memory_property_flags = {
 			let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
 
-			memory_property_flags |= if device_accesses.contains(crate::DeviceAccesses::CpuRead) {
-				vk::MemoryPropertyFlags::HOST_VISIBLE
-			} else {
-				vk::MemoryPropertyFlags::empty()
-			};
+			memory_property_flags |=
+				if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
+					vk::MemoryPropertyFlags::HOST_VISIBLE
+				} else {
+					vk::MemoryPropertyFlags::empty()
+				};
 			memory_property_flags |= if device_accesses.contains(crate::DeviceAccesses::CpuWrite) {
 				vk::MemoryPropertyFlags::HOST_COHERENT
 			} else {
@@ -228,13 +229,13 @@ impl Context {
 		(allocation_handle, mapped_memory)
 	}
 
-	pub(super) fn uses_only_host_access(device_accesses: crate::DeviceAccesses) -> bool {
+	pub(crate) fn uses_only_host_access(device_accesses: crate::DeviceAccesses) -> bool {
 		device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
 			&& !device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
 	}
 
 	/// Creates a Vulkan buffer, allocates memory for it, binds the memory, and returns the tracked buffer object.
-	pub(super) fn create_bound_buffer(
+	pub(crate) fn create_bound_buffer(
 		&mut self,
 		name: Option<&str>,
 		size: usize,
@@ -242,7 +243,6 @@ impl Context {
 		allocation_accesses: crate::DeviceAccesses,
 		buffer_accesses: crate::DeviceAccesses,
 		resource_uses: crate::Uses,
-		mip_levels: u32,
 	) -> Buffer {
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -269,7 +269,7 @@ impl Context {
 	/// Buffers that request only host access are created as a single mapped Vulkan buffer. Buffers that include GPU
 	/// access and CPU access keep a separate host-visible staging buffer so transfers can synchronize CPU writes with
 	/// GPU-visible storage.
-	pub(super) fn build_buffer_internal(
+	pub(crate) fn build_buffer_internal(
 		&mut self,
 		_next: Option<BufferHandle>,
 		name: Option<&str>,
@@ -347,8 +347,10 @@ impl Context {
 				crate::DeviceAccesses::empty()
 			};
 
+			// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
+			let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
 			let staging_buffer =
-				self.create_bound_buffer(name, size, vk_usage_flags, device_access, device_accesses, resource_uses);
+				self.create_bound_buffer(name, size, vk_usage_flags, allocation_accesses, device_access, resource_uses);
 
 			let (_, handle) = self.buffers.add(staging_buffer);
 
@@ -362,7 +364,7 @@ impl Context {
 	}
 
 	/// Builds a buffer and returns its handle.
-	pub(super) fn create_buffer_internal(
+	pub(crate) fn create_buffer_internal(
 		&mut self,
 		next: Option<BufferHandle>,
 		previous: Option<BufferHandle>,
@@ -386,7 +388,7 @@ impl Context {
 
 	/// Creates a CPU-visible staging buffer (TRANSFER_SRC) for use as a per-frame
 	/// staging buffer in the persistent write mode. Returns its handle.
-	pub(super) fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
+	pub(crate) fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
 		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 		let device_access = crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite;
 
@@ -396,7 +398,7 @@ impl Context {
 		handle
 	}
 
-	pub(super) fn build_image_internal(
+	pub(crate) fn build_image_internal(
 		&mut self,
 		next: Option<ImageHandle>,
 		name: Option<&str>,
@@ -409,7 +411,13 @@ impl Context {
 		resource_uses: crate::Uses,
 		mip_levels: u32,
 	) -> Image {
-		let size = extent.width() as usize * extent.height().max(1) as usize * extent.depth().max(1) as usize * format.size();
+		// Every array layer has a complete image payload in the shared staging buffer.
+		let layer_count = array_layers.map_or(1, NonZeroU32::get) as usize;
+		let size = extent.width() as usize
+			* extent.height().max(1) as usize
+			* extent.depth().max(1) as usize
+			* format.size()
+			* layer_count;
 
 		if extent.width() == 0 {
 			return Image {
@@ -472,18 +480,18 @@ impl Context {
 		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
 		let (staging_buffer, staging_allocation, pointer) = if uses_cpu_staging {
-			let reads_on_cpu = device_accesses.intersects(crate::DeviceAccesses::CpuRead);
-			let vk_buffer_usage_flags = if reads_on_cpu {
+			// A staging buffer may serve both readback and upload when the image allows both CPU access modes.
+			let vk_buffer_usage_flags = (if device_accesses.contains(crate::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
+				vk::BufferUsageFlags::empty()
+			}) | (if device_accesses.contains(crate::DeviceAccesses::CpuWrite) {
 				vk::BufferUsageFlags::TRANSFER_SRC
-			};
-			// Readback needs host visibility and explicit invalidation. Uploads use coherent host memory so writes are visible.
-			let allocation_accesses = if reads_on_cpu {
-				crate::DeviceAccesses::CpuRead
 			} else {
-				crate::DeviceAccesses::HostOnly
-			};
+				vk::BufferUsageFlags::empty()
+			});
+			// Preserve both host access directions so allocation selects visible memory and coherent uploads.
+			let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
 
 			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
 			let (allocation_handle, _) = self.create_allocation_internal(
@@ -611,7 +619,7 @@ impl Context {
 		texture_handle
 	}
 
-	pub(super) fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
+	pub(crate) fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
 
 		self.synchronizers.push(Synchronizer {
@@ -624,7 +632,7 @@ impl Context {
 		synchronizer_handle
 	}
 
-	pub(super) fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
+	pub(crate) fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
 		let current_buffer = self.buffers.resource(buffer_handle);
 
 		if current_buffer.size >= size {
@@ -709,7 +717,7 @@ impl Context {
 
 		self.images[image_handle.0 as usize] = new_image;
 
-		if let Some(state) = self.states.get_mut(&super::Handles::Image(image_handle)) {
+		if let Some(state) = self.states.get_mut(&crate::vulkan::Handles::Image(image_handle)) {
 			state.layout = vk::ImageLayout::UNDEFINED;
 		}
 

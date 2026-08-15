@@ -1,7 +1,7 @@
 use super::*;
 
 impl Context {
-	pub(super) fn create_descriptor_heap_arena(
+	pub(crate) fn create_descriptor_heap_arena(
 		&mut self,
 		name: &str,
 		size: u64,
@@ -60,7 +60,7 @@ impl Context {
 			device_address: aligned_address,
 			size,
 			reserved_size,
-			free_ranges: vec![super::DescriptorHeapRange {
+			free_ranges: vec![crate::vulkan::DescriptorHeapRange {
 				offset: application_offset,
 				size: size - application_offset,
 			}],
@@ -68,7 +68,7 @@ impl Context {
 	}
 
 	/// Allocates the long-lived resource and sampler heaps once for the context.
-	pub(super) fn create_descriptor_heaps(&mut self) -> DescriptorHeaps {
+	pub(crate) fn create_descriptor_heaps(&mut self) -> DescriptorHeaps {
 		const RESOURCE_HEAP_TARGET_SIZE: u64 = 64 * 1024 * 1024;
 		const SAMPLER_HEAP_TARGET_SIZE: u64 = 1024 * 1024;
 		let properties = self.device.descriptor_heap_properties;
@@ -118,7 +118,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn descriptors_at_slot<'a>(
+	pub(crate) fn descriptors_at_slot<'a>(
 		&'a self,
 		sets: &[graphics_hardware_interface::DescriptorSetHandle],
 		slot: crate::shader::ResourceSlot,
@@ -127,7 +127,7 @@ impl Context {
 			.find_map(|set| self.descriptor_sets[set.0 as usize].descriptors.get(&slot))
 	}
 
-	pub(super) fn descriptor_matches_kind(
+	pub(crate) fn descriptor_matches_kind(
 		descriptor: crate::descriptors::WriteData,
 		kind: crate::shader::ResourceKind,
 	) -> bool {
@@ -154,7 +154,7 @@ impl Context {
 	}
 
 	/// Compares the native resource and image layout consumed by two materialized descriptors.
-	pub(super) fn descriptors_consume_same_resource(left: Descriptor, right: Descriptor) -> bool {
+	pub(crate) fn descriptors_consume_same_resource(left: Descriptor, right: Descriptor) -> bool {
 		match (left, right) {
 			(Descriptor::Buffer { buffer: left, .. }, Descriptor::Buffer { buffer: right, .. }) => left == right,
 			(
@@ -213,7 +213,7 @@ impl Context {
 	}
 
 	/// Validates one complete logical set union against the active flat pipeline layout.
-	pub(super) fn validate_descriptor_sets(
+	pub(crate) fn validate_descriptor_sets(
 		&self,
 		layout: &PipelineLayout,
 		sets: &[graphics_hardware_interface::DescriptorSetHandle],
@@ -273,7 +273,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn swapchain_key_for_image(
+	pub(crate) fn swapchain_key_for_image(
 		&self,
 		handle: graphics_hardware_interface::BaseImageHandle,
 		sequence_index: u8,
@@ -286,7 +286,7 @@ impl Context {
 		})
 	}
 
-	pub(super) fn materialization_key(
+	pub(crate) fn materialization_key(
 		&self,
 		layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
 		sets: &[graphics_hardware_interface::DescriptorSetHandle],
@@ -353,7 +353,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn resolve_retained_descriptor(
+	pub(crate) fn resolve_retained_descriptor(
 		&self,
 		retained: crate::vulkan::descriptor_set::RetainedDescriptor,
 		sequence_index: u8,
@@ -414,7 +414,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn descriptor_image_view_create_info(
+	pub(crate) fn descriptor_image_view_create_info(
 		&self,
 		image: &Image,
 		view_type: crate::TextureViewTypes,
@@ -432,6 +432,7 @@ impl Context {
 			"Vulkan image descriptor mip range is invalid. The most likely cause is that the descriptor view exceeds the image mip count. base_mip_level={base_mip_level}, level_count={level_count}, mip_levels={}",
 			image.mip_levels,
 		);
+		let array_layer_count = image.layers.map_or(1, NonZeroU32::get);
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
 			crate::TextureViewTypes::Texture2D => {
 				assert!(
@@ -457,17 +458,17 @@ impl Context {
 			}
 			crate::TextureViewTypes::TextureCube => {
 				assert!(
-					layer.is_none() && layers == 6,
+					layer.is_none() && image.cube_compatible && array_layer_count == 6,
 					"Vulkan cubemap descriptor view mismatch. The most likely cause is that the image is not a six-layer cube-compatible image."
 				);
 				(vk::ImageViewType::CUBE, 0, 6)
 			}
 			crate::TextureViewTypes::TextureCubeArray => {
 				assert!(
-					layer.is_none() && image.cube_array_compatible && layers.is_multiple_of(6),
+					layer.is_none() && image.cube_array_compatible && array_layer_count.is_multiple_of(6),
 					"Vulkan cube-array descriptor view mismatch. The most likely cause is that the image is not a cube-array-compatible image."
 				);
-				(vk::ImageViewType::CUBE_ARRAY, 0, layers)
+				(vk::ImageViewType::CUBE_ARRAY, 0, array_layer_count)
 			}
 			crate::TextureViewTypes::Texture3D => {
 				assert!(
@@ -762,7 +763,7 @@ impl Context {
 		)
 	}
 	#[inline]
-	pub(super) fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
+	pub(crate) fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
 		#[cfg(debug_assertions)]
 		if let Some(name) = name {
 			self.names.insert(handle, name.to_string());
@@ -770,7 +771,7 @@ impl Context {
 	}
 
 	#[inline]
-	pub(super) fn get_object_debug_name(&self, handle: graphics_hardware_interface::Handles) -> Option<String> {
+	pub(crate) fn get_object_debug_name(&self, handle: graphics_hardware_interface::Handles) -> Option<String> {
 		#[cfg(debug_assertions)]
 		let name = self.names.get(&handle).map(|e| e.clone());
 

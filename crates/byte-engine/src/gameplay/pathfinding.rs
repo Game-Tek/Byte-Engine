@@ -411,9 +411,7 @@ mod tests {
 	fn bit_matrix_graph_reports_each_neighbor_once() {
 		let mut graph = BitMatrixGraph::with_capacity(130);
 		let start = graph.push(0);
-		let neighbors: Vec<_> = (1..=65)
-			.map(|value| graph.push_connected(start, value))
-			.collect();
+		let neighbors: Vec<_> = (1..=65).map(|value| graph.push_connected(start, value)).collect();
 
 		assert_eq!(graph.neighbors(start).collect::<Vec<_>>(), neighbors);
 	}

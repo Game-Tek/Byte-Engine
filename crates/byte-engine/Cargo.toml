@@ -35,6 +35,10 @@ name = "audio_graph"
 harness = false
 required-features = ["headed"]
 
+[[bench]]
+name = "pathfinding"
+harness = false
+
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 flate2 = { version = "1.1.9", optional = true }

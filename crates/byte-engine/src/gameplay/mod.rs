@@ -15,6 +15,8 @@ pub mod killer;
 #[doc(hidden)]
 pub mod object;
 #[doc(hidden)]
+pub mod pathfinding;
+#[doc(hidden)]
 pub mod timer;
 #[doc(hidden)]
 pub mod transform;

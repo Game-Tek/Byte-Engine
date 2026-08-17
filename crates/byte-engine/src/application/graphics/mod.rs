@@ -706,8 +706,13 @@ use crate::{
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
 impl Creator<Window> for GraphicsApplication {
-	fn create(&mut self, window: Window) -> crate::core::factory::Handle {
-		self.window_factory.0.create(window)
+	fn publish(&mut self, handle: Option<crate::core::factory::Handle>, window: Window) -> crate::core::factory::Handle {
+		if let Some(handle) = handle {
+			self.window_factory.0.derive(handle, window);
+			handle
+		} else {
+			self.window_factory.0.create(window)
+		}
 	}
 }
 

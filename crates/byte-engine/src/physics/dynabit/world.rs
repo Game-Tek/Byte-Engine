@@ -237,6 +237,9 @@ impl World {
 	}
 
 	fn create_body(&mut self, handle: Handle, body: &dyn Body) {
+		// Creation messages are upserts so one entity handle always owns at most one simulated body.
+		self.remove_body(handle);
+
 		let body_type = body.body_type();
 		let mass = body.mass();
 		debug_assert!(
@@ -285,6 +288,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		core::{channel::DefaultChannel, factory::Factory},
+		gameplay::Object,
 		physics::collider::Shapes,
 	};
 
@@ -366,6 +370,26 @@ mod tests {
 		assert!(world.remove_body(handle).is_some());
 		assert!(!world.apply_impulse(handle, Vector::new(1.0, 0.0, 0.0)));
 		assert!(!world.apply_impulse(test_handle(), Vector::new(1.0, 0.0, 0.0)));
+	}
+
+	#[test]
+	fn creation_with_an_existing_handle_replaces_the_registered_body() {
+		let mut world = make_world();
+		let handle = test_handle();
+		let first = Object::sphere(1.0);
+		let mut replacement = Object::sphere(2.0);
+		let replacement_position = math::Point::new(3.0, 2.0, 1.0);
+		let replacement_velocity = Vector::new(4.0, 5.0, 6.0);
+		replacement.set_position(replacement_position);
+		replacement.set_velocity(replacement_velocity);
+
+		world.create_body(handle, &first);
+		world.create_body(handle, &replacement);
+
+		assert_eq!(world.bodies.len(), 1);
+		let index = world.handles_to_bodies[&handle];
+		assert_eq!(world.bodies[index].position, replacement_position);
+		assert_eq!(world.bodies[index].linear_velocity, replacement_velocity);
 	}
 
 	#[test]

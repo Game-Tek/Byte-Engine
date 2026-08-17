@@ -16,15 +16,14 @@ pub trait TargetedMessage: Message {
 ///
 /// After calling [`TargetedMessagePublisher::set`], call [`MessageTargeter::on`] to select the
 /// destination and publish the message.
-pub trait TargetedMessagePublisher<M: TargetedMessage>: Publisher<M> {
+pub trait TargetedMessagePublisher<P>: Publisher<Self::Message> {
+	/// Selects the targeted message associated with this payload type.
+	type Message: TargetedMessage<Payload = P>;
+
 	/// Sets the payload for a targeted message.
 	///
 	/// Next, call [`MessageTargeter::on`] to select the destination and publish the message.
-	fn set(&self, payload: M::Payload) -> PendingTargetedMessage<'_, Self, M>;
-}
-
-impl<M: TargetedMessage, W: Publisher<M> + ?Sized> TargetedMessagePublisher<M> for W {
-	fn set(&self, payload: M::Payload) -> PendingTargetedMessage<'_, Self, M> {
+	fn set(&self, payload: P) -> PendingTargetedMessage<'_, Self, Self::Message> {
 		PendingTargetedMessage {
 			publisher: self,
 			payload,
@@ -91,6 +90,10 @@ mod tests {
 		fn publish(&self, message: TestMessage) {
 			self.published.set(Some(message));
 		}
+	}
+
+	impl TargetedMessagePublisher<u32> for TestPublisher {
+		type Message = TestMessage;
 	}
 
 	#[test]

@@ -81,6 +81,9 @@ impl PipelineManager {
 		handle: Handle,
 		entity: EntityHandle<dyn RenderableMesh>,
 	) {
+		// Creation messages are upserts so a handle cannot retain a stale render instance.
+		self.remove_mesh(handle);
+
 		let mesh = entity.get_mesh();
 
 		let mesh_id = match mesh {

@@ -7,7 +7,7 @@ use dispatch2::DispatchData;
 use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
 use objc2_foundation::{NSAutoreleasePool, NSString};
-use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLDevice, MTLLibrary, MTLResource, MTLTexture};
+use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLDevice, MTLResource, MTLTexture};
 use smallvec::SmallVec;
 
 use super::*;
@@ -25,6 +25,7 @@ use crate::{
 /// The `Context` struct owns resources created for rendering on a Metal GPU device.
 pub struct Context {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
+	pub(crate) compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::StoredQueue>,
 	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,

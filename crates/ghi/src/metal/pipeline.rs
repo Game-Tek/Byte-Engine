@@ -1,3 +1,6 @@
+use objc2_foundation::NSString;
+use objc2_metal::MTL4Compiler as _;
+
 use super::*;
 
 /// Returns the previous drawable size, new drawable size, and scale factor.
@@ -241,16 +244,60 @@ pub(crate) fn sampler_reduction_mode_for_device(
 	}
 }
 
-/// Configures one Metal color attachment with the GHI format and blend mode.
-pub(crate) fn configure_color_attachment(
-	color_attachment: &mtl::MTLRenderPipelineColorAttachmentDescriptor,
+/// Creates the compiler shared by context-local and detached Metal 4 pipeline builds.
+pub(crate) fn create_metal4_compiler(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	debug_labels: bool,
+) -> Result<Retained<ProtocolObject<dyn mtl::MTL4Compiler>>, &'static str> {
+	let descriptor = mtl::MTL4CompilerDescriptor::new();
+	if cfg!(debug_assertions) && debug_labels {
+		descriptor.setLabel(Some(&NSString::from_str("Byte Engine")));
+	}
+	device.newCompilerWithDescriptor_error(&descriptor).map_err(|error| {
+		eprintln!(
+			"Metal 4 compiler creation failed: {}. The most likely cause is that Metal could not allocate a compiler for this device.",
+			error.localizedDescription(),
+		);
+		"Metal 4 compiler creation failed. The most likely cause is that Metal could not allocate a compiler for this device."
+	})
+}
+
+/// Builds a Metal 4 function descriptor and applies any pipeline specialization constants.
+pub(crate) fn build_metal4_function_descriptor(
+	shader: &Shader,
+	specialization_map: &[crate::pipelines::SpecializationMapEntry],
+) -> Option<Retained<mtl::MTL4FunctionDescriptor>> {
+	let library = shader.metal_library.as_ref()?;
+	let entry_point = NSString::from_str(shader.metal_entry_point.as_ref()?);
+	let library_function = mtl::MTL4LibraryFunctionDescriptor::new();
+	library_function.setLibrary(Some(library.as_ref()));
+	library_function.setName(Some(&entry_point));
+	let library_function = unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(library_function) };
+
+	if specialization_map.is_empty() {
+		return Some(library_function);
+	}
+
+	let constant_values = mtl::MTLFunctionConstantValues::new();
+	for specialization in specialization_map {
+		apply_specialization_map_entry(&constant_values, specialization);
+	}
+	let specialized_function = mtl::MTL4SpecializedFunctionDescriptor::new();
+	specialized_function.setFunctionDescriptor(Some(&library_function));
+	specialized_function.setConstantValues(Some(&constant_values));
+	Some(unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(specialized_function) })
+}
+
+/// Configures one Metal 4 color attachment with the GHI format and blend mode.
+fn configure_metal4_color_attachment(
+	color_attachment: &mtl::MTL4RenderPipelineColorAttachmentDescriptor,
 	attachment: &crate::pipelines::raster::AttachmentDescriptor,
 ) {
 	color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
 	match attachment.blend {
-		crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
+		crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingState(mtl::MTL4BlendState::Disabled),
 		crate::pipelines::raster::BlendMode::Alpha => {
-			color_attachment.setBlendingEnabled(true);
+			color_attachment.setBlendingState(mtl::MTL4BlendState::Enabled);
 			color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
 			color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
 			color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
@@ -261,34 +308,92 @@ pub(crate) fn configure_color_attachment(
 	}
 }
 
-/// Configures render-target formats for a Metal mesh pipeline descriptor.
-pub(crate) fn configure_mesh_render_targets(
-	descriptor: &mtl::MTLMeshRenderPipelineDescriptor,
+/// Configures the packed color outputs shared by Metal 4 vertex and mesh render descriptors.
+fn configure_metal4_render_targets(
+	color_attachments: &mtl::MTL4RenderPipelineColorAttachmentDescriptorArray,
 	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
 ) {
-	for (index, attachment) in render_targets.iter().enumerate() {
-		if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-			descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-		} else {
-			let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-			configure_color_attachment(&color_attachment, attachment);
-		}
+	for (index, attachment) in render_targets
+		.iter()
+		.filter(|attachment| attachment.format.channel_layout() != crate::ChannelLayout::Depth)
+		.enumerate()
+	{
+		let color_attachment = unsafe { color_attachments.objectAtIndexedSubscript(index as _) };
+		configure_metal4_color_attachment(&color_attachment, attachment);
 	}
 }
 
-/// Configures render-target formats for a Metal raster pipeline descriptor.
-pub(crate) fn configure_render_targets(
-	descriptor: &mtl::MTLRenderPipelineDescriptor,
+/// Compiles one Metal 4 vertex/fragment render pipeline.
+pub(crate) fn compile_metal4_render_pipeline(
+	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
+	name: Option<&str>,
+	vertex_function: &mtl::MTL4FunctionDescriptor,
+	fragment_function: Option<&mtl::MTL4FunctionDescriptor>,
+	vertex_descriptor: Option<&mtl::MTLVertexDescriptor>,
 	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
-) {
-	for (index, attachment) in render_targets.iter().enumerate() {
-		if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-			descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-		} else {
-			let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-			configure_color_attachment(&color_attachment, attachment);
-		}
-	}
+) -> Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>> {
+	let descriptor = mtl::MTL4RenderPipelineDescriptor::new();
+	descriptor.setLabel(name.map(NSString::from_str).as_deref());
+	descriptor.setVertexFunctionDescriptor(Some(vertex_function));
+	descriptor.setFragmentFunctionDescriptor(fragment_function);
+	descriptor.setVertexDescriptor(vertex_descriptor);
+	descriptor.setInputPrimitiveTopology(mtl::MTLPrimitiveTopologyClass::Triangle);
+	configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
+
+	compiler
+		.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+		.unwrap_or_else(|error| {
+			panic!(
+				"Metal 4 raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the pipeline descriptor.",
+				error.localizedDescription(),
+			)
+		})
+}
+
+/// Compiles one Metal 4 object/mesh/fragment render pipeline.
+pub(crate) fn compile_metal4_mesh_pipeline(
+	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
+	name: Option<&str>,
+	object_function: Option<&mtl::MTL4FunctionDescriptor>,
+	mesh_function: &mtl::MTL4FunctionDescriptor,
+	fragment_function: Option<&mtl::MTL4FunctionDescriptor>,
+	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
+) -> Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>> {
+	let descriptor = mtl::MTL4MeshRenderPipelineDescriptor::new();
+	descriptor.setLabel(name.map(NSString::from_str).as_deref());
+	descriptor.setObjectFunctionDescriptor(object_function);
+	descriptor.setMeshFunctionDescriptor(Some(mesh_function));
+	descriptor.setFragmentFunctionDescriptor(fragment_function);
+	configure_metal4_render_targets(&descriptor.colorAttachments(), render_targets);
+
+	compiler
+		.newRenderPipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+		.unwrap_or_else(|error| {
+			panic!(
+				"Metal 4 mesh pipeline creation failed: {}. The most likely cause is invalid object, mesh, or fragment shader state in the pipeline descriptor.",
+				error.localizedDescription(),
+			)
+		})
+}
+
+/// Compiles one Metal 4 compute pipeline.
+pub(crate) fn compile_metal4_compute_pipeline(
+	compiler: &ProtocolObject<dyn mtl::MTL4Compiler>,
+	name: Option<&str>,
+	compute_function: &mtl::MTL4FunctionDescriptor,
+) -> Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>> {
+	let descriptor = mtl::MTL4ComputePipelineDescriptor::new();
+	descriptor.setLabel(name.map(NSString::from_str).as_deref());
+	descriptor.setComputeFunctionDescriptor(Some(compute_function));
+
+	compiler
+		.newComputePipelineStateWithDescriptor_compilerTaskOptions_error(&descriptor, None)
+		.unwrap_or_else(|error| {
+			panic!(
+				"Metal 4 compute pipeline creation failed: {}. The most likely cause is invalid compute shader state in the pipeline descriptor.",
+				error.localizedDescription(),
+			)
+		})
 }
 
 /// The `StageArgumentLayout` struct provides one pipeline-wide Metal argument-buffer layout shared by its shader stages.
@@ -473,8 +578,8 @@ pub(crate) struct Pipeline {
 
 #[derive(Clone)]
 pub(crate) enum PipelineState {
-	Raster(Option<Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>>),
-	Compute(Option<Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>>),
+	Raster(Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>),
+	Compute(Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>),
 	RayTracing,
 }
 

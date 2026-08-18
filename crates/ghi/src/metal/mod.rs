@@ -593,7 +593,7 @@ mod flat_binding_tests {
 			)
 			.name("Retained Material Binding Probe Pipeline"),
 		);
-		let PipelineState::Compute(Some(pipeline_state)) = &context
+		let PipelineState::Compute(pipeline_state) = &context
 			.pipelines
 			.last()
 			.expect(
@@ -684,6 +684,107 @@ mod flat_binding_tests {
 			*context.get_buffer_slice(output),
 			64 | (192 << 8),
 			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that retained materialization and the fixed MSL slot mapping disagree.",
+		);
+	}
+
+	/// Verifies Metal 4 function descriptors preserve specialization constants through pipeline compilation.
+	#[test]
+	fn metal4_specialized_function_descriptor_reaches_pipeline_compiler() {
+		use crate::{
+			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+			device::Device as _,
+			queue::{FrameRequest, Queue as _, QueueExecution as _},
+		};
+
+		const OUTPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(0);
+		let source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			constant uint specialized_value [[function_constant(0)]];
+			struct Resources { device uint* output [[id(0)]]; };
+			kernel void specialized_main(
+				uint gid [[thread_position_in_grid]],
+				constant Resources& resources [[buffer(16)]]) {
+				if (gid == 0) { resources.output[0] = specialized_value; }
+			}
+		"#;
+		let features = crate::device::Features::new();
+		let mut instance = super::Instance::new(features)
+			.expect("Metal 4 specialization test setup failed. The most likely cause is unavailable Metal device support.");
+		let mut queue_handle = None;
+		let mut context = instance
+			.create_device(
+				features,
+				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
+			)
+			.expect(
+				"Metal 4 specialization device creation failed. The most likely cause is unavailable compute queue support.",
+			)
+			.create_context()
+			.expect(
+				"Metal 4 specialization context creation failed. The most likely cause is unavailable Metal command support.",
+			);
+		let queue_handle = queue_handle.expect(
+			"Metal 4 specialization queue is missing. The most likely cause is that device selection did not return the requested queue.",
+		);
+		let output_resource = resource(
+			OUTPUT_SLOT.index(),
+			crate::shader::ResourceKind::StorageBuffer,
+			1,
+			crate::AccessPolicies::WRITE,
+		);
+		let shader = context
+			.create_shader(
+				Some("Metal 4 Specialization Probe"),
+				crate::shader::Sources::MTL {
+					source,
+					entry_point: "specialized_main",
+				},
+				crate::ShaderTypes::Compute,
+				[output_resource],
+			)
+			.expect("Metal 4 specialization shader creation failed. The most likely cause is invalid Metal test source.");
+		let specialization_map = [crate::pipelines::SpecializationMapEntry::new(0, "u32".to_string(), 73u32)];
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
+				.with_specialization_map(&specialization_map),
+		));
+		let output = context.build_buffer::<u32>(
+			crate::buffer::Builder::new(crate::Uses::Storage)
+				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+		);
+		*context.get_mut_buffer_slice(output) = 0;
+		let descriptor_set = context.create_descriptor_set(Some("Metal 4 Specialization Probe"));
+		context.write(&[crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into())]);
+		let command_buffer = context
+			.queue(queue_handle)
+			.create_command_buffer(Some("Metal 4 Specialization Probe"));
+		let signal = context.create_synchronizer(Some("Metal 4 Specialization Probe"), true);
+		context.queue(queue_handle).execute(
+			Some(FrameRequest {
+				index: 0,
+				synchronizer: signal,
+			}),
+			&[],
+			signal,
+			|execution| {
+				execution.record(command_buffer, |recording| {
+					recording
+						.bind_compute_pipeline(pipeline)
+						.bind_descriptor_sets(&[descriptor_set])
+						.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+				});
+				[]
+			},
+		);
+		context.wait();
+
+		assert_eq!(
+			*context.get_buffer_slice(output),
+			73,
+			"Metal 4 specialization produced the wrong value. The most likely cause is that the specialized function descriptor did not reach the pipeline compiler.",
 		);
 	}
 

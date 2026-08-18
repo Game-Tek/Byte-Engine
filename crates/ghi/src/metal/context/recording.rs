@@ -69,8 +69,10 @@ impl Context {
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
+		let compiler = create_metal4_compiler(device.as_ref(), settings.debug_labels)?;
 		let mut context = Context {
 			device,
+			compiler,
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues,
 			buffers: ResourceCollection::with_capacity(1024),
@@ -107,7 +109,11 @@ impl Context {
 	}
 
 	pub fn create_factory(&self) -> Option<crate::metal::factory::Factory> {
-		Some(crate::metal::factory::Factory::new(self.device.clone(), self.settings))
+		Some(crate::metal::factory::Factory::new(
+			self.device.clone(),
+			self.compiler.clone(),
+			self.settings,
+		))
 	}
 
 	pub(super) fn create_buffer_resource(

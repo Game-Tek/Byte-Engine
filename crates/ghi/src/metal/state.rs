@@ -213,6 +213,18 @@ pub mod queue {
 			self.retain_allocation(allocation);
 		}
 
+		/// Retains a compute pipeline and declares its compiled allocation in this command's residency set.
+		pub(crate) fn retain_compute_pipeline(&self, pipeline: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>) {
+			let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
+			self.retain_allocation(allocation);
+		}
+
+		/// Retains a render pipeline and declares its compiled allocation in this command's residency set.
+		pub(crate) fn retain_render_pipeline(&self, pipeline: Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>) {
+			let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
+			self.retain_allocation(allocation);
+		}
+
 		/// Retains a sampler referenced from a nested argument buffer until GPU completion.
 		pub(crate) fn retain_sampler(&self, sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>) {
 			let sampler = unsafe { Retained::cast_unchecked::<AnyObject>(sampler) };

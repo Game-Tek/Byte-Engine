@@ -243,16 +243,12 @@ impl CommandBufferRecording<'_> {
 		}
 
 		let compute_pipeline_state = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
-			PipelineState::Compute(Some(compute_pipeline_state)) => compute_pipeline_state.clone(),
-			PipelineState::Compute(None) => {
-				panic!(
-					"Metal compute pipeline has no MTLComputePipelineState. The most likely cause is shader creation failed."
-				)
-			}
+			PipelineState::Compute(compute_pipeline_state) => compute_pipeline_state.clone(),
 			_ => panic!(
 				"Cannot dispatch a non-compute Metal pipeline. The most likely cause is that a raster or ray tracing pipeline handle was passed to bind_compute_pipeline."
 			),
 		};
+		self.command_buffer.retain_compute_pipeline(compute_pipeline_state.clone());
 		self.ensure_compute_encoder()
 			.setComputePipelineState(compute_pipeline_state.as_ref());
 		self.encoded_compute_pipeline = Some(pipeline_handle);
@@ -268,10 +264,16 @@ impl CommandBufferRecording<'_> {
 		}
 
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
-		let pipeline_state = pipeline.pipeline.clone();
+		let render_pipeline_state = match &pipeline.pipeline {
+			PipelineState::Raster(render_pipeline_state) => render_pipeline_state.clone(),
+			_ => panic!(
+				"Cannot draw with a non-raster Metal pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
+			),
+		};
 		let depth_stencil_state = pipeline.depth_stencil_state.clone();
 		let face_winding = pipeline.face_winding;
 		let cull_mode = pipeline.cull_mode;
+		self.command_buffer.retain_render_pipeline(render_pipeline_state.clone());
 		let encoder = self
 			.active_render_encoder
 			.as_ref()
@@ -280,18 +282,7 @@ impl CommandBufferRecording<'_> {
 		encoder.setFrontFacingWinding(utils::winding(face_winding));
 		encoder.setCullMode(utils::cull_mode(cull_mode));
 		encoder.setDepthStencilState(depth_stencil_state.as_ref().map(|state| state.as_ref()));
-
-		match &pipeline_state {
-			PipelineState::Raster(Some(render_pipeline_state)) => {
-				encoder.setRenderPipelineState(render_pipeline_state);
-			}
-			PipelineState::Raster(None) => panic!(
-				"Metal raster pipeline has no MTLRenderPipelineState. The most likely cause is shader creation failed or SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
-			),
-			_ => panic!(
-				"Cannot draw with a non-raster Metal pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
-			),
-		}
+		encoder.setRenderPipelineState(render_pipeline_state.as_ref());
 
 		self.encoded_render_pipeline = Some(pipeline_handle);
 	}

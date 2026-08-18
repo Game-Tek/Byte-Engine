@@ -3,41 +3,24 @@
 /// The `Factory` struct provides detached Metal resource creation without owning render context state.
 pub struct Factory {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
+	pub(crate) compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
 	pub settings: crate::device::Features,
 	pub(crate) shaders: Vec<Shader>,
 }
 
 impl Factory {
 	/// Creates a detached Metal factory from a backend device snapshot.
-	pub(crate) fn new(device: Retained<ProtocolObject<dyn mtl::MTLDevice>>, settings: crate::device::Features) -> Self {
+	pub(crate) fn new(
+		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
+		compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
+		settings: crate::device::Features,
+	) -> Self {
 		Self {
 			device,
+			compiler,
 			settings,
 			shaders: Vec::new(),
 		}
-	}
-
-	fn create_metal_function(
-		&self,
-		shader_parameter: &crate::pipelines::ShaderParameter,
-	) -> Option<Retained<ProtocolObject<dyn MTLFunction>>> {
-		let shader = &self.shaders[shader_parameter.handle.0 as usize];
-		let library = shader.metal_library.as_ref()?;
-		let entry_point = shader.metal_entry_point.as_ref()?;
-		let entry_point = NSString::from_str(entry_point);
-
-		let constant_values = MTLFunctionConstantValues::new();
-
-		for specialization_map_entry in shader_parameter.specialization_map {
-			apply_specialization_map_entry(&constant_values, specialization_map_entry);
-		}
-
-		library
-			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
-			.map_err(|error| {
-				eprintln!("Metal shader specialization failed: {}", error.localizedDescription());
-			})
-			.ok()
 	}
 
 	fn build_pipeline_layout(
@@ -172,15 +155,19 @@ impl crate::device::Device for Factory {
 			shader_handles.insert(*shader_parameter.handle, [0; 32]);
 			match shader_parameter.stage {
 				crate::ShaderTypes::Task => {
-					object_function = self.create_metal_function(shader_parameter);
+					object_function = build_metal4_function_descriptor(shader, shader_parameter.specialization_map);
 					object_threadgroup_size = Some(shader.threadgroup_size.unwrap_or(Extent::new(1, 1, 1)));
 				}
-				crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
+				crate::ShaderTypes::Vertex => {
+					vertex_function = build_metal4_function_descriptor(shader, shader_parameter.specialization_map)
+				}
 				crate::ShaderTypes::Mesh => {
-					mesh_function = self.create_metal_function(shader_parameter);
+					mesh_function = build_metal4_function_descriptor(shader, shader_parameter.specialization_map);
 					mesh_threadgroup_size = shader.threadgroup_size;
 				}
-				crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
+				crate::ShaderTypes::Fragment => {
+					fragment_function = build_metal4_function_descriptor(shader, shader_parameter.specialization_map)
+				}
 				_ => {}
 			}
 		}
@@ -194,54 +181,29 @@ impl crate::device::Device for Factory {
 			None
 		};
 
+		let pipeline_name = if cfg!(debug_assertions) && self.settings.debug_labels {
+			builder.name
+		} else {
+			None
+		};
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
-			let descriptor = MTLMeshRenderPipelineDescriptor::new();
-			#[cfg(debug_assertions)]
-			if self.settings.debug_labels {
-				if let Some(name) = builder.name {
-					descriptor.setLabel(Some(&NSString::from_str(name)));
-				}
-			}
-			unsafe {
-				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
-				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
-				descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
-			}
-
-			configure_mesh_render_targets(&descriptor, builder.render_targets.as_ref());
-
-			self.device
-				.newRenderPipelineStateWithMeshDescriptor_options_reflection_error(&descriptor, MTLPipelineOption::None, None)
-				.unwrap_or_else(|error| {
-					panic!(
-						"Metal mesh raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription(),
-					)
-				})
-				.into()
+			compile_metal4_mesh_pipeline(
+				self.compiler.as_ref(),
+				pipeline_name,
+				object_function.as_deref(),
+				mesh_function,
+				fragment_function.as_deref(),
+				builder.render_targets.as_ref(),
+			)
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
-			let descriptor = MTLRenderPipelineDescriptor::new();
-			#[cfg(debug_assertions)]
-			if self.settings.debug_labels {
-				if let Some(name) = builder.name {
-					descriptor.setLabel(Some(&NSString::from_str(name)));
-				}
-			}
-			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
-			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
-			descriptor.setVertexDescriptor(vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()));
-
-			configure_render_targets(&descriptor, builder.render_targets.as_ref());
-
-			self.device
-				.newRenderPipelineStateWithDescriptor_error(&descriptor)
-				.unwrap_or_else(|error| {
-					panic!(
-						"Metal raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription(),
-					)
-				})
-				.into()
+			compile_metal4_render_pipeline(
+				self.compiler.as_ref(),
+				pipeline_name,
+				vertex_function,
+				fragment_function.as_deref(),
+				vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()),
+				builder.render_targets.as_ref(),
+			)
 		} else {
 			let shader_names = builder
 				.shaders
@@ -285,28 +247,16 @@ impl crate::device::Device for Factory {
 				shader.stage == crate::Stages::COMPUTE,
 				"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 			);
-			let function = self.create_metal_function(shader_parameter).expect(
-				"Metal compute pipeline creation requires a Metal shader function. The most likely cause is that this compute shader was created from SPIR-V, which this backend does not translate to MSL.",
+			let function = build_metal4_function_descriptor(shader, shader_parameter.specialization_map).expect(
+				"Metal 4 compute pipeline creation requires a Metal function descriptor. The most likely cause is that the shader has no Metal library or entry point.",
 			);
 
-			let descriptor = MTLComputePipelineDescriptor::new();
-			#[cfg(debug_assertions)]
-			if self.settings.debug_labels {
-				if let Some(name) = builder.name {
-					descriptor.setLabel(Some(&NSString::from_str(name)));
-				}
-			}
-			descriptor.setComputeFunction(Some(&function));
-
-			Some(
-				self.device
-					.newComputePipelineStateWithDescriptor_options_reflection_error(
-						&descriptor,
-						MTLPipelineOption::None,
-						None,
-					)
-					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation."),
-			)
+			let pipeline_name = if cfg!(debug_assertions) && self.settings.debug_labels {
+				builder.name
+			} else {
+				None
+			};
+			compile_metal4_compute_pipeline(self.compiler.as_ref(), pipeline_name, &function)
 		};
 
 		let mut shader_handles = HashMap::default();
@@ -399,11 +349,7 @@ impl crate::device::Device for Factory {
 
 use dispatch2::DispatchData;
 use objc2_foundation::NSString;
-use objc2_metal::{
-	MTLCompareFunction, MTLCompileOptions, MTLComputePipelineDescriptor, MTLDepthStencilDescriptor, MTLDevice, MTLFunction,
-	MTLFunctionConstantValues, MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor,
-	MTLResource as _,
-};
+use objc2_metal::{MTLCompareFunction, MTLCompileOptions, MTLDepthStencilDescriptor, MTLDevice, MTLLibrary, MTLResource as _};
 
 use super::*;
 use crate::metal::utils::parse_threadgroup_size_metadata;

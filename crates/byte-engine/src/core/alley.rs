@@ -4,7 +4,7 @@ pub struct Alley<'scope> {
 }
 
 /// The `AlleyFunction` trait defines work that every lane runs during an [`Alley`] dispatch.
-pub trait AlleyFunction = for<'dispatch> Fn(&ConcreteLane<'dispatch>) + Clone + Send;
+pub trait AlleyFunction = for<'dispatch> Fn(&mut ConcreteLane<'dispatch>) + Clone + Send;
 
 /// The `Lane` trait identifies a logical parallel path through an [`Alley`].
 pub trait Lane {
@@ -15,8 +15,8 @@ pub trait Lane {
 pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
 	state: &'dispatch DispatchState,
-	next_single_runner_section: Cell<u32>,
-	next_broadcast_section: Cell<usize>,
+	next_single_runner_section: u32,
+	next_broadcast_section: usize,
 }
 
 impl<'dispatch> ConcreteLane<'dispatch> {
@@ -24,24 +24,24 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		Self {
 			lane_idx,
 			state,
-			next_single_runner_section: Cell::new(0),
-			next_broadcast_section: Cell::new(0),
+			next_single_runner_section: 0,
+			next_broadcast_section: 0,
 		}
 	}
 
 	/// Runs `f` on the first lane to reach this single-runner section.
 	///
 	/// Every lane must encounter single-runner sections in the same order.
-	pub fn only_one_runs<F>(&self, f: F)
+	pub fn only_one_runs<F>(&mut self, f: F)
 	where
 		F: FnOnce(),
 	{
-		let section = self.next_single_runner_section.get();
+		let section = self.next_single_runner_section;
 		assert!(
 			section < usize::BITS,
 			"Single-runner section limit exceeded. A dispatch supports at most usize::BITS sections."
 		);
-		self.next_single_runner_section.set(section + 1);
+		self.next_single_runner_section = section + 1;
 
 		let claim = 1usize << section;
 		if self.state.claimed.fetch_or(claim, Ordering::Relaxed) & claim == 0 {
@@ -52,13 +52,13 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	/// Returns the value produced by the first lane to reach this broadcast section.
 	///
 	/// Every lane must encounter broadcast sections in the same order and with the same types.
-	pub fn broadcast<T, F>(&self, f: F) -> T
+	pub fn broadcast<T, F>(&mut self, f: F) -> T
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		let section = self.next_broadcast_section.get();
-		self.next_broadcast_section.set(section + 1);
+		let section = self.next_broadcast_section;
+		self.next_broadcast_section += 1;
 
 		self.state
 			.broadcasts
@@ -80,6 +80,11 @@ const BROADCAST_SLOT_COUNT: usize = 32;
 const BROADCAST_SLOT_SIZE: usize = 64;
 const BROADCAST_SLOT_ALIGNMENT: usize = 64;
 
+const BROADCAST_EMPTY: u8 = 0;
+const BROADCAST_WRITING: u8 = 1;
+const BROADCAST_READY: u8 = 2;
+const BROADCAST_POISONED: u8 = 3;
+
 struct DispatchState {
 	claimed: AtomicUsize,
 	broadcasts: [BroadcastSlot; BROADCAST_SLOT_COUNT],
@@ -95,16 +100,16 @@ impl DispatchState {
 }
 
 struct BroadcastSlot {
-	initialized: Once,
-	type_id: OnceLock<TypeId>,
+	state: AtomicU8,
+	type_id: UnsafeCell<MaybeUninit<TypeId>>,
 	storage: UnsafeCell<BroadcastStorage>,
 }
 
 impl BroadcastSlot {
 	fn new() -> Self {
 		Self {
-			initialized: Once::new(),
-			type_id: OnceLock::new(),
+			state: AtomicU8::new(BROADCAST_EMPTY),
+			type_id: UnsafeCell::new(MaybeUninit::uninit()),
 			storage: UnsafeCell::new(BroadcastStorage::new()),
 		}
 	}
@@ -125,30 +130,69 @@ impl BroadcastSlot {
 			"Broadcast value alignment is unsupported. Section {section} requires more than {BROADCAST_SLOT_ALIGNMENT}-byte alignment."
 		);
 
-		self.initialized.call_once(|| {
-			let value = f();
-			// SAFETY: The size and alignment checks above prove that `T` fits in the
-			// slot. `Once` grants this closure exclusive initialization access.
-			unsafe { self.storage.get().cast::<T>().write(value) };
-			self.type_id
-				.set(TypeId::of::<T>())
-				.expect("Broadcast type registration failed. The slot was initialized more than once.");
-		});
+		if self
+			.state
+			.compare_exchange(BROADCAST_EMPTY, BROADCAST_WRITING, Ordering::Relaxed, Ordering::Relaxed)
+			.is_ok()
+		{
+			match catch_unwind(AssertUnwindSafe(f)) {
+				Ok(value) => {
+					// SAFETY: The size and alignment checks above prove that `T` fits in
+					// the slot, and the successful state transition grants exclusive write access.
+					unsafe {
+						self.storage.get().cast::<T>().write(value);
+						self.type_id.get().write(MaybeUninit::new(TypeId::of::<T>()));
+					}
+					self.state.store(BROADCAST_READY, Ordering::Release);
+				}
+				Err(payload) => {
+					self.state.store(BROADCAST_POISONED, Ordering::Release);
+					resume_unwind(payload);
+				}
+			}
+		} else {
+			self.wait_until_readable(section);
+		}
 
+		// SAFETY: A ready state is observed with `Acquire`, so the winning lane's
+		// type and value writes happen before these reads.
+		let stored_type = unsafe { self.type_id.get().read().assume_init() };
 		assert!(
-			self.type_id.get() == Some(&TypeId::of::<T>()),
+			stored_type == TypeId::of::<T>(),
 			"Broadcast type mismatch at section {section}. Every lane must use the same result type for that section."
 		);
 
-		// SAFETY: `Once` establishes that initialization completed, the type ID
-		// matches `T`, and `T: Copy` means reading does not move out of the slot.
+		// SAFETY: The published type matches `T`, and `T: Copy` means reading does
+		// not move the shared value out of the slot.
 		unsafe { self.storage.get().cast::<T>().read() }
+	}
+
+	/// Waits until the winning lane publishes a value or reports an initialization panic.
+	fn wait_until_readable(&self, section: usize) {
+		let mut spins = 0usize;
+		loop {
+			match self.state.load(Ordering::Acquire) {
+				BROADCAST_READY => return,
+				BROADCAST_POISONED => {
+					panic!("Broadcast initialization failed. The lane that claimed section {section} panicked.")
+				}
+				BROADCAST_EMPTY | BROADCAST_WRITING => {
+					if spins < 64 {
+						spin_loop();
+						spins += 1;
+					} else {
+						yield_now();
+					}
+				}
+				state => unreachable!("unknown broadcast state {state}"),
+			}
+		}
 	}
 }
 
-// SAFETY: `Once` serializes writes and publishes them before reads. The slot only
-// accepts `Send + Sync` values, and its storage is not accessed outside that protocol.
-#[allow(unsafe_code, reason = "Once synchronizes access to the slot's UnsafeCell storage.")]
+// SAFETY: The atomic state grants exclusive write access and publishes writes before
+// reads. The slot only accepts `Send + Sync` values and is not accessed outside that protocol.
+#[allow(unsafe_code, reason = "Atomic state synchronizes access to the slot's inline storage.")]
 unsafe impl Sync for BroadcastSlot {}
 
 #[repr(C, align(64))]
@@ -181,7 +225,7 @@ impl<'scope> Alley<'scope> {
 		let state = DispatchState::new();
 		let state = &state;
 		self.threadpool.execute_on_all(move |lane_idx| {
-			f(&ConcreteLane::new(lane_idx, state));
+			f(&mut ConcreteLane::new(lane_idx, state));
 		});
 	}
 
@@ -189,7 +233,7 @@ impl<'scope> Alley<'scope> {
 	pub fn for_each_mut<T, F>(&self, items: &mut [T], f: F)
 	where
 		T: Send,
-		F: for<'dispatch> Fn(&ConcreteLane<'dispatch>, &mut [T]) + Clone + Send,
+		F: for<'dispatch> Fn(&mut ConcreteLane<'dispatch>, &mut [T]) + Clone + Send,
 	{
 		let job_count = self.threadpool.parallelism().min(items.len());
 
@@ -221,7 +265,7 @@ impl<'scope> Alley<'scope> {
 			lane_idx += 1;
 			let f = f.clone();
 			Some(move || {
-				f(&ConcreteLane::new(current_lane_idx, state), chunk);
+				f(&mut ConcreteLane::new(current_lane_idx, state), chunk);
 			})
 		});
 
@@ -232,6 +276,7 @@ impl<'scope> Alley<'scope> {
 #[cfg(test)]
 mod tests {
 	use std::{
+		panic::{catch_unwind, AssertUnwindSafe},
 		sync::atomic::{AtomicUsize, Ordering},
 		thread::scope,
 	};
@@ -313,16 +358,35 @@ mod tests {
 		assert_eq!(initializer_count.load(Ordering::Relaxed), 2);
 		assert_eq!(counter.load(Ordering::Relaxed), 24);
 	}
+
+	#[test]
+	fn broadcast_panic_releases_waiting_lanes() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+			let panic = catch_unwind(AssertUnwindSafe(|| {
+				alley.execute(|lane| {
+					let _: usize = lane.broadcast(|| panic!("expected broadcast panic"));
+				});
+			}));
+			assert!(panic.is_err());
+
+			let completed = AtomicUsize::new(0);
+			alley.execute(|_| {
+				completed.fetch_add(1, Ordering::Relaxed);
+			});
+			assert_eq!(completed.load(Ordering::Relaxed), 8);
+		});
+	}
 }
 
 use std::{
 	any::TypeId,
-	cell::{Cell, UnsafeCell},
+	cell::UnsafeCell,
+	hint::spin_loop,
 	mem::{align_of, size_of, MaybeUninit},
-	sync::{
-		atomic::{AtomicUsize, Ordering},
-		Once, OnceLock,
-	},
+	panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
+	sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+	thread::yield_now,
 };
 
 use crate::core::threadpool::{Scope, ScopedThreadPool};

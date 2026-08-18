@@ -110,9 +110,53 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	}
 }
 
+/// The `SharedLane` struct provides lane-local access to one exclusive partition of shared mutable data.
+pub struct SharedLane<'dispatch, 'values, T> {
+	lane: ConcreteLane<'dispatch>,
+	values: &'values mut [T],
+}
+
+impl<'dispatch, 'values, T> SharedLane<'dispatch, 'values, T> {
+	fn new(lane: ConcreteLane<'dispatch>, values: &'values mut [T]) -> Self {
+		Self { lane, values }
+	}
+
+	/// Mutates this lane's partition and returns all lane results after publication.
+	///
+	/// Every lane must encounter this collective in the same order and with the same result type.
+	pub fn each_shared_mut<R, F>(&mut self, f: F) -> &'dispatch [R]
+	where
+		R: Copy + Send + Sync + 'static,
+		F: FnOnce(&mut [T]) -> R,
+	{
+		let values = &mut *self.values;
+		self.lane.each(move || f(values))
+	}
+}
+
+impl<'dispatch, T> Deref for SharedLane<'dispatch, '_, T> {
+	type Target = ConcreteLane<'dispatch>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.lane
+	}
+}
+
+impl<'dispatch, T> DerefMut for SharedLane<'dispatch, '_, T> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.lane
+	}
+}
+
 impl Lane for ConcreteLane<'_> {
 	fn idx(&self) -> usize {
 		self.lane_idx
+	}
+}
+
+impl<T> Lane for SharedLane<'_, '_, T> {
+	fn idx(&self) -> usize {
+		self.lane.idx()
 	}
 }
 
@@ -121,8 +165,12 @@ fn shared_partition<T>(values: &[T], lane_idx: usize, lane_count: usize) -> &[T]
 	let minimum_len = values.len() / lane_count;
 	let larger_partition_count = values.len() % lane_count;
 	let start = lane_idx * minimum_len + lane_idx.min(larger_partition_count);
-	let len = minimum_len + usize::from(lane_idx < larger_partition_count);
+	let len = balanced_partition_len(values.len(), lane_idx, lane_count);
 	&values[start..start + len]
+}
+
+fn balanced_partition_len(value_count: usize, lane_idx: usize, lane_count: usize) -> usize {
+	value_count / lane_count + usize::from(lane_idx < value_count % lane_count)
 }
 
 const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
@@ -415,6 +463,45 @@ impl<'scope> Alley<'scope> {
 		});
 	}
 
+	/// Executes every lane with exclusive access to a balanced mutable partition.
+	pub fn execute_shared_mut<T, F>(&self, values: &mut [T], f: F)
+	where
+		T: Send,
+		F: for<'dispatch, 'values> Fn(&mut SharedLane<'dispatch, 'values, T>) + Clone + Send,
+	{
+		let lane_count = self.threadpool.parallelism();
+		let state = DispatchState::new(lane_count);
+		let state = &state;
+		let value_count = values.len();
+		let mut remaining = Some(values);
+		let mut lane_idx = 0;
+
+		// Build one job per lane so every lane reaches collectives, including lanes
+		// whose partition is empty when there are fewer values than lanes.
+		let jobs = std::iter::from_fn(move || {
+			if lane_idx == lane_count {
+				return None;
+			}
+
+			let values = remaining
+				.take()
+				.expect("Shared Alley partitioning failed. The previous lane consumed the remaining slice.");
+			let partition_len = balanced_partition_len(value_count, lane_idx, lane_count);
+			let (partition, rest) = values.split_at_mut(partition_len);
+			remaining = Some(rest);
+
+			let current_lane_idx = lane_idx;
+			lane_idx += 1;
+			let f = f.clone();
+			Some(move || {
+				let lane = ConcreteLane::new(current_lane_idx, state);
+				f(&mut SharedLane::new(lane, partition));
+			})
+		});
+
+		self.threadpool.execute_many(jobs);
+	}
+
 	/// Distributes `items` evenly and gives each lane exclusive access to one partition.
 	pub fn for_each_mut<T, F>(&self, items: &mut [T], f: F)
 	where
@@ -705,6 +792,33 @@ mod tests {
 			});
 		});
 	}
+
+	#[test]
+	fn each_shared_mut() {
+		let value = AtomicUsize::new(0);
+		let mut values = vec![0; 16];
+
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+
+			alley.execute_shared_mut(&mut values, |lane| {
+				let lane_idx = lane.idx();
+				let all = lane.each_shared_mut(|partition| {
+					for (offset, value) in partition.iter_mut().enumerate() {
+						*value = lane_idx * 2 + offset + 1;
+					}
+					partition.iter().sum::<usize>()
+				});
+
+				lane.only_one_runs(|| {
+					value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+				});
+			});
+		});
+
+		assert_eq!(values, (1..=16).collect::<Vec<_>>());
+		assert_eq!(value.load(Ordering::Relaxed), 136);
+	}
 }
 
 use std::{
@@ -712,6 +826,7 @@ use std::{
 	cell::UnsafeCell,
 	hint::spin_loop,
 	mem::{align_of, size_of, MaybeUninit},
+	ops::{Deref, DerefMut},
 	panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
 	sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 	thread::yield_now,

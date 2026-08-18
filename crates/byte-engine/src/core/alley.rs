@@ -87,6 +87,19 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		collective.each(lane_idx, lane_count, section, f)
 	}
 
+	/// Runs `f` on each lane's balanced partition and returns all lane results.
+	///
+	/// Every lane must provide the same shared slice and encounter this collective in the same order.
+	pub fn each_shared<T, R, F>(&mut self, values: &[T], f: F) -> &'dispatch [R]
+	where
+		T: Sync,
+		R: Copy + Send + Sync + 'static,
+		F: FnOnce(&[T]) -> R,
+	{
+		let partition = shared_partition(values, self.lane_idx, self.state.lane_count);
+		self.each(move || f(partition))
+	}
+
 	fn next_collective(&mut self) -> (usize, &'dispatch CollectiveSlot) {
 		let section = self.next_collective_section;
 		self.next_collective_section += 1;
@@ -101,6 +114,15 @@ impl Lane for ConcreteLane<'_> {
 	fn idx(&self) -> usize {
 		self.lane_idx
 	}
+}
+
+/// Returns the balanced read-only partition assigned to one lane.
+fn shared_partition<T>(values: &[T], lane_idx: usize, lane_count: usize) -> &[T] {
+	let minimum_len = values.len() / lane_count;
+	let larger_partition_count = values.len() % lane_count;
+	let start = lane_idx * minimum_len + lane_idx.min(larger_partition_count);
+	let len = minimum_len + usize::from(lane_idx < larger_partition_count);
+	&values[start..start + len]
 }
 
 const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
@@ -644,6 +666,43 @@ mod tests {
 				completed.fetch_add(1, Ordering::Relaxed);
 			});
 			assert_eq!(completed.load(Ordering::Relaxed), 8);
+		});
+	}
+
+	#[test]
+	fn each_shared() {
+		let value = AtomicUsize::new(0);
+
+		let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+
+			alley.execute(|lane| {
+				let all = lane.each_shared(&values, |partition| partition.iter().sum());
+
+				lane.only_one_runs(|| {
+					value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+				});
+			});
+		});
+
+		assert_eq!(value.load(Ordering::Relaxed), 136);
+	}
+
+	#[test]
+	fn each_shared_balances_uneven_and_empty_partitions() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 5);
+			let values = [1usize, 2, 3];
+
+			alley.execute(|lane| {
+				let lengths = lane.each_shared(&values, <[usize]>::len);
+				let sums = lane.each_shared(&values, |partition| partition.iter().sum::<usize>());
+
+				assert_eq!(lengths, &[1, 1, 1, 0, 0]);
+				assert_eq!(sums, &[1, 2, 3, 0, 0]);
+			});
 		});
 	}
 }

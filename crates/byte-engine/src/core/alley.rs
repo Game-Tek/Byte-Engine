@@ -16,7 +16,7 @@ pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
 	state: &'dispatch DispatchState,
 	next_limited_parallelism_section: usize,
-	next_broadcast_section: usize,
+	next_collective_section: usize,
 }
 
 impl<'dispatch> ConcreteLane<'dispatch> {
@@ -25,7 +25,7 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 			lane_idx,
 			state,
 			next_limited_parallelism_section: 0,
-			next_broadcast_section: 0,
+			next_collective_section: 0,
 		}
 	}
 
@@ -69,16 +69,31 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		let section = self.next_broadcast_section;
-		self.next_broadcast_section += 1;
+		let (section, collective) = self.next_collective();
+		collective.broadcast(section, f)
+	}
 
-		self.state
-			.broadcasts
-			.get(section)
-			.unwrap_or_else(|| {
-				panic!("Broadcast capacity exceeded. A dispatch supports at most {BROADCAST_SLOT_COUNT} broadcast sections.")
-			})
-			.get_or_init(section, f)
+	/// Runs `f` on every lane and returns all lane results after every value is published.
+	///
+	/// Every lane must encounter `each` sections in the same order and with the same types.
+	pub fn each<T, F>(&mut self, f: F) -> &'dispatch [T]
+	where
+		T: Copy + Send + Sync + 'static,
+		F: FnOnce() -> T,
+	{
+		let lane_idx = self.lane_idx;
+		let lane_count = self.state.lane_count;
+		let (section, collective) = self.next_collective();
+		collective.each(lane_idx, lane_count, section, f)
+	}
+
+	fn next_collective(&mut self) -> (usize, &'dispatch CollectiveSlot) {
+		let section = self.next_collective_section;
+		self.next_collective_section += 1;
+		let collective = self.state.collectives.get(section).unwrap_or_else(|| {
+			panic!("Collective capacity exceeded. A dispatch supports at most {COLLECTIVE_SECTION_COUNT} collective sections.")
+		});
+		(section, collective)
 	}
 }
 
@@ -89,135 +104,271 @@ impl Lane for ConcreteLane<'_> {
 }
 
 const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
-const BROADCAST_SLOT_COUNT: usize = 32;
-const BROADCAST_SLOT_SIZE: usize = 64;
-const BROADCAST_SLOT_ALIGNMENT: usize = 64;
+const COLLECTIVE_SECTION_COUNT: usize = 32;
+const COLLECTIVE_LANE_CAPACITY: usize = 64;
+const COLLECTIVE_VALUE_SIZE: usize = 64;
+const COLLECTIVE_VALUE_ALIGNMENT: usize = 64;
 
-const BROADCAST_EMPTY: u8 = 0;
-const BROADCAST_WRITING: u8 = 1;
-const BROADCAST_READY: u8 = 2;
-const BROADCAST_POISONED: u8 = 3;
+const COLLECTIVE_KIND_UNSET: u8 = 0;
+const COLLECTIVE_KIND_BROADCAST: u8 = 1;
+const COLLECTIVE_KIND_EACH: u8 = 2;
+
+const COLLECTIVE_EMPTY: u8 = 0;
+const COLLECTIVE_REGISTERING: u8 = 1;
+const COLLECTIVE_ACTIVE: u8 = 2;
+const COLLECTIVE_READY: u8 = 3;
+const COLLECTIVE_POISONED: u8 = 4;
 
 struct DispatchState {
+	lane_count: usize,
 	limited_parallelism: [AtomicUsize; LIMITED_PARALLELISM_SECTION_COUNT],
-	broadcasts: [BroadcastSlot; BROADCAST_SLOT_COUNT],
+	collectives: [CollectiveSlot; COLLECTIVE_SECTION_COUNT],
 }
 
 impl DispatchState {
-	fn new() -> Self {
+	fn new(lane_count: usize) -> Self {
 		Self {
+			lane_count,
 			limited_parallelism: std::array::from_fn(|_| AtomicUsize::new(0)),
-			broadcasts: std::array::from_fn(|_| BroadcastSlot::new()),
+			collectives: std::array::from_fn(|_| CollectiveSlot::new()),
 		}
 	}
 }
 
-struct BroadcastSlot {
+struct CollectiveSlot {
+	kind: AtomicU8,
 	state: AtomicU8,
+	producer_claimed: AtomicBool,
+	published: AtomicUsize,
 	type_id: UnsafeCell<MaybeUninit<TypeId>>,
-	storage: UnsafeCell<BroadcastStorage>,
+	storage: UnsafeCell<CollectiveStorage>,
 }
 
-impl BroadcastSlot {
+impl CollectiveSlot {
 	fn new() -> Self {
 		Self {
-			state: AtomicU8::new(BROADCAST_EMPTY),
+			kind: AtomicU8::new(COLLECTIVE_KIND_UNSET),
+			state: AtomicU8::new(COLLECTIVE_EMPTY),
+			producer_claimed: AtomicBool::new(false),
+			published: AtomicUsize::new(0),
 			type_id: UnsafeCell::new(MaybeUninit::uninit()),
-			storage: UnsafeCell::new(BroadcastStorage::new()),
+			storage: UnsafeCell::new(CollectiveStorage::new()),
 		}
 	}
 
-	/// Initializes the slot once and returns a copy of its shared value.
-	#[allow(unsafe_code, reason = "Broadcast values use synchronized, fixed-size inline storage.")]
-	fn get_or_init<T, F>(&self, section: usize, f: F) -> T
+	/// Publishes one elected lane value and returns it to every lane.
+	#[allow(
+		unsafe_code,
+		reason = "Broadcast reads a synchronized value from inline collective storage."
+	)]
+	fn broadcast<T, F>(&self, section: usize, f: F) -> T
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
 	{
-		assert!(
-			size_of::<T>() <= BROADCAST_SLOT_SIZE,
-			"Broadcast value is too large. Section {section} exceeds the {BROADCAST_SLOT_SIZE}-byte slot capacity."
-		);
-		assert!(
-			align_of::<T>() <= BROADCAST_SLOT_ALIGNMENT,
-			"Broadcast value alignment is unsupported. Section {section} requires more than {BROADCAST_SLOT_ALIGNMENT}-byte alignment."
-		);
+		self.validate_value::<T>(section);
+		self.register::<T>(COLLECTIVE_KIND_BROADCAST, section);
+
+		if self
+			.producer_claimed
+			.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+			.is_ok()
+		{
+			let value = self.compute(f);
+			// SAFETY: Registration validates the type layout, and producer election
+			// grants this lane exclusive write access to element zero.
+			unsafe { self.value_ptr::<T>(0).write(value) };
+			self.published.store(1, Ordering::Release);
+			self.publish_ready(section);
+		} else {
+			self.wait_until_ready(section);
+		}
+
+		// SAFETY: Ready was published after element zero was initialized, and `T: Copy`.
+		unsafe { self.value_ptr::<T>(0).read() }
+	}
+
+	/// Publishes one value per lane and returns the completed lane-ordered result slice.
+	#[allow(unsafe_code, reason = "Each reads synchronized lane values from inline collective storage.")]
+	fn each<T, F>(&self, lane_idx: usize, lane_count: usize, section: usize, f: F) -> &[T]
+	where
+		T: Copy + Send + Sync + 'static,
+		F: FnOnce() -> T,
+	{
+		if lane_count > COLLECTIVE_LANE_CAPACITY {
+			self.poison();
+			panic!(
+				"Collective lane capacity exceeded. Section {section} has {lane_count} lanes but supports at most {COLLECTIVE_LANE_CAPACITY}."
+			);
+		}
+		self.validate_value::<T>(section);
+		self.register::<T>(COLLECTIVE_KIND_EACH, section);
+
+		let value = self.compute(f);
+		// SAFETY: Each lane writes to its unique index after layout validation.
+		unsafe { self.value_ptr::<T>(lane_idx).write(value) };
+		let published = self.published.fetch_add(1, Ordering::AcqRel) + 1;
+		if published == lane_count {
+			self.publish_ready(section);
+		} else {
+			self.wait_until_ready(section);
+		}
+
+		// SAFETY: Ready was published after all lane-indexed values were initialized.
+		unsafe { std::slice::from_raw_parts(self.value_ptr::<T>(0), lane_count) }
+	}
+
+	fn compute<T, F>(&self, f: F) -> T
+	where
+		F: FnOnce() -> T,
+	{
+		match catch_unwind(AssertUnwindSafe(f)) {
+			Ok(value) => value,
+			Err(payload) => {
+				self.poison();
+				resume_unwind(payload);
+			}
+		}
+	}
+
+	fn validate_value<T>(&self, section: usize) {
+		if size_of::<T>() > COLLECTIVE_VALUE_SIZE {
+			self.poison();
+			panic!("Collective value is too large. Section {section} exceeds the {COLLECTIVE_VALUE_SIZE}-byte value capacity.");
+		}
+		if align_of::<T>() > COLLECTIVE_VALUE_ALIGNMENT {
+			self.poison();
+			panic!(
+				"Collective value alignment is unsupported. Section {section} requires more than {COLLECTIVE_VALUE_ALIGNMENT}-byte alignment."
+			);
+		}
+	}
+
+	/// Registers and validates the operation kind and value type shared by every lane.
+	#[allow(unsafe_code, reason = "Collective type metadata is published through atomic state.")]
+	fn register<T>(&self, kind: u8, section: usize)
+	where
+		T: 'static,
+	{
+		match self
+			.kind
+			.compare_exchange(COLLECTIVE_KIND_UNSET, kind, Ordering::Relaxed, Ordering::Relaxed)
+		{
+			Ok(_) => {}
+			Err(registered) if registered == kind => {}
+			Err(_) => {
+				self.poison();
+				panic!(
+					"Collective operation mismatch at section {section}. Every lane must call broadcast or each consistently."
+				);
+			}
+		}
 
 		if self
 			.state
-			.compare_exchange(BROADCAST_EMPTY, BROADCAST_WRITING, Ordering::Relaxed, Ordering::Relaxed)
+			.compare_exchange(COLLECTIVE_EMPTY, COLLECTIVE_REGISTERING, Ordering::Relaxed, Ordering::Relaxed)
 			.is_ok()
 		{
-			match catch_unwind(AssertUnwindSafe(f)) {
-				Ok(value) => {
-					// SAFETY: The size and alignment checks above prove that `T` fits in
-					// the slot, and the successful state transition grants exclusive write access.
-					unsafe {
-						self.storage.get().cast::<T>().write(value);
-						self.type_id.get().write(MaybeUninit::new(TypeId::of::<T>()));
-					}
-					self.state.store(BROADCAST_READY, Ordering::Release);
-				}
-				Err(payload) => {
-					self.state.store(BROADCAST_POISONED, Ordering::Release);
-					resume_unwind(payload);
-				}
+			// SAFETY: The successful state transition grants exclusive type write access.
+			unsafe { self.type_id.get().write(MaybeUninit::new(TypeId::of::<T>())) };
+			if self
+				.state
+				.compare_exchange(
+					COLLECTIVE_REGISTERING,
+					COLLECTIVE_ACTIVE,
+					Ordering::Release,
+					Ordering::Acquire,
+				)
+				.is_err()
+			{
+				self.panic_poisoned(section);
 			}
 		} else {
-			self.wait_until_readable(section);
+			self.wait_until_registered(section);
 		}
 
-		// SAFETY: A ready state is observed with `Acquire`, so the winning lane's
-		// type and value writes happen before these reads.
+		// SAFETY: Active or ready was observed with `Acquire` after type publication.
 		let stored_type = unsafe { self.type_id.get().read().assume_init() };
-		assert!(
-			stored_type == TypeId::of::<T>(),
-			"Broadcast type mismatch at section {section}. Every lane must use the same result type for that section."
-		);
-
-		// SAFETY: The published type matches `T`, and `T: Copy` means reading does
-		// not move the shared value out of the slot.
-		unsafe { self.storage.get().cast::<T>().read() }
+		if stored_type != TypeId::of::<T>() {
+			self.poison();
+			panic!("Collective type mismatch at section {section}. Every lane must use the same result type for that section.");
+		}
 	}
 
-	/// Waits until the winning lane publishes a value or reports an initialization panic.
-	fn wait_until_readable(&self, section: usize) {
+	fn publish_ready(&self, section: usize) {
+		match self
+			.state
+			.compare_exchange(COLLECTIVE_ACTIVE, COLLECTIVE_READY, Ordering::Release, Ordering::Acquire)
+		{
+			Ok(_) | Err(COLLECTIVE_READY) => {}
+			Err(COLLECTIVE_POISONED) => self.panic_poisoned(section),
+			Err(state) => unreachable!("cannot publish collective from state {state}"),
+		}
+	}
+
+	fn wait_until_registered(&self, section: usize) {
 		let mut spins = 0usize;
 		loop {
 			match self.state.load(Ordering::Acquire) {
-				BROADCAST_READY => return,
-				BROADCAST_POISONED => {
-					panic!("Broadcast initialization failed. The lane that claimed section {section} panicked.")
-				}
-				BROADCAST_EMPTY | BROADCAST_WRITING => {
-					if spins < 64 {
-						spin_loop();
-						spins += 1;
-					} else {
-						yield_now();
-					}
-				}
-				state => unreachable!("unknown broadcast state {state}"),
+				COLLECTIVE_ACTIVE | COLLECTIVE_READY => return,
+				COLLECTIVE_POISONED => self.panic_poisoned(section),
+				COLLECTIVE_EMPTY | COLLECTIVE_REGISTERING => wait_briefly(&mut spins),
+				state => unreachable!("unknown collective state {state}"),
 			}
+		}
+	}
+
+	fn wait_until_ready(&self, section: usize) {
+		let mut spins = 0usize;
+		loop {
+			match self.state.load(Ordering::Acquire) {
+				COLLECTIVE_READY => return,
+				COLLECTIVE_POISONED => self.panic_poisoned(section),
+				COLLECTIVE_EMPTY | COLLECTIVE_REGISTERING | COLLECTIVE_ACTIVE => wait_briefly(&mut spins),
+				state => unreachable!("unknown collective state {state}"),
+			}
+		}
+	}
+
+	fn poison(&self) {
+		self.state.store(COLLECTIVE_POISONED, Ordering::Release);
+	}
+
+	fn panic_poisoned(&self, section: usize) -> ! {
+		panic!("Collective failed. A lane in section {section} panicked or used a different operation or type.")
+	}
+
+	#[allow(unsafe_code, reason = "Collective values occupy lane-indexed offsets in inline storage.")]
+	unsafe fn value_ptr<T>(&self, lane_idx: usize) -> *mut T {
+		// SAFETY: Callers validate lane capacity, value size, and alignment.
+		unsafe { self.storage.get().cast::<u8>().add(lane_idx * size_of::<T>()).cast::<T>() }
+	}
+}
+
+// SAFETY: Producers write exclusive elements, then publish with release ordering.
+// Readers wait for an acquire observation of ready before reading inline storage.
+#[allow(unsafe_code, reason = "Atomic publication synchronizes CollectiveSlot inline storage.")]
+unsafe impl Sync for CollectiveSlot {}
+
+#[repr(C, align(64))]
+struct CollectiveStorage {
+	bytes: [MaybeUninit<u8>; COLLECTIVE_LANE_CAPACITY * COLLECTIVE_VALUE_SIZE],
+}
+
+impl CollectiveStorage {
+	fn new() -> Self {
+		Self {
+			bytes: [MaybeUninit::uninit(); COLLECTIVE_LANE_CAPACITY * COLLECTIVE_VALUE_SIZE],
 		}
 	}
 }
 
-// SAFETY: The atomic state grants exclusive write access and publishes writes before
-// reads. The slot only accepts `Send + Sync` values and is not accessed outside that protocol.
-#[allow(unsafe_code, reason = "Atomic state synchronizes access to the slot's inline storage.")]
-unsafe impl Sync for BroadcastSlot {}
-
-#[repr(C, align(64))]
-struct BroadcastStorage {
-	bytes: [MaybeUninit<u8>; BROADCAST_SLOT_SIZE],
-}
-
-impl BroadcastStorage {
-	fn new() -> Self {
-		Self {
-			bytes: [MaybeUninit::uninit(); BROADCAST_SLOT_SIZE],
-		}
+fn wait_briefly(spins: &mut usize) {
+	if *spins < 64 {
+		spin_loop();
+		*spins += 1;
+	} else {
+		yield_now();
 	}
 }
 
@@ -235,7 +386,7 @@ impl<'scope> Alley<'scope> {
 	}
 
 	pub fn execute(&self, f: impl AlleyFunction) {
-		let state = DispatchState::new();
+		let state = DispatchState::new(self.threadpool.parallelism());
 		let state = &state;
 		self.threadpool.execute_on_all(move |lane_idx| {
 			f(&mut ConcreteLane::new(lane_idx, state));
@@ -256,7 +407,7 @@ impl<'scope> Alley<'scope> {
 
 		let minimum_chunk_len = items.len() / job_count;
 		let larger_chunk_count = items.len() % job_count;
-		let state = DispatchState::new();
+		let state = DispatchState::new(job_count);
 		let state = &state;
 		let mut remaining = Some(items);
 		let mut lane_idx = 0;
@@ -416,6 +567,85 @@ mod tests {
 			assert_eq!(completed.load(Ordering::Relaxed), 8);
 		});
 	}
+
+	#[test]
+	fn each() {
+		let counter = AtomicUsize::new(0);
+		let initializer_count = AtomicUsize::new(0);
+
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+
+			alley.execute(|lane| {
+				let lane_idx = lane.idx();
+				let all = lane.each(|| {
+					initializer_count.fetch_add(1, Ordering::Relaxed);
+					1usize
+				});
+				let lane_indices = lane.each(|| lane_idx);
+
+				assert_eq!(lane_indices, &[0, 1, 2, 3, 4, 5, 6, 7]);
+				counter.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+			});
+		});
+
+		assert_eq!(initializer_count.load(Ordering::Relaxed), 8);
+		assert_eq!(counter.load(Ordering::Relaxed), 64);
+	}
+
+	#[test]
+	fn broadcast_and_each_share_collective_sections() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+
+			alley.execute(|lane| {
+				let lane_idx = lane.idx();
+				let first = lane.broadcast(|| 7u32);
+				let all = lane.each(|| lane_idx);
+				let second = lane.broadcast(|| 11u16);
+
+				assert_eq!(first, 7);
+				assert_eq!(all, &[0, 1, 2, 3, 4, 5, 6, 7]);
+				assert_eq!(second, 11);
+			});
+		});
+	}
+
+	#[test]
+	fn collective_operation_mismatch_releases_waiting_lanes() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+			let panic = catch_unwind(AssertUnwindSafe(|| {
+				alley.execute(|lane| {
+					if lane.idx() == 0 {
+						let _ = lane.broadcast(|| 1usize);
+					} else {
+						let _ = lane.each(|| 1usize);
+					}
+				});
+			}));
+			assert!(panic.is_err());
+		});
+	}
+
+	#[test]
+	fn each_panic_releases_waiting_lanes() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+			let panic = catch_unwind(AssertUnwindSafe(|| {
+				alley.execute(|lane| {
+					let _: &[usize] = lane.each(|| panic!("expected each panic"));
+				});
+			}));
+			assert!(panic.is_err());
+
+			let completed = AtomicUsize::new(0);
+			alley.execute(|_| {
+				completed.fetch_add(1, Ordering::Relaxed);
+			});
+			assert_eq!(completed.load(Ordering::Relaxed), 8);
+		});
+	}
 }
 
 use std::{
@@ -424,7 +654,7 @@ use std::{
 	hint::spin_loop,
 	mem::{align_of, size_of, MaybeUninit},
 	panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
-	sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+	sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 	thread::yield_now,
 };
 

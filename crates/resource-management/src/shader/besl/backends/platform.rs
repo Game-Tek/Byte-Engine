@@ -1,7 +1,9 @@
+#[cfg(target_os = "windows")]
+use crate::shader::besl::backends::hlsl::HLSLShaderGenerator;
 #[cfg(target_os = "linux")]
 use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
-#[cfg(target_os = "windows")]
-use crate::shader::besl::{backends::hlsl::HLSLShaderGenerator, evaluation::ProgramEvaluation};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::shader::besl::evaluation::ProgramEvaluation;
 use crate::shader::generator::{CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator};
 #[cfg(target_vendor = "apple")]
 use crate::shader::msl_shader_compiler::MSLShaderCompiler;
@@ -112,12 +114,12 @@ impl Generator {
 	pub async fn generate(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		program: &besl::NodeReference,
 	) -> Result<GeneratedCompiledPlatformShader, String> {
 		self.generate_for_language(
 			PlatformShaderLanguage::current_platform(),
 			shader_generation_settings,
-			main_function_node,
+			program,
 		)
 		.await
 	}
@@ -127,15 +129,28 @@ impl Generator {
 		&mut self,
 		language: PlatformShaderLanguage,
 		shader_generation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		program: &besl::NodeReference,
 	) -> Result<GeneratedCompiledPlatformShader, String> {
 		match language {
 			#[cfg(target_os = "linux")]
 			PlatformShaderLanguage::Glsl => {
-				let (binary, bindings, extent) = self
+				let main = program.get_main().ok_or_else(missing_main_error)?;
+				let (binary, _, extent) = self
 					.spirv_shader_generator
-					.generate(shader_generation_settings, main_function_node)?
+					.generate(shader_generation_settings, &main)?
 					.into_parts();
+				let bindings = ProgramEvaluation::from_program(program)?
+					.into_bindings()
+					.into_iter()
+					.map(|binding| CompiledShaderBinding {
+						slot: binding.slot,
+						kind: binding.kind,
+						count: binding.count,
+						buffer_stride: binding.buffer_stride,
+						read: binding.read,
+						write: binding.write,
+					})
+					.collect();
 
 				Ok(GeneratedCompiledPlatformShader {
 					binary,
@@ -148,7 +163,7 @@ impl Generator {
 			PlatformShaderLanguage::Msl => {
 				let (binary, bindings, extent) = self
 					.msl_shader_compiler
-					.generate(shader_generation_settings, main_function_node)
+					.generate(shader_generation_settings, program)
 					.await?
 					.into_parts();
 
@@ -161,11 +176,12 @@ impl Generator {
 			}
 			#[cfg(target_os = "windows")]
 			PlatformShaderLanguage::Hlsl => {
-				let source = self.hlsl_shader_generator.generate(shader_generation_settings, main_function_node).map_err(|_| {
+				let main = program.get_main().ok_or_else(missing_main_error)?;
+				let source = self.hlsl_shader_generator.generate(shader_generation_settings, &main).map_err(|_| {
 					"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
 						.to_string()
 				})?;
-				let evaluation = ProgramEvaluation::from_main(main_function_node)?;
+				let evaluation = ProgramEvaluation::from_program(program)?;
 				Ok(GeneratedCompiledPlatformShader {
 					binary: source.into_bytes().into_boxed_slice(),
 					bindings: evaluation
@@ -197,6 +213,11 @@ impl Generator {
 	}
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn missing_main_error() -> String {
+	"Main function not found. The program description likely does not define a `main` function.".to_string()
+}
+
 #[cfg(test)]
 mod tests {
 	use super::Generator;
@@ -218,11 +239,11 @@ mod tests {
 	#[cfg(target_os = "linux")]
 	#[compio::test]
 	async fn generate_uses_current_platform_compiler() {
-		let main = generator::tests::fragment_shader();
+		let program = generator::tests::fragment_program();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
 		let generated = generator
-			.generate(&settings, &main)
+			.generate(&settings, &program)
 			.await
 			.expect("Failed to generate compiled platform shader");
 
@@ -237,11 +258,11 @@ mod tests {
 	#[cfg(target_os = "windows")]
 	#[compio::test]
 	async fn generate_uses_hlsl_on_windows() {
-		let main = generator::tests::fragment_shader();
+		let program = generator::tests::fragment_program();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
 		let generated = generator
-			.generate(&settings, &main)
+			.generate(&settings, &program)
 			.await
 			.expect("Failed to generate HLSL shader");
 

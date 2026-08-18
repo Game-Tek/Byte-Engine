@@ -581,17 +581,30 @@ pub(crate) fn allocate_argument_binding_slots(descriptor: crate::shader::ShaderR
 	}
 }
 
-/// Builds one fixed Metal argument-buffer layout from a pipeline's flat resource union.
+/// Returns whether a native layout matches a stage's canonical packed resource interface.
+pub(crate) fn stage_argument_interface_matches(
+	layout: &StageArgumentLayout,
+	resources: &[crate::shader::ShaderResourceDescriptor],
+) -> bool {
+	layout.bindings.len() == resources.len()
+		&& layout
+			.bindings
+			.iter()
+			.zip(resources)
+			.all(|(binding, descriptor)| binding.descriptor == *descriptor)
+}
+
+/// Builds one fixed-ID Metal argument-buffer layout matching one shader stage's packed resource struct.
 pub(crate) fn build_stage_argument_layout(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	stage: crate::Stages,
-	resources: &[PipelineResourceDescriptor],
+	resources: &[crate::shader::ShaderResourceDescriptor],
 ) -> StageArgumentLayout {
 	let mut metal_argument_descriptors = Vec::new();
 	let bindings = resources
 		.iter()
-		.map(|pipeline_resource| {
-			let resource = pipeline_resource.descriptor;
+		.copied()
+		.map(|resource| {
 			let access = if resource.access().intersects(crate::AccessPolicies::WRITE) {
 				mtl::MTLBindingAccess::ReadWrite
 			} else {
@@ -642,19 +655,27 @@ pub(crate) fn build_stage_argument_layout(
 	}
 }
 
-/// Builds the private Metal pipeline layout by merging the fixed resource interfaces of every shader stage.
+/// Builds the private Metal pipeline layout from the packed resource interface of each shader stage.
 pub(crate) fn build_pipeline_layout(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	stage_resources: &[(crate::Stages, Vec<crate::shader::ShaderResourceDescriptor>)],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 ) -> PipelineLayout {
 	let mut resources = Vec::<PipelineResourceDescriptor>::new();
-	let mut resource_stages = crate::Stages::NONE;
+	let mut stage_argument_layouts = Vec::with_capacity(stage_resources.len());
 
 	for (stage, stage_descriptors) in stage_resources {
 		let stage_descriptors = canonicalize_stage_resources(stage_descriptors);
 		if !stage_descriptors.is_empty() {
-			resource_stages |= *stage;
+			if let Some(existing) = stage_argument_layouts
+				.iter_mut()
+				.find(|layout| stage_argument_interface_matches(layout, &stage_descriptors))
+			{
+				// Identical stage structs can share one immutable argument buffer at index 16.
+				existing.stage |= *stage;
+			} else {
+				stage_argument_layouts.push(build_stage_argument_layout(device, *stage, &stage_descriptors));
+			}
 		}
 
 		for descriptor in stage_descriptors {
@@ -692,12 +713,6 @@ pub(crate) fn build_pipeline_layout(
 	}
 
 	resources.sort_by_key(|resource| resource.descriptor.slot());
-	// Fixed IDs let all stages share one argument buffer containing the complete pipeline resource union.
-	let stage_argument_layouts = if resources.is_empty() {
-		Vec::new()
-	} else {
-		vec![build_stage_argument_layout(device, resource_stages, &resources)]
-	};
 	let push_constant_size = push_constant_ranges
 		.iter()
 		.map(|range| range.offset as usize + range.size as usize)

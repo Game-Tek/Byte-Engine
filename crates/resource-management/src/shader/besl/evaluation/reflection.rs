@@ -358,12 +358,18 @@ pub struct ProgramEvaluation {
 }
 
 impl ProgramEvaluation {
+	/// Reflects every declared binding while evaluating code behavior from reachable `main`.
 	pub fn from_program(program: &besl::NodeReference) -> Result<Self, String> {
 		let main = program.get_main().ok_or_else(|| {
 			"Main function not found. The program description likely does not define a `main` function.".to_string()
 		})?;
 
-		Self::from_main(&main)
+		besl::optimization::optimize(&main);
+
+		Ok(Self {
+			bindings: collect_bindings(program)?,
+			opacity: evaluate_opacity(&main),
+		})
 	}
 
 	pub fn from_main(main_function_node: &besl::NodeReference) -> Result<Self, String> {

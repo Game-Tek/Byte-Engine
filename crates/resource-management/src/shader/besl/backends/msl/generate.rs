@@ -22,7 +22,29 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
 	}
 
-	/// Generates an MSL shader using `allocator` for temporary graph and classification storage.
+	/// Generates an MSL shader whose resource ABI contains every binding declared by `program`.
+	pub fn generate_program(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+	) -> Result<String, ()> {
+		self.generate_program_in(shader_compilation_settings, program, self.allocator.clone())
+	}
+
+	/// Generates a full-program MSL shader using `allocator` for temporary graph and classification storage.
+	pub fn generate_program_in(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+		allocator: A,
+	) -> Result<String, ()> {
+		let previous_allocator = std::mem::replace(&mut self.allocator, allocator);
+		let result = self.generate_program_with_current_allocator(shader_compilation_settings, program);
+		self.allocator = previous_allocator;
+		result
+	}
+
+	/// Generates an entry-point MSL shader using `allocator` for temporary graph and classification storage.
 	pub fn generate_in(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
@@ -35,21 +57,83 @@ impl<A: Allocator + Clone> Generator<A> {
 		result
 	}
 
+	/// Generates code reachable from `main` while retaining every program binding in the Metal resource ABI.
+	pub(crate) fn generate_program_with_current_allocator(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+	) -> Result<String, ()> {
+		let main = program.get_main().ok_or(())?;
+		let mut order = ordered_shader_nodes_in(&main, "MSL", self.allocator.clone());
+		Self::append_declared_bindings(program, &mut order);
+		self.generate_order(shader_compilation_settings, &main, &order)
+	}
+
 	pub(crate) fn generate_with_current_allocator(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
-		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
-		let intrinsic_requirements = Self::collect_intrinsic_requirements(&order);
+		self.generate_order(shader_compilation_settings, main_function_node, &order)
+	}
+
+	/// Appends authored binding declarations without traversing unreachable executable nodes.
+	fn append_declared_bindings(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference, A>) {
+		let program_borrow = program.borrow();
+		match program_borrow.node() {
+			besl::Nodes::Binding { r#type, .. } => {
+				if let besl::BindingTypes::Buffer { members } = r#type {
+					for member in members {
+						Self::append_storage_type_declarations(member, order);
+					}
+				}
+				if !order.contains(program) {
+					order.push(program.clone());
+				}
+			}
+			besl::Nodes::Scope { children, .. } => {
+				for child in children {
+					Self::append_declared_bindings(child, order);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	/// Retains user struct declarations required to represent an authored buffer binding.
+	fn append_storage_type_declarations(node: &besl::NodeReference, order: &mut Vec<besl::NodeReference, A>) {
+		let node_borrow = node.borrow();
+		match node_borrow.node() {
+			besl::Nodes::Member { r#type, .. } => Self::append_storage_type_declarations(r#type, order),
+			besl::Nodes::Struct { fields, .. } if !fields.is_empty() => {
+				for field in fields {
+					Self::append_storage_type_declarations(field, order);
+				}
+				if !order.contains(node) {
+					order.push(node.clone());
+				}
+			}
+			_ => {}
+		}
+	}
+
+	/// Emits one shader from the reachable node order and its complete resource declarations.
+	fn generate_order(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		main_function_node: &besl::NodeReference,
+		order: &[besl::NodeReference],
+	) -> Result<String, ()> {
+		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, order)?;
+		let intrinsic_requirements = Self::collect_intrinsic_requirements(order);
 		if intrinsic_requirements.uses_subgroup_intrinsics
 			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })
 		{
 			return Err(());
 		}
-		Self::validate_reachable_binding_layout(&order, self.allocator.clone())?;
-		self.collect_packed_mat4x3_members(&order);
+		Self::validate_reachable_binding_layout(order, self.allocator.clone())?;
+		self.collect_packed_mat4x3_members(order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
 				return Ok(source);
@@ -68,29 +152,29 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.generate_msl_header_block(&mut string, shader_compilation_settings, &intrinsic_requirements);
 
 		match shader_compilation_settings.stage {
-			Stages::Vertex if Self::has_raster_interface(&order) => {
-				self.generate_vertex_shader(&mut string, &order, main_function_node)
+			Stages::Vertex if Self::has_raster_interface(order) => {
+				self.generate_vertex_shader(&mut string, order, main_function_node)
 			}
-			Stages::Fragment if Self::has_raster_interface(&order) || Self::has_non_void_return(main_function_node) => {
-				self.generate_fragment_shader(&mut string, &order, main_function_node)
+			Stages::Fragment if Self::has_raster_interface(order) || Self::has_non_void_return(main_function_node) => {
+				self.generate_fragment_shader(&mut string, order, main_function_node)
 			}
 			Stages::Compute { .. } => self.generate_compute_shader(
 				&mut string,
-				&order,
+				order,
 				main_function_node,
 				intrinsic_requirements.uses_simd_lane_id,
 			),
 			Stages::Task {
 				maximum_mesh_threadgroups,
 				..
-			} => self.generate_task_shader(&mut string, &order, main_function_node, maximum_mesh_threadgroups),
+			} => self.generate_task_shader(&mut string, order, main_function_node, maximum_mesh_threadgroups),
 			Stages::Mesh {
 				maximum_vertices,
 				maximum_primitives,
 				..
 			} => self.generate_mesh_shader(
 				&mut string,
-				&order,
+				order,
 				main_function_node,
 				maximum_vertices,
 				maximum_primitives,
@@ -98,7 +182,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			),
 			_ => {
 				for node in order {
-					self.emit_node_string(&mut string, &node);
+					self.emit_node_string(&mut string, node);
 				}
 			}
 		}

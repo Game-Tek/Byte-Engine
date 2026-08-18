@@ -307,16 +307,13 @@ pub(crate) async fn compile_shader_program(
 		}
 	};
 
-	let main_node = match root_node.get_main() {
-		Some(main_node) => main_node,
-		None => {
-			log::error!(
-				"Failed to compile shader '{name}' for stage '{stage}'. The generated BESL program has no main function. See {}.",
-				online_docs_url(BESL_DOCS_PATH)
-			);
-			return Err(());
-		}
-	};
+	if root_node.get_main().is_none() {
+		log::error!(
+			"Failed to compile shader '{name}' for stage '{stage}'. The generated BESL program has no main function. See {}.",
+			online_docs_url(BESL_DOCS_PATH)
+		);
+		return Err(());
+	}
 
 	let settings = match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
@@ -328,8 +325,14 @@ pub(crate) async fn compile_shader_program(
 	}
 	.name(name.to_string());
 
+	let evaluation = ProgramEvaluation::from_program(&root_node).map_err(|error| {
+		log::error!(
+			"Failed to reflect shader '{name}' for stage '{stage}': {error}. See {}.",
+			online_docs_url(BESL_DOCS_PATH)
+		);
+	})?;
 	let shader_program = PlatformShaderGenerator::new()
-		.generate(&settings, &main_node)
+		.generate(&settings, &root_node)
 		.await
 		.map_err(|error| {
 			log::error!(
@@ -349,10 +352,20 @@ pub(crate) async fn compile_shader_program(
 
 	let interface = ShaderInterface {
 		workgroup_size: shader_program.extent().map(|e| (e.width(), e.height(), e.depth())),
-		bindings: shader_program
-			.bindings()
-			.iter()
-			.map(|b| Binding::new(b.slot, b.kind, b.count, b.buffer_stride, b.read, b.write))
+		bindings: evaluation
+			.into_bindings()
+			.into_iter()
+			.map(|binding| {
+				Binding::named(
+					binding.name,
+					binding.slot,
+					binding.kind,
+					binding.count,
+					binding.buffer_stride,
+					binding.read,
+					binding.write,
+				)
+			})
 			.collect(),
 	};
 
@@ -796,7 +809,10 @@ use super::{
 };
 use crate::shader::{
 	artifact::finalize_platform_shader_artifact,
-	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+	besl::{
+		backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+		evaluation::ProgramEvaluation,
+	},
 };
 use crate::{
 	asset::{self, JsonObject},

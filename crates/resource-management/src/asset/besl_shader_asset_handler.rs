@@ -423,10 +423,10 @@ fn prepare_shader(
 	let program = besl::lex(parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
-	let main = program.get_main().ok_or_else(|| {
+	program.get_main().ok_or_else(|| {
 		"Missing BESL main function. The most likely cause is that the standalone shader does not declare `main`.".to_string()
 	})?;
-	let bindings = ProgramEvaluation::from_main(&main)?
+	let bindings = ProgramEvaluation::from_program(&program)?
 		.into_bindings()
 		.into_iter()
 		.map(|binding| {
@@ -443,7 +443,7 @@ fn prepare_shader(
 		.collect();
 
 	Ok((
-		main,
+		program,
 		ShaderInterface {
 			workgroup_size,
 			bindings,
@@ -459,9 +459,9 @@ async fn compile_shader(
 	source_hash: u64,
 	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<(Shader, Box<[u8]>), String> {
-	let (main, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
+	let (program, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
 	let mut generator = PlatformShaderGenerator::new();
-	let compiled = generator.generate(&settings.generation_settings(id), &main).await?;
+	let compiled = generator.generate(&settings.generation_settings(id), &program).await?;
 
 	// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
 	let semantic_bindings = interface
@@ -529,7 +529,7 @@ async fn compile_shader(
 /// Hashes every source-side input that can change a standalone shader resource.
 fn hash_shader_source(id: &str, source: &str, settings: BESLShaderSettings) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	hasher.write(b"standalone-besl-shader-v4-fixed-metal-resource-abi");
+	hasher.write(b"standalone-besl-shader-v5-full-declared-resource-abi");
 	hash_text(&mut hasher, id);
 	hash_text(&mut hasher, source);
 	hasher.write_u8(match settings.stage {

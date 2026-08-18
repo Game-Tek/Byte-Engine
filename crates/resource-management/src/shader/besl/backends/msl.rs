@@ -111,6 +111,25 @@ mod tests {
 	}
 
 	#[test]
+	fn full_program_resource_abi_retains_unreachable_declared_bindings() {
+		let program = besl::compile_to_besl(
+			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<Unused, 3, read, constant>; Used: struct { value: u32, } used: descriptor<Used, 9, write, device>; main: fn () -> void { used.value = 7; }",
+			None,
+		)
+		.expect("Expected full-program resource ABI fixture to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)
+			.expect("Expected full-program MSL generation");
+
+		assert_string_contains!(shader, "struct Payload");
+		assert_string_contains!(shader, "constant _unused* unused [[id(6)]];");
+		assert_string_contains!(shader, "device _used* used [[id(18)]];");
+		assert_string_contains!(shader, "resources.used->value=7;");
+		assert!(!shader.contains("resources.unused"));
+	}
+
+	#[test]
 	fn sampled_binding_array_argument_uses_bare_compute_resources() {
 		let mut root = besl::Node::root();
 		root.add_child(

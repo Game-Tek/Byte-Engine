@@ -1210,7 +1210,7 @@ pub mod tests {
 		main
 	}
 
-	pub fn fragment_shader() -> besl::NodeReference {
+	pub fn fragment_program() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
 			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
@@ -1218,11 +1218,11 @@ pub mod tests {
 		}
 		"#;
 
-		let script_node = besl::compile_to_besl(&script, None).unwrap();
+		besl::compile_to_besl(&script, None).unwrap()
+	}
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+	pub fn fragment_shader() -> besl::NodeReference {
+		RefCell::borrow(&fragment_program()).get_child("main").unwrap()
 	}
 
 	pub fn cull_unused_functions() -> besl::NodeReference {

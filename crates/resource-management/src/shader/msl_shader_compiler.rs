@@ -1,6 +1,5 @@
 use std::{
 	alloc::{Allocator, Global},
-	cell::RefCell,
 	fs,
 	path::{Path, PathBuf},
 	time::{SystemTime, UNIX_EPOCH},
@@ -64,9 +63,9 @@ impl<A: Allocator + Clone> Compiler<A> {
 	pub async fn generate(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		program: &besl::NodeReference,
 	) -> Result<GeneratedShader, String> {
-		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
+		self.generate_in(shader_compilation_settings, program, self.allocator.clone())
 			.await
 	}
 
@@ -74,12 +73,12 @@ impl<A: Allocator + Clone> Compiler<A> {
 	pub async fn generate_in(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
+		program: &besl::NodeReference,
 		allocator: A,
 	) -> Result<GeneratedShader, String> {
 		let msl_shader = self
 			.msl_shader_generator
-			.generate_in(shader_compilation_settings, main_function_node, allocator)
+			.generate_program_in(shader_compilation_settings, program, allocator)
 			.map_err(|_| {
 				error(
 					"Failed to generate MSL shader source",
@@ -89,19 +88,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 
-		{
-			let node_borrow = RefCell::borrow(main_function_node);
-			let node_ref = node_borrow.node();
-
-			match node_ref {
-				besl::Nodes::Function { name, .. } => {
-					assert_eq!(name, "main");
-				}
-				_ => panic!("Root node must be a function node."),
-			}
-		}
-
-		let bindings = collect_bindings::<CompiledShaderBinding>(main_function_node)?;
+		let bindings = collect_bindings::<CompiledShaderBinding>(program)?;
 
 		Ok(CompiledShader::new(
 			binary,

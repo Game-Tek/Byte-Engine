@@ -561,6 +561,40 @@ mod tests {
 	}
 
 	#[test]
+	fn program_reflection_keeps_an_unreachable_declared_binding() {
+		let mut root = besl::Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32 type");
+		root.add_child(
+			besl::Node::binding(
+				"unreachable",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("value", f32_type).into()],
+				},
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+		let program = besl::compile_to_besl("main: fn() -> void { return; }", Some(root))
+			.expect("Expected unreachable binding fixture to link");
+		let main = program
+			.get_main()
+			.expect("Expected unreachable binding fixture main function");
+
+		let program_bindings = ProgramEvaluation::from_program(&program)
+			.expect("Expected full-program reflection")
+			.into_bindings();
+		let main_bindings = ProgramEvaluation::from_main(&main)
+			.expect("Expected reachable-main reflection")
+			.into_bindings();
+
+		assert_eq!(program_bindings.len(), 1);
+		assert_eq!(program_bindings[0].name, "unreachable");
+		assert!(main_bindings.is_empty());
+	}
+
+	#[test]
 	fn reflection_culls_a_binding_used_only_by_a_dead_local() {
 		let mut root = besl::Node::root();
 		let f32_type = root.get_child("f32").expect("Expected f32 type");

@@ -295,7 +295,7 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	/// Encodes one immutable pipeline-wide argument buffer from the bound retained set union.
+	/// Encodes one immutable argument buffer matching a shader stage's packed resource interface.
 	pub(super) fn encode_stage_argument_buffer(
 		&self,
 		layout: &StageArgumentLayout,

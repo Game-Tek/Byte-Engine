@@ -9,7 +9,7 @@ impl Context {
 		}
 	}
 
-	/// Appends every pending buffer and image upload to one Metal blit submission.
+	/// Appends every pending buffer and image upload to one Metal 4 compute submission.
 	pub(super) fn flush_pending_uploads(
 		&mut self,
 		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
@@ -27,12 +27,12 @@ impl Context {
 			Some("Pending Uploads"),
 			"Metal upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
 		);
-		let blit_encoder = command_buffer.blitCommandEncoder().expect(
-			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		let transfer_encoder = command_buffer.compute_command_encoder().expect(
+			"Metal 4 transfer encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
-			blit_encoder.setLabel(Some(&NSString::from_str("Pending Uploads")));
+			transfer_encoder.setLabel(Some(&NSString::from_str("Pending Uploads")));
 		}
 
 		while let Some(buffer_handle) = self.pending_buffer_syncs.pop_front() {
@@ -42,7 +42,7 @@ impl Context {
 			};
 			let staging = self.buffers.resource(staging_handle);
 			unsafe {
-				blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 					staging.buffer.as_ref(),
 					0,
 					buffer.buffer.as_ref(),
@@ -58,7 +58,7 @@ impl Context {
 				continue;
 			};
 			self.encode_texture_upload(
-				blit_encoder.as_ref(),
+				transfer_encoder.as_ref(),
 				image.texture.as_ref(),
 				image.format,
 				image.extent,
@@ -67,7 +67,7 @@ impl Context {
 			);
 		}
 
-		blit_encoder.endEncoding();
+		transfer_encoder.endEncoding();
 		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 }

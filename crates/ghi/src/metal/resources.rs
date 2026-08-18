@@ -1,10 +1,5 @@
 use super::*;
 
-pub(super) struct CommandBufferInternal {
-	pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
-	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-}
-
 #[derive(Clone)]
 pub(crate) struct StoredCommandBuffer {
 	pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,

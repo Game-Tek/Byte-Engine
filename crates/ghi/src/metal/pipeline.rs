@@ -75,8 +75,20 @@ pub(crate) fn apply_specialization_map_entry(
 	}
 }
 
+/// Rejects vertex attributes that overlap the fixed push-constant and nested argument-buffer bindings.
+pub(crate) fn validate_vertex_binding(binding: u32) {
+	assert!(
+		binding < command_buffer::PUSH_CONSTANT_BINDING_INDEX,
+		"Metal vertex binding is reserved. The most likely cause is that a vertex attribute uses binding 15 or higher. binding={binding}",
+	);
+}
+
 /// Builds the Metal vertex descriptor and matching GHI vertex-layout metadata.
 pub(crate) fn build_vertex_layout(vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
+	for element in vertex_elements {
+		validate_vertex_binding(element.binding);
+	}
+
 	let elements = vertex_elements
 		.iter()
 		.map(|element| VertexElementDescriptor {
@@ -724,5 +736,19 @@ pub(crate) fn build_pipeline_layout(
 		stage_argument_layouts,
 		push_constant_ranges: push_constant_ranges.to_vec(),
 		push_constant_size,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn vertex_bindings_stop_before_reserved_shader_buffers() {
+		super::validate_vertex_binding(14);
+	}
+
+	#[test]
+	#[should_panic(expected = "Metal vertex binding is reserved")]
+	fn vertex_binding_fifteen_is_rejected() {
+		super::validate_vertex_binding(15);
 	}
 }

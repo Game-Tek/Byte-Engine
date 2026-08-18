@@ -1,5 +1,57 @@
 use super::*;
 
+impl PushUploadArena {
+	/// Copies one push-constant state into a unique aligned range and returns its GPU address.
+	fn upload(
+		&mut self,
+		device: &ProtocolObject<dyn mtl::MTLDevice>,
+		command: &queue::NativeCommand,
+		bytes: &[u8],
+	) -> mtl::MTLGPUAddress {
+		assert!(
+			!bytes.is_empty(),
+			"Empty Metal push upload. The most likely cause is that a zero-sized push-constant layout was marked dirty."
+		);
+
+		let current_offset = self
+			.pages
+			.last()
+			.and_then(|page| push_upload_offset(page.cursor, bytes.len(), page.buffer.length()));
+		if current_offset.is_none() {
+			let capacity =
+				bytes.len().checked_add(PUSH_UPLOAD_ALIGNMENT - 1).expect(
+					"Metal push upload size overflowed. The most likely cause is an invalid push-constant layout size.",
+				) & !(PUSH_UPLOAD_ALIGNMENT - 1);
+			let capacity = capacity.max(PUSH_UPLOAD_PAGE_SIZE);
+			let buffer = device
+				.newBufferWithLength_options(capacity, mtl::MTLResourceOptions::StorageModeShared)
+				.expect(
+					"Metal push upload allocation failed. The most likely cause is that the device is out of shared memory.",
+				);
+			command.retain_buffer(buffer.clone());
+			self.pages.push(PushUploadPage { buffer, cursor: 0 });
+		}
+
+		let page = self.pages.last_mut().expect(
+			"Missing Metal push upload page. The most likely cause is that page allocation did not update the command-local arena.",
+		);
+		let offset = push_upload_offset(page.cursor, bytes.len(), page.buffer.length()).expect(
+			"Metal push upload range does not fit. The most likely cause is that the newly allocated page is smaller than the push-constant state.",
+		);
+		unsafe {
+			std::ptr::copy_nonoverlapping(
+				bytes.as_ptr(),
+				page.buffer.contents().as_ptr().cast::<u8>().add(offset),
+				bytes.len(),
+			);
+		}
+		page.cursor = offset + bytes.len();
+		page.buffer.gpuAddress().checked_add(offset as u64).expect(
+			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
+		)
+	}
+}
+
 impl<'a> CommandBufferRecording<'a> {
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		let buffer = self.device.buffers.get_single(buffer_handle.into()).unwrap();
@@ -23,10 +75,12 @@ impl<'a> CommandBufferRecording<'a> {
 		let staging_buffer = staging.buffer.clone();
 		let destination_buffer = buffer.buffer.clone();
 		let destination_size = buffer.size;
-		let blit_encoder = self.ensure_blit_encoder().clone();
+		self.command_buffer.retain_buffer(staging_buffer.clone());
+		self.command_buffer.retain_buffer(destination_buffer.clone());
+		let transfer_encoder = self.prepare_transfer().clone();
 
 		unsafe {
-			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+			transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 				staging_buffer.as_ref(),
 				0,
 				destination_buffer.as_ref(),
@@ -40,7 +94,7 @@ impl<'a> CommandBufferRecording<'a> {
 		device: RecordingDevice<'a>,
 		commit: Option<RecordingCommit<'a>>,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		command_buffer: queue::NativeCommand,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 		drawables: SmallVec<
 			[(
@@ -51,6 +105,9 @@ impl<'a> CommandBufferRecording<'a> {
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
+		for (_, drawable) in &drawables {
+			command_buffer.retain_drawable(drawable.clone());
+		}
 
 		Self {
 			device,
@@ -65,8 +122,6 @@ impl<'a> CommandBufferRecording<'a> {
 			compute_debug_region_depth: 0,
 			#[cfg(debug_assertions)]
 			render_debug_region_depth: 0,
-			#[cfg(debug_assertions)]
-			blit_debug_region_depth: 0,
 			#[cfg(debug_assertions)]
 			encoder_block_index: 0,
 			drawables,
@@ -84,20 +139,20 @@ impl<'a> CommandBufferRecording<'a> {
 			render_push_constants_dirty: false,
 			active_compute_encoder: None,
 			active_render_encoder: None,
-			active_blit_encoder: None,
+			compute_encoder_phase: ComputeEncoderPhase::None,
+			argument_tables: CommandArgumentTables::default(),
+			push_upload_arena: PushUploadArena::default(),
 			encoded_compute_pipeline: None,
 			encoded_render_pipeline: None,
 			applied_compute_descriptor_binding: None,
 			applied_render_descriptor_binding: None,
-			compute_resident_bindings: SmallVec::new(),
-			render_resident_bindings: SmallVec::new(),
 			_autorelease_pool: autorelease_pool,
 		}
 	}
 
 	/// Mirrors every active logical region into a newly created native encoder.
 	#[cfg(debug_assertions)]
-	pub(super) fn push_active_compute_debug_regions(&mut self, encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>) {
+	pub(super) fn push_active_compute_debug_regions(&mut self, encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>) {
 		if self.device.debug_labels {
 			for region in &self.debug_regions {
 				encoder.pushDebugGroup(region);
@@ -108,23 +163,12 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Mirrors every active logical region into a newly created native encoder.
 	#[cfg(debug_assertions)]
-	pub(super) fn push_active_render_debug_regions(&mut self, encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>) {
+	pub(super) fn push_active_render_debug_regions(&mut self, encoder: &ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>) {
 		if self.device.debug_labels {
 			for region in &self.debug_regions {
 				encoder.pushDebugGroup(region);
 			}
 			self.render_debug_region_depth = self.debug_regions.len();
-		}
-	}
-
-	/// Mirrors every active logical region into a newly created native encoder.
-	#[cfg(debug_assertions)]
-	pub(super) fn push_active_blit_debug_regions(&mut self, encoder: &ProtocolObject<dyn mtl::MTLBlitCommandEncoder>) {
-		if self.device.debug_labels {
-			for region in &self.debug_regions {
-				encoder.pushDebugGroup(region);
-			}
-			self.blit_debug_region_depth = self.debug_regions.len();
 		}
 	}
 
@@ -153,9 +197,9 @@ impl<'a> CommandBufferRecording<'a> {
 			self.compute_debug_region_depth = 0;
 		}
 		encoder.endEncoding();
+		self.compute_encoder_phase = ComputeEncoderPhase::None;
 		self.encoded_compute_pipeline = None;
 		self.applied_compute_descriptor_binding = None;
-		self.compute_resident_bindings.clear();
 		self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
 	}
 
@@ -174,44 +218,9 @@ impl<'a> CommandBufferRecording<'a> {
 		encoder.endEncoding();
 		self.encoded_render_pipeline = None;
 		self.applied_render_descriptor_binding = None;
-		self.render_resident_bindings.clear();
 		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
 		self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
 		self.encoded_vertex_buffer_count = 0;
-	}
-
-	/// Ends the active blit encoder and balances its mirrored debug regions.
-	pub(super) fn end_blit_encoder(&mut self) {
-		let Some(encoder) = self.active_blit_encoder.take() else {
-			return;
-		};
-		#[cfg(debug_assertions)]
-		if self.device.debug_labels {
-			for _ in 0..self.blit_debug_region_depth {
-				encoder.popDebugGroup();
-			}
-			self.blit_debug_region_depth = 0;
-		}
-		encoder.endEncoding();
-	}
-
-	pub(super) fn ensure_blit_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTLBlitCommandEncoder>> {
-		self.end_compute_encoder();
-		self.end_render_encoder();
-
-		if self.active_blit_encoder.is_none() {
-			let encoder = self.command_buffer.blitCommandEncoder().expect(
-				"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
-			);
-			#[cfg(debug_assertions)]
-			if self.device.debug_labels {
-				encoder.setLabel(Some(&self.next_encoder_block_label()));
-				self.push_active_blit_debug_regions(encoder.as_ref());
-			}
-			self.active_blit_encoder = Some(encoder);
-		}
-
-		self.active_blit_encoder.as_ref().unwrap()
 	}
 
 	/// Retains acquired drawables that may be referenced directly while recording this frame.
@@ -224,13 +233,15 @@ impl<'a> CommandBufferRecording<'a> {
 			),
 		>,
 	) {
-		self.drawables.extend(drawables);
+		for (handle, drawable) in drawables {
+			self.command_buffer.retain_drawable(drawable.clone());
+			self.drawables.push((handle, drawable));
+		}
 	}
 
 	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer<'static> {
 		self.end_render_encoder();
 		self.end_compute_encoder();
-		self.end_blit_encoder();
 
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
@@ -239,14 +250,12 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	pub(super) fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>> {
+	pub(super) fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
 		self.end_render_encoder();
-		self.end_blit_encoder();
 
 		if self.active_compute_encoder.is_none() {
-			// The ordinary Metal compute encoder is serial. Its dispatch order supplies inter-dispatch dependencies;
-			// Metal explicitly ignores memoryBarrier calls unless a concurrent encoder is requested.
-			let encoder = self.command_buffer.computeCommandEncoder().expect(
+			// One serial MTL4 compute encoder records both copy and dispatch commands. Phase transitions add explicit visibility.
+			let encoder = self.command_buffer.compute_command_encoder().expect(
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
 			);
 			#[cfg(debug_assertions)]
@@ -255,13 +264,83 @@ impl<'a> CommandBufferRecording<'a> {
 				self.push_active_compute_debug_regions(encoder.as_ref());
 			}
 			self.active_compute_encoder = Some(encoder);
+			self.compute_encoder_phase = ComputeEncoderPhase::None;
 			self.encoded_compute_pipeline = None;
 			self.applied_compute_descriptor_binding = None;
-			self.compute_resident_bindings.clear();
 			self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
 		}
 
 		self.active_compute_encoder.as_ref().unwrap()
+	}
+
+	/// Prepares the Metal 4 compute encoder for copy work and makes prior encoder writes device-visible.
+	pub(super) fn prepare_transfer(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
+		let previous_phase = self.compute_encoder_phase;
+		let encoder = self.ensure_compute_encoder().clone();
+		match previous_phase {
+			ComputeEncoderPhase::Dispatch => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
+				mtl::MTLStages::Dispatch,
+				mtl::MTLStages::Blit,
+				mtl::MTL4VisibilityOptions::Device,
+			),
+			ComputeEncoderPhase::Transfer => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
+				mtl::MTLStages::Blit,
+				mtl::MTLStages::Blit,
+				mtl::MTL4VisibilityOptions::Device,
+			),
+			ComputeEncoderPhase::None => {}
+		}
+		self.compute_encoder_phase = ComputeEncoderPhase::Transfer;
+		self.active_compute_encoder.as_ref().unwrap()
+	}
+
+	/// Creates one initialized Metal 4 argument table when a shader stage first needs bindings.
+	pub(super) fn argument_table(&mut self, stage: ArgumentTableStage) -> Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>> {
+		if let Some(table) = self.argument_tables.get(stage) {
+			return table.clone();
+		}
+
+		let descriptor = mtl::MTL4ArgumentTableDescriptor::new();
+		descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
+		descriptor.setInitializeBindings(true);
+		let table = self.device.metal_device.newArgumentTableWithDescriptor_error(&descriptor);
+		let table = table.expect(
+			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
+		);
+		self.command_buffer.retain_argument_table(table.clone());
+		self.argument_tables.insert(stage, table.clone());
+		table
+	}
+
+	/// Updates one stage table and associates it with the active encoder before its next snapshot command.
+	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
+		assert!(
+			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
+			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
+		);
+		let table = self.argument_table(stage);
+		unsafe {
+			table.setAddress_atIndex(address, binding as _);
+		}
+
+		match stage {
+			ArgumentTableStage::Compute => self
+				.active_compute_encoder
+				.as_ref()
+				.expect("No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.")
+				.setArgumentTable(Some(table.as_ref())),
+			stage => self
+				.active_render_encoder
+				.as_ref()
+				.expect("No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.")
+				.setArgumentTable_atStages(table.as_ref(), stage.render_stage()),
+		}
+	}
+
+	/// Uploads the current logical push state into an immutable command-local range.
+	fn upload_push_constants(&mut self) -> mtl::MTLGPUAddress {
+		self.push_upload_arena
+			.upload(self.device.metal_device, &self.command_buffer, &self.push_constant_data)
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
@@ -397,35 +476,27 @@ impl<'a> CommandBufferRecording<'a> {
 		self.render_push_constants_dirty = push_constant_size > 0;
 	}
 
-	/// Applies changed logical vertex-buffer bindings once before the next ordinary draw.
+	/// Applies changed logical vertex-buffer addresses once before the next ordinary draw.
 	pub(super) fn apply_bound_vertex_buffers(&mut self) {
 		if !self.render_vertex_buffers_dirty {
 			return;
 		}
-		let Some(encoder) = self.active_render_encoder.as_ref() else {
-			return;
-		};
+		assert!(
+			self.bound_vertex_buffers.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
+			"Too many Metal vertex buffers were bound. The most likely cause is that a vertex binding overlaps the reserved push-constant slot."
+		);
 
-		let mut buffers = SmallVec::<[*const ProtocolObject<dyn mtl::MTLBuffer>; 8]>::new();
-		let mut offsets = SmallVec::<[usize; 8]>::new();
-		for (buffer_handle, offset) in self.bound_vertex_buffers.iter().copied() {
-			let buffer = &self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
-			buffers.push(buffer.buffer.as_ref());
-			offsets.push(offset);
+		for binding in 0..self.bound_vertex_buffers.len() {
+			let (buffer_handle, offset) = self.bound_vertex_buffers[binding];
+			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
+			let address = buffer.gpu_address.checked_add(offset as u64).expect(
+				"Metal vertex buffer address overflowed. The most likely cause is that the requested vertex offset exceeds the native buffer address range.",
+			);
+			self.command_buffer.retain_buffer(buffer.buffer.clone());
+			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, address);
 		}
-
-		if !buffers.is_empty() {
-			let buffers = NonNull::new(buffers.as_mut_ptr()).expect("A non-empty Metal vertex buffer list had a null pointer.");
-			let offsets =
-				NonNull::new(offsets.as_mut_ptr()).expect("A non-empty Metal vertex buffer offset list had a null pointer.");
-			unsafe {
-				encoder.setVertexBuffers_offsets_withRange(buffers, offsets, NSRange::new(0, self.bound_vertex_buffers.len()));
-			}
-		}
-		for index in self.bound_vertex_buffers.len()..self.encoded_vertex_buffer_count {
-			unsafe {
-				encoder.setVertexBuffer_offset_atIndex(None, 0, index);
-			}
+		for binding in self.bound_vertex_buffers.len()..self.encoded_vertex_buffer_count {
+			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, 0);
 		}
 		self.encoded_vertex_buffer_count = self.bound_vertex_buffers.len();
 		self.render_vertex_buffers_dirty = false;
@@ -437,33 +508,22 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		}
 
-		let pointer = NonNull::new(self.push_constant_data.as_ptr() as *mut std::ffi::c_void)
-			.expect("Push constant data pointer was null. The most likely cause is an empty push constant buffer upload.");
-
-		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			unsafe {
-				encoder.setObjectBytes_length_atIndex(
-					pointer,
-					self.push_constant_data.len() as _,
-					PUSH_CONSTANT_BINDING_INDEX as _,
-				);
-				encoder.setMeshBytes_length_atIndex(
-					pointer,
-					self.push_constant_data.len() as _,
-					PUSH_CONSTANT_BINDING_INDEX as _,
-				);
-				encoder.setVertexBytes_length_atIndex(
-					pointer,
-					self.push_constant_data.len() as _,
-					PUSH_CONSTANT_BINDING_INDEX as _,
-				);
-				encoder.setFragmentBytes_length_atIndex(
-					pointer,
-					self.push_constant_data.len() as _,
-					PUSH_CONSTANT_BINDING_INDEX as _,
-				);
+		let pipeline_handle = self.bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that render push constants were flushed before binding a pipeline.",
+		);
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let uses_mesh = pipeline.mesh_threadgroup_size.is_some();
+		let uses_object = pipeline.object_threadgroup_size.is_some();
+		let address = self.upload_push_constants();
+		if uses_mesh {
+			if uses_object {
+				self.set_stage_buffer_address(ArgumentTableStage::Object, PUSH_CONSTANT_BINDING_INDEX, address);
 			}
+			self.set_stage_buffer_address(ArgumentTableStage::Mesh, PUSH_CONSTANT_BINDING_INDEX, address);
+		} else {
+			self.set_stage_buffer_address(ArgumentTableStage::Vertex, PUSH_CONSTANT_BINDING_INDEX, address);
 		}
+		self.set_stage_buffer_address(ArgumentTableStage::Fragment, PUSH_CONSTANT_BINDING_INDEX, address);
 		self.render_push_constants_dirty = false;
 	}
 
@@ -473,33 +533,24 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		}
 
-		let pointer = NonNull::new(self.push_constant_data.as_ptr() as *mut std::ffi::c_void)
-			.expect("Push constant data pointer was null. The most likely cause is an empty push constant buffer upload.");
-		let push_constant_size = self.push_constant_data.len();
-		unsafe {
-			self.ensure_compute_encoder().setBytes_length_atIndex(
-				pointer,
-				push_constant_size as _,
-				PUSH_CONSTANT_BINDING_INDEX as _,
-			);
-		}
+		let address = self.upload_push_constants();
+		self.set_stage_buffer_address(ArgumentTableStage::Compute, PUSH_CONSTANT_BINDING_INDEX, address);
 		self.compute_push_constants_dirty = false;
 	}
 
+	/// Ends and submits a non-frame recording as a one-command Metal 4 batch.
 	pub(super) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.end_compute_encoder();
 		self.end_render_encoder();
-		self.end_blit_encoder();
+		queue::NativeCommand::submit_batch(std::slice::from_ref(&self.command_buffer));
 
 		if let Some(commit) = self.commit.as_mut() {
 			let synchronizer = commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
-			// Retain the command buffer until a GHI wait observes completion.
+			// The synchronizer owns the submitted command until its shared-event token completes.
 			commit
 				.synchronizers
 				.resource(synchronizer)
 				.signal_workload(self.command_buffer.clone());
 		}
-
-		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 	}
 }

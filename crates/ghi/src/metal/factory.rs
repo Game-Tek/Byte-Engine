@@ -173,7 +173,7 @@ impl crate::device::Device for Factory {
 			match shader_parameter.stage {
 				crate::ShaderTypes::Task => {
 					object_function = self.create_metal_function(shader_parameter);
-					object_threadgroup_size = shader.threadgroup_size;
+					object_threadgroup_size = Some(shader.threadgroup_size.unwrap_or(Extent::new(1, 1, 1)));
 				}
 				crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
 				crate::ShaderTypes::Mesh => {

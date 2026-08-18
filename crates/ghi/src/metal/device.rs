@@ -1,4 +1,6 @@
-/// The `Device` struct owns the underlying Metal GPU device object.
+/// The `Device` struct owns the Metal GPU entry point for the macOS 26-only backend.
+///
+/// The backend calls Metal 4 directly and does not provide an older Metal fallback.
 pub struct Device {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	pub(crate) queues: Vec<queue::StoredQueue>,
@@ -18,12 +20,12 @@ impl Device {
 
 		for (selection, output_handle) in queues.iter_mut() {
 			let workloads = select_metal_command_queue_workloads(device.as_ref(), selection.r#type)?;
-			let queue = device.newCommandQueue().ok_or(
-				"Metal command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
+			let queue = device.newMTL4CommandQueue().ok_or(
+				"Metal 4 command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
 			)?;
 			let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
 
-			created_queues.push(queue::StoredQueue { queue, workloads });
+			created_queues.push(queue::StoredQueue::new(queue, workloads));
 
 			**output_handle = Some(handle);
 		}
@@ -98,19 +100,19 @@ pub(super) fn select_metal_command_queue_workloads(
 
 	if requested.intersects(crate::WorkloadTypes::VIDEO) {
 		return Err(
-			"Failed to create a Metal command queue. Metal video work is not exposed through MTLCommandQueue in this backend.",
+			"Failed to create a Metal 4 command queue. Metal video work is not exposed through the graphics command queue in this backend.",
 		);
 	}
 
 	if requested.intersects(crate::WorkloadTypes::IO) {
 		return Err(
-			"Failed to create a Metal command queue. Metal IO uses MTLIOCommandQueue and is not compatible with this command-buffer queue path.",
+			"Failed to create a Metal 4 command queue. Metal IO uses MTLIOCommandQueue and is not compatible with this command-buffer queue path.",
 		);
 	}
 
 	let mut supported = crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE | crate::WorkloadTypes::TRANSFER;
 
-	if requested.intersects(crate::WorkloadTypes::RAY_TRACING) && metal_device_supports_ray_tracing(device) {
+	if requested.intersects(crate::WorkloadTypes::RAY_TRACING) && device.supportsRaytracing() {
 		supported |= crate::WorkloadTypes::RAY_TRACING;
 	}
 
@@ -121,128 +123,6 @@ pub(super) fn select_metal_command_queue_workloads(
 	}
 
 	Ok(requested)
-}
-
-fn metal_device_supports_ray_tracing(device: &ProtocolObject<dyn mtl::MTLDevice>) -> bool {
-	let responds_to_supports_raytracing: bool = unsafe { msg_send![device, respondsToSelector: sel!(supportsRaytracing)] };
-
-	responds_to_supports_raytracing && device.supportsRaytracing()
-}
-
-fn metal_command_encoder_label(
-	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
-) -> Option<Retained<NSString>> {
-	unsafe {
-		let label: *mut NSString = msg_send![encoder_info, label];
-		if label.is_null() {
-			None
-		} else {
-			Retained::from_raw(label)
-		}
-	}
-}
-
-fn metal_command_encoder_debug_signposts(
-	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
-) -> Option<Retained<NSArray<NSString>>> {
-	unsafe {
-		let debug_signposts: *mut NSArray<NSString> = msg_send![encoder_info, debugSignposts];
-		if debug_signposts.is_null() {
-			None
-		} else {
-			Retained::from_raw(debug_signposts)
-		}
-	}
-}
-
-// Formats the detailed Metal failure report, including per-encoder execution status when Metal provides it.
-fn describe_metal_command_buffer_failure(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) -> String {
-	let status = command_buffer.status();
-	let mut report = String::from(
-		"Metal command buffer execution failed. The most likely cause is that a Metal encoder triggered a GPU validation, resource lifetime, or shader execution fault.",
-	);
-
-	if let Some(label) = command_buffer.label().filter(|label| !label.to_string().is_empty()) {
-		let _ = write!(report, "\nCommand buffer: {}", label);
-	}
-
-	let status = match status {
-		mtl::MTLCommandBufferStatus::NotEnqueued => "not_enqueued",
-		mtl::MTLCommandBufferStatus::Enqueued => "enqueued",
-		mtl::MTLCommandBufferStatus::Committed => "committed",
-		mtl::MTLCommandBufferStatus::Scheduled => "scheduled",
-		mtl::MTLCommandBufferStatus::Completed => "completed",
-		mtl::MTLCommandBufferStatus::Error => "error",
-		_ => "unknown",
-	};
-	let _ = write!(report, "\nStatus: {}", status);
-
-	let Some(error) = command_buffer.error() else {
-		return report;
-	};
-
-	let _ = write!(report, "\nDomain: {}", error.domain());
-	let _ = write!(report, "\nCode: {}", error.code());
-	let _ = write!(report, "\nDescription: {}", error.localizedDescription());
-
-	if let Some(reason) = error.localizedFailureReason().filter(|reason| !reason.to_string().is_empty()) {
-		let _ = write!(report, "\nFailure reason: {}", reason);
-	}
-
-	let user_info = error.userInfo();
-	let encoder_info_key = unsafe { mtl::MTLCommandBufferEncoderInfoErrorKey };
-	let Some(encoder_info_value) = user_info.objectForKeyedSubscript(encoder_info_key) else {
-		return report;
-	};
-
-	let encoder_infos = unsafe { objc2::rc::Retained::cast_unchecked::<NSArray<AnyObject>>(encoder_info_value) };
-	if encoder_infos.count() == 0 {
-		return report;
-	}
-
-	report.push_str("\nEncoders:");
-	for index in 0..encoder_infos.count() {
-		let encoder_info = unsafe {
-			objc2::rc::Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>>(
-				encoder_infos.objectAtIndex(index),
-			)
-		};
-		let label = metal_command_encoder_label(encoder_info.as_ref())
-			.map(|label| label.to_string())
-			.unwrap_or_default();
-		let label = if label.is_empty() { "<unlabeled>" } else { label.as_str() };
-		let state = match encoder_info.errorState() {
-			mtl::MTLCommandEncoderErrorState::Unknown => "unknown",
-			mtl::MTLCommandEncoderErrorState::Completed => "completed",
-			mtl::MTLCommandEncoderErrorState::Affected => "affected",
-			mtl::MTLCommandEncoderErrorState::Pending => "pending",
-			mtl::MTLCommandEncoderErrorState::Faulted => "faulted",
-			_ => "unknown",
-		};
-		let _ = write!(report, "\n  {}. {} [{}]", index, label, state);
-
-		if let Some(signposts) =
-			metal_command_encoder_debug_signposts(encoder_info.as_ref()).filter(|signposts| signposts.count() > 0)
-		{
-			let joined_signposts = signposts.componentsJoinedByString(&NSString::from_str(" > "));
-			let _ = write!(report, "\n     Signposts: {}", joined_signposts);
-		}
-	}
-
-	report
-}
-
-// Waits for the Metal command buffer and turns Metal's enhanced error payload into a readable panic.
-pub(super) fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-	command_buffer.waitUntilCompleted();
-
-	if command_buffer.status() != mtl::MTLCommandBufferStatus::Completed || command_buffer.error().is_some() {
-		panic!("{}", describe_metal_command_buffer_failure(command_buffer));
-	}
-}
-
-pub(super) fn submit_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-	command_buffer.commit();
 }
 
 #[derive(Clone)]
@@ -290,11 +170,6 @@ pub struct Sampler {
 
 unsafe impl Send for Sampler {}
 
-use std::fmt::Write as _;
-
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
-use objc2_foundation::{NSArray, NSString};
-use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDepthStencilState, MTLDevice};
+use objc2_metal::{MTLDepthStencilState, MTLDevice};
 
 use super::*;

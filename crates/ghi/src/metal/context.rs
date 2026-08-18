@@ -7,14 +7,10 @@ use dispatch2::DispatchData;
 use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
 use objc2_foundation::{NSAutoreleasePool, NSString};
-use objc2_metal::{
-	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
-	MTLTexture,
-};
+use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLDevice, MTLLibrary, MTLResource, MTLTexture};
 use smallvec::SmallVec;
 
 use super::*;
-use crate::implementation::device::submit_metal_command_buffer;
 use crate::{
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
@@ -62,10 +58,21 @@ pub struct Context {
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
+	// Metal 4 command buffers do not retain referenced resources, so upload allocations move into the submitted native command.
+	pub(crate) pending_native_allocations: RefCell<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLAllocation>>; 32]>>,
 	pub(crate) tasks: Vec<Task>,
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
+}
+
+impl Drop for Context {
+	fn drop(&mut self) {
+		// Metal 4 command buffers do not retain resources, so all queue work must finish before context-owned resources drop.
+		for synchronizer in self.synchronizers.iter() {
+			synchronizer.wait();
+		}
+	}
 }
 
 /// Reports whether a CAMetalLayer drawable can satisfy the requested texture uses directly.

@@ -37,6 +37,7 @@ impl Context {
 		&'a mut self,
 		index: u64,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		queue_handle: graphics_hardware_interface::QueueHandle,
 	) -> crate::queue::StartedFrame<super::super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
@@ -46,7 +47,10 @@ impl Context {
 		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);
 		self.synchronizers.resource(synchronizer_handle).wait();
 		self.process_tasks(frame_key.sequence_index);
-		crate::queue::StartedFrame::new(super::super::Frame::new(self, frame_key), completed_frame)
+		crate::queue::StartedFrame::new(
+			super::super::Frame::new_for_queue(self, frame_key, queue_handle),
+			completed_frame,
+		)
 	}
 
 	pub fn start_frame_capture(&self) {

@@ -106,18 +106,17 @@ pub(crate) mod utils {
 	pub(crate) fn storage_mode_from_access(access: DeviceAccesses) -> mtl::MTLStorageMode {
 		if access == DeviceAccesses::DeviceOnly {
 			mtl::MTLStorageMode::Private
-		} else if access.contains(DeviceAccesses::CpuRead) {
-			mtl::MTLStorageMode::Managed
 		} else {
+			// Metal 4 has no managed-resource synchronization commands. Shared storage is CPU-coherent after queue completion.
 			mtl::MTLStorageMode::Shared
 		}
 	}
 
 	pub(crate) fn resource_options_from_access(access: DeviceAccesses) -> mtl::MTLResourceOptions {
-		match storage_mode_from_access(access) {
-			mtl::MTLStorageMode::Private => mtl::MTLResourceOptions::StorageModePrivate,
-			mtl::MTLStorageMode::Managed => mtl::MTLResourceOptions::StorageModeManaged,
-			_ => mtl::MTLResourceOptions::StorageModeShared,
+		if access == DeviceAccesses::DeviceOnly {
+			mtl::MTLResourceOptions::StorageModePrivate
+		} else {
+			mtl::MTLResourceOptions::StorageModeShared
 		}
 	}
 

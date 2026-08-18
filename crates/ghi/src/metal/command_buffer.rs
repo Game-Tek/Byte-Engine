@@ -4,8 +4,8 @@ use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
-	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder,
-	MTLDevice, MTLRenderCommandEncoder, MTLTexture,
+	MTL4ArgumentTable, MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTL4RenderCommandEncoder, MTLArgumentEncoder, MTLBuffer,
+	MTLDevice, MTLTexture,
 };
 use smallvec::SmallVec;
 
@@ -21,7 +21,10 @@ use crate::{
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
-const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+const ARGUMENT_TABLE_BUFFER_COUNT: usize = 17;
+const PUSH_UPLOAD_ALIGNMENT: usize = 256;
+const PUSH_UPLOAD_PAGE_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 struct AppliedDescriptorBinding {
@@ -106,24 +109,14 @@ mod tests {
 	fn layered_rendering_rejects_a_native_texture_with_too_few_layers() {
 		validate_attachment_layer_selection(None, std::num::NonZeroU32::new(4), 3);
 	}
-}
 
-/// Flushes CPU writes to a managed Metal buffer before a GPU read command uses that range.
-fn flush_managed_buffer_range(buffer: &buffer::Buffer, offset: usize, size: usize) {
-	if utils::storage_mode_from_access(buffer.access) != mtl::MTLStorageMode::Managed {
-		return;
+	#[test]
+	fn push_upload_ranges_are_aligned_and_do_not_overlap() {
+		assert_eq!(super::push_upload_offset(0, 4, 1024), Some(0));
+		assert_eq!(super::push_upload_offset(4, 4, 1024), Some(256));
+		assert_eq!(super::push_upload_offset(260, 4, 1024), Some(512));
+		assert_eq!(super::push_upload_offset(1020, 8, 1024), None);
 	}
-
-	let end = offset.checked_add(size).expect(
-		"Metal managed buffer flush range overflowed. The most likely cause is an invalid upload buffer offset or size.",
-	);
-	assert!(
-		end <= buffer.size,
-		"Metal managed buffer flush range is out of bounds. The most likely cause is that recorded upload ranges exceed the staging buffer. offset={offset}, size={size}, buffer_size={}",
-		buffer.size
-	);
-
-	buffer.buffer.didModifyRange(NSRange::new(offset, size));
 }
 
 fn replace_texture_from_bytes(
@@ -208,6 +201,80 @@ pub(super) struct RecordingCommit<'a> {
 	>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ComputeEncoderPhase {
+	None,
+	Transfer,
+	Dispatch,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ArgumentTableStage {
+	Compute,
+	Vertex,
+	Fragment,
+	Object,
+	Mesh,
+}
+
+impl ArgumentTableStage {
+	fn index(self) -> usize {
+		match self {
+			Self::Compute => 0,
+			Self::Vertex => 1,
+			Self::Fragment => 2,
+			Self::Object => 3,
+			Self::Mesh => 4,
+		}
+	}
+
+	fn render_stage(self) -> mtl::MTLRenderStages {
+		match self {
+			Self::Vertex => mtl::MTLRenderStages::Vertex,
+			Self::Fragment => mtl::MTLRenderStages::Fragment,
+			Self::Object => mtl::MTLRenderStages::Object,
+			Self::Mesh => mtl::MTLRenderStages::Mesh,
+			Self::Compute => unreachable!(
+				"Invalid Metal render argument-table stage. The most likely cause is that the compute table was bound to a render encoder."
+			),
+		}
+	}
+}
+
+/// The `CommandArgumentTables` struct keeps one mutable Metal 4 binding table per shader stage for command-local snapshots.
+#[derive(Default)]
+pub(super) struct CommandArgumentTables {
+	tables: [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5],
+}
+
+impl CommandArgumentTables {
+	fn get(&self, stage: ArgumentTableStage) -> Option<&Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>> {
+		self.tables[stage.index()].as_ref()
+	}
+
+	fn insert(&mut self, stage: ArgumentTableStage, table: Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>) {
+		self.tables[stage.index()] = Some(table);
+	}
+}
+
+/// The `PushUploadPage` struct keeps immutable push-constant snapshots in one command-local shared Metal buffer.
+pub(super) struct PushUploadPage {
+	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	cursor: usize,
+}
+
+/// The `PushUploadArena` struct provides aligned, non-overlapping push-constant ranges for one command recording.
+#[derive(Default)]
+pub(super) struct PushUploadArena {
+	pages: SmallVec<[PushUploadPage; 2]>,
+}
+
+/// Returns the next aligned upload offset when the requested range fits in the current page.
+fn push_upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usize> {
+	let aligned = cursor.checked_add(PUSH_UPLOAD_ALIGNMENT - 1)? & !(PUSH_UPLOAD_ALIGNMENT - 1);
+	(aligned.checked_add(size)? <= capacity).then_some(aligned)
+}
+
 // TODO: use frame allocator for this
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
@@ -215,15 +282,13 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
-	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+	command_buffer: queue::NativeCommand,
 	#[cfg(debug_assertions)]
 	debug_regions: SmallVec<[Retained<NSString>; 8]>,
 	#[cfg(debug_assertions)]
 	compute_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	render_debug_region_depth: usize,
-	#[cfg(debug_assertions)]
-	blit_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	encoder_block_index: usize,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
@@ -238,25 +303,15 @@ pub struct CommandBufferRecording<'a> {
 	push_constant_data: SmallVec<[u8; 128]>,
 	compute_push_constants_dirty: bool,
 	render_push_constants_dirty: bool,
-	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
-	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
-	active_blit_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLBlitCommandEncoder>>>,
+	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
+	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>>,
+	compute_encoder_phase: ComputeEncoderPhase,
+	argument_tables: CommandArgumentTables,
+	push_upload_arena: PushUploadArena,
 	encoded_compute_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	encoded_render_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,
 	applied_render_descriptor_binding: Option<AppliedDescriptorBinding>,
-	compute_resident_bindings: SmallVec<
-		[(
-			(DescriptorSetHandle, crate::shader::ResourceSlot),
-			(u64, mtl::MTLResourceUsage),
-		); 32],
-	>,
-	render_resident_bindings: SmallVec<
-		[(
-			(DescriptorSetHandle, crate::shader::ResourceSlot),
-			(u64, mtl::MTLResourceUsage, mtl::MTLRenderStages),
-		); 32],
-	>,
 	drawables: SmallVec<
 		[(
 			graphics_hardware_interface::SwapchainHandle,
@@ -268,7 +323,7 @@ pub struct CommandBufferRecording<'a> {
 
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+	pub(crate) command_buffer: queue::NativeCommand,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 

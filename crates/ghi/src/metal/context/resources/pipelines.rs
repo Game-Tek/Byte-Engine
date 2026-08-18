@@ -118,10 +118,13 @@ impl Context {
 	) -> VertexLayoutHandle {
 		let elements = vertex_elements
 			.iter()
-			.map(|element| VertexElementDescriptor {
-				name: element.name.to_owned(),
-				format: element.format,
-				binding: element.binding,
+			.map(|element| {
+				validate_vertex_binding(element.binding);
+				VertexElementDescriptor {
+					name: element.name.to_owned(),
+					format: element.format,
+					binding: element.binding,
+				}
 			})
 			.collect::<Vec<_>>();
 		let key = VertexLayoutKey {
@@ -260,7 +263,7 @@ impl Context {
 			match shader_parameter.stage {
 				crate::ShaderTypes::Task => {
 					object_function = self.create_metal_function(shader_parameter);
-					object_threadgroup_size = shader.threadgroup_size;
+					object_threadgroup_size = Some(shader.threadgroup_size.unwrap_or(Extent::new(1, 1, 1)));
 				}
 				crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
 				crate::ShaderTypes::Mesh => {

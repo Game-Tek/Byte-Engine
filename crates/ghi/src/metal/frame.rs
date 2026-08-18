@@ -1,8 +1,6 @@
 use objc2_foundation::NSAutoreleasePool;
 use objc2_foundation::NSString;
-use objc2_metal::MTLBlitCommandEncoder;
-use objc2_metal::MTLCommandBuffer;
-use objc2_metal::MTLCommandEncoder;
+use objc2_metal::{MTL4CommandEncoder, MTL4CommandQueue, MTL4ComputeCommandEncoder, MTLDrawable};
 use smallvec::SmallVec;
 
 use super::*;
@@ -18,6 +16,7 @@ use crate::SwapchainHandle;
 /// released before the autorelease pool drains, so `_autorelease_pool` is declared last.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
+	queue_handle: graphics_hardware_interface::QueueHandle,
 	drawables: SmallVec<[(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>); 4]>,
 	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
@@ -25,9 +24,23 @@ pub struct Frame<'a> {
 
 impl<'a> Frame<'a> {
 	pub fn new(device: &'a mut context::Context, frame_key: graphics_hardware_interface::FrameKey) -> Self {
+		assert!(
+			!device.queues.is_empty(),
+			"Metal frame creation failed. The most likely cause is that the context has no command queues.",
+		);
+		Self::new_for_queue(device, frame_key, graphics_hardware_interface::QueueHandle(0))
+	}
+
+	/// Creates a frame that batches command buffers through the selected queue.
+	pub(crate) fn new_for_queue(
+		device: &'a mut context::Context,
+		frame_key: graphics_hardware_interface::FrameKey,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+	) -> Self {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
+			queue_handle,
 			drawables: SmallVec::new(),
 			device,
 			_autorelease_pool: pool,
@@ -204,22 +217,28 @@ impl Frame<'_> {
 
 	pub fn execute_finished(
 		&mut self,
-		cbr: super::FinishedCommandBuffer<'_>,
+		command_buffer: super::FinishedCommandBuffer<'_>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let super::FinishedCommandBuffer {
-			command_buffer_handle: _command_buffer_handle,
-			command_buffer,
-			_marker,
-		} = cbr;
+		let mut command_buffers = SmallVec::new();
+		command_buffers.push(command_buffer);
+		self.execute_finished_batch(command_buffers, present_keys, synchronizer);
+	}
+
+	/// Finishes and submits all frame command buffers through one Metal 4 queue commit.
+	pub(crate) fn execute_finished_batch<'command>(
+		&mut self,
+		command_buffers: SmallVec<[super::FinishedCommandBuffer<'command>; 4]>,
+		present_keys: &[graphics_hardware_interface::PresentKey],
+		synchronizer: graphics_hardware_interface::SynchronizerHandle,
+	) {
 		let mut present_drawables = SmallVec::<
 			[(
 				graphics_hardware_interface::PresentKey,
 				Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
 			); 4],
 		>::new();
-
 		for &present_key in present_keys {
 			let drawable = self
 				.drawables
@@ -229,16 +248,35 @@ impl Frame<'_> {
 			present_drawables.push((present_key, drawable));
 		}
 
-		if present_keys
+		let mut native_commands = SmallVec::<[queue::NativeCommand; 4]>::new();
+		for command_buffer in command_buffers {
+			let super::FinishedCommandBuffer {
+				command_buffer_handle,
+				command_buffer,
+				_marker,
+			} = command_buffer;
+			let command_queue = self.device.command_buffers[command_buffer_handle.0 as usize].queue_handle;
+			assert_eq!(
+				command_queue,
+				self.queue_handle,
+				"Metal 4 frame batch submission failed. The most likely cause is that a command buffer from another GHI queue was recorded into this execution.",
+			);
+			native_commands.push(command_buffer);
+		}
+
+		let uses_proxy = present_keys
 			.iter()
-			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy)
-		{
-			let blit_encoder = command_buffer.blitCommandEncoder().expect(
-				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
+			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy);
+		if uses_proxy {
+			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
+			let resolve_command = self.device.queues[self.queue_handle.0 as usize]
+				.acquire_native_command(Some("Present Resolve"), self.device.settings.debug_labels);
+			let copy_encoder = resolve_command.compute_command_encoder().expect(
+				"Metal 4 present resolve encoder creation failed. The most likely cause is that the resolve command was not recording.",
 			);
 			#[cfg(debug_assertions)]
 			if self.device.settings.debug_labels {
-				blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
+				copy_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
 			}
 
 			for (present_key, drawable) in &present_drawables {
@@ -252,27 +290,61 @@ impl Frame<'_> {
 				let Some(proxy_image) = swapchain.images[present_key.sequence_index as usize] else {
 					continue;
 				};
-				let source_texture = &self.device.images.resource(proxy_image).texture;
+				let source_texture = self.device.images.resource(proxy_image).texture.clone();
 				let destination_texture = drawable.texture();
+				resolve_command.retain_texture(source_texture.clone());
+				resolve_command.retain_texture(destination_texture.clone());
 
 				unsafe {
-					blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
+					copy_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
+				}
+			}
+			copy_encoder.endEncoding();
+			native_commands.push(resolve_command);
+		}
+
+		// An empty command still advances the frame synchronizer and provides a valid commit point for presentation.
+		if native_commands.is_empty() {
+			native_commands.push(
+				self.device.queues[self.queue_handle.0 as usize]
+					.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels),
+			);
+		}
+		for command in &native_commands {
+			for (_, drawable) in &present_drawables {
+				if let Some(drawable) = drawable {
+					command.retain_drawable(drawable.clone());
+				}
+			}
+		}
+
+		{
+			let queue = &self.device.queues[self.queue_handle.0 as usize].queue;
+			for (_, drawable) in &present_drawables {
+				if let Some(drawable) = drawable {
+					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
+					queue.waitForDrawable(drawable);
 				}
 			}
 
-			blit_encoder.endEncoding();
+			queue::NativeCommand::submit_batch(&native_commands);
+
+			for (_, drawable) in &present_drawables {
+				if let Some(drawable) = drawable {
+					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
+					queue.signalDrawable(drawable);
+					drawable.present();
+				}
+			}
 		}
 
-		for (_, drawable) in &present_drawables {
-			let Some(drawable) = drawable else {
-				continue;
-			};
-			let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-			command_buffer.presentDrawable(drawable_ref);
-		}
-
+		let synchronizer = self
+			.device
+			.synchronizer_for_sequence(synchronizer, self.frame_key.sequence_index);
 		self.device
-			.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, self.frame_key.sequence_index);
+			.synchronizers
+			.resource(synchronizer)
+			.signal_workloads(native_commands);
 	}
 }
 

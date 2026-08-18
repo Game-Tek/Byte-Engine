@@ -1,295 +1,55 @@
 use super::*;
 
 impl CommandBufferRecording<'_> {
-	pub(super) fn render_stages(stages: crate::Stages) -> mtl::MTLRenderStages {
-		let mut render_stages = mtl::MTLRenderStages(0);
-
-		if stages.intersects(crate::Stages::VERTEX) {
-			render_stages |= mtl::MTLRenderStages::Vertex;
+	/// Retains every materialized argument buffer and descriptor allocation through native command completion.
+	pub(super) fn retain_descriptor_resources(&self, layout: &PipelineLayout, materialization: &Materialization) {
+		for (_, argument_buffer) in materialization.argument_buffers.iter() {
+			self.command_buffer.retain_buffer(argument_buffer.clone());
 		}
-
-		if stages.intersects(crate::Stages::FRAGMENT) {
-			render_stages |= mtl::MTLRenderStages::Fragment;
+		for texture_view in materialization._texture_views.iter() {
+			self.command_buffer.retain_texture(texture_view.clone());
 		}
-
-		if stages.intersects(crate::Stages::TASK) {
-			render_stages |= mtl::MTLRenderStages::Object;
-		}
-
-		if stages.intersects(crate::Stages::MESH) {
-			render_stages |= mtl::MTLRenderStages::Mesh;
-		}
-
-		if render_stages.is_empty() {
-			mtl::MTLRenderStages(
-				mtl::MTLRenderStages::Vertex.0
-					| mtl::MTLRenderStages::Fragment.0
-					| mtl::MTLRenderStages::Object.0
-					| mtl::MTLRenderStages::Mesh.0,
-			)
-		} else {
-			render_stages
-		}
-	}
-
-	pub(super) fn metal_resource_usage(access: crate::AccessPolicies) -> mtl::MTLResourceUsage {
-		let mut usage = mtl::MTLResourceUsage(0);
-		if access.intersects(crate::AccessPolicies::READ) {
-			usage |= mtl::MTLResourceUsage::Read;
-		}
-		if access.intersects(crate::AccessPolicies::WRITE) {
-			usage |= mtl::MTLResourceUsage::Write;
-		}
-		usage
-	}
-
-	/// Returns the residency usage that still needs to be declared for one compute descriptor slot.
-	pub(super) fn update_compute_binding_residency(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		version: u64,
-		slot: crate::shader::ResourceSlot,
-		usage: mtl::MTLResourceUsage,
-	) -> Option<mtl::MTLResourceUsage> {
-		if let Some((_, (resident_version, resident_usage))) = self
-			.compute_resident_bindings
-			.iter_mut()
-			.find(|(key, _)| *key == (set_handle, slot))
-		{
-			if *resident_version != version {
-				*resident_version = version;
-				*resident_usage = usage;
-				return Some(usage);
-			}
-
-			let combined = mtl::MTLResourceUsage(resident_usage.0 | usage.0);
-			if combined.0 == resident_usage.0 {
-				return None;
-			}
-			*resident_usage = combined;
-			return Some(combined);
-		}
-
-		self.compute_resident_bindings.push(((set_handle, slot), (version, usage)));
-		Some(usage)
-	}
-
-	/// Returns the residency usage and stages that still need to be declared for one render descriptor slot.
-	pub(super) fn update_render_binding_residency(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		version: u64,
-		slot: crate::shader::ResourceSlot,
-		usage: mtl::MTLResourceUsage,
-		stages: mtl::MTLRenderStages,
-	) -> Option<(mtl::MTLResourceUsage, mtl::MTLRenderStages)> {
-		if let Some((_, (resident_version, resident_usage, resident_stages))) = self
-			.render_resident_bindings
-			.iter_mut()
-			.find(|(key, _)| *key == (set_handle, slot))
-		{
-			if *resident_version != version {
-				*resident_version = version;
-				*resident_usage = usage;
-				*resident_stages = stages;
-				return Some((usage, stages));
-			}
-
-			let combined_usage = mtl::MTLResourceUsage(resident_usage.0 | usage.0);
-			let combined_stages = mtl::MTLRenderStages(resident_stages.0 | stages.0);
-			if combined_usage.0 == resident_usage.0 && combined_stages.0 == resident_stages.0 {
-				return None;
-			}
-			*resident_usage = combined_usage;
-			*resident_stages = combined_stages;
-			return Some((combined_usage, combined_stages));
-		}
-
-		self.render_resident_bindings
-			.push(((set_handle, slot), (version, usage, stages)));
-		Some((usage, stages))
-	}
-
-	/// Makes the resources referenced by the flat pipeline interface resident for a render encoder.
-	pub(super) fn make_render_descriptor_resources_resident(
-		&mut self,
-		encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>,
-		layout: &PipelineLayout,
-	) {
-		struct UsageBatch {
-			usage: mtl::MTLResourceUsage,
-			stages: mtl::MTLRenderStages,
-			resources: SmallVec<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>,
-		}
-
-		let mut batches = SmallVec::<[UsageBatch; 8]>::new();
-		let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
 
 		for resource in &layout.resources {
-			let slot = resource.descriptor.slot();
-			let Some((set_handle, _)) = self.descriptors_at_slot_with_owner(slot) else {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
 				continue;
 			};
-			let version = self.device.descriptor_sets[set_handle.0 as usize].version;
-			let usage = Self::metal_resource_usage(resource.descriptor.access());
-			let stages = Self::render_stages(resource.stages);
-			let Some((usage, stages)) = self.update_render_binding_residency(set_handle, version, slot, usage, stages) else {
-				continue;
-			};
-			let descriptors = self
-				.descriptors_at_slot(slot)
-				.expect("A Metal descriptor slot disappeared while its residency declaration was being recorded.");
-
-			let batch_index = batches.iter().position(|b| b.usage.0 == usage.0 && b.stages.0 == stages.0);
-			let batch = match batch_index {
-				Some(index) => &mut batches[index],
-				None => {
-					batches.push(UsageBatch {
-						usage,
-						stages,
-						resources: SmallVec::new(),
-					});
-					batches.last_mut().unwrap()
-				}
-			};
-
 			for descriptor in descriptors.values().copied() {
-				let native_resource = match descriptor {
-					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
-						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-						NonNull::from(resource)
+				match descriptor {
+					Descriptor::Image { image, .. } => {
+						self.command_buffer
+							.retain_texture(self.device.images.resource(image).texture.clone());
+					}
+					Descriptor::CombinedImageSampler { image, sampler, .. } => {
+						self.command_buffer
+							.retain_texture(self.device.images.resource(image).texture.clone());
+						self.command_buffer
+							.retain_sampler(self.device.samplers[sampler.0 as usize].sampler.clone());
 					}
 					Descriptor::Buffer { buffer, .. } => {
-						let buf: &ProtocolObject<dyn mtl::MTLBuffer> = &self.device.buffers.resource(buffer).buffer;
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(buf);
-						NonNull::from(resource)
+						self.command_buffer
+							.retain_buffer(self.device.buffers.resource(buffer).buffer.clone());
 					}
 					Descriptor::Swapchain { handle } => {
-						if let Some(proxy_handle) =
-							self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
-						{
-							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
-							let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-							NonNull::from(resource)
+						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
+							self.command_buffer
+								.retain_texture(self.device.images.resource(proxy).texture.clone());
 						} else {
-							retained_drawable_textures.push(self.drawable_texture(handle));
-							let tex: &ProtocolObject<dyn mtl::MTLTexture> = retained_drawable_textures.last().unwrap().as_ref();
-							let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-							NonNull::from(resource)
+							self.command_buffer.retain_texture(self.drawable_texture(handle));
 						}
 					}
 					Descriptor::AccelerationStructure { handle } => {
-						let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() else {
-							continue;
-						};
-						let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(structure);
-						NonNull::from(resource)
-					}
-					Descriptor::Sampler { .. } => continue,
-				};
-				batch.resources.push(native_resource);
-			}
-		}
-
-		for batch in &batches {
-			if !batch.resources.is_empty() {
-				let resources = NonNull::new(batch.resources.as_ptr() as *mut _)
-					.expect("A non-empty Metal render residency list had a null pointer.");
-				unsafe {
-					encoder.useResources_count_usage_stages(resources, batch.resources.len(), batch.usage, batch.stages);
-				}
-			}
-		}
-	}
-
-	/// Makes the resources referenced by the flat pipeline interface resident for a compute encoder.
-	pub(super) fn make_compute_descriptor_resources_resident(
-		&mut self,
-		encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>,
-		layout: &PipelineLayout,
-	) {
-		struct UsageBatch {
-			usage: mtl::MTLResourceUsage,
-			resources: SmallVec<[NonNull<ProtocolObject<dyn mtl::MTLResource>>; 32]>,
-		}
-
-		let mut batches = SmallVec::<[UsageBatch; 4]>::new();
-		let mut retained_drawable_textures = SmallVec::<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 1]>::new();
-
-		for resource in &layout.resources {
-			let slot = resource.descriptor.slot();
-			let Some((set_handle, _)) = self.descriptors_at_slot_with_owner(slot) else {
-				continue;
-			};
-			let version = self.device.descriptor_sets[set_handle.0 as usize].version;
-			let usage = Self::metal_resource_usage(resource.descriptor.access());
-			let Some(usage) = self.update_compute_binding_residency(set_handle, version, slot, usage) else {
-				continue;
-			};
-			let descriptors = self
-				.descriptors_at_slot(slot)
-				.expect("A Metal descriptor slot disappeared while its residency declaration was being recorded.");
-
-			let batch_index = batches.iter().position(|b| b.usage.0 == usage.0);
-			let batch = match batch_index {
-				Some(index) => &mut batches[index],
-				None => {
-					batches.push(UsageBatch {
-						usage,
-						resources: SmallVec::new(),
-					});
-					batches.last_mut().unwrap()
-				}
-			};
-
-			for descriptor in descriptors.values().copied() {
-				let native_resource = match descriptor {
-					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
-						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-						NonNull::from(resource)
-					}
-					Descriptor::Buffer { buffer, .. } => {
-						let buf: &ProtocolObject<dyn mtl::MTLBuffer> = &self.device.buffers.resource(buffer).buffer;
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(buf);
-						NonNull::from(resource)
-					}
-					Descriptor::Swapchain { handle } => {
-						if let Some(proxy_handle) =
-							self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
-						{
-							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
-							let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-							NonNull::from(resource)
-						} else {
-							retained_drawable_textures.push(self.drawable_texture(handle));
-							let tex: &ProtocolObject<dyn mtl::MTLTexture> = retained_drawable_textures.last().unwrap().as_ref();
-							let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(tex);
-							NonNull::from(resource)
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							let allocation = unsafe {
+								Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone())
+							};
+							self.command_buffer.retain_allocations(std::iter::once(allocation));
 						}
 					}
-					Descriptor::AccelerationStructure { handle } => {
-						let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() else {
-							continue;
-						};
-						let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
-						let resource: &ProtocolObject<dyn mtl::MTLResource> = ProtocolObject::from_ref(structure);
-						NonNull::from(resource)
+					Descriptor::Sampler { sampler } => {
+						self.command_buffer
+							.retain_sampler(self.device.samplers[sampler.0 as usize].sampler.clone());
 					}
-					Descriptor::Sampler { .. } => continue,
-				};
-				batch.resources.push(native_resource);
-			}
-		}
-
-		for batch in &batches {
-			if !batch.resources.is_empty() {
-				let resources = NonNull::new(batch.resources.as_ptr() as *mut _)
-					.expect("A non-empty Metal compute residency list had a null pointer.");
-				unsafe {
-					encoder.useResources_count_usage(resources, batch.resources.len(), batch.usage);
 				}
 			}
 		}
@@ -548,19 +308,18 @@ impl CommandBufferRecording<'_> {
 
 		let pipeline_layout_handle = self.device.pipelines[pipeline_handle.0 as usize].layout;
 		let materialization = self.materialize_argument_buffers(pipeline_handle);
-		let encoder = self.active_compute_encoder.clone().expect(
-			"No active compute encoder. The most likely cause is that compute descriptors were prepared before a dispatch.",
-		);
 
 		for (stage, argument_buffer) in materialization.argument_buffers.iter() {
 			if stage.intersects(crate::Stages::COMPUTE) {
-				unsafe {
-					encoder.setBuffer_offset_atIndex(Some(argument_buffer.as_ref()), 0, ARGUMENT_BUFFER_BINDING_BASE as _);
-				}
+				self.set_stage_buffer_address(
+					ArgumentTableStage::Compute,
+					ARGUMENT_BUFFER_BINDING_BASE,
+					argument_buffer.gpuAddress(),
+				);
 			}
 		}
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
-		self.make_compute_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
+		self.retain_descriptor_resources(pipeline_layout, &materialization);
 		self.applied_compute_descriptor_binding = Some(AppliedDescriptorBinding {
 			pipeline: pipeline_handle,
 			descriptor_sets: self.bound_descriptor_set_handles.clone(),
@@ -580,40 +339,22 @@ impl CommandBufferRecording<'_> {
 
 		let pipeline_layout_handle = self.device.pipelines[pipeline_handle.0 as usize].layout;
 		let materialization = self.materialize_argument_buffers(pipeline_handle);
-		let encoder = self.active_render_encoder.clone().expect(
-			"No active render pass. The most likely cause is that render descriptors were prepared before start_render_pass.",
-		);
 
 		for (stage, argument_buffer) in materialization.argument_buffers.iter() {
-			unsafe {
-				if stage.intersects(crate::Stages::TASK) {
-					encoder.setObjectBuffer_offset_atIndex(
-						Some(argument_buffer.as_ref()),
-						0,
-						ARGUMENT_BUFFER_BINDING_BASE as _,
-					);
-				}
-				if stage.intersects(crate::Stages::MESH) {
-					encoder.setMeshBuffer_offset_atIndex(Some(argument_buffer.as_ref()), 0, ARGUMENT_BUFFER_BINDING_BASE as _);
-				}
-				if stage.intersects(crate::Stages::VERTEX) {
-					encoder.setVertexBuffer_offset_atIndex(
-						Some(argument_buffer.as_ref()),
-						0,
-						ARGUMENT_BUFFER_BINDING_BASE as _,
-					);
-				}
-				if stage.intersects(crate::Stages::FRAGMENT) {
-					encoder.setFragmentBuffer_offset_atIndex(
-						Some(argument_buffer.as_ref()),
-						0,
-						ARGUMENT_BUFFER_BINDING_BASE as _,
-					);
+			let address = argument_buffer.gpuAddress();
+			for (stages, table_stage) in [
+				(crate::Stages::TASK, ArgumentTableStage::Object),
+				(crate::Stages::MESH, ArgumentTableStage::Mesh),
+				(crate::Stages::VERTEX, ArgumentTableStage::Vertex),
+				(crate::Stages::FRAGMENT, ArgumentTableStage::Fragment),
+			] {
+				if stage.intersects(stages) {
+					self.set_stage_buffer_address(table_stage, ARGUMENT_BUFFER_BINDING_BASE, address);
 				}
 			}
 		}
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
-		self.make_render_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
+		self.retain_descriptor_resources(pipeline_layout, &materialization);
 		self.applied_render_descriptor_binding = Some(AppliedDescriptorBinding {
 			pipeline: pipeline_handle,
 			descriptor_sets: self.bound_descriptor_set_handles.clone(),
@@ -621,8 +362,24 @@ impl CommandBufferRecording<'_> {
 		});
 	}
 
-	/// Restores encoder-local compute state immediately before a dispatch.
+	/// Restores encoder-local compute state and makes prior copy writes device-visible before a dispatch.
 	pub(super) fn prepare_compute_dispatch(&mut self) {
+		let previous_phase = self.compute_encoder_phase;
+		let encoder = self.ensure_compute_encoder().clone();
+		match previous_phase {
+			ComputeEncoderPhase::Transfer => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
+				mtl::MTLStages::Blit,
+				mtl::MTLStages::Dispatch,
+				mtl::MTL4VisibilityOptions::Device,
+			),
+			ComputeEncoderPhase::Dispatch => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
+				mtl::MTLStages::Dispatch,
+				mtl::MTLStages::Dispatch,
+				mtl::MTL4VisibilityOptions::Device,
+			),
+			ComputeEncoderPhase::None => {}
+		}
+		self.compute_encoder_phase = ComputeEncoderPhase::Dispatch;
 		self.apply_bound_compute_pipeline();
 		self.apply_bound_compute_descriptors();
 	}
@@ -639,7 +396,7 @@ impl CommandBufferRecording<'_> {
 			return;
 		};
 		let first_image = self.device.images.resource(*first_handle);
-		let rpd = mtl::MTLRenderPassDescriptor::new();
+		let rpd = mtl::MTL4RenderPassDescriptor::new();
 		if first_image.array_layers > 1 {
 			rpd.setRenderTargetArrayLength(first_image.array_layers as _);
 		}
@@ -647,6 +404,7 @@ impl CommandBufferRecording<'_> {
 		let mut color_index = 0;
 		for (handle, clear_value) in images {
 			let image = self.device.images.resource(*handle);
+			self.command_buffer.retain_texture(image.texture.clone());
 			if image.format.is_depth() {
 				let attachment = rpd.depthAttachment();
 				attachment.setTexture(Some(image.texture.as_ref()));
@@ -663,7 +421,7 @@ impl CommandBufferRecording<'_> {
 			}
 		}
 
-		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
+		let encoder = self.command_buffer.render_command_encoder(&rpd).expect(
 				"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 		);
 		#[cfg(debug_assertions)]

@@ -293,6 +293,7 @@ version = "0.1.1"
 dependencies = [
  "ash",
  "bitflags 2.13.0",
+ "block2",
  "byte-engine-utils",
  "dispatch2",
  "objc2",

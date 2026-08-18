@@ -1,35 +1,36 @@
 use super::*;
 
 impl Context {
-	// Creates a Metal command buffer with enhanced encoder execution status enabled.
+	// Acquires one reusable native command from the context-local pool and retains resources queued for an upload batch.
 	pub(super) fn create_metal_command_buffer(
 		&self,
-		queue: &ProtocolObject<dyn mtl::MTLCommandQueue>,
+		queue: &ProtocolObject<dyn mtl::MTL4CommandQueue>,
 		label: Option<&str>,
 		error_message: &'static str,
-	) -> Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>> {
-		let descriptor = mtl::MTLCommandBufferDescriptor::new();
-		descriptor.setRetainedReferences(true);
-		descriptor.setErrorOptions(mtl::MTLCommandBufferErrorOption::EncoderExecutionStatus);
+	) -> queue::NativeCommand {
+		let queue = self
+			.queues
+			.iter()
+			.find(|stored_queue| std::ptr::eq(stored_queue.queue.as_ref(), queue))
+			.expect(error_message);
+		let command = queue.acquire_native_command(label, self.settings.debug_labels);
 
-		let command_buffer = queue.commandBufferWithDescriptor(&descriptor).expect(error_message);
-
-		#[cfg(debug_assertions)]
-		if self.settings.debug_labels {
-			if let Some(label) = label {
-				command_buffer.setLabel(Some(&NSString::from_str(label)));
+		// Pending handles are still available here. Retain their source and destination allocations before the upload loop drains them.
+		for &buffer_handle in &self.pending_buffer_syncs {
+			let buffer = self.buffers.resource(buffer_handle);
+			command.retain_buffer(buffer.buffer.clone());
+			if let Some(staging_handle) = buffer.staging {
+				command.retain_buffer(self.buffers.resource(staging_handle).buffer.clone());
 			}
 		}
+		for &image_handle in &self.pending_image_syncs {
+			command.retain_texture(self.images.resource(image_handle).texture.clone());
+		}
 
-		command_buffer
+		command
 	}
 
-	// Submits the Metal command buffer without blocking; synchronizers retain submitted work for later waits.
-	pub(super) fn submit_metal_command_buffer(&self, command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-		submit_metal_command_buffer(command_buffer);
-	}
-
-	pub(super) fn synchronizer_for_sequence(
+	pub(crate) fn synchronizer_for_sequence(
 		&self,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		sequence_index: u8,
@@ -43,27 +44,24 @@ impl Context {
 
 	pub(crate) fn submit_metal_command_buffer_for_synchronizer(
 		&self,
-		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		command: queue::NativeCommand,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		sequence_index: u8,
 	) {
 		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index);
 		let synchronizer = self.synchronizers.resource(synchronizer_handle);
 
-		// The synchronizer owns a retained command buffer until a GHI wait observes completion.
-		synchronizer.signal_workload(command_buffer.clone());
-		self.submit_metal_command_buffer(command_buffer.as_ref());
+		// Synchronizer ownership keeps the native command and all retained resources alive until its shared-event token completes.
+		synchronizer.signal_workload(command.clone());
+		queue::NativeCommand::submit_batch(std::slice::from_ref(&command));
 	}
 
-	pub(super) fn submit_internal_metal_command_buffer(
-		&self,
-		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-		sequence_index: u8,
-	) {
+	pub(super) fn submit_internal_metal_command_buffer(&self, command: queue::NativeCommand, sequence_index: u8) {
+		command.retain_allocations(self.pending_native_allocations.take());
 		let synchronizer = self.internal_upload_synchronizer.expect(
 			"Metal internal upload synchronizer is missing. The most likely cause is that the context was not initialized correctly.",
 		);
-		self.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, sequence_index);
+		self.submit_metal_command_buffer_for_synchronizer(command, synchronizer, sequence_index);
 	}
 
 	pub fn new(
@@ -97,6 +95,7 @@ impl Context {
 			settings,
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
+			pending_native_allocations: RefCell::new(SmallVec::new()),
 			tasks: Vec::new(),
 
 			#[cfg(debug_assertions)]
@@ -295,10 +294,10 @@ impl Context {
 		handle
 	}
 
-	/// Copies one compact CPU texture into an upload buffer and appends its blits to a shared encoder.
+	/// Copies one compact CPU texture into an upload buffer and appends its copy commands to a Metal 4 compute encoder.
 	pub(super) fn encode_texture_upload(
 		&self,
-		blit_encoder: &ProtocolObject<dyn mtl::MTLBlitCommandEncoder>,
+		transfer_encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>,
 		texture: &ProtocolObject<dyn mtl::MTLTexture>,
 		format: crate::Formats,
 		extent: Extent,
@@ -316,6 +315,20 @@ impl Context {
 			.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
 			.expect("Metal upload buffer creation failed. The most likely cause is that the device is out of memory.");
 		let destination = upload_buffer.contents().as_ptr() as *mut u8;
+		let upload_allocation =
+			unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(upload_buffer.clone()) };
+		let destination_texture_pointer =
+			texture as *const ProtocolObject<dyn mtl::MTLTexture> as *mut ProtocolObject<dyn mtl::MTLTexture>;
+		let destination_texture = unsafe {
+			Retained::retain(destination_texture_pointer).expect(
+				"Metal upload destination retention failed. The most likely cause is that an invalid texture reached upload encoding.",
+			)
+		};
+		let destination_allocation =
+			unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(destination_texture) };
+		self.pending_native_allocations
+			.borrow_mut()
+			.extend([upload_allocation, destination_allocation]);
 
 		for slice in 0..array_layers as usize {
 			let source_offset = slice * bytes_per_image;
@@ -349,7 +362,7 @@ impl Context {
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 		for slice in 0..array_layers as usize {
 			unsafe {
-				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+				transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 					upload_buffer.as_ref(),
 					(slice * aligned_bytes_per_image) as _,
 					aligned_bytes_per_row as _,
@@ -383,11 +396,11 @@ impl Context {
 			Some("Texture Upload"),
 			"Metal texture upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
 		);
-		let blit_encoder = command_buffer.blitCommandEncoder().expect(
-			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
-		);
-		self.encode_texture_upload(blit_encoder.as_ref(), texture, format, extent, array_layers, staging);
-		blit_encoder.endEncoding();
+		let transfer_encoder = command_buffer
+			.compute_command_encoder()
+			.expect("Metal 4 copy encoder creation failed. The most likely cause is that the command buffer is not recording.");
+		self.encode_texture_upload(transfer_encoder.as_ref(), texture, format, extent, array_layers, staging);
+		transfer_encoder.endEncoding();
 		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 

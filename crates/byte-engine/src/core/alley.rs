@@ -1,6 +1,6 @@
-/// The `Alley` struct provides scoped parallel execution across a fixed number of lanes.
-pub struct Alley<'scope> {
-	threadpool: ScopedThreadPool<'scope>,
+/// The `Alley` struct provides reusable parallel execution across a fixed number of owned lanes.
+pub struct Alley {
+	threadpool: LanePool,
 }
 
 /// The `AlleyFunction` trait defines work that every lane runs during an [`Alley`] dispatch.
@@ -442,23 +442,30 @@ fn wait_briefly(spins: &mut usize) {
 	}
 }
 
-impl<'scope> Alley<'scope> {
-	pub fn new(scope: &'scope Scope<'scope, '_>) -> Self {
+impl Alley {
+	/// Creates an alley with one lane for each available hardware thread.
+	///
+	/// Call [`Self::execute`] or [`Self::execute_shared_mut`] to dispatch work.
+	pub fn new() -> Self {
 		Self {
-			threadpool: ScopedThreadPool::with_parallelism(scope, 8),
+			threadpool: LanePool::new(),
 		}
 	}
 
-	pub fn with_parallelism(scope: &'scope Scope<'scope, '_>, count: usize) -> Self {
+	/// Creates an alley with `count` persistent worker lanes.
+	///
+	/// Call [`Self::execute`] or [`Self::execute_shared_mut`] to dispatch work.
+	pub fn with_parallelism(count: usize) -> Self {
 		Self {
-			threadpool: ScopedThreadPool::with_parallelism(scope, count),
+			threadpool: LanePool::with_parallelism(count),
 		}
 	}
 
+	/// Executes `f` once on every lane and waits for all lanes to finish.
 	pub fn execute(&self, f: impl AlleyFunction) {
 		let state = DispatchState::new(self.threadpool.parallelism());
 		let state = &state;
-		self.threadpool.execute_on_all(move |lane_idx| {
+		self.threadpool.dispatch_all(move |lane_idx| {
 			f(&mut ConcreteLane::new(lane_idx, state));
 		});
 	}
@@ -499,7 +506,7 @@ impl<'scope> Alley<'scope> {
 			})
 		});
 
-		self.threadpool.execute_many(jobs);
+		self.threadpool.dispatch_many(jobs);
 	}
 
 	/// Distributes `items` evenly and gives each lane exclusive access to one partition.
@@ -542,7 +549,7 @@ impl<'scope> Alley<'scope> {
 			})
 		});
 
-		self.threadpool.execute_many(jobs);
+		self.threadpool.dispatch_many(jobs);
 	}
 }
 
@@ -551,37 +558,32 @@ mod tests {
 	use std::{
 		panic::{catch_unwind, AssertUnwindSafe},
 		sync::atomic::{AtomicUsize, Ordering},
-		thread::scope,
 	};
 
 	use crate::core::alley::{Alley, Lane};
 
 	#[test]
 	fn runs_on_all_lanes() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
-			let counter = AtomicUsize::new(0);
+		let alley = Alley::with_parallelism(8);
+		let counter = AtomicUsize::new(0);
 
-			alley.execute(|_| {
-				counter.fetch_add(1, Ordering::Relaxed);
-			});
-
-			assert_eq!(counter.load(Ordering::Relaxed), 8);
+		alley.execute(|_| {
+			counter.fetch_add(1, Ordering::Relaxed);
 		});
+
+		assert_eq!(counter.load(Ordering::Relaxed), 8);
 	}
 
 	#[test]
 	fn each_partition_receives_its_lane_index() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 3);
-			let mut counters = [0; 10];
+		let alley = Alley::with_parallelism(3);
+		let mut counters = [0; 10];
 
-			alley.for_each_mut(&mut counters, |lane, partition| {
-				partition.fill(lane.idx());
-			});
-
-			assert_eq!(counters, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]);
+		alley.for_each_mut(&mut counters, |lane, partition| {
+			partition.fill(lane.idx());
 		});
+
+		assert_eq!(counters, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]);
 	}
 
 	#[test]
@@ -589,16 +591,14 @@ mod tests {
 		let first_counter = AtomicUsize::new(0);
 		let second_counter = AtomicUsize::new(0);
 
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute(|lane| {
-				lane.only_one_runs(|| {
-					first_counter.fetch_add(1, Ordering::Relaxed);
-				});
-				lane.only_one_runs(|| {
-					second_counter.fetch_add(1, Ordering::Relaxed);
-				});
+		alley.execute(|lane| {
+			lane.only_one_runs(|| {
+				first_counter.fetch_add(1, Ordering::Relaxed);
+			});
+			lane.only_one_runs(|| {
+				second_counter.fetch_add(1, Ordering::Relaxed);
 			});
 		});
 
@@ -608,28 +608,26 @@ mod tests {
 
 	#[test]
 	fn limited_parallelism_runs_only_the_first_lanes() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
-			let first_section = AtomicUsize::new(0);
-			let second_section = AtomicUsize::new(0);
-			let zero_section = AtomicUsize::new(0);
+		let alley = Alley::with_parallelism(8);
+		let first_section = AtomicUsize::new(0);
+		let second_section = AtomicUsize::new(0);
+		let zero_section = AtomicUsize::new(0);
 
-			alley.execute(|lane| {
-				lane.with_limited_parallelism(3, || {
-					first_section.fetch_add(1, Ordering::Relaxed);
-				});
-				lane.with_limited_parallelism(5, || {
-					second_section.fetch_add(1, Ordering::Relaxed);
-				});
-				lane.with_limited_parallelism(0, || {
-					zero_section.fetch_add(1, Ordering::Relaxed);
-				});
+		alley.execute(|lane| {
+			lane.with_limited_parallelism(3, || {
+				first_section.fetch_add(1, Ordering::Relaxed);
 			});
-
-			assert_eq!(first_section.load(Ordering::Relaxed), 3);
-			assert_eq!(second_section.load(Ordering::Relaxed), 5);
-			assert_eq!(zero_section.load(Ordering::Relaxed), 0);
+			lane.with_limited_parallelism(5, || {
+				second_section.fetch_add(1, Ordering::Relaxed);
+			});
+			lane.with_limited_parallelism(0, || {
+				zero_section.fetch_add(1, Ordering::Relaxed);
+			});
 		});
+
+		assert_eq!(first_section.load(Ordering::Relaxed), 3);
+		assert_eq!(second_section.load(Ordering::Relaxed), 5);
+		assert_eq!(zero_section.load(Ordering::Relaxed), 0);
 	}
 
 	#[test]
@@ -637,21 +635,19 @@ mod tests {
 		let counter = AtomicUsize::new(0);
 		let initializer_count = AtomicUsize::new(0);
 
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute(|lane| {
-				let first = lane.broadcast(|| {
-					initializer_count.fetch_add(1, Ordering::Relaxed);
-					1usize
-				});
-				let second = lane.broadcast(|| {
-					initializer_count.fetch_add(1, Ordering::Relaxed);
-					2u16
-				});
-
-				counter.fetch_add(first + usize::from(second), Ordering::Relaxed);
+		alley.execute(|lane| {
+			let first = lane.broadcast(|| {
+				initializer_count.fetch_add(1, Ordering::Relaxed);
+				1usize
 			});
+			let second = lane.broadcast(|| {
+				initializer_count.fetch_add(1, Ordering::Relaxed);
+				2u16
+			});
+
+			counter.fetch_add(first + usize::from(second), Ordering::Relaxed);
 		});
 
 		assert_eq!(initializer_count.load(Ordering::Relaxed), 2);
@@ -660,21 +656,19 @@ mod tests {
 
 	#[test]
 	fn broadcast_panic_releases_waiting_lanes() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
-			let panic = catch_unwind(AssertUnwindSafe(|| {
-				alley.execute(|lane| {
-					let _: usize = lane.broadcast(|| panic!("expected broadcast panic"));
-				});
-			}));
-			assert!(panic.is_err());
-
-			let completed = AtomicUsize::new(0);
-			alley.execute(|_| {
-				completed.fetch_add(1, Ordering::Relaxed);
+		let alley = Alley::with_parallelism(8);
+		let panic = catch_unwind(AssertUnwindSafe(|| {
+			alley.execute(|lane| {
+				let _: usize = lane.broadcast(|| panic!("expected broadcast panic"));
 			});
-			assert_eq!(completed.load(Ordering::Relaxed), 8);
+		}));
+		assert!(panic.is_err());
+
+		let completed = AtomicUsize::new(0);
+		alley.execute(|_| {
+			completed.fetch_add(1, Ordering::Relaxed);
 		});
+		assert_eq!(completed.load(Ordering::Relaxed), 8);
 	}
 
 	#[test]
@@ -682,20 +676,18 @@ mod tests {
 		let counter = AtomicUsize::new(0);
 		let initializer_count = AtomicUsize::new(0);
 
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute(|lane| {
-				let lane_idx = lane.idx();
-				let all = lane.each(|| {
-					initializer_count.fetch_add(1, Ordering::Relaxed);
-					1usize
-				});
-				let lane_indices = lane.each(|| lane_idx);
-
-				assert_eq!(lane_indices, &[0, 1, 2, 3, 4, 5, 6, 7]);
-				counter.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+		alley.execute(|lane| {
+			let lane_idx = lane.idx();
+			let all = lane.each(|| {
+				initializer_count.fetch_add(1, Ordering::Relaxed);
+				1usize
 			});
+			let lane_indices = lane.each(|| lane_idx);
+
+			assert_eq!(lane_indices, &[0, 1, 2, 3, 4, 5, 6, 7]);
+			counter.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
 		});
 
 		assert_eq!(initializer_count.load(Ordering::Relaxed), 8);
@@ -704,56 +696,50 @@ mod tests {
 
 	#[test]
 	fn broadcast_and_each_share_collective_sections() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute(|lane| {
-				let lane_idx = lane.idx();
-				let first = lane.broadcast(|| 7u32);
-				let all = lane.each(|| lane_idx);
-				let second = lane.broadcast(|| 11u16);
+		alley.execute(|lane| {
+			let lane_idx = lane.idx();
+			let first = lane.broadcast(|| 7u32);
+			let all = lane.each(|| lane_idx);
+			let second = lane.broadcast(|| 11u16);
 
-				assert_eq!(first, 7);
-				assert_eq!(all, &[0, 1, 2, 3, 4, 5, 6, 7]);
-				assert_eq!(second, 11);
-			});
+			assert_eq!(first, 7);
+			assert_eq!(all, &[0, 1, 2, 3, 4, 5, 6, 7]);
+			assert_eq!(second, 11);
 		});
 	}
 
 	#[test]
 	fn collective_operation_mismatch_releases_waiting_lanes() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
-			let panic = catch_unwind(AssertUnwindSafe(|| {
-				alley.execute(|lane| {
-					if lane.idx() == 0 {
-						let _ = lane.broadcast(|| 1usize);
-					} else {
-						let _ = lane.each(|| 1usize);
-					}
-				});
-			}));
-			assert!(panic.is_err());
-		});
+		let alley = Alley::with_parallelism(8);
+		let panic = catch_unwind(AssertUnwindSafe(|| {
+			alley.execute(|lane| {
+				if lane.idx() == 0 {
+					let _ = lane.broadcast(|| 1usize);
+				} else {
+					let _ = lane.each(|| 1usize);
+				}
+			});
+		}));
+		assert!(panic.is_err());
 	}
 
 	#[test]
 	fn each_panic_releases_waiting_lanes() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
-			let panic = catch_unwind(AssertUnwindSafe(|| {
-				alley.execute(|lane| {
-					let _: &[usize] = lane.each(|| panic!("expected each panic"));
-				});
-			}));
-			assert!(panic.is_err());
-
-			let completed = AtomicUsize::new(0);
-			alley.execute(|_| {
-				completed.fetch_add(1, Ordering::Relaxed);
+		let alley = Alley::with_parallelism(8);
+		let panic = catch_unwind(AssertUnwindSafe(|| {
+			alley.execute(|lane| {
+				let _: &[usize] = lane.each(|| panic!("expected each panic"));
 			});
-			assert_eq!(completed.load(Ordering::Relaxed), 8);
+		}));
+		assert!(panic.is_err());
+
+		let completed = AtomicUsize::new(0);
+		alley.execute(|_| {
+			completed.fetch_add(1, Ordering::Relaxed);
 		});
+		assert_eq!(completed.load(Ordering::Relaxed), 8);
 	}
 
 	#[test]
@@ -762,15 +748,13 @@ mod tests {
 
 		let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute(|lane| {
-				let all = lane.each_shared(&values, |partition| partition.iter().sum());
+		alley.execute(|lane| {
+			let all = lane.each_shared(&values, |partition| partition.iter().sum());
 
-				lane.only_one_runs(|| {
-					value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
-				});
+			lane.only_one_runs(|| {
+				value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
 			});
 		});
 
@@ -779,17 +763,15 @@ mod tests {
 
 	#[test]
 	fn each_shared_balances_uneven_and_empty_partitions() {
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 5);
-			let values = [1usize, 2, 3];
+		let alley = Alley::with_parallelism(5);
+		let values = [1usize, 2, 3];
 
-			alley.execute(|lane| {
-				let lengths = lane.each_shared(&values, <[usize]>::len);
-				let sums = lane.each_shared(&values, |partition| partition.iter().sum::<usize>());
+		alley.execute(|lane| {
+			let lengths = lane.each_shared(&values, <[usize]>::len);
+			let sums = lane.each_shared(&values, |partition| partition.iter().sum::<usize>());
 
-				assert_eq!(lengths, &[1, 1, 1, 0, 0]);
-				assert_eq!(sums, &[1, 2, 3, 0, 0]);
-			});
+			assert_eq!(lengths, &[1, 1, 1, 0, 0]);
+			assert_eq!(sums, &[1, 2, 3, 0, 0]);
 		});
 	}
 
@@ -798,21 +780,19 @@ mod tests {
 		let value = AtomicUsize::new(0);
 		let mut values = vec![0; 16];
 
-		scope(|s| {
-			let alley = Alley::with_parallelism(s, 8);
+		let alley = Alley::with_parallelism(8);
 
-			alley.execute_shared_mut(&mut values, |lane| {
-				let lane_idx = lane.idx();
-				let all = lane.each_shared_mut(|partition| {
-					for (offset, value) in partition.iter_mut().enumerate() {
-						*value = lane_idx * 2 + offset + 1;
-					}
-					partition.iter().sum::<usize>()
-				});
+		alley.execute_shared_mut(&mut values, |lane| {
+			let lane_idx = lane.idx();
+			let all = lane.each_shared_mut(|partition| {
+				for (offset, value) in partition.iter_mut().enumerate() {
+					*value = lane_idx * 2 + offset + 1;
+				}
+				partition.iter().sum::<usize>()
+			});
 
-				lane.only_one_runs(|| {
-					value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
-				});
+			lane.only_one_runs(|| {
+				value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
 			});
 		});
 
@@ -832,4 +812,4 @@ use std::{
 	thread::yield_now,
 };
 
-use crate::core::threadpool::{Scope, ScopedThreadPool};
+use crate::core::threadpool::LanePool;

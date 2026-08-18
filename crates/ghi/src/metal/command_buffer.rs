@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, rc::Rc};
+use std::rc::Rc;
 
 use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
@@ -26,11 +26,10 @@ const ARGUMENT_TABLE_BUFFER_COUNT: usize = 17;
 const PUSH_UPLOAD_ALIGNMENT: usize = 256;
 const PUSH_UPLOAD_PAGE_SIZE: usize = 64 * 1024;
 
-#[derive(Clone, PartialEq, Eq)]
 struct AppliedDescriptorBinding {
 	pipeline: graphics_hardware_interface::PipelineHandle,
 	descriptor_sets: SmallVec<[DescriptorSetHandle; 4]>,
-	versions: SmallVec<[u64; 4]>,
+	materialization: Materialization,
 }
 
 fn attachment_texture_view(
@@ -119,62 +118,81 @@ mod tests {
 	}
 }
 
-fn replace_texture_from_bytes(
+/// Copies compact CPU texture data into an aligned shared buffer and records its Metal blits.
+pub(in crate::metal) fn encode_texture_upload(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	transfer_encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>,
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
 	extent: Extent,
 	array_layers: u32,
-	bytes: &[u8],
-) {
-	let Some((bytes_per_row, _, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
-		return;
-	};
+	staging: &[u8],
+) -> Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>> {
+	let (bytes_per_row, row_count, bytes_per_image) = utils::texture_upload_layout(format, extent)?;
+	let expected_size = bytes_per_image
+		.checked_mul(array_layers as usize)
+		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
+	assert!(
+		staging.len() >= expected_size,
+		"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
+		staging.len(),
+	);
+	if utils::is_block_compressed(format) {
+		assert_eq!(
+			staging.len(),
+			expected_size,
+			"Metal compressed texture staging size mismatch. The most likely cause is that CPU staging was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, staging_len={}, expected_size={expected_size}",
+			staging.len()
+		);
+	}
 
-	let region = mtl::MTLRegion {
-		origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-		size: {
-			let mut size = utils::texture_copy_size(format, extent);
-			size.depth = 1;
-			size
-		},
-	};
+	let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
+	let aligned_bytes_per_image = aligned_bytes_per_row
+		.checked_mul(row_count)
+		.expect("Metal texture upload pitch overflowed. The most likely cause is an invalid row count or aligned row size.");
+	let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
+		"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
+	);
+	let upload_buffer = device
+		.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
+		.expect("Metal upload buffer creation failed. The most likely cause is that the device is out of memory.");
+	let destination = upload_buffer.contents().as_ptr() as *mut u8;
 
 	for slice in 0..array_layers as usize {
-		let offset = slice * bytes_per_image;
-		let end = offset + bytes_per_image;
-
-		let Some(slice_bytes) = bytes.get(offset..end) else {
-			break;
-		};
-
-		let staging_ptr = NonNull::new(slice_bytes.as_ptr() as *mut std::ffi::c_void)
-			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
-
-		unsafe {
-			if array_layers > 1 {
-				texture.replaceRegion_mipmapLevel_slice_withBytes_bytesPerRow_bytesPerImage(
-					region,
-					0,
-					slice,
-					staging_ptr,
-					bytes_per_row as _,
-					bytes_per_image as _,
+		let source_offset = slice * bytes_per_image;
+		let destination_offset = slice * aligned_bytes_per_image;
+		let source_bytes = &staging[source_offset..source_offset + bytes_per_image];
+		for row in 0..row_count {
+			unsafe {
+				std::ptr::copy_nonoverlapping(
+					source_bytes.as_ptr().add(row * bytes_per_row),
+					destination.add(destination_offset + row * aligned_bytes_per_row),
+					bytes_per_row,
 				);
-			} else {
-				texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
 			}
 		}
 	}
 
-	if utils::is_block_compressed(format) {
-		let expected_size = bytes_per_image * array_layers as usize;
-		assert_eq!(
-			bytes.len(),
-			expected_size,
-			"Metal compressed texture replacement size mismatch. The most likely cause is that the source payload was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, bytes_len={}, expected_size={expected_size}",
-			bytes.len()
-		);
+	let mut source_size = utils::texture_copy_size(format, extent);
+	source_size.depth = 1;
+	let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+	for slice in 0..array_layers as usize {
+		unsafe {
+			transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+				upload_buffer.as_ref(),
+				(slice * aligned_bytes_per_image) as _,
+				aligned_bytes_per_row as _,
+				aligned_bytes_per_image as _,
+				source_size,
+				texture,
+				slice,
+				0,
+				destination_origin,
+			);
+		}
 	}
+
+	Some(upload_buffer)
 }
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
@@ -194,18 +212,12 @@ pub(super) struct RecordingDevice<'a> {
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
 pub(super) struct RecordingCommit<'a> {
+	pub(super) resource_tracker: &'a mut synchronization::MetalResourceTracker,
 	pub(super) synchronizers: &'a mut ResourceCollection<
 		synchronizer::Synchronizer,
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ComputeEncoderPhase {
-	None,
-	Transfer,
-	Dispatch,
 }
 
 #[derive(Clone, Copy)]
@@ -278,7 +290,7 @@ fn push_upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usi
 // TODO: use frame allocator for this
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
-	commit: Option<RecordingCommit<'a>>,
+	commit: RecordingCommit<'a>,
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
@@ -305,13 +317,16 @@ pub struct CommandBufferRecording<'a> {
 	render_push_constants_dirty: bool,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>>,
-	compute_encoder_phase: ComputeEncoderPhase,
+	active_encoder_scope: Option<synchronization::MetalEncoderScope>,
+	next_encoder_id: u32,
+	resource_tracker: synchronization::MetalResourceTracker,
 	argument_tables: CommandArgumentTables,
 	push_upload_arena: PushUploadArena,
 	encoded_compute_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	encoded_render_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,
 	applied_render_descriptor_binding: Option<AppliedDescriptorBinding>,
+	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	drawables: SmallVec<
 		[(
 			graphics_hardware_interface::SwapchainHandle,
@@ -319,6 +334,14 @@ pub struct CommandBufferRecording<'a> {
 		); 4],
 	>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
+}
+
+impl Drop for CommandBufferRecording<'_> {
+	fn drop(&mut self) {
+		if self.resource_tracker.rollback_recording() {
+			*self.commit.resource_tracker = std::mem::take(&mut self.resource_tracker);
+		}
+	}
 }
 
 pub struct FinishedCommandBuffer<'a> {

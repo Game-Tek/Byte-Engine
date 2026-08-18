@@ -11,8 +11,8 @@ pub mod queue {
 	use objc2::runtime::AnyObject;
 	use objc2_foundation::NSString;
 	use objc2_metal::{
-		MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandEncoder, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice,
-		MTLResidencySet, MTLSharedEvent,
+		MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice, MTLResidencySet,
+		MTLSharedEvent,
 	};
 
 	use super::*;
@@ -174,31 +174,17 @@ pub mod queue {
 			self.inner.state.set(NativeCommandState::Recording);
 		}
 
-		/// Returns a Metal 4 compute encoder that waits for prior work on the queue.
+		/// Returns a Metal 4 compute encoder for resource-tracked dispatch and transfer commands.
 		pub(crate) fn compute_command_encoder(&self) -> Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>> {
-			let encoder = self.inner.command_buffer.computeCommandEncoder()?;
-			// Metal 4 queue order does not make writes visible across encoders without an explicit barrier.
-			encoder.barrierAfterQueueStages_beforeStages_visibilityOptions(
-				mtl::MTLStages::All,
-				mtl::MTLStages::All,
-				mtl::MTL4VisibilityOptions::Device,
-			);
-			Some(encoder)
+			self.inner.command_buffer.computeCommandEncoder()
 		}
 
-		/// Returns a Metal 4 render encoder that waits for prior work on the queue.
+		/// Returns a Metal 4 render encoder for a resource-tracked render pass.
 		pub(crate) fn render_command_encoder(
 			&self,
 			descriptor: &mtl::MTL4RenderPassDescriptor,
 		) -> Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>> {
-			let encoder = self.inner.command_buffer.renderCommandEncoderWithDescriptor(descriptor)?;
-			// The barrier also covers work in earlier command buffers from the same ordered queue batch.
-			encoder.barrierAfterQueueStages_beforeStages_visibilityOptions(
-				mtl::MTLStages::All,
-				mtl::MTLStages::All,
-				mtl::MTL4VisibilityOptions::Device,
-			);
-			Some(encoder)
+			self.inner.command_buffer.renderCommandEncoderWithDescriptor(descriptor)
 		}
 
 		/// Retains a Metal buffer and declares its allocation in this command's residency set.
@@ -244,7 +230,7 @@ pub mod queue {
 			self.inner.retained_objects.borrow_mut().push(drawable);
 		}
 
-		/// Retains allocations collected by context-level upload encoding.
+		/// Retains native allocations referenced indirectly by this command.
 		pub(crate) fn retain_allocations(
 			&self,
 			allocations: impl IntoIterator<Item = Retained<ProtocolObject<dyn mtl::MTLAllocation>>>,
@@ -423,6 +409,7 @@ pub mod queue {
 	pub(crate) struct StoredQueue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTL4CommandQueue>>,
 		pub(crate) workloads: crate::WorkloadTypes,
+		pub(crate) resource_tracker: synchronization::MetalResourceTracker,
 		completion_event: Retained<ProtocolObject<dyn mtl::MTLSharedEvent>>,
 		next_completion_value: Rc<Cell<u64>>,
 		command_pool: Rc<CommandPool>,
@@ -436,6 +423,7 @@ pub mod queue {
 			Self {
 				queue,
 				workloads,
+				resource_tracker: synchronization::MetalResourceTracker::default(),
 				completion_event,
 				next_completion_value: Rc::new(Cell::new(1)),
 				command_pool: Rc::new(CommandPool {

@@ -10,26 +10,19 @@ impl Context {
 	}
 
 	/// Appends every pending buffer and image upload to one Metal 4 compute submission.
-	pub(super) fn flush_pending_uploads(
-		&mut self,
-		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
-		sequence_index: u8,
-	) {
+	pub(super) fn flush_pending_uploads(&mut self, queue_handle: graphics_hardware_interface::QueueHandle, sequence_index: u8) {
 		if self.pending_buffer_syncs.is_empty() && self.pending_image_syncs.is_empty() {
 			return;
 		}
 
-		let queue = queue_handle
-			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
-			.unwrap_or_else(|| self.transfer_queue());
-		let command_buffer = self.create_metal_command_buffer(
-			queue.queue.as_ref(),
-			Some("Pending Uploads"),
-			"Metal upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
-		);
+		let queue_index = queue_handle.0 as usize;
+		let command_buffer = self.create_metal_command_buffer(queue_handle, Some("Pending Uploads"));
 		let transfer_encoder = command_buffer.compute_command_encoder().expect(
 			"Metal 4 transfer encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		let mut resource_tracker = std::mem::take(&mut self.queues[queue_index].resource_tracker);
+		resource_tracker.begin_recording();
+		let scope = synchronization::MetalEncoderScope::Encoder(0);
 		#[cfg(debug_assertions)]
 		if self.settings.debug_labels {
 			transfer_encoder.setLabel(Some(&NSString::from_str("Pending Uploads")));
@@ -41,6 +34,28 @@ impl Context {
 				continue;
 			};
 			let staging = self.buffers.resource(staging_handle);
+			command_buffer.retain_buffer(buffer.buffer.clone());
+			command_buffer.retain_buffer(staging.buffer.clone());
+			let barrier = resource_tracker.consume(
+				scope,
+				[
+					synchronization::MetalResourceUse::buffer(
+						staging_handle,
+						0,
+						buffer.size,
+						mtl::MTLStages::Blit,
+						crate::AccessPolicies::READ,
+					),
+					synchronization::MetalResourceUse::buffer(
+						buffer_handle,
+						0,
+						buffer.size,
+						mtl::MTLStages::Blit,
+						crate::AccessPolicies::WRITE,
+					),
+				],
+			);
+			barrier.encode_compute(transfer_encoder.as_ref());
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 					staging.buffer.as_ref(),
@@ -57,17 +72,40 @@ impl Context {
 			let Some(staging) = image.staging.as_ref() else {
 				continue;
 			};
-			self.encode_texture_upload(
+			command_buffer.retain_texture(image.texture.clone());
+			let barrier = resource_tracker.consume(
+				scope,
+				[synchronization::MetalResourceUse::image(
+					image_handle,
+					Some(0),
+					None,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::WRITE,
+				)],
+			);
+			barrier.encode_compute(transfer_encoder.as_ref());
+			if let Some(upload_buffer) = crate::metal::command_buffer::encode_texture_upload(
+				self.device.as_ref(),
 				transfer_encoder.as_ref(),
 				image.texture.as_ref(),
 				image.format,
 				image.extent,
 				image.array_layers,
 				staging,
-			);
+			) {
+				command_buffer.retain_buffer(upload_buffer);
+			}
 		}
 
 		transfer_encoder.endEncoding();
-		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
+		resource_tracker.finish_recording();
+		self.queues[queue_index].resource_tracker = resource_tracker;
+		let synchronizer = self.internal_upload_synchronizer(sequence_index);
+		// The synchronizer owns the upload command and its retained resources through completion.
+		self.synchronizers
+			.resource(synchronizer)
+			.signal_workload(command_buffer.clone());
+		queue::NativeCommand::submit_batch(std::slice::from_ref(&command_buffer));
+		self.internal_upload_queues[sequence_index as usize] = Some(queue_handle);
 	}
 }

@@ -94,6 +94,39 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			self.push_active_render_debug_regions(rce.as_ref());
 		}
 
+		let scope = self.allocate_encoder_scope();
+		self.active_encoder_scope = Some(scope);
+		self.active_render_encoder = Some(rce);
+		let mut initial_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
+		let mut final_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
+		for (attachment, texture, ..) in &attachments {
+			let resource_use = |access| match attachment.target {
+				ImageOrSwapchain::Image(image) => synchronization::MetalResourceUse::image(
+					self.get_internal_image_handle(image),
+					Some(0),
+					attachment.layer,
+					mtl::MTLStages::Fragment,
+					access,
+				),
+				ImageOrSwapchain::Swapchain(_) => {
+					synchronization::MetalResourceUse::drawable(texture.as_ref(), mtl::MTLStages::Fragment, access)
+				}
+			};
+			let initial_access = crate::AccessPolicies::WRITE
+				| if attachment.load {
+					crate::AccessPolicies::READ
+				} else {
+					crate::AccessPolicies::NONE
+				};
+			initial_attachment_uses.push(resource_use(initial_access));
+			final_attachment_uses.push(resource_use(crate::AccessPolicies::WRITE));
+		}
+		self.consume_render_resources(initial_attachment_uses);
+		self.active_render_attachment_uses = final_attachment_uses;
+
+		let rce = self.active_render_encoder.as_ref().expect(
+			"Metal 4 render encoder setup failed. The most likely cause is that attachment synchronization ended the encoder early.",
+		);
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
 			originY: 0.0,
@@ -109,7 +142,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			height: extent.height() as _,
 		});
 
-		self.active_render_encoder = Some(rce);
 		self.encoded_render_pipeline = None;
 		self.applied_render_descriptor_binding = None;
 		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
@@ -178,15 +210,25 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let transfer_encoder = self.prepare_transfer().clone();
-
 		for buffer_handle in buffer_handles {
-			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(*buffer_handle));
-			if buffer.size == 0 {
+			let handle = self.get_internal_buffer_handle(*buffer_handle);
+			let (buffer, size) = {
+				let buffer = self.device.buffers.resource(handle);
+				(buffer.buffer.clone(), buffer.size)
+			};
+			if size == 0 {
 				continue;
 			}
-			self.command_buffer.retain_buffer(buffer.buffer.clone());
+			self.command_buffer.retain_buffer(buffer.clone());
+			self.consume_compute_resources([synchronization::MetalResourceUse::buffer(
+				handle,
+				0,
+				size,
+				mtl::MTLStages::Blit,
+				crate::AccessPolicies::WRITE,
+			)]);
 			unsafe {
-				transfer_encoder.fillBuffer_range_value(buffer.buffer.as_ref(), NSRange::new(0, buffer.size), 0);
+				transfer_encoder.fillBuffer_range_value(buffer.as_ref(), NSRange::new(0, size), 0);
 			}
 		}
 	}
@@ -197,27 +239,38 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let transfer_encoder = self.prepare_transfer().clone();
-
 		for copy in copies {
 			if copy.size == 0 {
 				continue;
 			}
-			let source = self
-				.device
-				.buffers
-				.resource(self.get_internal_buffer_handle(copy.source_buffer));
-			let destination = self
-				.device
-				.buffers
-				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
+			let source_handle = self.get_internal_buffer_handle(copy.source_buffer);
+			let destination_handle = self.get_internal_buffer_handle(copy.destination_buffer);
+			let source = self.device.buffers.resource(source_handle).buffer.clone();
+			let destination = self.device.buffers.resource(destination_handle).buffer.clone();
 
-			self.command_buffer.retain_buffer(source.buffer.clone());
-			self.command_buffer.retain_buffer(destination.buffer.clone());
+			self.command_buffer.retain_buffer(source.clone());
+			self.command_buffer.retain_buffer(destination.clone());
+			self.consume_compute_resources([
+				synchronization::MetalResourceUse::buffer(
+					source_handle,
+					copy.source_offset,
+					copy.size,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::READ,
+				),
+				synchronization::MetalResourceUse::buffer(
+					destination_handle,
+					copy.destination_offset,
+					copy.size,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::WRITE,
+				),
+			]);
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-					source.buffer.as_ref(),
+					source.as_ref(),
 					copy.source_offset as _,
-					destination.buffer.as_ref(),
+					destination.as_ref(),
 					copy.destination_offset as _,
 					copy.size as _,
 				);
@@ -231,8 +284,31 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let transfer_encoder = self.prepare_transfer().clone();
-
 		for copy in copies {
+			let source_handle = self.get_internal_buffer_handle(copy.source_buffer);
+			let destination_handle = self.get_internal_image_handle(copy.destination_image);
+			let source_size = copy
+				.source_bytes_per_image
+				.checked_mul(self.device.images.resource(destination_handle).array_layers as usize)
+				.expect(
+					"Metal texture copy tracked range overflowed. The most likely cause is an invalid source pitch or array layer count.",
+				);
+			self.consume_compute_resources([
+				synchronization::MetalResourceUse::buffer(
+					source_handle,
+					copy.source_offset,
+					source_size,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::READ,
+				),
+				synchronization::MetalResourceUse::image(
+					destination_handle,
+					Some(copy.destination_mip_level),
+					None,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::WRITE,
+				),
+			]);
 			let source = self
 				.device
 				.buffers
@@ -328,20 +404,50 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let transfer_encoder = self.prepare_transfer().clone();
-
 		for copy in copies {
-			let (source_texture, source_format, source_extent, source_array_layers) = match copy.source {
+			let (source_use, source_texture, source_format, source_extent, source_array_layers) = match copy.source {
 				ImageOrSwapchain::Image(image) => {
-					let source = self.device.images.resource(self.get_internal_image_handle(image));
-					(source.texture.clone(), source.format, source.extent, source.array_layers)
+					let handle = self.get_internal_image_handle(image);
+					let source = self.device.images.resource(handle);
+					(
+						synchronization::MetalResourceUse::image(
+							handle,
+							Some(0),
+							None,
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::READ,
+						),
+						source.texture.clone(),
+						source.format,
+						source.extent,
+						source.array_layers,
+					)
 				}
 				ImageOrSwapchain::Swapchain(swapchain) => {
 					if let Some(proxy) = self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize] {
 						let source = self.device.images.resource(proxy);
-						(source.texture.clone(), source.format, source.extent, source.array_layers)
-					} else {
 						(
-							self.drawable_texture(crate::swapchain::SwapchainHandle(swapchain.0)),
+							synchronization::MetalResourceUse::image(
+								proxy,
+								Some(0),
+								None,
+								mtl::MTLStages::Blit,
+								crate::AccessPolicies::READ,
+							),
+							source.texture.clone(),
+							source.format,
+							source.extent,
+							source.array_layers,
+						)
+					} else {
+						let drawable = self.drawable_texture(crate::swapchain::SwapchainHandle(swapchain.0));
+						(
+							synchronization::MetalResourceUse::drawable(
+								drawable.as_ref(),
+								mtl::MTLStages::Blit,
+								crate::AccessPolicies::READ,
+							),
+							drawable,
 							crate::Formats::BGRAu8,
 							self.device.swapchains[swapchain.0 as usize].extent,
 							1,
@@ -349,10 +455,24 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					}
 				}
 			};
-			let destination = self
-				.device
-				.buffers
-				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
+			let destination_handle = self.get_internal_buffer_handle(copy.destination_buffer);
+			let destination_size = copy
+				.destination_bytes_per_image
+				.checked_mul(source_array_layers as usize)
+				.expect(
+					"Metal image copy tracked range overflowed. The most likely cause is an invalid destination pitch or array layer count.",
+				);
+			self.consume_compute_resources([
+				source_use,
+				synchronization::MetalResourceUse::buffer(
+					destination_handle,
+					copy.destination_offset,
+					destination_size,
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::WRITE,
+				),
+			]);
+			let destination = self.device.buffers.resource(destination_handle);
 			self.command_buffer.retain_texture(source_texture.clone());
 			self.command_buffer.retain_buffer(destination.buffer.clone());
 			let Some((compact_bytes_per_row, row_count, _)) = utils::texture_upload_layout(source_format, source_extent) else {
@@ -445,22 +565,44 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	) {
 		let image_handle = self.get_internal_image_handle(image_handle);
 
-		let image = self.device.images.resource(image_handle);
-
-		let Some(_) = image.staging.as_ref() else {
-			return;
+		let (texture, format, extent, array_layers, has_staging) = {
+			let image = self.device.images.resource(image_handle);
+			(
+				image.texture.clone(),
+				image.format,
+				image.extent,
+				image.array_layers,
+				image.staging.is_some(),
+			)
 		};
+		if !has_staging || utils::texture_upload_layout(format, extent).is_none() {
+			return;
+		}
 
-		// Metal accepts a CPU pointer for immediate texture replacement, so the caller-provided
-		// pixel slice can be used directly instead of cloning through the image staging Vec.
-		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) };
-
-		let texture = image.texture.clone();
-		let format = image.format;
-		let extent = image.extent;
-		let array_layers = image.array_layers;
-
-		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, bytes);
+		// The upload buffer snapshots caller memory now; the tracked blit performs the GPU-visible write in command order.
+		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), std::mem::size_of_val(data)) };
+		self.command_buffer.retain_texture(texture.clone());
+		let transfer_encoder = self.prepare_transfer().clone();
+		self.consume_compute_resources([synchronization::MetalResourceUse::image(
+			image_handle,
+			Some(0),
+			None,
+			mtl::MTLStages::Blit,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let upload_buffer = encode_texture_upload(
+			self.device.metal_device,
+			transfer_encoder.as_ref(),
+			texture.as_ref(),
+			format,
+			extent,
+			array_layers,
+			bytes,
+		)
+		.expect(
+			"Metal image-data upload layout disappeared. The most likely cause is that format validation and upload encoding used different image metadata.",
+		);
+		self.command_buffer.retain_buffer(upload_buffer);
 	}
 
 	fn blit_image(
@@ -478,6 +620,22 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.command_buffer.retain_texture(source_texture.clone());
 		self.command_buffer.retain_texture(destination_texture.clone());
 		let transfer_encoder = self.prepare_transfer().clone();
+		self.consume_compute_resources([
+			synchronization::MetalResourceUse::image(
+				source_internal,
+				None,
+				None,
+				mtl::MTLStages::Blit,
+				crate::AccessPolicies::READ,
+			),
+			synchronization::MetalResourceUse::image(
+				destination_internal,
+				None,
+				None,
+				mtl::MTLStages::Blit,
+				crate::AccessPolicies::WRITE,
+			),
+		]);
 
 		unsafe {
 			transfer_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
@@ -661,7 +819,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		self.prepare_render_draw();
+		self.prepare_render_draw([]);
 		self.flush_render_push_constants();
 		let mesh_index = mesh_handle.0 as usize;
 		let vertex_buffer_count = self.device.meshes[mesh_index].vertex_buffers.len();
@@ -704,11 +862,13 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.encoded_vertex_buffer_count = vertex_buffer_count;
 		// Mesh-owned bindings replace the ordinary logical bindings even when that logical list is empty.
 		self.render_vertex_buffers_dirty = true;
+		self.record_render_attachment_writes();
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
-		self.prepare_render_draw();
 		self.apply_bound_vertex_buffers();
+		let resource_uses = self.bound_vertex_resource_uses();
+		self.prepare_render_draw(resource_uses);
 		self.flush_render_push_constants();
 		unsafe {
 			self.active_render_encoder
@@ -722,6 +882,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 					first_instance as _,
 				);
 		}
+		self.record_render_attachment_writes();
 	}
 
 	fn draw_indexed(
@@ -732,13 +893,15 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		self.prepare_render_draw();
 		self.apply_bound_vertex_buffers();
-		self.flush_render_push_constants();
 		let (buffer_handle, offset, index_type) = self
 			.bound_index_buffer
 			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
-		let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
+		let internal_buffer = self.get_internal_buffer_handle(buffer_handle);
+		let (buffer_size, buffer_gpu_address, native_buffer) = {
+			let buffer = self.device.buffers.resource(internal_buffer);
+			(buffer.size, buffer.gpu_address, buffer.buffer.clone())
+		};
 		let (metal_index_type, index_size) = match index_type {
 			crate::DataTypes::U16 => (mtl::MTLIndexType::UInt16, std::mem::size_of::<u16>()),
 			crate::DataTypes::U32 => (mtl::MTLIndexType::UInt32, std::mem::size_of::<u32>()),
@@ -752,14 +915,35 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let index_buffer_offset = offset.checked_add(first_index_offset).expect(
 			"Metal indexed draw offset overflowed. The most likely cause is that the bound offset and first_index exceed the host address range.",
 		);
-		// Metal 4 measures the accessible index range from the shifted GPU address, not from the buffer allocation's start.
-		let index_buffer_length = buffer.size.checked_sub(index_buffer_offset).expect(
-			"Metal indexed draw starts past the index buffer. The most likely cause is that the bound offset or first_index exceeds the buffer size.",
+		let index_data_size = (index_count as usize).checked_mul(index_size).expect(
+			"Metal indexed draw range overflowed. The most likely cause is that index_count exceeds the host address range.",
 		);
-		let index_buffer_address = buffer.gpu_address.checked_add(index_buffer_offset as u64).expect(
+		let index_data_end = index_buffer_offset.checked_add(index_data_size).expect(
+			"Metal indexed draw range overflowed. The most likely cause is that the index offset and count exceed the host address range.",
+		);
+		assert!(
+			index_data_end <= buffer_size,
+			"Metal indexed draw exceeds the index buffer. The most likely cause is that the bound offset, first index, or index count exceeds the buffer size. range_end={index_data_end}, buffer_size={buffer_size}",
+		);
+		// Metal 4 measures the accessible index range from the shifted GPU address, not from the buffer allocation's start.
+		let index_buffer_length = buffer_size - index_buffer_offset;
+		let index_buffer_address = buffer_gpu_address.checked_add(index_buffer_offset as u64).expect(
 			"Metal index-buffer GPU address overflowed. The most likely cause is that the bound index range exceeds the native address space.",
 		);
-		self.command_buffer.retain_buffer(buffer.buffer.clone());
+		self.command_buffer.retain_buffer(native_buffer);
+
+		let mut resource_uses = self.bound_vertex_resource_uses();
+		if index_data_size > 0 {
+			resource_uses.push(synchronization::MetalResourceUse::buffer(
+				internal_buffer,
+				index_buffer_offset,
+				index_data_size,
+				mtl::MTLStages::Vertex,
+				crate::AccessPolicies::READ,
+			));
+		}
+		self.prepare_render_draw(resource_uses);
+		self.flush_render_push_constants();
 
 		unsafe {
 			self.active_render_encoder
@@ -778,10 +962,11 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 					first_instance as _,
 				);
 		}
+		self.record_render_attachment_writes();
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		self.prepare_render_draw();
+		self.prepare_render_draw([]);
 		self.flush_render_push_constants();
 		let bound_pipeline = self
 			.bound_pipeline
@@ -814,6 +999,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 					depth: mesh_threadgroup_size.depth() as _,
 				},
 			);
+		self.record_render_attachment_writes();
 	}
 }
 
@@ -821,7 +1007,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
 		let threadgroups = dispatch.get_extent();
 		let threads_per_threadgroup = dispatch.get_workgroup_extent();
-		self.prepare_compute_dispatch();
+		self.prepare_compute_dispatch([]);
 		self.flush_compute_push_constants();
 
 		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
@@ -865,7 +1051,13 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		);
 		self.command_buffer.retain_buffer(buffer.buffer.clone());
 
-		self.prepare_compute_dispatch();
+		self.prepare_compute_dispatch([synchronization::MetalResourceUse::buffer(
+			internal_buffer,
+			indirect_offset,
+			std::mem::size_of::<[u32; 3]>(),
+			mtl::MTLStages::Dispatch,
+			crate::AccessPolicies::READ,
+		)]);
 		self.flush_compute_push_constants();
 
 		let bound_pipeline = self.bound_pipeline.expect(

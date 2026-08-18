@@ -123,7 +123,7 @@ impl<'a> Builder<'a> {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct ImageHandle(pub(crate) u64);
 
 impl From<ImageHandle> for PrivateHandles {

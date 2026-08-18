@@ -1,33 +1,16 @@
 use super::*;
 
 impl Context {
-	// Acquires one reusable native command from the context-local pool and retains resources queued for an upload batch.
+	// Acquires one reusable native command from the selected queue's context-local pool.
 	pub(super) fn create_metal_command_buffer(
 		&self,
-		queue: &ProtocolObject<dyn mtl::MTL4CommandQueue>,
+		queue_handle: graphics_hardware_interface::QueueHandle,
 		label: Option<&str>,
-		error_message: &'static str,
 	) -> queue::NativeCommand {
-		let queue = self
-			.queues
-			.iter()
-			.find(|stored_queue| std::ptr::eq(stored_queue.queue.as_ref(), queue))
-			.expect(error_message);
-		let command = queue.acquire_native_command(label, self.settings.debug_labels);
-
-		// Pending handles are still available here. Retain their source and destination allocations before the upload loop drains them.
-		for &buffer_handle in &self.pending_buffer_syncs {
-			let buffer = self.buffers.resource(buffer_handle);
-			command.retain_buffer(buffer.buffer.clone());
-			if let Some(staging_handle) = buffer.staging {
-				command.retain_buffer(self.buffers.resource(staging_handle).buffer.clone());
-			}
-		}
-		for &image_handle in &self.pending_image_syncs {
-			command.retain_texture(self.images.resource(image_handle).texture.clone());
-		}
-
-		command
+		let queue = self.queues.get(queue_handle.0 as usize).expect(
+			"Metal command queue is missing. The most likely cause is that the queue handle came from another context.",
+		);
+		queue.acquire_native_command(label, self.settings.debug_labels)
 	}
 
 	pub(crate) fn synchronizer_for_sequence(
@@ -42,26 +25,30 @@ impl Context {
 			)
 	}
 
-	pub(crate) fn submit_metal_command_buffer_for_synchronizer(
-		&self,
-		command: queue::NativeCommand,
-		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-		sequence_index: u8,
-	) {
-		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index);
-		let synchronizer = self.synchronizers.resource(synchronizer_handle);
-
-		// Synchronizer ownership keeps the native command and all retained resources alive until its shared-event token completes.
-		synchronizer.signal_workload(command.clone());
-		queue::NativeCommand::submit_batch(std::slice::from_ref(&command));
-	}
-
-	pub(super) fn submit_internal_metal_command_buffer(&self, command: queue::NativeCommand, sequence_index: u8) {
-		command.retain_allocations(self.pending_native_allocations.take());
+	/// Returns the frame-local synchronizer that owns internal upload submissions.
+	pub(super) fn internal_upload_synchronizer(&self, sequence_index: u8) -> crate::synchronizer::SynchronizerHandle {
 		let synchronizer = self.internal_upload_synchronizer.expect(
 			"Metal internal upload synchronizer is missing. The most likely cause is that the context was not initialized correctly.",
 		);
-		self.submit_metal_command_buffer_for_synchronizer(command, synchronizer, sequence_index);
+		self.synchronizer_for_sequence(synchronizer, sequence_index)
+	}
+
+	/// Waits for and releases one upload slot during frame retirement or a cross-queue handoff.
+	pub(super) fn retire_internal_uploads(&mut self, sequence_index: u8) {
+		if self.internal_upload_queues[sequence_index as usize].take().is_none() {
+			return;
+		}
+		let synchronizer = self.internal_upload_synchronizer(sequence_index);
+		self.synchronizers.resource(synchronizer).wait();
+	}
+
+	/// Waits only for outstanding internal uploads submitted to another Metal queue.
+	pub(super) fn synchronize_internal_upload_queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) {
+		for sequence_index in 0..self.internal_upload_queues.len() {
+			if self.internal_upload_queues[sequence_index].is_some_and(|owner| owner != queue_handle) {
+				self.retire_internal_uploads(sequence_index as u8);
+			}
+		}
 	}
 
 	pub fn new(
@@ -90,6 +77,7 @@ impl Context {
 			command_buffers: Vec::new(),
 			synchronizers: ResourceCollection::with_capacity(32),
 			internal_upload_synchronizer: None,
+			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
@@ -97,7 +85,6 @@ impl Context {
 			settings,
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
-			pending_native_allocations: RefCell::new(SmallVec::new()),
 			tasks: Vec::new(),
 
 			#[cfg(debug_assertions)]
@@ -298,116 +285,6 @@ impl Context {
 		}
 
 		handle
-	}
-
-	/// Copies one compact CPU texture into an upload buffer and appends its copy commands to a Metal 4 compute encoder.
-	pub(super) fn encode_texture_upload(
-		&self,
-		transfer_encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>,
-		texture: &ProtocolObject<dyn mtl::MTLTexture>,
-		format: crate::Formats,
-		extent: Extent,
-		array_layers: u32,
-		staging: &[u8],
-	) {
-		let Some((bytes_per_row, row_count, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
-			return;
-		};
-		let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
-		let aligned_bytes_per_image = aligned_bytes_per_row * row_count;
-		let upload_size = aligned_bytes_per_image * array_layers as usize;
-		let upload_buffer = self
-			.device
-			.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
-			.expect("Metal upload buffer creation failed. The most likely cause is that the device is out of memory.");
-		let destination = upload_buffer.contents().as_ptr() as *mut u8;
-		let upload_allocation =
-			unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(upload_buffer.clone()) };
-		let destination_texture_pointer =
-			texture as *const ProtocolObject<dyn mtl::MTLTexture> as *mut ProtocolObject<dyn mtl::MTLTexture>;
-		let destination_texture = unsafe {
-			Retained::retain(destination_texture_pointer).expect(
-				"Metal upload destination retention failed. The most likely cause is that an invalid texture reached upload encoding.",
-			)
-		};
-		let destination_allocation =
-			unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(destination_texture) };
-		self.pending_native_allocations
-			.borrow_mut()
-			.extend([upload_allocation, destination_allocation]);
-
-		for slice in 0..array_layers as usize {
-			let source_offset = slice * bytes_per_image;
-			let destination_offset = slice * aligned_bytes_per_image;
-			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
-				break;
-			};
-			for row in 0..row_count {
-				unsafe {
-					std::ptr::copy_nonoverlapping(
-						source_bytes.as_ptr().add(row * bytes_per_row),
-						destination.add(destination_offset + row * aligned_bytes_per_row),
-						bytes_per_row,
-					);
-				}
-			}
-		}
-
-		if utils::is_block_compressed(format) {
-			let expected_size = bytes_per_image * array_layers as usize;
-			assert_eq!(
-				staging.len(),
-				expected_size,
-				"Metal compressed texture staging size mismatch. The most likely cause is that CPU staging was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, staging_len={}, expected_size={expected_size}",
-				staging.len()
-			);
-		}
-
-		let mut source_size = utils::texture_copy_size(format, extent);
-		source_size.depth = 1;
-		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
-		for slice in 0..array_layers as usize {
-			unsafe {
-				transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-					upload_buffer.as_ref(),
-					(slice * aligned_bytes_per_image) as _,
-					aligned_bytes_per_row as _,
-					aligned_bytes_per_image as _,
-					source_size,
-					texture,
-					slice,
-					0,
-					destination_origin,
-				);
-			}
-		}
-	}
-
-	/// Uploads one texture immediately when no pending-upload batch owns the work.
-	pub(super) fn upload_texture_from_staging(
-		&mut self,
-		texture: &ProtocolObject<dyn mtl::MTLTexture>,
-		format: crate::Formats,
-		extent: Extent,
-		array_layers: u32,
-		staging: &[u8],
-		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
-		sequence_index: u8,
-	) {
-		let queue = queue_handle
-			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
-			.unwrap_or_else(|| self.transfer_queue());
-		let command_buffer = self.create_metal_command_buffer(
-			queue.queue.as_ref(),
-			Some("Texture Upload"),
-			"Metal texture upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
-		);
-		let transfer_encoder = command_buffer
-			.compute_command_encoder()
-			.expect("Metal 4 copy encoder creation failed. The most likely cause is that the command buffer is not recording.");
-		self.encode_texture_upload(transfer_encoder.as_ref(), texture, format, extent, array_layers, staging);
-		transfer_encoder.endEncoding();
-		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
 	/// Stores one resolved retained descriptor and advances the set version used by immutable native snapshots.

@@ -7,7 +7,13 @@ impl Context {
 	}
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
-		self.frames = frames.max(1);
+		let frames = frames.max(1);
+		// Retire upload slots before truncation so their queue ownership cannot be lost.
+		for sequence_index in frames as usize..self.internal_upload_queues.len() {
+			self.retire_internal_uploads(sequence_index as u8);
+		}
+		self.frames = frames;
+		self.internal_upload_queues.resize(frames as usize, None);
 		// TODO: Rebuild dynamic resources for new frame count.
 	}
 
@@ -160,16 +166,6 @@ impl Context {
 			device: self,
 			queue_handle,
 		}
-	}
-
-	pub(in crate::metal::context) fn transfer_queue(&self) -> &queue::StoredQueue {
-		self.queues
-			.iter()
-			.find(|queue| queue.workloads.intersects(crate::WorkloadTypes::TRANSFER))
-			.or_else(|| self.queues.first())
-			.expect(
-				"Metal transfer queue lookup failed. The most likely cause is that the device was created without any command queues.",
-			)
 	}
 
 	pub fn command_buffer<'a>(

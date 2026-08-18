@@ -274,6 +274,10 @@ impl Frame<'_> {
 			let copy_encoder = resolve_command.compute_command_encoder().expect(
 				"Metal 4 present resolve encoder creation failed. The most likely cause is that the resolve command was not recording.",
 			);
+			let queue_index = self.queue_handle.0 as usize;
+			let mut resource_tracker = std::mem::take(&mut self.device.queues[queue_index].resource_tracker);
+			resource_tracker.begin_recording();
+			let resolve_scope = synchronization::MetalEncoderScope::Encoder(0);
 			#[cfg(debug_assertions)]
 			if self.device.settings.debug_labels {
 				copy_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
@@ -294,12 +298,32 @@ impl Frame<'_> {
 				let destination_texture = drawable.texture();
 				resolve_command.retain_texture(source_texture.clone());
 				resolve_command.retain_texture(destination_texture.clone());
+				let barrier = resource_tracker.consume(
+					resolve_scope,
+					[
+						synchronization::MetalResourceUse::image(
+							proxy_image,
+							None,
+							None,
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::READ,
+						),
+						synchronization::MetalResourceUse::drawable(
+							destination_texture.as_ref(),
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::WRITE,
+						),
+					],
+				);
+				barrier.encode_compute(copy_encoder.as_ref());
 
 				unsafe {
 					copy_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
 				}
 			}
 			copy_encoder.endEncoding();
+			resource_tracker.finish_recording();
+			self.device.queues[queue_index].resource_tracker = resource_tracker;
 			native_commands.push(resolve_command);
 		}
 
@@ -335,6 +359,14 @@ impl Frame<'_> {
 					queue.signalDrawable(drawable);
 					drawable.present();
 				}
+			}
+		}
+
+		let resource_tracker = &mut self.device.queues[self.queue_handle.0 as usize].resource_tracker;
+		for (_, drawable) in &present_drawables {
+			if let Some(drawable) = drawable {
+				let texture = drawable.texture();
+				resource_tracker.forget_drawable(texture.as_ref());
 			}
 		}
 

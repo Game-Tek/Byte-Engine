@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ptr::NonNull;
 
@@ -47,6 +46,7 @@ pub struct Context {
 		crate::synchronizer::SynchronizerHandle,
 	>,
 	internal_upload_synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
+	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 
 	pub(crate) resource_to_descriptor:
@@ -59,8 +59,6 @@ pub struct Context {
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
-	// Metal 4 command buffers do not retain referenced resources, so upload allocations move into the submitted native command.
-	pub(crate) pending_native_allocations: RefCell<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLAllocation>>; 32]>>,
 	pub(crate) tasks: Vec<Task>,
 
 	#[cfg(debug_assertions)]

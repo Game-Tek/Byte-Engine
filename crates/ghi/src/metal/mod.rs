@@ -27,6 +27,7 @@ use crate::PrivateHandles;
 mod pipeline;
 mod resources;
 mod state;
+mod synchronization;
 mod types;
 pub(crate) mod utils {
 	use objc2_metal as mtl;

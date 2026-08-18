@@ -78,6 +78,22 @@ impl<'a> CommandBufferRecording<'a> {
 		self.command_buffer.retain_buffer(staging_buffer.clone());
 		self.command_buffer.retain_buffer(destination_buffer.clone());
 		let transfer_encoder = self.prepare_transfer().clone();
+		self.consume_compute_resources([
+			synchronization::MetalResourceUse::buffer(
+				staging_handle,
+				0,
+				destination_size,
+				mtl::MTLStages::Blit,
+				crate::AccessPolicies::READ,
+			),
+			synchronization::MetalResourceUse::buffer(
+				buffer_handle,
+				0,
+				destination_size,
+				mtl::MTLStages::Blit,
+				crate::AccessPolicies::WRITE,
+			),
+		]);
 
 		unsafe {
 			transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -92,7 +108,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub(crate) fn new(
 		device: RecordingDevice<'a>,
-		commit: Option<RecordingCommit<'a>>,
+		commit: RecordingCommit<'a>,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: queue::NativeCommand,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
@@ -105,6 +121,8 @@ impl<'a> CommandBufferRecording<'a> {
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
+		let mut resource_tracker = std::mem::take(commit.resource_tracker);
+		resource_tracker.begin_recording();
 		for (_, drawable) in &drawables {
 			command_buffer.retain_drawable(drawable.clone());
 		}
@@ -139,13 +157,16 @@ impl<'a> CommandBufferRecording<'a> {
 			render_push_constants_dirty: false,
 			active_compute_encoder: None,
 			active_render_encoder: None,
-			compute_encoder_phase: ComputeEncoderPhase::None,
+			active_encoder_scope: None,
+			next_encoder_id: 0,
+			resource_tracker,
 			argument_tables: CommandArgumentTables::default(),
 			push_upload_arena: PushUploadArena::default(),
 			encoded_compute_pipeline: None,
 			encoded_render_pipeline: None,
 			applied_compute_descriptor_binding: None,
 			applied_render_descriptor_binding: None,
+			active_render_attachment_uses: SmallVec::new(),
 			_autorelease_pool: autorelease_pool,
 		}
 	}
@@ -197,10 +218,19 @@ impl<'a> CommandBufferRecording<'a> {
 			self.compute_debug_region_depth = 0;
 		}
 		encoder.endEncoding();
-		self.compute_encoder_phase = ComputeEncoderPhase::None;
+		self.active_encoder_scope = None;
 		self.encoded_compute_pipeline = None;
 		self.applied_compute_descriptor_binding = None;
 		self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
+	}
+
+	/// Records render-target writes after a draw so a later aliased access sees the dependency.
+	pub(super) fn record_render_attachment_writes(&mut self) {
+		let scope = self.active_encoder_scope.expect(
+			"Metal render resource finalization failed. The most likely cause is that attachment writes were recorded without an active encoder.",
+		);
+		self.resource_tracker
+			.record_final(scope, self.active_render_attachment_uses.iter().copied());
 	}
 
 	/// Ends the active render encoder and balances its mirrored debug regions.
@@ -216,6 +246,9 @@ impl<'a> CommandBufferRecording<'a> {
 			self.render_debug_region_depth = 0;
 		}
 		encoder.endEncoding();
+		self.record_render_attachment_writes();
+		self.active_render_attachment_uses.clear();
+		self.active_encoder_scope = None;
 		self.encoded_render_pipeline = None;
 		self.applied_render_descriptor_binding = None;
 		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
@@ -242,10 +275,11 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer<'static> {
 		self.end_render_encoder();
 		self.end_compute_encoder();
+		self.publish_resource_states();
 
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
-			command_buffer: self.command_buffer,
+			command_buffer: self.command_buffer.clone(),
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -264,7 +298,7 @@ impl<'a> CommandBufferRecording<'a> {
 				self.push_active_compute_debug_regions(encoder.as_ref());
 			}
 			self.active_compute_encoder = Some(encoder);
-			self.compute_encoder_phase = ComputeEncoderPhase::None;
+			self.active_encoder_scope = Some(self.allocate_encoder_scope());
 			self.encoded_compute_pipeline = None;
 			self.applied_compute_descriptor_binding = None;
 			self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
@@ -273,25 +307,70 @@ impl<'a> CommandBufferRecording<'a> {
 		self.active_compute_encoder.as_ref().unwrap()
 	}
 
-	/// Prepares the Metal 4 compute encoder for copy work and makes prior encoder writes device-visible.
+	/// Prepares the combined Metal 4 compute encoder for transfer commands.
 	pub(super) fn prepare_transfer(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
-		let previous_phase = self.compute_encoder_phase;
-		let encoder = self.ensure_compute_encoder().clone();
-		match previous_phase {
-			ComputeEncoderPhase::Dispatch => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
-				mtl::MTLStages::Dispatch,
-				mtl::MTLStages::Blit,
-				mtl::MTL4VisibilityOptions::Device,
-			),
-			ComputeEncoderPhase::Transfer => encoder.barrierAfterEncoderStages_beforeEncoderStages_visibilityOptions(
-				mtl::MTLStages::Blit,
-				mtl::MTLStages::Blit,
-				mtl::MTL4VisibilityOptions::Device,
-			),
-			ComputeEncoderPhase::None => {}
-		}
-		self.compute_encoder_phase = ComputeEncoderPhase::Transfer;
-		self.active_compute_encoder.as_ref().unwrap()
+		self.ensure_compute_encoder()
+	}
+
+	/// Allocates one command-local identity for hazard tracking within a native encoder.
+	pub(super) fn allocate_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
+		let id = self.next_encoder_id;
+		self.next_encoder_id = self.next_encoder_id.checked_add(1).expect(
+			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
+		);
+		synchronization::MetalEncoderScope::Encoder(id)
+	}
+
+	/// Applies dependencies for one compute command without copying its immutable descriptor-use table.
+	pub(super) fn consume_compute_resources_with_descriptors(
+		&mut self,
+		descriptor_uses: &[synchronization::MetalResourceUse],
+		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
+	) {
+		let scope = self.active_encoder_scope.expect(
+			"Metal compute resource tracking failed. The most likely cause is that a command consumed resources without an active compute encoder.",
+		);
+		let barrier = self
+			.resource_tracker
+			.consume_preconsolidated(scope, descriptor_uses, additional_uses);
+		let encoder = self.active_compute_encoder.as_ref().expect(
+			"Metal compute resource tracking failed. The most likely cause is that the active encoder was ended before its resource barrier.",
+		);
+		barrier.encode_compute(encoder.as_ref());
+	}
+
+	/// Applies only the queue and encoder dependencies required by the resources one compute command consumes.
+	pub(super) fn consume_compute_resources(&mut self, uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
+		self.consume_compute_resources_with_descriptors(&[], uses);
+	}
+
+	/// Applies dependencies for one render command without copying its immutable descriptor-use table.
+	pub(super) fn consume_render_resources_with_descriptors(
+		&mut self,
+		descriptor_uses: &[synchronization::MetalResourceUse],
+		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
+	) {
+		let scope = self.active_encoder_scope.expect(
+			"Metal render resource tracking failed. The most likely cause is that a command consumed resources without an active render encoder.",
+		);
+		let barrier = self
+			.resource_tracker
+			.consume_preconsolidated(scope, descriptor_uses, additional_uses);
+		let encoder = self.active_render_encoder.as_ref().expect(
+			"Metal render resource tracking failed. The most likely cause is that the active encoder was ended before its resource barrier.",
+		);
+		barrier.encode_render(encoder.as_ref());
+	}
+
+	/// Applies only the queue and encoder dependencies required by the resources one render command consumes.
+	pub(super) fn consume_render_resources(&mut self, uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
+		self.consume_render_resources_with_descriptors(&[], uses);
+	}
+
+	/// Publishes this finalized recording's resource history to its queue.
+	fn publish_resource_states(&mut self) {
+		self.resource_tracker.finish_recording();
+		*self.commit.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
 	/// Creates one initialized Metal 4 argument table when a shader stage first needs bindings.
@@ -476,6 +555,24 @@ impl<'a> CommandBufferRecording<'a> {
 		self.render_push_constants_dirty = push_constant_size > 0;
 	}
 
+	/// Returns the buffer ranges consumed by the next ordinary vertex draw.
+	pub(super) fn bound_vertex_resource_uses(&self) -> SmallVec<[synchronization::MetalResourceUse; 8]> {
+		self.bound_vertex_buffers
+			.iter()
+			.map(|(buffer_handle, offset)| {
+				let handle = self.get_internal_buffer_handle(*buffer_handle);
+				let buffer = self.device.buffers.resource(handle);
+				synchronization::MetalResourceUse::buffer(
+					handle,
+					*offset,
+					buffer.size.saturating_sub(*offset),
+					mtl::MTLStages::Vertex,
+					crate::AccessPolicies::READ,
+				)
+			})
+			.collect()
+	}
+
 	/// Applies changed logical vertex-buffer addresses once before the next ordinary draw.
 	pub(super) fn apply_bound_vertex_buffers(&mut self) {
 		if !self.render_vertex_buffers_dirty {
@@ -542,15 +639,14 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(super) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.end_compute_encoder();
 		self.end_render_encoder();
+		self.publish_resource_states();
 		queue::NativeCommand::submit_batch(std::slice::from_ref(&self.command_buffer));
 
-		if let Some(commit) = self.commit.as_mut() {
-			let synchronizer = commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
-			// The synchronizer owns the submitted command until its shared-event token completes.
-			commit
-				.synchronizers
-				.resource(synchronizer)
-				.signal_workload(self.command_buffer.clone());
-		}
+		let synchronizer = self.commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
+		// The synchronizer owns the submitted command until its shared-event token completes.
+		self.commit
+			.synchronizers
+			.resource(synchronizer)
+			.signal_workload(self.command_buffer.clone());
 	}
 }

@@ -33,15 +33,11 @@ impl Context {
 			(command_buffer.queue_handle, name)
 		};
 
-		// Uploads committed on the same Metal queue are ordered before this command buffer without a CPU wait.
-		self.flush_pending_uploads(Some(queue_handle), sequence_index);
+		// Same-queue uploads stay asynchronous; a queue switch waits because pending writes have no public queue owner.
+		self.synchronize_internal_upload_queue(queue_handle);
+		self.flush_pending_uploads(queue_handle, sequence_index);
 
-		let queue = &self.queues[queue_handle.0 as usize];
-		let mtl_command_buffer = self.create_metal_command_buffer(
-			queue.queue.as_ref(),
-			command_buffer_name.as_deref(),
-			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
-		);
+		let mtl_command_buffer = self.create_metal_command_buffer(queue_handle, command_buffer_name.as_deref());
 
 		let recording_device = super::super::command_buffer::RecordingDevice {
 			metal_device: self.device.as_ref(),
@@ -57,12 +53,13 @@ impl Context {
 			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::super::command_buffer::RecordingCommit {
+			resource_tracker: &mut self.queues[queue_handle.0 as usize].resource_tracker,
 			synchronizers: &mut self.synchronizers,
 		};
 
 		super::super::CommandBufferRecording::new(
 			recording_device,
-			Some(commit),
+			commit,
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,

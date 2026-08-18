@@ -58,21 +58,15 @@ impl Context {
 	}
 
 	pub fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let image = self.images.resource_mut(self.images.nth_handle(texture_handle.0, 0).unwrap());
+		let image_handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
+		let image = self.images.resource_mut(image_handle);
 
 		let Some(staging) = image.staging.as_mut() else {
 			return;
 		};
 
 		f(staging);
-
-		let texture = image.texture.clone();
-		let format = image.format;
-		let extent = image.extent;
-		let array_layers = image.array_layers;
-		let staging = staging.to_vec();
-
-		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging, None, 0);
+		self.pending_image_syncs.push_back(image_handle);
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {

@@ -30,7 +30,7 @@ impl<'a> Builder<'a> {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct BufferHandle(pub(crate) u64);
 
 impl From<BufferHandle> for graphics_hardware_interface::Handles {

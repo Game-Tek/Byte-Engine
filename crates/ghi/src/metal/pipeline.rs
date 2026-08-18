@@ -525,6 +525,7 @@ pub(crate) struct MaterializationKey {
 pub(crate) struct Materialization {
 	pub(crate) versions: SmallVec<[u64; 4]>,
 	pub(crate) argument_buffers: Rc<SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>>,
+	pub(crate) resource_uses: Rc<SmallVec<[synchronization::MetalResourceUse; 16]>>,
 	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
 	pub(crate) _texture_views: Rc<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>>,
 }

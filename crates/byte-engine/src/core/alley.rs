@@ -11,6 +11,109 @@ pub trait Lane {
 	fn idx(&self) -> usize;
 }
 
+/// The `LaneMut` struct provides one stable lane with exclusive access to a mutable resource.
+pub struct LaneMut<'value, T> {
+	owner_lane: usize,
+	value: UnsafeCell<&'value mut T>,
+}
+
+impl<'value, T> LaneMut<'value, T> {
+	fn new(owner_lane: usize, value: &'value mut T) -> Self {
+		Self {
+			owner_lane,
+			value: UnsafeCell::new(value),
+		}
+	}
+}
+
+// SAFETY: `only_one_runs_mut` dereferences the resource only on its stable owner lane.
+// The blocking dispatch prevents that access from outliving the original `&mut T`.
+#[allow(unsafe_code, reason = "A stable owner lane provides exclusive mutable resource access.")]
+unsafe impl<T: Send> Sync for LaneMut<'_, T> {}
+
+mod lane_resources_private {
+	// This token keeps wrapper construction inside the Alley dispatch API.
+	pub struct BindToken;
+}
+
+/// The `IntoLaneResources` trait binds mutable resources to stable owner lanes for an [`Alley`] dispatch.
+///
+/// Pass one mutable reference or a tuple containing 1 through 8 distinct mutable references.
+pub trait IntoLaneResources {
+	/// The wrappers shared with every lane during the blocking dispatch.
+	type Bound: Sync;
+
+	#[doc(hidden)]
+	fn bind(self, parallelism: usize, next_index: &mut usize, _token: lane_resources_private::BindToken) -> Self::Bound;
+}
+
+impl<'value, T: Send> IntoLaneResources for &'value mut T {
+	type Bound = LaneMut<'value, T>;
+
+	fn bind(self, parallelism: usize, next_index: &mut usize, _token: lane_resources_private::BindToken) -> Self::Bound {
+		let owner_lane = *next_index % parallelism;
+		*next_index += 1;
+		LaneMut::new(owner_lane, self)
+	}
+}
+
+macro_rules! impl_into_lane_resources_for_tuple {
+	($(($resource_type:ident, $resource:ident)),+) => {
+		impl<'value, $($resource_type: Send),+> IntoLaneResources for ($(&'value mut $resource_type,)+) {
+			type Bound = ($(LaneMut<'value, $resource_type>,)+);
+
+			fn bind(
+				self,
+				parallelism: usize,
+				next_index: &mut usize,
+				_token: lane_resources_private::BindToken,
+			) -> Self::Bound {
+				let ($($resource,)+) = self;
+				($($resource.bind(parallelism, next_index, lane_resources_private::BindToken),)+)
+			}
+		}
+	};
+}
+
+impl_into_lane_resources_for_tuple!((T0, resource0));
+impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1));
+impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1), (T2, resource2));
+impl_into_lane_resources_for_tuple!((T0, resource0), (T1, resource1), (T2, resource2), (T3, resource3));
+impl_into_lane_resources_for_tuple!(
+	(T0, resource0),
+	(T1, resource1),
+	(T2, resource2),
+	(T3, resource3),
+	(T4, resource4)
+);
+impl_into_lane_resources_for_tuple!(
+	(T0, resource0),
+	(T1, resource1),
+	(T2, resource2),
+	(T3, resource3),
+	(T4, resource4),
+	(T5, resource5)
+);
+impl_into_lane_resources_for_tuple!(
+	(T0, resource0),
+	(T1, resource1),
+	(T2, resource2),
+	(T3, resource3),
+	(T4, resource4),
+	(T5, resource5),
+	(T6, resource6)
+);
+impl_into_lane_resources_for_tuple!(
+	(T0, resource0),
+	(T1, resource1),
+	(T2, resource2),
+	(T3, resource3),
+	(T4, resource4),
+	(T5, resource5),
+	(T6, resource6),
+	(T7, resource7)
+);
+
 /// The `ConcreteLane` struct provides lane-local operations during an [`Alley`] dispatch.
 pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
@@ -37,6 +140,24 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		F: FnOnce(),
 	{
 		self.with_limited_parallelism(1, f);
+	}
+
+	/// Runs `f` with the mutable resource only when this lane is its stable owner.
+	///
+	/// This operation performs one lane-index branch without synchronization or allocation.
+	#[allow(
+		unsafe_code,
+		reason = "The resource owner lane exclusively dereferences its bound mutable value."
+	)]
+	pub fn only_one_runs_mut<T, R>(&mut self, resource: &LaneMut<'_, T>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+		if self.lane_idx != resource.owner_lane {
+			return None;
+		}
+
+		// SAFETY: `LaneMut` has one private owner index, and only that lane enters
+		// this branch. One lane executes its calls in source order before dispatch returns.
+		let value = unsafe { &mut **resource.value.get() };
+		Some(f(value))
 	}
 
 	/// Runs `f` on the first `limit` lanes to reach this section.
@@ -477,6 +598,27 @@ impl Alley {
 			.try_dispatch_all(move |lane_idx| f(&mut ConcreteLane::new(lane_idx, state)))
 	}
 
+	/// Executes every lane with mutable resources assigned to stable owner lanes.
+	///
+	/// Resources are assigned by tuple position in round-robin order across this alley's
+	/// lanes. The blocking dispatch keeps every mutable borrow bound until all lanes finish.
+	/// Mutable access to the `Alley` prevents another dispatch from overlapping those borrows.
+	/// Use [`ConcreteLane::only_one_runs_mut`] to access each resource without synchronization.
+	pub fn execute_with_mut<Resources, R, F>(&mut self, resources: Resources, f: F) -> std::thread::Result<Vec<R>>
+	where
+		Resources: IntoLaneResources,
+		R: Send,
+		F: for<'dispatch, 'lane, 'resources> Fn(&'lane mut ConcreteLane<'dispatch>, &'resources Resources::Bound) -> R
+			+ Clone
+			+ Send,
+	{
+		let parallelism = self.threadpool.parallelism();
+		let mut next_index = 0;
+		let resources = resources.bind(parallelism, &mut next_index, lane_resources_private::BindToken);
+		let resources = &resources;
+		self.execute(move |lane| f(lane, resources))
+	}
+
 	/// Executes every lane with exclusive access to a balanced mutable partition.
 	///
 	/// Mutable access prevents overlapping or nested dispatches on this `Alley`. Gang-scheduled
@@ -854,6 +996,54 @@ mod tests {
 
 		assert_eq!(values, (1..=16).collect::<Vec<_>>());
 		assert_eq!(value.load(Ordering::Relaxed), 136);
+	}
+
+	#[test]
+	fn mut_access() {
+		let mut a = 0;
+		let mut b = 0;
+
+		let mut alley = Alley::with_parallelism(8);
+
+		unwrap_dispatch(alley.execute_with_mut((&mut a, &mut b), |lane, (a, b)| {
+			let _ = lane.only_one_runs_mut(a, |a| *a += 1);
+			let _ = lane.only_one_runs_mut(b, |b| *b += 1);
+		}));
+
+		assert_eq!(a, 1);
+		assert_eq!(b, 1);
+	}
+
+	#[test]
+	fn mutable_resources_use_round_robin_stable_owner_lanes() {
+		let mut first_owner = usize::MAX;
+		let mut second_owner = usize::MAX;
+		let mut third_owner = usize::MAX;
+		let mut fourth_owner = usize::MAX;
+		let mut history = Vec::new();
+		let mut alley = Alley::with_parallelism(3);
+
+		unwrap_dispatch(alley.execute_with_mut(
+			(
+				&mut first_owner,
+				&mut second_owner,
+				&mut third_owner,
+				&mut fourth_owner,
+				&mut history,
+			),
+			|lane, (first, second, third, fourth, history)| {
+				let lane_idx = lane.idx();
+				let _ = lane.only_one_runs_mut(first, |owner| *owner = lane_idx);
+				let _ = lane.only_one_runs_mut(second, |owner| *owner = lane_idx);
+				let _ = lane.only_one_runs_mut(third, |owner| *owner = lane_idx);
+				let _ = lane.only_one_runs_mut(fourth, |owner| *owner = lane_idx);
+				let _ = lane.only_one_runs_mut(history, |values| values.push((lane_idx, 1)));
+				let _ = lane.only_one_runs_mut(history, |values| values.push((lane_idx, 2)));
+			},
+		));
+
+		assert_eq!([first_owner, second_owner, third_owner, fourth_owner], [0, 1, 2, 0]);
+		assert_eq!(history, [(1, 1), (1, 2)]);
 	}
 }
 

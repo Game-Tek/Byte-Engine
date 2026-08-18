@@ -1831,7 +1831,7 @@ pub(super) mod tests {
 			using namespace metal;
 			struct Resources {
 				texture2d<float, access::write> image [[id(0)]];
-				texture2d<float, access::read> last_frame_image [[id(1)]];
+				texture2d<float, access::read> last_frame_image [[id(2)]];
 			};
 			kernel void compute_main(
 				uint2 gid [[thread_position_in_grid]],
@@ -2143,17 +2143,16 @@ pub(super) mod tests {
 
 			layout(location = 0) out vec4 out_color;
 
-			layout(set=0,binding=0) uniform sampler smpl;
-			layout(set=0,binding=2) uniform texture2D tex;
+			layout(set=0,binding=0) uniform sampler2D tex;
 
 			void main() {
-				out_color = texture(sampler2D(tex, smpl), vec2(0, 0));
+				out_color = texture(tex, vec2(0, 0));
 			}
 		";
 		let vertex_shader_msl = r#"
 			#include <metal_stdlib>
 			using namespace metal;
-			struct VertexResources { constant float4x4* matrix [[id(0)]]; };
+			struct VertexResources { constant float4x4* matrix [[id(2)]]; };
 			struct VertexInput {
 				float3 position [[attribute(0)]];
 				float4 color [[attribute(1)]];
@@ -2162,7 +2161,7 @@ pub(super) mod tests {
 				float4 position [[position]];
 				float4 color;
 			};
-			vertex VertexOutput vertex_main(
+			vertex VertexOutput besl_main(
 				VertexInput input [[stage_in]],
 				constant VertexResources& resources [[buffer(16)]]) {
 				return VertexOutput { resources.matrix[0] * float4(input.position, 1.0), input.color };
@@ -2172,14 +2171,14 @@ pub(super) mod tests {
 			#include <metal_stdlib>
 			using namespace metal;
 			struct FragmentResources {
-				sampler texture_sampler [[id(0)]];
-				texture2d<float> texture [[id(1)]];
+				texture2d<float> texture [[id(0)]];
+				sampler texture_sampler [[id(1)]];
 			};
 			struct VertexOutput {
 				float4 position [[position]];
 				float4 color;
 			};
-			fragment float4 fragment_main(
+			fragment float4 besl_main(
 				VertexOutput input [[stage_in]],
 				constant FragmentResources& resources [[buffer(16)]]) {
 				return resources.texture.sample(resources.texture_sampler, float2(0.0));
@@ -2198,7 +2197,7 @@ pub(super) mod tests {
 		"#;
 		let fragment_shader_hlsl = r#"
 			SamplerState texture_sampler : register(s0, space0);
-			Texture2D<float4> texture_image : register(t2, space0);
+			Texture2D<float4> texture_image : register(t0, space0);
 			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
 			float4 fragment_main(VertexOutput input) : SV_TARGET0 {
 				return texture_image.Sample(texture_sampler, float2(0.0, 0.0));
@@ -2209,7 +2208,7 @@ pub(super) mod tests {
 			ShaderSource::PlatformNative {
 				glsl: vertex_shader_code,
 				msl: vertex_shader_msl,
-				msl_entry_point: "vertex_main",
+				msl_entry_point: "besl_main",
 				hlsl: vertex_shader_hlsl,
 				hlsl_entry_point: "vertex_main",
 			},
@@ -2220,7 +2219,7 @@ pub(super) mod tests {
 			ShaderSource::PlatformNative {
 				glsl: fragment_shader_code,
 				msl: fragment_shader_msl,
-				msl_entry_point: "fragment_main",
+				msl_entry_point: "besl_main",
 				hlsl: fragment_shader_hlsl,
 				hlsl_entry_point: "fragment_main",
 			},
@@ -2228,19 +2227,15 @@ pub(super) mod tests {
 		.expect(
 			"Failed to compile the descriptor test fragment shader. The most likely cause is invalid native shader source.",
 		);
-		let sampler_resource = crate::ShaderResourceDescriptor::single(
-			crate::ResourceSlot::new(0),
-			crate::ResourceKind::Sampler,
-			crate::AccessPolicies::READ,
-		);
+
 		let buffer_resource = crate::ShaderResourceDescriptor::single(
 			crate::ResourceSlot::new(1),
 			crate::ResourceKind::StorageBuffer,
 			crate::AccessPolicies::READ,
 		);
-		let image_resource = crate::ShaderResourceDescriptor::single(
-			crate::ResourceSlot::new(2),
-			crate::ResourceKind::SampledImage,
+		let texture_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(0),
+			crate::ResourceKind::CombinedImageSampler,
 			crate::AccessPolicies::READ,
 		);
 
@@ -2257,7 +2252,7 @@ pub(super) mod tests {
 				None,
 				fragment_shader_artifact.as_source(),
 				ShaderTypes::Fragment,
-				[sampler_resource, image_resource],
+				[texture_resource],
 			)
 			.expect("Failed to create fragment shader");
 
@@ -2312,9 +2307,14 @@ pub(super) mod tests {
 
 		let descriptor_set = device.create_descriptor_set(None);
 		device.write(&[
-			crate::DescriptorWrite::sampler(descriptor_set, sampler_resource.slot(), sampler),
+			crate::DescriptorWrite::combined_image_sampler(
+				descriptor_set,
+				texture_resource.slot(),
+				sampled_texture,
+				sampler,
+				Layouts::Read,
+			),
 			crate::DescriptorWrite::buffer(descriptor_set, buffer_resource.slot(), buffer.into()),
-			crate::DescriptorWrite::image(descriptor_set, image_resource.slot(), sampled_texture, Layouts::Read),
 		]);
 
 		assert!(!device.has_errors());

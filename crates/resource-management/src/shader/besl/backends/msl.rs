@@ -7,6 +7,9 @@ use std::{
 
 pub use Generator as MSLShaderGenerator;
 
+/// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
+pub const MSL_ENTRY_POINT: &str = "besl_main";
+
 use crate::shader::generator::{
 	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in, MatrixLayouts, NodeEmitter, ShaderFormatting,
 	ShaderGenerationSettings, ShaderGenerator, Stages,
@@ -73,8 +76,8 @@ mod tests {
 		.into()
 	}
 
-	#[test]
-	fn sampled_binding_array_argument_is_emitted_in_resources() {
+	#[compio::test]
+	async fn sampled_binding_array_argument_is_emitted_in_resources() {
 		let mut root = besl::Node::root();
 		root.add_child(
 			besl::Node::binding_array(
@@ -97,9 +100,14 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected sampled binding array MSL generation");
 
-		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
-		assert_string_contains!(shader, "sampler textures_sampler [[id(4)]][4];");
+		assert_string_contains!(shader, "texture2d<float> textures [[id(18)]][4];");
+		assert_string_contains!(shader, "sampler textures_sampler [[id(22)]][4];");
 		assert_string_contains!(shader, "resources.textures[0].sample(resources.textures_sampler[0]");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-fixed-slot-array")
+			.await
+			.expect("Expected sparse fixed-slot MSL argument IDs to compile natively");
 	}
 
 	#[test]
@@ -138,7 +146,7 @@ mod tests {
 	}
 
 	#[test]
-	fn intrinsic_definition_only_bindings_do_not_shift_dense_argument_ids() {
+	fn intrinsic_definition_only_bindings_keep_fixed_argument_ids() {
 		let root = besl::Node::root();
 		let void = root.get_child("void").expect("Expected the built-in void type");
 		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
@@ -160,8 +168,8 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected instantiated intrinsic binding generation");
 
-		assert_string_contains!(shader, "texture2d<float> instantiated [[id(0)]];");
-		assert_string_contains!(shader, "sampler instantiated_sampler [[id(1)]];");
+		assert_string_contains!(shader, "texture2d<float> instantiated [[id(200)]];");
+		assert_string_contains!(shader, "sampler instantiated_sampler [[id(201)]];");
 		assert!(!shader.contains("definition_only"));
 	}
 
@@ -202,7 +210,7 @@ mod tests {
 	}
 
 	#[test]
-	fn dense_metal_argument_id_ranges_cannot_overflow() {
+	fn fixed_metal_argument_id_ranges_cannot_overflow() {
 		let binding: besl::NodeReference = besl::Node::binding_array(
 			"textures",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -218,7 +226,7 @@ mod tests {
 			Generator::new()
 				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 				.is_err(),
-			"Packed Metal argument IDs must not wrap"
+			"Fixed Metal argument IDs must not wrap"
 		);
 	}
 
@@ -367,7 +375,7 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"struct _resources{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(1)]];texture2d<float> texture [[id(2)]];sampler texture_sampler [[id(3)]];};"
+			"struct _resources{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(2)]];texture2d<float> texture [[id(4)]];sampler texture_sampler [[id(5)]];};"
 		);
 		assert_string_contains!(
 			shader,
@@ -532,8 +540,8 @@ mod tests {
 			argument_buffer_shader,
 			"constant _dispatch_values* dispatch_values [[id(0)]];"
 		);
-		assert_string_contains!(argument_buffer_shader, "const device _vertices* vertices [[id(1)]];");
-		assert_string_contains!(argument_buffer_shader, "device _counters* counters [[id(2)]];");
+		assert_string_contains!(argument_buffer_shader, "const device _vertices* vertices [[id(2)]];");
+		assert_string_contains!(argument_buffer_shader, "device _counters* counters [[id(4)]];");
 
 		let bare_resource_shader = Generator::new()
 			.minified(true)

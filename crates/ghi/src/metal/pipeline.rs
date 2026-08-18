@@ -279,7 +279,7 @@ pub(crate) fn configure_render_targets(
 	}
 }
 
-/// The `StageArgumentLayout` struct exists to translate one shader stage's flat resource interface into Metal argument IDs.
+/// The `StageArgumentLayout` struct provides one pipeline-wide Metal argument-buffer layout shared by its shader stages.
 #[derive(Clone)]
 pub(crate) struct StageArgumentLayout {
 	pub(crate) stage: crate::Stages,
@@ -288,7 +288,7 @@ pub(crate) struct StageArgumentLayout {
 	pub(crate) encoded_length: usize,
 }
 
-/// The `StageArgumentBinding` struct exists to retain the Metal argument IDs assigned to one flat resource slot.
+/// The `StageArgumentBinding` struct retains stable Metal argument IDs derived from one flat resource slot.
 #[derive(Clone)]
 pub(crate) struct StageArgumentBinding {
 	pub(crate) descriptor: crate::shader::ShaderResourceDescriptor,
@@ -542,74 +542,62 @@ pub(crate) fn canonicalize_stage_resources(
 	canonical
 }
 
-/// Reserves a dense run of native argument IDs for one shader resource array.
-pub(crate) fn reserve_argument_slots(next_argument_index: &mut u32, count: u32) -> ArgumentSlotRange {
-	let start = *next_argument_index;
-	let end = start
+/// Maps one logical flat-slot interval to its stable Metal argument-ID reservation.
+pub(crate) fn fixed_argument_slot_ranges(
+	slot: crate::shader::ResourceSlot,
+	count: u32,
+) -> (ArgumentSlotRange, ArgumentSlotRange) {
+	let primary = slot.index().checked_mul(2).expect(
+		"Metal argument index overflowed. The most likely cause is a flat resource slot too large for the fixed Metal ABI.",
+	);
+	let secondary = primary
 		.checked_add(count)
-		.expect("Metal argument index range overflowed. The most likely cause is an invalid shader resource count.");
-	*next_argument_index = end;
-	ArgumentSlotRange { base: start, count }
+		.expect("Metal argument index overflowed. The most likely cause is an invalid flat resource slot or resource count.");
+	secondary
+		.checked_add(count)
+		.expect("Metal argument reservation overflowed. The most likely cause is a flat resource range too large for the fixed Metal ABI.");
+	(
+		ArgumentSlotRange { base: primary, count },
+		ArgumentSlotRange { base: secondary, count },
+	)
 }
 
-/// Assigns the dense Metal argument IDs needed to represent one flat GHI resource.
-pub(crate) fn allocate_argument_binding_slots(
-	kind: crate::shader::ResourceKind,
-	count: u32,
-	next_argument_index: &mut u32,
-) -> ArgumentBindingSlots {
-	match kind {
+/// Assigns stable Metal argument IDs from one flat GHI resource interval.
+pub(crate) fn allocate_argument_binding_slots(descriptor: crate::shader::ShaderResourceDescriptor) -> ArgumentBindingSlots {
+	let (primary, secondary) = fixed_argument_slot_ranges(descriptor.slot(), descriptor.count());
+	match descriptor.kind() {
 		crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer => {
-			ArgumentBindingSlots::Buffer(reserve_argument_slots(next_argument_index, count))
+			ArgumentBindingSlots::Buffer(primary)
 		}
 		crate::shader::ResourceKind::SampledImage
 		| crate::shader::ResourceKind::StorageImage
-		| crate::shader::ResourceKind::InputAttachment => {
-			ArgumentBindingSlots::Texture(reserve_argument_slots(next_argument_index, count))
-		}
-		crate::shader::ResourceKind::Sampler => {
-			ArgumentBindingSlots::Sampler(reserve_argument_slots(next_argument_index, count))
-		}
+		| crate::shader::ResourceKind::InputAttachment => ArgumentBindingSlots::Texture(primary),
+		crate::shader::ResourceKind::Sampler => ArgumentBindingSlots::Sampler(primary),
 		crate::shader::ResourceKind::CombinedImageSampler => ArgumentBindingSlots::CombinedImageSampler {
-			textures: reserve_argument_slots(next_argument_index, count),
-			samplers: reserve_argument_slots(next_argument_index, count),
+			textures: primary,
+			samplers: secondary,
 		},
-		crate::shader::ResourceKind::AccelerationStructure => {
-			ArgumentBindingSlots::AccelerationStructure(reserve_argument_slots(next_argument_index, count))
-		}
+		crate::shader::ResourceKind::AccelerationStructure => ArgumentBindingSlots::AccelerationStructure(primary),
 	}
 }
 
-pub(crate) fn stage_argument_interface_matches(
-	layout: &StageArgumentLayout,
-	resources: &[crate::shader::ShaderResourceDescriptor],
-) -> bool {
-	layout.bindings.len() == resources.len()
-		&& layout
-			.bindings
-			.iter()
-			.zip(resources)
-			.all(|(binding, descriptor)| binding.descriptor == *descriptor)
-}
-
-/// Builds one dense Metal argument-buffer layout from the flat resources used by a shader stage.
+/// Builds one fixed Metal argument-buffer layout from a pipeline's flat resource union.
 pub(crate) fn build_stage_argument_layout(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	stage: crate::Stages,
-	resources: &[crate::shader::ShaderResourceDescriptor],
+	resources: &[PipelineResourceDescriptor],
 ) -> StageArgumentLayout {
-	let mut next_argument_index = 0u32;
 	let mut metal_argument_descriptors = Vec::new();
 	let bindings = resources
 		.iter()
-		.copied()
-		.map(|resource| {
+		.map(|pipeline_resource| {
+			let resource = pipeline_resource.descriptor;
 			let access = if resource.access().intersects(crate::AccessPolicies::WRITE) {
 				mtl::MTLBindingAccess::ReadWrite
 			} else {
 				mtl::MTLBindingAccess::ReadOnly
 			};
-			let argument_slots = allocate_argument_binding_slots(resource.kind(), resource.count(), &mut next_argument_index);
+			let argument_slots = allocate_argument_binding_slots(resource);
 			argument_slots.for_each_metal_argument(|slot, count, data_type| {
 				let descriptor = mtl::MTLArgumentDescriptor::argumentDescriptor();
 				descriptor.setDataType(data_type);
@@ -654,27 +642,19 @@ pub(crate) fn build_stage_argument_layout(
 	}
 }
 
-/// Builds the private Metal pipeline layout by merging the resource interfaces of every shader stage.
+/// Builds the private Metal pipeline layout by merging the fixed resource interfaces of every shader stage.
 pub(crate) fn build_pipeline_layout(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	stage_resources: &[(crate::Stages, Vec<crate::shader::ShaderResourceDescriptor>)],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 ) -> PipelineLayout {
 	let mut resources = Vec::<PipelineResourceDescriptor>::new();
-	let mut stage_argument_layouts = Vec::with_capacity(stage_resources.len());
+	let mut resource_stages = crate::Stages::NONE;
 
 	for (stage, stage_descriptors) in stage_resources {
 		let stage_descriptors = canonicalize_stage_resources(stage_descriptors);
 		if !stage_descriptors.is_empty() {
-			if let Some(existing) = stage_argument_layouts
-				.iter_mut()
-				.find(|layout| stage_argument_interface_matches(layout, &stage_descriptors))
-			{
-				// Identical interfaces can use the same immutable argument buffer at index 16 for every matching stage.
-				existing.stage |= *stage;
-			} else {
-				stage_argument_layouts.push(build_stage_argument_layout(device, *stage, &stage_descriptors));
-			}
+			resource_stages |= *stage;
 		}
 
 		for descriptor in stage_descriptors {
@@ -712,6 +692,12 @@ pub(crate) fn build_pipeline_layout(
 	}
 
 	resources.sort_by_key(|resource| resource.descriptor.slot());
+	// Fixed IDs let all stages share one argument buffer containing the complete pipeline resource union.
+	let stage_argument_layouts = if resources.is_empty() {
+		Vec::new()
+	} else {
+		vec![build_stage_argument_layout(device, resource_stages, &resources)]
+	};
 	let push_constant_size = push_constant_ranges
 		.iter()
 		.map(|range| range.offset as usize + range.size as usize)

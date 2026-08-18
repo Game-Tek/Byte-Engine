@@ -41,23 +41,26 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 	}
 
+	/// Maps one logical flat-slot interval to a stable Metal argument-ID reservation.
+	pub(crate) fn fixed_argument_ids(slot: u32, count: u32) -> Result<(u32, u32), ()> {
+		let primary = slot.checked_mul(2).ok_or(())?;
+		let secondary = primary.checked_add(count).ok_or(())?;
+		secondary.checked_add(count).ok_or(())?;
+		Ok((primary, secondary))
+	}
+
 	pub(crate) fn emit_argument_buffer_struct(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
 		self.emit_named_struct_start(string, "_resources");
 
-		let mut next_id = 0u32;
 		for binding in bindings {
-			self.emit_argument_buffer_field(string, binding, &mut next_id);
+			self.emit_argument_buffer_field(string, binding);
 		}
 
 		self.emit_struct_declaration_end(string);
 	}
 
-	pub(crate) fn emit_argument_buffer_field(
-		&mut self,
-		string: &mut String,
-		binding_node: &besl::NodeReference,
-		next_id: &mut u32,
-	) {
+	/// Emits one field using IDs derived only from its logical flat-slot interval.
+	pub(crate) fn emit_argument_buffer_field(&mut self, string: &mut String, binding_node: &besl::NodeReference) {
 		let node = binding_node.borrow();
 		let besl::Nodes::Binding {
 			name,
@@ -66,26 +69,27 @@ impl<A: Allocator + Clone> Generator<A> {
 			memory_class,
 			r#type,
 			count,
+			slot,
 			..
 		} = node.node()
 		else {
 			return;
 		};
 
-		let emit_suffix = |string: &mut String, next_id: &mut u32| {
+		let descriptor_count = count.map(|count| count.get()).unwrap_or(1);
+		let (primary_id, secondary_id) = Self::fixed_argument_ids(*slot, descriptor_count).expect(
+			"Invalid fixed Metal argument ID range. The most likely cause is that binding validation was bypassed before source emission.",
+		);
+		let emit_suffix = |string: &mut String, argument_id: u32| {
 			string.push_str(" [[id(");
-			let _ = write!(string, "{next_id}");
+			let _ = write!(string, "{argument_id}");
 			string.push_str(")]]");
-			let descriptor_count = count.map(|count| count.get()).unwrap_or(1);
 			if let Some(count) = count {
 				string.push('[');
 				let _ = write!(string, "{count}");
 				string.push(']');
 			}
 			self.emit_statement_end(string);
-			*next_id = next_id.checked_add(descriptor_count).expect(
-				"Invalid dense Metal argument ID range. The most likely cause is that binding validation was bypassed before source emission.",
-			);
 		};
 
 		self.emit_indentation(string, 1);
@@ -96,7 +100,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(address_space);
 				string.push(' ');
 				string.push_str(&format!("_{}* {}", name, name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::Image { format } => {
 				let element_type = match format.as_str() {
@@ -111,7 +115,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					"access::read"
 				};
 				string.push_str(&format!("texture2d<{}, {}> {}", element_type, access, name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
@@ -125,12 +129,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(texture_type);
 				string.push(' ');
 				string.push_str(name);
-				emit_suffix(string, next_id);
+				emit_suffix(string, primary_id);
 
 				self.emit_indentation(string, 1);
 				string.push_str("sampler ");
 				string.push_str(&format!("{}_sampler", name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, secondary_id);
 			}
 		}
 	}
@@ -262,7 +266,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		string.push_str("kernel void ");
 		if *name == "main" {
-			string.push_str("besl_main");
+			string.push_str(MSL_ENTRY_POINT);
 		} else {
 			string.push_str(name);
 		}
@@ -346,7 +350,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str(maximum_mesh_threadgroups.to_string().as_str());
 		string.push_str(")]] void ");
 		if *name == "main" {
-			string.push_str("besl_main");
+			string.push_str(MSL_ENTRY_POINT);
 		} else {
 			string.push_str(name);
 		}
@@ -434,7 +438,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		string.push_str("[[mesh]] void ");
 		if *name == "main" {
-			string.push_str("besl_main");
+			string.push_str(MSL_ENTRY_POINT);
 		} else {
 			string.push_str(name);
 		}

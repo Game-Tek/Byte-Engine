@@ -597,8 +597,8 @@ mod tests {
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Expected transformed array sample MSL generation");
 
-		assert!(shader.contains("material_textures [[id(1)]][1024]"), "{shader}");
-		assert!(shader.contains("material_textures_sampler [[id(1025)]][1024]"), "{shader}");
+		assert!(shader.contains("material_textures [[id(18)]][1024]"), "{shader}");
+		assert!(shader.contains("material_textures_sampler [[id(1042)]][1024]"), "{shader}");
 	}
 
 	/// Compiles a synthetic main that exposes common-function values through one result buffer.

@@ -295,7 +295,7 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	/// Encodes one immutable stage-specific argument buffer from the currently bound retained set union.
+	/// Encodes one immutable pipeline-wide argument buffer from the bound retained set union.
 	pub(super) fn encode_stage_argument_buffer(
 		&self,
 		layout: &StageArgumentLayout,

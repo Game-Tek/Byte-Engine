@@ -30,7 +30,7 @@ impl PlatformShaderLanguage {
 		match self {
 			Self::Glsl => "main",
 			Self::Hlsl => "besl_main",
-			Self::Msl => "besl_main",
+			Self::Msl => crate::shader::besl::backends::msl::MSL_ENTRY_POINT,
 		}
 	}
 

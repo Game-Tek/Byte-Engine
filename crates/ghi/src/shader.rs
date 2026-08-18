@@ -170,6 +170,9 @@ fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, Stri
 ///
 /// Slots are global to the pipeline interface. Descriptor sets may group resources by lifetime,
 /// but they never introduce another shader-visible coordinate.
+///
+/// Direct MSL argument-buffer fields use `2 * slot` as their primary `[[id]]`. Combined image
+/// samplers place their sampler range at `2 * slot + count`. This mapping is shared by every stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct ResourceSlot(u32);

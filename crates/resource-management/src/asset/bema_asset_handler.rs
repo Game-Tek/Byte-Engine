@@ -514,7 +514,7 @@ pub mod tests {
 							)],
 						},
 						artifact: crate::resources::material::ShaderArtifact::Msl {
-							entry_point: "test_main".to_string(),
+							entry_point: crate::shader::besl::backends::msl::MSL_ENTRY_POINT.to_string(),
 						},
 						source_hash: 42,
 					},
@@ -682,7 +682,8 @@ pub mod tests {
 		assert_eq!(shader_model.source_hash, 42);
 		assert!(matches!(
 			shader_model.artifact,
-			crate::resources::material::ShaderArtifact::Msl { ref entry_point } if entry_point == "test_main"
+			crate::resources::material::ShaderArtifact::Msl { ref entry_point }
+				if entry_point == crate::shader::besl::backends::msl::MSL_ENTRY_POINT
 		));
 
 		let material = resource_storage_backend

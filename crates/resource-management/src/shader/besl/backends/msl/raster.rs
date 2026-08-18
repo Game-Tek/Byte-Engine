@@ -326,7 +326,9 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 		let formatting = ShaderFormatting::new(self.minified);
 
-		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]]");
+		string.push_str("vertex VertexOutput ");
+		string.push_str(MSL_ENTRY_POINT);
+		string.push_str("(VertexInput in [[stage_in]]");
 		if inputs
 			.iter()
 			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "vertex_id"))
@@ -401,7 +403,9 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		string.push_str("fragment ");
 		string.push_str(&entry_return_type);
-		string.push_str(" besl_main(FragmentInput in [[stage_in]]");
+		string.push(' ');
+		string.push_str(MSL_ENTRY_POINT);
+		string.push_str("(FragmentInput in [[stage_in]]");
 		if inputs
 			.iter()
 			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "front_facing"))
@@ -740,7 +744,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 	}
 
-	/// Returns the resources in logical-slot order so Metal argument IDs are packed deterministically.
+	/// Returns resources in logical-slot order so generated MSL remains deterministic.
 	pub(crate) fn sort_bindings_by_slot<'a>(&self, bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference, A> {
 		let mut sorted = Vec::with_capacity_in(bindings.len(), self.allocator.clone());
 		sorted.extend_from_slice(bindings);

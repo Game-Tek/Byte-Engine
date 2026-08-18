@@ -445,20 +445,28 @@ mod flat_binding_tests {
 	}
 
 	#[test]
-	fn combined_image_sampler_arrays_pack_dense_texture_then_sampler_ids() {
-		let mut next = 3;
-		let combined = allocate_argument_binding_slots(crate::shader::ResourceKind::CombinedImageSampler, 2, &mut next);
-		let buffer = allocate_argument_binding_slots(crate::shader::ResourceKind::UniformBuffer, 1, &mut next);
+	fn combined_image_sampler_arrays_use_stable_slot_derived_ids() {
+		let combined = allocate_argument_binding_slots(resource(
+			9,
+			crate::shader::ResourceKind::CombinedImageSampler,
+			2,
+			crate::AccessPolicies::READ,
+		));
+		let buffer = allocate_argument_binding_slots(resource(
+			11,
+			crate::shader::ResourceKind::UniformBuffer,
+			1,
+			crate::AccessPolicies::READ,
+		));
 
 		assert_eq!(
 			combined,
 			ArgumentBindingSlots::CombinedImageSampler {
-				textures: ArgumentSlotRange { base: 3, count: 2 },
-				samplers: ArgumentSlotRange { base: 5, count: 2 },
+				textures: ArgumentSlotRange { base: 18, count: 2 },
+				samplers: ArgumentSlotRange { base: 20, count: 2 },
 			}
 		);
-		assert_eq!(buffer, ArgumentBindingSlots::Buffer(ArgumentSlotRange { base: 7, count: 1 }));
-		assert_eq!(next, 8);
+		assert_eq!(buffer, ArgumentBindingSlots::Buffer(ArgumentSlotRange { base: 22, count: 1 }));
 	}
 
 	#[test]
@@ -508,15 +516,15 @@ mod flat_binding_tests {
 			using namespace metal;
 
 			struct _resources {
-				texture2d<float> textures [[id(0)]][1024];
-				sampler textures_sampler [[id(1024)]][1024];
-				constant uint* material_texture_index [[id(2048)]];
-				texture2d<float> ao [[id(2049)]];
-				sampler ao_sampler [[id(2050)]];
-				device uint* output [[id(2051)]];
+				texture2d<float> textures [[id(18)]][1024];
+				sampler textures_sampler [[id(1042)]][1024];
+				constant uint* material_texture_index [[id(2092)]];
+				texture2d<float> ao [[id(2102)]];
+				sampler ao_sampler [[id(2103)]];
+				device uint* output [[id(2108)]];
 			};
 
-			kernel void retained_material_probe(
+			kernel void besl_main(
 				uint2 gid [[thread_position_in_grid]],
 				constant _resources& resources [[buffer(16)]]) {
 				if (gid.x != 0 || gid.y != 0) { return; }
@@ -573,7 +581,7 @@ mod flat_binding_tests {
 				Some("Retained Material Binding Probe"),
 				crate::shader::Sources::MTL {
 					source,
-					entry_point: "retained_material_probe",
+					entry_point: "besl_main",
 				},
 				crate::ShaderTypes::Compute,
 				[output_resource, ao_resource, texture_resource, material_resource],
@@ -676,7 +684,7 @@ mod flat_binding_tests {
 		assert_eq!(
 			*context.get_buffer_slice(output),
 			64 | (192 << 8),
-			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that retained materialization and MSL dense-ID allocation disagree.",
+			"Material resources after the bindless table reached the wrong Metal argument IDs. The most likely cause is that retained materialization and the fixed MSL slot mapping disagree.",
 		);
 	}
 
@@ -695,8 +703,8 @@ mod flat_binding_tests {
 
 			struct _resources {
 				texture2d<float, access::write> mip_one [[id(0)]];
-				texture2d<float, access::write> mip_two [[id(1)]];
-				texture2d<float, access::write> mip_three [[id(2)]];
+				texture2d<float, access::write> mip_two [[id(2)]];
+				texture2d<float, access::write> mip_three [[id(4)]];
 			};
 
 			kernel void write_mips(

@@ -393,11 +393,29 @@ mod tests {
 	}
 
 	#[test]
-	fn dxil_shader_artifact_round_trips_through_resource_archiving() {
-		let bytes = crate::to_vec(&ShaderArtifact::Dxil).expect("DXIL artifact should serialize");
-		let artifact: ShaderArtifact = crate::from_slice(&bytes).expect("DXIL artifact should deserialize");
+	fn shader_artifacts_round_trip_through_resource_archiving() {
+		let round_trip = |artifact: &ShaderArtifact| {
+			let bytes = crate::to_vec(artifact).expect("Shader artifact should serialize");
+			crate::from_slice::<ShaderArtifact>(&bytes).expect("Shader artifact should deserialize")
+		};
+		assert!(matches!(round_trip(&ShaderArtifact::Dxil), ShaderArtifact::Dxil));
 
-		assert!(matches!(artifact, ShaderArtifact::Dxil));
+		let entry_point = crate::shader::besl::backends::msl::MSL_ENTRY_POINT;
+		let msl = round_trip(&ShaderArtifact::Msl {
+			entry_point: entry_point.to_string(),
+		});
+		let mtlb = round_trip(&ShaderArtifact::Mtlb {
+			entry_point: entry_point.to_string(),
+		});
+
+		assert!(matches!(
+			msl,
+			ShaderArtifact::Msl { entry_point: ref archived_entry_point } if archived_entry_point == entry_point
+		));
+		assert!(matches!(
+			mtlb,
+			ShaderArtifact::Mtlb { entry_point: ref archived_entry_point } if archived_entry_point == entry_point
+		));
 	}
 
 	#[test]

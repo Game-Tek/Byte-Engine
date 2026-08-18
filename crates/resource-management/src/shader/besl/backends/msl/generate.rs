@@ -334,9 +334,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
-	/// Validates logical flat-slot intervals and the packed Metal argument-ID space before source emission.
+	/// Validates logical flat-slot intervals and fixed Metal argument-ID reservations before source emission.
 	pub(crate) fn validate_reachable_binding_layout(order: &[besl::NodeReference], allocator: A) -> Result<(), ()> {
-		let mut dense_argument_count = 0u32;
 		let binding_count = order
 			.iter()
 			.filter(|node| matches!(node.borrow().node(), besl::Nodes::Binding { .. }))
@@ -344,11 +343,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		let mut ranges = Vec::with_capacity_in(binding_count, allocator);
 
 		for binding in order {
-			let Some((start, end, dense_count)) = Self::binding_layout(binding)? else {
+			let Some((start, end)) = Self::binding_layout(binding)? else {
 				continue;
 			};
 
-			dense_argument_count = dense_argument_count.checked_add(dense_count).ok_or(())?;
 			ranges.push((start, end));
 		}
 
@@ -361,21 +359,17 @@ impl<A: Allocator + Clone> Generator<A> {
 		Ok(())
 	}
 
-	pub(crate) fn binding_layout(binding: &besl::NodeReference) -> Result<Option<(u32, u32, u32)>, ()> {
+	pub(crate) fn binding_layout(binding: &besl::NodeReference) -> Result<Option<(u32, u32)>, ()> {
 		let binding = binding.borrow();
-		let besl::Nodes::Binding { slot, count, r#type, .. } = binding.node() else {
+		let besl::Nodes::Binding { slot, count, .. } = binding.node() else {
 			return Ok(None);
 		};
 
 		let count = count.map_or(1, |count| count.get());
 		let end = slot.checked_add(count).ok_or(())?;
-		let dense_count = if matches!(r#type, besl::BindingTypes::CombinedImageSampler { .. }) {
-			count.checked_mul(2).ok_or(())?
-		} else {
-			count
-		};
+		Self::fixed_argument_ids(*slot, count)?;
 
-		Ok(Some((*slot, end, dense_count)))
+		Ok(Some((*slot, end)))
 	}
 
 	pub(crate) fn function_return_type_name(function_node: &besl::NodeReference) -> Option<String> {

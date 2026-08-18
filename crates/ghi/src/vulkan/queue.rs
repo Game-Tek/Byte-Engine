@@ -92,7 +92,7 @@ impl crate::queue::Queue for Queue {
 
 	fn execute<'a, P>(
 		&'a mut self,
-		frame: Option<crate::queue::FrameRequest>,
+		frame: Option<crate::queue::FrameRequest<'a>>,
 		wait_for: &[crate::SynchronizerHandle],
 		synchronizer: crate::SynchronizerHandle,
 		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
@@ -149,7 +149,7 @@ impl crate::queue::Queue for QueueReference<'_> {
 
 	fn execute<'a, P>(
 		&'a mut self,
-		frame: Option<crate::queue::FrameRequest>,
+		frame: Option<crate::queue::FrameRequest<'a>>,
 		wait_for: &[crate::SynchronizerHandle],
 		synchronizer: crate::SynchronizerHandle,
 		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,

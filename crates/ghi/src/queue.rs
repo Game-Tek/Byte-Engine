@@ -21,7 +21,7 @@ pub trait Queue {
 	/// Opens the requested frame, lets the closure record submission work, and submits it on this queue.
 	fn execute<'a, P>(
 		&'a mut self,
-		frame: Option<FrameRequest>,
+		frame: Option<FrameRequest<'a>>,
 		wait_for: &[SynchronizerHandle],
 		synchronizer: crate::SynchronizerHandle,
 		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
@@ -29,12 +29,31 @@ pub trait Queue {
 		P: AsRef<[PresentKey]>;
 }
 
-/// The `FrameRequest` struct identifies a frame that should be opened for queue execution.
+/// The `FrameRequest` struct identifies a frame and the allocator for its temporary host objects.
 #[derive(Clone, Copy)]
-pub struct FrameRequest {
+pub struct FrameRequest<'a> {
 	/// The monotonically increasing identity of this submission frame.
 	pub index: u64,
 	pub synchronizer: SynchronizerHandle,
+	pub(crate) allocator: &'a dyn std::alloc::Allocator,
+}
+
+impl FrameRequest<'static> {
+	/// Creates a frame request that uses the global allocator.
+	pub fn new(index: u64, synchronizer: SynchronizerHandle) -> Self {
+		Self::new_in(index, synchronizer, &std::alloc::Global)
+	}
+}
+
+impl<'a> FrameRequest<'a> {
+	/// Creates a frame request that uses `allocator` for frame-owned host memory.
+	pub fn new_in(index: u64, synchronizer: SynchronizerHandle, allocator: &'a dyn std::alloc::Allocator) -> Self {
+		Self {
+			index,
+			synchronizer,
+			allocator,
+		}
+	}
 }
 
 /// The `StartedFrame` struct exists to pair an opened frame with the previous frame that became reusable.

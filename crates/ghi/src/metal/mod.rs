@@ -662,14 +662,9 @@ mod flat_binding_tests {
 			.queue(queue_handle)
 			.create_command_buffer(Some("Material Binding Probe"));
 		let signal = context.create_synchronizer(Some("Material Binding Probe Signal"), true);
-		context.queue(queue_handle).execute(
-			Some(FrameRequest {
-				index: 0,
-				synchronizer: signal,
-			}),
-			&[],
-			signal,
-			|execution| {
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |recording| {
 					recording
 						.bind_compute_pipeline(pipeline)
@@ -677,8 +672,7 @@ mod flat_binding_tests {
 						.dispatch(crate::DispatchExtent::new(Extent::square(1), Extent::square(1)));
 				});
 				[]
-			},
-		);
+			});
 		context.wait();
 
 		assert_eq!(
@@ -763,14 +757,9 @@ mod flat_binding_tests {
 			.queue(queue_handle)
 			.create_command_buffer(Some("Metal 4 Specialization Probe"));
 		let signal = context.create_synchronizer(Some("Metal 4 Specialization Probe"), true);
-		context.queue(queue_handle).execute(
-			Some(FrameRequest {
-				index: 0,
-				synchronizer: signal,
-			}),
-			&[],
-			signal,
-			|execution| {
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |recording| {
 					recording
 						.bind_compute_pipeline(pipeline)
@@ -778,8 +767,7 @@ mod flat_binding_tests {
 						.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 				});
 				[]
-			},
-		);
+			});
 		context.wait();
 
 		assert_eq!(
@@ -990,10 +978,7 @@ mod flat_binding_tests {
 		for frame_index in 0..4 {
 			*context.get_mut_buffer_slice(output_buffer) = [0; 3];
 			context.queue(queue_handle).execute(
-				Some(FrameRequest {
-					index: frame_index,
-					synchronizer: completion,
-				}),
+				Some(FrameRequest::new(frame_index, completion)),
 				&[],
 				completion,
 				|execution| {

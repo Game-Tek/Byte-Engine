@@ -1759,7 +1759,7 @@ void main() {
 		let mut captured_present_key = None;
 
 		device.queue(queue_handle).execute(
-			Some(crate::queue::FrameRequest { index: 0, synchronizer }),
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
 			&[],
 			synchronizer,
 			|execution| {
@@ -3275,7 +3275,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			return;
 		};
 		let synchronizer = device.create_synchronizer(None, false);
-		let frame = crate::queue::FrameRequest { index: 0, synchronizer };
+		let frame = crate::queue::FrameRequest::new(0, synchronizer);
 
 		device.queue(queue_handle).execute(Some(frame), &[], synchronizer, |_| []);
 

@@ -19,6 +19,7 @@
 	clippy::type_complexity,
 	clippy::unnecessary_literal_unwrap
 )]
+#![feature(allocator_api)]
 #![feature(generic_const_exprs)]
 #![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, str_as_str))]
 

@@ -525,12 +525,13 @@ pub mod queue {
 			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 			let queue_handle = self.queue_handle;
-			self.device_mut().start_frame(index, synchronizer_handle, queue_handle)
+			self.device_mut()
+				.start_frame(index, synchronizer_handle, queue_handle, &std::alloc::Global)
 		}
 
 		fn execute<'a, P>(
 			&'a mut self,
-			frame: Option<crate::queue::FrameRequest>,
+			frame: Option<crate::queue::FrameRequest<'a>>,
 			wait_for: &[graphics_hardware_interface::SynchronizerHandle],
 			synchronizer: graphics_hardware_interface::SynchronizerHandle,
 			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
@@ -543,7 +544,7 @@ pub mod queue {
 				device.wait_for_synchronizer(wait_synchronizer);
 			}
 
-			let frame = frame.map(|frame| device.start_frame(frame.index, frame.synchronizer, queue_handle));
+			let frame = frame.map(|frame| device.start_frame(frame.index, frame.synchronizer, queue_handle, frame.allocator));
 			let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
 			let frame = frame.map(|frame| frame.frame);
 			let mut execution = Execution {
@@ -573,12 +574,13 @@ pub mod queue {
 			index: u64,
 			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
-			self.device.start_frame(index, synchronizer_handle, self.queue_handle)
+			self.device
+				.start_frame(index, synchronizer_handle, self.queue_handle, &std::alloc::Global)
 		}
 
 		fn execute<'a, P>(
 			&'a mut self,
-			frame: Option<crate::queue::FrameRequest>,
+			frame: Option<crate::queue::FrameRequest<'a>>,
 			wait_for: &[graphics_hardware_interface::SynchronizerHandle],
 			synchronizer: graphics_hardware_interface::SynchronizerHandle,
 			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
@@ -590,7 +592,10 @@ pub mod queue {
 			}
 
 			let queue_handle = self.queue_handle;
-			let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer, queue_handle));
+			let frame = frame.map(|frame| {
+				self.device
+					.start_frame(frame.index, frame.synchronizer, queue_handle, frame.allocator)
+			});
 			let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
 			let frame = frame.map(|frame| frame.frame);
 			let mut execution = Execution {

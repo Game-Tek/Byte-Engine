@@ -1,3 +1,5 @@
+use std::alloc::{Allocator, Global};
+
 use objc2_metal::MTLDevice;
 
 use super::*;
@@ -20,6 +22,7 @@ impl Instance {
 		Ok(Instance { devices, settings })
 	}
 
+	/// Creates a Metal device that uses the global allocator.
 	pub fn create_device(
 		&mut self,
 		settings: crate::device::Features,
@@ -28,6 +31,19 @@ impl Instance {
 			&mut Option<graphics_hardware_interface::QueueHandle>,
 		)],
 	) -> Result<super::Device, &'static str> {
+		self.create_device_in(settings, queues, Global)
+	}
+
+	/// Creates a Metal device that uses `allocator` for device-owned host memory.
+	pub fn create_device_in<A: Allocator>(
+		&mut self,
+		settings: crate::device::Features,
+		queues: &mut [(
+			graphics_hardware_interface::QueueSelection,
+			&mut Option<graphics_hardware_interface::QueueHandle>,
+		)],
+		allocator: A,
+	) -> Result<super::Device<A>, &'static str> {
 		let device = if let Some(preferred_name) = settings.gpu {
 			let selected = self.devices.iter().find(|device| device.name().to_string() == preferred_name);
 
@@ -58,6 +74,6 @@ impl Instance {
 			mesh_shading: settings.mesh_shading || self.settings.mesh_shading,
 		};
 
-		super::Device::new(merged_settings, device, queues)
+		super::Device::new_in(merged_settings, device, queues, allocator)
 	}
 }

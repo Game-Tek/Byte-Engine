@@ -38,6 +38,7 @@ impl Context {
 		index: u64,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 		queue_handle: graphics_hardware_interface::QueueHandle,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> crate::queue::StartedFrame<super::super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
@@ -49,7 +50,7 @@ impl Context {
 		self.retire_internal_uploads(frame_key.sequence_index);
 		self.process_tasks(frame_key.sequence_index);
 		crate::queue::StartedFrame::new(
-			super::super::Frame::new_for_queue(self, frame_key, queue_handle),
+			super::super::Frame::new_for_queue(self, frame_key, queue_handle, allocator),
 			completed_frame,
 		)
 	}

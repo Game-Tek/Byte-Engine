@@ -2,10 +2,15 @@ use super::*;
 
 impl crate::device::Device for Device {
 	type Context = Context;
+	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&std::alloc::Global
+	}
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {

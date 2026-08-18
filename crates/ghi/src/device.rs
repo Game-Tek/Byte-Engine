@@ -1,3 +1,5 @@
+use std::alloc::Allocator;
+
 use crate::{
 	image, pipelines, sampler,
 	shader::{self, Sources},
@@ -10,10 +12,14 @@ where
 	Self: Sized,
 {
 	type Context: crate::context::Context;
+	type Allocator: Allocator;
 	type RasterPipeline;
 	type ComputePipeline;
 	type Image;
 	type Sampler;
+
+	/// Returns the allocator used for device-owned host memory.
+	fn allocator(&self) -> &Self::Allocator;
 
 	/// Returns whether the backend API reported an error.
 	#[cfg(any(debug_assertions, test))]

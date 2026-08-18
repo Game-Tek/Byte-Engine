@@ -59,10 +59,15 @@ pub type FactorySampler = Sampler;
 
 impl crate::device::Device for Factory {
 	type Context = crate::metal::context::Context;
+	type Allocator = std::alloc::Global;
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = ComputePipeline;
 	type Image = Image;
 	type Sampler = Sampler;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&std::alloc::Global
+	}
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {

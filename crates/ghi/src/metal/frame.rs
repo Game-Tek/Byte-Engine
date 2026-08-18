@@ -1,7 +1,6 @@
 use objc2_foundation::NSAutoreleasePool;
 use objc2_foundation::NSString;
 use objc2_metal::{MTL4CommandEncoder, MTL4CommandQueue, MTL4ComputeCommandEncoder, MTLDrawable};
-use smallvec::SmallVec;
 
 use super::*;
 use crate::image::ImageHandle;
@@ -17,18 +16,22 @@ use crate::SwapchainHandle;
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	queue_handle: graphics_hardware_interface::QueueHandle,
-	drawables: SmallVec<[(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>); 4]>,
+	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>), &'a dyn std::alloc::Allocator>,
 	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut context::Context, frame_key: graphics_hardware_interface::FrameKey) -> Self {
+	pub fn new(
+		device: &'a mut context::Context,
+		frame_key: graphics_hardware_interface::FrameKey,
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> Self {
 		assert!(
 			!device.queues.is_empty(),
 			"Metal frame creation failed. The most likely cause is that the context has no command queues.",
 		);
-		Self::new_for_queue(device, frame_key, graphics_hardware_interface::QueueHandle(0))
+		Self::new_for_queue(device, frame_key, graphics_hardware_interface::QueueHandle(0), allocator)
 	}
 
 	/// Creates a frame that batches command buffers through the selected queue.
@@ -36,12 +39,13 @@ impl<'a> Frame<'a> {
 		device: &'a mut context::Context,
 		frame_key: graphics_hardware_interface::FrameKey,
 		queue_handle: graphics_hardware_interface::QueueHandle,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
 			queue_handle,
-			drawables: SmallVec::new(),
+			drawables: Vec::new_in(allocator),
 			device,
 			_autorelease_pool: pool,
 		}

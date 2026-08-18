@@ -569,10 +569,15 @@ impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
 
 impl crate::device::Device for Device {
 	type Context = Device;
+	type Allocator = std::alloc::Global;
 	type RasterPipeline = crate::dx12::factory::RasterPipeline;
 	type ComputePipeline = crate::dx12::factory::ComputePipeline;
 	type Image = crate::dx12::factory::FactoryImage;
 	type Sampler = crate::dx12::factory::FactorySampler;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&std::alloc::Global
+	}
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {

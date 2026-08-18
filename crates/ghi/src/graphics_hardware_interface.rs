@@ -1012,10 +1012,7 @@ pub(super) mod tests {
 		{
 			let mut queue = renderer.queue(queue_handle);
 			queue.execute(
-				Some(FrameRequest {
-					index: 0,
-					synchronizer: render_finished_synchronizer,
-				}),
+				Some(FrameRequest::new(0, render_finished_synchronizer)),
 				&[],
 				render_finished_synchronizer,
 				|execution| {
@@ -1114,10 +1111,7 @@ pub(super) mod tests {
 			{
 				let mut queue = renderer.queue(queue_handle);
 				queue.execute(
-					Some(FrameRequest {
-						index: i,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1228,10 +1222,7 @@ pub(super) mod tests {
 				let mut queue = device.queue(queue_handle);
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
-					Some(FrameRequest {
-						index: i as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1347,10 +1338,7 @@ pub(super) mod tests {
 				let mut queue = device.queue(queue_handle);
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
-					Some(FrameRequest {
-						index: i as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1462,10 +1450,7 @@ pub(super) mod tests {
 				let mut texture_copy_handles = Vec::new();
 
 				queue.execute(
-					Some(FrameRequest {
-						index: i as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1595,10 +1580,7 @@ pub(super) mod tests {
 				let mut queue = device.queue(queue_handle);
 				let mut copy_texture_handles = Vec::new();
 				queue.execute(
-					Some(FrameRequest {
-						index: i as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1761,10 +1743,7 @@ pub(super) mod tests {
 				let mut queue = device.queue(queue_handle);
 				let mut texture_copy_handles = Vec::new();
 				queue.execute(
-					Some(FrameRequest {
-						index: frame_index as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {
@@ -1914,29 +1893,21 @@ pub(super) mod tests {
 		let copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest {
-					index: 0,
-					synchronizer: signal,
-				}),
-				&[],
-				signal,
-				|execution| {
-					execution.record(command_buffer, |command_buffer_recording| {
-						let data = [0.5f32];
+			queue.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
+				execution.record(command_buffer, |command_buffer_recording| {
+					let data = [0.5f32];
 
-						let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
+					let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-						pipeline_command.write_push_constant(0, data);
-						pipeline_command
-							.bind_descriptor_sets(&[descriptor_set])
-							.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+					pipeline_command.write_push_constant(0, data);
+					pipeline_command
+						.bind_descriptor_sets(&[descriptor_set])
+						.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-					});
-					[]
-				},
-			);
+					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+				});
+				[]
+			});
 			copy_handles
 		};
 
@@ -1965,29 +1936,21 @@ pub(super) mod tests {
 		let copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest {
-					index: 1,
-					synchronizer: signal,
-				}),
-				&[],
-				signal,
-				|execution| {
-					execution.record(command_buffer, |command_buffer_recording| {
-						let data = [1.0f32];
+			queue.execute(Some(FrameRequest::new(1, signal)), &[], signal, |execution| {
+				execution.record(command_buffer, |command_buffer_recording| {
+					let data = [1.0f32];
 
-						let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
+					let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-						pipeline_command.write_push_constant(0, data);
-						pipeline_command
-							.bind_descriptor_sets(&[descriptor_set])
-							.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+					pipeline_command.write_push_constant(0, data);
+					pipeline_command
+						.bind_descriptor_sets(&[descriptor_set])
+						.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-					});
-					[]
-				},
-			);
+					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+				});
+				[]
+			});
 			copy_handles
 		};
 
@@ -2025,20 +1988,12 @@ pub(super) mod tests {
 		let copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest {
-					index: 2,
-					synchronizer: signal,
-				}),
-				&[],
-				signal,
-				|execution| {
-					execution.record(command_buffer, |command_buffer_recording| {
-						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-					});
-					[]
-				},
-			);
+			queue.execute(Some(FrameRequest::new(2, signal)), &[], signal, |execution| {
+				execution.record(command_buffer, |command_buffer_recording| {
+					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+				});
+				[]
+			});
 			copy_handles
 		};
 
@@ -2053,20 +2008,12 @@ pub(super) mod tests {
 		let copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest {
-					index: 3,
-					synchronizer: signal,
-				}),
-				&[],
-				signal,
-				|execution| {
-					execution.record(command_buffer, |command_buffer_recording| {
-						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-					});
-					[]
-				},
-			);
+			queue.execute(Some(FrameRequest::new(3, signal)), &[], signal, |execution| {
+				execution.record(command_buffer, |command_buffer_recording| {
+					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+				});
+				[]
+			});
 			copy_handles
 		};
 
@@ -2348,45 +2295,37 @@ pub(super) mod tests {
 		let texure_copy_handles = {
 			let mut queue = device.queue(queue_handle);
 			let mut texure_copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest {
-					index: 0,
-					synchronizer: signal,
-				}),
-				&[],
-				signal,
-				|execution| {
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
+			queue.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
+				execution.record(command_buffer_handle, |command_buffer_recording| {
+					command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
 
-						let attachments = [AttachmentInformation::new(
-							render_target,
-							Layouts::RenderTarget,
-							ClearValue::Color(RGBA {
-								r: 0.0,
-								g: 0.0,
-								b: 0.0,
-								a: 1.0,
-							}),
-							false,
-							true,
-						)];
+					let attachments = [AttachmentInformation::new(
+						render_target,
+						Layouts::RenderTarget,
+						ClearValue::Color(RGBA {
+							r: 0.0,
+							g: 0.0,
+							b: 0.0,
+							a: 1.0,
+						}),
+						false,
+						true,
+					)];
 
-						let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+					let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-						let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
+					let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
 
-						raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
+					raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 
-						raster_pipeline_command.draw_mesh(&mesh);
+					raster_pipeline_command.draw_mesh(&mesh);
 
-						raster_render_pass_command.end_render_pass();
+					raster_render_pass_command.end_render_pass();
 
-						texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-					});
-					[]
-				},
-			);
+					texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+				});
+				[]
+			});
 			texure_copy_handles
 		};
 
@@ -2746,10 +2685,7 @@ void miss_main(inout Payload payload) {
 				let mut queue = renderer.queue(queue_handle);
 				let mut texure_copy_handles = Vec::new();
 				queue.execute(
-					Some(FrameRequest {
-						index: i as u64,
-						synchronizer: render_finished_synchronizer,
-					}),
+					Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
 					&[],
 					render_finished_synchronizer,
 					|execution| {

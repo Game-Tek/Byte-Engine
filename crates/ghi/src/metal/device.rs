@@ -1,20 +1,25 @@
-/// The `Device` struct owns the Metal GPU entry point for the macOS 26-only backend.
+use std::alloc::{Allocator, Global};
+
+/// The `Device` struct owns the Metal GPU entry point and host allocator for the macOS 26-only backend.
 ///
 /// The backend calls Metal 4 directly and does not provide an older Metal fallback.
-pub struct Device {
+pub struct Device<A: Allocator = Global> {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	pub(crate) queues: Vec<queue::StoredQueue>,
 	pub settings: crate::device::Features,
+	allocator: A,
 }
 
-impl Device {
-	pub fn new(
+impl<A: Allocator> Device<A> {
+	/// Creates a Metal device that uses `allocator` for device-owned host memory.
+	pub fn new_in(
 		settings: crate::device::Features,
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: &mut [(
 			graphics_hardware_interface::QueueSelection,
 			&mut Option<graphics_hardware_interface::QueueHandle>,
 		)],
+		allocator: A,
 	) -> Result<Self, &'static str> {
 		let mut created_queues = Vec::with_capacity(queues.len());
 
@@ -34,15 +39,36 @@ impl Device {
 			device,
 			queues: created_queues,
 			settings,
+			allocator,
 		})
 	}
 }
-impl crate::device::Device for Device {
+
+impl Device<Global> {
+	/// Creates a Metal device that uses the global allocator.
+	pub fn new(
+		settings: crate::device::Features,
+		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
+		queues: &mut [(
+			graphics_hardware_interface::QueueSelection,
+			&mut Option<graphics_hardware_interface::QueueHandle>,
+		)],
+	) -> Result<Self, &'static str> {
+		Self::new_in(settings, device, queues, Global)
+	}
+}
+
+impl<A: Allocator> crate::device::Device for Device<A> {
 	type Context = crate::metal::context::Context;
+	type Allocator = A;
 	type RasterPipeline = crate::metal::factory::RasterPipeline;
 	type ComputePipeline = crate::metal::factory::ComputePipeline;
 	type Image = crate::metal::factory::FactoryImage;
 	type Sampler = crate::metal::factory::FactorySampler;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&self.allocator
+	}
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {

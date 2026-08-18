@@ -501,10 +501,8 @@ impl Renderer {
 		}
 
 		let mut queue = self.context.queue(self.graphics_queue_handle);
-		let frame = ghi::queue::FrameRequest {
-			index: self.started_frame_count,
-			synchronizer: self.render_finished_synchronizer,
-		};
+		let frame =
+			ghi::queue::FrameRequest::new_in(self.started_frame_count, self.render_finished_synchronizer, &frame_allocator);
 
 		self.started_frame_count += 1;
 

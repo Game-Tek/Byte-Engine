@@ -667,14 +667,9 @@ mod tests {
 
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
 		let signal = context.create_synchronizer(None, true);
-		context.queue(queue_handle).execute(
-			Some(FrameRequest {
-				index: 0,
-				synchronizer: signal,
-			}),
-			&[],
-			signal,
-			|execution| {
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |recording| {
 					recording
 						.bind_compute_pipeline(pipeline)
@@ -682,8 +677,7 @@ mod tests {
 						.dispatch(ghi::DispatchExtent::new(utils::Extent::line(1), utils::Extent::line(1)));
 				});
 				[]
-			},
-		);
+			});
 		context.wait();
 
 		assert_eq!(*context.get_buffer_slice(output), 4660);
@@ -813,14 +807,9 @@ mod tests {
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
 		let signal = context.create_synchronizer(None, true);
 		let mut copies = Vec::new();
-		context.queue(queue_handle).execute(
-			Some(FrameRequest {
-				index: 0,
-				synchronizer: signal,
-			}),
-			&[],
-			signal,
-			|execution| {
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |recording| {
 					let attachments = [ghi::AttachmentInformation::new(
 						target,
@@ -844,8 +833,7 @@ mod tests {
 					copies = recording.transfer_textures(&[target.into()]);
 				});
 				[]
-			},
-		);
+			});
 		context.wait();
 
 		assert!(!context.has_errors());

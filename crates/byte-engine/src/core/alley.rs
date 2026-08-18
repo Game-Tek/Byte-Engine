@@ -15,7 +15,7 @@ pub trait Lane {
 pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
 	state: &'dispatch DispatchState,
-	next_single_runner_section: u32,
+	next_limited_parallelism_section: usize,
 	next_broadcast_section: usize,
 }
 
@@ -24,27 +24,39 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		Self {
 			lane_idx,
 			state,
-			next_single_runner_section: 0,
+			next_limited_parallelism_section: 0,
 			next_broadcast_section: 0,
 		}
 	}
 
 	/// Runs `f` on the first lane to reach this single-runner section.
 	///
-	/// Every lane must encounter single-runner sections in the same order.
+	/// Every lane must encounter limited-parallelism sections in the same order.
 	pub fn only_one_runs<F>(&mut self, f: F)
 	where
 		F: FnOnce(),
 	{
-		let section = self.next_single_runner_section;
-		assert!(
-			section < usize::BITS,
-			"Single-runner section limit exceeded. A dispatch supports at most usize::BITS sections."
-		);
-		self.next_single_runner_section = section + 1;
+		self.with_limited_parallelism(1, f);
+	}
 
-		let claim = 1usize << section;
-		if self.state.claimed.fetch_or(claim, Ordering::Relaxed) & claim == 0 {
+	/// Runs `f` on the first `limit` lanes to reach this section.
+	///
+	/// Lanes beyond `limit` continue immediately. Every lane must encounter these
+	/// sections in the same order and use the same limit for each section.
+	pub fn with_limited_parallelism<F>(&mut self, limit: usize, f: F)
+	where
+		F: FnOnce(),
+	{
+		let section = self.next_limited_parallelism_section;
+		self.next_limited_parallelism_section += 1;
+
+		let claims = self.state.limited_parallelism.get(section).unwrap_or_else(|| {
+			panic!(
+				"Limited-parallelism capacity exceeded. A dispatch supports at most {LIMITED_PARALLELISM_SECTION_COUNT} limited sections."
+			)
+		});
+
+		if claims.fetch_add(1, Ordering::Relaxed) < limit {
 			f();
 		}
 	}
@@ -76,6 +88,7 @@ impl Lane for ConcreteLane<'_> {
 	}
 }
 
+const LIMITED_PARALLELISM_SECTION_COUNT: usize = 32;
 const BROADCAST_SLOT_COUNT: usize = 32;
 const BROADCAST_SLOT_SIZE: usize = 64;
 const BROADCAST_SLOT_ALIGNMENT: usize = 64;
@@ -86,14 +99,14 @@ const BROADCAST_READY: u8 = 2;
 const BROADCAST_POISONED: u8 = 3;
 
 struct DispatchState {
-	claimed: AtomicUsize,
+	limited_parallelism: [AtomicUsize; LIMITED_PARALLELISM_SECTION_COUNT],
 	broadcasts: [BroadcastSlot; BROADCAST_SLOT_COUNT],
 }
 
 impl DispatchState {
 	fn new() -> Self {
 		Self {
-			claimed: AtomicUsize::new(0),
+			limited_parallelism: std::array::from_fn(|_| AtomicUsize::new(0)),
 			broadcasts: std::array::from_fn(|_| BroadcastSlot::new()),
 		}
 	}
@@ -331,6 +344,32 @@ mod tests {
 
 		assert_eq!(first_counter.load(Ordering::Relaxed), 1);
 		assert_eq!(second_counter.load(Ordering::Relaxed), 1);
+	}
+
+	#[test]
+	fn limited_parallelism_runs_only_the_first_lanes() {
+		scope(|s| {
+			let alley = Alley::with_parallelism(s, 8);
+			let first_section = AtomicUsize::new(0);
+			let second_section = AtomicUsize::new(0);
+			let zero_section = AtomicUsize::new(0);
+
+			alley.execute(|lane| {
+				lane.with_limited_parallelism(3, || {
+					first_section.fetch_add(1, Ordering::Relaxed);
+				});
+				lane.with_limited_parallelism(5, || {
+					second_section.fetch_add(1, Ordering::Relaxed);
+				});
+				lane.with_limited_parallelism(0, || {
+					zero_section.fetch_add(1, Ordering::Relaxed);
+				});
+			});
+
+			assert_eq!(first_section.load(Ordering::Relaxed), 3);
+			assert_eq!(second_section.load(Ordering::Relaxed), 5);
+			assert_eq!(zero_section.load(Ordering::Relaxed), 0);
+		});
 	}
 
 	#[test]

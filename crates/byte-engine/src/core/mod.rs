@@ -23,6 +23,11 @@ pub mod publisher;
 pub mod targeted_message;
 
 #[doc(hidden)]
+pub mod alley;
+#[doc(hidden)]
+pub mod threadpool;
+
+#[doc(hidden)]
 pub mod task;
 
 use std::ops::Deref;

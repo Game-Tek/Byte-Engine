@@ -58,8 +58,35 @@ impl crate::device::Device for Device {
 		Ok(handle)
 	}
 
-	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		RasterPipeline
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		// Detached builders borrow caller data, so retain owned state until the render frame interns the pipeline.
+		RasterPipeline {
+			name: crate::debug_name(builder.name),
+			push_constant_ranges: builder.push_constant_ranges.into_owned(),
+			vertex_elements: builder
+				.vertex_elements
+				.iter()
+				.map(|element| FactoryVertexElement {
+					name: element.name.to_owned(),
+					format: element.format,
+					binding: element.binding,
+				})
+				.collect(),
+			shaders: builder
+				.shaders
+				.iter()
+				.map(|shader| FactoryShaderParameter {
+					handle_index: shader.handle.0 as usize,
+					stage: shader.stage,
+					specialization_map: shader.specialization_map.to_vec(),
+				})
+				.collect(),
+			render_targets: builder.render_targets.into_owned(),
+			face_winding: builder.face_winding,
+			cull_mode: builder.cull_mode,
+			depth_write: builder.depth_write,
+			factory_shaders: self.shaders.clone(),
+		}
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
@@ -113,7 +140,7 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan buffer and reports the memory requirements needed to bind it.
-	pub(super) fn create_vulkan_buffer(
+	pub(crate) fn create_vulkan_buffer(
 		&self,
 		name: Option<&str>,
 		size: usize,
@@ -138,7 +165,7 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan image and reports the memory requirements needed to bind it.
-	pub(super) fn create_vulkan_texture(
+	pub(crate) fn create_vulkan_texture(
 		&self,
 		name: Option<&str>,
 		extent: Extent,
@@ -196,7 +223,7 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan fence with the requested initial signal state.
-	pub(super) fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
+	pub(crate) fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
 		let fence_create_info = vk::FenceCreateInfo::default().flags(
 			vk::FenceCreateFlags::empty()
 				| if signaled {
@@ -209,7 +236,7 @@ impl InnerDevice {
 	}
 
 	/// Assigns a Vulkan debug name when debug utilities are available.
-	pub(super) fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
+	pub(crate) fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
 		#[cfg(debug_assertions)]
 		if let Some(name) = name {
 			let name = std::ffi::CString::new(name).unwrap();
@@ -230,7 +257,7 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan semaphore and assigns its debug name.
-	pub(super) fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
+	pub(crate) fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
 		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 		let handle = unsafe {
 			self.device
@@ -244,7 +271,7 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan image view for images with view-capable usage flags.
-	pub(super) fn create_vulkan_image_view(
+	pub(crate) fn create_vulkan_image_view(
 		&self,
 		name: Option<&str>,
 		texture: &vk::Image,
@@ -295,7 +322,7 @@ impl InnerDevice {
 		vk_image_view
 	}
 
-	pub(super) fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
+	pub(crate) fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
 		usage.intersects(
 			vk::ImageUsageFlags::SAMPLED
 				| vk::ImageUsageFlags::STORAGE
@@ -307,42 +334,6 @@ impl InnerDevice {
 				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
 		)
 	}
-}
-
-/// The `ComputePipeline` struct carries a Vulkan compute pipeline before it has a public GHI handle.
-pub struct ComputePipeline {
-	pub(crate) pipeline: vk::Pipeline,
-	pub(crate) layout: crate::vulkan::PipelineLayout,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-}
-
-unsafe impl Send for ComputePipeline {}
-
-/// The `RasterPipeline` struct marks detached Vulkan raster pipelines for future support.
-pub struct RasterPipeline;
-
-/// The `FactoryImage` struct carries Vulkan image parameters until a context interns them.
-pub struct FactoryImage {
-	pub(crate) name: Option<String>,
-	pub(crate) extent: Extent,
-	pub(crate) format: crate::Formats,
-	pub(crate) resource_uses: crate::Uses,
-	pub(crate) device_accesses: crate::DeviceAccesses,
-	pub(crate) use_case: crate::UseCases,
-	pub(crate) array_layers: Option<NonZeroU32>,
-	pub(crate) cube_compatible: bool,
-	pub(crate) cube_array_compatible: bool,
-}
-
-/// The `FactorySampler` struct carries Vulkan sampler parameters until a context interns them.
-pub struct FactorySampler {
-	pub(crate) filtering_mode: crate::FilteringModes,
-	pub(crate) reduction_mode: crate::SamplingReductionModes,
-	pub(crate) mip_map_mode: crate::FilteringModes,
-	pub(crate) addressing_mode: crate::SamplerAddressingModes,
-	pub(crate) anisotropy: Option<f32>,
-	pub(crate) min_lod: f32,
-	pub(crate) max_lod: f32,
 }
 
 impl Device {

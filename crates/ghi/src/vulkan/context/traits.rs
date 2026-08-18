@@ -976,7 +976,7 @@ impl crate::context::ContextCreate for Context {
 			std::marker::PhantomData::<T> {},
 		);
 
-		if super::buffer::PERSISTENT_WRITE
+		if crate::vulkan::buffer::PERSISTENT_WRITE
 			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)
 			&& !Self::uses_only_host_access(builder.device_accesses)
 		{

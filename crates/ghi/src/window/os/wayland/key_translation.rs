@@ -1,10 +1,10 @@
 use super::*;
 
 /// The `KeyboardState` struct provides XKB keycode translation for a Wayland window.
-struct KeyboardState {
-	context: xkb::Context,
-	keymap: xkb::Keymap,
-	state: xkb::State,
+pub(super) struct KeyboardState {
+	pub(super) context: xkb::Context,
+	pub(super) keymap: xkb::Keymap,
+	pub(super) state: xkb::State,
 }
 
 impl std::fmt::Debug for KeyboardState {
@@ -13,7 +13,7 @@ impl std::fmt::Debug for KeyboardState {
 	}
 }
 
-fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
+pub(super) fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
 	let key = match keysym.raw() {
 		keysyms::KEY_a | keysyms::KEY_A => Keys::A,
 		keysyms::KEY_b | keysyms::KEY_B => Keys::B,

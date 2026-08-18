@@ -8,8 +8,8 @@ use super::{
 		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
 	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
-	CommandBufferInternal, Consumption, Context, Descriptor, Handles, Image, ImageHandle, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
+	Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 use crate::{graphics_hardware_interface, FrameKey, HandleLike as _, Size};
 
@@ -37,10 +37,10 @@ pub struct CommandBufferRecording<'a> {
 	pub(crate) buffer_states: HashMap<Handles, Vec<BufferTransitionState>>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
-	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
+	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<graphics_hardware_interface::DescriptorSetHandle>,
-	current_descriptor_materialization: Option<super::DescriptorMaterializationHandle>,
+	current_descriptor_materialization: Option<DescriptorMaterializationHandle>,
 	descriptor_materialization_dirty: bool,
 	descriptor_resources_initialized: bool,
 	descriptor_heaps_bound: bool,
@@ -66,12 +66,12 @@ mod recording;
 mod transitions;
 
 use transitions::{
-	PlannedBufferBarrier, PlannedImageBarrier, PlannedMemoryBarrier, PlannedTransitions, TransitionStateUpdates,
+	buffer_image_height, buffer_row_length, PlannedBufferBarrier, PlannedImageBarrier, PlannedMemoryBarrier,
+	PlannedTransitions, TransitionStateUpdates,
 };
+pub(crate) use transitions::{BufferCopy, ImageCopy};
 
 mod tests {
-	use ash::vk::Handle as _;
-
 	use super::*;
 
 	fn transition(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2, layout: vk::ImageLayout) -> TransitionState {

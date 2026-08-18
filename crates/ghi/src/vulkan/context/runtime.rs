@@ -1,7 +1,7 @@
 use super::*;
 
 impl Context {
-	pub(super) fn new(device: &Device) -> Result<Self, &'static str> {
+	pub(crate) fn new(device: &Device) -> Result<Self, &'static str> {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let memory_properties = device.memory_properties;
 		let queues = std::mem::take(&mut device.queues);
@@ -440,6 +440,7 @@ impl Context {
 					crate::DeviceAccesses::DeviceOnly,
 					None,
 					false,
+					false,
 					proxy_extent,
 					proxy_uses,
 					1,
@@ -469,7 +470,7 @@ impl Context {
 	}
 
 	#[cfg(any())]
-	pub(super) fn get_swapchain_image(
+	pub(crate) fn get_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		uses: crate::Uses,
@@ -513,6 +514,7 @@ impl Context {
 						proxy_format,
 						crate::DeviceAccesses::DeviceOnly,
 						None,
+						false,
 						false,
 						extent,
 						proxy_uses,
@@ -642,7 +644,7 @@ impl Context {
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
 
-	pub(super) fn swapchain_needs_proxy(
+	pub(crate) fn swapchain_needs_proxy(
 		&self,
 		supported_usage_flags: vk::ImageUsageFlags,
 		requested_usage: vk::ImageUsageFlags,
@@ -652,7 +654,7 @@ impl Context {
 			|| (uses.contains(crate::Uses::Storage) && !self.swapchain_native_supports_formatless_storage_write)
 	}
 
-	pub(super) fn validate_swapchain_proxy_format(&self, uses: crate::Uses) {
+	pub(crate) fn validate_swapchain_proxy_format(&self, uses: crate::Uses) {
 		if uses.contains(crate::Uses::Storage) && !self.swapchain_proxy_supports_formatless_storage_write {
 			panic!(
 				"Failed to create a Vulkan swapchain proxy image. The most likely cause is that VK_FORMAT_B8G8R8A8_UNORM does not support storage image writes without format."
@@ -660,13 +662,13 @@ impl Context {
 		}
 	}
 
-	pub(super) fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
+	pub(crate) fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
 		self.swapchains
 			.iter()
 			.any(|swapchain| swapchain.images[0].0 == handle.0 .0 || swapchain.native_images[0].0 == handle.0 .0)
 	}
 
-	pub(super) fn get_swapchain_image_for_sequence(
+	pub(crate) fn get_swapchain_image_for_sequence(
 		&self,
 		handle: graphics_hardware_interface::ImageHandle,
 		sequence_index: usize,
@@ -684,7 +686,7 @@ impl Context {
 		})
 	}
 
-	pub(super) fn resolve_descriptor_image_handle(
+	pub(crate) fn resolve_descriptor_image_handle(
 		&self,
 		handle: graphics_hardware_interface::ImageHandle,
 		sequence_index: usize,
@@ -700,19 +702,19 @@ impl Context {
 	}
 
 	/// Resolves a frame sequence and offset into a valid per-frame resource index.
-	pub(super) fn frame_index_with_offset(&self, sequence_index: usize, frame_offset: i32) -> usize {
+	pub(crate) fn frame_index_with_offset(&self, sequence_index: usize, frame_offset: i32) -> usize {
 		crate::frame_resources::frame_index_with_offset(sequence_index, frame_offset, self.frames as usize)
 	}
 
 	/// Selects the frame-local image handle for a chained image resource.
-	pub(super) fn image_handle_for_sequence(&self, handle: ImageHandle, sequence_index: usize) -> ImageHandle {
+	pub(crate) fn image_handle_for_sequence(&self, handle: ImageHandle, sequence_index: usize) -> ImageHandle {
 		let root_handle = handle.root(&self.images);
 		let handles = root_handle.get_all(&self.images);
 		handles[sequence_index.rem_euclid(handles.len())]
 	}
 
 	/// Removes cached keys immediately while retaining their immutable bytes until the owning frame sequence completes.
-	pub(super) fn retire_descriptor_materializations(&mut self, predicate: impl Fn(&MaterializationKey) -> bool) {
+	pub(crate) fn retire_descriptor_materializations(&mut self, predicate: impl Fn(&MaterializationKey) -> bool) {
 		let stale = self
 			.materialization_indices
 			.iter()
@@ -725,7 +727,7 @@ impl Context {
 		}
 	}
 
-	pub(super) fn invalidate_descriptor_set_materializations(
+	pub(crate) fn invalidate_descriptor_set_materializations(
 		&mut self,
 		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
 		sequence_index: Option<u8>,
@@ -736,7 +738,7 @@ impl Context {
 		});
 	}
 
-	pub(super) fn bump_descriptor_sequence_epoch(&mut self, sequence_index: u8) {
+	pub(crate) fn bump_descriptor_sequence_epoch(&mut self, sequence_index: u8) {
 		let epoch = &mut self.descriptor_sequence_epochs[sequence_index as usize];
 		*epoch = epoch.wrapping_add(1);
 		self.retire_descriptor_materializations(|key| {
@@ -747,7 +749,7 @@ impl Context {
 	}
 
 	/// Reclaims stale heap ranges only after the sequence fence proves that no command buffer still references them.
-	pub(super) fn release_retired_descriptor_materializations(&mut self, sequence_index: u8) {
+	pub(crate) fn release_retired_descriptor_materializations(&mut self, sequence_index: u8) {
 		let sequence_index = sequence_index as usize;
 		if self.retired_materializations[sequence_index].is_empty() {
 			return;
@@ -891,7 +893,7 @@ impl Context {
 		self.tasks = tasks;
 	}
 
-	pub(super) fn get_syncronizer_handles(
+	pub(crate) fn get_syncronizer_handles(
 		&self,
 		synchroizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> SmallVec<[SynchronizerHandle; MAX_FRAMES_IN_FLIGHT]> {

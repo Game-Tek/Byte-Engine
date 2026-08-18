@@ -222,6 +222,9 @@ impl VisibilityPipelineManager {
 
 	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
 	pub(crate) fn request_mesh(&mut self, handle: Handle, renderable: EntityHandle<dyn RenderableMesh>) {
+		// Creation messages are upserts across both pending requests and resolved scene instances.
+		self.remove_mesh(handle);
+
 		let source = renderable.get_mesh().clone();
 		let mesh_key = VisibilityMeshKey::from_source(&source);
 		if self.requested_meshes.insert(mesh_key.clone()) {

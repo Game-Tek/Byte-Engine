@@ -291,6 +291,8 @@ mod tests {
 		assert_string_contains!(shader, "packed_float4 center_radius;packed_float4 cone_apex_cutoff;");
 		assert!(!shader.contains("struct packed_vec4f"));
 		shader.push_str("\nstatic_assert(sizeof(Meshlet) == 52, \"Packed Meshlet stride must match the host\");\n");
+
+		#[cfg(target_os = "macos")]
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-packed-vec4f")
 			.await
 			.expect("Expected packed_vec4f storage lowering to compile natively");

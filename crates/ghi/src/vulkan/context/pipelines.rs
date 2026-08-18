@@ -1,7 +1,7 @@
 use super::*;
 
 impl Context {
-	pub(super) fn create_vulkan_graphics_pipeline_create_info<'a, R>(
+	pub(crate) fn create_vulkan_graphics_pipeline_create_info<'a, R>(
 		&'a mut self,
 		builder: crate::pipelines::raster::Builder,
 		after_build: impl FnOnce(
@@ -171,7 +171,7 @@ impl Context {
 			.front(vk::StencilOpState::default())
 			.back(vk::StencilOpState::default());
 
-		let pipeline_create_info = if has_depth {
+		let pipeline_create_info = if has_depth.is_some() {
 			pipeline_create_info.depth_stencil_state(&depth_stencil_state)
 		} else {
 			pipeline_create_info
@@ -241,7 +241,7 @@ impl Context {
 	}
 
 	/// Returns a cached descriptor-heap layout derived from shader resource metadata.
-	pub(super) fn get_or_create_pipeline_layout(
+	pub(crate) fn get_or_create_pipeline_layout(
 		&mut self,
 		shaders: &[crate::pipelines::ShaderParameter],
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
@@ -269,7 +269,7 @@ impl Context {
 		handle
 	}
 
-	pub(super) fn create_vulkan_pipeline(
+	pub(crate) fn create_vulkan_pipeline(
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {

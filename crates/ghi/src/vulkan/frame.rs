@@ -583,6 +583,53 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
+	/// Interns a factory-built raster pipeline into this frame's device.
+	pub fn intern_raster_pipeline(
+		&mut self,
+		pipeline: crate::implementation::RasterPipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		// Factory shader handles index the detached shader list, so append those shaders and remap every parameter.
+		let shader_handles = pipeline
+			.factory_shaders
+			.into_iter()
+			.map(|shader| {
+				let handle = graphics_hardware_interface::ShaderHandle(self.device.shaders.len() as u64);
+				self.device.shaders.push(shader);
+				handle
+			})
+			.collect::<Vec<_>>();
+		let vertex_elements = pipeline
+			.vertex_elements
+			.iter()
+			.map(|element| crate::pipelines::VertexElement::new(&element.name, element.format, element.binding))
+			.collect::<Vec<_>>();
+		let shaders = pipeline
+			.shaders
+			.iter()
+			.map(|shader| {
+				let handle = shader_handles.get(shader.handle_index).expect(
+					"Missing Vulkan factory shader. The most likely cause is that the detached raster pipeline references a shader from another factory.",
+				);
+				crate::pipelines::ShaderParameter::new(handle, shader.stage)
+					.with_specialization_map(&shader.specialization_map)
+			})
+			.collect::<Vec<_>>();
+		let mut builder = crate::pipelines::raster::Builder::new(
+			&pipeline.push_constant_ranges,
+			&vertex_elements,
+			&shaders,
+			&pipeline.render_targets,
+		)
+		.face_winding(pipeline.face_winding)
+		.cull_mode(pipeline.cull_mode)
+		.depth_write(pipeline.depth_write);
+		if let Some(name) = pipeline.name.as_deref() {
+			builder = builder.name(name);
+		}
+
+		self.device.create_raster_pipeline(builder)
+	}
+
 	/// Interns a factory-built compute pipeline into this frame's device.
 	pub fn intern_compute_pipeline(
 		&mut self,
@@ -612,6 +659,11 @@ impl<'a> Frame<'a> {
 		builder.cube_array_compatible = image.cube_array_compatible;
 
 		self.device.build_image(builder)
+	}
+
+	/// Updates retained descriptor-set state before command recording.
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		self.device.write(descriptor_set_writes);
 	}
 
 	/// Interns a factory-built sampler through this frame's device.

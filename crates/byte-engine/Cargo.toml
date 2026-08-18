@@ -27,6 +27,10 @@ dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [[bench]]
+name = "alley"
+harness = false
+
+[[bench]]
 name = "animation_graph"
 harness = false
 
@@ -34,6 +38,10 @@ harness = false
 name = "audio_graph"
 harness = false
 required-features = ["headed"]
+
+[[bench]]
+name = "pathfinding"
+harness = false
 
 [dependencies]
 base64 = { version = "0.13.1", optional = true }

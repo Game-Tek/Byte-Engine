@@ -20,13 +20,55 @@ pub struct Factory<T: Clone + ?Sized> {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// The `Creator` trait provides direct creation through an owning API boundary.
+/// The `Creator` trait provides fluent creation through an owning API boundary.
 ///
-/// Use this trait when an owner exposes a [`Factory`] without requiring callers to select that
-/// factory themselves.
+/// Use [`Self::create`] for the first representation of an entity, then chain
+/// [`Creation::with`] for each additional representation that must share its handle.
 pub trait Creator<T> {
-	/// Creates a value in the owner's matching factory and returns its stable handle.
-	fn create(&mut self, value: T) -> Handle;
+	/// Creates a value in the owner's matching factory and starts a shared-handle creation chain.
+	fn create(&mut self, value: T) -> Creation<'_, Self>
+	where
+		Self: Sized,
+	{
+		let handle = self.publish(None, value);
+		Creation { creator: self, handle }
+	}
+
+	/// Publishes a value with a new handle or the supplied shared handle.
+	#[doc(hidden)]
+	fn publish(&mut self, handle: Option<Handle>, value: T) -> Handle;
+}
+
+/// The `Creation` struct keeps one stable handle while an owner creates multiple entity representations.
+///
+/// Chain [`Self::with`] to publish another representation, then convert the
+/// result into [`Handle`] when another API needs the entity identity.
+pub struct Creation<'creator, C: ?Sized> {
+	creator: &'creator mut C,
+	handle: Handle,
+}
+
+impl<C: ?Sized> Creation<'_, C> {
+	/// Publishes another representation through the same owner under this creation's handle.
+	pub fn with<T>(self, value: T) -> Self
+	where
+		C: Creator<T>,
+	{
+		let published_handle = self.creator.publish(Some(self.handle), value);
+		debug_assert_eq!(published_handle, self.handle);
+		self
+	}
+
+	/// Returns the stable handle shared by every representation in this chain.
+	pub fn handle(&self) -> Handle {
+		self.handle
+	}
+}
+
+impl<C: ?Sized> From<Creation<'_, C>> for Handle {
+	fn from(creation: Creation<'_, C>) -> Self {
+		creation.handle
+	}
 }
 
 impl<T: Clone> Default for Factory<T> {
@@ -82,7 +124,7 @@ impl<T: Clone> Factory<T> {
 	///
 	/// Use this after [`Self::create`] when another system-specific representation
 	/// must retain the original entity identity.
-	pub fn derive(&mut self, handle: Handle, data: T) {
+	pub fn derive(&self, handle: Handle, data: T) {
 		let message = CreateMessage::new(handle, data);
 
 		self.record_creation_before_listener(&message);
@@ -103,7 +145,7 @@ impl<T: Clone> Factory<T> {
 		std::mem::take(&mut *self.created_before_listener.borrow_mut())
 	}
 
-	fn record_creation_before_listener(&mut self, message: &CreateMessage<T>) {
+	fn record_creation_before_listener(&self, message: &CreateMessage<T>) {
 		if self.record_created_before_listener.get() {
 			self.created_before_listener.borrow_mut().push(message.clone());
 		}
@@ -153,7 +195,7 @@ pub struct Handle(u32);
 
 #[cfg(test)]
 mod tests {
-	use super::Factory;
+	use super::{Creator, Factory, Handle};
 	use crate::core::listener::Listener;
 
 	#[test]
@@ -171,6 +213,48 @@ mod tests {
 		assert_eq!(messages[0].data(), &"first");
 		assert_eq!(messages[1].handle(), &second);
 		assert_eq!(messages[1].data(), &"second");
+	}
+
+	#[test]
+	fn creator_chains_different_values_under_one_handle() {
+		struct Owner {
+			labels: Factory<String>,
+			indices: Factory<u32>,
+		}
+
+		impl Creator<String> for Owner {
+			fn publish(&mut self, handle: Option<Handle>, value: String) -> Handle {
+				if let Some(handle) = handle {
+					self.labels.derive(handle, value);
+					handle
+				} else {
+					self.labels.create(value)
+				}
+			}
+		}
+
+		impl Creator<u32> for Owner {
+			fn publish(&mut self, handle: Option<Handle>, value: u32) -> Handle {
+				if let Some(handle) = handle {
+					self.indices.derive(handle, value);
+					handle
+				} else {
+					self.indices.create(value)
+				}
+			}
+		}
+
+		let mut owner = Owner {
+			labels: Factory::new(),
+			indices: Factory::new(),
+		};
+		let mut labels = owner.labels.listener();
+		let mut indices = owner.indices.listener();
+
+		let handle: Handle = owner.create(String::from("entity")).with(7).into();
+
+		assert_eq!(labels.read().expect("label creation").handle(), &handle);
+		assert_eq!(indices.read().expect("index creation").handle(), &handle);
 	}
 
 	#[test]

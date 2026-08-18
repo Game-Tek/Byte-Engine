@@ -33,7 +33,7 @@ windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win
 shaderc = "0.10.1"
 renderdoc = "0.12.1"
 xcb = { version = "1.5.0", features=['xtest'] }
-wayland-client = "0.31.12"
+wayland-client = { version = "0.31.12", features = ["system"] }
 wayland-protocols = { version = "0.32.6", features = ['client', 'unstable'] }
 ash = { git = "https://github.com/ash-rs/ash", rev = "a9a1fb17e98a0cde146caada86200d809306200d", features=['linked'] }
 xkbcommon = "0.9.0"

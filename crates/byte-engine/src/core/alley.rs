@@ -300,15 +300,61 @@ const COLLECTIVE_LANE_CAPACITY: usize = 64;
 const COLLECTIVE_VALUE_SIZE: usize = 64;
 const COLLECTIVE_VALUE_ALIGNMENT: usize = 64;
 
-const COLLECTIVE_KIND_UNSET: u8 = 0;
-const COLLECTIVE_KIND_BROADCAST: u8 = 1;
-const COLLECTIVE_KIND_EACH: u8 = 2;
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum CollectiveKind {
+	Unset,
+	Broadcast,
+	Each,
+}
 
-const COLLECTIVE_EMPTY: u8 = 0;
-const COLLECTIVE_REGISTERING: u8 = 1;
-const COLLECTIVE_ACTIVE: u8 = 2;
-const COLLECTIVE_READY: u8 = 3;
-const COLLECTIVE_POISONED: u8 = 4;
+impl CollectiveKind {
+	const fn as_raw(self) -> u8 {
+		self as u8
+	}
+
+	/// Converts atomic storage into a collective operation kind.
+	fn from_raw(raw: u8) -> Self {
+		match raw {
+			0 => Self::Unset,
+			1 => Self::Broadcast,
+			2 => Self::Each,
+			_ => {
+				unreachable!("Unknown collective kind raw value {raw}. Atomic collective metadata contained an invalid value.")
+			}
+		}
+	}
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum CollectiveState {
+	Empty,
+	Registering,
+	Active,
+	Ready,
+	Poisoned,
+}
+
+impl CollectiveState {
+	const fn as_raw(self) -> u8 {
+		self as u8
+	}
+
+	/// Converts atomic storage into a collective lifecycle state.
+	fn from_raw(raw: u8) -> Self {
+		match raw {
+			0 => Self::Empty,
+			1 => Self::Registering,
+			2 => Self::Active,
+			3 => Self::Ready,
+			4 => Self::Poisoned,
+			_ => {
+				unreachable!("Unknown collective state raw value {raw}. Atomic collective metadata contained an invalid value.")
+			}
+		}
+	}
+}
 
 struct DispatchState {
 	lane_count: usize,
@@ -338,8 +384,8 @@ struct CollectiveSlot {
 impl CollectiveSlot {
 	fn new() -> Self {
 		Self {
-			kind: AtomicU8::new(COLLECTIVE_KIND_UNSET),
-			state: AtomicU8::new(COLLECTIVE_EMPTY),
+			kind: AtomicU8::new(CollectiveKind::Unset.as_raw()),
+			state: AtomicU8::new(CollectiveState::Empty.as_raw()),
 			producer_claimed: AtomicBool::new(false),
 			published: AtomicUsize::new(0),
 			type_id: UnsafeCell::new(MaybeUninit::uninit()),
@@ -358,7 +404,7 @@ impl CollectiveSlot {
 		F: FnOnce() -> T,
 	{
 		self.validate_value::<T>(section);
-		self.register::<T>(COLLECTIVE_KIND_BROADCAST, section);
+		self.register::<T>(CollectiveKind::Broadcast, section);
 
 		if self
 			.producer_claimed
@@ -393,7 +439,7 @@ impl CollectiveSlot {
 			);
 		}
 		self.validate_value::<T>(section);
-		self.register::<T>(COLLECTIVE_KIND_EACH, section);
+		self.register::<T>(CollectiveKind::Each, section);
 
 		let value = self.compute(f);
 		// SAFETY: Each lane writes to its unique index after layout validation.
@@ -437,16 +483,18 @@ impl CollectiveSlot {
 
 	/// Registers and validates the operation kind and value type shared by every lane.
 	#[allow(unsafe_code, reason = "Collective type metadata is published through atomic state.")]
-	fn register<T>(&self, kind: u8, section: usize)
+	fn register<T>(&self, kind: CollectiveKind, section: usize)
 	where
 		T: 'static,
 	{
-		match self
-			.kind
-			.compare_exchange(COLLECTIVE_KIND_UNSET, kind, Ordering::Relaxed, Ordering::Relaxed)
-		{
+		match self.kind.compare_exchange(
+			CollectiveKind::Unset.as_raw(),
+			kind.as_raw(),
+			Ordering::Relaxed,
+			Ordering::Relaxed,
+		) {
 			Ok(_) => {}
-			Err(registered) if registered == kind => {}
+			Err(registered) if CollectiveKind::from_raw(registered) == kind => {}
 			Err(_) => {
 				self.poison();
 				panic!(
@@ -457,7 +505,12 @@ impl CollectiveSlot {
 
 		if self
 			.state
-			.compare_exchange(COLLECTIVE_EMPTY, COLLECTIVE_REGISTERING, Ordering::Relaxed, Ordering::Relaxed)
+			.compare_exchange(
+				CollectiveState::Empty.as_raw(),
+				CollectiveState::Registering.as_raw(),
+				Ordering::Relaxed,
+				Ordering::Relaxed,
+			)
 			.is_ok()
 		{
 			// SAFETY: The successful state transition grants exclusive type write access.
@@ -465,8 +518,8 @@ impl CollectiveSlot {
 			if self
 				.state
 				.compare_exchange(
-					COLLECTIVE_REGISTERING,
-					COLLECTIVE_ACTIVE,
+					CollectiveState::Registering.as_raw(),
+					CollectiveState::Active.as_raw(),
 					Ordering::Release,
 					Ordering::Acquire,
 				)
@@ -487,24 +540,30 @@ impl CollectiveSlot {
 	}
 
 	fn publish_ready(&self, section: usize) {
-		match self
-			.state
-			.compare_exchange(COLLECTIVE_ACTIVE, COLLECTIVE_READY, Ordering::Release, Ordering::Acquire)
-		{
-			Ok(_) | Err(COLLECTIVE_READY) => {}
-			Err(COLLECTIVE_POISONED) => self.panic_poisoned(section),
-			Err(state) => unreachable!("cannot publish collective from state {state}"),
+		match self.state.compare_exchange(
+			CollectiveState::Active.as_raw(),
+			CollectiveState::Ready.as_raw(),
+			Ordering::Release,
+			Ordering::Acquire,
+		) {
+			Ok(_) => {}
+			Err(state) => match CollectiveState::from_raw(state) {
+				CollectiveState::Ready => {}
+				CollectiveState::Poisoned => self.panic_poisoned(section),
+				state => {
+					unreachable!("Cannot publish a collective from state {state:?}. The collective lifecycle is inconsistent.")
+				}
+			},
 		}
 	}
 
 	fn wait_until_registered(&self, section: usize) {
 		let mut spins = 0usize;
 		loop {
-			match self.state.load(Ordering::Acquire) {
-				COLLECTIVE_ACTIVE | COLLECTIVE_READY => return,
-				COLLECTIVE_POISONED => self.panic_poisoned(section),
-				COLLECTIVE_EMPTY | COLLECTIVE_REGISTERING => wait_briefly(&mut spins),
-				state => unreachable!("unknown collective state {state}"),
+			match CollectiveState::from_raw(self.state.load(Ordering::Acquire)) {
+				CollectiveState::Active | CollectiveState::Ready => return,
+				CollectiveState::Poisoned => self.panic_poisoned(section),
+				CollectiveState::Empty | CollectiveState::Registering => wait_briefly(&mut spins),
 			}
 		}
 	}
@@ -512,17 +571,18 @@ impl CollectiveSlot {
 	fn wait_until_ready(&self, section: usize) {
 		let mut spins = 0usize;
 		loop {
-			match self.state.load(Ordering::Acquire) {
-				COLLECTIVE_READY => return,
-				COLLECTIVE_POISONED => self.panic_poisoned(section),
-				COLLECTIVE_EMPTY | COLLECTIVE_REGISTERING | COLLECTIVE_ACTIVE => wait_briefly(&mut spins),
-				state => unreachable!("unknown collective state {state}"),
+			match CollectiveState::from_raw(self.state.load(Ordering::Acquire)) {
+				CollectiveState::Ready => return,
+				CollectiveState::Poisoned => self.panic_poisoned(section),
+				CollectiveState::Empty | CollectiveState::Registering | CollectiveState::Active => {
+					wait_briefly(&mut spins);
+				}
 			}
 		}
 	}
 
 	fn poison(&self) {
-		self.state.store(COLLECTIVE_POISONED, Ordering::Release);
+		self.state.store(CollectiveState::Poisoned.as_raw(), Ordering::Release);
 	}
 
 	fn panic_poisoned(&self, section: usize) -> ! {

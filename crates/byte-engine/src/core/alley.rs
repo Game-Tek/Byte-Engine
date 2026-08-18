@@ -114,6 +114,68 @@ impl_into_lane_resources_for_tuple!(
 	(T7, resource7)
 );
 
+/// The `LaneValues` struct provides lane-ordered iteration over completed collective values.
+pub struct LaneValues<'dispatch, T> {
+	storage: *const u8,
+	next_lane: usize,
+	lane_count: usize,
+	marker: std::marker::PhantomData<&'dispatch T>,
+}
+
+impl<'dispatch, T> LaneValues<'dispatch, T> {
+	fn new(collective: &'dispatch CollectiveSlot, lane_count: usize) -> Self {
+		Self {
+			storage: collective.storage.get().cast::<u8>(),
+			next_lane: 0,
+			lane_count,
+			marker: std::marker::PhantomData,
+		}
+	}
+
+	#[allow(unsafe_code, reason = "Lane values are copied from synchronized strided storage.")]
+	fn read_lane(&self, lane_idx: usize) -> T
+	where
+		T: Copy,
+	{
+		// SAFETY: `CollectiveSlot::each` constructs this iterator only after every lane
+		// initialized its aligned slot and the collective reached ready. `T: Copy` leaves storage valid.
+		unsafe { self.storage.add(lane_idx * COLLECTIVE_VALUE_SIZE).cast::<T>().read() }
+	}
+}
+
+impl<T> Clone for LaneValues<'_, T> {
+	fn clone(&self) -> Self {
+		Self {
+			storage: self.storage,
+			next_lane: self.next_lane,
+			lane_count: self.lane_count,
+			marker: std::marker::PhantomData,
+		}
+	}
+}
+
+impl<T: Copy> Iterator for LaneValues<'_, T> {
+	type Item = T;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		if self.next_lane == self.lane_count {
+			return None;
+		}
+
+		let lane_idx = self.next_lane;
+		self.next_lane += 1;
+		Some(self.read_lane(lane_idx))
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		let remaining = self.lane_count - self.next_lane;
+		(remaining, Some(remaining))
+	}
+}
+
+impl<T: Copy> ExactSizeIterator for LaneValues<'_, T> {}
+impl<T: Copy> std::iter::FusedIterator for LaneValues<'_, T> {}
+
 /// The `ConcreteLane` struct provides lane-local operations during an [`Alley`] dispatch.
 pub struct ConcreteLane<'dispatch> {
 	lane_idx: usize,
@@ -194,10 +256,10 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 		collective.broadcast(section, f)
 	}
 
-	/// Runs `f` on every lane and returns all lane results after every value is published.
+	/// Runs `f` on every lane and returns lane-ordered values after every result is published.
 	///
 	/// Every lane must encounter `each` sections in the same order and with the same types.
-	pub fn each<T, F>(&mut self, f: F) -> &'dispatch [T]
+	pub fn each<T, F>(&mut self, f: F) -> LaneValues<'dispatch, T>
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
@@ -211,7 +273,7 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	/// Runs `f` on each lane's balanced partition and returns all lane results.
 	///
 	/// Every lane must provide the same shared slice and encounter this collective in the same order.
-	pub fn each_shared<T, R, F>(&mut self, values: &[T], f: F) -> &'dispatch [R]
+	pub fn each_shared<T, R, F>(&mut self, values: &[T], f: F) -> LaneValues<'dispatch, R>
 	where
 		T: Sync,
 		R: Copy + Send + Sync + 'static,
@@ -245,7 +307,7 @@ impl<'dispatch, 'values, T> SharedLane<'dispatch, 'values, T> {
 	/// Mutates this lane's partition and returns all lane results after publication.
 	///
 	/// Every lane must encounter this collective in the same order and with the same result type.
-	pub fn each_shared_mut<R, F>(&mut self, f: F) -> &'dispatch [R]
+	pub fn each_shared_mut<R, F>(&mut self, f: F) -> LaneValues<'dispatch, R>
 	where
 		R: Copy + Send + Sync + 'static,
 		F: FnOnce(&mut [T]) -> R,
@@ -413,7 +475,7 @@ impl CollectiveSlot {
 		{
 			let value = self.compute(f);
 			// SAFETY: Registration validates the type layout, and producer election
-			// grants this lane exclusive write access to element zero.
+			// grants this lane exclusive write access to lane slot zero.
 			unsafe { self.value_ptr::<T>(0).write(value) };
 			self.published.store(1, Ordering::Release);
 			self.publish_ready(section);
@@ -421,13 +483,19 @@ impl CollectiveSlot {
 			self.wait_until_ready(section);
 		}
 
-		// SAFETY: Ready was published after element zero was initialized, and `T: Copy`.
+		// SAFETY: Ready was published after lane slot zero was initialized, and `T: Copy`.
 		unsafe { self.value_ptr::<T>(0).read() }
 	}
 
-	/// Publishes one value per lane and returns the completed lane-ordered result slice.
-	#[allow(unsafe_code, reason = "Each reads synchronized lane values from inline collective storage.")]
-	fn each<T, F>(&self, lane_idx: usize, lane_count: usize, section: usize, f: F) -> &[T]
+	/// Publishes one value per lane and returns completed values in lane order.
+	#[allow(unsafe_code, reason = "Each writes synchronized lane values to strided inline storage.")]
+	fn each<'dispatch, T, F>(
+		&'dispatch self,
+		lane_idx: usize,
+		lane_count: usize,
+		section: usize,
+		f: F,
+	) -> LaneValues<'dispatch, T>
 	where
 		T: Copy + Send + Sync + 'static,
 		F: FnOnce() -> T,
@@ -442,7 +510,7 @@ impl CollectiveSlot {
 		self.register::<T>(CollectiveKind::Each, section);
 
 		let value = self.compute(f);
-		// SAFETY: Each lane writes to its unique index after layout validation.
+		// SAFETY: Each lane writes to its unique cache-line-sized slot after layout validation.
 		unsafe { self.value_ptr::<T>(lane_idx).write(value) };
 		let published = self.published.fetch_add(1, Ordering::AcqRel) + 1;
 		if published == lane_count {
@@ -451,8 +519,7 @@ impl CollectiveSlot {
 			self.wait_until_ready(section);
 		}
 
-		// SAFETY: Ready was published after all lane-indexed values were initialized.
-		unsafe { std::slice::from_raw_parts(self.value_ptr::<T>(0), lane_count) }
+		LaneValues::new(self, lane_count)
 	}
 
 	fn compute<T, F>(&self, f: F) -> T
@@ -589,10 +656,17 @@ impl CollectiveSlot {
 		panic!("Collective failed. A lane in section {section} panicked or used a different operation or type.")
 	}
 
-	#[allow(unsafe_code, reason = "Collective values occupy lane-indexed offsets in inline storage.")]
+	#[allow(unsafe_code, reason = "Collective values occupy cache-line-sized inline slots.")]
 	unsafe fn value_ptr<T>(&self, lane_idx: usize) -> *mut T {
-		// SAFETY: Callers validate lane capacity, value size, and alignment.
-		unsafe { self.storage.get().cast::<u8>().add(lane_idx * size_of::<T>()).cast::<T>() }
+		// SAFETY: Callers validate lane capacity, value size, and alignment. The storage
+		// and every lane stride are aligned to `COLLECTIVE_VALUE_ALIGNMENT`.
+		unsafe {
+			self.storage
+				.get()
+				.cast::<u8>()
+				.add(lane_idx * COLLECTIVE_VALUE_SIZE)
+				.cast::<T>()
+		}
 	}
 }
 
@@ -948,12 +1022,34 @@ mod tests {
 			});
 			let lane_indices = lane.each(|| lane_idx);
 
-			assert_eq!(lane_indices, &[0, 1, 2, 3, 4, 5, 6, 7]);
-			counter.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+			assert_eq!(lane_indices.collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
+			counter.fetch_add(all.sum::<usize>(), Ordering::Relaxed);
 		}));
 
 		assert_eq!(initializer_count.load(Ordering::Relaxed), 8);
 		assert_eq!(counter.load(Ordering::Relaxed), 64);
+	}
+
+	#[test]
+	fn each_iterates_small_and_full_padded_values_in_lane_order() {
+		#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+		struct Value64([u8; 64]);
+
+		let mut alley = Alley::with_parallelism(8);
+
+		unwrap_dispatch(alley.execute(|lane| {
+			let lane_idx = lane.idx();
+			let mut small = lane.each(|| lane_idx as u8);
+			let full = lane.each(|| Value64([lane_idx as u8; 64]));
+
+			assert_eq!(small.size_hint(), (8, Some(8)));
+			assert_eq!(small.clone().collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
+			assert_eq!(small.nth(2), Some(2));
+			assert_eq!(small.len(), 5);
+			for (expected_lane, value) in full.enumerate() {
+				assert_eq!(value, Value64([expected_lane as u8; 64]));
+			}
+		}));
 	}
 
 	#[test]
@@ -967,7 +1063,7 @@ mod tests {
 			let second = lane.broadcast(|| 11u16);
 
 			assert_eq!(first, 7);
-			assert_eq!(all, &[0, 1, 2, 3, 4, 5, 6, 7]);
+			assert_eq!(all.collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
 			assert_eq!(second, 11);
 		}));
 	}
@@ -989,7 +1085,7 @@ mod tests {
 	fn each_panic_releases_waiting_lanes() {
 		let mut alley = Alley::with_parallelism(8);
 		let result = alley.execute(|lane| {
-			let _: &[usize] = lane.each(|| panic!("expected each panic"));
+			let _ = lane.each(|| -> usize { panic!("expected each panic") });
 		});
 		assert!(result.is_err());
 
@@ -1009,10 +1105,10 @@ mod tests {
 		let mut alley = Alley::with_parallelism(8);
 
 		unwrap_dispatch(alley.execute(|lane| {
-			let all = lane.each_shared(&values, |partition| partition.iter().sum());
+			let all = lane.each_shared(&values, |partition| partition.iter().sum::<usize>());
 
 			lane.only_one_runs(|| {
-				value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+				value.fetch_add(all.sum::<usize>(), Ordering::Relaxed);
 			});
 		}));
 
@@ -1028,8 +1124,8 @@ mod tests {
 			let lengths = lane.each_shared(&values, <[usize]>::len);
 			let sums = lane.each_shared(&values, |partition| partition.iter().sum::<usize>());
 
-			assert_eq!(lengths, &[1, 1, 1, 0, 0]);
-			assert_eq!(sums, &[1, 2, 3, 0, 0]);
+			assert_eq!(lengths.collect::<Vec<_>>(), [1, 1, 1, 0, 0]);
+			assert_eq!(sums.collect::<Vec<_>>(), [1, 2, 3, 0, 0]);
 		}));
 	}
 
@@ -1050,7 +1146,7 @@ mod tests {
 			});
 
 			lane.only_one_runs(|| {
-				value.fetch_add(all.iter().sum::<usize>(), Ordering::Relaxed);
+				value.fetch_add(all.sum::<usize>(), Ordering::Relaxed);
 			});
 		});
 

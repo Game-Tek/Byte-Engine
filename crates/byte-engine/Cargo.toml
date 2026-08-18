@@ -27,6 +27,10 @@ dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [[bench]]
+name = "alley"
+harness = false
+
+[[bench]]
 name = "animation_graph"
 harness = false
 

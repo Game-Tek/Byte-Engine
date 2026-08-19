@@ -679,7 +679,6 @@ mod tests {
 
 	#[test]
 	fn pcm_conversion_preserves_zero_endpoints_and_monotonic_order() {
-
 		assert_eq!(i16_to_f32(i16::MIN), -1.0);
 		assert_eq!(i16_to_f32(0), 0.0);
 		assert!(i16_to_f32(i16::MAX) < 1.0);
@@ -689,7 +688,6 @@ mod tests {
 
 		let samples = [-1.0, -0.5, 0.0, 0.5, 1.0];
 		for pair in samples.windows(2) {
-
 			assert!(f32_to_i16(pair[0]) < f32_to_i16(pair[1]));
 		}
 	}
@@ -804,10 +802,8 @@ mod tests {
 	}
 
 	fn assert_samples_close(actual: &[f32], expected: &[f32]) {
-
 		assert_eq!(actual.len(), expected.len());
 		for (actual, expected) in actual.iter().zip(expected) {
-
 			assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
 		}
 	}

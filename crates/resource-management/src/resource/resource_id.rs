@@ -71,7 +71,6 @@ mod tests {
 
 	#[test]
 	fn hex_parser_rejects_wrong_length_and_non_hex_input() {
-
 		assert_eq!(ResourceId::from_uid_hex("abc"), None);
 		assert_eq!(ResourceId::from_uid_hex("zz41402abc4b2a76b9719d911017c592"), None);
 	}

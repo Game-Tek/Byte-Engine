@@ -38,7 +38,6 @@ pub struct AnimationGraphBenchmarkFixture {
 impl AnimationGraphBenchmarkFixture {
 	/// Creates a graph and admits every required clip before measurement starts.
 	pub fn new(benchmark: AnimationGraphBenchmark, node_count: usize) -> Self {
-
 		assert!(node_count > 0, "Animation graph benchmarks need at least one skeleton node.");
 
 		let active_animation = benchmark_animation("active", node_count, 0.25);

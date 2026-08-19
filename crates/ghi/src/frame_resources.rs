@@ -245,7 +245,6 @@ mod tests {
 
 	#[test]
 	fn signed_frame_offsets_select_relative_frames_and_wrap() {
-
 		assert_eq!(frame_index_with_offset(1, -1, 3), 0);
 		assert_eq!(frame_index_with_offset(1, 1, 3), 2);
 		assert_eq!(frame_index_with_offset(0, -1, 3), 2);

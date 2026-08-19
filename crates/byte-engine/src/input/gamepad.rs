@@ -826,7 +826,6 @@ mod tests {
 	use super::*;
 
 	fn assert_float_near(actual: f32, expected: f32) {
-
 		assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
 	}
 
@@ -843,7 +842,6 @@ mod tests {
 
 	#[test]
 	fn classifies_known_controllers_without_case_sensitive_product_names() {
-
 		assert_eq!(classify_gamepad(0x054C, 0x05C4, None, 0, 0), Some(GamepadKind::DualShock4));
 		assert_eq!(classify_gamepad(0x054C, 0x0CE6, None, 0, 0), Some(GamepadKind::DualSense));
 		assert_eq!(classify_gamepad(0x045E, 0, None, 0, 0), Some(GamepadKind::Xbox));
@@ -862,7 +860,6 @@ mod tests {
 
 	#[test]
 	fn axis_and_trigger_normalization_preserves_endpoints_and_order() {
-
 		assert_eq!(normalize_axis_u8(0), -1.0);
 		assert_eq!(normalize_axis_u8(128), 0.0);
 		assert_eq!(normalize_axis_u8(u8::MAX), 1.0);
@@ -970,7 +967,6 @@ mod tests {
 
 	#[test]
 	fn parsers_reject_reports_without_their_required_payload() {
-
 		assert!(parse_dualshock4(&[0; 8]).is_none());
 		assert!(parse_dualsense(&[0; 8]).is_none());
 		assert!(parse_generic_joystick(&[0; 4]).is_none());

@@ -187,7 +187,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl crate::command_buffer::RasterizationRenderPassMode {
-
 		assert!(
 			!self.active_rendering && self.pending_rendering.is_none(),
 			"A Vulkan render pass is already active. The most likely cause is that start_render_pass was called twice without end_render_pass.",

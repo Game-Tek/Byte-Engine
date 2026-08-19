@@ -6,7 +6,6 @@ pub(crate) const SKINNING_JOINTS_STRIDE: usize = std::mem::size_of::<[u16; 4]>()
 pub(crate) const SKINNING_WEIGHTS_STRIDE: usize = std::mem::size_of::<[f32; 4]>();
 
 const _: () = {
-
 	assert!(SKINNING_POSITION_STRIDE == 12);
 	assert!(SKINNING_NORMAL_STRIDE == 12);
 	assert!(SKINNING_JOINTS_STRIDE == 8);

@@ -116,7 +116,6 @@ mod tests {
 
 	#[test]
 	fn completed_frame_is_absent_only_while_sequences_are_first_submitted() {
-
 		assert_eq!(completed_frame_key(0, 2), None);
 		assert_eq!(completed_frame_key(1, 2), None);
 

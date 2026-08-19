@@ -212,7 +212,6 @@ mod tests {
 
 	#[test]
 	fn mip_extent_halves_non_power_of_two_dimensions_without_changing_dimensionality() {
-
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 0), Extent::rectangle(17, 9));
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 1), Extent::rectangle(8, 4));
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 4), Extent::rectangle(1, 1));

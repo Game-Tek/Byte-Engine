@@ -478,7 +478,6 @@ mod tests {
 				.generate(&settings, &main)
 				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to MSL."));
 			if name == "blend and neighborhood" {
-
 				assert!(
 					source.contains("half"),
 					"SMAA weights must remain half precision in Metal source."

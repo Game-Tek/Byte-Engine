@@ -121,6 +121,7 @@ impl Default for OGGAssetHandler {
 #[cfg(test)]
 mod tests {
 	use std::alloc::Global;
+
 	use super::append_interleaved_pcm;
 	use crate::{
 		asset::{self, handler::implementations::ogg::OGGAssetHandler, manager::AssetManager, ResourceId},

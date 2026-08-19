@@ -37,7 +37,6 @@ impl UploadStagingArena {
 
 	/// Waits until one aligned region is available or rejects a request larger than the complete arena.
 	pub(crate) async fn allocate(self: &Arc<Self>, byte_count: usize, alignment: usize) -> Option<StagingLease> {
-
 		assert!(
 			alignment.is_power_of_two(),
 			"Upload staging alignment must be a non-zero power of two."

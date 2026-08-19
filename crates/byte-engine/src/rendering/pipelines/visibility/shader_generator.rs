@@ -103,7 +103,6 @@ mod tests {
 	/// Guards the algebraic decoder shape so compact normals do not reintroduce transcendental work per shaded pixel.
 	#[test]
 	fn octahedral_decoder_uses_abs_and_step_and_defers_normalization() {
-
 		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("sqrt("));
 		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("normalize("));
 		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("abs("));

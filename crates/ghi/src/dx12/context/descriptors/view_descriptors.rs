@@ -227,7 +227,6 @@ impl Device {
 	pub(crate) fn descriptor_array_range(array_layers: u32, layer: Option<u32>) -> (u32, u32) {
 		let array_layers = array_layers.max(1);
 		if let Some(layer) = layer {
-
 			assert!(
 				layer < array_layers,
 				"Invalid DX12 image descriptor layer. The most likely cause is that the selected layer exceeds the image array size."
@@ -264,7 +263,6 @@ impl Device {
 			panic!("Unsupported DX12 cubemap UAV. The most likely cause is that a read-only cubemap was declared writable.");
 		}
 		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
-
 			assert!(
 				array_layers <= 1,
 				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata or a selected layer."
@@ -390,7 +388,6 @@ impl Device {
 			);
 		}
 		if texture_view_type == TextureViewTypes::TextureCube {
-
 			assert!(
 				layer.is_none() && array_layers == 6,
 				"Invalid DX12 cubemap descriptor view. The most likely cause is that the image is not a six-layer cubemap."
@@ -409,7 +406,6 @@ impl Device {
 			};
 		}
 		if texture_view_type == TextureViewTypes::TextureCubeArray {
-
 			assert!(
 				layer.is_none() && array_layers > 0 && array_layers.is_multiple_of(6),
 				"Invalid DX12 cube-array descriptor view. The most likely cause is that the image layer count is not divisible by six."
@@ -430,7 +426,6 @@ impl Device {
 			};
 		}
 		if texture_view_type == TextureViewTypes::Texture2D && layer.is_none() {
-
 			assert!(
 				array_layers <= 1,
 				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata or a selected layer."

@@ -660,7 +660,6 @@ mod tests {
 			generator: Option<&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator>,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
-
 				assert_eq!(id, "passes/resolve.besl");
 				assert!(source.contains("main"));
 				assert_eq!(settings.stage, ShaderTypes::Compute);

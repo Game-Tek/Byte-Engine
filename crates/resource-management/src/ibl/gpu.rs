@@ -836,7 +836,6 @@ fn copy_output_region(atlas: &[u8], atlas_width: u32, atlas_y_offset: u32, face_
 mod tests {
 	#[test]
 	fn push_constants_match_every_native_shader_layout() {
-
 		assert_eq!(std::mem::size_of::<GPUIBLPushConstants>(), 112);
 	}
 

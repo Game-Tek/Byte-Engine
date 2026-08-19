@@ -21,7 +21,6 @@ mod tests {
 
 	#[test]
 	fn texture_copy_layout_preserves_raw_zero_extent() {
-
 		assert_eq!(
 			texture_copy_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)),
 			Some((0, 0, 0))

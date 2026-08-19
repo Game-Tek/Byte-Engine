@@ -578,19 +578,16 @@ mod tests {
 
 	#[test]
 	fn default_output_is_the_first_macos_component_candidate() {
-
 		assert_eq!(output_component_subtypes()[0], kAudioUnitSubType_DefaultOutput);
 	}
 
 	#[test]
 	fn input_io_is_disabled_for_non_default_output_units() {
-
 		assert_eq!(IO_DISABLED, 0);
 	}
 
 	#[test]
 	fn ring_rejects_zero_capacity() {
-
 		assert!(SpscByteRing::new(0).is_err());
 	}
 
@@ -626,7 +623,6 @@ mod tests {
 		let ring = SpscByteRing::new(8).unwrap();
 
 		let first = ring.with_write_chunk(6, |chunk| {
-
 			assert_eq!(chunk.len(), 6);
 			chunk.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
 			chunk.len()
@@ -639,7 +635,6 @@ mod tests {
 		assert_eq!(ring.pop_into_slice(&mut dropped), 4);
 
 		let second = ring.with_write_chunk(6, |chunk| {
-
 			assert_eq!(chunk.len(), 2);
 			chunk.copy_from_slice(&[7, 8]);
 			chunk.len()
@@ -648,7 +643,6 @@ mod tests {
 		assert_eq!(second, 2);
 
 		let third = ring.with_write_chunk(6, |chunk| {
-
 			assert_eq!(chunk.len(), 4);
 			chunk.copy_from_slice(&[9, 10, 11, 12]);
 			chunk.len()

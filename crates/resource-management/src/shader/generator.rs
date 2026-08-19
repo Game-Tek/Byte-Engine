@@ -28,7 +28,6 @@ pub struct CompiledShaderBinding {
 impl CompiledShaderBinding {
 	/// Builds one validated compiled resource requirement.
 	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
-
 		assert!(
 			count > 0,
 			"Invalid resource count. The most likely cause is that a compiled shader resource was declared with an empty array."
@@ -359,7 +358,6 @@ impl Settings {
 	}
 
 	pub fn task(local_size: Extent, maximum_mesh_threadgroups: u32) -> Settings {
-
 		assert!(
 			maximum_mesh_threadgroups > 0,
 			"Invalid task mesh-threadgroup limit. The most likely cause is that a task shader was configured to emit zero mesh threadgroups."

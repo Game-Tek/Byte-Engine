@@ -34,10 +34,7 @@ impl AssetManager {
 		AS: StorageBackend + 'static,
 		RS: ResourceStorageBackend + 'static,
 	{
-		Self::new_shared(
-			storage_backend,
-			StorageBackendHarness::new(resource_storage_backend).into_shared(),
-		)
+		Self::new_shared(storage_backend, Arc::new(resource_storage_backend))
 	}
 
 	/// Creates an asset manager that shares an existing destination resource store.
@@ -1681,8 +1678,6 @@ use crate::{
 	},
 	online_docs_url,
 	r#async::BoxedFuture,
-	resource::{
-		self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend, StorageBackendHarness,
-	},
+	resource::{self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend},
 	Model, ProcessedAsset, ReferenceModel,
 };

@@ -199,7 +199,6 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 
 /// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
 fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
-
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."

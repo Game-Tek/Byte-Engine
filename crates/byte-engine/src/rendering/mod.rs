@@ -128,7 +128,6 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 			descriptor.buffer_stride(stride)
 		}
 		_ => {
-
 			assert!(
 				b.buffer_stride.is_none(),
 				"Unexpected compiled buffer stride. The most likely cause is that reflection attached buffer metadata to a non-buffer resource."

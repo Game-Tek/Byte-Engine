@@ -173,7 +173,6 @@ mod tests {
 
 	#[test]
 	fn ibl_stream_names_are_stable_and_level_specific() {
-
 		assert_eq!(super::IBL_PREFILTERED_SPECULAR_MIP_COUNT, 8);
 		assert_eq!(super::IMAGE_BASE_MIP_STREAM_NAME, "mip[0]");
 		assert_eq!(super::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, "ibl.diffuse_irradiance.mip[0]");

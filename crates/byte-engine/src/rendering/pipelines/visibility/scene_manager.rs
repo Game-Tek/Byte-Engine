@@ -489,7 +489,6 @@ mod tests {
 
 	#[test]
 	fn light_data_layout_matches_the_shader_light_record() {
-
 		assert_eq!(std::mem::align_of::<LightData>(), 16);
 		assert_eq!(std::mem::size_of::<LightData>(), 112);
 		assert_eq!(std::mem::offset_of!(LightData, position), 0);

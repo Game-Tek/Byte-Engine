@@ -92,7 +92,6 @@ impl AudioGraph {
 		let mut input_ids = SmallVec::new();
 
 		for input in inputs {
-
 			assert!(
 				nodes.len() + input.nodes.len() <= MAX_AUDIO_GRAPH_NODES,
 				"Audio graph is too large. Combining the {selector_name} inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
@@ -129,7 +128,6 @@ impl AudioGraph {
 
 	/// Appends a gain node and makes it the graph output.
 	pub(super) fn with_gain(mut self, gain: f32) -> Self {
-
 		assert!(
 			gain.is_finite() && gain >= 0.0,
 			"Invalid audio graph gain. The gain must be finite and non-negative."
@@ -144,7 +142,6 @@ impl AudioGraph {
 
 	/// Appends a varispeed node that changes playback speed and pitch together.
 	pub(super) fn with_varispeed(mut self, rate: f32) -> Self {
-
 		assert!(
 			rate.is_finite() && (0.25..=4.0).contains(&rate),
 			"Invalid audio graph varispeed rate. The provided rate is not finite or is outside 0.25..=4.0."
@@ -164,7 +161,6 @@ impl AudioGraph {
 
 	/// Appends a duration-preserving pitch-shift node.
 	pub(super) fn with_pitch_shift(mut self, ratio: f32) -> Self {
-
 		assert!(
 			ratio.is_finite() && (0.5..=2.0).contains(&ratio),
 			"Invalid audio graph pitch ratio. The ratio must be finite and between 0.5 and 2.0."
@@ -193,7 +189,6 @@ impl AudioGraph {
 	}
 
 	pub(super) fn push(&mut self, node: AudioNode) {
-
 		assert!(
 			self.nodes.len() < MAX_AUDIO_GRAPH_NODES,
 			"Audio graph is too large. A graph can contain at most {MAX_AUDIO_GRAPH_NODES} nodes."

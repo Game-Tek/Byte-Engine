@@ -583,7 +583,6 @@ mod tests {
 
 	#[test]
 	fn extracts_semantic_from_asset_name() {
-
 		assert_eq!(
 			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Base_color.png").get_base()),
 			Semantic::Albedo
@@ -656,7 +655,6 @@ mod tests {
 
 	#[test]
 	fn determines_output_format_from_compression_and_semantic() {
-
 		assert_eq!(should_compress_for_semantic(Semantic::Albedo), true);
 		assert_eq!(should_compress_for_semantic(Semantic::Normal), true);
 		assert_eq!(should_compress_for_semantic(Semantic::Other), false);

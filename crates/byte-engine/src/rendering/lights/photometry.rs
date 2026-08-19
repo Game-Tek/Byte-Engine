@@ -281,7 +281,6 @@ mod tests {
 	use super::{LightColor, PhotometricIntensity};
 
 	fn assert_near(actual: f32, expected: f32) {
-
 		assert!(
 			(actual - expected).abs() <= expected.abs().max(1.0) * 0.000_01,
 			"{actual} != {expected}"

@@ -96,13 +96,11 @@ mod tests {
 
 	#[test]
 	fn drawable_uses_accept_render_and_shader_output() {
-
 		assert!(drawable_supports_uses(Uses::RenderTarget | Uses::Storage));
 	}
 
 	#[test]
 	fn drawable_uses_reject_non_texture_roles() {
-
 		assert!(!drawable_supports_uses(Uses::RenderTarget | Uses::Vertex));
 	}
 }

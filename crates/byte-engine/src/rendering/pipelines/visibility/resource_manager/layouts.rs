@@ -119,7 +119,6 @@ pub(super) fn texture_upload_layout(format: ghi::Formats, extent: Extent, layer_
 
 /// Expands compact rows backward inside their final leased range, avoiding a second CPU allocation or full-resource copy.
 pub(super) fn pack_texture_rows_in_place(bytes: &mut [u8], layout: &TextureUploadLayout) {
-
 	assert_eq!(bytes.len(), layout.padded_size);
 	let layer_count = layout.compact_size / layout.compact_bytes_per_image;
 	for layer in (0..layer_count).rev() {

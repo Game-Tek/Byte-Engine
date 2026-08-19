@@ -336,7 +336,6 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 
 #[test]
 fn atomic_add_requires_read_and_write_descriptor_access() {
-
 	assert_eq!(
 		compile_error(compile_atomic_add(true, false)),
 		VmError::DescriptorAccessDenied {

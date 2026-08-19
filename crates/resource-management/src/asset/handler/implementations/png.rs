@@ -332,6 +332,8 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	processors::processor::implementations::image::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
+	processors::processor::implementations::image::{
+		gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription,
+	},
 	types::{Formats, Gamma},
 };

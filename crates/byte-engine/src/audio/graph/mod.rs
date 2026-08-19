@@ -331,12 +331,10 @@ mod tests {
 		for compiled in [first, second] {
 			match compiled.resource_id.as_str() {
 				"audio/a.wav" => {
-
 					assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
 					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.125)]);
 				}
 				"audio/b.wav" => {
-
 					assert_eq!(compiled.playback_rate, PlaybackRate::from_rate(1.5));
 					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.25)]);
 				}

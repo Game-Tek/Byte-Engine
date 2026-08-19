@@ -50,7 +50,6 @@ impl MediaTime {
 
 	/// Creates a time value from fractional seconds, rounded to the nearest tick.
 	pub fn from_seconds_f64(seconds: f64) -> Self {
-
 		assert!(
 			seconds.is_finite(),
 			"Media time seconds must be finite. The most likely cause is a NaN or infinite simulation duration."
@@ -112,7 +111,6 @@ impl MediaTime {
 
 	/// Converts a non-negative engine time into a standard duration.
 	pub fn to_std(self) -> Duration {
-
 		assert!(
 			self.0 >= 0,
 			"Negative media time cannot become a standard duration. The most likely cause is converting a signed timeline offset at an OS time boundary."
@@ -254,7 +252,6 @@ impl Div<i64> for MediaTime {
 	type Output = Self;
 
 	fn div(self, rhs: i64) -> Self::Output {
-
 		assert!(
 			rhs != 0,
 			"Media time division by zero is invalid. The most likely cause is averaging an empty timeline."
@@ -295,7 +292,6 @@ mod tests {
 	#[test]
 	fn media_timebase_rejects_rates_that_require_rational_timing() {
 		for rate in [122, 165, 244, 365] {
-
 			assert_eq!(MediaTime::from_frames(1, rate), None);
 		}
 	}

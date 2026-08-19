@@ -53,7 +53,6 @@ mod tests {
 
 	#[test]
 	fn zero_intervals_are_well_defined_as_every_tick() {
-
 		assert!(Interval::Frames(0).is_now(MediaTime::ZERO, MediaTime::ZERO, 17));
 		assert!(Interval::Time(MediaTime::ZERO).is_now(MediaTime::from_seconds(1), MediaTime::ZERO, 17));
 	}

@@ -89,7 +89,6 @@ mod tests {
 
 	#[test]
 	fn generated_indices_are_checked_before_u16_narrowing() {
-
 		assert_eq!(validated_generated_indices(&[0, 2, 1], 3), Some(vec![0, 2, 1]));
 		assert!(validated_generated_indices(&[3], 3).is_none());
 		assert!(validated_generated_indices(&[u16::MAX as u32 + 1], u16::MAX as usize + 2).is_none());
@@ -97,7 +96,6 @@ mod tests {
 
 	#[test]
 	fn visibility_capacity_rejects_only_the_overflowing_upload() {
-
 		assert_eq!(checked_visibility_capacity(3, 2, 5, "test"), Some(5));
 		assert_eq!(checked_visibility_capacity(3, 3, 5, "test"), None);
 		assert_eq!(checked_visibility_capacity(1, usize::MAX, usize::MAX, "test"), None);

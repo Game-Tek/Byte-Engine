@@ -259,7 +259,6 @@ mod tests {
 		skinned: bool,
 		workgroup_index: u32,
 	) -> TaskOutputs {
-
 		assert!(
 			!center_radii.is_empty(),
 			"Missing task meshlet fixtures. The most likely cause is a test invoking a workgroup without any task lanes."
@@ -728,7 +727,6 @@ mod tests {
 
 		assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
 		if let Some(expected_render_target_array_index) = expected_render_target_array_index {
-
 			assert_eq!(
 				mesh_outputs.render_target_array_index(0),
 				Some(expected_render_target_array_index)
@@ -1868,7 +1866,6 @@ mod tests {
 
 	#[test]
 	fn shader_meshlet_data_matches_packed_buffer_layout() {
-
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 4);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 52);
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, center_radius), 16);

@@ -366,7 +366,6 @@ mod tests {
 	}
 
 	fn assert_finite_nonnegative_color(color: [f32; 4], name: &str) {
-
 		assert!(
 			color[..3].iter().all(|channel| channel.is_finite() && *channel >= 0.0),
 			"Invalid {name} VM output. The most likely cause is unstable atmosphere integration: {color:?}"

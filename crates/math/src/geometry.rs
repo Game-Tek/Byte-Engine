@@ -580,7 +580,6 @@ mod tests {
 
 	#[test]
 	fn normalization_rejects_zero_and_non_finite_vectors() {
-
 		assert_eq!(Vector::<WorldSpace>::zero().normalized(), Err(NormalizationError::ZeroLength));
 		assert_eq!(
 			Vector::<WorldSpace>::new(f32::NAN, 0.0, 0.0).normalized(),

@@ -297,7 +297,6 @@ mod tests {
 
 		session.send(true, [2; 1024]);
 		for _ in 0..crate::packet_buffer::MAX_RELIABLE_SEND_ATTEMPTS {
-
 			assert_eq!(session.update(&[]).unwrap().len(), 1);
 		}
 

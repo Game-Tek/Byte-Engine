@@ -34,7 +34,10 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
 		},
 		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
-		processors::{processor::implementations::image::Semantic, processor::implementations::mesh::orient_triangle_indices_for_front_face},
+		processors::{
+			processor::implementations::image::Semantic,
+			processor::implementations::mesh::orient_triangle_indices_for_front_face,
+		},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
@@ -411,7 +414,6 @@ mod tests {
 	}
 
 	fn assert_near(actual: f32, expected: f32) {
-
 		assert!((actual - expected).abs() < 1.0e-5, "expected {expected}, got {actual}");
 	}
 
@@ -559,7 +561,6 @@ mod tests {
 
 		match animation.tracks[0].translation.as_ref().unwrap() {
 			Vector3Curve::Linear { times, values } => {
-
 				assert_eq!(times, &[0.0, 2.0]);
 				assert_eq!(values, &[[0.0, 0.0, -2.0], [1.0, 2.0, -3.0]]);
 			}
@@ -573,7 +574,6 @@ mod tests {
 				in_tangents,
 				out_tangents,
 			} => {
-
 				assert_eq!(times, &[0.0, 2.0]);
 				assert_eq!(values, &[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]);
 				assert_eq!(in_tangents, &[[-2.0, 0.0, 0.0, 0.0], [-6.0, 0.0, 0.0, 0.0]]);
@@ -872,7 +872,6 @@ mod tests {
 
 	#[test]
 	fn maps_gltf_semantics_to_normalized_channels() {
-
 		assert_eq!(gltf_vertex_component(gltf::Semantic::Normals).unwrap().channel, 0);
 		assert_eq!(gltf_vertex_component(gltf::Semantic::TexCoords(0)).unwrap().channel, 0);
 		assert!(gltf_vertex_component(gltf::Semantic::TexCoords(1)).is_none());
@@ -963,7 +962,6 @@ mod tests {
 
 	#[test]
 	fn generated_image_ids_use_stable_indices_and_optional_names() {
-
 		assert_eq!(
 			generated_gltf_image_id(ResourceId::new("models/robot.glb"), 0, None),
 			"models/robot.glb#images/0"
@@ -1226,7 +1224,9 @@ use crate::{
 		processor::implementations::image::{
 			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, Semantic,
 		},
-		processor::implementations::mesh::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
+		processor::implementations::mesh::{
+			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
+		},
 	},
 	r#async::spawn_cpu_task,
 	resource,

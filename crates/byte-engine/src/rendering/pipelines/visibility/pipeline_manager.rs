@@ -1171,13 +1171,11 @@ mod tests {
 
 	#[test]
 	fn default_environment_is_opaque_black() {
-
 		assert_eq!(DEFAULT_ENVIRONMENT_TEXEL, [0, 0, 0, 255]);
 	}
 
 	#[test]
 	fn lit_binding_supports_transparent_read_modify_write() {
-
 		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
 	}
 
@@ -1379,7 +1377,6 @@ mod tests {
 
 	#[test]
 	fn lighting_data_matches_gpu_buffer_layout() {
-
 		assert_eq!(
 			std::mem::size_of::<LightData>(),
 			112,

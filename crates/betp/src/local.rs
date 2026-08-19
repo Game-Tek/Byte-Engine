@@ -270,7 +270,6 @@ mod tests {
 		let mut local = Local::new();
 
 		for expected in 0..=u16::MAX {
-
 			assert_eq!(local.get_sequence_number(), expected);
 		}
 

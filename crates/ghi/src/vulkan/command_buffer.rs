@@ -79,7 +79,6 @@ mod tests {
 	}
 
 	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
-
 		assert!(actual.stage == expected.stage);
 		assert!(actual.access == expected.access);
 		assert!(actual.layout == expected.layout);

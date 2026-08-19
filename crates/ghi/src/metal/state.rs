@@ -156,7 +156,6 @@ pub mod queue {
 
 		// Starts a fresh recording cycle with the command's paired allocator and residency set.
 		fn begin(&self, label: Option<&str>, debug_labels: bool) {
-
 			assert_eq!(
 				self.inner.state.get(),
 				NativeCommandState::Idle,

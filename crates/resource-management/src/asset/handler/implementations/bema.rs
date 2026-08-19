@@ -533,7 +533,6 @@ pub mod tests {
 			stage: &'a str,
 		) -> crate::r#async::BoxedFuture<'a, Result<(crate::resources::material::Shader, Box<[u8]>), ()>> {
 			Box::pin(async move {
-
 				assert_eq!(format, "besl");
 
 				let stage = match stage {

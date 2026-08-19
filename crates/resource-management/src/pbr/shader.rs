@@ -947,7 +947,6 @@ mod tests {
 		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
 
 		for name in ["albedo", "metalness", "roughness", "normal", "occlusion", "emission"] {
-
 			assert_eq!(
 				count_calls(assignment_right(surface_assignment(&program, name)), "sample_material"),
 				0,

@@ -128,7 +128,6 @@ impl Context {
 	/// Retains flat descriptor writes and schedules frame-local snapshot refreshes without touching command-visible heap memory.
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for &descriptor_write in descriptor_set_writes {
-
 			assert!(
 				!matches!(
 					descriptor_write.descriptor,

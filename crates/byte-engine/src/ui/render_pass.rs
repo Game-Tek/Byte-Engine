@@ -540,7 +540,6 @@ impl RenderPass for UiRenderPass {
 
 		let mut text_groups = Vec::new();
 		if !self.data.texts.is_empty() {
-
 			assert!(
 				extent.width() > 0 && extent.height() > 0,
 				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
@@ -868,14 +867,12 @@ mod tests {
 	const UI_BLUR_COMPOSITE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-composite.besl");
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
-
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
 		assert!((actual[1] - expected[1]).abs() < 0.0001);
 	}
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
-
 			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
 		}
 	}
@@ -1215,7 +1212,6 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_filter_push_layout_matches_the_production_shader() {
-
 		assert_eq!(size_of::<UiBlurFilterPush>(), 128);
 		assert_eq!(align_of::<UiBlurFilterPush>(), 16);
 		assert_eq!(offset_of!(UiBlurFilterPush, filter_data), 0);
@@ -1290,7 +1286,6 @@ mod tests {
 					"Gaussian variance error {relative_error} at sigma {sigma}"
 				);
 			} else {
-
 				assert_eq!(second_moment, 0.0);
 			}
 		}
@@ -1419,7 +1414,6 @@ mod tests {
 				"Unexpected Gaussian tap at distance {distance}"
 			);
 			if distance > 0 {
-
 				assert!(profile[(center + distance - 1) as usize] >= positive);
 			}
 		}
@@ -1531,7 +1525,6 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_half_extent_keeps_every_awkward_edge_texel() {
-
 		assert_eq!(blur_half_extent(Extent::rectangle(1920, 1080)), Extent::rectangle(960, 540));
 		assert_eq!(blur_half_extent(Extent::rectangle(1919, 1079)), Extent::rectangle(960, 540));
 		assert_eq!(blur_half_extent(Extent::rectangle(2802, 1)), Extent::rectangle(1401, 1));
@@ -1658,7 +1651,6 @@ mod tests {
 						run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, display_scale);
 					for color in &output {
 						for channel in color.iter().take(3) {
-
 							assert!(
 								channel.is_finite() && (0.0..=1.0).contains(channel),
 								"Adaptive blur introduced an invalid color at radius {radius} and scale {display_scale}"
@@ -1676,10 +1668,8 @@ mod tests {
 							assert_rgba_close(color, [0.25, 0.5, 0.75, 1.0], 2e-5);
 						}
 					} else if radius == 0.0 {
-
 						assert_eq!(output, input);
 					} else {
-
 						assert!(output
 							.iter()
 							.zip(input)
@@ -1776,7 +1766,6 @@ mod tests {
 		run_blur_downsample_region_vm(&downsample, &mut source, &mut downsampled, regions.downsample);
 		for y in regions.downsample.origin[1]..regions.downsample.origin[1] + regions.downsample.extent.height() {
 			for x in regions.downsample.origin[0]..regions.downsample.origin[0] + regions.downsample.extent.width() {
-
 				assert!(
 					rgba(&downsampled, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale downsample texel at [{x}, {y}]"
@@ -1801,7 +1790,6 @@ mod tests {
 			for x in regions.filter.horizontal.origin[0]
 				..regions.filter.horizontal.origin[0] + regions.filter.horizontal.extent.width()
 			{
-
 				assert!(
 					rgba(&horizontal, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale horizontal texel at [{x}, {y}]"
@@ -1822,7 +1810,6 @@ mod tests {
 			for x in
 				regions.filter.vertical.origin[0]..regions.filter.vertical.origin[0] + regions.filter.vertical.extent.width()
 			{
-
 				assert!(
 					rgba(&vertical, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale vertical texel at [{x}, {y}]"
@@ -2738,7 +2725,6 @@ mod tests {
 				Value::Vec2F([0.625, 0.875]),
 				Value::F32(0.375),
 			]) {
-
 			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
 		}
 	}
@@ -2969,7 +2955,6 @@ mod tests {
 
 	#[test]
 	fn skips_zero_alpha_text_before_rasterization() {
-
 		assert!(!should_rasterize_text(&UiTextDrawElement {
 			depth: 0,
 			order: 0,

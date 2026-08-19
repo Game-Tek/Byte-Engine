@@ -48,7 +48,6 @@ mod tests {
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
-
 		assert_eq!(parse_query_property("name=hero"), Ok(("name", "hero")));
 		assert_eq!(parse_query_property("expression=a=b"), Ok(("expression", "a=b")));
 		assert_eq!(parse_query_property("name"), Err(1));
@@ -99,7 +98,6 @@ mod tests {
 
 	#[test]
 	fn query_errors_keep_distinct_actionable_causes() {
-
 		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
 		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
 	}

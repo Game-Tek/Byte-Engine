@@ -1003,7 +1003,6 @@ impl crate::context::ContextCreate for Context {
 			self.persistent_write_dynamic_buffers.push(handle.into());
 
 			for i in 1..self.frames {
-
 				assert!(i < 2, "This does not support more than one deferred buffer!");
 				self.tasks.push(Task::new(
 					Tasks::BuildBuffer(BuildBuffer {
@@ -1016,7 +1015,6 @@ impl crate::context::ContextCreate for Context {
 			}
 		} else {
 			for i in 1..self.frames {
-
 				assert!(i < 2, "This does not support more than one deferred buffer!");
 				self.tasks.push(Task::new(
 					Tasks::BuildBuffer(BuildBuffer {

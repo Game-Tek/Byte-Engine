@@ -104,7 +104,6 @@ mod tests {
 
 		assert_float_eq_with_epsilon!(general.normal().into_vector().length_squared(), 1.0, 0.0001);
 		for point in points {
-
 			assert_float_eq_with_epsilon!(general.signed_distance_to_point(point), 0.0, 0.0001);
 		}
 	}
@@ -120,7 +119,6 @@ mod tests {
 		assert_geometry_near!(forward.normal(), -reversed.normal());
 		assert_float_eq!(forward.distance(), -reversed.distance());
 		for point in [first, second, third] {
-
 			assert_float_eq!(forward.signed_distance_to_point(point), 0.0);
 			assert_float_eq!(reversed.signed_distance_to_point(point), 0.0);
 		}
@@ -134,7 +132,6 @@ mod tests {
 
 	#[test]
 	fn collinear_points_are_rejected() {
-
 		assert_eq!(
 			Plane::<WorldSpace>::from_points(Point::origin(), Point::new(1.0, 0.0, 0.0), Point::new(2.0, 0.0, 0.0)),
 			Err(crate::NormalizationError::ZeroLength)

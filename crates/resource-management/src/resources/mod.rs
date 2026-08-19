@@ -102,7 +102,6 @@ mod tests {
 		];
 
 		for (actual, expected) in tags {
-
 			assert_eq!(actual, expected);
 		}
 	}

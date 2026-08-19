@@ -26,7 +26,6 @@ where
 	}
 
 	pub fn set(&mut self, index: usize, value: bool) {
-
 		assert!(
 			index < N,
 			"Bit index is out of bounds. The most likely cause is an index greater than or equal to the bit-array length."
@@ -42,7 +41,6 @@ where
 	}
 
 	pub fn get(&self, index: usize) -> bool {
-
 		assert!(
 			index < N,
 			"Bit index is out of bounds. The most likely cause is an index greater than or equal to the bit-array length."
@@ -63,7 +61,6 @@ mod tests {
 		let mut bits = BitArray::<17>::new();
 
 		for index in 0..17 {
-
 			assert!(!bits.get(index));
 		}
 
@@ -72,7 +69,6 @@ mod tests {
 		}
 
 		for index in 0..17 {
-
 			assert_eq!(bits.get(index), matches!(index, 0 | 7 | 8 | 15 | 16));
 		}
 

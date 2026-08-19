@@ -217,7 +217,6 @@ impl SkinningPass {
 
 	/// Copies a complete caller-produced palette into the active frame without allocating intermediate storage.
 	pub(crate) fn write_matrix_palette(&self, frame: &mut ghi::implementation::Frame, matrices: &[AffineMatrix4x3Columns]) {
-
 		assert!(
 			matrices.len() <= MAX_SKINNING_MATRICES,
 			"Skinning matrix palette exceeds capacity. The most likely cause is that active skins require more than {MAX_SKINNING_MATRICES} matrices."
@@ -236,7 +235,6 @@ impl SkinningPass {
 		frame: &mut ghi::implementation::Frame,
 		dual_quaternions: &[DualQuaternion],
 	) {
-
 		assert!(
 			dual_quaternions.len() <= MAX_SKINNING_MATRICES,
 			"Skinning dual-quaternion palette exceeds capacity. The most likely cause is that active skins require more than {MAX_SKINNING_MATRICES} rigid transforms."
@@ -424,7 +422,6 @@ mod tests {
 
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
-
 		assert_eq!(std::mem::size_of::<[u16; 4]>(), 8);
 		assert_eq!(std::mem::size_of::<AffineMatrix4x3Columns>(), 48);
 		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);

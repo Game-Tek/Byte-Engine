@@ -309,7 +309,6 @@ mod tests {
 
 	#[test]
 	fn malformed_headers_report_distinct_causes() {
-
 		assert_eq!(read_packet_header(b"BET"), Err(PacketReadError::ShortHeader));
 		assert_eq!(read_packet_header(b"NOPE\x04"), Err(PacketReadError::WrongProtocol));
 		assert_eq!(read_packet_header(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
@@ -340,7 +339,6 @@ mod tests {
 
 	#[test]
 	fn every_packet_variant_round_trips_through_the_canonical_wire_format() {
-
 		assert_eq!(CONNECTION_PACKET_SIZE, 13);
 		assert_eq!(CHALLENGE_PACKET_SIZE, 21);
 		assert_eq!(DATA_PACKET_SIZE, 1045);
@@ -408,7 +406,6 @@ mod tests {
 
 	#[test]
 	fn complete_packet_decoding_rejects_malformed_headers_and_the_reserved_type() {
-
 		assert_eq!(read_packet(b"BET"), Err(PacketReadError::ShortHeader));
 		assert_eq!(read_packet(b"NOPE\x01\0\0\0\0\0\0\0\0"), Err(PacketReadError::WrongProtocol));
 		assert_eq!(read_packet(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
@@ -475,7 +472,6 @@ mod tests {
 
 	#[test]
 	fn sequence_order_is_antisymmetric_across_wraparound() {
-
 		assert!(!sequence_greater_than(7, 7));
 		assert!(sequence_greater_than(1, 0));
 		assert!(sequence_greater_than(0, u16::MAX));

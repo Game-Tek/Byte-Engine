@@ -334,7 +334,6 @@ mod tests {
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
-
 			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
 		}
 	}

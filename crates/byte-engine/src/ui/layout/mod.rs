@@ -631,7 +631,6 @@ mod tests {
 	}
 
 	fn assert_layout(element: &LayoutElement, size: Size, position: Location3) {
-
 		assert_eq!(element.size, size);
 		assert_eq!(element.position, position);
 	}

@@ -87,7 +87,6 @@ fn validate_attachment_layer_selection(
 	available_layer_count: u32,
 ) {
 	if let Some(layer) = layer {
-
 		assert!(
 			layer < available_layer_count,
 			"Render-pass attachment layer is out of bounds. The most likely cause is that the selected layer does not exist in the target image. layer={layer}, available_layers={available_layer_count}",
@@ -113,7 +112,6 @@ mod tests {
 
 	#[test]
 	fn push_upload_ranges_are_aligned_and_do_not_overlap() {
-
 		assert_eq!(super::push_upload_offset(0, 4, 1024), Some(0));
 		assert_eq!(super::push_upload_offset(4, 4, 1024), Some(256));
 		assert_eq!(super::push_upload_offset(260, 4, 1024), Some(512));
@@ -142,7 +140,6 @@ pub(in crate::metal) fn encode_texture_upload(
 		staging.len(),
 	);
 	if utils::is_block_compressed(format) {
-
 		assert_eq!(
 			staging.len(),
 			expected_size,

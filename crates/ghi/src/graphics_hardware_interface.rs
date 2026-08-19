@@ -672,7 +672,6 @@ pub(super) mod tests {
 	}
 
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
-
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
 		let pixel = pixels[0]; // top left

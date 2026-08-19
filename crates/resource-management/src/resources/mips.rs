@@ -603,11 +603,9 @@ mod tests {
 	}
 
 	fn assert_chain_matches(chain: &MipChain<'_>, expected: &[ExpectedMipLevel]) {
-
 		assert_eq!(chain.len(), expected.len());
 
 		for (generated, expected_level) in chain.levels().zip(expected.iter()) {
-
 			assert_eq!(generated.width, expected_level.width);
 			assert_eq!(generated.height, expected_level.height);
 			assert_eq!(generated.data, expected_level.data.as_slice());

@@ -182,7 +182,6 @@ impl InnerDevice {
 		cube_array_compatible: bool,
 	) -> MemoryBackedResourceCreationResult<vk::Image> {
 		if cube_compatible {
-
 			assert!(
 				array_layers.is_some_and(|layers| layers.get() == 6)
 					&& extent.width() == extent.height()
@@ -191,7 +190,6 @@ impl InnerDevice {
 			);
 		}
 		if cube_array_compatible {
-
 			assert!(
 				array_layers.is_some_and(|layers| layers.get().is_multiple_of(6))
 					&& extent.width() == extent.height()

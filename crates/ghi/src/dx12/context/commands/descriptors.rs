@@ -173,7 +173,6 @@ impl Device {
 					"Invalid DX12 storage-buffer descriptor. The most likely cause is that the buffer was not created with storage usage."
 				);
 				if shader_resource.access().intersects(crate::AccessPolicies::WRITE) {
-
 					assert!(
 						self.buffer_heap_kind_for_sequence(handle, sequence_index) == Some(BufferHeapKind::Default),
 						"Invalid writable DX12 storage-buffer descriptor. The most likely cause is that the buffer uses a host-visible heap that cannot provide a UAV."
@@ -208,21 +207,18 @@ impl Device {
 			"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
 		);
 		if shader_resource.texture_view() == TextureViewTypes::TextureCubeArray {
-
 			assert!(
 				layer.is_none() && image.array_layers > 0 && image.array_layers.is_multiple_of(6),
 				"Invalid DX12 cube-array descriptor view. The most likely cause is that the image layer count is not divisible by six."
 			);
 		}
 		if shader_resource.kind() == ResourceKind::StorageImage {
-
 			assert!(
 				image.uses.intersects(Uses::Storage),
 				"Invalid DX12 storage-image descriptor. The most likely cause is that the image was not created with storage usage."
 			);
 		}
 		if let Some(mip_level) = mip_level {
-
 			assert!(
 				mip_level < image.mip_levels,
 				"Invalid DX12 image descriptor mip level. The most likely cause is that the selected mip exceeds the image mip count. mip_level={mip_level}, mip_levels={}",
@@ -230,7 +226,6 @@ impl Device {
 			);
 		}
 		if let Some(layer) = layer {
-
 			assert!(
 				shader_resource.texture_view() == TextureViewTypes::Texture2DArray,
 				"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
@@ -240,7 +235,6 @@ impl Device {
 				"Invalid DX12 image descriptor layer. The most likely cause is that the selected layer exceeds the image array size."
 			);
 		} else if shader_resource.texture_view() == TextureViewTypes::Texture2D {
-
 			assert!(
 				image.array_layers <= 1,
 				"Invalid DX12 Texture2D descriptor view. The most likely cause is that an array image requires Texture2DArray metadata."
@@ -267,7 +261,6 @@ impl Device {
 			let set = &self.descriptor_sets[set_handle.0 as usize];
 			for &slot in set.descriptors.keys() {
 				if layout.resources.iter().any(|resource| resource.descriptor.slot() == slot) {
-
 					assert!(
 						occupied_slots.insert(slot),
 						"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
@@ -303,7 +296,6 @@ impl Device {
 				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own the same active shader resource.",
 			);
 			if resource.descriptor.count() == 1 {
-
 				assert!(
 					owners.first().is_some_and(|descriptors| descriptors.contains_key(&0)),
 					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
@@ -312,7 +304,6 @@ impl Device {
 			}
 			if let Some(descriptors) = owners.first() {
 				for (&array_element, retained) in descriptors.iter() {
-
 					assert!(
 						array_element < resource.descriptor.count(),
 						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",

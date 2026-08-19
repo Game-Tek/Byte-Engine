@@ -331,7 +331,6 @@ mod tests {
 
 	#[test]
 	fn extent_dimensions_and_division_preserve_active_axes() {
-
 		assert_eq!(Extent::line(8).dimensions(), 1);
 		assert_eq!(Extent::square(8).dimensions(), 2);
 		assert_eq!(Extent::cube(8, 4, 2).dimensions(), 3);

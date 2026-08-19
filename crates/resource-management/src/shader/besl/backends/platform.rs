@@ -251,10 +251,8 @@ mod tests {
 			.expect("Failed to generate compiled platform shader");
 
 		if cfg!(target_vendor = "apple") {
-
 			assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Msl.entry_point()));
 		} else {
-
 			assert_eq!(generated.entry_point(), None);
 		}
 

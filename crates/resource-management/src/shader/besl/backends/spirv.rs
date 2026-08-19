@@ -83,7 +83,6 @@ mod compilation {
 
 				match node_ref {
 					besl::Nodes::Function { name, .. } => {
-
 						assert_eq!(name, "main");
 					}
 					_ => panic!("Root node must be a function node."),

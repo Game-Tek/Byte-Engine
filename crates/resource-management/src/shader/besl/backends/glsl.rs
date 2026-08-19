@@ -14,7 +14,6 @@ mod tests {
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
-
 			assert!(
 				$haystack.contains($needle),
 				"Expected string to contain '{}', but it did not. String: '{}'",

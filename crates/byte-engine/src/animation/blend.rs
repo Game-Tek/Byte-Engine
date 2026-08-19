@@ -464,7 +464,6 @@ mod tests {
 
 	#[test]
 	fn one_dimensional_samples_must_be_strictly_ascending() {
-
 		assert_eq!(
 			BlendSpace1D::new(vec![0.0, 1.0, 1.0]),
 			Err(BlendSpaceError::SamplesNotStrictlyAscending)

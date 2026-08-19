@@ -458,7 +458,6 @@ mod tests {
 
 	#[test]
 	fn tetrahedron_rejects_degenerate_clouds() {
-
 		assert!(build_tetrahedron([Point::new(1.0, 2.0, 3.0); 4].into_iter()).is_none());
 	}
 

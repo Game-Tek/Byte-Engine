@@ -278,7 +278,6 @@ mod tests {
 
 	#[test]
 	fn render_pass_state_selects_the_expected_execution_path() {
-
 		assert_eq!(execution_path(RenderPassState::Enabled), RenderPassExecutionPath::Prepare);
 		assert_eq!(execution_path(RenderPassState::Bypassed), RenderPassExecutionPath::Bypass);
 	}

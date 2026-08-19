@@ -8,7 +8,6 @@ impl PushUploadArena<'_> {
 		command: &queue::NativeCommand,
 		bytes: &[u8],
 	) -> mtl::MTLGPUAddress {
-
 		assert!(
 			!bytes.is_empty(),
 			"Empty Metal push upload. The most likely cause is that a zero-sized push-constant layout was marked dirty."
@@ -396,7 +395,6 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Updates one stage table and associates it with the active encoder before its next snapshot command.
 	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
-
 		assert!(
 			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
 			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
@@ -529,7 +527,6 @@ impl<'a> CommandBufferRecording<'a> {
 
 			let descriptors = self.descriptors_at_slot(descriptor.slot());
 			if descriptor.count() == 1 {
-
 				assert!(
 					descriptors.is_some_and(|descriptors| descriptors.contains_key(&0)),
 					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
@@ -539,7 +536,6 @@ impl<'a> CommandBufferRecording<'a> {
 
 			if let Some(descriptors) = descriptors {
 				for (&array_element, &value) in descriptors {
-
 					assert!(
 						array_element < descriptor.count(),
 						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",

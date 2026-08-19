@@ -1967,7 +1967,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		if device.supports_native_mesh_shaders() {
-
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -1975,7 +1974,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 				device.graphics_pipeline_state_last_error()
 			);
 		} else {
-
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 		}
 	}
@@ -2066,7 +2064,6 @@ void main(
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		if device.supports_native_mesh_shaders() {
-
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -2074,7 +2071,6 @@ void main(
 				device.graphics_pipeline_state_last_error()
 			);
 		} else {
-
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 		}
 	}
@@ -2142,12 +2138,10 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		if device.supports_native_mesh_shaders() {
-
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 			assert_eq!(device.pipeline_state_bind_count(), 1);
 			assert_eq!(device.mesh_dispatch_encode_count(), 1);
 		} else {
-
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 			assert_eq!(device.mesh_dispatch_encode_count(), 0);
 		}
@@ -2196,7 +2190,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		if device.supports_native_mesh_shaders() {
-
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -2205,7 +2198,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			);
 			assert_eq!(device.mesh_dispatch_encode_count(), 1);
 		} else {
-
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 			assert_eq!(device.mesh_dispatch_encode_count(), 0);
 		}
@@ -3861,11 +3853,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 		assert_eq!(device.ray_tracing_state_object_create_attempt_count(), 1);
 		if device.supports_native_ray_tracing() {
-
 			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(true));
 			assert_eq!(device.ray_tracing_shader_identifier_count(pipeline), Some(3));
 		} else {
-
 			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(false));
 		}
 	}

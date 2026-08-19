@@ -43,7 +43,6 @@ mod tests {
 
 	#[test]
 	fn platform_artifact_mapping_uses_binary_runtime_formats() {
-
 		assert!(matches!(
 			platform_shader_artifact(PlatformShaderLanguage::Glsl, None),
 			ShaderArtifact::Spirv

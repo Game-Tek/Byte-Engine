@@ -293,7 +293,6 @@ fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member
 
 #[test]
 fn apply_arithmetic_supports_all_basic_scalar_operations() {
-
 	assert_eq!(
 		super::apply_arithmetic(super::ArithmeticOperator::Add, &super::Value::U32(2), &super::Value::U32(3))
 			.expect("Expected addition to succeed"),
@@ -2228,7 +2227,6 @@ fn execution_limit_stops_an_infinite_loop() {
 
 #[test]
 fn reflect_preserves_the_exact_non_unit_normal_semantics() {
-
 	assert_eq!(
 		reflect_vector([1.0, 2.0], [2.0, 0.0]).expect("Reflect is defined for every finite normal"),
 		[-7.0, 2.0]
@@ -2600,7 +2598,6 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 	}
 
 	for lane in 0..32 {
-
 		assert_eq!(
 			result.read_indexed("values", lane).expect("Expected first subgroup result"),
 			Value::U32(21)
@@ -2609,7 +2606,6 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 		assert_eq!(result.read_indexed("lane_indices", lane), Ok(Value::U32(lane as u32)));
 	}
 	for lane in 32..64 {
-
 		assert_eq!(
 			result.read_indexed("values", lane).expect("Expected second subgroup result"),
 			Value::U32(53)

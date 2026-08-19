@@ -59,7 +59,6 @@ impl Device {
 		for descriptor in descriptors {
 			if let Some(previous) = merged.last_mut() {
 				if previous.slot() == descriptor.slot() {
-
 					assert!(
 						Self::resource_representations_match(*previous, descriptor),
 						"Conflicting DX12 shader resources. The most likely cause is that shader stages declared the same flat slot with incompatible representations.",
@@ -200,7 +199,6 @@ impl Device {
 			"DX12 root signature exceeds 64 DWORDs. The most likely cause is that push constants leave insufficient space for the descriptor tables."
 		);
 		if push_constant_size != 0 {
-
 			assert!(
 				layout.resources.iter().all(|resource| {
 					resource.descriptor.kind() != ResourceKind::UniformBuffer || resource.descriptor.slot().index() != 0

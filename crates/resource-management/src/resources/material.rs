@@ -226,7 +226,6 @@ pub struct Binding {
 impl Binding {
 	/// Builds one validated persisted shader resource requirement.
 	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
-
 		assert!(
 			count > 0,
 			"Invalid resource count. The most likely cause is that a shader interface resource was declared with an empty array."

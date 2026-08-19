@@ -328,7 +328,6 @@ impl<'builder, I> AnimationGraphStateBuilder<'builder, I> {
 impl<'builder, I> AnimationGraphState<'builder, I> {
 	/// Starts an authored transition that completes in `target`.
 	pub fn to(self, target: Self) -> AnimationGraphTransitionBuilder<'builder, I> {
-
 		assert!(
 			std::ptr::eq(self.data, target.data),
 			"animation graph states must use the same builder"
@@ -460,7 +459,6 @@ impl<I> AnimationGraphBuilder<I> {
 
 	/// Validates the graph and selects the initial state.
 	pub fn build(&self, initial: AnimationGraphState<'_, I>) -> Result<AnimationGraph<I>, AnimationGraphBuildError> {
-
 		assert!(
 			std::ptr::eq(&self.data, initial.data),
 			"the initial animation state must use this builder"

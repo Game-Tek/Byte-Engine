@@ -684,8 +684,7 @@ mod tests {
 		asset::{manager::AssetManager, storage_backend::tests::TestStorageBackend, ResourceId},
 		r#async,
 		resource::{
-			storage_backend::{tests::TestStorageBackend as TestResourceStorage, StorageBackendHarness},
-			ReadStorageBackend as _, ReadTargetsMut,
+			storage_backend::tests::TestStorageBackend as TestResourceStorage, ReadStorageBackend as _, ReadTargetsMut,
 		},
 		resources::image::Image,
 		types::{Formats, Gamma},
@@ -774,9 +773,9 @@ TILT=NONE
 
 		source_storage.add_file("lights/quadrant.ies", QUADRANT_PROFILE);
 
-		let resource_storage = StorageBackendHarness::new(TestResourceStorage::new()).into_shared();
+		let resource_storage = Arc::new(TestResourceStorage::new());
 
-		let mut asset_manager = AssetManager::new_shared(source_storage, Arc::clone(&resource_storage));
+		let mut asset_manager = AssetManager::new_shared(source_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(IESAssetHandler::new());
 

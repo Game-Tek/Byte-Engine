@@ -327,7 +327,6 @@ impl CommandBufferRecording<'_> {
 		let active_rendering = command_buffer.active_rendering;
 
 		if active_rendering {
-
 			assert!(
 				planned.image_barriers.is_empty() && planned.buffer_barriers.is_empty() && planned.memory_barriers.is_empty(),
 				"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
@@ -659,7 +658,6 @@ impl CommandBufferRecording<'_> {
 			"Invalid Vulkan attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
 		);
 		if attachment.layer_count.is_some() {
-
 			assert!(
 				attachment.layer.is_none(),
 				"Invalid layered Vulkan attachment. The most likely cause is that the attachment selects both one layer and a layered range."

@@ -18,8 +18,7 @@ pub use resource_id::ResourceId;
 pub use resource_manager::{ResourceUpdate, ResourceUpdateListener};
 pub use storage_backend::redb_storage_backend::{RedbStorageBackend, ResourceStorageMode};
 pub use storage_backend::{
-	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, ReadStorageBackend, StorageBackend,
-	StorageBackendHarness, WriteStorageBackend,
+	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, ReadStorageBackend, StorageBackend, WriteStorageBackend,
 };
 
 use crate::Model;

@@ -235,7 +235,6 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-
 			assert_eq!(reflected_storage_buffer_stride_for_target(&members, target), Ok(20));
 		}
 
@@ -249,7 +248,6 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-
 			assert_eq!(reflected_storage_buffer_stride_for_target(&uv_array, target), Ok(4));
 		}
 	}
@@ -267,7 +265,6 @@ mod tests {
 			(StorageLayoutTarget::Msl, 1, 2),
 			(StorageLayoutTarget::GlslScalar, 1, 2),
 		] {
-
 			assert_eq!(reflected_storage_buffer_stride_for_target(&bytes, target), Ok(byte_stride));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&words, target), Ok(word_stride));
 		}
@@ -376,7 +373,6 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-
 			assert_eq!(
 				reflected_storage_buffer_stride_for_target(&flattened_positions, target),
 				Ok(12)
@@ -472,7 +468,6 @@ mod tests {
 			(StorageLayoutTarget::Msl, 80, 176),
 			(StorageLayoutTarget::GlslScalar, 80, 176),
 		] {
-
 			assert_eq!(
 				reflected_storage_buffer_stride_for_target(&mesh_buffer, target),
 				Ok(mesh_stride)

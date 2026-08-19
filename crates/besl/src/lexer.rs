@@ -267,7 +267,6 @@ mod tests {
 	fn assert_type(node: &Node, type_name: &str) {
 		match &node.node {
 			Nodes::Struct { name, .. } => {
-
 				assert_eq!(name, type_name);
 			}
 			_ => {
@@ -403,7 +402,6 @@ main: fn () -> void {
 						statements,
 						..
 					} => {
-
 						assert_eq!(name, "main");
 						assert_type(&return_type.borrow(), "void");
 
@@ -417,7 +415,6 @@ main: fn () -> void {
 
 								match position.node() {
 									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-
 										assert_eq!(name, "position");
 										assert_eq!(r#type, &vec4f);
 									}
@@ -498,7 +495,6 @@ main: fn () -> void {
 
 		match nb.node() {
 			Nodes::Scope { name, .. } => {
-
 				assert_eq!(name, "root");
 
 				let vertex = node.get_descendant("Vertex").expect("Expected Vertex");
@@ -506,7 +502,6 @@ main: fn () -> void {
 
 				match vertex.node() {
 					Nodes::Struct { name, fields, .. } => {
-
 						assert_eq!(name, "Vertex");
 						assert_eq!(fields.len(), 3);
 
@@ -514,7 +509,6 @@ main: fn () -> void {
 
 						match array.node() {
 							Nodes::Member { name, r#type, count } => {
-
 								assert_eq!(name, "array");
 								assert_type(&r#type.borrow(), "u32");
 
@@ -642,7 +636,6 @@ main: fn () -> void {
 		};
 		match material_index_member.borrow().node() {
 			Nodes::Expression(Expressions::Member { name, source }) => {
-
 				assert_eq!(name, "material_index");
 				assert!(matches!(
 					source.borrow().node(),
@@ -655,7 +648,6 @@ main: fn () -> void {
 		let meshes_member = match indexed_meshes.borrow().node() {
 			Nodes::Expression(Expressions::Accessor { left, .. }) => match left.borrow().node() {
 				Nodes::Expression(Expressions::Accessor { left, right }) => {
-
 					assert_eq!(left.borrow().get_name(), Some("meshes"));
 					assert!(
 						right.borrow().node().is_indexable(),
@@ -669,7 +661,6 @@ main: fn () -> void {
 		};
 		match meshes_member.borrow().node() {
 			Nodes::Expression(Expressions::Member { name, source }) => {
-
 				assert_eq!(name, "meshes");
 				assert!(matches!(
 					source.borrow().node(),
@@ -685,7 +676,6 @@ main: fn () -> void {
 		};
 		let pixel_mapping_member = match pixel_mapping_access.borrow().node() {
 			Nodes::Expression(Expressions::Accessor { left, .. }) => {
-
 				assert!(left.borrow().node().is_indexable());
 				match left.borrow().node() {
 					Nodes::Expression(Expressions::Accessor { right, .. }) => right.clone(),
@@ -696,7 +686,6 @@ main: fn () -> void {
 		};
 		match pixel_mapping_member.borrow().node() {
 			Nodes::Expression(Expressions::Member { name, source }) => {
-
 				assert_eq!(name, "pixel_mapping");
 				assert!(matches!(
 					source.borrow().node(),
@@ -729,7 +718,6 @@ main: fn () -> void {
 
 		match nb.node() {
 			Nodes::Scope { name, .. } => {
-
 				assert_eq!(name, "root");
 
 				let main = node.get_descendant("main").expect("Expected main");
@@ -742,7 +730,6 @@ main: fn () -> void {
 						statements,
 						..
 					} => {
-
 						assert_eq!(name, "main");
 						assert_type(&return_type.borrow(), "void");
 
@@ -756,7 +743,6 @@ main: fn () -> void {
 
 								match albedo.node() {
 									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-
 										assert_eq!(name, "albedo");
 										assert_eq!(r#type, &vec3f);
 									}
@@ -829,7 +815,6 @@ main: fn () -> void {
 
 		match nb.node() {
 			Nodes::Scope { name, .. } => {
-
 				assert_eq!(name, "root");
 
 				let main = node.get_descendant("main").unwrap();
@@ -837,21 +822,18 @@ main: fn () -> void {
 
 				match main.node() {
 					Nodes::Function { name, statements, .. } => {
-
 						assert_eq!(name, "main");
 
 						let n = statements[0].borrow();
 
 						match n.node() {
 							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-
 								assert_eq!(operator, &Operators::Assignment);
 
 								let n = left.borrow();
 
 								match n.node() {
 									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-
 										assert_eq!(name, "n");
 										assert_type(&r#type.borrow(), "f32");
 									}
@@ -872,7 +854,6 @@ main: fn () -> void {
 
 												match intrinsic.node() {
 													Nodes::Intrinsic { name, elements, .. } => {
-
 														assert_eq!(name, "intrinsic");
 														assert_eq!(elements.len(), 2);
 													}
@@ -890,7 +871,6 @@ main: fn () -> void {
 
 										match right.node() {
 											Nodes::Expression(Expressions::Member { name, .. }) => {
-
 												assert_eq!(name, "y");
 											}
 											_ => {
@@ -972,7 +952,6 @@ main: fn () -> void {
 						arguments,
 						elements,
 					}) => {
-
 						assert_eq!(arguments.len(), 2);
 						assert_eq!(elements.len(), 2);
 
@@ -983,7 +962,6 @@ main: fn () -> void {
 								r#return,
 								elements,
 							} => {
-
 								assert_eq!(name, expected_name);
 								assert_type(&r#return.borrow(), "vec4f");
 
@@ -1068,14 +1046,12 @@ main: fn () -> void {
 				arguments,
 				elements,
 			}) => {
-
 				assert_eq!(arguments.len(), 3);
 				assert_eq!(elements.len(), 3);
 
 				let intrinsic = intrinsic.borrow();
 				match intrinsic.node() {
 					Nodes::Intrinsic { name, r#return, .. } => {
-
 						assert_eq!(name, "write");
 						assert_type(&r#return.borrow(), "void");
 					}
@@ -1108,11 +1084,9 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				}) => {
-
 					assert_eq!(arguments.len(), 2);
 					match intrinsic.borrow().node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-
 							assert_eq!(name, "dot");
 							assert_type(&r#return.borrow(), "f32");
 						}
@@ -1147,11 +1121,9 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				}) => {
-
 					assert_eq!(arguments.len(), 2);
 					match intrinsic.borrow().node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-
 							assert_eq!(name, "cross");
 							assert_type(&r#return.borrow(), "vec3f");
 						}
@@ -1188,7 +1160,6 @@ main: fn () -> void {
 			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
 				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
 					Nodes::Intrinsic { name, r#return, .. } => {
-
 						assert_eq!(name, "length");
 						assert_type(&r#return.borrow(), "f32");
 					}
@@ -1203,7 +1174,6 @@ main: fn () -> void {
 			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
 				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
 					Nodes::Intrinsic { name, r#return, .. } => {
-
 						assert_eq!(name, "normalize");
 						assert_type(&r#return.borrow(), "vec3f");
 					}
@@ -1225,7 +1195,6 @@ main: fn () -> void {
 				elements,
 				r#return,
 			} => {
-
 				assert_eq!(name, "reflect");
 				assert_eq!(elements.len(), 2);
 				assert_type(&r#return.borrow(), "vec4f");
@@ -1256,11 +1225,9 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::IntrinsicCall {
 					intrinsic, arguments, ..
 				}) => {
-
 					assert!(arguments.is_empty());
 					match intrinsic.borrow().node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-
 							assert_eq!(name, "thread_idx");
 							assert_type(&r#return.borrow(), "u32");
 						}
@@ -1290,12 +1257,10 @@ main: fn () -> void {
 
 		match pi.node() {
 			Nodes::Const { name, r#type, value } => {
-
 				assert_eq!(name, "PI");
 				assert_eq!(r#type.borrow().get_name().unwrap(), "f32");
 				match value.borrow().node() {
 					Nodes::Expression(Expressions::Literal { value }) => {
-
 						assert_eq!(value, "3.14");
 					}
 					_ => panic!("Expected a literal expression value"),
@@ -1322,7 +1287,6 @@ main: fn () -> void {
 
 		match weights.node() {
 			Nodes::Const { name, r#type, value } => {
-
 				assert_eq!(name, "WEIGHTS");
 				assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
 				assert!(weights.node().is_indexable());
@@ -1383,7 +1347,6 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::Operator { left, right, .. }) => {
 					match left.borrow().node() {
 						Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => {
-
 							assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
 						}
 						_ => panic!("Expected variable declaration"),
@@ -1391,7 +1354,6 @@ main: fn () -> void {
 
 					match right.borrow().node() {
 						Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-
 							assert_eq!(parameters.len(), 3);
 							assert_eq!(function.borrow().get_name().unwrap(), "f32[3]");
 						}
@@ -1425,12 +1387,10 @@ main: fn () -> void {
 		let conditional = statements[1].borrow();
 		match conditional.node() {
 			Nodes::Conditional { condition, statements } => {
-
 				assert_eq!(statements.len(), 1);
 
 				match condition.borrow().node() {
 					Nodes::Expression(Expressions::Operator { operator, .. }) => {
-
 						assert_eq!(operator, &Operators::LessThan);
 					}
 					_ => panic!("Expected less-than condition"),
@@ -1467,7 +1427,6 @@ main: fn () -> void {
 				update,
 				statements,
 			} => {
-
 				assert_eq!(statements.len(), 1);
 				assert!(matches!(
 					initializer.borrow().node(),
@@ -1506,7 +1465,6 @@ main: fn () -> void {
 		match statement.node() {
 			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
 				Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-
 					assert_eq!(operator, &Operators::BitwiseOr);
 					assert!(matches!(
 						left.borrow().node(),
@@ -1593,7 +1551,6 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
 					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-
 							assert_eq!(name, expected_name);
 							assert_type(&r#return.borrow(), expected_type);
 						}
@@ -1645,7 +1602,6 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
 					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
 						Nodes::Intrinsic { name, r#return, .. } => {
-
 							assert_eq!(name, expected_name);
 							assert_type(&r#return.borrow(), expected_type);
 						}

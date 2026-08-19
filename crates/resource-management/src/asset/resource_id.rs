@@ -101,7 +101,6 @@ pub mod tests {
 	use super::{get_base, get_fragment, ResourceId};
 
 	fn assert_text_view(view: &(impl AsRef<str> + std::fmt::Debug + ToString), expected: &str) {
-
 		assert_eq!(view.as_ref(), expected);
 		assert_eq!(view.to_string(), expected);
 		assert_eq!(format!("{view:?}"), expected);
@@ -109,7 +108,6 @@ pub mod tests {
 
 	#[test]
 	fn test_base_url_parse() {
-
 		assert_eq!(get_base("name.extension").unwrap(), "name.extension");
 		assert_eq!(get_base("name.extension#").unwrap(), "name.extension");
 		assert_eq!(get_base("#fragment"), None);
@@ -122,7 +120,6 @@ pub mod tests {
 
 	#[test]
 	fn test_fragment_parse() {
-
 		assert_eq!(get_fragment("name.extension"), None);
 		assert_eq!(get_fragment("name.extension#"), None);
 		assert_eq!(get_fragment("#fragment"), None);
@@ -131,7 +128,6 @@ pub mod tests {
 
 	#[test]
 	fn extensionless_resource_ids_report_an_empty_format_without_panicking() {
-
 		assert_eq!(super::ResourceId::new("buffers/skeleton").get_extension(), "");
 	}
 

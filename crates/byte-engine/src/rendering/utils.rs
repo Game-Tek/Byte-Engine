@@ -99,7 +99,6 @@ impl<I> MeshBuffersStats<I> {
 
 	pub fn add_mesh(&mut self, mesh: MeshStats, hash: u64) -> AddMeshResponse {
 		if let Some(existing_mesh) = self.meshes.get(&(hash as usize)) {
-
 			assert_eq!(
 				existing_mesh.vertex_count, mesh.vertex_count,
 				"Tried to add a mesh with a hash which already exists but their vertex counts don't match."
@@ -142,7 +141,6 @@ impl<I> MeshBuffersStats<I> {
 	}
 
 	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> StableVecHandle {
-
 		assert!(
 			self.meshes.contains_key(&mesh_id),
 			"Provided mesh_id for instance does not exist!"

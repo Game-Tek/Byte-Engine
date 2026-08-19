@@ -750,7 +750,6 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
-
 		assert!(
 			buffer_descriptors.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
 			"Too many Metal vertex buffers were bound. The most likely cause is that ordinary vertex bindings overlap the reserved push-constant or argument-buffer slots."
@@ -1037,7 +1036,6 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
-
 		assert!(
 			entry_index < N,
 			"Metal indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",

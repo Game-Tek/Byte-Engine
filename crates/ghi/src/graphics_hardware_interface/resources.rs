@@ -188,7 +188,6 @@ impl AttachmentInformation {
 
 	/// Selects one array layer for every draw in the render pass.
 	pub fn layer(mut self, layer: u32) -> Self {
-
 		assert!(
 			self.layer_count.is_none(),
 			"Cannot select one attachment layer after enabling layered rendering. The most likely cause is that layer and layers were both called for the same attachment."

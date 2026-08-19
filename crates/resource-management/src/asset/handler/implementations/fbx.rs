@@ -796,7 +796,6 @@ mod tests {
 
 	#[test]
 	fn malformed_fbx_returns_a_parse_error() {
-
 		assert!(matches!(
 			load_fbx_scene(b"not an FBX", "broken.fbx"),
 			Err(FbxImportError::Parse(_))
@@ -822,7 +821,6 @@ mod tests {
 
 	#[test]
 	fn material_numeric_conversion_replaces_non_finite_and_overflowing_values() {
-
 		assert_eq!(finite_material_component(f64::MAX, 0.25), 0.25);
 		assert_eq!(finite_material_component(f64::NAN, 0.5), 0.5);
 		assert_eq!(finite_material_product(f32::MAX, f32::MAX, 0.0), 0.0);
@@ -1146,14 +1144,12 @@ mod tests {
 
 	fn assert_vec3_close(actual: [f32; 3], expected: [f32; 3]) {
 		for index in 0..3 {
-
 			assert!((actual[index] - expected[index]).abs() < 1.0e-6);
 		}
 	}
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for index in 0..4 {
-
 			assert!(
 				(actual[index] - expected[index]).abs() < 1.0e-6,
 				"component {index} differs: actual {actual:?}, expected {expected:?}"
@@ -1193,7 +1189,9 @@ use crate::{
 		BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
 	},
 	processors::{
-		processor::implementations::image::{gamma_from_semantic, process_image_with_mip_backend_in, ImageDescription, Semantic},
+		processor::implementations::image::{
+			gamma_from_semantic, process_image_with_mip_backend_in, ImageDescription, Semantic,
+		},
 		processor::implementations::mesh::{
 			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
 			TriangleFrontFaceWinding,

@@ -40,7 +40,6 @@ impl PipelineLayoutKey {
 
 #[inline]
 pub(crate) fn align_up(value: u64, alignment: u64) -> u64 {
-
 	assert!(
 		alignment.is_power_of_two(),
 		"Invalid Vulkan descriptor alignment. The most likely cause is that the device reported a non-power-of-two descriptor-heap alignment.",
@@ -94,7 +93,6 @@ fn canonicalize_stage_resources(
 	for descriptor in sorted {
 		if let Some(previous) = canonical.last_mut() {
 			if previous.slot() == descriptor.slot() {
-
 				assert!(
 					resource_representations_match(*previous, descriptor),
 					"Conflicting Vulkan shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
@@ -142,7 +140,6 @@ fn descriptor_heap_representation(
 }
 
 fn reserve_descriptor_range(cursor: &mut u64, count: u32, size: u64, alignment: u64) -> (u32, u32) {
-
 	assert!(
 		size > 0,
 		"Invalid Vulkan descriptor size. The most likely cause is incomplete descriptor-heap properties."
@@ -175,7 +172,6 @@ pub(crate) fn build_pipeline_layout(
 			if let Some((existing, existing_stages)) =
 				merged.iter_mut().find(|(existing, _)| existing.slot() == descriptor.slot())
 			{
-
 				assert!(
 					resource_representations_match(*existing, descriptor),
 					"Conflicting Vulkan pipeline resources. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",

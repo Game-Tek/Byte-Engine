@@ -29,13 +29,11 @@ fn derive_besl_struct_builds_a_parser_node_definition() {
 
 	match node.node_mut() {
 		besl::parser::Nodes::Struct { name, fields } => {
-
 			assert_eq!((*name).to_string(), "Light");
 			assert_eq!(fields.len(), 3);
 
 			match fields[0].node_mut() {
 				besl::parser::Nodes::Member { name, r#type } => {
-
 					assert_eq!((*name).to_string(), "position");
 					assert_eq!(r#type, "Vec3f");
 				}
@@ -44,7 +42,6 @@ fn derive_besl_struct_builds_a_parser_node_definition() {
 
 			match fields[2].node_mut() {
 				besl::parser::Nodes::Member { name, r#type } => {
-
 					assert_eq!((*name).to_string(), "indices");
 					assert_eq!(r#type, "u32[3]");
 				}
@@ -68,13 +65,11 @@ fn derive_besl_struct_supports_instance_access_and_overrides() {
 
 	match node.node_mut() {
 		besl::parser::Nodes::Struct { name, fields } => {
-
 			assert_eq!((*name).to_string(), "MaterialParameters");
 			assert_eq!(fields.len(), 2);
 
 			match fields[0].node_mut() {
 				besl::parser::Nodes::Member { name, r#type } => {
-
 					assert_eq!((*name).to_string(), "base_color");
 					assert_eq!(r#type, "vec4f");
 				}
@@ -83,7 +78,6 @@ fn derive_besl_struct_supports_instance_access_and_overrides() {
 
 			match fields[1].node_mut() {
 				besl::parser::Nodes::Member { name, r#type } => {
-
 					assert_eq!((*name).to_string(), "base_color_texture");
 					assert_eq!(r#type, "Texture2D");
 				}

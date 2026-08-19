@@ -97,7 +97,6 @@ mod tests {
 	}
 
 	fn release(pool: &mut AudioSamplePool, queue: &AudioSampleReleaseQueue, lease: AudioSampleLease) {
-
 		assert!(queue.push(lease.into_id()));
 		pool.release_returned(queue);
 	}
@@ -172,7 +171,6 @@ mod tests {
 			),
 			AudioSampleCacheKey::new("tone.wav", 7, metadata(BitDepths::Sixteen, 1, 3)),
 		] {
-
 			assert_ne!(key, distinct);
 		}
 	}
@@ -329,7 +327,6 @@ mod tests {
 	fn release_queue_is_bounded_fifo_and_reuses_wrapped_slots() {
 		let queue = AudioSampleReleaseQueue::new();
 		for slot in 0..AUDIO_SAMPLE_RELEASE_CAPACITY {
-
 			assert!(queue.push(AudioSampleLeaseId {
 				slot: u8::try_from(slot % AUDIO_GRAPH_CAPACITY).unwrap(),
 				generation: slot as u64,
@@ -342,18 +339,15 @@ mod tests {
 		}));
 
 		for generation in 0..AUDIO_SAMPLE_RELEASE_CAPACITY / 2 {
-
 			assert_eq!(queue.pop().expect("queued release").generation, generation as u64);
 		}
 		for generation in AUDIO_SAMPLE_RELEASE_CAPACITY..AUDIO_SAMPLE_RELEASE_CAPACITY + 16 {
-
 			assert!(queue.push(AudioSampleLeaseId {
 				slot: 0,
 				generation: generation as u64,
 			}));
 		}
 		for generation in AUDIO_SAMPLE_RELEASE_CAPACITY / 2..AUDIO_SAMPLE_RELEASE_CAPACITY + 16 {
-
 			assert_eq!(queue.pop().expect("queued release").generation, generation as u64);
 		}
 
@@ -362,7 +356,6 @@ mod tests {
 
 	#[test]
 	fn decoded_sample_size_is_checked_before_pool_admission() {
-
 		assert_eq!(
 			AudioSampleLayout::new(metadata(BitDepths::Eight, 2, 2)).and_then(AudioSampleLayout::decoded_byte_count),
 			Ok(16)

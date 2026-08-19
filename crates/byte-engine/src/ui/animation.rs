@@ -407,7 +407,6 @@ mod tests {
 
 	#[test]
 	fn animation_frame_duration_is_capped_for_all_drivers() {
-
 		assert!((capped_frame_duration(MediaTime::from_seconds(1)).as_seconds_f32() - MAX_STEP).abs() < f32::EPSILON);
 		assert!((capped_frame_duration(MediaTime::from_millis(16)).as_seconds_f32() - 0.016).abs() < f32::EPSILON);
 	}

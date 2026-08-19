@@ -252,7 +252,6 @@ mod tests {
 
 	#[test]
 	fn hash_is_stable_for_equal_geometry_and_changes_with_radius() {
-
 		assert_eq!(
 			SphereMeshGenerator::from_radius(1.0).hash(),
 			SphereMeshGenerator::from_radius(1.0).hash()

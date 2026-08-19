@@ -182,7 +182,6 @@ mod tests {
 		let first = ReadTargetsMut::from(first_bytes.as_mut_slice()).with_offset(3).with_size(4);
 		match first {
 			ReadTargetsMut::Buffer { buffer, offset, size } => {
-
 				assert_eq!(buffer.len(), 8);
 				assert_eq!(offset, 3);
 				assert_eq!(size, Some(4));

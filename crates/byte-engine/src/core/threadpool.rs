@@ -8,7 +8,6 @@ pub type Scope<'scope, 'b> = std::thread::Scope<'scope, 'b>;
 
 impl<'scope> ScopedThreadPool<'scope> {
 	pub fn with_parallelism(scope: &'scope Scope<'scope, '_>, count: usize) -> Self {
-
 		assert!(
 			count > 0,
 			"Thread-pool parallelism must be greater than zero. No worker threads would be available to execute jobs."
@@ -143,7 +142,6 @@ impl LanePool {
 	///
 	/// Call [`Self::dispatch_all`] or [`Self::dispatch_many`] to run a blocking batch.
 	pub fn with_parallelism(count: usize) -> Self {
-
 		assert!(
 			count > 0,
 			"Lane-pool initialization failed. The requested parallelism is zero, so no worker could execute jobs."
@@ -248,7 +246,6 @@ impl LanePool {
 		// stay borrowed until their completion messages arrive.
 		let submission_result = catch_unwind(AssertUnwindSafe(|| {
 			for job in jobs {
-
 				assert!(
 					submitted < self.parallelism(),
 					"Lane-pool dispatch rejected. The batch contains more jobs than worker lanes; split it into gangs of at most {} jobs.",

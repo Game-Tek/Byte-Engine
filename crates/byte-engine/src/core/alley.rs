@@ -1050,7 +1050,6 @@ mod tests {
 			assert_eq!(small.nth(2), Some(2));
 			assert_eq!(small.len(), 5);
 			for (expected_lane, value) in full.enumerate() {
-
 				assert_eq!(value, Value64([expected_lane as u8; 64]));
 			}
 		}));

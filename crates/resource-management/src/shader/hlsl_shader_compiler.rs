@@ -165,7 +165,6 @@ mod tests {
 
 	#[test]
 	fn dxil_profiles_cover_baked_stages_and_upgrade_native_16_bit_source() {
-
 		assert_eq!(dxil_target_profile(ShaderTypes::Vertex, "float4 value;").unwrap(), "vs_6_0");
 		assert_eq!(dxil_target_profile(ShaderTypes::Fragment, "float4 value;").unwrap(), "ps_6_0");
 		assert_eq!(dxil_target_profile(ShaderTypes::Compute, "float4 value;").unwrap(), "cs_6_0");
@@ -179,7 +178,6 @@ mod tests {
 
 	#[test]
 	fn dxil_profile_rejects_non_baked_shader_stages() {
-
 		assert!(dxil_target_profile(ShaderTypes::RayGen, "float4 value;").is_err());
 	}
 }

@@ -293,12 +293,14 @@ mod tests {
 		inertializer
 			.apply(&destination, MediaTime::ZERO, &mut output)
 			.expect("expected test value");
+
 		assert!((output[0].translation[0] - 1.0).abs() < 1.0e-4);
 		assert!((output[0].rotation[1] - source[0].rotation[1]).abs() < 1.0e-4);
 
 		inertializer
 			.apply(&destination, MediaTime::from_millis(200), &mut output)
 			.expect("expected test value");
+
 		assert_eq!(output, destination);
 		assert!(!inertializer.is_active());
 	}
@@ -322,6 +324,7 @@ mod tests {
 		inertializer
 			.apply(&destination, MediaTime::ZERO, &mut output)
 			.expect("expected test value");
+
 		assert_eq!(output, destination);
 	}
 }

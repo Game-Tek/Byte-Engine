@@ -300,6 +300,7 @@ mod tests {
 		let model = ReferenceModel::<DefaultLoadModel>::new("default-load", 0, expected.len(), &DefaultLoadModel, None);
 		let reader = Box::new(FileResourceReader::new(&fs::File::open(&path).unwrap(), expected.len() as u64).unwrap());
 		let mut reference = Reference::from_model(model, DefaultLoadResource, reader);
+
 		assert_eq!(reference.resource.get_class(), DefaultLoadModel::get_class());
 		let target = ReadTargetsMut::from(&reference);
 		let result = reference.load(target).await.unwrap();

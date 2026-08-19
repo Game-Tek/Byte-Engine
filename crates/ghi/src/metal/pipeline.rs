@@ -80,6 +80,7 @@ pub(crate) fn apply_specialization_map_entry(
 
 /// Rejects vertex attributes that overlap the fixed push-constant and nested argument-buffer bindings.
 pub(crate) fn validate_vertex_binding(binding: u32) {
+
 	assert!(
 		binding < command_buffer::PUSH_CONSTANT_BINDING_INDEX,
 		"Metal vertex binding is reserved. The most likely cause is that a vertex attribute uses binding 15 or higher. binding={binding}",
@@ -153,12 +154,14 @@ pub(crate) fn build_texture_descriptor(
 	mip_levels: u32,
 ) -> Retained<mtl::MTLTextureDescriptor> {
 	if cube_compatible {
+
 		assert!(
 			array_layers == 6 && extent.width() == extent.height() && extent.depth().max(1) == 1,
 			"Invalid Metal cubemap image. The most likely cause is that cube compatibility was requested for a non-square image or an image without six faces."
 		);
 	}
 	if cube_array_compatible {
+
 		assert!(
 			array_layers > 0
 				&& array_layers.is_multiple_of(6)
@@ -421,6 +424,7 @@ pub(crate) struct ArgumentSlotRange {
 
 impl ArgumentSlotRange {
 	fn slot(self, array_element: u32) -> u32 {
+
 		assert!(
 			array_element < self.count,
 			"Metal argument array element is out of range. The most likely cause is that descriptor validation was bypassed.",
@@ -634,6 +638,7 @@ pub(crate) fn canonicalize_stage_resources(
 	for descriptor in sorted {
 		if let Some(previous) = canonical.last_mut() {
 			if previous.slot() == descriptor.slot() {
+
 				assert!(
 					resource_representations_match(*previous, descriptor),
 					"Conflicting Metal shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
@@ -801,6 +806,7 @@ pub(crate) fn build_pipeline_layout(
 				.iter_mut()
 				.find(|existing| existing.descriptor.slot() == descriptor.slot())
 			{
+
 				assert!(
 					resource_representations_match(existing.descriptor, descriptor),
 					"Conflicting pipeline resource slot. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",

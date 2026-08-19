@@ -120,6 +120,7 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 			let stride = b.buffer_stride.expect(
 				"Missing compiled storage-buffer stride. The most likely cause is that shader reflection did not retain the element layout.",
 			);
+
 			assert!(
 				stride > 0,
 				"Invalid compiled storage-buffer stride. The most likely cause is that shader reflection produced a zero-byte element."
@@ -127,6 +128,7 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 			descriptor.buffer_stride(stride)
 		}
 		_ => {
+
 			assert!(
 				b.buffer_stride.is_none(),
 				"Unexpected compiled buffer stride. The most likely cause is that reflection attached buffer metadata to a non-buffer resource."

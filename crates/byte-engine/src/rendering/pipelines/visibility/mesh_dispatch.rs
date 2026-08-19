@@ -29,6 +29,7 @@ pub(crate) struct MeshDispatchWorkItem {
 impl MeshDispatchWorkItem {
 	/// Packs bounded mesh dispatch coordinates into the shader's single-word work format.
 	pub(super) fn new(instance_index: u32, chunk_index: u32) -> Self {
+
 		assert!(
 			instance_index <= INSTANCE_MASK && chunk_index <= CHUNK_MASK,
 			"Visibility mesh dispatch coordinate exceeds its packed range. The most likely cause is a pipeline limit changing without updating the shared work format."
@@ -191,6 +192,7 @@ mod tests {
 			.iter()
 			.map(|work| (work.instance_index(), work.chunk_index()))
 			.collect::<Vec<_>>();
+
 		assert_eq!(unpacked, [(7, 0), (7, 1), (19, 0)]);
 	}
 }

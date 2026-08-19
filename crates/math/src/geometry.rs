@@ -580,6 +580,7 @@ mod tests {
 
 	#[test]
 	fn normalization_rejects_zero_and_non_finite_vectors() {
+
 		assert_eq!(Vector::<WorldSpace>::zero().normalized(), Err(NormalizationError::ZeroLength));
 		assert_eq!(
 			Vector::<WorldSpace>::new(f32::NAN, 0.0, 0.0).normalized(),
@@ -647,7 +648,6 @@ mod tests {
 		assert!(large.length_squared().is_infinite());
 		assert!(smaller_large.length_squared().is_infinite());
 		assert_eq!(large.partial_cmp_magnitude(smaller_large), Some(Ordering::Greater));
-
 		assert_eq!(tiny.length_squared(), 0.0);
 		assert_eq!(larger_tiny.length_squared(), 0.0);
 		assert_eq!(tiny.partial_cmp_magnitude(larger_tiny), Some(Ordering::Less));

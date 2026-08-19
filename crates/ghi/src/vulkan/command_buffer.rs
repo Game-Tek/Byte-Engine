@@ -79,6 +79,7 @@ mod tests {
 	}
 
 	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
+
 		assert!(actual.stage == expected.stage);
 		assert!(actual.access == expected.access);
 		assert!(actual.layout == expected.layout);
@@ -144,6 +145,7 @@ mod tests {
 		assert_eq!(planned.state_updates.len(), 1);
 
 		let barrier = planned.buffer_barriers[0];
+
 		assert!(barrier.src_stage == vk::PipelineStageFlags2::TRANSFER);
 		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
 		assert!(barrier.dst_stage == vk::PipelineStageFlags2::TRANSFER);
@@ -179,6 +181,7 @@ mod tests {
 		assert!(planned.buffer_barriers.is_empty());
 		assert_eq!(planned.state_updates.len(), 1);
 		let state = planned.state_updates[0].1;
+
 		assert!(state.stage.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER));
 		assert!(state.stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
 	}
@@ -247,6 +250,7 @@ mod tests {
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
+
 		assert!(barrier.src_stage == vk::PipelineStageFlags2::COPY);
 		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
 		assert!(barrier.offset == 64);
@@ -288,6 +292,7 @@ mod tests {
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
+
 		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
 		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COPY));
 		assert!(barrier.src_access.contains(vk::AccessFlags2::SHADER_READ));
@@ -331,9 +336,9 @@ mod tests {
 		assert!(barrier.dst_access == destination.access);
 		assert!(barrier.image == vk::Image::from_raw(77));
 		assert!(barrier.aspect_mask == vk::ImageAspectFlags::COLOR);
-
 		assert_eq!(planned.state_updates.len(), 1);
 		let (updated_handle, updated_state) = planned.state_updates[0];
+
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
 	}
@@ -435,7 +440,6 @@ mod tests {
 		assert!(barrier.dst_stage == destination.stage);
 		assert!(barrier.dst_access == destination.access);
 		assert!(barrier.buffer == vk::Buffer::from_raw(111));
-
 		assert_eq!(planned.state_updates.len(), 1);
 		let (_, updated_state) = planned.state_updates[0];
 		assert_visible_state_eq(updated_state, destination);
@@ -480,12 +484,13 @@ mod tests {
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
+
 		assert!(barrier.src_stage == vk::PipelineStageFlags2::empty());
 		assert!(barrier.src_access == vk::AccessFlags2::empty());
 		assert!(barrier.buffer == vk::Buffer::from_raw(222));
-
 		assert_eq!(planned.state_updates.len(), 1);
 		let (updated_handle, updated_state) = planned.state_updates[0];
+
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
 	}
@@ -516,11 +521,11 @@ mod tests {
 
 		assert_eq!(planned.memory_barriers.len(), 1);
 		let barrier = planned.memory_barriers[0];
+
 		assert!(barrier.src_stage == previous.stage);
 		assert!(barrier.src_access == previous.access);
 		assert!(barrier.dst_stage == destination.stage);
 		assert!(barrier.dst_access == destination.access);
-
 		assert_eq!(planned.state_updates.len(), 1);
 		let (_, updated_state) = planned.state_updates[0];
 		assert_visible_state_eq(updated_state, destination);
@@ -549,6 +554,7 @@ mod tests {
 		assert_eq!(planned.state_updates.len(), 1);
 
 		let (updated_handle, updated_state) = planned.state_updates[0];
+
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
 	}
@@ -588,11 +594,11 @@ mod tests {
 		assert_eq!(planned.buffer_barriers.len(), 2);
 		let first_barrier = planned.buffer_barriers[0];
 		let second_barrier = planned.buffer_barriers[1];
+
 		assert!(first_barrier.src_stage == source.stage);
 		assert!(first_barrier.src_access == source.access);
 		assert!(second_barrier.src_stage == source.stage);
 		assert!(second_barrier.src_access == source.access);
-
 		assert_eq!(planned.state_updates.len(), 2);
 		let (_, first_state) = planned.state_updates[0];
 		let (_, second_state) = planned.state_updates[1];

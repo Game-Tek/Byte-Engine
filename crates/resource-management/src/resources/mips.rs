@@ -111,7 +111,7 @@ impl OwnedMipChain {
 /// The `MipGenerationBackend` trait provides alternate offline mip generation for image processors.
 ///
 /// Implement this trait when generated material textures should use an accelerator. Return only levels after the base
-/// level; [`crate::processors::image_processor::process_image_with_mip_backend_in`] stores the original base level first.
+/// level; [`crate::processors::processor::implementations::image::process_image_with_mip_backend_in`] stores the original base level first.
 pub trait MipGenerationBackend: Send + Sync {
 	fn generate_lower_levels(
 		&self,
@@ -598,13 +598,16 @@ mod tests {
 	#[test]
 	fn counts_mip_levels() {
 		let count = mip_level_count(17, 9).expect("valid size");
+
 		assert_eq!(count, 5);
 	}
 
 	fn assert_chain_matches(chain: &MipChain<'_>, expected: &[ExpectedMipLevel]) {
+
 		assert_eq!(chain.len(), expected.len());
 
 		for (generated, expected_level) in chain.levels().zip(expected.iter()) {
+
 			assert_eq!(generated.width, expected_level.width);
 			assert_eq!(generated.height, expected_level.height);
 			assert_eq!(generated.data, expected_level.data.as_slice());

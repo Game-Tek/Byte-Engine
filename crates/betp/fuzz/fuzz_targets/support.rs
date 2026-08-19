@@ -114,6 +114,7 @@ pub fn other_connection_id(connection_id: u64) -> u64 {
 
 /// Checks the bounded-output and session-identity contracts shared by both state machines.
 pub fn observe_session_output(packets: &[Packets], connection_id: &mut Option<u64>) {
+
 	assert!(packets.len() <= MAX_SESSION_OUTPUT_PACKETS);
 
 	for packet in packets {

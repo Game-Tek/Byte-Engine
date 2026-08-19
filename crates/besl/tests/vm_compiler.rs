@@ -129,6 +129,7 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 	let error = executable
 		.run_main(&mut descriptors)
 		.expect_err("Expected missing return error");
+
 	assert_eq!(
 		error,
 		VmError::UnsupportedStatement {
@@ -164,6 +165,7 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 		Ok(_) => panic!("Expected argument mismatch"),
 		Err(error) => error,
 	};
+
 	assert_eq!(error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
 }
 
@@ -198,6 +200,7 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 		// Lowering the first argument would report `continue` as an unsupported value expression.
 		compile_error(ExecutableProgram::compile(root.into()))
 	};
+
 	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
 
 	let statement_error = {
@@ -215,6 +218,7 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 		// Indexing the image argument before validation would panic for this empty call.
 		compile_error(ExecutableProgram::compile(root.into()))
 	};
+
 	assert_eq!(statement_error, VmError::CallArgumentMismatch { expected: 3, found: 0 });
 }
 
@@ -252,6 +256,7 @@ fn void_statement_calls_execute_without_a_result_register() {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot, &mut result);
 	executable.run_main(&mut descriptors).expect("Expected void call execution");
+
 	assert_eq!(result.read("value").expect("Expected result"), Value::U32(7));
 }
 
@@ -331,6 +336,7 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 
 #[test]
 fn atomic_add_requires_read_and_write_descriptor_access() {
+
 	assert_eq!(
 		compile_error(compile_atomic_add(true, false)),
 		VmError::DescriptorAccessDenied {

@@ -239,6 +239,7 @@ mod tests {
 
 		for sequence in 0..=u16::MAX {
 			remote.acknowledge_packet(sequence);
+
 			assert_eq!(remote.get_ack(), sequence);
 		}
 
@@ -260,7 +261,6 @@ mod tests {
 		assert!(!remote.acknowledge_packet(2_000));
 		assert!(!remote.acknowledge_packet(0));
 		assert!(!remote.acknowledge_packet(976));
-
 		assert_eq!(remote.get_ack(), ack);
 		assert_eq!(remote.get_ack_bitfield(), ack_bitfield);
 		assert_eq!(remote.get_packet_data(0), None);
@@ -270,6 +270,7 @@ mod tests {
 	fn large_jumps_clear_history_and_accept_missing_packets_only_within_the_new_window() {
 		let mut remote = Remote::new();
 		for sequence in 0..=2 {
+
 			assert!(remote.acknowledge_packet(sequence));
 		}
 

@@ -19,6 +19,7 @@ const OPERATION_OTHER_DISCONNECT: u64 = 10;
 fn enum_choice(index: u64, count: u64) -> [u8; 4] {
 	let numerator = u128::from(2 * index + 1) * (u128::from(u32::MAX) + 1);
 	let value = (numerator / u128::from(2 * count)) as u32;
+
 	assert_eq!((u64::from(value) * count) >> 32, index);
 	value.to_le_bytes()
 }

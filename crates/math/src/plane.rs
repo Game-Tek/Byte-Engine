@@ -76,6 +76,7 @@ mod tests {
 	fn points_define_a_unit_normal_with_winding() {
 		let plane: Plane<WorldSpace> =
 			Plane::from_points(Point::origin(), Point::new(2.0, 0.0, 0.0), Point::new(0.0, 3.0, 0.0)).unwrap();
+
 		assert_eq!(plane.normal(), UnitVector::z_axis());
 		assert_eq!(plane.signed_distance_to_point(Point::new(0.0, 0.0, 0.0)), 0.0);
 	}
@@ -88,6 +89,7 @@ mod tests {
 			Point::new(-2.0, 0.0, 1.0),
 		)
 		.unwrap();
+
 		assert_eq!(offset.normal(), UnitVector::x_axis());
 		assert_eq!(offset.distance(), 2.0);
 		assert_float_eq!(offset.signed_distance_to_point(Point::new(-1.0, 0.0, 0.0)), 1.0);
@@ -99,8 +101,10 @@ mod tests {
 			Point::new(-2.0, 4.0, -3.0),
 		];
 		let general = Plane::from_points(points[0], points[1], points[2]).unwrap();
+
 		assert_float_eq_with_epsilon!(general.normal().into_vector().length_squared(), 1.0, 0.0001);
 		for point in points {
+
 			assert_float_eq_with_epsilon!(general.signed_distance_to_point(point), 0.0, 0.0001);
 		}
 	}
@@ -116,10 +120,12 @@ mod tests {
 		assert_geometry_near!(forward.normal(), -reversed.normal());
 		assert_float_eq!(forward.distance(), -reversed.distance());
 		for point in [first, second, third] {
+
 			assert_float_eq!(forward.signed_distance_to_point(point), 0.0);
 			assert_float_eq!(reversed.signed_distance_to_point(point), 0.0);
 		}
 		let test_point = Point::new(5.0, 5.0, 5.0);
+
 		assert_float_eq!(
 			forward.signed_distance_to_point(test_point),
 			-reversed.signed_distance_to_point(test_point)
@@ -128,6 +134,7 @@ mod tests {
 
 	#[test]
 	fn collinear_points_are_rejected() {
+
 		assert_eq!(
 			Plane::<WorldSpace>::from_points(Point::origin(), Point::new(1.0, 0.0, 0.0), Point::new(2.0, 0.0, 0.0)),
 			Err(crate::NormalizationError::ZeroLength)

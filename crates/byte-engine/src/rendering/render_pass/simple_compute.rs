@@ -418,6 +418,7 @@ mod tests {
 			Resource::combined_image_sampler("source", image, sampler, ghi::Layouts::Read),
 		];
 		validate_resources(&bindings, &resources).expect("complete resources should validate");
+
 		assert!(bindings[0].read && !bindings[0].write);
 		validate_shared_schema(&bindings, &[bindings[0].clone(), bindings[2].clone()])
 			.expect("compatible shared bindings should validate");
@@ -425,12 +426,15 @@ mod tests {
 			kind: BindingKind::StorageImage,
 			..bindings[0].clone()
 		};
+
 		assert!(validate_shared_schema(&bindings, &[incompatible]).is_err());
 		let mut array = bindings[0].clone();
 		array.count = 2;
+
 		assert!(validate_binding_schema(&[array]).is_err());
 		let mut writable_sampler = bindings[1].clone();
 		writable_sampler.write = true;
+
 		assert!(validate_binding_schema(&[writable_sampler]).is_err());
 		assert!(matches!(
 			texture_view(TextureView::Texture3D),
@@ -440,14 +444,17 @@ mod tests {
 			.expect_err("Expected a missing resource")
 			.starts_with("Missing compute resource `source`."));
 		let duplicate = [resources[0], resources[1], resources[2], resources[2]];
+
 		assert!(validate_resources(&bindings, &duplicate)
 			.expect_err("Expected a duplicate resource")
 			.starts_with("Duplicate compute resource `source`."));
 		let wrong = [resources[0], resources[2], Resource::image("parameters", image)];
+
 		assert!(validate_resources(&bindings, &wrong)
 			.expect_err("Expected a resource type mismatch")
 			.starts_with("Compute resource `parameters` has the wrong type."));
 		let unknown = [resources[0], resources[1], resources[2], Resource::image("typo", image)];
+
 		assert!(validate_resources(&bindings, &unknown)
 			.expect_err("Expected an unknown resource")
 			.starts_with("Unknown compute resource `typo`."));

@@ -74,7 +74,7 @@ pub mod inspect;
 
 pub mod r#async;
 
-pub use asset::asset_handler::{AssetHandler, BakeContext};
+pub use asset::handler::{AssetHandler, BakeContext};
 #[cfg(debug_assertions)]
 pub use asset::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
 pub use model::Model;
@@ -97,7 +97,9 @@ impl<T> ResourceArchive for T where T: rkyv::Archive + for<'a> rkyv::Serialize<R
 
 type ResourceHighSerializer<'a> =
 	rkyv::api::high::HighSerializer<rkyv::util::AlignedVec, rkyv::ser::allocator::ArenaHandle<'a>, ResourceArchiveError>;
+
 pub(crate) type ResourceHighDeserializer = rkyv::api::high::HighDeserializer<ResourceArchiveError>;
+
 pub(crate) type ResourceHighValidator<'a> = rkyv::api::high::HighValidator<'a, ResourceArchiveError>;
 
 /// Serializes a resource archive value into bytes for storage.
@@ -111,8 +113,11 @@ pub(crate) fn to_vec_in<'a, T: ResourceArchive>(
 	allocator: &'a dyn Allocator,
 ) -> Result<Vec<u8, &'a dyn Allocator>, ResourceArchiveError> {
 	let bytes = rkyv::to_bytes::<ResourceArchiveError>(value)?;
+
 	let mut output = Vec::with_capacity_in(bytes.len(), allocator);
+
 	output.extend_from_slice(&bytes);
+
 	Ok(output)
 }
 
@@ -139,6 +144,7 @@ where
 
 /// The `ProcessedAsset` struct carries a handler's baked metadata and binary data to resource storage.
 #[derive(Debug, Clone)]
+
 pub struct ProcessedAsset {
 	/// The stable, public resource ID.
 	id: String,
@@ -170,6 +176,7 @@ impl ProcessedAsset {
 	/// Attaches the source versions observed while the asset handler produced this resource.
 	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
 		self.asset_dependencies = asset_dependencies;
+
 		self
 	}
 
@@ -203,6 +210,7 @@ impl ProcessedAsset {
 
 	pub fn with_streams(mut self, streams: Vec<StreamDescription>) -> Self {
 		self.streams = Some(streams);
+
 		self
 	}
 }
@@ -210,6 +218,7 @@ impl ProcessedAsset {
 impl<'a, T: Resource + ResourceArchive + Clone> From<Reference<T>> for ProcessedAsset {
 	fn from(value: Reference<T>) -> Self {
 		let id = value.id.clone();
+
 		let queryable_properties = value.resource.queryable_properties(&id);
 
 		ProcessedAsset {
@@ -237,6 +246,7 @@ impl From<SerializableResource> for ProcessedAsset {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+
 pub struct StreamDescription {
 	/// The subresource name, such as `Vertex` or `Index`.
 	name: String,
@@ -270,6 +280,7 @@ impl StreamDescription {
 }
 
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+
 pub struct SerializableResource {
 	/// The stable, public resource ID.
 	id: String,
@@ -351,6 +362,7 @@ impl<M: Model> From<SerializableResource> for ReferenceModel<M> {
 
 /// The `LoadResults` enum identifies failures that can occur while loading a resource.
 #[derive(Debug)]
+
 pub enum LoadResults {
 	/// No resource could be resolved for the given path.
 	ResourceNotFound,
@@ -372,7 +384,9 @@ pub trait Description: Any + Send + Sync {
 }
 
 #[cfg(test)]
+
 mod tests {
+
 	/// The path to the asset fixtures used by tests.
 	pub const ASSETS_PATH: &str = "../../assets";
 }

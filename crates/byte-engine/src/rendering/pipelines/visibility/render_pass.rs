@@ -120,7 +120,6 @@ mod tests {
 		assert_eq!(radius, ConfigurationValue::Float(2.5));
 		assert_eq!(samples, ConfigurationValue::Integer(12));
 		assert_eq!(rays, ConfigurationValue::Integer(16));
-
 		assert!(settings
 			.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
 			.is_err());
@@ -166,12 +165,14 @@ mod tests {
 		let gtao_extent = gtao_half_resolution_extent(extent);
 		let constants = fast_gtao_view_data(&sink, gtao_extent);
 		let projection = view.projection();
+
 		assert_eq!(std::mem::size_of_val(&constants), 32);
 
 		for z in [0.1f32, 0.5, 1.0, 10.0, 100.0] {
 			let clip = projection * Vec4f::new(0.0, 0.0, z, 1.0);
 			let depth = clip.z / clip.w;
 			let reconstructed = constants.depth_unproject_numerator / (depth + constants.depth_unproject_denominator_offset);
+
 			assert!(
 				(reconstructed - z).abs() <= z.max(1.0) * 0.00001,
 				"Unexpected GTAO depth reconstruction for z={z}: {reconstructed}"
@@ -187,9 +188,11 @@ mod tests {
 				2.0 * (pixel[0] + 0.5) / gtao_extent.width() as f32 - 1.0,
 				1.0 - 2.0 * (pixel[1] + 0.5) / gtao_extent.height() as f32,
 			];
+
 			assert!((ray[0] - ndc[0] / projection[0]).abs() < 0.000001);
 			assert!((ray[1] - ndc[1] / projection[5]).abs() < 0.000001);
 		}
+
 		assert_eq!(constants.view_z_sign, 1.0);
 		assert_eq!(gtao_extent, Extent::rectangle(960, 540));
 		assert_eq!(
@@ -278,6 +281,7 @@ mod tests {
 			// The normal must face toward the camera, i.e. dot(normal, center_position) <= 0.
 			// For a flat surface perpendicular to Z: normal.z should be dominant and negative.
 			let dot_check = normal.x * center.x + normal.y * center.y + normal.z * center.z;
+
 			assert!(
 				dot_check <= 0.0,
 				"Normal should face camera (dot(normal, center_position) <= 0) at vz={}, got dot={}",

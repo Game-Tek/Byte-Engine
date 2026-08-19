@@ -35,6 +35,7 @@ impl IBLGenerator {
 	/// Create thread-affine GHI state inside `initialize`; captured values must be safe to move to the worker. Setup errors
 	/// are returned so you can select [`Self::new`].
 	#[cfg(feature = "gpu-ibl")]
+
 	pub fn with_gpu_processor_factory(
 		initialize: impl FnOnce() -> Result<gpu::GPUIBLProcessor, gpu::GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, gpu::GPUIBLBakeError> {
@@ -48,6 +49,7 @@ impl IBLGenerator {
 	/// Build the context inside `initialize` so a non-`Send` backend context never crosses a thread boundary. Return an owner
 	/// guard that keeps its device and instance alive; the queue must support compute and transfer work.
 	#[cfg(feature = "gpu-ibl")]
+
 	pub fn with_gpu_context<Owner: 'static>(
 		initialize: impl FnOnce() -> Result<(ghi::implementation::Context, ghi::QueueHandle, Owner), gpu::GPUIBLBakeError>
 			+ Send
@@ -55,6 +57,7 @@ impl IBLGenerator {
 	) -> Result<Self, gpu::GPUIBLBakeError> {
 		Self::with_gpu_processor_factory(move || {
 			let (context, queue, owner) = initialize()?;
+
 			gpu::GPUIBLProcessor::from_context(context, queue, owner)
 		})
 	}
@@ -63,6 +66,7 @@ impl IBLGenerator {
 	///
 	/// Use [`Self::new`] when deterministic CPU-only baking is required or when this constructor reports a setup error.
 	#[cfg(feature = "gpu-ibl")]
+
 	pub fn try_with_default_gpu() -> Result<Self, gpu::GPUIBLBakeError> {
 		Self::with_gpu_processor_factory(gpu::GPUIBLProcessor::try_new)
 	}
@@ -101,10 +105,12 @@ impl IBLGenerator {
 			));
 			LoadErrors::FailedToProcess
 		})?;
+
 		store_baked_image(context, url, baked.root_extent, baked.ibl, baked.streams, &baked.data)
 	}
 
 	#[cfg(all(test, feature = "gpu-ibl"))]
+
 	pub(crate) fn unavailable_for_test() -> Self {
 		Self {
 			gpu_client: Some(gpu::GPUIBLClient::unavailable_for_test()),
@@ -129,14 +135,16 @@ fn store_baked_image(
 		ibl: Some(ibl),
 		photometry: None,
 	};
+
 	let asset = ProcessedAsset::new(url, image).with_streams(streams);
+
 	context.store_primary(asset, data)
 }
 
 use utils::Extent;
 
 use crate::{
-	asset::{asset_handler::LoadErrors, ResourceId},
+	asset::{handler::LoadErrors, ResourceId},
 	ibl::cpu::bake_image_ibl_in,
 	resources::image::{Image, ImageIBL},
 	types::{Formats, Gamma},

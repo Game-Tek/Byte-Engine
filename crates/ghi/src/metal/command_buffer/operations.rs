@@ -319,6 +319,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.resource(self.get_internal_image_handle(copy.destination_image));
 			self.command_buffer.retain_buffer(source.buffer.clone());
 			self.command_buffer.retain_texture(destination.texture.clone());
+
 			assert!(
 				copy.destination_mip_level < destination.mip_levels,
 				"Metal texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image. mip_level={}, mip_levels={}",
@@ -336,6 +337,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			};
 			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
 			let expected_bytes_per_image = expected_bytes_per_row * row_count;
+
 			assert_eq!(
 				copy.source_offset % 256,
 				0,
@@ -363,6 +365,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.expect(
 					"Metal texture copy source bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
 				);
+
 			assert!(
 				required_source_bytes <= source.size,
 				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={required_source_bytes}, source_offset={}, array_layers={}, source_bytes_per_image={}, format={:?}, extent={:?}",
@@ -482,6 +485,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			};
 			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
 			let expected_bytes_per_image = expected_bytes_per_row * row_count;
+
 			assert_eq!(
 				copy.destination_offset % 256,
 				0,
@@ -507,6 +511,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.expect(
 					"Metal image copy destination bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
 				);
+
 			assert!(
 				required_destination_bytes <= destination.size,
 				"Metal image copy destination buffer is too small. The most likely cause is that the readback buffer allocation is smaller than the recorded texture copy. destination_size={}, required_destination_bytes={required_destination_bytes}, destination_offset={}, array_layers={source_array_layers}, destination_bytes_per_image={}, format={source_format:?}, extent={source_extent:?}",
@@ -745,6 +750,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
+
 		assert!(
 			buffer_descriptors.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
 			"Too many Metal vertex buffers were bound. The most likely cause is that ordinary vertex bindings overlap the reserved push-constant or argument-buffer slots."
@@ -823,6 +829,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.flush_render_push_constants();
 		let mesh_index = mesh_handle.0 as usize;
 		let vertex_buffer_count = self.device.meshes[mesh_index].vertex_buffers.len();
+
 		assert!(
 			vertex_buffer_count <= PUSH_CONSTANT_BINDING_INDEX as usize,
 			"Too many Metal mesh vertex buffers were bound. The most likely cause is that mesh bindings overlap the reserved push-constant or argument-buffer slots."
@@ -921,6 +928,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let index_data_end = index_buffer_offset.checked_add(index_data_size).expect(
 			"Metal indexed draw range overflowed. The most likely cause is that the index offset and count exceed the host address range.",
 		);
+
 		assert!(
 			index_data_end <= buffer_size,
 			"Metal indexed draw exceeds the index buffer. The most likely cause is that the bound offset, first index, or index count exceeds the buffer size. range_end={index_data_end}, buffer_size={buffer_size}",
@@ -1029,6 +1037,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
 		entry_index: usize,
 	) {
+
 		assert!(
 			entry_index < N,
 			"Metal indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
@@ -1041,6 +1050,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		let indirect_end = indirect_offset.checked_add(std::mem::size_of::<[u32; 3]>()).expect(
 			"Metal indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
 		);
+
 		assert!(
 			indirect_end <= buffer.size,
 			"Metal indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={indirect_end}, buffer_size={}",

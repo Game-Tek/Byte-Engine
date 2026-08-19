@@ -631,6 +631,7 @@ mod tests {
 		);
 
 		let report = optimize(&main);
+
 		assert_eq!(report.culled_unused_local_variables, 2);
 		assert_eq!(statements(&main).len(), 1);
 	}
@@ -709,6 +710,7 @@ mod tests {
 		)
 		.expect("Expected atomic side-effect fixture to link");
 		let main = program.get_main().expect("Expected atomic side-effect main function");
+
 		assert_eq!(optimize(&main), OptimizationReport::default());
 
 		let executable = ExecutableProgram::compile(program).expect("Expected optimized fixture to compile for the VM");
@@ -750,6 +752,7 @@ mod tests {
 		);
 
 		let report = optimize(&main);
+
 		assert_eq!(report.culled_unreachable_statements, 1);
 		assert_eq!(statements(&main).len(), 1);
 	}
@@ -768,6 +771,7 @@ mod tests {
 		);
 
 		let report = optimize(&main);
+
 		assert_eq!(report.culled_unreachable_statements, 1);
 		let main_statements = statements(&main);
 		let [conditional] = main_statements.as_slice() else {
@@ -777,6 +781,7 @@ mod tests {
 		let Nodes::Conditional { statements, .. } = conditional.node() else {
 			panic!("Expected conditional statement");
 		};
+
 		assert_eq!(statements.len(), 1);
 		assert!(matches!(
 			statements[0].borrow().node(),

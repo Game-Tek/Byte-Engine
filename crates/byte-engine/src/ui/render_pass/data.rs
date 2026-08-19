@@ -659,6 +659,7 @@ pub(super) fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> 
 
 // Reads the dispatch contract persisted beside a production compute shader.
 pub(super) fn blur_shader_workgroup(shader: &crate::rendering::resource_loading::LoadedShader, name: &str) -> Extent {
+
 	assert!(
 		matches!(shader.stage, ResourceShaderTypes::Compute),
 		"Invalid {name} shader stage. The most likely cause is incorrect BESL sidecar metadata."

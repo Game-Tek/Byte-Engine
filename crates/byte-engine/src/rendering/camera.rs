@@ -164,10 +164,12 @@ mod tests {
 		assert!(camera.as_string().contains("72.5"));
 
 		let invalid = camera.set("fov", "wide").expect_err("non-numeric field of view");
+
 		assert!(invalid.contains("most likely cause"));
 		assert_eq!(camera.vertical_fov(), 72.5);
 
 		let unknown = camera.set("exposure", "1").expect_err("unsupported field");
+
 		assert!(unknown.contains("most likely cause"));
 		assert_eq!(camera.vertical_fov(), 72.5);
 	}

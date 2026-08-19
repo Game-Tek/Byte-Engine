@@ -272,6 +272,7 @@ mod tests {
 		world.set(Camera::new().with_fov(72.0)).on(handle);
 
 		let update = cameras.read().expect("camera update");
+
 		assert_eq!(update.handle(), &handle);
 		assert_eq!(update.data().vertical_fov(), 72.0);
 	}

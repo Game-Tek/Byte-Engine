@@ -560,6 +560,7 @@ mod tests {
 				"Unexpected pipeline request kind. The most likely cause is that the specialized client route sent a resource request."
 			);
 		};
+
 		assert_eq!(request.material_variant_id, "material/test");
 		assert_eq!(request.push_constant_ranges.len(), 1);
 		assert!(matches!(requests.try_recv(), Ok(None)));
@@ -577,6 +578,7 @@ mod tests {
 			.try_recv()
 			.expect("resource request receive")
 			.expect("resource request");
+
 		assert!(matches!(
 			resource_request.kind,
 			PipelineRequestKind::Resource { ref id } if id == "shared/id"
@@ -585,6 +587,7 @@ mod tests {
 			.try_recv()
 			.expect("specialized request receive")
 			.expect("specialized request");
+
 		assert!(matches!(
 			specialized_request.kind,
 			PipelineRequestKind::SpecializedCompute(ref request)
@@ -605,13 +608,16 @@ mod tests {
 		let (client, requests) = client();
 		let reference = client.request_pipeline("pipeline/test");
 		let initial = requests.try_recv().unwrap().unwrap();
+
 		assert_eq!(initial.revision, 0);
 
 		client.resource_updated("unrelated");
+
 		assert!(matches!(requests.try_recv(), Ok(None)));
 		client.resource_updated("pipeline/test");
 
 		let rebuilt = requests.try_recv().unwrap().unwrap();
+
 		assert_eq!(rebuilt.key, reference.0);
 		assert_eq!(rebuilt.revision, 1);
 		assert!(matches!(client.get(reference), PipelineState::Pending));

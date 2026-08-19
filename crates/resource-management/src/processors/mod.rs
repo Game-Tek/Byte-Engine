@@ -1,4 +1,3 @@
-pub mod audio_processor;
-pub mod image_processor;
-pub mod lut_processor;
-pub mod mesh_processor;
+//! Process source data into engine resource representations.
+
+pub mod processor;

@@ -131,6 +131,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			let (compact_bytes_per_row, compact_row_count, _) = source
 				.format_
 				.compact_copy_layout(source.extent.width().max(1), source.extent.height().max(1));
+
 			assert!(
 				copy.destination_bytes_per_row >= compact_bytes_per_row
 					&& copy.destination_bytes_per_image >= copy.destination_bytes_per_row * compact_row_count
@@ -144,6 +145,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.expect(
 					"Vulkan image readback bounds overflowed. The most likely cause is an invalid destination offset, pitch, or layer count.",
 				);
+
 			assert!(
 				required_bytes <= destination.size,
 				"Vulkan image readback destination is too small. The most likely cause is that the destination buffer does not contain every copied layer."
@@ -185,6 +187,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl crate::command_buffer::RasterizationRenderPassMode {
+
 		assert!(
 			!self.active_rendering && self.pending_rendering.is_none(),
 			"A Vulkan render pass is already active. The most likely cause is that start_render_pass was called twice without end_render_pass.",
@@ -649,6 +652,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			let destination_image_handle = self.get_internal_base_image_handle(copy.destination_image);
 			let source_buffer = self.get_buffer(source_buffer_handle);
 			let destination_image = self.get_image(destination_image_handle);
+
 			assert!(
 				copy.destination_mip_level < destination_image.mip_levels,
 				"Vulkan texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
@@ -747,6 +751,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let (Some(buffer), Some(pointer)) = (texture.staging_buffer, texture.pointer) else {
 			return;
 		};
+
 		assert!(
 			!pointer.is_null(),
 			"Vulkan image upload pointer is null. The most likely cause is that the host-visible staging allocation was not mapped."
@@ -769,6 +774,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let required_bytes = pixel_count
 			.checked_mul(std::mem::size_of::<graphics_hardware_interface::RGBAu8>())
 			.expect("Vulkan image upload byte size overflowed. The most likely cause is an oversized image.");
+
 		assert!(
 			data.len() >= pixel_count,
 			"Vulkan image upload data is too small. The most likely cause is that the source does not contain every pixel and array layer."

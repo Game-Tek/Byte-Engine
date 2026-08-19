@@ -42,12 +42,14 @@ pub(super) mod tests {
 	fn attachment_layer_builders_keep_single_and_layered_rendering_distinct() {
 		let single_layer =
 			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layer(3);
+
 		assert_eq!(single_layer.layer, Some(3));
 		assert_eq!(single_layer.layer_count, None);
 
 		let layered =
 			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
 				.layers(4);
+
 		assert_eq!(layered.layer, None);
 		assert_eq!(layered.layer_count.map(std::num::NonZeroU32::get), Some(4));
 		assert_eq!(AttachmentInformation::render_pass_layer_count(&[layered, layered]), 4);
@@ -88,6 +90,7 @@ pub(super) mod tests {
 	#[test]
 	fn test_formats_encoding() {
 		// Test floating point formats
+
 		assert_eq!(Formats::R8F.encoding(), Some(Encodings::FloatingPoint));
 		assert_eq!(Formats::R16F.encoding(), Some(Encodings::FloatingPoint));
 		assert_eq!(Formats::R32F.encoding(), Some(Encodings::FloatingPoint));
@@ -100,6 +103,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::Depth32.encoding(), Some(Encodings::FloatingPoint));
 
 		// Test unsigned normalized formats
+
 		assert_eq!(Formats::R8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::R16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::R32UNORM.encoding(), Some(Encodings::UnsignedNormalized));
@@ -114,6 +118,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::BGRAu8.encoding(), Some(Encodings::UnsignedNormalized));
 
 		// Test signed normalized formats
+
 		assert_eq!(Formats::R8SNORM.encoding(), Some(Encodings::SignedNormalized));
 		assert_eq!(Formats::R16SNORM.encoding(), Some(Encodings::SignedNormalized));
 		assert_eq!(Formats::R32SNORM.encoding(), Some(Encodings::SignedNormalized));
@@ -125,6 +130,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGBA16SNORM.encoding(), Some(Encodings::SignedNormalized));
 
 		// Test sRGB formats
+
 		assert_eq!(Formats::R8sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::R16sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::R32sRGB.encoding(), Some(Encodings::sRGB));
@@ -138,6 +144,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::BC7SRGB.encoding(), Some(Encodings::sRGB));
 
 		// Test formats without encoding
+
 		assert_eq!(Formats::U32.encoding(), None);
 		assert_eq!(Formats::BC5.encoding(), None);
 		assert_eq!(Formats::BC7.encoding(), None);
@@ -153,6 +160,7 @@ pub(super) mod tests {
 		let acceleration_structure = TopLevelAccelerationStructureHandle(5);
 
 		let buffer_write = descriptors::DescriptorWrite::buffer(set, slot, buffer);
+
 		assert_eq!(buffer_write.descriptor_set, set);
 		assert_eq!(buffer_write.slot, slot);
 		assert_eq!(buffer_write.array_element, 0);
@@ -166,6 +174,7 @@ pub(super) mod tests {
 		));
 
 		let image_write = descriptors::DescriptorWrite::image_with_frame(set, slot, image, Layouts::General, -1);
+
 		assert_eq!(image_write.frame_offset, Some(-1));
 		assert!(matches!(
 			image_write.descriptor,
@@ -176,6 +185,7 @@ pub(super) mod tests {
 			} if handle == BaseImageHandle(3)
 		));
 		let mip_write = descriptors::DescriptorWrite::image_mip(set, slot, image, Layouts::Read, 2);
+
 		assert!(matches!(
 			mip_write.descriptor,
 			descriptors::WriteData::Image {
@@ -194,6 +204,7 @@ pub(super) mod tests {
 			7,
 			2,
 		);
+
 		assert_eq!(array_write.array_element, 7);
 		assert_eq!(array_write.frame_offset, Some(2));
 		assert!(matches!(
@@ -207,8 +218,10 @@ pub(super) mod tests {
 		));
 
 		let sampler_write = descriptors::DescriptorWrite::sampler(set, slot, sampler);
+
 		assert!(matches!(sampler_write.descriptor, descriptors::WriteData::Sampler(value) if value == sampler));
 		let acceleration_write = descriptors::DescriptorWrite::acceleration_structure(set, slot, acceleration_structure);
+
 		assert!(matches!(
 			acceleration_write.descriptor,
 			descriptors::WriteData::AccelerationStructure { handle } if handle == acceleration_structure
@@ -235,6 +248,7 @@ pub(super) mod tests {
 	#[test]
 	fn test_formats_channel_bit_size() {
 		// Test 8-bit formats
+
 		assert_eq!(Formats::R8F.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(Formats::R8UNORM.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(Formats::R8SNORM.channel_bit_size(), ChannelBitSize::Bits8);
@@ -246,6 +260,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::BGRAsRGB.channel_bit_size(), ChannelBitSize::Bits8);
 
 		// Test 16-bit formats
+
 		assert_eq!(Formats::R16F.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(Formats::R16UNORM.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(Formats::RG16SNORM.channel_bit_size(), ChannelBitSize::Bits16);
@@ -254,12 +269,14 @@ pub(super) mod tests {
 		assert_eq!(Formats::Depth16.channel_bit_size(), ChannelBitSize::Bits16);
 
 		// Test 32-bit formats
+
 		assert_eq!(Formats::R32F.channel_bit_size(), ChannelBitSize::Bits32);
 		assert_eq!(Formats::R32UNORM.channel_bit_size(), ChannelBitSize::Bits32);
 		assert_eq!(Formats::Depth32.channel_bit_size(), ChannelBitSize::Bits32);
 		assert_eq!(Formats::U32.channel_bit_size(), ChannelBitSize::Bits32);
 
 		// Test special formats
+
 		assert_eq!(Formats::RGBu11u11u10.channel_bit_size(), ChannelBitSize::Bits11_11_10);
 		assert_eq!(Formats::BC5.channel_bit_size(), ChannelBitSize::Compressed);
 		assert_eq!(Formats::BC7.channel_bit_size(), ChannelBitSize::Compressed);
@@ -269,39 +286,47 @@ pub(super) mod tests {
 	#[test]
 	fn test_formats_channel_layout() {
 		// Test single channel formats
+
 		assert_eq!(Formats::R8F.channel_layout(), ChannelLayout::R);
 		assert_eq!(Formats::R16UNORM.channel_layout(), ChannelLayout::R);
 		assert_eq!(Formats::R32SNORM.channel_layout(), ChannelLayout::R);
 		assert_eq!(Formats::R8sRGB.channel_layout(), ChannelLayout::R);
 
 		// Test dual channel formats
+
 		assert_eq!(Formats::RG8F.channel_layout(), ChannelLayout::RG);
 		assert_eq!(Formats::RG16UNORM.channel_layout(), ChannelLayout::RG);
 		assert_eq!(Formats::RG8SNORM.channel_layout(), ChannelLayout::RG);
 
 		// Test triple channel formats
+
 		assert_eq!(Formats::RGB8F.channel_layout(), ChannelLayout::RGB);
 		assert_eq!(Formats::RGB16UNORM.channel_layout(), ChannelLayout::RGB);
 		assert_eq!(Formats::RGB8sRGB.channel_layout(), ChannelLayout::RGB);
 		assert_eq!(Formats::RGBu11u11u10.channel_layout(), ChannelLayout::RGB);
 
 		// Test quad channel formats
+
 		assert_eq!(Formats::RGBA8F.channel_layout(), ChannelLayout::RGBA);
 		assert_eq!(Formats::RGBA16UNORM.channel_layout(), ChannelLayout::RGBA);
 		assert_eq!(Formats::RGBA8SNORM.channel_layout(), ChannelLayout::RGBA);
 
 		// Test BGRA format
+
 		assert_eq!(Formats::BGRAu8.channel_layout(), ChannelLayout::BGRA);
 		assert_eq!(Formats::BGRAsRGB.channel_layout(), ChannelLayout::BGRA);
 
 		// Test depth format
+
 		assert_eq!(Formats::Depth16.channel_layout(), ChannelLayout::Depth);
 		assert_eq!(Formats::Depth32.channel_layout(), ChannelLayout::Depth);
 
 		// Test packed format
+
 		assert_eq!(Formats::U32.channel_layout(), ChannelLayout::Packed);
 
 		// Test block compressed formats
+
 		assert_eq!(Formats::BC5.channel_layout(), ChannelLayout::BC);
 		assert_eq!(Formats::BC7.channel_layout(), ChannelLayout::BC);
 		assert_eq!(Formats::BC7SRGB.channel_layout(), ChannelLayout::BC);
@@ -310,6 +335,7 @@ pub(super) mod tests {
 	#[test]
 	fn test_formats_size() {
 		// Test single channel formats
+
 		assert_eq!(Formats::R8F.size(), 1);
 		assert_eq!(Formats::R8UNORM.size(), 1);
 		assert_eq!(Formats::R16F.size(), 2);
@@ -318,24 +344,28 @@ pub(super) mod tests {
 		assert_eq!(Formats::R32SNORM.size(), 4);
 
 		// Test dual channel formats
+
 		assert_eq!(Formats::RG8F.size(), 2);
 		assert_eq!(Formats::RG8UNORM.size(), 2);
 		assert_eq!(Formats::RG16F.size(), 4);
 		assert_eq!(Formats::RG16SNORM.size(), 4);
 
 		// Test triple channel formats
+
 		assert_eq!(Formats::RGB8F.size(), 3);
 		assert_eq!(Formats::RGB8UNORM.size(), 3);
 		assert_eq!(Formats::RGB16F.size(), 6);
 		assert_eq!(Formats::RGB16SNORM.size(), 6);
 
 		// Test quad channel formats
+
 		assert_eq!(Formats::RGBA8F.size(), 4);
 		assert_eq!(Formats::RGBA8UNORM.size(), 4);
 		assert_eq!(Formats::RGBA16F.size(), 8);
 		assert_eq!(Formats::RGBA16UNORM.size(), 8);
 
 		// Test special formats
+
 		assert_eq!(Formats::RGBu11u11u10.size(), 4);
 		assert_eq!(Formats::BGRAu8.size(), 4);
 		assert_eq!(Formats::BGRAsRGB.size(), 4);
@@ -351,6 +381,7 @@ pub(super) mod tests {
 		// Test that encoding, channel_bit_size, and channel_layout are consistent
 		// For R8FloatingPoint
 		let format = Formats::R8F;
+
 		assert_eq!(format.encoding(), Some(Encodings::FloatingPoint));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(format.channel_layout(), ChannelLayout::R);
@@ -358,6 +389,7 @@ pub(super) mod tests {
 
 		// For RGBA16UnsignedNormalized
 		let format = Formats::RGBA16UNORM;
+
 		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(format.channel_layout(), ChannelLayout::RGBA);
@@ -365,6 +397,7 @@ pub(super) mod tests {
 
 		// For RGB8sRGB
 		let format = Formats::RGB8sRGB;
+
 		assert_eq!(format.encoding(), Some(Encodings::sRGB));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(format.channel_layout(), ChannelLayout::RGB);
@@ -372,6 +405,7 @@ pub(super) mod tests {
 
 		// For special format RGBu11u11u10
 		let format = Formats::RGBu11u11u10;
+
 		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits11_11_10);
 		assert_eq!(format.channel_layout(), ChannelLayout::RGB);
@@ -379,6 +413,7 @@ pub(super) mod tests {
 
 		// For Depth16
 		let format = Formats::Depth16;
+
 		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits16);
 		assert_eq!(format.channel_layout(), ChannelLayout::Depth);
@@ -386,6 +421,7 @@ pub(super) mod tests {
 
 		// For BGRAu8
 		let format = Formats::BGRAu8;
+
 		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(format.channel_layout(), ChannelLayout::BGRA);
@@ -393,6 +429,7 @@ pub(super) mod tests {
 
 		// For BGRAsRGB
 		let format = Formats::BGRAsRGB;
+
 		assert_eq!(format.encoding(), Some(Encodings::sRGB));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(format.channel_layout(), ChannelLayout::BGRA);
@@ -400,6 +437,7 @@ pub(super) mod tests {
 
 		// For Depth32
 		let format = Formats::Depth32;
+
 		assert_eq!(format.encoding(), Some(Encodings::FloatingPoint));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits32);
 		assert_eq!(format.channel_layout(), ChannelLayout::Depth);
@@ -407,6 +445,7 @@ pub(super) mod tests {
 
 		// For BC7
 		let format = Formats::BC7;
+
 		assert_eq!(format.encoding(), None);
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Compressed);
 		assert_eq!(format.channel_layout(), ChannelLayout::BC);
@@ -414,6 +453,7 @@ pub(super) mod tests {
 
 		// For BC7 sRGB
 		let format = Formats::BC7SRGB;
+
 		assert_eq!(format.encoding(), Some(Encodings::sRGB));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Compressed);
 		assert_eq!(format.channel_layout(), ChannelLayout::BC);
@@ -623,16 +663,20 @@ pub(super) mod tests {
 	#[test]
 	fn dispatch_extent() {
 		let dispatch_extent = DispatchExtent::new(Extent::new(10, 10, 10), Extent::new(5, 5, 5));
+
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(2, 2, 2));
 
 		let dispatch_extent = DispatchExtent::new(Extent::new(10, 10, 10), Extent::new(3, 3, 3));
+
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
 	}
 
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
+
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
 		let pixel = pixels[0]; // top left
+
 		assert_eq!(
 			pixel,
 			RGBAu8 {
@@ -645,6 +689,7 @@ pub(super) mod tests {
 
 		if !extent.width().is_multiple_of(2) {
 			let pixel = pixels[(extent.width() / 2) as usize]; // middle top center
+
 			assert_eq!(
 				pixel,
 				RGBAu8 {
@@ -657,6 +702,7 @@ pub(super) mod tests {
 		}
 
 		let pixel = pixels[(extent.width() - 1) as usize]; // top right
+
 		assert_eq!(
 			pixel,
 			RGBAu8 {
@@ -668,6 +714,7 @@ pub(super) mod tests {
 		);
 
 		let pixel = pixels[(extent.width() * (extent.height() - 1)) as usize]; // bottom left
+
 		assert_eq!(
 			pixel,
 			RGBAu8 {
@@ -679,6 +726,7 @@ pub(super) mod tests {
 		);
 
 		let pixel = pixels[(extent.width() * extent.height() - (extent.width() / 2)) as usize]; // middle bottom center
+
 		assert!(
 			pixel
 				== RGBAu8 {
@@ -696,6 +744,7 @@ pub(super) mod tests {
 		); // different implementations render slightly differently
 
 		let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
+
 		assert_eq!(
 			pixel,
 			RGBAu8 {
@@ -920,6 +969,7 @@ pub(super) mod tests {
 		};
 
 		device.wait();
+
 		assert!(
 			!device.has_errors(),
 			"Metal depth-state rendering failed. The most likely cause is an invalid pipeline or render-pass attachment configuration.",
@@ -929,6 +979,7 @@ pub(super) mod tests {
 		);
 		let image_data = device.get_image_data(copy_handle);
 		let expected_byte_count = (extent.width() * extent.height()) as usize * std::mem::size_of::<RGBAu8>();
+
 		assert_eq!(
 			image_data.len(),
 			expected_byte_count,
@@ -1494,6 +1545,7 @@ pub(super) mod tests {
 
 			let image_data = device.get_image_data(texture_copy_handles[0]);
 			let pixel_count = (extent.width() * extent.height()) as usize;
+
 			assert_eq!(
 				image_data.len(),
 				pixel_count * std::mem::size_of::<RGBAu8>(),
@@ -1650,6 +1702,7 @@ pub(super) mod tests {
 
 			if i % 4 == 0 {
 				let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
+
 				assert_eq!(
 					pixel,
 					RGBAu8 {
@@ -1662,6 +1715,7 @@ pub(super) mod tests {
 				);
 			} else if i % 4 == 1 {
 				let pixel = pixels[(extent.width() * (extent.height() - 1)) as usize]; // bottom left
+
 				assert_eq!(
 					pixel,
 					RGBAu8 {
@@ -1674,6 +1728,7 @@ pub(super) mod tests {
 				);
 			} else if i % 4 == 2 {
 				let pixel = pixels[0]; // top left
+
 				assert_eq!(
 					pixel,
 					RGBAu8 {
@@ -1686,6 +1741,7 @@ pub(super) mod tests {
 				);
 			} else if i % 4 == 3 {
 				let pixel = pixels[(extent.width() - 1) as usize]; // top right
+
 				assert_eq!(
 					pixel,
 					RGBAu8 {
@@ -1914,6 +1970,7 @@ pub(super) mod tests {
 		device.wait();
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
 		assert!(
 			pixels[0]
 				== RGBAu8 {
@@ -1930,7 +1987,6 @@ pub(super) mod tests {
 				}
 		); // Current frame image
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 }); // Current frame sample from last frame image
-
 		assert!(!device.has_errors());
 
 		let copy_handles = {
@@ -1982,7 +2038,6 @@ pub(super) mod tests {
 					a: 255
 				}
 		); // Current frame sample from last frame image
-
 		assert!(!device.has_errors());
 
 		let copy_handles = {
@@ -2000,9 +2055,9 @@ pub(super) mod tests {
 		device.wait();
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
 		assert_eq!(pixels[0], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
-
 		assert!(!device.has_errors());
 
 		let copy_handles = {
@@ -2037,7 +2092,6 @@ pub(super) mod tests {
 				}
 		);
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
-
 		assert!(!device.has_errors());
 	}
 

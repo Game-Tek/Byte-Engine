@@ -177,6 +177,7 @@ mod tests {
 	fn bounds_are_world_space_even_when_shape_data_is_local() {
 		let mut body = body();
 		body.position = Point::new(3.0, 0.0, 0.0);
+
 		assert_eq!(body.bounds().min(), Point::new(2.0, -1.0, -1.0));
 	}
 }

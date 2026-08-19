@@ -153,12 +153,14 @@ mod tests {
 	fn box_streams_describe_six_independent_quad_faces() {
 		let generator = BoxMeshGenerator::from_size(Vec3f::new(2.0, 3.0, 4.0));
 		let positions = generator.positions();
+
 		assert_eq!(positions.len(), 24);
 		assert_eq!(generator.normals().len(), positions.len());
 		assert_eq!(generator.tangents().len(), positions.len());
 		assert_eq!(generator.bitangents().len(), positions.len());
 		assert_eq!(generator.uvs().len(), positions.len());
 		let indices = generator.indices();
+
 		assert_eq!(indices.len(), 36);
 		assert!(indices.iter().all(|index| (*index as usize) < positions.len()));
 		assert!(positions
@@ -175,6 +177,7 @@ mod tests {
 			let a = vector(positions[triangle[0] as usize]);
 			let b = vector(positions[triangle[1] as usize]);
 			let c = vector(positions[triangle[2] as usize]);
+
 			assert!(dot(cross(b - a, c - a), vector(normals[triangle[0] as usize])) > 0.0);
 		}
 		for ((normal, tangent), bitangent) in normals
@@ -183,6 +186,7 @@ mod tests {
 			.zip(generator.bitangents().iter())
 		{
 			let normal = vector(*normal);
+
 			assert!((length(normal) - 1.0).abs() < 1e-6);
 			assert!(dot(normal, *tangent).abs() < 1e-6);
 			assert!(dot(normal, *bitangent).abs() < 1e-6);
@@ -193,6 +197,7 @@ mod tests {
 	#[test]
 	fn hash_changes_for_each_size_axis() {
 		let base = BoxMeshGenerator::from_size(Vec3f::new(1.0, 1.0, 1.0)).hash();
+
 		assert_eq!(base, BoxMeshGenerator::new().hash());
 		assert_ne!(base, BoxMeshGenerator::from_size(Vec3f::new(2.0, 1.0, 1.0)).hash());
 		assert_ne!(base, BoxMeshGenerator::from_size(Vec3f::new(1.0, 2.0, 1.0)).hash());

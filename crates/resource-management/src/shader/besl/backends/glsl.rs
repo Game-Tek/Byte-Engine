@@ -14,6 +14,7 @@ mod tests {
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
+
 			assert!(
 				$haystack.contains($needle),
 				"Expected string to contain '{}', but it did not. String: '{}'",
@@ -85,7 +86,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(32)), &main)
 			.expect("Expected subgroup fixture to lower to GLSL");
-
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_basic:require");
 		assert_string_contains!(shader, "#extension GL_KHR_shader_subgroup_ballot:require");
 		assert_string_contains!(shader, "subgroupBallot(uint(gl_LocalInvocationIndex)<4)");
@@ -108,7 +108,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected formatted storage image GLSL generation");
-
 		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");
 	}
 
@@ -126,7 +125,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected unformatted storage image GLSL generation");
-
 		assert_string_contains!(shader, "layout(set=0,binding=5) writeonly uniform image2D image;");
 		assert!(
 			!shader.contains("binding=5,"),
@@ -141,7 +139,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected vec4u16 GLSL generation");
-
 		assert_string_contains!(shader, "u16vec4 value;");
 		assert!(!shader.contains("struct vec4u16"));
 	}
@@ -155,7 +152,6 @@ mod tests {
 				&generator::tests::packed_vec4f_meshlet_binding(),
 			)
 			.expect("Expected packed_vec4f GLSL generation");
-
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
 		assert!(!shader.contains("struct packed_vec4f"));
@@ -170,7 +166,6 @@ mod tests {
 				&generator::tests::vec2f16_array_binding(),
 			)
 			.expect("Expected vec2f16 GLSL generation");
-
 		assert_string_contains!(shader, "f16vec2 values[2];");
 		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 	}
@@ -183,7 +178,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "pixel_mapping.pixel_mapping[0]=meshes.meshes[1];");
 	}
 
@@ -195,7 +189,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}"
@@ -210,7 +203,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "layout(location=0)in vec3 color;void main(){color;}");
 	}
 
@@ -222,7 +214,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "layout(location=0)out vec3 color;void main(){color;}");
 	}
 
@@ -237,7 +228,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Expected packed integer fragment GLSL generation");
-
 		assert_string_contains!(vertex_shader, "layout(location=0)in u16vec2 packed_input;");
 		assert_string_contains!(vertex_shader, "layout(location=1)flat out u16vec4 packed_output;");
 		assert_string_contains!(fragment_shader, "layout(location=0)flat in u16vec2 packed_input;");
@@ -252,7 +242,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);albedo;}");
 	}
 
@@ -266,7 +255,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate fwidth GLSL shader");
-
 		assert_string_contains!(shader, "fwidth(1.0)");
 	}
 
@@ -278,7 +266,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"void used_by_used(){}void used(){used_by_used();}void main(){used();}"
@@ -306,7 +293,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Expected dead-local GLSL generation");
-
 		assert_string_contains!(shader, "void main(){return;}");
 		assert!(
 			!shader.contains("expensive"),
@@ -323,7 +309,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"struct Vertex{vec3 position;vec3 normal;};Vertex use_vertex(){}void main(){use_vertex();}"
@@ -338,7 +323,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"layout(push_constant)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
@@ -381,7 +365,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
 		assert_string_contains!(shader, "void used(){}");
 		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
@@ -395,7 +378,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void main(){0 + 1.0 * 2;}");
 	}
 
@@ -451,7 +433,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "const float PI = 3.14;");
 		assert_string_contains!(shader, "void main(){PI;}");
 	}
@@ -474,7 +455,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "const vec3 WEIGHTS = vec3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 	}
@@ -509,7 +489,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Expected scalar arrays to lower to GLSL vectors");
-
 		assert_string_contains!(shader, "vec3 scalar_f32()");
 		assert_string_contains!(shader, "u16vec3 scalar_u16()");
 		assert_string_contains!(shader, "uvec3 scalar_u32()");
@@ -535,7 +514,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Expected compare-exchange source to lower to GLSL");
-
 		assert_string_contains!(
 			shader,
 			"atomicCompSwap(shared_keys[uint(gl_LocalInvocationIndex)],4294967295,7)"
@@ -560,7 +538,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "SetMeshOutputsEXT(4,2);");
 		assert_string_contains!(shader, "gl_MeshVerticesEXT[0].gl_Position = vec4(1.0,2.0,3.0,1.0);");
 		assert_string_contains!(shader, "gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0,1,2);");
@@ -585,7 +562,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "if(n<1){n=2;}");
 	}
 
@@ -605,7 +581,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
 	}
 
@@ -628,7 +603,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
 	}
 
@@ -664,7 +638,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "abs(0.0-2.5)");
 		assert_string_contains!(shader, "sqrt(9.0)");
 		assert_string_contains!(shader, "exp(1.0)");
@@ -694,7 +667,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "max(1.0,2.0)");
 		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
 	}
@@ -708,7 +680,6 @@ mod tests {
 				&generator::tests::mixed_f16_storage_binding(),
 			)
 			.expect("Expected f16 GLSL generation");
-
 		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 		assert_string_contains!(shader, "float16_t scalar;");
 		assert_string_contains!(shader, "f16vec2 uv;");
@@ -753,7 +724,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "vec4 texel=texelFetch(texture,ivec2(coord),0);");
 	}
 
@@ -765,14 +735,12 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(minified_shader, "float main(){return 1.0;}");
 
 		let pretty_shader = Generator::new()
 			.minified(false)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
 	}
 }

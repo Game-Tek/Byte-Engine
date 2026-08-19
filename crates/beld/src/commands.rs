@@ -48,6 +48,7 @@ mod tests {
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
+
 		assert_eq!(parse_query_property("name=hero"), Ok(("name", "hero")));
 		assert_eq!(parse_query_property("expression=a=b"), Ok(("expression", "a=b")));
 		assert_eq!(parse_query_property("name"), Err(1));
@@ -59,6 +60,7 @@ mod tests {
 	fn hex_codec_round_trips_all_byte_values_and_accepts_uppercase() {
 		let bytes: Vec<u8> = (u8::MIN..=u8::MAX).collect();
 		let encoded = encode_hex(&bytes);
+
 		assert_eq!(encoded.len(), bytes.len() * 2);
 		assert_eq!(decode_hex(&encoded), Some(bytes.clone()));
 		assert_eq!(decode_hex(&encoded.to_uppercase()), Some(bytes));
@@ -70,6 +72,7 @@ mod tests {
 	fn query_cursor_codec_is_lossless_and_rejects_non_cursor_json() {
 		let cursor = QueryCursor::new(vec![0, 1, 2, 0xfe, 0xff]);
 		let encoded = encode_query_cursor(&cursor);
+
 		assert_eq!(decode_query_cursor(&encoded), Ok(cursor));
 		assert_eq!(decode_query_cursor("not-hex"), Err(1));
 		assert_eq!(decode_query_cursor(&encode_hex(br#"{"wrong":true}"#)), Err(1));
@@ -87,6 +90,7 @@ mod tests {
 				value: QueryableValue::String("opaque".into()),
 			},
 		];
+
 		assert_eq!(
 			queryable_properties_json(&properties),
 			json!({"name": "hero", "group": "opaque"})
@@ -95,6 +99,7 @@ mod tests {
 
 	#[test]
 	fn query_errors_keep_distinct_actionable_causes() {
+
 		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
 		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
 	}
@@ -114,6 +119,7 @@ mod tests {
 		std::fs::write(&sentinel_path, b"retain-me").unwrap();
 
 		let executor = resource_management::r#async::Executor::new().unwrap();
+
 		assert_eq!(executor.block_on(list(root.to_string_lossy().into_owned())), Err(1));
 		assert_eq!(std::fs::read(&signature_path).unwrap(), b"stale-signature");
 		assert_eq!(std::fs::read(&sentinel_path).unwrap(), b"retain-me");
@@ -257,6 +263,7 @@ mod tests {
 		let failed_trace = executor
 			.block_on(resource_storage.read_trace(ResourceId::new("broken.png")))
 			.unwrap();
+
 		assert_eq!(failed_trace.len(), 1);
 		assert_eq!(failed_trace[0].level(), ResourceTraceLevel::Error);
 		assert!(executor
@@ -330,6 +337,7 @@ mod tests {
 		std::fs::write(path.join("nested/old.resource"), b"old").unwrap();
 
 		wipe(path.to_string_lossy().into_owned()).unwrap();
+
 		assert!(path.is_dir());
 		assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
 		std::fs::remove_dir(path).unwrap();

@@ -44,6 +44,7 @@ pub(crate) fn compile(main: besl::NodeReference) -> ExecutableProgram {
 
 /// Creates a tightly initialized two-dimensional texture without intermediate pixel storage.
 pub(crate) fn texture_2d(width: u32, height: u32, texels: &[[f32; 4]]) -> Texture {
+
 	assert_eq!(
 		texels.len(),
 		width as usize * height as usize,
@@ -98,6 +99,7 @@ pub(crate) fn rgba(texture: &Texture, coordinate: [u32; 2]) -> [f32; 4] {
 /// Compares finite RGBA values component by component with a caller-selected tolerance.
 pub(crate) fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
 	for (channel, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+
 		assert!(
 			actual.is_finite() && (actual - expected).abs() <= tolerance,
 			"Unexpected VM shader output in channel {channel}: expected {expected}, found {actual}. The most likely cause is a shader regression or incorrect VM semantics."

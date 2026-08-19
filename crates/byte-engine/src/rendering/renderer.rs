@@ -101,6 +101,7 @@ mod tests {
 		));
 
 		let future = render_pass_harness_with_state(Box::new(NamedRenderPass("bloom")), &states);
+
 		assert_eq!(future.state(), RenderPassState::Bypassed);
 	}
 
@@ -123,6 +124,7 @@ mod tests {
 
 		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
 		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+
 		assert_eq!(pending.len(), 0);
 		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
 	}
@@ -148,6 +150,7 @@ mod tests {
 	#[test]
 	fn test_render_targets_new() {
 		let rt = RenderTargets::new();
+
 		assert!(rt.images.is_empty());
 		assert!(rt.by_name.is_empty());
 		assert!(rt.by_sink_index.is_empty());
@@ -159,8 +162,10 @@ mod tests {
 		let image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
 		let format = ghi::Formats::RGBA8UNORM;
 		let index = rt.insert("test".to_string(), 0, image, format);
+
 		assert_eq!(index, 0);
 		let retrieved = rt.get("test", 0);
+
 		assert!(retrieved.is_some());
 		assert_eq!(rt.get("nonexistent", 0), None);
 	}
@@ -198,9 +203,11 @@ mod tests {
 		);
 
 		let attachments = rt.get_attachment_infos(0);
+
 		assert_eq!(attachments.len(), 2);
 
 		let attachments_view1 = rt.get_attachment_infos(1);
+
 		assert_eq!(attachments_view1.len(), 1);
 	}
 
@@ -208,6 +215,7 @@ mod tests {
 	fn test_get_attachment_infos_empty_view() {
 		let rt = RenderTargets::new();
 		let attachments = rt.get_attachment_infos(0);
+
 		assert!(attachments.is_empty());
 	}
 
@@ -223,6 +231,7 @@ mod tests {
 		rt.alias(0, "second", "main");
 
 		let (image, _) = rt.get("main", 0).expect("main alias should resolve");
+
 		assert_eq!(*image, second_image);
 	}
 
@@ -237,6 +246,7 @@ mod tests {
 
 		let (sink0_image, _) = rt.get("main", 0).expect("sink 0 main should resolve");
 		let (sink1_image, _) = rt.get("main", 1).expect("sink 1 main should resolve");
+
 		assert_eq!(*sink0_image, image1);
 		assert_eq!(*sink1_image, image2);
 	}

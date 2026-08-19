@@ -18,12 +18,14 @@ fn real_resource_slots_do_not_alias_virtual_interface_slots() {
 
 	for virtual_slot in virtual_slots {
 		let descriptor_slot = ResourceSlot::new(virtual_slot.slot());
+
 		assert_ne!(descriptor_slot, virtual_slot);
 		slots.insert(descriptor_slot);
 		slots.insert(virtual_slot);
 	}
 
 	// Input and output slot 3 deliberately share one numeric real-resource counterpart.
+
 	assert_eq!(slots.len(), 5);
 }
 
@@ -204,6 +206,7 @@ fn non_indexed_field_access_rejects_array_members() {
 	items
 		.write_indexed_field("items", 1, "value", Value::U32(7))
 		.expect("Expected explicit array element write");
+
 	assert_eq!(
 		items
 			.read_indexed_field("items", 1, "value")
@@ -215,6 +218,7 @@ fn non_indexed_field_access_rejects_array_members() {
 #[test]
 fn texture_creation_rejects_overflowing_texel_counts() {
 	let error = Texture::new_3d(u32::MAX, u32::MAX, u32::MAX).expect_err("Expected texel count overflow");
+
 	assert_eq!(
 		error,
 		VmError::TextureTexelCountOverflow {
@@ -244,6 +248,7 @@ fn texture_creation_rejects_overflowing_texel_counts() {
 fn texture_access_rejects_stale_cross_format_views() {
 	let mut texture = Texture::new(1, 1).expect("Expected texture");
 	texture.write_u32([0, 0], 7).expect("Expected integer write");
+
 	assert_eq!(texture.fetch_u32([0, 0]).expect("Expected integer fetch"), Value::U32(7));
 	assert!(matches!(
 		texture.fetch([0, 0]),
@@ -256,6 +261,7 @@ fn texture_access_rejects_stale_cross_format_views() {
 	texture
 		.write([0, 0], [0.25, 0.5, 0.75, 1.0])
 		.expect("Expected float write to replace the texel format");
+
 	assert_eq!(
 		texture.fetch([0, 0]).expect("Expected float fetch"),
 		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
@@ -352,6 +358,7 @@ fn buffer_layout_rejects_overflowing_arrays() {
 		"#,
 		root,
 	);
+
 	assert_eq!(
 		error,
 		VmError::UnsupportedBufferLayout {
@@ -396,6 +403,7 @@ fn buffer_layout_rejects_resource_handle_members() {
 		"#,
 		root,
 	);
+
 	assert_eq!(
 		error,
 		VmError::UnsupportedBufferLayout {

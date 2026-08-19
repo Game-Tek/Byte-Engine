@@ -12,6 +12,7 @@ pub(super) fn lex_parsed_node(
 	let node = match &parser_node.node {
 		parser::Nodes::Null => Node::new(Nodes::Null).into(),
 		parser::Nodes::Scope { name, children } => {
+
 			assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the program.
 
 			let this: NodeReference = Node::scope(name.to_string()).into();

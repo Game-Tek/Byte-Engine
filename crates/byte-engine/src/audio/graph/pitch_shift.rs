@@ -350,6 +350,7 @@ mod tests {
 			for &advance in &advances {
 				let actual = advance_output_phase(phase, advance);
 				let expected = wrap_phase(phase + advance);
+
 				assert!(
 					(-PI..PI).contains(&actual),
 					"phase {actual} is outside the canonical range for phase {phase} and advance {advance}"
@@ -377,6 +378,7 @@ mod tests {
 	fn rendering_is_identical_across_period_boundaries() {
 		let contiguous = render(1.5, &[SAMPLE_COUNT]);
 		let chunked = render(1.5, &[127; 130]);
+
 		assert_eq!(contiguous, chunked);
 	}
 
@@ -393,6 +395,7 @@ mod tests {
 		let first = magnitude_at(&output, 150.0);
 		let second = magnitude_at(&output, 210.0);
 		let valley = magnitude_at(&output, 180.0);
+
 		assert!(first > valley * 1.8, "the 150 Hz tone was smeared into the spectral valley");
 		assert!(second > valley * 1.8, "the 210 Hz tone was smeared into the spectral valley");
 	}

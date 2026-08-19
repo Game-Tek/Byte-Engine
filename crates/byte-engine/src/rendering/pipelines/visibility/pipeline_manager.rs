@@ -9,6 +9,7 @@ use shadow::*;
 
 /// The `SkinningPaletteCacheEntry` struct shares one uploaded binding palette across a renderable's primitives.
 #[derive(Clone, Copy)]
+
 struct SkinningPaletteCacheEntry {
 	handle: Handle,
 	binding: *const SkinBinding,
@@ -18,6 +19,7 @@ struct SkinningPaletteCacheEntry {
 
 /// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
 #[derive(Clone, Copy)]
+
 struct EnvironmentTexture {
 	diffuse_image: ghi::BaseImageHandle,
 	specular_image: ghi::BaseImageHandle,
@@ -26,6 +28,7 @@ struct EnvironmentTexture {
 
 /// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
@@ -33,6 +36,7 @@ pub struct VisibilityPipelineSettings {
 
 /// The startup parameter that sets [`VisibilityPipelineSettings::cone_shadow_map_pool_capacity`].
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
+
 /// The startup parameter that sets [`VisibilityPipelineSettings::point_shadow_map_pool_capacity`].
 pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-map-pool.capacity";
 
@@ -55,6 +59,7 @@ impl VisibilityPipelineSettings {
 		}
 
 		self.cone_shadow_map_pool_capacity = capacity;
+
 		Ok(self)
 	}
 
@@ -72,6 +77,7 @@ impl VisibilityPipelineSettings {
 		}
 
 		self.point_shadow_map_pool_capacity = capacity;
+
 		Ok(self)
 	}
 
@@ -137,13 +143,19 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
+
 		self.adopt_resource_completions(frame);
+
 		self.process_transform_updates();
+
 		self.refresh_material_pipelines();
+
 		self.write_material_data(frame);
+
 		self.rebuild_active_instances(frame);
 
 		let loaded_ies_profiles = &self.loaded_ies_profiles;
+
 		let shadow_lights = select_shadow_lights_with_intensity_scale(
 			self.scene.lights.iter().map(|(_, light)| light),
 			sinks,
@@ -151,18 +163,21 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.point_shadow_map_pool_capacity,
 			|light| manager::ies_intensity_scale(light, loaded_ies_profiles),
 		);
+
 		if shadow_lights.eligible_cone_count > self.cone_shadow_map_pool_capacity {
 			warn!(
 				"Cone-light shadow pool capacity exceeded. The most likely cause is that more than {} visible cone lights require shadows. Extra cone lights remain lit without shadows.",
 				self.cone_shadow_map_pool_capacity,
 			);
 		}
+
 		if shadow_lights.eligible_point_count > self.point_shadow_map_pool_capacity {
 			warn!(
 				"Point-light shadow pool capacity exceeded. The most likely cause is that more than {} visible point lights require shadows. Extra point lights remain lit without shadows.",
 				self.point_shadow_map_pool_capacity,
 			);
 		}
+
 		let [opaque_mesh_dispatch, masked_mesh_dispatch, transparent_mesh_dispatch] = self.mesh_dispatch_work.write_phases(
 			frame,
 			[
@@ -174,7 +189,9 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		if let Some(sink) = sinks.first() {
 			let main_view = sink.view();
+
 			let main_view_data = Self::make_shader_view_data(main_view);
+
 			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.scene.views_data_buffer_handle);
 
 			for view_data in views_data_buffer.iter_mut() {
@@ -188,7 +205,9 @@ impl PipelineManager for VisibilityPipelineManager {
 						.enumerate()
 				{
 					let mut cascade_view_data = Self::make_shader_view_data(cascade_view);
+
 					cascade_view_data.far = cascade_far;
+
 					views_data_buffer[cascade_index + 1] = cascade_view_data;
 				}
 			}
@@ -197,6 +216,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				if let Some((_, light)) = shadow_light {
 					let intensity_scale_candela =
 						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
+
 					views_data_buffer[CONE_SHADOW_VIEW_OFFSET + layer] = Self::make_shader_view_data(make_cone_shadow_view(
 						*light,
 						CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
@@ -209,6 +229,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				if let Some((_, light)) = shadow_light {
 					let intensity_scale_candela =
 						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
+
 					for face in 0..POINT_SHADOW_FACE_COUNT {
 						views_data_buffer[POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT + face] =
 							Self::make_shader_view_data(make_point_shadow_view(
@@ -225,8 +246,11 @@ impl PipelineManager for VisibilityPipelineManager {
 		}
 
 		let directional_shadow_light_index = shadow_lights.directional.map(|(index, _)| index);
+
 		let cone_shadow_light_indices = shadow_lights.cones.map(|light| light.map(|(index, _)| index));
+
 		let point_shadow_light_indices = shadow_lights.points.map(|light| light.map(|(index, _)| index));
+
 		self.scene.write_light_data(
 			frame,
 			directional_shadow_light_index,
@@ -242,7 +266,9 @@ impl PipelineManager for VisibilityPipelineManager {
 				.find(|sink_state| sink_state.id == sink.index())
 				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
+
 		let skinning_pass = &self.skinning_pass;
+
 		let skinning_dispatches = self.scene.render_info.skinning_dispatches.as_slice();
 
 		let commands: SmallVec<[RenderPassReturn<'a>; 16]> = sink_x_rp
@@ -297,6 +323,7 @@ impl PipelineManager for VisibilityPipelineManager {
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		log::debug!("Visibility sink created: sink_id={}", sink_id);
+
 		let lit_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16UNORM,
@@ -304,20 +331,25 @@ impl PipelineManager for VisibilityPipelineManager {
 			)
 			.name("Lit"),
 		);
+
 		let depth_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Depth")
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+
 		let primitive_index = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"),
 		);
+
 		let instance_id = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"),
 		);
 
 		let context = render_pass_builder.context();
+
 		let visibility_passes_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
+
 		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
 
 		let material_count_buffer = context.build_buffer(
@@ -358,6 +390,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.name("Occlusion Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
+
 		let directional_shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(DIRECTIONAL_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Directional Shadow Map")
@@ -365,6 +398,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32))
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+
 		let directional_shadow_depth_pyramid = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("Directional Shadow Depth Pyramid")
@@ -375,9 +409,11 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
 		);
+
 		// Dynamic images start at zero extent, so this pool has no backing shadow maps until a visible cone uses it.
 		// Metal requires two layers to create the array texture that material evaluation always binds.
 		let cone_shadow_map_layers = self.cone_shadow_map_pool_capacity.max(2) as u32;
+
 		let cone_shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(CONE_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Cone Shadow Map")
@@ -385,6 +421,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.array_layers(NonZeroU32::new(cone_shadow_map_layers))
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+
 		// Dynamic images start at zero extent, so this cube array has no backing maps until a visible point light uses it.
 		let point_shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(POINT_SHADOW_MAP_FORMAT, ghi::Uses::DepthStencil | ghi::Uses::Image)
@@ -396,6 +433,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				)
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+
 		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -405,6 +443,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
+
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -414,6 +453,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
+
 		let directional_shadow_depth_pyramid_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -423,6 +463,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0.0)
 				.max_lod((DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
+
 		context.write(&[
 			ghi::DescriptorWrite::image(
 				material_evaluation_descriptor_set,
@@ -508,16 +549,19 @@ impl PipelineManager for VisibilityPipelineManager {
 				ghi::Layouts::General,
 			),
 		]);
+
 		context.write(&[diffuse_environment_descriptor_write(
 			material_evaluation_descriptor_set,
 			self.environment_texture,
 		)]);
+
 		context.write(&[specular_environment_descriptor_write(
 			material_evaluation_descriptor_set,
 			self.environment_texture,
 		)]);
 
 		render_pass_builder.alias("Depth", "depth");
+
 		render_pass_builder.alias("Lit", "main");
 
 		let render_pass = VisibilityPipelineRenderPass::new(
@@ -550,7 +594,9 @@ impl PipelineManager for VisibilityPipelineManager {
 }
 
 #[cfg(test)]
+
 mod tests {
+
 	use std::sync::Arc;
 
 	use math::{Orientation, Point, UnitVector};
@@ -591,10 +637,15 @@ mod tests {
 	#[test]
 	fn renderable_admission_waits_for_every_primitive_dependency() {
 		let mut handles = Factory::new();
+
 		let incomplete = handles.create("incomplete");
+
 		let independent = handles.create("independent");
+
 		let primitives = [(incomplete, 0), (incomplete, 1), (independent, 0)];
+
 		let mut ready_materials = std::collections::HashSet::from([0u32]);
+
 		let mut incomplete_renderables = std::collections::HashSet::new();
 
 		collect_incomplete_renderables(
@@ -605,14 +656,17 @@ mod tests {
 
 		assert!(incomplete_renderables.contains(&incomplete));
 		assert!(!incomplete_renderables.contains(&independent));
+
 		let admitted = primitives
 			.iter()
 			.filter(|(handle, _)| !incomplete_renderables.contains(handle))
 			.copied()
 			.collect::<Vec<_>>();
+
 		assert_eq!(admitted, [(independent, 0)]);
 
 		ready_materials.insert(1);
+
 		collect_incomplete_renderables(
 			primitives,
 			|material_index| ready_materials.contains(&material_index),
@@ -736,11 +790,14 @@ mod tests {
 	#[test]
 	fn shadow_selection_keeps_cones_visible_in_any_sink_and_skips_cones_outside_all_sinks() {
 		let visible_in_second_sink = cone(100.0).with_shadow_far(20.0);
+
 		let outside_all_sinks = cone(500.0).with_shadow_far(20.0);
+
 		let lights = [
 			Lights::Cone(visible_in_second_sink.clone()),
 			Lights::Cone(outside_all_sinks.clone()),
 		];
+
 		let sinks = [sink(Point::origin()), sink(Point::new(100.0, 0.0, 0.0))];
 
 		assert!(sinks
@@ -767,9 +824,11 @@ mod tests {
 	#[test]
 	fn cone_shadow_pool_assigns_its_limited_layers_to_visible_lights() {
 		let lights = [Lights::Cone(cone(0.0)), Lights::Cone(cone(1.0))];
+
 		let sinks = [sink(Point::origin())];
 
 		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+
 		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
@@ -787,6 +846,7 @@ mod tests {
 			Lights::Cone(cone(8.0).with_shadow_far(5.0)),
 			Lights::Cone(cone(0.0).with_shadow_far(5.0)),
 		];
+
 		let sinks = [sink(Point::origin())];
 
 		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
@@ -807,6 +867,7 @@ mod tests {
 			Lights::Cone(cone(100.0).with_shadow_far(20.0)),
 			Lights::Cone(cone(200.0).with_shadow_far(20.0)),
 		];
+
 		let sinks = [
 			sink(Point::origin()),
 			sink(Point::new(100.0, 0.0, 0.0)),
@@ -824,11 +885,15 @@ mod tests {
 	#[test]
 	fn unlit_cones_yield_pool_layers_to_visible_lit_cones() {
 		let mut unlit = cone(0.0);
+
 		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
+
 		let lights = [Lights::Cone(unlit.clone()), Lights::Cone(cone(1.0))];
+
 		let sinks = [sink(Point::origin())];
 
 		assert!(!cone_light_has_brightness(&unlit, 1.0));
+
 		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
@@ -845,9 +910,11 @@ mod tests {
 			Lights::Point(point(1.0)),
 			Lights::Point(point(2.0)),
 		];
+
 		let sinks = [sink(Point::origin())];
 
 		let selection = select_shadow_lights(lights.iter(), &sinks, 0, 2);
+
 		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, 0);
 
 		assert_eq!(
@@ -865,6 +932,7 @@ mod tests {
 			Lights::Point(point(3.5).with_shadow_far(1.0)),
 			Lights::Point(point(0.0).with_shadow_far(1.0)),
 		];
+
 		let sinks = [sink(Point::origin())];
 
 		let selection = select_shadow_lights(lights.iter(), &sinks, 0, 1);
@@ -887,12 +955,16 @@ mod tests {
 			)
 			.expect("physical IES point light"),
 		);
+
 		let analytic_light = Lights::Point(point(0.0));
+
 		let profile = IesProfileTexture {
 			texture_index: 19,
 			intensity_scale_candela: 180.0,
 		};
+
 		let mut profiles = HashMap::default();
+
 		assert_eq!(ies_intensity_scale(&profile_light, &profiles), 0.5);
 		assert_eq!(ies_intensity_scale(&analytic_light, &profiles), 1.0);
 		profiles.insert("lights/office.ies".to_string(), profile);
@@ -919,9 +991,13 @@ mod tests {
 			"lights/office.ies",
 		)
 		.expect("physical IES point light");
+
 		let lights = [Lights::Point(light.clone())];
+
 		let sinks = [sink(Point::origin())];
+
 		let mut profiles = HashMap::default();
+
 		profiles.insert(
 			"lights/office.ies".to_string(),
 			IesProfileTexture {
@@ -929,11 +1005,15 @@ mod tests {
 				intensity_scale_candela: 180.0,
 			},
 		);
+
 		let fallback = select_shadow_lights(lights.iter(), &sinks, 0, 1);
+
 		let resident = select_shadow_lights_with_intensity_scale(lights.iter(), &sinks, 0, 1, |light| {
 			resolved_ies_profile_texture(light, &profiles).map_or(1.0, |profile| profile.intensity_scale_candela)
 		});
+
 		let (_, fallback_far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let (_, resident_far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 90.0);
 
 		assert!(fallback.points.iter().all(Option::is_none));
@@ -946,6 +1026,7 @@ mod tests {
 	#[test]
 	fn point_shadow_views_cover_every_cube_direction_and_range() {
 		let light = point(1.0).with_shadow_range(0.2, 50.0);
+
 		let directions = [
 			UnitVector::x_axis(),
 			-UnitVector::x_axis(),
@@ -957,8 +1038,11 @@ mod tests {
 
 		for (face, direction) in directions.into_iter().enumerate() {
 			let view = make_point_shadow_view(&light, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 			let point = (light.position + direction * 10.0).into_maths();
+
 			let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
+
 			let ndc = clip / clip.w;
 
 			assert!((view.y_fov() - 90.0).abs() < 0.0001);
@@ -969,7 +1053,9 @@ mod tests {
 		}
 
 		let positive_y_view = make_point_shadow_view(&light, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let right_of_positive_y_face = (light.position + UnitVector::y_axis() * 10.0 + UnitVector::x_axis()).into_maths();
+
 		let clip = positive_y_view.view_projection()
 			* Vec4f::new(
 				right_of_positive_y_face.x,
@@ -977,13 +1063,16 @@ mod tests {
 				right_of_positive_y_face.z,
 				1.0,
 			);
+
 		assert!((clip.x / clip.w) > 0.0);
 	}
 
 	#[test]
 	fn point_shadow_range_uses_manual_endpoints_and_visibility() {
 		let light = point(500.0).with_shadow_range(-4.0, f32::NAN);
+
 		let (near, far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let automatic_far = (100.0 / POINT_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, POINT_SHADOW_NEAR_M);
@@ -992,8 +1081,11 @@ mod tests {
 		assert!(
 			point_shadow_importance(&point(100.0).with_shadow_far(20.0), 1.0, &sink(Point::new(100.0, 0.0, 0.0))).is_some()
 		);
+
 		let mut unlit = point(0.0);
+
 		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
+
 		assert!(!point_light_has_brightness(&unlit, 1.0));
 		assert_eq!(POINT_SHADOW_FACE_COUNT, 6);
 	}
@@ -1001,6 +1093,7 @@ mod tests {
 	#[test]
 	fn visibility_pipeline_settings_bound_local_shadow_pool_capacities() {
 		let defaults = VisibilityPipelineSettings::default();
+
 		let settings = defaults
 			.with_cone_shadow_map_pool_capacity(1)
 			.expect("supported cone shadow map pool capacity")
@@ -1022,11 +1115,17 @@ mod tests {
 	#[test]
 	fn cone_shadow_view_uses_the_light_projection_and_automatic_clip_range() {
 		let light = cone(1.0);
+
 		let view = make_cone_shadow_view(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let point = light.position + light.direction() * 10.0;
+
 		let point = point.into_maths();
+
 		let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
+
 		let ndc = clip / clip.w;
+
 		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert!((view.y_fov() - 60.0).abs() < 0.0001);
@@ -1040,13 +1139,16 @@ mod tests {
 	#[test]
 	fn cone_shadow_range_uses_manual_endpoints_and_clamps_invalid_values() {
 		let light = cone(1.0).with_shadow_range(-4.0, f32::NAN);
+
 		let (near, far) = resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, CONE_SHADOW_NEAR_M);
 		assert!((far - automatic_far).abs() < 0.0001);
 
 		let light = cone(1.0).with_shadow_near(50.0).with_shadow_far(20.0);
+
 		assert_eq!(
 			resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0),
 			(50.0, 50.1)
@@ -1056,8 +1158,11 @@ mod tests {
 	#[test]
 	fn cone_shadow_range_scales_with_linear_exposure() {
 		let light = cone(1.0);
+
 		let (_, neutral_far) = resolve_cone_shadow_range(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+
 		let (_, brighter_far) = resolve_cone_shadow_range(&light, 4.0, 1.0);
+
 		let (_, invalid_far) = resolve_cone_shadow_range(&light, f32::NAN, 1.0);
 
 		assert!((brighter_far - neutral_far * 2.0).abs() < 0.0001);
@@ -1066,11 +1171,13 @@ mod tests {
 
 	#[test]
 	fn default_environment_is_opaque_black() {
+
 		assert_eq!(DEFAULT_ENVIRONMENT_TEXEL, [0, 0, 0, 255]);
 	}
 
 	#[test]
 	fn lit_binding_supports_transparent_read_modify_write() {
+
 		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
 	}
 
@@ -1093,7 +1200,6 @@ mod tests {
 		assert!(material_data.textures[3..]
 			.iter()
 			.all(|texture_index| *texture_index == u32::MAX));
-
 		assert!(!write_material_texture_indices(&mut material_data, [Some(3)]));
 		assert_eq!(material_data.textures[0], 3);
 		assert!(material_data.textures[1..]
@@ -1125,21 +1231,26 @@ mod tests {
 			opaque_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
 			transparent_material_mask: [0; MAX_MATERIALS / u64::BITS as usize],
 		};
+
 		let blended = Instance {
 			shader_mesh_index: 3,
 			meshlet_count: 1,
 		};
+
 		let opaque = Instance {
 			shader_mesh_index: 5,
 			meshlet_count: 2,
 		};
+
 		let masked = Instance {
 			shader_mesh_index: 8,
 			meshlet_count: 3,
 		};
 
 		render_info.push_active_instance(blended, 7, &AlphaMode::Blend);
+
 		render_info.push_active_instance(opaque, 11, &AlphaMode::Opaque);
+
 		render_info.push_active_instance(masked, 68, &AlphaMode::Mask(0.5));
 
 		assert_eq!(render_info.opaque_instances, [opaque]);
@@ -1211,6 +1322,7 @@ mod tests {
 	#[test]
 	fn active_skin_instances_receive_non_overlapping_vertex_ranges() {
 		let mut cursor = 0;
+
 		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 0);
 		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 3);
 		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 5), 6);
@@ -1221,10 +1333,15 @@ mod tests {
 	#[test]
 	fn noncontiguous_primitives_reuse_their_frame_skinning_palette() {
 		let mut factory = Factory::new();
+
 		let first_handle = factory.create(());
+
 		let second_handle = factory.create(());
+
 		let first_binding = Arc::new(SkinBinding { entries: Vec::new() });
+
 		let second_binding = Arc::new(SkinBinding { entries: Vec::new() });
+
 		let palette_cache = vec![
 			SkinningPaletteCacheEntry {
 				handle: first_handle,
@@ -1262,6 +1379,7 @@ mod tests {
 
 	#[test]
 	fn lighting_data_matches_gpu_buffer_layout() {
+
 		assert_eq!(
 			std::mem::size_of::<LightData>(),
 			112,
@@ -1282,7 +1400,6 @@ mod tests {
 		assert_eq!(std::mem::offset_of!(LightData, ies_profile_texture), 96);
 		assert_eq!(std::mem::offset_of!(LightData, ies_c0_tangent), 100);
 		assert_eq!(std::mem::offset_of!(LightData, _ies_padding), 104);
-
 		assert_eq!(
 			std::mem::size_of::<LightingData>(),
 			1808,
@@ -1300,58 +1417,68 @@ const LIT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::READ_WRITE,
 );
+
 const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1045),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(std::mem::size_of::<LightingData>() as u32);
+
 const MATERIALS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1046),
 	ghi::ResourceKind::StorageBuffer,
 	ghi::AccessPolicies::READ,
 )
 .buffer_stride(std::mem::size_of::<MaterialData>() as u32);
+
 const AO_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1051),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
+
 const SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1052),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+
 const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1053),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
+
 const CONE_SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1064),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
+
 const POINT_SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1065),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::TextureCubeArray);
+
 const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1054),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::TextureCube);
+
 const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1055),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::TextureCube);
+
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};
@@ -1369,7 +1496,7 @@ use ghi::frame::Frame as _;
 use log::{error, warn};
 use math::{AffineShaderMatrix, Matrix, ShaderMatrix, UnitVector};
 use maths_rs::Vec4f;
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
+use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};

@@ -79,16 +79,20 @@ mod tests {
 	#[test]
 	fn feature_builders_compose_and_remove_only_requested_flags() {
 		let window = Window::new("Main", Extent::rectangle(1_920, 1_080));
+
 		assert_eq!(window.name(), "Main");
 		assert_eq!(window.extent(), Extent::rectangle(1_920, 1_080));
 		assert!(window.features().is_empty());
 
 		let decorated = window.with_feature(Features::DECORATIONS);
+
 		assert!(decorated.features().contains(Features::DECORATIONS));
 		let undecorated = decorated.without_feature(Features::DECORATIONS);
+
 		assert!(undecorated.features().is_empty());
 
 		let replaced = undecorated.with_features(Features::DECORATIONS);
+
 		assert_eq!(replaced.features(), Features::DECORATIONS);
 	}
 
@@ -100,6 +104,7 @@ mod tests {
 
 		assert!(window.camera().is_none());
 		window.attach(camera);
+
 		assert_eq!(window.camera(), Some(&camera));
 		assert_eq!(window.clone().camera(), Some(&camera));
 	}

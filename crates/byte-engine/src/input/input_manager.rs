@@ -148,6 +148,7 @@ impl InputManager {
 			Some(device) => device.index + 1,
 			None => 0,
 		};
+
 		assert_ne!(
 			index, MANUAL_ACTION_DEVICE.0,
 			"Physical device index exhausted reserved manual action handle"
@@ -968,6 +969,7 @@ mod tests {
 		fixture.update();
 
 		let event = fixture.next_event().expect("expected character action event");
+
 		assert_eq!(event.handle(), handle);
 		assert_eq!(event.value(), Value::Unicode('é'));
 		assert!(fixture.next_event().is_none());
@@ -1248,10 +1250,12 @@ mod tests {
 		assert_eq!(fixture.tick(), 0);
 
 		fixture.set_up_key(true);
+
 		assert_eq!(fixture.tick(), 1);
 		assert_eq!(fixture.tick(), 0);
 
 		fixture.set_up_key(false);
+
 		assert_eq!(fixture.tick(), 1);
 		assert_eq!(fixture.tick(), 0);
 	}
@@ -1268,10 +1272,12 @@ mod tests {
 			.input_manager
 			.trigger_action(fixture.seat, action_handle, Value::Float(3.5))
 			.expect("registered manual action should accept a float value");
+
 		assert!(fixture.next_event().is_none());
 		fixture.update();
 
 		let event = fixture.next_event().expect("expected manual action event");
+
 		assert_eq!(event.seat_handle(), fixture.seat);
 		assert_eq!(event.handle(), event_handle);
 		assert_eq!(event.value(), Value::Float(3.5));
@@ -1306,6 +1312,7 @@ mod tests {
 			})
 		));
 		fixture.update();
+
 		assert!(fixture.next_event().is_none());
 	}
 
@@ -1343,11 +1350,13 @@ mod tests {
 		assert_eq!(fixture.tick(), 0);
 
 		fixture.set_up_key(true);
+
 		assert!(fixture.tick() >= 1);
 		assert_eq!(fixture.tick(), 1);
 		assert_eq!(fixture.tick(), 1);
 
 		fixture.set_up_key(false);
+
 		assert!(fixture.tick() >= 1);
 		assert_eq!(fixture.tick(), 0);
 	}
@@ -1360,10 +1369,12 @@ mod tests {
 		assert_eq!(fixture.tick(), 0);
 
 		fixture.set_up_key(true);
+
 		assert!(fixture.tick() >= 1);
 		assert_eq!(fixture.tick(), 1);
 
 		fixture.set_up_key(false);
+
 		assert!(fixture.tick() >= 1);
 		assert_eq!(fixture.tick(), 1);
 		assert_eq!(fixture.tick(), 1);

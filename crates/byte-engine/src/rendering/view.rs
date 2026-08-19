@@ -39,6 +39,7 @@ impl View {
 		direction: UnitVector,
 		up: UnitVector,
 	) -> Self {
+
 		assert!(
 			direction.dot(up.into_vector()).abs() < 0.99,
 			"Perspective view up direction is invalid. The most likely cause is that the up direction is parallel to the view direction."
@@ -240,6 +241,7 @@ mod tests {
 	use super::*;
 
 	fn assert_point_near(actual: Point, expected: Point) {
+
 		assert!((actual.x() - expected.x()).abs() < 0.001);
 		assert!((actual.y() - expected.y()).abs() < 0.001);
 		assert!((actual.z() - expected.z()).abs() < 0.001);

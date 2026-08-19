@@ -71,10 +71,12 @@ fn candidate_datagram(data: &[u8]) -> Option<EncodedDatagram> {
 /// Confirms every emitted packet uses its exact canonical wire representation.
 fn assert_canonical(datagrams: &[EncodedDatagram]) {
 	for datagram in datagrams {
+
 		assert!(!datagram.is_empty());
 		assert!(datagram.len() <= MAX_BETP_DATAGRAM_SIZE);
 		let packet = betp::read_packet(datagram.as_bytes()).expect("pipeline output must be canonical BETP");
 		let mut reencoded = [0; MAX_BETP_DATAGRAM_SIZE];
+
 		assert_eq!(betp::write_packet(&mut reencoded[..datagram.len()], packet), Some(()));
 		assert_eq!(&reencoded[..datagram.len()], datagram.as_bytes());
 	}
@@ -89,6 +91,7 @@ fn assert_accepted_is_authenticated(candidate: &[u8], outcome: DatagramOutcome) 
 	let Packets::Data(packet) = betp::read_packet(candidate).expect("accepted data must have decoded") else {
 		panic!("a non-data packet became application-visible");
 	};
+
 	assert_eq!(packet.get_connection_id(), CONNECTION_ID);
 	assert_eq!(payload, packet.data);
 }
@@ -104,12 +107,14 @@ fn assert_duplicate_is_suppressed(
 	outbound: &mut Vec<EncodedDatagram>,
 ) {
 	if matches!(client_outcome, DatagramOutcome::Accepted(_)) {
+
 		assert!(!matches!(
 			client.process_datagram(candidate, now, outbound),
 			Ok(DatagramOutcome::Accepted(_))
 		));
 	}
 	if matches!(server_outcome, DatagramOutcome::Accepted(_)) {
+
 		assert!(!matches!(
 			server.process_datagram(candidate, now, outbound),
 			Ok(DatagramOutcome::Accepted(_))
@@ -126,6 +131,7 @@ fuzz_target!(|data: &[u8]| {
 	// No raw packet may bypass the handshake boundary on either endpoint.
 	let mut fresh_client = ClientDatagramPipeline::new(CLIENT_SALT);
 	let mut fresh_server = ServerDatagramPipeline::new(SERVER_SALT);
+
 	assert!(!matches!(
 		fresh_client.process_datagram(candidate, now, &mut outbound),
 		Ok(DatagramOutcome::Accepted(_))
@@ -176,6 +182,7 @@ fuzz_target!(|data: &[u8]| {
 	.expect("typed recovery data must encode");
 
 	if client.is_connected() {
+
 		assert_eq!(
 			client.process_datagram(recovery.as_bytes(), now, &mut outbound),
 			Ok(DatagramOutcome::Accepted([0xA5; 1024]))
@@ -183,6 +190,7 @@ fuzz_target!(|data: &[u8]| {
 		assert_canonical(&outbound);
 	}
 	if server.is_connected() {
+
 		assert_eq!(
 			server.process_datagram(recovery.as_bytes(), now, &mut outbound),
 			Ok(DatagramOutcome::Accepted([0xA5; 1024]))

@@ -341,6 +341,7 @@ mod tests {
 	#[test]
 	fn generated_program_size_is_bounded() {
 		let source = generate_program(&[u8::MAX; 4_096]);
+
 		assert!(source.len() <= 32 * 1_024, "Generated source exceeded its size bound");
 	}
 }

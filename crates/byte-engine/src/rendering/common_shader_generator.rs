@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
+use resource_management::asset::{handler::implementations::bema::ProgramGenerator, JsonObject};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.
@@ -530,10 +530,12 @@ static COMMON_SHADER_SCOPE: OnceLock<besl::parser::Node<'static>> = OnceLock::ne
 fn parse_common_shader_scope() -> besl::parser::Node<'static> {
 	let mut root = besl::parse(COMMON_SHADER_SOURCE)
 		.expect("Failed to parse the common BESL shader module. The most likely cause is invalid portable BESL syntax.");
+
 	let children = match root.node_mut() {
 		besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
 		_ => unreachable!("Invalid common BESL shader root. The most likely cause is a parser contract regression."),
 	};
+
 	besl::parser::Node::scope("Common", children)
 }
 
@@ -558,6 +560,7 @@ impl CommonShaderGenerator {
 impl ProgramGenerator for CommonShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
 		root.add(vec![CommonShaderScope::new()]);
+
 		root
 	}
 }
@@ -570,9 +573,11 @@ impl CommonShaderScope {
 }
 
 #[cfg(test)]
+
 mod tests {
+
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
-	use resource_management::asset::bema_asset_handler::ProgramGenerator as _;
+	use resource_management::asset::handler::implementations::bema::ProgramGenerator as _;
 	use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 	use resource_management::shader::generator::ShaderGenerationSettings;
 
@@ -580,18 +585,26 @@ mod tests {
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 	const DEPTH_SLOT: ResourceSlot = ResourceSlot::new(1);
+
 	const EMPTY_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(2);
+
 	const SAMPLE_DEPTH_SLOT: ResourceSlot = ResourceSlot::new(3);
 
 	#[test]
 	fn transformed_array_sample_retains_texture_resources() {
 		let parsed = besl::parse(include_str!("../../assets/rendering/visibility/masked-fragment.besl"))
 			.expect("Expected masked fragment source to parse");
+
 		let context = serde_json::json!({ "variables": [] }).as_object().unwrap().clone();
+
 		let parsed = CommonShaderGenerator::new().transform(parsed, &context);
+
 		let program = besl::lex(parsed).expect("Expected transformed array sample source to link");
+
 		let main = program.get_main().expect("Expected main");
+
 		let shader = MSLShaderGenerator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
@@ -616,9 +629,11 @@ mod tests {
 			None,
 		)
 		.expect("Expected fixed-slot GPU probe to compile");
+
 		let source = MSLShaderGenerator::new()
 			.generate_program(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &program)
 			.expect("Expected fixed-slot GPU probe MSL");
+
 		let resource = ghi::ShaderResourceDescriptor::single(
 			ghi::ResourceSlot::new(9),
 			ghi::ResourceKind::StorageBuffer,
@@ -627,8 +642,11 @@ mod tests {
 		.buffer_stride(4);
 
 		let features = ghi::device::Features::new().debug_labels(true);
+
 		let mut instance = ghi::implementation::Instance::new(features).expect("Expected Metal instance");
+
 		let mut queue_handle = None;
+
 		let mut context = instance
 			.create_device(
 				features,
@@ -637,7 +655,9 @@ mod tests {
 			.expect("Expected Metal compute device")
 			.create_context()
 			.expect("Expected Metal context");
+
 		let queue_handle = queue_handle.expect("Expected Metal compute queue");
+
 		let shader = context
 			.create_shader(
 				Some("Generated fixed-slot probe"),
@@ -649,16 +669,21 @@ mod tests {
 				[resource],
 			)
 			.expect("Expected generated fixed-slot Metal shader");
+
 		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
 			ghi::pipelines::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 		));
+
 		let output = context.build_buffer::<u32>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.device_accesses(ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuWrite),
 		);
+
 		*context.get_mut_buffer_slice(output) = 0;
+
 		let descriptors = context.create_descriptor_set(Some("Generated fixed-slot probe"));
+
 		context.write(&[ghi::DescriptorWrite::buffer(
 			descriptors,
 			ghi::ResourceSlot::new(9),
@@ -666,7 +691,9 @@ mod tests {
 		)]);
 
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+
 		let signal = context.create_synchronizer(None, true);
+
 		context
 			.queue(queue_handle)
 			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
@@ -676,8 +703,10 @@ mod tests {
 						.bind_descriptor_sets(&[descriptors])
 						.dispatch(ghi::DispatchExtent::new(utils::Extent::line(1), utils::Extent::line(1)));
 				});
+
 				[]
 			});
+
 		context.wait();
 
 		assert_eq!(*context.get_buffer_slice(output), 4660);
@@ -701,23 +730,30 @@ mod tests {
 			None,
 		)
 		.expect("Expected fixed-slot raster vertex probe to compile");
+
 		let fragment_program = besl::compile_to_besl(
 			"Color: struct { value: vec4f, } color: descriptor<Color, 0, read, constant>; Scale: struct { value: f32, } scale: descriptor<Scale, 9, read, constant>; out_color: output<vec4f, 0>; main: fn () -> void { out_color = color.value; }",
 			None,
 		)
 		.expect("Expected fixed-slot raster fragment probe to compile");
+
 		let vertex_source = MSLShaderGenerator::new()
 			.generate_program(&ShaderGenerationSettings::vertex(), &vertex_program)
 			.expect("Expected fixed-slot raster vertex MSL");
+
 		let fragment_source = MSLShaderGenerator::new()
 			.generate_program(&ShaderGenerationSettings::fragment(), &fragment_program)
 			.expect("Expected fixed-slot raster fragment MSL");
+
 		assert!(vertex_source.contains("constant _color* color [[id(0)]]"));
 		assert!(fragment_source.contains("constant _scale* scale [[id(18)]]"));
 
 		let features = ghi::device::Features::new().debug_labels(true);
+
 		let mut instance = ghi::implementation::Instance::new(features).expect("Expected Metal instance");
+
 		let mut queue_handle = None;
+
 		let mut context = instance
 			.create_device(
 				features,
@@ -726,19 +762,23 @@ mod tests {
 			.expect("Expected Metal raster device")
 			.create_context()
 			.expect("Expected Metal context");
+
 		let queue_handle = queue_handle.expect("Expected Metal raster queue");
+
 		let scale_resource = ghi::ShaderResourceDescriptor::single(
 			ghi::ResourceSlot::new(9),
 			ghi::ResourceKind::StorageBuffer,
 			ghi::AccessPolicies::READ,
 		)
 		.buffer_stride(4);
+
 		let color_resource = ghi::ShaderResourceDescriptor::single(
 			ghi::ResourceSlot::new(0),
 			ghi::ResourceKind::StorageBuffer,
 			ghi::AccessPolicies::READ,
 		)
 		.buffer_stride(16);
+
 		let vertex_shader = context
 			.create_shader(
 				Some("Generated fixed-slot raster vertex probe"),
@@ -750,6 +790,7 @@ mod tests {
 				[color_resource, scale_resource],
 			)
 			.expect("Expected generated raster vertex shader");
+
 		let fragment_shader = context
 			.create_shader(
 				Some("Generated fixed-slot raster fragment probe"),
@@ -763,15 +804,20 @@ mod tests {
 			.expect("Expected generated raster fragment shader");
 
 		let vertex_layout = [ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
+
 		let vertex_buffer = context.build_buffer::<[f32; 9]>(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex).device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		*context.get_mut_buffer_slice(vertex_buffer) = [-0.8, -0.8, 0.0, 0.8, -0.8, 0.0, 0.0, 0.8, 0.0];
+
 		let index_buffer = context.build_buffer::<[u16; 3]>(
 			ghi::buffer::Builder::new(ghi::Uses::Index).device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		// Raster pipelines cull counter-clockwise back faces by default, so the probe uses clockwise indices.
 		*context.get_mut_buffer_slice(index_buffer) = [0, 2, 1];
+
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[],
 			&vertex_layout,
@@ -781,32 +827,48 @@ mod tests {
 			],
 			&[ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::RGBA8UNORM)],
 		));
+
 		let scale = context.build_buffer::<f32>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage).device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		*context.get_mut_buffer_slice(scale) = 1.0;
+
 		let color = context.build_buffer::<[f32; 4]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage).device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		*context.get_mut_buffer_slice(color) = [0.0, 1.0, 0.0, 1.0];
+
 		context.sync_buffer(vertex_buffer);
+
 		context.sync_buffer(index_buffer);
+
 		context.sync_buffer(scale);
+
 		context.sync_buffer(color);
+
 		let descriptors = context.create_descriptor_set(Some("Generated fixed-slot raster probe"));
+
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptors, ghi::ResourceSlot::new(9), scale.into()),
 			ghi::DescriptorWrite::buffer(descriptors, ghi::ResourceSlot::new(0), color.into()),
 		]);
+
 		let extent = utils::Extent::square(16);
+
 		let target = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::RenderTarget)
 				.extent(extent)
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost),
 		);
+
 		let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+
 		let signal = context.create_synchronizer(None, true);
+
 		let mut copies = Vec::new();
+
 		context
 			.queue(queue_handle)
 			.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
@@ -823,21 +885,31 @@ mod tests {
 						false,
 						true,
 					)];
+
 					let pass = recording.start_render_pass(extent, &attachments);
+
 					pass.bind_vertex_buffers(&[vertex_buffer.into()]);
+
 					pass.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer).index_type(ghi::DataTypes::U16));
+
 					pass.bind_raster_pipeline(pipeline)
 						.bind_descriptor_sets(&[descriptors])
 						.draw_indexed(3, 1, 0, 0, 0);
+
 					pass.end_render_pass();
+
 					copies = recording.transfer_textures(&[target.into()]);
 				});
+
 				[]
 			});
+
 		context.wait();
 
 		assert!(!context.has_errors());
+
 		let pixels = context.get_image_data(copies[0]);
+
 		assert!(
 			pixels.chunks_exact(4).any(|pixel| pixel[1] > 0),
 			"Generated BESL raster shaders with divergent resource interfaces rendered no green pixels"
@@ -852,7 +924,9 @@ mod tests {
 	) -> (ExecutableProgram, Buffer) {
 		let mut root = besl::parse(source)
 			.expect("Failed to parse a common shader VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(extra_nodes);
+
 		root.add(vec![
 			CommonShaderScope::new(),
 			besl::ParserNode::binding(
@@ -867,8 +941,11 @@ mod tests {
 		let program = besl::lex(root).expect(
 			"Failed to lex a common shader VM test. The most likely cause is an unresolved portable helper or test binding.",
 		);
+
 		let executable = compile(program);
+
 		let results = buffer(&executable, RESULT_SLOT);
+
 		(executable, results)
 	}
 
@@ -885,12 +962,15 @@ mod tests {
 			extra_nodes: Vec<besl::ParserNode<'static>>,
 		) -> Self {
 			let (program, results) = compile_common_main(source, result_members, extra_nodes);
+
 			Self { program, results }
 		}
 
 		fn run(&mut self) {
 			let mut descriptors = DescriptorBindings::new();
+
 			descriptors.bind_buffer(RESULT_SLOT, &mut self.results);
+
 			run_at(&self.program, &mut descriptors, [0, 0]);
 		}
 
@@ -932,6 +1012,7 @@ mod tests {
 			let Value::$variant(value) = $results.read($name).expect("Missing common shader result.") else {
 				panic!("Unexpected common shader result type for `{}`.", $name)
 			};
+
 			value
 		}};
 	}
@@ -939,12 +1020,15 @@ mod tests {
 	fn read_f32(results: &Buffer, name: &str) -> f32 {
 		read_result!(results, name, F32)
 	}
+
 	fn read_vec2f(results: &Buffer, name: &str) -> [f32; 2] {
 		read_result!(results, name, Vec2F)
 	}
+
 	fn read_vec3f(results: &Buffer, name: &str) -> [f32; 3] {
 		read_result!(results, name, Vec3F)
 	}
+
 	fn read_vec4f(results: &Buffer, name: &str) -> [f32; 4] {
 		read_result!(results, name, Vec4F)
 	}
@@ -953,6 +1037,7 @@ mod tests {
 	fn assert_floats_close<const N: usize>(actual: [f32; N], expected: [f32; N], epsilon: f32) {
 		for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
 			let tolerance = epsilon * expected.abs().max(1.0);
+
 			assert!(
 				actual.is_finite() && (actual - expected).abs() <= tolerance,
 				"Common shader result {index} changed: expected {expected}, found {actual}. The most likely cause is a common helper or VM arithmetic regression."
@@ -975,8 +1060,11 @@ mod tests {
 				);
 			}
 		"#;
+
 		let members = vec![besl::ParserNode::member("composited", "vec4f")];
+
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+
 		fixture.run();
 
 		fixture.assert_vec4("composited", [0.35, 0.35, 0.475, 0.625]);
@@ -1015,6 +1103,7 @@ mod tests {
 				results.oct_decoded = octahedral_decode(vec2f(0.5, 0.5));
 			}
 		"#;
+
 		let members = vec![
 			besl::ParserNode::member("squared_vec2", "f32"),
 			besl::ParserNode::member("squared_vec3", "f32"),
@@ -1037,8 +1126,11 @@ mod tests {
 			besl::ParserNode::member("oct_encoded", "vec2f"),
 			besl::ParserNode::member("oct_decoded", "vec3f"),
 		];
+
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+
 		fixture.run();
+
 		let results = &fixture.results;
 
 		assert_eq!(fixture.f32("squared_vec2"), 25.0);
@@ -1051,13 +1143,21 @@ mod tests {
 		assert_floats_close(read_vec3f(results, "oct_decoded"), [0.0, 0.0, 1.0], 0.00001);
 
 		let wrapped_frame = 1.0_f32;
+
 		let x = 10.0 + 5.588238 * wrapped_frame;
+
 		let y = 20.0 + 5.588238 * wrapped_frame;
+
 		let expected_noise = (52.982_918 * (0.06711056 * x + 0.00583715 * y).fract()).fract();
+
 		assert_f32_close(read_f32(results, "noise"), expected_noise, 0.00001);
+
 		assert_eq!(read_f32(results, "noise"), read_f32(results, "periodic_noise"));
+
 		fixture.assert_f32("sine", 0.8660254);
+
 		fixture.assert_f32("tangent_value", -1.0);
+
 		assert_floats_close(read_vec3f(results, "normal"), [0.0, 0.0, 1.0], 0.00001);
 		assert_floats_close(read_vec3f(results, "perpendicular_x"), [-0.8944272, 0.4472136, 0.0], 0.00001);
 		assert_floats_close(read_vec3f(results, "perpendicular_z"), [0.0, -0.4472136, 0.8944272], 0.00001);
@@ -1094,6 +1194,7 @@ mod tests {
 				results.rough_fresnel_grazing = fresnel_schlick_roughness(0.0, f0, 0.5);
 			}
 		"#;
+
 		let members = vec![
 			besl::ParserNode::member("distribution", "f32"),
 			besl::ParserNode::member("distribution_from_terms", "f32"),
@@ -1110,23 +1211,33 @@ mod tests {
 			besl::ParserNode::member("rough_fresnel", "vec3f"),
 			besl::ParserNode::member("rough_fresnel_grazing", "vec3f"),
 		];
+
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+
 		fixture.run();
+
 		let results = &fixture.results;
 
 		let expected_geometry = 0.5 / (0.5 * (1.0 - 0.28125) + 0.28125);
+
 		assert_f32_close(read_f32(results, "distribution"), 16.0 / std::f32::consts::PI, 0.00001);
 		assert_f32_close(
 			read_f32(results, "distribution_from_terms"),
 			16.0 / std::f32::consts::PI,
 			0.00001,
 		);
+
 		fixture.assert_f32("distribution_roughness_one", 1.0 / std::f32::consts::PI);
+
 		assert_f32_close(read_f32(results, "geometry"), expected_geometry, 0.00001);
+
 		assert_eq!(read_f32(results, "geometry_zero"), 0.0);
 		assert_eq!(read_f32(results, "geometry_one"), 1.0);
+
 		fixture.assert_f32("geometry_smith", expected_geometry * expected_geometry);
+
 		fixture.assert_f32("geometry_smith_from_terms", expected_geometry * expected_geometry);
+
 		assert_floats_close(read_vec3f(results, "fresnel"), [0.07; 3], 0.00001);
 		assert_floats_close(read_vec3f(results, "fresnel_from_factor"), [0.07; 3], 0.00001);
 		assert_floats_close(read_vec3f(results, "fresnel_normal"), [0.04; 3], 0.00001);
@@ -1184,6 +1295,7 @@ mod tests {
 				results.scaled_unit_vector = scale_normal_xy(unit_vector_from_xy(vec2f(1.0, 0.5)), 0.5);
 			}
 		"#;
+
 		let members = vec![
 			besl::ParserNode::member("barycentric", "vec3f"),
 			besl::ParserNode::member("degenerate", "vec3f"),
@@ -1200,11 +1312,15 @@ mod tests {
 			besl::ParserNode::member("decoded_normal", "vec3f"),
 			besl::ParserNode::member("scaled_unit_vector", "vec3f"),
 		];
+
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+
 		fixture.run();
+
 		let results = &fixture.results;
 
 		fixture.assert_vec3("barycentric", [0.5, 0.25, 0.25]);
+
 		assert_eq!(read_vec3f(results, "degenerate"), [1.0, 0.0, 0.0]);
 		assert_floats_close(read_vec3f(results, "full_lambda"), [0.5, 0.25, 0.25], 0.00001);
 		assert_floats_close(read_vec3f(results, "full_ddx"), [-0.25, 0.25, 0.0], 0.00001);
@@ -1260,6 +1376,7 @@ mod tests {
 				results.empty_normal = make_normal_from_depth_map(empty_depth_map, vec2i(1, 1), vec2u(3, 3), identity, identity);
 			}
 		"#;
+
 		let members = vec![
 			besl::ParserNode::member("direct_world", "vec3f"),
 			besl::ParserNode::member("perspective_world", "vec3f"),
@@ -1268,6 +1385,7 @@ mod tests {
 			besl::ParserNode::member("normal", "vec3f"),
 			besl::ParserNode::member("empty_normal", "vec3f"),
 		];
+
 		let bindings = vec![
 			besl::ParserNode::binding(
 				"depth_map",
@@ -1291,12 +1409,19 @@ mod tests {
 				false,
 			),
 		];
+
 		let (program, mut results) = compile_common_main(source, members, bindings);
+
 		let planar_texels = [[0.25, 0.0, 0.0, 1.0]; 9];
+
 		let mut depth_map = texture_2d(3, 3, &planar_texels);
+
 		let mut empty_texels = planar_texels;
+
 		empty_texels[4][0] = 0.0;
+
 		let mut empty_depth_map = texture_2d(3, 3, &empty_texels);
+
 		let mut sample_depth_map = texture_2d(
 			2,
 			2,
@@ -1307,12 +1432,18 @@ mod tests {
 				[0.8, 0.0, 0.0, 1.0],
 			],
 		);
+
 		{
 			let mut descriptors = DescriptorBindings::new();
+
 			descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 			descriptors.bind_texture(DEPTH_SLOT, &mut depth_map);
+
 			descriptors.bind_texture(EMPTY_DEPTH_SLOT, &mut empty_depth_map);
+
 			descriptors.bind_texture(SAMPLE_DEPTH_SLOT, &mut sample_depth_map);
+
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
@@ -1321,6 +1452,7 @@ mod tests {
 		assert_floats_close(read_vec3f(&results, "fetched_world"), [0.0, 0.0, 0.25], 0.00001);
 		assert_floats_close(read_vec3f(&results, "sampled_view"), [0.0, 0.0, 0.35], 0.00001);
 		assert_floats_close(read_vec3f(&results, "normal"), [0.0, 0.0, 1.0], 0.00001);
+
 		assert_eq!(read_vec3f(&results, "empty_normal"), [0.0, 0.0, 0.0]);
 	}
 
@@ -1348,9 +1480,13 @@ mod tests {
 				results.colors[16] = get_debug_color(16);
 			}
 		"#;
+
 		let members = vec![besl::ParserNode::member("colors", "vec4f[17]")];
+
 		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
+
 		fixture.run();
+
 		let results = &fixture.results;
 
 		let expected = [
@@ -1371,21 +1507,25 @@ mod tests {
 			[0.30980, 0.70980, 0.27059, 1.0],
 			[0.69804, 0.16078, 0.39216, 1.0],
 		];
+
 		for (index, expected) in expected.into_iter().enumerate() {
 			let value = results
 				.read_indexed("colors", index)
 				.expect("Missing debug color result. The most likely cause is an incorrect test array layout.");
+
 			let Value::Vec4F(actual) = value else {
 				panic!(
 					"Invalid debug color result `{value:?}`. The most likely cause is an incorrect test array element type."
 				);
 			};
+
 			assert_floats_close(actual, expected, 0.00001);
 		}
 
 		let wrapped = results
 			.read_indexed("colors", 16)
 			.expect("Missing wrapped debug color. The most likely cause is an incorrect test array layout.");
+
 		assert_eq!(wrapped, Value::Vec4F(expected[0]));
 	}
 }

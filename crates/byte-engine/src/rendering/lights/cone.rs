@@ -138,6 +138,7 @@ impl ConeLight {
 
 	/// Validates the angular range shared by uniform and IES-backed cone lights.
 	fn validate_angles(inner_angle: f32, outer_angle: f32) {
+
 		assert!(
 			inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= 0.0 && inner_angle < outer_angle,
 			"Invalid cone light angles. The most likely cause is that the angles are not finite or the inner angle is not smaller than the outer angle."

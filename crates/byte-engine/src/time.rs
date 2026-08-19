@@ -50,12 +50,14 @@ impl MediaTime {
 
 	/// Creates a time value from fractional seconds, rounded to the nearest tick.
 	pub fn from_seconds_f64(seconds: f64) -> Self {
+
 		assert!(
 			seconds.is_finite(),
 			"Media time seconds must be finite. The most likely cause is a NaN or infinite simulation duration."
 		);
 
 		let ticks = seconds * TICKS_PER_SECOND as f64;
+
 		assert!(
 			ticks >= -((1_u64 << 63) as f64) && ticks < (1_u64 << 63) as f64,
 			"Media time seconds overflowed. The most likely cause is an invalid or excessively large duration."
@@ -110,6 +112,7 @@ impl MediaTime {
 
 	/// Converts a non-negative engine time into a standard duration.
 	pub fn to_std(self) -> Duration {
+
 		assert!(
 			self.0 >= 0,
 			"Negative media time cannot become a standard duration. The most likely cause is converting a signed timeline offset at an OS time boundary."
@@ -251,6 +254,7 @@ impl Div<i64> for MediaTime {
 	type Output = Self;
 
 	fn div(self, rhs: i64) -> Self::Output {
+
 		assert!(
 			rhs != 0,
 			"Media time division by zero is invalid. The most likely cause is averaging an empty timeline."
@@ -283,6 +287,7 @@ mod tests {
 
 		for rate in rates {
 			let frame = MediaTime::from_frames(1, rate).expect("expected test value");
+
 			assert_eq!(frame.as_ticks() * i64::from(rate), TICKS_PER_SECOND);
 		}
 	}
@@ -290,6 +295,7 @@ mod tests {
 	#[test]
 	fn media_timebase_rejects_rates_that_require_rational_timing() {
 		for rate in [122, 165, 244, 365] {
+
 			assert_eq!(MediaTime::from_frames(1, rate), None);
 		}
 	}
@@ -298,6 +304,7 @@ mod tests {
 	fn media_timebase_exactly_represents_supported_audio_rates() {
 		for rate in [44_100, 48_000, 96_000, 192_000] {
 			let sample = MediaTime::from_samples(1, rate).expect("expected test value");
+
 			assert_eq!(sample.as_ticks() * i64::from(rate), TICKS_PER_SECOND);
 		}
 	}

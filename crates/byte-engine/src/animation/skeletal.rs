@@ -424,6 +424,7 @@ mod tests {
 			times: vec![1.0, 3.0],
 			values: vec![[2.0, 4.0, 6.0], [6.0, 8.0, 10.0]],
 		};
+
 		assert_eq!(sample_vector3(&curve, 0.0), [2.0, 4.0, 6.0]);
 		assert_eq!(sample_vector3(&curve, 2.0), [4.0, 6.0, 8.0]);
 		assert_eq!(sample_vector3(&curve, 4.0), [6.0, 8.0, 10.0]);
@@ -435,6 +436,7 @@ mod tests {
 			times: vec![0.0, 1.0],
 			values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, -1.0]],
 		};
+
 		assert_eq!(sample_rotation(&curve, 0.5), [0.0, 0.0, 0.0, 1.0]);
 	}
 
@@ -446,6 +448,7 @@ mod tests {
 			in_tangents: vec![[0.0; 3], [1.0, 0.0, 0.0]],
 			out_tangents: vec![[1.0, 0.0, 0.0], [0.0; 3]],
 		};
+
 		assert_eq!(sample_vector3(&curve, 1.0), [1.0, 0.0, 0.0]);
 	}
 
@@ -455,6 +458,7 @@ mod tests {
 			times: vec![1.0, 2.0],
 			values: vec![[3.0; 3], [4.0; 3]],
 		};
+
 		assert_eq!(sample_vector3(&curve, 0.0), [3.0; 3]);
 	}
 

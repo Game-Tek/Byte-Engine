@@ -227,12 +227,15 @@ mod tests {
 	#[test]
 	fn current_platform_language_matches_target() {
 		#[cfg(target_vendor = "apple")]
+
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Msl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Hlsl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "linux"))]
+
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
 	}
 
@@ -248,10 +251,13 @@ mod tests {
 			.expect("Failed to generate compiled platform shader");
 
 		if cfg!(target_vendor = "apple") {
+
 			assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Msl.entry_point()));
 		} else {
+
 			assert_eq!(generated.entry_point(), None);
 		}
+
 		assert!(!generated.binary().is_empty());
 	}
 

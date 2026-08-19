@@ -123,6 +123,7 @@ mod tests {
 			.unwrap();
 
 		let reference = model.solve(&storage).await.expect("stored image metadata");
+
 		assert_eq!(reference.id(), "texture.image");
 		assert_eq!(reference.hash(), 99);
 		assert_eq!(reference.size, 3);
@@ -131,6 +132,7 @@ mod tests {
 		assert_eq!(reference.resource.extent, [8, 4, 1]);
 		assert_eq!(reference.resource.mip_count, 4);
 		let ibl = reference.resource.ibl.as_ref().expect("stored IBL metadata");
+
 		assert_eq!(ibl.diffuse_irradiance.extent, [32, 16, 1]);
 		assert_eq!(ibl.prefiltered_specular.extent, [128, 64, 1]);
 		assert_eq!(ibl.prefiltered_specular.mip_count, 8);
@@ -148,6 +150,7 @@ mod tests {
 			photometry: None,
 		};
 		let missing = ReferenceModel::new("missing.image", 0, 0, &image, None);
+
 		assert!(matches!(
 			missing.solve(&TestStorageBackend::new()).await,
 			Err(SolveErrors::StorageError)
@@ -161,6 +164,7 @@ mod tests {
 			)
 			.unwrap();
 		let broken = ReferenceModel::new("broken.image", 0, 0, &image, None);
+
 		assert!(matches!(
 			broken.solve(&storage).await,
 			Err(SolveErrors::DeserializationFailed(_))
@@ -169,6 +173,7 @@ mod tests {
 
 	#[test]
 	fn ibl_stream_names_are_stable_and_level_specific() {
+
 		assert_eq!(super::IBL_PREFILTERED_SPECULAR_MIP_COUNT, 8);
 		assert_eq!(super::IMAGE_BASE_MIP_STREAM_NAME, "mip[0]");
 		assert_eq!(super::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, "ibl.diffuse_irradiance.mip[0]");

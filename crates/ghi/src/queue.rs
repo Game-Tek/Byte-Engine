@@ -116,10 +116,12 @@ mod tests {
 
 	#[test]
 	fn completed_frame_is_absent_only_while_sequences_are_first_submitted() {
+
 		assert_eq!(completed_frame_key(0, 2), None);
 		assert_eq!(completed_frame_key(1, 2), None);
 
 		let completed_frame = completed_frame_key(2, 2).unwrap();
+
 		assert_eq!(completed_frame.frame_index, 0);
 		assert_eq!(completed_frame.sequence_index, 0);
 	}

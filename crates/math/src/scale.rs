@@ -60,6 +60,7 @@ mod tests {
 
 	#[test]
 	fn identity_has_unit_factors() {
+
 		assert_eq!(Scale::identity(), Scale::new(1.0, 1.0, 1.0));
 	}
 

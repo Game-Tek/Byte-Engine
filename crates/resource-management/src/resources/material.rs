@@ -226,6 +226,7 @@ pub struct Binding {
 impl Binding {
 	/// Builds one validated persisted shader resource requirement.
 	pub fn new(slot: u32, kind: BindingKind, count: u32, buffer_stride: Option<u32>, read: bool, write: bool) -> Self {
+
 		assert!(
 			count > 0,
 			"Invalid resource count. The most likely cause is that a shader interface resource was declared with an empty array."
@@ -398,6 +399,7 @@ mod tests {
 			let bytes = crate::to_vec(artifact).expect("Shader artifact should serialize");
 			crate::from_slice::<ShaderArtifact>(&bytes).expect("Shader artifact should deserialize")
 		};
+
 		assert!(matches!(round_trip(&ShaderArtifact::Dxil), ShaderArtifact::Dxil));
 
 		let entry_point = crate::shader::besl::backends::msl::MSL_ENTRY_POINT;

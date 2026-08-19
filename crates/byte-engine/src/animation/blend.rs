@@ -431,6 +431,7 @@ mod tests {
 		let right = [transform(2.0, [0.0, 0.0, 0.0, -1.0])];
 		let mut output = [LocalTransform::identity()];
 		blend_local_pose(&left, &right, 0.5, &mut output).expect("expected test value");
+
 		assert_eq!(output[0].translation, [1.0, 0.0, 0.0]);
 		assert_eq!(output[0].rotation, [0.0, 0.0, 0.0, 1.0]);
 		assert_eq!(output[0].scale, [2.0, 1.0, 1.0]);
@@ -442,6 +443,7 @@ mod tests {
 		let second = [transform(4.0, [0.0, 0.0, 0.0, 1.0])];
 		let mut output = [LocalTransform::identity()];
 		blend_local_poses(&[&first, &second], &[3.0, 1.0], &mut output).expect("expected test value");
+
 		assert_eq!(output[0].translation, [1.0, 0.0, 0.0]);
 	}
 
@@ -450,15 +452,19 @@ mod tests {
 		let space = BlendSpace1D::new(vec![0.0, 2.0, 6.0]).expect("expected test value");
 		let mut weights = [0.0; 3];
 		space.write_weights(4.0, &mut weights).expect("expected test value");
+
 		assert_eq!(weights, [0.0, 0.5, 0.5]);
 		space.write_weights(-1.0, &mut weights).expect("expected test value");
+
 		assert_eq!(weights, [1.0, 0.0, 0.0]);
 		space.write_weights(8.0, &mut weights).expect("expected test value");
+
 		assert_eq!(weights, [0.0, 0.0, 1.0]);
 	}
 
 	#[test]
 	fn one_dimensional_samples_must_be_strictly_ascending() {
+
 		assert_eq!(
 			BlendSpace1D::new(vec![0.0, 1.0, 1.0]),
 			Err(BlendSpaceError::SamplesNotStrictlyAscending)
@@ -471,6 +477,7 @@ mod tests {
 			.expect("expected test value");
 		let mut weights = [0.0; 3];
 		space.write_weights([0.25, 0.25], &mut weights).expect("expected test value");
+
 		assert_eq!(weights, [0.5, 0.25, 0.25]);
 	}
 
@@ -480,6 +487,7 @@ mod tests {
 			.expect("expected test value");
 		let mut weights = [0.0; 3];
 		space.write_weights([0.75, 0.75], &mut weights).expect("expected test value");
+
 		assert!((weights[0] - 0.0).abs() < 1.0e-6);
 		assert!((weights[1] - 0.5).abs() < 1.0e-6);
 		assert!((weights[2] - 0.5).abs() < 1.0e-6);

@@ -298,17 +298,20 @@ mod tests {
 		let port = configuration.register("render.pass.");
 
 		let id = configuration.update("render.pass.bloom", "bypassed");
+
 		assert_eq!(
 			configuration.event(id).expect("expected test value").state(),
 			&ConfigurationUpdateState::Pending
 		);
 
 		let update = port.read().expect("render configuration update");
+
 		assert_eq!(update.id(), id);
 		assert_eq!(update.parameter(), "render.pass.bloom");
 		assert_eq!(update.value(), &ConfigurationValue::from("bypassed"));
 
 		port.set(id, ConfigurationValue::from("bypassed"));
+
 		assert_eq!(
 			configuration.event(id).expect("expected test value").state(),
 			&ConfigurationUpdateState::Set {

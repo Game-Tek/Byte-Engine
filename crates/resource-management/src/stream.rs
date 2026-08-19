@@ -125,6 +125,7 @@ mod tests {
 			assert_eq!(stream.buffer().len(), std::mem::size_of_val(&expected));
 			stream.buffer_mut().fill(0);
 		}
+
 		assert_eq!(words, [0, 0]);
 	}
 

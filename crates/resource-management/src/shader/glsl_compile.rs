@@ -229,7 +229,6 @@ shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
 		assert_eq!(error[0].errors.len(), 1);
 		assert_eq!(error[0].errors[0].symbol, ">=");
 		assert_eq!(error[0].errors[0].error, "can't read from writeonly object");
-
 		assert_eq!(error[1].line_number, 146);
 		assert_eq!(error[1].source_code, "");
 		assert_eq!(error[1].errors.len(), 1);

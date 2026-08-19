@@ -227,6 +227,7 @@ impl CommandBufferRecording<'_> {
 		if let Some(materialization) = self.ensure_descriptor_materialization() {
 			for resource in &self.device.descriptor_materialization(materialization).resources {
 				let writes = resource.access.intersects(crate::AccessPolicies::WRITE);
+
 				assert!(
 					!self.active_rendering || !writes,
 					"Writable Vulkan descriptors cannot be reused by multiple draws in one render pass. The most likely cause is that a storage resource needs a barrier; split the draws into separate render passes.",
@@ -326,6 +327,7 @@ impl CommandBufferRecording<'_> {
 		let active_rendering = command_buffer.active_rendering;
 
 		if active_rendering {
+
 			assert!(
 				planned.image_barriers.is_empty() && planned.buffer_barriers.is_empty() && planned.memory_barriers.is_empty(),
 				"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
@@ -647,6 +649,7 @@ impl CommandBufferRecording<'_> {
 		let image = self.get_image(self.get_attachment_image_handle(attachment));
 		let image_layer_count = image.layers.map_or(1, |layer_count| layer_count.get());
 		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
+
 		assert!(
 			requested_layer_count <= image_layer_count,
 			"Invalid Vulkan attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
@@ -656,6 +659,7 @@ impl CommandBufferRecording<'_> {
 			"Invalid Vulkan attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
 		);
 		if attachment.layer_count.is_some() {
+
 			assert!(
 				attachment.layer.is_none(),
 				"Invalid layered Vulkan attachment. The most likely cause is that the attachment selects both one layer and a layered range."

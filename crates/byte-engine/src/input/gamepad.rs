@@ -826,6 +826,7 @@ mod tests {
 	use super::*;
 
 	fn assert_float_near(actual: f32, expected: f32) {
+
 		assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
 	}
 
@@ -836,11 +837,13 @@ mod tests {
 		assert_float_near(actual.right_stick.y, expected.right_stick.y);
 		assert_float_near(actual.left_trigger, expected.left_trigger);
 		assert_float_near(actual.right_trigger, expected.right_trigger);
+
 		assert_eq!(actual.buttons, expected.buttons);
 	}
 
 	#[test]
 	fn classifies_known_controllers_without_case_sensitive_product_names() {
+
 		assert_eq!(classify_gamepad(0x054C, 0x05C4, None, 0, 0), Some(GamepadKind::DualShock4));
 		assert_eq!(classify_gamepad(0x054C, 0x0CE6, None, 0, 0), Some(GamepadKind::DualSense));
 		assert_eq!(classify_gamepad(0x045E, 0, None, 0, 0), Some(GamepadKind::Xbox));
@@ -859,6 +862,7 @@ mod tests {
 
 	#[test]
 	fn axis_and_trigger_normalization_preserves_endpoints_and_order() {
+
 		assert_eq!(normalize_axis_u8(0), -1.0);
 		assert_eq!(normalize_axis_u8(128), 0.0);
 		assert_eq!(normalize_axis_u8(u8::MAX), 1.0);
@@ -866,6 +870,7 @@ mod tests {
 		let mut previous = -1.0;
 		for value in u8::MIN..=u8::MAX {
 			let normalized = normalize_axis_u8(value);
+
 			assert!((-1.0..=1.0).contains(&normalized));
 			assert!(normalized >= previous);
 			previous = normalized;
@@ -895,6 +900,7 @@ mod tests {
 				| BUTTON_DPAD_RIGHT;
 
 		let raw = parse_dualshock4(&payload).expect("valid raw DualShock report");
+
 		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
 		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
 		assert_eq!(raw.left_trigger, 0.0);
@@ -924,6 +930,7 @@ mod tests {
 		payload[12..14].copy_from_slice(&i16::MIN.to_le_bytes());
 
 		let raw = parse_xbox(&payload).expect("valid Xbox report");
+
 		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
 		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
 		assert_eq!(raw.left_trigger, 0.0);
@@ -943,6 +950,7 @@ mod tests {
 		// and bit 14 is the active-low X input used by AppleUserHIDDevice.
 		let released_x = [0, 255, 128, 128, 0x11, 0x40, 0];
 		let state = parse_generic_joystick(&released_x).expect("valid generic report");
+
 		assert_eq!(state.left_stick, Axis2::new(-1.0, -1.0));
 		assert_eq!(state.right_stick, Axis2::new(0.0, 0.0));
 		assert_eq!(state.buttons, BUTTON_A | BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT);
@@ -950,6 +958,7 @@ mod tests {
 		let mut pressed_x = released_x;
 		pressed_x[5] &= !0x40;
 		let state = parse_generic_joystick(&pressed_x).expect("valid generic report");
+
 		assert_eq!(state.buttons, BUTTON_A | BUTTON_X | BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT);
 
 		let prefixed = [0x07].into_iter().chain(released_x).collect::<Vec<_>>();
@@ -961,6 +970,7 @@ mod tests {
 
 	#[test]
 	fn parsers_reject_reports_without_their_required_payload() {
+
 		assert!(parse_dualshock4(&[0; 8]).is_none());
 		assert!(parse_dualsense(&[0; 8]).is_none());
 		assert!(parse_generic_joystick(&[0; 4]).is_none());
@@ -987,6 +997,7 @@ mod tests {
 			buttons: BUTTON_A,
 			..GamepadState::default()
 		};
+
 		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, noise).is_empty());
 
 		let changed = GamepadState {
@@ -1007,6 +1018,7 @@ mod tests {
 				TriggerReference::Handle(_) => panic!("gamepad transitions use named triggers"),
 			})
 			.collect::<Vec<_>>();
+
 		assert_eq!(
 			observed,
 			[

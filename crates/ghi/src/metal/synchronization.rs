@@ -305,6 +305,7 @@ pub(crate) struct MetalResourceTracker {
 impl MetalResourceTracker {
 	/// Starts a sparse transaction so abandoning a command recording can restore queue history.
 	pub(crate) fn begin_recording(&mut self) {
+
 		assert!(
 			!self.recording,
 			"Metal resource tracker transaction failed. The most likely cause is that queue history was reused before its previous recording finished.",
@@ -387,6 +388,7 @@ impl MetalResourceTracker {
 
 	/// Converts command-local encoder scopes into queue history and commits the recording transaction.
 	pub(crate) fn finish_recording(&mut self) {
+
 		assert!(
 			std::mem::take(&mut self.recording),
 			"Metal resource tracker finalization failed. The most likely cause is that resource recording was not started.",
@@ -604,6 +606,7 @@ mod tests {
 			MetalEncoderScope::Encoder(3),
 			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
 		);
+
 		assert_eq!(barrier.queue_after, mtl::MTLStages::Fragment);
 		assert_eq!(barrier.queue_before, mtl::MTLStages::Dispatch);
 		assert_eq!(barrier.queue_visibility, mtl::MTL4VisibilityOptions::Device);
@@ -696,6 +699,7 @@ mod tests {
 			MetalEncoderScope::Encoder(2),
 			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
 		);
+
 		assert_eq!(barrier.queue_after, mtl::MTLStages::Blit);
 		assert_eq!(barrier.queue_before, mtl::MTLStages::Dispatch);
 	}

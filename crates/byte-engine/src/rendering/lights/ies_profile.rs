@@ -20,6 +20,7 @@ impl IesProfile {
 	/// that the light was created without a baked `.ies` resource path or with an invalid dimmer.
 	pub fn new(resource_id: impl Into<String>, dimmer: f32) -> Self {
 		let resource_id = resource_id.into();
+
 		assert!(
 			!resource_id.trim().is_empty(),
 			"Invalid IES profile resource ID. The most likely cause is that the light was created without a baked .ies resource path."

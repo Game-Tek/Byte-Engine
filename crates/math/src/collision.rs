@@ -439,13 +439,17 @@ mod tests {
 		let aabb: AABB<WorldSpace> = AABB::new(Point::new(-0.5, -0.5, -0.5), Point::new(0.5, 0.5, 0.5));
 
 		let from_above = Ray::new(Point::new(0.0, 2.0, 0.0), -UnitVector::y_axis());
+
 		assert_eq!(ray_aabb_intersection(&from_above, &aabb), Some(1.5));
 		let from_front = Ray::new(Point::new(0.0, 0.0, -2.0), UnitVector::z_axis());
+
 		assert_eq!(ray_aabb_intersection(&from_front, &aabb), Some(1.5));
 		let diagonal = Ray::new(Point::new(0.0, 1.0, -1.0), Vector::new(0.0, -1.0, 1.0).normalized().unwrap());
+
 		assert_float_eq_with_epsilon!(ray_aabb_intersection(&diagonal, &aabb).unwrap(), 0.5_f32.sqrt(), 0.000001);
 
 		let parallel_miss = Ray::new(Point::new(2.0, 2.0, 0.0), -UnitVector::y_axis());
+
 		assert_eq!(ray_aabb_intersection(&parallel_miss, &aabb), None);
 	}
 
@@ -482,6 +486,7 @@ mod tests {
 		let first: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(1.0, 1.0, 1.0));
 		let second = AABB::from_center_and_half_extents(Point::new(1.0, 0.0, 0.0), Vector::new(1.0, 1.0, 1.0));
 		let aabb_contact = aabb_vs_aabb(&first, &second).unwrap();
+
 		assert_eq!(aabb_contact.normal(), UnitVector::x_axis());
 		assert_eq!(aabb_contact.depth(), 1.0);
 		assert_eq!(aabb_contact.point_on_a(), Point::new(1.0, 0.0, 0.0));
@@ -490,12 +495,14 @@ mod tests {
 		let aabb: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(0.5, 0.5, 0.5));
 		let surface_sphere = Sphere::new(Point::new(0.0, 0.9, 0.0), 0.5);
 		let surface_contact = sphere_vs_aabb(&surface_sphere, &aabb).unwrap();
+
 		assert_eq!(surface_contact.normal(), -UnitVector::y_axis());
 		assert_eq!(surface_contact.point_on_b(), Point::new(0.0, 0.5, 0.0));
 		assert_float_eq_with_epsilon!(surface_contact.depth(), 0.1, 0.000001);
 
 		let inside_sphere = Sphere::new(Point::new(0.0, 0.49, 0.0), 0.5);
 		let inside_contact = sphere_vs_aabb(&inside_sphere, &aabb).unwrap();
+
 		assert_eq!(inside_contact.normal(), UnitVector::y_axis());
 		assert_eq!(inside_contact.point_on_b(), Point::new(0.0, 0.5, 0.0));
 		assert_float_eq_with_epsilon!(inside_contact.depth(), 0.51, 0.000001);
@@ -505,9 +512,11 @@ mod tests {
 	fn ray_vs_sphere_returns_entry_and_exit_distances() {
 		let ray: Ray<WorldSpace> = Ray::new(Point::origin(), UnitVector::z_axis());
 		let sphere = Sphere::new(Point::new(0.0, 0.0, 10.0), 1.0);
+
 		assert_eq!(ray_vs_sphere(&ray, &sphere), Some((9.0, 11.0)));
 
 		let miss = Sphere::new(Point::new(0.0, 4.0, 10.0), 1.0);
+
 		assert_eq!(ray_vs_sphere(&ray, &miss), None);
 	}
 
@@ -516,24 +525,28 @@ mod tests {
 		let first: Sphere<WorldSpace> = Sphere::new(Point::new(-2.0, 0.0, 0.0), 1.0);
 		let second = Sphere::new(Point::new(2.0, 0.0, 0.0), 1.0);
 		let hit = sphere_vs_sphere_dynamic(&first, &second, Vector::new(3.0, 0.0, 0.0), Vector::zero(), 1.0).unwrap();
+
 		assert_float_eq_with_epsilon!(hit.toi(), 2.0 / 3.0, 0.0001);
 
 		let first: Sphere<WorldSpace> = Sphere::new(Point::origin(), 1.0);
 		let second = Sphere::new(Point::new(4.0, 0.0, 0.0), 1.0);
 		let hit =
 			sphere_vs_sphere_dynamic(&first, &second, Vector::new(1.0, 0.0, 0.0), Vector::new(-1.0, 0.0, 0.0), 2.0).unwrap();
+
 		assert_float_eq_with_epsilon!(hit.toi(), 1.0, 0.000001);
 		assert_float_eq_with_epsilon!(hit.contact().depth(), 0.0, 0.000001);
 		assert_eq!(hit.contact().normal(), UnitVector::x_axis());
 
 		let overlapping = Sphere::new(Point::new(1.5, 0.0, 0.0), 1.0);
 		let hit = sphere_vs_sphere_dynamic(&first, &overlapping, Vector::zero(), Vector::zero(), 1.0).unwrap();
+
 		assert_eq!(hit.toi(), 0.0);
 		assert_float_eq_with_epsilon!(hit.contact().depth(), 0.5, 0.000001);
 		assert_eq!(hit.contact().normal(), UnitVector::x_axis());
 
 		let coincident: Sphere<WorldSpace> = Sphere::new(Point::origin(), 1.0);
 		let hit = sphere_vs_sphere_dynamic(&coincident, &coincident, Vector::new(1.0, 0.0, 0.0), Vector::zero(), 1.0).unwrap();
+
 		assert_eq!(hit.toi(), 0.0);
 		assert_eq!(hit.contact().normal(), -UnitVector::x_axis());
 		assert_eq!(hit.contact().depth(), 2.0);

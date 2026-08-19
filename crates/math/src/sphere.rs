@@ -43,6 +43,7 @@ mod tests {
 	#[test]
 	fn containment_includes_surface_and_is_translation_invariant() {
 		let sphere: Sphere<WorldSpace> = Sphere::new(Point::new(10.0, -4.0, 2.0), 3.0);
+
 		assert!(sphere.contains_point(Point::new(10.0, -4.0, 2.0)));
 		assert!(sphere.contains_point(Point::new(13.0, -4.0, 2.0)));
 		assert!(!sphere.contains_point(Point::new(13.001, -4.0, 2.0)));

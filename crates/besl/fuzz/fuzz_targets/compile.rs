@@ -15,6 +15,7 @@ fuzz_target!(|data: &[u8]| {
 	// Source compilation always produces a scope, even for an empty program.
 	{
 		let program = program.borrow();
+
 		assert!(matches!(program.node(), besl::Nodes::Scope { .. }));
 	}
 

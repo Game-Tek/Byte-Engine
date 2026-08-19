@@ -211,6 +211,7 @@ mod tests {
 
 		TransformationUpdate::apply(&mut channel, handle, transform);
 		let update = listener.read().expect("transformation update");
+
 		assert_eq!(update.handle(), &handle);
 		assert_eq!(update.transform().get_position(), Point::new(7.0, 8.0, 9.0));
 	}

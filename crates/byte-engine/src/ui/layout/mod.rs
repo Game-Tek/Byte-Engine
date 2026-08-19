@@ -631,6 +631,7 @@ mod tests {
 	}
 
 	fn assert_layout(element: &LayoutElement, size: Size, position: Location3) {
+
 		assert_eq!(element.size, size);
 		assert_eq!(element.position, position);
 	}
@@ -996,10 +997,12 @@ mod tests {
 		assert_eq!(elements.len(), 3);
 
 		let element = &elements[1];
+
 		assert_eq!(element.position, Location3::new(18, 0, 1));
 		assert_eq!(element.size, Size::new(64, 32));
 
 		let element = &elements[2];
+
 		assert_eq!(element.position, Location3::new(40, 32, 1));
 		assert_eq!(element.size, Size::new(20, 16));
 	}
@@ -1058,10 +1061,12 @@ mod tests {
 		assert_eq!(elements.len(), 3);
 
 		let element = &elements[1];
+
 		assert_eq!(element.position, Location3::new(40, 35, 1));
 		assert_eq!(element.size, Size::new(20, 10));
 
 		let element = &elements[2];
+
 		assert_eq!(element.position, Location3::new(30, 30, 1));
 		assert_eq!(element.size, Size::new(40, 20));
 	}

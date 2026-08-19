@@ -110,6 +110,7 @@ fuzz_target!(|input: Input| {
 			Operation::Send { reliable, fill } => {
 				if session.is_connected() {
 					session.send(*reliable, [*fill; 1024]);
+
 					assert!(session.is_connected());
 				}
 			}
@@ -127,6 +128,7 @@ fuzz_target!(|input: Input| {
 				let was_connected = session.is_connected();
 				session.disconnect();
 				if was_connected {
+
 					assert!(!session.is_connected());
 				}
 			}
@@ -140,6 +142,7 @@ fuzz_target!(|input: Input| {
 				let packet = make_data_packet(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
 				let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}
@@ -155,17 +158,20 @@ fuzz_target!(|input: Input| {
 					// Refresh first so timeout policy cannot be mistaken for rejection of unrelated peer traffic.
 					let refresh = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[refresh], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 
 					let invalid = make_data_packet(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 
 					// Valid traffic immediately after ignored traffic proves the session remains live.
 					let valid = make_data_packet(id, sequence.wrapping_add(1), *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {
@@ -188,6 +194,7 @@ fuzz_target!(|input: Input| {
 				];
 				let result = update_session(&mut session, &packets, current_time, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}
@@ -197,11 +204,13 @@ fuzz_target!(|input: Input| {
 					let id = connection_id.expect("connected server must have an accepted identity");
 					let packet = DisconnectPacket::new(id).into();
 					let result = update_session(&mut session, &[packet], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(matches!(result, Some(Ok(output)) if output.is_empty()));
 					assert!(!session.is_connected());
 
 					if updates_left > 0 {
 						let result = update_session(&mut session, &[], current_time, &mut connection_id, &mut updates_left);
+
 						assert!(
 							matches!(result, Some(Ok(output)) if matches!(output.as_slice(), [Packets::Disconnect(packet)] if packet.get_connection_id() == id))
 						);
@@ -216,16 +225,19 @@ fuzz_target!(|input: Input| {
 					let id = connection_id.expect("connected server must have an accepted identity");
 					let refresh = make_data_packet(id, 0, 0, 0, 0);
 					let result = update_session(&mut session, &[refresh], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 
 					let invalid = DisconnectPacket::new(other_connection_id(id)).into();
 					let result = update_session(&mut session, &[invalid], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 
 					let valid = make_data_packet(id, 1, 0, 0, 0);
 					let result = update_session(&mut session, &[valid], current_time, &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {

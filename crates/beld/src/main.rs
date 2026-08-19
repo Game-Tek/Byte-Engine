@@ -227,6 +227,7 @@ mod tests {
 
 	#[test]
 	fn color_pre_scan_supports_split_and_equals_forms() {
+
 		assert_eq!(
 			parse_color_choice(args(&["beld", "--color", "always", "list"])),
 			clap::ColorChoice::Always
@@ -243,6 +244,7 @@ mod tests {
 
 	#[test]
 	fn color_pre_scan_ignores_missing_and_invalid_values() {
+
 		assert_eq!(parse_color_choice(args(&["beld", "--color"])), clap::ColorChoice::Auto);
 		assert_eq!(
 			parse_color_choice(args(&["beld", "--color=rainbow", "list"])),
@@ -276,6 +278,7 @@ mod tests {
 				cursor,
 				format,
 			} => {
+
 				assert_eq!(class, "Material");
 				assert_eq!(properties, ["name=hero", "group=opaque"]);
 				assert_eq!(limit, Some(25));
@@ -289,6 +292,7 @@ mod tests {
 	#[test]
 	fn cli_bake_allows_no_ids_and_selects_payload_storage() {
 		let cli = Cli::try_parse_from(["beld", "bake"]).unwrap();
+
 		assert!(cli.storage_mode.is_none());
 		assert!(matches!(
 			cli.command,
@@ -309,6 +313,7 @@ mod tests {
 			"mesh.gltf#skeleton",
 		])
 		.unwrap();
+
 		assert!(matches!(cli.storage_mode, Some(StorageMode::Packed)));
 		assert!(matches!(
 			cli.command,
@@ -321,6 +326,7 @@ mod tests {
 
 	#[test]
 	fn cli_bake_rejects_zero_and_overflowing_memory_budgets() {
+
 		assert!(Cli::try_parse_from(["beld", "bake", "--memory-budget-mib", "0"]).is_err());
 		assert!(Cli::try_parse_from([
 			"beld".to_string(),

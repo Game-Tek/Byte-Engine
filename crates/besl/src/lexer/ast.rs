@@ -118,6 +118,7 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 
 	match &node.node {
 		parser::Nodes::Scope { name, children } => {
+
 			assert_eq!(*name, "root");
 
 			let mut next_intrinsic_expansion_id = 0;

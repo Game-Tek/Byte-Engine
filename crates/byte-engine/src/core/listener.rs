@@ -220,6 +220,7 @@ mod tests {
 		let mut observer = listener.new_listener();
 
 		cloned_channel.send("from clone");
+
 		assert_eq!(observer.read(), Some("from clone"));
 	}
 }

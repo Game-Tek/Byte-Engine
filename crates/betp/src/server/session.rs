@@ -348,13 +348,16 @@ mod tests {
 		session.accept(7, start);
 		session.send(true, [1; 1024]);
 		let first_send = session.update(&[], start).unwrap();
+
 		assert_eq!(first_send.len(), 1);
 
 		let unrelated_receive = Packets::Data(DataPacket::new(7, ConnectionStatus::new(0, 400, 0), [2; 1024]));
 		let retry = session.update(&[unrelated_receive], start).unwrap();
+
 		assert_eq!(retry.len(), 1);
 
 		let explicit_ack = Packets::Data(DataPacket::new(7, ConnectionStatus::new(1, 0, 1), [3; 1024]));
+
 		assert!(session.update(&[explicit_ack], start).unwrap().is_empty());
 	}
 }

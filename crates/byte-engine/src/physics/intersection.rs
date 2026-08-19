@@ -202,6 +202,7 @@ mod tests {
 			endpoint(1, 2.0, true),
 			endpoint(1, 3.0, false),
 		]);
+
 		assert!(build_pairs(&disjoint).is_empty());
 
 		let nested = sorted_endpoints([
@@ -210,6 +211,7 @@ mod tests {
 			endpoint(1, 1.0, true),
 			endpoint(1, 2.0, false),
 		]);
+
 		assert_eq!(canonical_pairs(build_pairs(&nested)), [(0, 1)]);
 
 		let touching = sorted_endpoints([
@@ -218,6 +220,7 @@ mod tests {
 			endpoint(1, 1.0, true),
 			endpoint(1, 2.0, false),
 		]);
+
 		assert_eq!(canonical_pairs(build_pairs(&touching)), [(0, 1)]);
 	}
 

@@ -219,6 +219,7 @@ pub struct ShaderResourceDescriptor {
 
 impl ShaderResourceDescriptor {
 	pub const fn new(slot: ResourceSlot, kind: ResourceKind, count: u32, access: AccessPolicies) -> Self {
+
 		assert!(
 			count > 0,
 			"Invalid shader resource count. The most likely cause is that a shader declared an empty resource array."
@@ -295,16 +296,19 @@ mod tests {
 		.expect("Expected platform-native shader selection to compile.");
 
 		if crate::implementation::USES_DX12 {
+
 			assert!(matches!(
 				compiled,
 				CompiledShaderSource::HLSL { entry_point, .. } if entry_point == "main"
 			));
 		} else if crate::implementation::USES_METAL {
+
 			assert!(matches!(
 				compiled,
 				CompiledShaderSource::MTL { entry_point, .. } if entry_point == "main0"
 			));
 		} else {
+
 			assert!(matches!(compiled, CompiledShaderSource::SPIRV(binary) if !binary.is_empty()));
 		}
 	}

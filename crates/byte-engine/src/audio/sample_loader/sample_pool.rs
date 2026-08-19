@@ -229,6 +229,7 @@ impl AudioSampleLease {
 
 	#[cfg(test)]
 	pub(crate) fn for_test(sample_rate: u32, channel_count: u16, samples: Box<[f32]>) -> Self {
+
 		assert!(sample_rate > 0);
 		assert!(channel_count == 1 || channel_count == 2);
 		assert!(!samples.is_empty());
@@ -254,6 +255,7 @@ impl AudioSampleLease {
 	///
 	/// The benchmark state must retain `samples` until this lease is dropped.
 	pub(crate) fn for_benchmark(sample_rate: u32, channel_count: u16, samples: &[f32]) -> Self {
+
 		assert!(sample_rate > 0);
 		assert!(channel_count == 1 || channel_count == 2);
 		assert!(!samples.is_empty());
@@ -510,6 +512,7 @@ impl AudioSamplePool {
 		let resident_bytes = layout
 			.decoded_byte_count()
 			.expect("Validated audio sample byte count must fit this platform.");
+
 		assert!(
 			self.slots.iter().any(|slot| slot.entry.is_none())
 				&& region.end() <= self.storage.len()

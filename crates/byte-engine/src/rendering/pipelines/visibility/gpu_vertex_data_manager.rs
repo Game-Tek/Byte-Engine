@@ -89,6 +89,7 @@ mod tests {
 
 	#[test]
 	fn generated_indices_are_checked_before_u16_narrowing() {
+
 		assert_eq!(validated_generated_indices(&[0, 2, 1], 3), Some(vec![0, 2, 1]));
 		assert!(validated_generated_indices(&[3], 3).is_none());
 		assert!(validated_generated_indices(&[u16::MAX as u32 + 1], u16::MAX as usize + 2).is_none());
@@ -96,6 +97,7 @@ mod tests {
 
 	#[test]
 	fn visibility_capacity_rejects_only_the_overflowing_upload() {
+
 		assert_eq!(checked_visibility_capacity(3, 2, 5, "test"), Some(5));
 		assert_eq!(checked_visibility_capacity(3, 3, 5, "test"), None);
 		assert_eq!(checked_visibility_capacity(1, usize::MAX, usize::MAX, "test"), None);
@@ -110,6 +112,7 @@ mod tests {
 			meshlets: 1,
 			skinning_vertices: 0,
 		};
+
 		assert!(prepared_mesh_counts_match(expected, expected));
 		assert!(!prepared_mesh_counts_match(
 			expected,
@@ -135,6 +138,7 @@ mod tests {
 			.chunks_exact(2)
 			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes(bytes.try_into().unwrap())).to_f32())
 			.collect::<Vec<_>>();
+
 		assert_eq!(decoded, vec![-0.5, 2.0, 1.25, -3.0]);
 	}
 }

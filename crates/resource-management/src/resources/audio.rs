@@ -41,6 +41,7 @@ mod tests {
 			.unwrap();
 
 		let reference = model.solve(&storage).await.expect("stored audio metadata");
+
 		assert_eq!(reference.id(), "sound.audio");
 		assert_eq!(reference.hash(), 7);
 		assert_eq!(reference.size, 5);

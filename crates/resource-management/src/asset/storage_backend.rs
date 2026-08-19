@@ -497,6 +497,7 @@ pub mod tests {
 			.version(ResourceId::new("shader.bin"))
 			.await
 			.expect("source metadata should be available");
+
 		assert_eq!(first.source.size, 4);
 		assert!(first.sidecar.is_none());
 
@@ -509,6 +510,7 @@ pub mod tests {
 			.version(ResourceId::new("shader.bin"))
 			.await
 			.expect("modified source metadata should be available");
+
 		assert_ne!(first, modified);
 
 		fs::write(directory.join("shader.bin.bead"), b"{}").unwrap();
@@ -516,6 +518,7 @@ pub mod tests {
 			.version(ResourceId::new("shader.bin"))
 			.await
 			.expect("sidecar metadata should be available");
+
 		assert!(with_sidecar.sidecar.is_some());
 
 		fs::remove_dir_all(directory).unwrap();

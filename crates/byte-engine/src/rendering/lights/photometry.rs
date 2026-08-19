@@ -281,6 +281,7 @@ mod tests {
 	use super::{LightColor, PhotometricIntensity};
 
 	fn assert_near(actual: f32, expected: f32) {
+
 		assert!(
 			(actual - expected).abs() <= expected.abs().max(1.0) * 0.000_01,
 			"{actual} != {expected}"
@@ -297,6 +298,7 @@ mod tests {
 		] {
 			let rgb = color.resolve().expect("valid light chromaticity");
 			assert_near(0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z, 1.0);
+
 			assert!(rgb.x >= 0.0 && rgb.y >= 0.0 && rgb.z >= 0.0);
 		}
 	}
@@ -375,6 +377,7 @@ mod tests {
 		let error = LightColor::LinearSrgb(Vec3f::new(0.0, 0.0, 0.0))
 			.resolve()
 			.expect_err("black has no chromaticity");
+
 		assert!(error.to_string().contains("most likely cause"));
 
 		let error = PhotometricIntensity::Illuminance {
@@ -383,6 +386,7 @@ mod tests {
 		}
 		.point_candela()
 		.expect_err("zero reference distance");
+
 		assert!(error.to_string().contains("measurement distance"));
 	}
 }

@@ -87,12 +87,14 @@ fn validate_attachment_layer_selection(
 	available_layer_count: u32,
 ) {
 	if let Some(layer) = layer {
+
 		assert!(
 			layer < available_layer_count,
 			"Render-pass attachment layer is out of bounds. The most likely cause is that the selected layer does not exist in the target image. layer={layer}, available_layers={available_layer_count}",
 		);
 	}
 	let layer_count = layer_count.map_or(1, std::num::NonZeroU32::get);
+
 	assert!(
 		layer_count <= available_layer_count,
 		"Render-pass attachment layer count is out of bounds. The most likely cause is that layered rendering requested more layers than the target image provides. requested_layers={layer_count}, available_layers={available_layer_count}",
@@ -111,6 +113,7 @@ mod tests {
 
 	#[test]
 	fn push_upload_ranges_are_aligned_and_do_not_overlap() {
+
 		assert_eq!(super::push_upload_offset(0, 4, 1024), Some(0));
 		assert_eq!(super::push_upload_offset(4, 4, 1024), Some(256));
 		assert_eq!(super::push_upload_offset(260, 4, 1024), Some(512));
@@ -132,12 +135,14 @@ pub(in crate::metal) fn encode_texture_upload(
 	let expected_size = bytes_per_image
 		.checked_mul(array_layers as usize)
 		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
+
 	assert!(
 		staging.len() >= expected_size,
 		"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
 		staging.len(),
 	);
 	if utils::is_block_compressed(format) {
+
 		assert_eq!(
 			staging.len(),
 			expected_size,

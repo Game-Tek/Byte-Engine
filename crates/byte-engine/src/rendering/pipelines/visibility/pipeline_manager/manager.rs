@@ -596,6 +596,7 @@ impl VisibilityPipelineManager {
 				let skeleton_node_count = skinning.skeleton_node_count as usize;
 				let pose = skinning_poses.get(&render_entity.handle);
 				if let Some(pose) = pose {
+
 					assert_eq!(
 						pose.len(),
 						skeleton_node_count,

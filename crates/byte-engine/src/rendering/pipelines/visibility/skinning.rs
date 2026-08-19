@@ -217,6 +217,7 @@ impl SkinningPass {
 
 	/// Copies a complete caller-produced palette into the active frame without allocating intermediate storage.
 	pub(crate) fn write_matrix_palette(&self, frame: &mut ghi::implementation::Frame, matrices: &[AffineMatrix4x3Columns]) {
+
 		assert!(
 			matrices.len() <= MAX_SKINNING_MATRICES,
 			"Skinning matrix palette exceeds capacity. The most likely cause is that active skins require more than {MAX_SKINNING_MATRICES} matrices."
@@ -235,6 +236,7 @@ impl SkinningPass {
 		frame: &mut ghi::implementation::Frame,
 		dual_quaternions: &[DualQuaternion],
 	) {
+
 		assert!(
 			dual_quaternions.len() <= MAX_SKINNING_MATRICES,
 			"Skinning dual-quaternion palette exceeds capacity. The most likely cause is that active skins require more than {MAX_SKINNING_MATRICES} rigid transforms."
@@ -271,6 +273,7 @@ impl SkinningPass {
 			let palette_end = (dispatch.palette_base as usize)
 				.checked_add(dispatch.palette_count as usize)
 				.expect("Skinning palette range overflows. The most likely cause is a corrupted skin binding.");
+
 			assert!(
 				source_end <= MAX_SKINNED_VERTICES,
 				"Skinning source range exceeds its buffer. The most likely cause is corrupted primitive vertex metadata."
@@ -421,6 +424,7 @@ mod tests {
 
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
+
 		assert_eq!(std::mem::size_of::<[u16; 4]>(), 8);
 		assert_eq!(std::mem::size_of::<AffineMatrix4x3Columns>(), 48);
 		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
@@ -446,6 +450,7 @@ mod tests {
 		let msl = MSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Visibility skinning should lower to MSL.");
+
 		assert!(msl.contains("struct DualQuaternion"));
 
 		#[cfg(target_os = "macos")]
@@ -491,6 +496,7 @@ mod tests {
 
 		for matrix in [scaled, sheared, reflected, non_finite] {
 			let mut output = vec![DualQuaternion::default()];
+
 			assert!(!append_dual_quaternion_palette(&[identity, matrix], &mut output));
 			assert_eq!(output, vec![DualQuaternion::default()]);
 		}
@@ -582,6 +588,7 @@ mod tests {
 			descriptors.bind_push_constant(&mut push_constant);
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
+
 		assert_eq!(
 			output
 				.read_indexed_field("values", 3, "position")

@@ -61,6 +61,7 @@ mod tests {
 		source: &[u8],
 	) -> (Vec<u8>, TextureUploadLayout) {
 		let layout = texture_upload_layout(format, extent, layer_count).expect("texture layout");
+
 		assert_eq!(source.len(), layout.compact_size);
 		let mut bytes = vec![0u8; layout.padded_size];
 		bytes[..source.len()].copy_from_slice(source);
@@ -91,6 +92,7 @@ mod tests {
 
 		material_indices.push(0);
 		primitive_skins.push(None);
+
 		assert!(VisibilityPipelineResourceManagerWorker::resource_mesh_metadata_is_valid(
 			&mesh,
 			&material_indices,
@@ -143,6 +145,7 @@ mod tests {
 
 		let (zero_data, zero_extent) =
 			staged_texture_bytes(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), 1, &[1, 2, 3, 4]);
+
 		assert_eq!(zero_extent.source_bytes_per_row, 256);
 		assert_eq!(zero_extent.source_bytes_per_image, 256);
 		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
@@ -192,12 +195,14 @@ mod tests {
 		let compact_face_size = 2 * 2 * 8;
 		let source = (0..compact_face_size * 6).map(|value| value as u8).collect::<Vec<_>>();
 		let (data, upload) = staged_texture_bytes(ghi::Formats::RGBA16F, extent, 6, &source);
+
 		assert_eq!(upload.source_bytes_per_image, 512);
 		assert_eq!(data.len(), 512 * 6);
 		for face in 0..6 {
 			for row in 0..2 {
 				let source_start = face * compact_face_size + row * 16;
 				let upload_start = face * 512 + row * 256;
+
 				assert_eq!(
 					&data[upload_start..upload_start + 16],
 					&source[source_start..source_start + 16]

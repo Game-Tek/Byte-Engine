@@ -609,9 +609,11 @@ mod tests {
 		});
 
 		let mut first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(engine.render(&mut first).size(), 1);
 
 		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(engine.render(&mut second).size(), 1);
 	}
 
@@ -749,11 +751,13 @@ mod tests {
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+
 		assert_eq!(first.elements.len(), 2);
 		assert_eq!(first.relations, vec![(first_ids[0], first_ids[1])]);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+
 		assert_eq!(second_ids, first_ids);
 		assert_eq!(second.relations, first.relations);
 	}
@@ -774,6 +778,7 @@ mod tests {
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+
 		assert_eq!(first_ids.len(), 65);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
@@ -803,9 +808,11 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 2);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(second.elements.len(), 1);
 	}
 
@@ -825,6 +832,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(hits.load(Ordering::SeqCst), 0);
 
 		std::thread::sleep(Duration::from_millis(2));
@@ -1035,6 +1043,7 @@ mod tests {
 			.elements()
 			.find(|element| element.position.x() == 70.0)
 			.expect("expected test value");
+
 		assert_eq!(toast.size, Size::new(20, 20));
 	}
 
@@ -1065,6 +1074,7 @@ mod tests {
 			.elements()
 			.find(|element| element.position.x() == 70.0)
 			.expect("expected test value");
+
 		assert_eq!(toast.size, Size::new(20, 20));
 		assert_eq!(toast.clip, None);
 	}
@@ -1130,9 +1140,11 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(*geometry.lock().expect("expected test value"), None);
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(
 			*geometry.lock().expect("expected test value"),
 			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
@@ -1158,6 +1170,7 @@ mod tests {
 				);
 
 				button.render().await;
+
 				assert!(button.update_container(|container| {
 					container.width = Sizing::pixels(40);
 					container.set_position((24, 36));
@@ -1193,6 +1206,7 @@ mod tests {
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(hits.load(Ordering::SeqCst), 0);
 
 		std::thread::sleep(Duration::from_millis(20));
@@ -1370,10 +1384,12 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, false);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(hits.load(Ordering::SeqCst), 0);
 
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 
@@ -1461,6 +1477,7 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 2);
 		assert_eq!(*result.lock().expect("expected test value"), None);
 
@@ -1492,14 +1509,17 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 2);
 
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let during_close = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(during_close.elements.len(), 2);
 
 		let after_close = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(after_close.elements.len(), 1);
 	}
 
@@ -1526,9 +1546,11 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 2);
 
 		let after_drop = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(after_drop.elements.len(), 1);
 	}
 
@@ -1569,9 +1591,11 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 3);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(second.elements.len(), 2);
 
 		engine.update_key_state(Key::Escape, true);
@@ -1649,6 +1673,7 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 2);
 
 		engine.set_cursor_position(UiPoint::zero());
@@ -1656,9 +1681,11 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(second.elements.len(), 2);
 
 		let ids = ids.lock().expect("expected test value");
+
 		assert_eq!(ids.len(), 2);
 		assert_eq!(ids[0], ids[1]);
 	}
@@ -1731,6 +1758,7 @@ mod tests {
 			.elements()
 			.find(|element| element.position.x() == 30.0)
 			.expect("expected test value");
+
 		assert_eq!(modal.size, Size::new(80, 30));
 		assert_eq!(modal.clip, None);
 	}
@@ -2303,6 +2331,7 @@ mod tests {
 					.element("frame")
 					.container(Container::default().width(10.into()).height(10.into()));
 				frame.render().await;
+
 				assert!(frame.update_container(|container| {
 					container.width = Sizing::pixels(30);
 					container.set_style(ConcreteLayer::default().color(RGBA::new(0.4, 0.5, 0.6, 1.0).into()));
@@ -2311,9 +2340,11 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements[0].size, Size::new(10, 10));
 
 		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(second.elements[0].size, Size::new(30, 10));
 
 		let render = engine.render(&mut second);
@@ -2332,6 +2363,7 @@ mod tests {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.render().await;
+
 				assert!(frame.update_container(|container| {
 					container.set_opacity(0.25);
 				}));
@@ -2354,6 +2386,7 @@ mod tests {
 			Box::pin(async move {
 				let mut text = ctx.element("label").text(Text::new("Hello"));
 				text.render().await;
+
 				assert!(text.update_text(|text| {
 					text.set_content("Updated");
 					text.set_style(ConcreteLayer::default().color(RGBA::new(0.7, 0.8, 0.9, 1.0).into()));
@@ -2375,12 +2408,15 @@ mod tests {
 		let mut content = String::from("Hi");
 
 		TextEdit::Inserted('é').apply_to(&mut content);
+
 		assert_eq!(content, "Hié");
 
 		TextEdit::Deleted('é').apply_to(&mut content);
+
 		assert_eq!(content, "Hi");
 
 		TextEdit::Deleted('x').apply_to(&mut content);
+
 		assert_eq!(content, "Hi");
 	}
 
@@ -2493,6 +2529,7 @@ mod tests {
 					let mut content = content.lock().expect("expected test value");
 					event.edit.apply_to(&mut content);
 					let updated = content.clone();
+
 					assert!(field.update_text_field(|field| field.set_content(updated)));
 				}
 				field.render().await;
@@ -2563,11 +2600,13 @@ mod tests {
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(first.elements.len(), 1);
 		assert_eq!(first.elements[0].size, Size::new(10, 10));
 
 		std::thread::sleep(Duration::from_millis(20));
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
 		assert_eq!(second.elements.len(), 1);
 		assert!(second.elements[0].size.x() > 10.0);
 	}

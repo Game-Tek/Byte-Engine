@@ -259,12 +259,14 @@ mod tests {
 		skinned: bool,
 		workgroup_index: u32,
 	) -> TaskOutputs {
+
 		assert!(
 			!center_radii.is_empty(),
 			"Missing task meshlet fixtures. The most likely cause is a test invoking a workgroup without any task lanes."
 		);
 		let meshlet_count = u32::try_from(center_radii.len())
 			.expect("Task meshlet fixture is too large. The most likely cause is an invalid test case.");
+
 		assert!(
 			meshlet_count <= TASK_WORKGROUP_SIZE,
 			"Task meshlet fixture exceeds one workgroup. The most likely cause is a test supplying more meshlets than the production payload can address."
@@ -382,6 +384,7 @@ mod tests {
 	fn visibility_task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
 		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
 		let visible = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [0.0, 0.0, 0.5, 0.1], false);
+
 		assert_eq!(
 			visible,
 			(
@@ -394,6 +397,7 @@ mod tests {
 		);
 
 		let culled = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], false);
+
 		assert_eq!(culled, (Some(0), None));
 	}
 
@@ -449,6 +453,7 @@ mod tests {
 	fn visibility_task_main_bypasses_static_culling_for_skinned_meshes() {
 		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
 		let output = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], true);
+
 		assert_eq!(
 			output,
 			(
@@ -469,6 +474,7 @@ mod tests {
 			std::array::from_fn(|view_index| (view_index, horizontally_translated_matrix(4.0)));
 		view_projections[3].1 = identity_matrix();
 		let output = run_single_meshlet_task(&program, &view_projections, Some(3), [0.0, 0.0, 0.5, 0.1], false);
+
 		assert_eq!(
 			output,
 			(
@@ -719,13 +725,16 @@ mod tests {
 				.expect("Missing mesh vertex output. The most likely cause is that a mesh invocation did not write its lane.");
 			assert_rgba_close(actual, expected, 0.00001);
 		}
+
 		assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
 		if let Some(expected_render_target_array_index) = expected_render_target_array_index {
+
 			assert_eq!(
 				mesh_outputs.render_target_array_index(0),
 				Some(expected_render_target_array_index)
 			);
 		}
+
 		assert_eq!(
 			read_u32(&out_instance_indices, "out_instance_index", 0),
 			FIXTURE_INSTANCE_INDEX as u32
@@ -1030,6 +1039,7 @@ mod tests {
 		assert_eq!(read_u32(&material_offsets, "material_offset", 5), 2);
 		assert_eq!(read_u32(&material_offsets, "material_offset", 6), 3);
 		// The offset pass no longer clears material_count; evaluation reads it directly for bounds.
+
 		assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
 		assert_eq!(read_u32(&material_counts, "material_count", 5), 1);
 		assert_eq!(
@@ -1121,6 +1131,7 @@ mod tests {
 		let mut seen = [[false; PIXEL_MAPPING_WORKGROUP_WIDTH as usize]; PIXEL_MAPPING_WORKGROUP_WIDTH as usize];
 		for mapping_index in 0..PIXEL_MAPPING_WORKGROUP_SIZE {
 			let coordinate = read_vec2u16(&pixel_mapping, "pixel_mapping", mapping_index);
+
 			assert!(
 				coordinate[0] > 0
 					&& coordinate[0] <= PIXEL_MAPPING_WORKGROUP_WIDTH as u16
@@ -1130,12 +1141,14 @@ mod tests {
 			);
 			let x = (coordinate[0] - 1) as usize;
 			let y = (coordinate[1] - 1) as usize;
+
 			assert!(
 				!seen[y][x],
 				"Pixel Mapping duplicated a coherent-tile coordinate. The most likely cause is that the fast path reused a local rank."
 			);
 			seen[y][x] = true;
 		}
+
 		assert!(
 			seen.into_iter().flatten().all(|coordinate| coordinate),
 			"Pixel Mapping omitted a coherent-tile coordinate. The most likely cause is that the fast path skipped a local rank."
@@ -1202,6 +1215,7 @@ mod tests {
 				(material_index % PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u16 + 1,
 				(material_index / PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u16 + 1,
 			];
+
 			assert_eq!(
 				read_vec2u16(&pixel_mapping, "pixel_mapping", material_index),
 				expected_coordinate,
@@ -1261,6 +1275,7 @@ mod tests {
 
 		for material_index in 0..33 {
 			let expected = if material_index < 31 { 2 } else { 1 };
+
 			assert_eq!(
 				read_u32(&material_counts, "material_count", material_index),
 				expected,
@@ -1798,6 +1813,7 @@ mod tests {
 			}
 		});
 		let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, [2, 2]);
+
 		assert!(
 			horizontal[0] < 0.8,
 			"Expected X blur to mix neighboring columns, found {horizontal:?}"
@@ -1843,6 +1859,7 @@ mod tests {
 		});
 		let left = run_gtao_upscale_fixture(&upscale, full_extent, &device_depth, low_extent, &linear_depth, &ao, [3, 3]);
 		let right = run_gtao_upscale_fixture(&upscale, full_extent, &device_depth, low_extent, &linear_depth, &ao, [4, 3]);
+
 		assert!(
 			left[0] < 0.3 && right[0] > 0.7,
 			"Expected reconstruction to preserve the AO edge, found left={left:?} and right={right:?}. The most likely cause is missing low-resolution depth rejection."
@@ -1851,6 +1868,7 @@ mod tests {
 
 	#[test]
 	fn shader_meshlet_data_matches_packed_buffer_layout() {
+
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 4);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 52);
 		assert_eq!(std::mem::offset_of!(super::ShaderMeshletData, center_radius), 16);

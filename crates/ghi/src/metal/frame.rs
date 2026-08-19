@@ -28,6 +28,7 @@ impl<'a> Frame<'a> {
 		frame_key: graphics_hardware_interface::FrameKey,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
+
 		assert!(
 			!device.queues.is_empty(),
 			"Metal frame creation failed. The most likely cause is that the context has no command queues.",
@@ -265,6 +266,7 @@ impl Frame<'_> {
 				_marker,
 			} = command_buffer;
 			let command_queue = self.device.command_buffers[command_buffer_handle.0 as usize].queue_handle;
+
 			assert_eq!(
 				command_queue,
 				self.queue_handle,

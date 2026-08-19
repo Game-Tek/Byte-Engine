@@ -333,6 +333,7 @@ mod tests {
 	#[test]
 	fn workgroup_reflection_includes_compute_task_and_mesh_stages() {
 		let extent = Extent::new(32, 1, 1);
+
 		assert_eq!(
 			reflected_workgroup_extent(&ShaderGenerationSettings::compute(extent)),
 			Some(extent)
@@ -392,9 +393,11 @@ mod tests {
 		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
 
 		let compiled = collect_bindings::<CompiledShaderBinding>(&main).expect("Expected instantiated flat resource metadata");
+
 		assert_eq!(usage(&compiled), vec![(100, true, false)]);
 
 		let evaluated = collect_bindings::<BindingUsage>(&main).expect("Expected instantiated flat resource metadata");
+
 		assert_eq!(usage(&evaluated), vec![(100, true, false)]);
 	}
 
@@ -407,6 +410,7 @@ mod tests {
 			besl::Node::function("main", Vec::new(), void_type, vec![shared.clone(), shared]).into();
 
 		let bindings = collect_bindings::<BindingUsage>(&main).expect("Expected one shared flat resource declaration");
+
 		assert_eq!(usage(&bindings), vec![(3, true, false)]);
 	}
 
@@ -423,6 +427,7 @@ mod tests {
 		.into();
 
 		let error = collect_bindings::<BindingUsage>(&main).expect_err("Expected distinct same-slot declarations to fail");
+
 		assert!(error.contains("Duplicate resource declaration at slot 3"));
 	}
 
@@ -471,6 +476,7 @@ metallib: malformed AIR input"
 	#[test]
 	fn missing_metal_toolchain_failure_has_an_actionable_cause() {
 		let stderr = b"error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain";
+
 		assert!(metal_toolchain_missing(stderr));
 		assert!(!metal_toolchain_missing(b"shader.metal:7:3: error: unknown identifier"));
 		let failure = format_tool_failure(

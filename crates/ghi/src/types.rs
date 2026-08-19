@@ -826,6 +826,7 @@ mod tests {
 		assert_eq!(layout.bytes_per_image, 64);
 
 		let small = bc_layout(1, 1, 8);
+
 		assert_eq!(small.blocks_w, 1);
 		assert_eq!(small.blocks_h, 1);
 		assert_eq!(small.bytes_per_row, 8);
@@ -834,6 +835,7 @@ mod tests {
 
 	#[test]
 	fn format_bc_layout_uses_format_block_size() {
+
 		assert_eq!(Formats::BC5.bc_bytes_per_block(), Some(16));
 		assert_eq!(Formats::BC7.bc_layout(8, 4).unwrap().bytes_per_image, 32);
 		assert_eq!(Formats::RGBA8UNORM.bc_layout(8, 4), None);
@@ -853,6 +855,7 @@ mod tests {
 		];
 
 		for (format, width, height, expected) in cases {
+
 			assert_eq!(format.compact_copy_layout(width, height), expected);
 		}
 	}
@@ -873,6 +876,7 @@ mod tests {
 			(ShaderTypes::Callable, Stages::CALLABLE),
 		];
 		for (shader, expected_stage) in cases {
+
 			assert_eq!(Stages::from(shader), expected_stage);
 		}
 	}
@@ -897,6 +901,7 @@ mod tests {
 			(DataTypes::UInt4, 16),
 		];
 		for (data_type, expected_size) in cases {
+
 			assert_eq!(data_type.size(), expected_size);
 			assert_eq!(Size::size(&data_type), expected_size);
 		}
@@ -904,6 +909,7 @@ mod tests {
 
 	#[test]
 	fn access_and_use_aliases_preserve_backend_bit_contracts() {
+
 		assert_eq!(AccessPolicies::READ_WRITE, AccessPolicies::READ | AccessPolicies::WRITE);
 		assert_eq!(DeviceAccesses::DeviceOnly, DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite);
 		assert_eq!(DeviceAccesses::HostOnly, DeviceAccesses::CpuRead | DeviceAccesses::CpuWrite);

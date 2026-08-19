@@ -65,6 +65,7 @@ impl SpecializationMapEntry {
 		[(); std::mem::size_of::<T>()]:,
 	{
 		if r#type == "vec4f" {
+
 			assert_eq!(std::mem::size_of::<T>(), 16);
 		}
 

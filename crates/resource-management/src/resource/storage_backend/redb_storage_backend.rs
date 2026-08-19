@@ -865,11 +865,13 @@ mod tests {
 		{
 			let (_, reader) = backend.read(first_id).await.unwrap();
 			let backing = reader.into_backing_storage().await.unwrap();
+
 			assert_eq!(backing.as_slice(), b"first-payload");
 		}
 		{
 			let (_, reader) = backend.read(second_id).await.unwrap();
 			let backing = reader.into_backing_storage().await.unwrap();
+
 			assert_eq!(backing.as_slice(), b"second-payload");
 		}
 
@@ -887,10 +889,12 @@ mod tests {
 			.unwrap();
 		let (_, reader) = backend.read(first_id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
+
 		assert_eq!(backing.as_slice(), b"replacement");
 		drop(backing);
 
 		let expected_pack_size = b"first-payload".len() + b"second-payload".len() + b"replacement".len();
+
 		assert_eq!(
 			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
 				.unwrap()
@@ -899,6 +903,7 @@ mod tests {
 		);
 
 		backend.delete(second_id).unwrap();
+
 		assert!(backend.read(second_id).await.is_none());
 		std::fs::remove_dir_all(&backend.base_path).unwrap();
 	}
@@ -915,12 +920,14 @@ mod tests {
 
 		assert!(validate_resource_management_signature(&resources_path).is_err());
 		std::fs::write(resources_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE), "stale").unwrap();
+
 		assert!(validate_resource_management_signature(&resources_path).is_err());
 		std::fs::write(
 			resources_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE),
 			RESOURCE_MANAGEMENT_CODE_HASH,
 		)
 		.unwrap();
+
 		assert_eq!(validate_resource_management_signature(&resources_path), Ok(()));
 
 		std::fs::remove_dir_all(resources_path).unwrap();
@@ -965,16 +972,19 @@ mod tests {
 		);
 
 		let (first_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
+
 		assert_eq!(first_ids.len(), 2);
 		assert!(cursor.is_some());
 
 		let (second_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2).cursor(cursor.unwrap())).await;
+
 		assert_eq!(second_ids.len(), 1);
 		assert!(cursor.is_none());
 
 		let mut ids = first_ids;
 		ids.extend(second_ids);
 		ids.sort();
+
 		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
 	}
 
@@ -999,6 +1009,7 @@ mod tests {
 		);
 
 		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/b").limit(10)).await;
+
 		assert_eq!(ids, vec!["materials/b"]);
 		assert!(cursor.is_none());
 	}
@@ -1036,6 +1047,7 @@ mod tests {
 			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero").limit(10),
 		)
 		.await;
+
 		assert_eq!(ids, vec!["materials/a"]);
 	}
 
@@ -1078,6 +1090,7 @@ mod tests {
 		);
 
 		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/missing").limit(10)).await;
+
 		assert!(ids.is_empty());
 		assert!(cursor.is_none());
 	}
@@ -1099,6 +1112,7 @@ mod tests {
 		assert!(backend.list().await.unwrap().is_empty());
 
 		backend.delete(id).unwrap();
+
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
 	}
 
@@ -1116,6 +1130,7 @@ mod tests {
 		backend.delete(crate::asset::ResourceId::new("materials/a")).unwrap();
 
 		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
+
 		assert!(ids.is_empty());
 	}
 

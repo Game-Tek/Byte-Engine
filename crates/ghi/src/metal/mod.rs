@@ -315,6 +315,7 @@ pub(crate) mod utils {
 
 		#[test]
 		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
+
 			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
 			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
 			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
@@ -323,11 +324,13 @@ pub(crate) mod utils {
 
 		#[test]
 		fn depth16_format_mapping_uses_depth16_unorm() {
+
 			assert_eq!(to_pixel_format(Formats::Depth16), mtl::MTLPixelFormat::Depth16Unorm);
 		}
 
 		#[test]
 		fn sampler_reduction_modes_preserve_the_ghi_contract() {
+
 			assert_eq!(
 				sampler_reduction_mode(SamplingReductionModes::WeightedAverage),
 				mtl::MTLSamplerReductionMode::WeightedAverage
@@ -378,6 +381,7 @@ mod flat_binding_tests {
 
 	#[test]
 	fn sampler_reduction_falls_back_before_apple10() {
+
 		assert_eq!(
 			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Minimum, false),
 			mtl::MTLSamplerReductionMode::WeightedAverage
@@ -604,6 +608,7 @@ mod flat_binding_tests {
 		else {
 			panic!("Missing Metal compute pipeline state. The most likely cause is invalid compute pipeline creation.");
 		};
+
 		assert_eq!(
 			pipeline_state.label().map(|label| label.to_string()),
 			Some("Retained Material Binding Probe Pipeline".to_string())

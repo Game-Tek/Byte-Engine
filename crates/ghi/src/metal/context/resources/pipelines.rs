@@ -333,6 +333,7 @@ impl Context {
 		let compute_pipeline_state = {
 			let shader_parameter = &builder.shader;
 			let shader = &self.shaders[shader_handle.0 as usize];
+
 			assert!(
 				shader.stage == crate::Stages::COMPUTE,
 				"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",

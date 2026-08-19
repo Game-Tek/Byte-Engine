@@ -248,6 +248,7 @@ impl<N> BitMatrixGraph<N> {
 
 	/// Adds an unconnected node and returns its handle.
 	pub fn push(&mut self, value: N) -> NodeHandle {
+
 		assert!(
 			self.nodes.len() < self.capacity,
 			"bit matrix graph capacity exceeded. The graph has reached its fixed node capacity"
@@ -267,6 +268,7 @@ impl<N> BitMatrixGraph<N> {
 
 	/// Connects both endpoints of an undirected edge.
 	pub fn connect(&mut self, (a, b): NodeEdge) {
+
 		assert!(
 			(a as usize) < self.nodes.len() && (b as usize) < self.nodes.len(),
 			"invalid graph edge. One or both node handles are outside the graph"

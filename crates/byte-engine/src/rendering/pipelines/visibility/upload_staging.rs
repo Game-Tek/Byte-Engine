@@ -37,6 +37,7 @@ impl UploadStagingArena {
 
 	/// Waits until one aligned region is available or rejects a request larger than the complete arena.
 	pub(crate) async fn allocate(self: &Arc<Self>, byte_count: usize, alignment: usize) -> Option<StagingLease> {
+
 		assert!(
 			alignment.is_power_of_two(),
 			"Upload staging alignment must be a non-zero power of two."
@@ -133,6 +134,7 @@ fn join_adjacent_regions(left: StagingRegion, right: StagingRegion) -> StagingRe
 	let total_len = left_len + right.bytes.len();
 	let left_pointer = left.bytes.as_mut_ptr();
 	let right_pointer = right.bytes.as_mut_ptr();
+
 	assert_eq!(
 		left_pointer.wrapping_add(left_len),
 		right_pointer,
@@ -193,12 +195,14 @@ mod tests {
 		let complete = executor.block_on(arena.allocate(64, 16)).expect("complete arena lease");
 		let mut blocked = std::pin::pin!(arena.allocate(16, 16));
 		let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+
 		assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
 
 		drop(complete);
 		let Poll::Ready(Some(reused)) = blocked.as_mut().poll(&mut context) else {
 			panic!("A returned staging lease must wake and satisfy one blocked allocation request.");
 		};
+
 		assert_eq!(reused.offset(), 0);
 	}
 
@@ -210,10 +214,12 @@ mod tests {
 		executor.block_on(async {
 			let mut first = arena.allocate(24, 16).await.expect("first lease");
 			let mut second = arena.allocate(24, 16).await.expect("second lease");
+
 			assert_eq!(first.offset(), 0);
 			assert_eq!(second.offset(), 32);
 			first.bytes_mut().fill(3);
 			second.bytes_mut().fill(7);
+
 			assert!(first.bytes_mut().iter().all(|byte| *byte == 3));
 			assert!(second.bytes_mut().iter().all(|byte| *byte == 7));
 		});
@@ -230,6 +236,7 @@ mod tests {
 			drop(first);
 			drop(second);
 			let complete = arena.allocate(64, 16).await.expect("coalesced lease");
+
 			assert_eq!(complete.offset(), 0);
 		});
 	}

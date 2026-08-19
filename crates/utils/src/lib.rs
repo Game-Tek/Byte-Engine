@@ -285,22 +285,27 @@ mod tests {
 	fn test_partition() {
 		let input = [];
 		let expected: Vec<(usize, &[usize])> = vec![];
+
 		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0])];
+
 		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 1];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0, 1])];
+
 		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 2];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0]), (2, &[2])];
+
 		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [1, 2, 3, 5, 6, 7, 9, 10, 11];
 		let expected: Vec<(usize, &[usize])> = vec![(1, &[1, 2, 3]), (5, &[5, 6, 7]), (9, &[9, 10, 11])];
+
 		assert_eq!(super::partition(&input, |x| *x,), expected);
 	}
 
@@ -320,11 +325,13 @@ mod tests {
 			assert_eq!(allocator.remaining(), 8);
 			assert_eq!(allocator.remaining_aligned(8), 8);
 		}
+
 		assert_eq!(&storage[..8], &[1, 2, 3, 0, 4, 5, 6, 7]);
 	}
 
 	#[test]
 	fn extent_dimensions_and_division_preserve_active_axes() {
+
 		assert_eq!(Extent::line(8).dimensions(), 1);
 		assert_eq!(Extent::square(8).dimensions(), 2);
 		assert_eq!(Extent::cube(8, 4, 2).dimensions(), 3);
@@ -339,6 +346,7 @@ mod tests {
 	#[test]
 	fn rgba_multiplication_is_component_wise_and_hashes_all_channels() {
 		let tint = RGBA::new(0.5, 0.25, 1.0, 0.5);
+
 		assert_eq!(tint * RGBA::white(), tint);
 		assert_eq!(tint * 2.0, RGBA::new(1.0, 0.5, 2.0, 1.0));
 		assert_eq!(<[f32; 4]>::from(RGBA::transparent()), [0.0, 0.0, 0.0, 0.0]);
@@ -349,6 +357,7 @@ mod tests {
 			color.hash(&mut hasher);
 			hasher.finish()
 		};
+
 		assert_ne!(hash(tint), hash(RGBA::new(0.5, 0.25, 1.0, 0.25)));
 	}
 
@@ -356,10 +365,12 @@ mod tests {
 	fn byte_slice_views_preserve_native_object_representation() {
 		let values = [0x1122u16, 0x3344u16];
 		let bytes = as_byte_slice(&values);
+
 		assert_eq!(bytes.len(), std::mem::size_of_val(&values));
 
 		let mut mutable = [0u16; 2];
 		as_byte_slice_mut(&mut mutable).copy_from_slice(bytes);
+
 		assert_eq!(mutable, values);
 	}
 }

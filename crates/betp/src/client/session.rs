@@ -274,13 +274,16 @@ mod tests {
 		let mut session = connected_session(connection_id);
 		session.send(true, [1; 1024]);
 		let first_send = session.update(&[]).unwrap();
+
 		assert_eq!(first_send.len(), 1);
 
 		let unrelated_receive = Packets::Data(DataPacket::new(connection_id, ConnectionStatus::new(0, 400, 0), [2; 1024]));
 		let retry = session.update(&[unrelated_receive]).unwrap();
+
 		assert_eq!(retry.len(), 1);
 
 		let explicit_ack = Packets::Data(DataPacket::new(connection_id, ConnectionStatus::new(1, 0, 1), [3; 1024]));
+
 		assert!(session.update(&[explicit_ack]).unwrap().is_empty());
 	}
 
@@ -288,13 +291,16 @@ mod tests {
 	fn one_shot_and_reliable_sends_have_bounded_session_lifetimes() {
 		let mut session = connected_session(7);
 		session.send(false, [1; 1024]);
+
 		assert_eq!(session.update(&[]).unwrap().len(), 1);
 		assert!(session.update(&[]).unwrap().is_empty());
 
 		session.send(true, [2; 1024]);
 		for _ in 0..crate::packet_buffer::MAX_RELIABLE_SEND_ATTEMPTS {
+
 			assert_eq!(session.update(&[]).unwrap().len(), 1);
 		}
+
 		assert!(session.update(&[]).unwrap().is_empty());
 	}
 }

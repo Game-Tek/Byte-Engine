@@ -247,6 +247,7 @@ fn affine_matrix4x3_from_matrix4(matrix: &Matrix) -> AffineMatrix4x3Columns {
 /// Rejects projective pose data before the compact representation would discard it.
 fn assert_affine_matrix(matrix: &Matrix) {
 	const AFFINE_EPSILON: f32 = 0.00001;
+
 	assert!(
 		matrix[(3, 0)].abs() <= AFFINE_EPSILON
 			&& matrix[(3, 1)].abs() <= AFFINE_EPSILON
@@ -488,6 +489,7 @@ mod tests {
 
 	#[test]
 	fn light_data_layout_matches_the_shader_light_record() {
+
 		assert_eq!(std::mem::align_of::<LightData>(), 16);
 		assert_eq!(std::mem::size_of::<LightData>(), 112);
 		assert_eq!(std::mem::offset_of!(LightData, position), 0);

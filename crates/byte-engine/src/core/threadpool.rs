@@ -8,6 +8,7 @@ pub type Scope<'scope, 'b> = std::thread::Scope<'scope, 'b>;
 
 impl<'scope> ScopedThreadPool<'scope> {
 	pub fn with_parallelism(scope: &'scope Scope<'scope, '_>, count: usize) -> Self {
+
 		assert!(
 			count > 0,
 			"Thread-pool parallelism must be greater than zero. No worker threads would be available to execute jobs."
@@ -142,6 +143,7 @@ impl LanePool {
 	///
 	/// Call [`Self::dispatch_all`] or [`Self::dispatch_many`] to run a blocking batch.
 	pub fn with_parallelism(count: usize) -> Self {
+
 		assert!(
 			count > 0,
 			"Lane-pool initialization failed. The requested parallelism is zero, so no worker could execute jobs."
@@ -246,6 +248,7 @@ impl LanePool {
 		// stay borrowed until their completion messages arrive.
 		let submission_result = catch_unwind(AssertUnwindSafe(|| {
 			for job in jobs {
+
 				assert!(
 					submitted < self.parallelism(),
 					"Lane-pool dispatch rejected. The batch contains more jobs than worker lanes; split it into gangs of at most {} jobs.",
@@ -400,10 +403,12 @@ mod tests {
 			let panic = catch_unwind(AssertUnwindSafe(|| {
 				pool.execute(|| panic!("expected worker panic"));
 			}));
+
 			assert!(panic.is_err());
 
 			let mut completed = false;
 			pool.execute(|| completed = true);
+
 			assert!(completed);
 		});
 	}
@@ -454,6 +459,7 @@ mod tests {
 			.downcast_ref::<&str>()
 			.copied()
 			.or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+
 		assert_eq!(
 			message,
 			Some(
@@ -465,6 +471,7 @@ mod tests {
 		pool.dispatch_many(std::iter::once(|| {
 			*completed.lock().unwrap() += 1;
 		}));
+
 		assert_eq!(*completed.lock().unwrap(), 3);
 	}
 
@@ -488,10 +495,12 @@ mod tests {
 				}
 			});
 		}));
+
 		assert!(panic.is_err());
 
 		let mut completed = false;
 		pool.dispatch_many(std::iter::once(|| completed = true));
+
 		assert!(completed);
 	}
 

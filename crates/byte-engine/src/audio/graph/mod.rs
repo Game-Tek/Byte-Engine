@@ -91,6 +91,7 @@ mod tests {
 			input: identity,
 			gain: 0.5,
 		});
+
 		assert_eq!(graph.nodes.len(), 3);
 		let mut factory = AudioGraphFactory::new();
 
@@ -101,6 +102,7 @@ mod tests {
 		let AudioNode::Gain { input, .. } = &*graph.nodes[graph.output.0] else {
 			panic!("optimized output must remain a gain node");
 		};
+
 		assert_eq!(*input, AudioNodeId(0));
 		assert!(!graph.nodes.iter().any(|node| {
 			matches!(&**node, AudioNode::RoundRobin(node) if node.inputs.len() == 1)
@@ -132,10 +134,12 @@ mod tests {
 	#[test]
 	fn nested_functions_compile_to_a_looping_sample_and_gain_processor() {
 		let graph = gain(r#loop(sample("audio/music.ogg")), 0.5);
+
 		assert!(!graph.nodes.spilled());
 		assert!(graph.nodes.iter().all(|node| !node.is_heap()));
 
 		let compiled = graph.compile().expect("valid graph");
+
 		assert_eq!(compiled.resource_id, "audio/music.ogg");
 		assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
 		assert!(!compiled.processors.spilled());
@@ -145,6 +149,7 @@ mod tests {
 	#[test]
 	fn unity_gain_and_duplicate_loop_are_eliminated() {
 		let gain_graph = gain(gain(sample("audio/music.ogg"), 0.5), 1.0);
+
 		assert_eq!(gain_graph.nodes.len(), 2);
 		assert_eq!(
 			gain_graph
@@ -156,6 +161,7 @@ mod tests {
 		);
 
 		let loop_graph = r#loop(r#loop(sample("audio/music.ogg")));
+
 		assert_eq!(loop_graph.nodes.len(), 2);
 		assert_eq!(
 			loop_graph
@@ -240,6 +246,7 @@ mod tests {
 	#[test]
 	fn cloned_graphs_keep_independent_round_robin_cursors() {
 		let mut original = round_robin([sample("audio/a.wav"), sample("audio/b.wav")]);
+
 		assert_eq!(compile_submission(&mut original).resource_id, "audio/a.wav");
 		let mut cloned = original.clone();
 
@@ -252,11 +259,13 @@ mod tests {
 	#[test]
 	fn one_input_round_robin_is_eliminated() {
 		let mut graph = round_robin([gain(sample("audio/a.wav"), 0.5)]);
+
 		assert_eq!(graph.nodes.len(), 2);
 		assert!(!graph.nodes.iter().any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
 
 		for _ in 0..3 {
 			let compiled = compile_submission(&mut graph);
+
 			assert_eq!(compiled.resource_id, "audio/a.wav");
 			assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
 		}
@@ -272,10 +281,12 @@ mod tests {
 	fn round_robin_accepts_the_node_limit_and_rejects_larger_graphs() {
 		let inputs = (0..63).map(|index| sample(format!("audio/{index}.wav")));
 		let maximum = round_robin(inputs);
+
 		assert_eq!(maximum.nodes.len(), 64);
 		assert_eq!(maximum.compile().expect("expected test value").resource_id, "audio/0.wav");
 
 		let too_many = std::panic::catch_unwind(|| round_robin((0..64).map(|index| sample(format!("audio/{index}.wav")))));
+
 		assert!(too_many.is_err());
 	}
 
@@ -288,6 +299,7 @@ mod tests {
 
 		for _ in 0..96 {
 			let resource_id = compile_submission(&mut graph).resource_id;
+
 			assert_ne!(previous.as_deref(), Some(resource_id.as_str()));
 			match resource_id.as_str() {
 				"audio/a.wav" => seen[0] = true,
@@ -314,14 +326,17 @@ mod tests {
 
 		let first = compile_submission(&mut graph);
 		let second = compile_submission(&mut graph);
+
 		assert_ne!(first.resource_id, second.resource_id);
 		for compiled in [first, second] {
 			match compiled.resource_id.as_str() {
 				"audio/a.wav" => {
+
 					assert_eq!(compiled.playback_mode, SamplePlaybackMode::Loop);
 					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.125)]);
 				}
 				"audio/b.wav" => {
+
 					assert_eq!(compiled.playback_rate, PlaybackRate::from_rate(1.5));
 					assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.25)]);
 				}
@@ -335,6 +350,7 @@ mod tests {
 		let mut graph = random([sample("audio/a.wav"), sample("audio/b.wav")]);
 		set_random_state(&mut graph, 0, None);
 		let expected_first = graph.compile().expect("valid graph").resource_id;
+
 		assert_eq!(graph.compile().expect("valid graph").resource_id, expected_first);
 		let mut factory = AudioGraphFactory::new();
 		let mut listener = factory.listener();
@@ -370,19 +386,23 @@ mod tests {
 		let mut cloned = original.clone();
 
 		let cloned_next = cloned.compile().expect("valid clone").resource_id;
+
 		assert_eq!(compile_submission(&mut original).resource_id, cloned_next);
 		compile_submission(&mut original);
+
 		assert_eq!(compile_submission(&mut cloned).resource_id, cloned_next);
 	}
 
 	#[test]
 	fn one_input_random_is_eliminated() {
 		let mut graph = random([gain(sample("audio/a.wav"), 0.5)]);
+
 		assert_eq!(graph.nodes.len(), 2);
 		assert!(!graph.nodes.iter().any(|node| matches!(&**node, AudioNode::Random(_))));
 
 		for _ in 0..3 {
 			let compiled = compile_submission(&mut graph);
+
 			assert_eq!(compiled.resource_id, "audio/a.wav");
 			assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
 		}
@@ -427,6 +447,7 @@ mod tests {
 			input: AudioNodeId(2),
 			gain: 0.5,
 		});
+
 		assert_eq!(graph.nodes.len(), 4);
 		let mut factory = AudioGraphFactory::new();
 
@@ -437,6 +458,7 @@ mod tests {
 		let AudioNode::Gain { input, .. } = &*graph.nodes[graph.output.0] else {
 			panic!("optimized output must remain a gain node");
 		};
+
 		assert_eq!(*input, AudioNodeId(1));
 		assert_eq!(
 			graph
@@ -451,6 +473,7 @@ mod tests {
 	#[test]
 	fn eliminated_identity_nodes_do_not_consume_the_node_limit() {
 		let optimized_random = random([maximum_node_chain()]);
+
 		assert_eq!(optimized_random.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_random
 			.nodes
@@ -458,6 +481,7 @@ mod tests {
 			.any(|node| matches!(&**node, AudioNode::Random(_))));
 
 		let optimized_round_robin = round_robin([maximum_node_chain()]);
+
 		assert_eq!(optimized_round_robin.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_round_robin
 			.nodes
@@ -465,6 +489,7 @@ mod tests {
 			.any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
 
 		let optimized_varispeed = varispeed(maximum_node_chain(), 1.0);
+
 		assert_eq!(optimized_varispeed.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_varispeed
 			.nodes
@@ -472,6 +497,7 @@ mod tests {
 			.any(|node| matches!(&**node, AudioNode::Varispeed { .. })));
 
 		let optimized_pitch_shift = pitch_shift(maximum_node_chain(), 1.0);
+
 		assert_eq!(optimized_pitch_shift.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_pitch_shift
 			.nodes
@@ -479,6 +505,7 @@ mod tests {
 			.any(|node| matches!(&**node, AudioNode::PitchShift { .. })));
 
 		let optimized_gain = gain(maximum_node_chain(), 1.0);
+
 		assert_eq!(optimized_gain.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert!(!optimized_gain
 			.nodes
@@ -486,6 +513,7 @@ mod tests {
 			.any(|node| matches!(&**node, AudioNode::Gain { gain: 1.0, .. })));
 
 		let optimized_loop = r#loop(maximum_looping_chain());
+
 		assert_eq!(optimized_loop.nodes.len(), MAX_AUDIO_GRAPH_NODES);
 		assert_eq!(
 			optimized_loop
@@ -507,16 +535,19 @@ mod tests {
 	fn random_accepts_the_node_limit_and_rejects_larger_graphs() {
 		let inputs = (0..63).map(|index| sample(format!("audio/{index}.wav")));
 		let maximum = random(inputs);
+
 		assert_eq!(maximum.nodes.len(), 64);
 		maximum.compile().expect("maximum-size random graph should compile");
 
 		let too_many = std::panic::catch_unwind(|| random((0..64).map(|index| sample(format!("audio/{index}.wav")))));
+
 		assert!(too_many.is_err());
 	}
 
 	#[test]
 	fn invalid_unselected_branch_does_not_advance_the_cursor() {
 		let mut graph = round_robin([sample("audio/a.wav"), sample("")]);
+
 		assert!(graph.compile().unwrap_err().contains("resource ID is empty"));
 
 		let AudioNode::Sample { resource_id } = &mut *graph.nodes[1] else {
@@ -536,6 +567,7 @@ mod tests {
 
 		let mut graph = random([sample("audio/a.wav"), sample("")]);
 		set_random_state(&mut graph, 0, None);
+
 		assert!(graph.compile().unwrap_err().contains("resource ID is empty"));
 		let AudioNode::Sample { resource_id } = &mut *graph.nodes[1] else {
 			panic!("second input must remain a sample node");
@@ -552,6 +584,7 @@ mod tests {
 			panic!("graph output must be a gain node");
 		};
 		*input = cyclic.output;
+
 		assert!(cyclic.compile().unwrap_err().contains("cycle"));
 
 		let mut disconnected = round_robin([sample("audio/a.wav"), sample("audio/b.wav")]);
@@ -559,6 +592,7 @@ mod tests {
 			panic!("graph output must be a round-robin node");
 		};
 		node.inputs.pop();
+
 		assert!(disconnected.compile().unwrap_err().contains("not connected"));
 
 		let mut disconnected = random([sample("audio/a.wav"), sample("audio/b.wav")]);
@@ -566,6 +600,7 @@ mod tests {
 			panic!("graph output must be a random node");
 		};
 		node.inputs.pop();
+
 		assert!(disconnected.compile().unwrap_err().contains("not connected"));
 
 		let mut outside = gain(sample("audio/a.wav"), 0.5);
@@ -573,6 +608,7 @@ mod tests {
 			panic!("graph output must be a gain node");
 		};
 		*input = AudioNodeId(usize::MAX);
+
 		assert!(outside.compile().unwrap_err().contains("outside this graph"));
 	}
 
@@ -581,12 +617,14 @@ mod tests {
 		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.5)
 			.compile()
 			.expect("valid graph");
+
 		assert_eq!(
 			&compiled.processors[..],
 			&[AudioProcessor::PitchShift(2.0), AudioProcessor::Gain(0.5)]
 		);
 
 		let unity_graph = pitch_shift(pitch_shift(sample("audio/music.ogg"), 2.0), 1.0);
+
 		assert_eq!(unity_graph.nodes.len(), 2);
 		assert_eq!(
 			unity_graph
@@ -597,6 +635,7 @@ mod tests {
 			1
 		);
 		let unity = unity_graph.compile().expect("valid graph");
+
 		assert_eq!(&unity.processors[..], &[AudioProcessor::PitchShift(2.0)]);
 	}
 
@@ -605,11 +644,13 @@ mod tests {
 		let compiled = gain(gain(sample("audio/music.ogg"), 0.5), 0.25)
 			.compile()
 			.expect("valid graph");
+
 		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.125)]);
 
 		let separated = gain(pitch_shift(gain(sample("audio/music.ogg"), 0.5), 2.0), 0.25)
 			.compile()
 			.expect("valid graph");
+
 		assert_eq!(
 			&separated.processors[..],
 			&[
@@ -650,6 +691,7 @@ mod tests {
 				samples.fill(invocation);
 			}
 		});
+
 		assert_eq!(graph, graph.clone());
 
 		let (_, first_plan) = graph.compile().expect("valid graph").into_parts();
@@ -697,6 +739,7 @@ mod tests {
 		let compiled = gain(pitch_shift(sample("audio/music.ogg"), 2.0), 0.0)
 			.compile()
 			.expect("valid graph");
+
 		assert!(compiled.muted);
 		assert!(compiled.processors.is_empty());
 		assert_eq!(compiled.muted_drain_latency, PITCH_SHIFT_LATENCY);
@@ -718,6 +761,7 @@ mod tests {
 		assert_eq!(&compiled.processors[..], &[AudioProcessor::Gain(0.5)]);
 
 		let unity_graph = varispeed(varispeed(sample("audio/music.ogg"), 1.5), 1.0);
+
 		assert_eq!(unity_graph.nodes.len(), 2);
 		assert_eq!(
 			unity_graph
@@ -728,9 +772,11 @@ mod tests {
 			1
 		);
 		let unity = unity_graph.compile().expect("valid graph");
+
 		assert_eq!(unity.playback_rate, PlaybackRate::from_rate(1.5));
 
 		let unity = varispeed(sample("audio/music.ogg"), 1.0).compile().expect("valid graph");
+
 		assert_eq!(unity.playback_rate, PlaybackRate::UNITY);
 	}
 

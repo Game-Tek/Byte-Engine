@@ -312,8 +312,8 @@ mod tests {
 		let mut values = StableVec::new();
 
 		let handle = values.push("first");
-		assert_eq!(values.remove(handle), Some("first"));
 
+		assert_eq!(values.remove(handle), Some("first"));
 		assert_eq!(values.insert(handle, "stale"), None);
 		assert_eq!(values.len(), 0);
 	}
@@ -328,7 +328,6 @@ mod tests {
 
 		assert_eq!(values.remove(second), Some("second"));
 		assert_eq!(values.pop(), Some("third"));
-
 		assert_eq!(values.get(first), Some(&"first"));
 		assert_eq!(values.get(second), None);
 		assert_eq!(values.get(third), None);

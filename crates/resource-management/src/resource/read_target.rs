@@ -182,6 +182,7 @@ mod tests {
 		let first = ReadTargetsMut::from(first_bytes.as_mut_slice()).with_offset(3).with_size(4);
 		match first {
 			ReadTargetsMut::Buffer { buffer, offset, size } => {
+
 				assert_eq!(buffer.len(), 8);
 				assert_eq!(offset, 3);
 				assert_eq!(size, Some(4));
@@ -197,6 +198,7 @@ mod tests {
 		.with_size(2)
 		.with_offset(1);
 		let immutable = ReadTargets::from(second);
+
 		assert_eq!(immutable.buffer().map(<[u8]>::len), Some(6));
 	}
 
@@ -214,6 +216,7 @@ mod tests {
 			Some([4, 5].as_slice())
 		);
 		let immutable = ReadTargets::from(mutable);
+
 		assert_eq!(immutable.stream("vertices").map(Stream::buffer), Some([1, 2, 3].as_slice()));
 	}
 

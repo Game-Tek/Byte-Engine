@@ -321,6 +321,7 @@ mod tests {
 		);
 
 		let result = std::panic::catch_unwind(|| crate::assert_float_eq!(f32::NAN, 0.0));
+
 		assert!(result.is_err());
 	}
 
@@ -349,6 +350,7 @@ mod tests {
 	#[test]
 	fn inverse_preserves_identity_and_inverts_a_scale_matrix() {
 		let identity = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+
 		assert_eq!(inverse(identity), identity);
 
 		let scale = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0);

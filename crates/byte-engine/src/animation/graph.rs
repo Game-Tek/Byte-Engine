@@ -328,6 +328,7 @@ impl<'builder, I> AnimationGraphStateBuilder<'builder, I> {
 impl<'builder, I> AnimationGraphState<'builder, I> {
 	/// Starts an authored transition that completes in `target`.
 	pub fn to(self, target: Self) -> AnimationGraphTransitionBuilder<'builder, I> {
+
 		assert!(
 			std::ptr::eq(self.data, target.data),
 			"animation graph states must use the same builder"
@@ -459,6 +460,7 @@ impl<I> AnimationGraphBuilder<I> {
 
 	/// Validates the graph and selects the initial state.
 	pub fn build(&self, initial: AnimationGraphState<'_, I>) -> Result<AnimationGraph<I>, AnimationGraphBuildError> {
+
 		assert!(
 			std::ptr::eq(&self.data, initial.data),
 			"the initial animation state must use this builder"
@@ -670,11 +672,13 @@ mod tests {
 			.with(AnimationClip::once("restart.animation"))
 			.when(AnimationTransition::always().inertialize(MediaTime::from_millis(100)));
 		let graph = builder.build(idle).expect("expected graph value");
+
 		assert_eq!(graph.state_count(), 3);
 		assert_eq!(graph.state(idle.id).transitions.len(), 2);
 
 		let invalid = AnimationGraph::<()>::builder();
 		let state = invalid.state("").with(AnimationClip::once("clip.animation"));
+
 		assert!(matches!(
 			invalid.build(state),
 			Err(AnimationGraphBuildError::EmptyStateName { state: 0 })
@@ -720,6 +724,7 @@ mod tests {
 		let looping_state = AnimationGraph::<()>::builder();
 		let idle = looping_state.state("idle").with(AnimationClip::looping("idle.animation"));
 		looping_state.transition_state("invalid", AnimationClip::looping("invalid.animation"), idle.id);
+
 		assert!(matches!(
 			looping_state.build(idle),
 			Err(AnimationGraphBuildError::TransitionStateMustPlayOnce { state: 1 })
@@ -734,6 +739,7 @@ mod tests {
 			AnimationClip::once("invalid.animation"),
 			super::AnimationStateId(2),
 		);
+
 		assert!(matches!(
 			missing_completion.build(idle),
 			Err(AnimationGraphBuildError::TransitionStateCompletionOutOfRange {

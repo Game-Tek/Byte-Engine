@@ -476,12 +476,14 @@ mod tests {
 			vec![(4, 2), (2, 1), (1, 1)]
 		);
 		for level in levels.levels() {
+
 			assert!(level.data.chunks_exact(4).all(|pixel| pixel == [64, 128, 192, 255]));
 		}
 
 		let reused = generator
 			.generate_lower_levels(Formats::RGBA8, 8, 4, &base)
 			.expect("the cached GPU pyramid should support another bake");
+
 		assert_eq!(reused.levels().count(), 3);
 	}
 
@@ -498,6 +500,7 @@ mod tests {
 		let mut levels = levels.levels();
 
 		let first = levels.next().expect("the 2x2 level should exist");
+
 		assert_eq!(
 			first.data,
 			[10, 10, 10, 255, 18, 18, 18, 255, 42, 42, 42, 255, 50, 50, 50, 255,]

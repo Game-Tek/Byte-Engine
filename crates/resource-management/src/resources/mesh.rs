@@ -454,10 +454,12 @@ mod tests {
 				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
 			}],
 		};
+
 		assert!(validate_skin_metadata(None, std::slice::from_ref(&skin), &skin_vertex_layout(), &[]).is_err());
 
 		let storage = TestStorageBackend::new();
 		let skeleton = test_skeleton(&storage).await;
+
 		assert!(validate_skin_metadata(
 			Some(&skeleton),
 			std::slice::from_ref(&skin),
@@ -478,13 +480,16 @@ mod tests {
 	async fn primitive_transform_nodes_require_a_matching_skeleton_node() {
 		let mut primitive = test_primitive(None, false, false);
 		primitive.transform_node = Some(0);
+
 		assert!(validate_skin_metadata(None, &[], &[], std::slice::from_ref(&primitive)).is_err());
 
 		let storage = TestStorageBackend::new();
 		let skeleton = test_skeleton(&storage).await;
+
 		assert!(validate_skin_metadata(Some(&skeleton), &[], &[], std::slice::from_ref(&primitive)).is_ok());
 
 		primitive.transform_node = Some(1);
+
 		assert!(validate_skin_metadata(Some(&skeleton), &[], &[], std::slice::from_ref(&primitive)).is_err());
 	}
 

@@ -105,6 +105,7 @@ mod tests {
 
 		for input in [0.18, 4.0, 16.0] {
 			let output = run_aces_vm(&program, [input, input, input, 0.0]);
+
 			assert!(
 				output[..3]
 					.iter()

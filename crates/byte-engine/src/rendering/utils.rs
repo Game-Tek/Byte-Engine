@@ -99,6 +99,7 @@ impl<I> MeshBuffersStats<I> {
 
 	pub fn add_mesh(&mut self, mesh: MeshStats, hash: u64) -> AddMeshResponse {
 		if let Some(existing_mesh) = self.meshes.get(&(hash as usize)) {
+
 			assert_eq!(
 				existing_mesh.vertex_count, mesh.vertex_count,
 				"Tried to add a mesh with a hash which already exists but their vertex counts don't match."
@@ -141,6 +142,7 @@ impl<I> MeshBuffersStats<I> {
 	}
 
 	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> StableVecHandle {
+
 		assert!(
 			self.meshes.contains_key(&mesh_id),
 			"Provided mesh_id for instance does not exist!"
@@ -347,6 +349,7 @@ mod tests {
 		let mut batches = batches.iter();
 
 		let batch = batches.next().expect("expected test value");
+
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 0);
@@ -370,6 +373,7 @@ mod tests {
 		let mut batches = batches.iter();
 
 		let batch = batches.next().expect("expected test value");
+
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 2);
 		assert_eq!(batch.base_vertex(), 0);
@@ -398,6 +402,7 @@ mod tests {
 		let mut batches = batches.iter();
 
 		let batch = batches.next().expect("expected test value");
+
 		assert_eq!(batch.index_count(), 96);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 0);
@@ -405,6 +410,7 @@ mod tests {
 		assert_eq!(batch.base_instance(), 0);
 
 		let batch = batches.next().expect("expected test value");
+
 		assert_eq!(batch.index_count(), 192);
 		assert_eq!(batch.instance_count(), 1);
 		assert_eq!(batch.base_vertex(), 32);
@@ -446,6 +452,7 @@ mod tests {
 		mesh_buffer_stats.add_instance(second_mesh.id(), "second-a");
 		mesh_buffer_stats.add_instance(second_mesh.id(), "second-b");
 		mesh_buffer_stats.add_instance(first_mesh.id(), "last");
+
 		assert_eq!(mesh_buffer_stats.remove_instance(removed), Some("removed"));
 
 		let heap_batches = mesh_buffer_stats.get_instance_batches();

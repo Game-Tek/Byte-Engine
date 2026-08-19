@@ -909,6 +909,7 @@ mod tests {
 		assert_eq!(completed.load(Ordering::Relaxed), 3);
 
 		let values = unwrap_dispatch(alley.execute(|lane| lane.idx()));
+
 		assert_eq!(values, [0, 1, 2, 3]);
 	}
 
@@ -998,12 +999,14 @@ mod tests {
 		let result = alley.execute(|lane| {
 			let _: usize = lane.broadcast(|| panic!("expected broadcast panic"));
 		});
+
 		assert!(result.is_err());
 
 		let completed = AtomicUsize::new(0);
 		unwrap_dispatch(alley.execute(|_| {
 			completed.fetch_add(1, Ordering::Relaxed);
 		}));
+
 		assert_eq!(completed.load(Ordering::Relaxed), 8);
 	}
 
@@ -1047,6 +1050,7 @@ mod tests {
 			assert_eq!(small.nth(2), Some(2));
 			assert_eq!(small.len(), 5);
 			for (expected_lane, value) in full.enumerate() {
+
 				assert_eq!(value, Value64([expected_lane as u8; 64]));
 			}
 		}));
@@ -1078,6 +1082,7 @@ mod tests {
 				let _ = lane.each(|| 1usize);
 			}
 		});
+
 		assert!(result.is_err());
 	}
 
@@ -1087,12 +1092,14 @@ mod tests {
 		let result = alley.execute(|lane| {
 			let _ = lane.each(|| -> usize { panic!("expected each panic") });
 		});
+
 		assert!(result.is_err());
 
 		let completed = AtomicUsize::new(0);
 		unwrap_dispatch(alley.execute(|_| {
 			completed.fetch_add(1, Ordering::Relaxed);
 		}));
+
 		assert_eq!(completed.load(Ordering::Relaxed), 8);
 	}
 

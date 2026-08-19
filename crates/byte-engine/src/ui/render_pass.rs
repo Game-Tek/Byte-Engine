@@ -540,6 +540,7 @@ impl RenderPass for UiRenderPass {
 
 		let mut text_groups = Vec::new();
 		if !self.data.texts.is_empty() {
+
 			assert!(
 				extent.width() > 0 && extent.height() > 0,
 				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
@@ -867,12 +868,14 @@ mod tests {
 	const UI_BLUR_COMPOSITE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-composite.besl");
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
+
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
 		assert!((actual[1] - expected[1]).abs() < 0.0001);
 	}
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
+
 			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
 		}
 	}
@@ -1212,6 +1215,7 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_filter_push_layout_matches_the_production_shader() {
+
 		assert_eq!(size_of::<UiBlurFilterPush>(), 128);
 		assert_eq!(align_of::<UiBlurFilterPush>(), 16);
 		assert_eq!(offset_of!(UiBlurFilterPush, filter_data), 0);
@@ -1228,6 +1232,7 @@ mod tests {
 		let layout = executable
 			.push_constant_layout()
 			.expect("Missing production blur push constants. The most likely cause is a changed filter interface.");
+
 		assert_eq!(layout.size(), 128);
 		for (name, expected_offset) in [
 			("filter_data", 0),
@@ -1246,6 +1251,7 @@ mod tests {
 				.find(|member| member.name() == name)
 				.unwrap_or_else(|| panic!("Missing reflected blur field `{name}`"))
 				.offset();
+
 			assert_eq!(actual, expected_offset, "Unexpected reflected offset for `{name}`");
 		}
 	}
@@ -1257,6 +1263,7 @@ mod tests {
 		for sigma in [0.0, smallest_test_sigma, 4.0, 5.0, 6.0, largest_half_sigma] {
 			let kernel = UiBlurKernel::gaussian(sigma);
 			let energy = kernel.center_weight + 2.0 * kernel.pair_weights.iter().sum::<f32>();
+
 			assert!(
 				(energy - 1.0).abs() <= 2e-6,
 				"Gaussian energy drifted to {energy} at sigma {sigma}"
@@ -1268,6 +1275,7 @@ mod tests {
 				let first = (pair_index * 2 + 1) as f32;
 				let weight = kernel.pair_weights[pair_index];
 				let offset = kernel.pair_offsets[pair_index];
+
 				assert!(weight.is_finite() && weight >= 0.0);
 				assert!(offset.is_finite() && (first..=first + 1.0).contains(&offset));
 				let first_weight = weight * (first + 1.0 - offset);
@@ -1276,11 +1284,13 @@ mod tests {
 			}
 			if sigma >= smallest_test_sigma {
 				let relative_error = (second_moment - sigma * sigma).abs() / (sigma * sigma);
+
 				assert!(
 					relative_error < 0.02,
 					"Gaussian variance error {relative_error} at sigma {sigma}"
 				);
 			} else {
+
 				assert_eq!(second_moment, 0.0);
 			}
 		}
@@ -1295,6 +1305,7 @@ mod tests {
 				if blur_uses_full_resolution(resolution_mix) {
 					let observed = blur_kernel_variance(UiBlurKernel::gaussian(sigma));
 					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
+
 					assert!(
 						relative_error < 0.02,
 						"Full-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
@@ -1304,6 +1315,7 @@ mod tests {
 					let half_variance = blur_kernel_variance(UiBlurKernel::gaussian(blur_half_sigma(sigma)));
 					let observed = 4.0 * half_variance + 2.75;
 					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
+
 					assert!(
 						relative_error < 0.05,
 						"Half-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
@@ -1355,6 +1367,7 @@ mod tests {
 			run_at(&executable, &mut descriptors, [center - 1, 1]);
 			run_at(&executable, &mut descriptors, [center, 0]);
 		}
+
 		assert!(rgba(&result, [center - 1, 1])[0] > 0.0);
 		assert_eq!(rgba(&result, [center, 0])[0], 0.0);
 	}
@@ -1396,6 +1409,7 @@ mod tests {
 			let positive = profile[(center + distance) as usize];
 			let negative = profile[(center - distance) as usize];
 			let expected = (-0.5 * (distance as f32 / sigma).powi(2)).exp() / normalization;
+
 			assert!(
 				(positive - negative).abs() < 2e-6,
 				"Asymmetric Gaussian at distance {distance}"
@@ -1405,10 +1419,12 @@ mod tests {
 				"Unexpected Gaussian tap at distance {distance}"
 			);
 			if distance > 0 {
+
 				assert!(profile[(center + distance - 1) as usize] >= positive);
 			}
 		}
 		let energy = profile.iter().sum::<f32>();
+
 		assert!((energy - 1.0).abs() < 2e-5, "Production Gaussian energy drifted to {energy}");
 	}
 
@@ -1476,6 +1492,7 @@ mod tests {
 			let expected_coordinate = pixel_position[0] * 0.5 - 0.5;
 			let output = run_blur_composite_vm(&full, [full_width, 1], &half, [half_width, 1], pixel_position, 1.0, [0.0; 4]);
 			let expected = expected_coordinate / (half_width - 1) as f32;
+
 			assert!(
 				(output[0] - expected).abs() < 2e-5,
 				"Half-lattice phase drift at width {full_width}"
@@ -1490,6 +1507,7 @@ mod tests {
 			usize::from(blur_uses_full_resolution(resolution_mix)) * 2
 				+ usize::from(blur_uses_half_resolution(resolution_mix)) * 3
 		};
+
 		assert_eq!(blur_resolution_mix(4.0), 0.0);
 		assert_eq!(blur_resolution_mix(5.0), 0.5);
 		assert_eq!(blur_resolution_mix(6.0), 1.0);
@@ -1502,6 +1520,7 @@ mod tests {
 		let mut previous = 0.0;
 		for step in 0..=512 {
 			let resolution_mix = blur_resolution_mix(blur_sigma(step as f32 * 0.125));
+
 			assert!(
 				resolution_mix >= previous,
 				"Resolution crossover stepped backward at sweep index {step}"
@@ -1512,6 +1531,7 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_half_extent_keeps_every_awkward_edge_texel() {
+
 		assert_eq!(blur_half_extent(Extent::rectangle(1920, 1080)), Extent::rectangle(960, 540));
 		assert_eq!(blur_half_extent(Extent::rectangle(1919, 1079)), Extent::rectangle(960, 540));
 		assert_eq!(blur_half_extent(Extent::rectangle(2802, 1)), Extent::rectangle(1401, 1));
@@ -1523,6 +1543,7 @@ mod tests {
 		let viewport = Extent::rectangle(1920, 1080);
 		let bounds = [400.0, 300.0, 800.0, 600.0];
 		let full = blur_full_dispatch_regions(bounds, viewport);
+
 		assert_eq!(
 			full.vertical,
 			UiBlurDispatchRegion {
@@ -1539,6 +1560,7 @@ mod tests {
 		);
 
 		let half = blur_half_dispatch_regions(bounds, viewport);
+
 		assert_eq!(
 			half.filter.vertical,
 			UiBlurDispatchRegion {
@@ -1601,6 +1623,7 @@ mod tests {
 							for sampled_x in [sample[0].floor(), sample[0].ceil()] {
 								let sampled_x = sampled_x.clamp(0.0, target.width().saturating_sub(1) as f32) as u32;
 								let sampled_y = sampled_y.clamp(0.0, target.height().saturating_sub(1) as f32) as u32;
+
 								assert!((region.origin[0]..end[0]).contains(&sampled_x));
 								assert!((region.origin[1]..end[1]).contains(&sampled_y));
 							}
@@ -1635,6 +1658,7 @@ mod tests {
 						run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, display_scale);
 					for color in &output {
 						for channel in color.iter().take(3) {
+
 							assert!(
 								channel.is_finite() && (0.0..=1.0).contains(channel),
 								"Adaptive blur introduced an invalid color at radius {radius} and scale {display_scale}"
@@ -1642,6 +1666,7 @@ mod tests {
 						}
 					}
 					let output_variation = output.windows(2).map(|pair| (pair[1][0] - pair[0][0]).abs()).sum::<f32>();
+
 					assert!(
 						output_variation <= input_variation + 1e-4,
 						"Positive blur increased scanline variation at radius {radius} and scale {display_scale}"
@@ -1651,8 +1676,10 @@ mod tests {
 							assert_rgba_close(color, [0.25, 0.5, 0.75, 1.0], 2e-5);
 						}
 					} else if radius == 0.0 {
+
 						assert_eq!(output, input);
 					} else {
+
 						assert!(output
 							.iter()
 							.zip(input)
@@ -1677,6 +1704,7 @@ mod tests {
 
 		let at_zero = sample_center(0.0);
 		let near_zero = sample_center(1e-6);
+
 		assert!((at_zero - near_zero).abs() < 1e-6, "Blur popped when leaving radius zero");
 
 		let mut previous = at_zero;
@@ -1685,11 +1713,13 @@ mod tests {
 		for step in 1..=512 {
 			let current = sample_center(step as f32 * 0.125);
 			let delta = (current - previous).abs();
+
 			assert!(current.is_finite());
 			largest_step = largest_step.max(delta);
 			plateau_steps += usize::from(delta <= 1e-7);
 			previous = current;
 		}
+
 		assert!(
 			largest_step < 0.4,
 			"Radius sweep contained a visible output jump of {largest_step}"
@@ -1701,6 +1731,7 @@ mod tests {
 			let crossover_radius = (crossover_sigma / sigma_scale).powi(2);
 			let before = sample_center(crossover_radius - 0.001);
 			let after = sample_center(crossover_radius + 0.001);
+
 			assert!(
 				(before - after).abs() < 5e-4,
 				"Resolution crossover at sigma {crossover_sigma} introduced a discontinuity"
@@ -1720,6 +1751,7 @@ mod tests {
 			let energy = output.iter().map(|color| color[0]).sum::<f32>();
 			let centroid = output.iter().enumerate().map(|(x, color)| x as f32 * color[0]).sum::<f32>() / energy;
 			let source_centroid = (width / 2) as f32;
+
 			assert!(
 				(centroid - source_centroid).abs() <= 0.25,
 				"Blur centroid drifted from {source_centroid} to {centroid} at width {width}"
@@ -1744,6 +1776,7 @@ mod tests {
 		run_blur_downsample_region_vm(&downsample, &mut source, &mut downsampled, regions.downsample);
 		for y in regions.downsample.origin[1]..regions.downsample.origin[1] + regions.downsample.extent.height() {
 			for x in regions.downsample.origin[0]..regions.downsample.origin[0] + regions.downsample.extent.width() {
+
 				assert!(
 					rgba(&downsampled, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale downsample texel at [{x}, {y}]"
@@ -1768,6 +1801,7 @@ mod tests {
 			for x in regions.filter.horizontal.origin[0]
 				..regions.filter.horizontal.origin[0] + regions.filter.horizontal.extent.width()
 			{
+
 				assert!(
 					rgba(&horizontal, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale horizontal texel at [{x}, {y}]"
@@ -1788,6 +1822,7 @@ mod tests {
 			for x in
 				regions.filter.vertical.origin[0]..regions.filter.vertical.origin[0] + regions.filter.vertical.extent.width()
 			{
+
 				assert!(
 					rgba(&vertical, [x, y]).iter().all(|channel| channel.is_finite()),
 					"Stale vertical texel at [{x}, {y}]"
@@ -2000,6 +2035,7 @@ mod tests {
 		);
 		assert_vec2_close(geometry.vertices[0].position, [-0.8, 0.6]);
 		assert_vec2_close(geometry.vertices[2].position, [-0.2, -0.2]);
+
 		assert_eq!(geometry.vertices[2].local_position, [60.0, 40.0]);
 		assert_eq!(geometry.vertices[0].rect_size, [60.0, 40.0]);
 		assert_eq!(geometry.vertices[0].corner_radius, 8.0);
@@ -2041,6 +2077,7 @@ mod tests {
 		assert_eq!(geometry.batches[0].depth, 2);
 		assert_eq!(geometry.batches[0].order, 7);
 		let expected_sigma = blur_sigma(36.0);
+
 		assert_eq!(geometry.batches[0].resolution_mix, 1.0);
 		assert_eq!(geometry.batches[0].full_kernel, UiBlurKernel::gaussian(expected_sigma));
 		assert_eq!(
@@ -2056,6 +2093,7 @@ mod tests {
 		);
 		assert!(geometry.vertices.iter().all(|vertex| vertex.blur_resolution_mix == 1.0));
 		assert_vec2_close(geometry.vertices[0].position, [-0.8, 0.6]);
+
 		assert_eq!(geometry.vertices[0].color, [0.0, 0.0, 0.0, 0.45]);
 	}
 
@@ -2241,6 +2279,7 @@ mod tests {
 
 		assert_vec2_close(geometry.vertices[0].feather_mask_position, [20.0, 60.0]);
 		assert_vec2_close(geometry.vertices[0].feather_mask_size, [60.0, 120.0]);
+
 		assert_eq!(geometry.vertices[0].feather_mask_edges, [3.0, 4.0, 9.0, 8.0]);
 		assert_eq!(geometry.vertices[0].feather_mask_corner, [10.0, 3.0]);
 	}
@@ -2699,6 +2738,7 @@ mod tests {
 				Value::Vec2F([0.625, 0.875]),
 				Value::F32(0.375),
 			]) {
+
 			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
 		}
 	}
@@ -2929,6 +2969,7 @@ mod tests {
 
 	#[test]
 	fn skips_zero_alpha_text_before_rasterization() {
+
 		assert!(!should_rasterize_text(&UiTextDrawElement {
 			depth: 0,
 			order: 0,
@@ -2940,7 +2981,6 @@ mod tests {
 			font_size: 16.0,
 			text: "Hidden".to_string(),
 		}));
-
 		assert!(should_rasterize_text(&UiTextDrawElement {
 			depth: 0,
 			order: 0,
@@ -2969,6 +3009,7 @@ mod tests {
 		let mut text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let text_render = text_engine.render(&mut text_snapshot);
 		update_from_render(&text_render, &mut draw_list);
+
 		assert_eq!(draw_list.texts.len(), 1);
 
 		let mut no_text_engine = Engine::new();
@@ -2999,6 +3040,7 @@ mod tests {
 		let mut image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let image_render = image_engine.render(&mut image_snapshot);
 		update_from_render(&image_render, &mut draw_list);
+
 		assert_eq!(draw_list.images.len(), 1);
 
 		let mut no_image_engine = Engine::new();
@@ -3126,6 +3168,7 @@ mod tests {
 			feather_mask: None,
 			opacity: 0.0,
 		};
+
 		assert!(!should_draw_image(&hidden));
 
 		let draw_list = UiDrawList {

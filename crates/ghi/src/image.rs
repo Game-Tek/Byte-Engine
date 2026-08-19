@@ -154,6 +154,7 @@ mod tests {
 	#[test]
 	fn builder_defaults_are_valid_for_a_single_static_image() {
 		let builder = Builder::new(Formats::RGBA8UNORM, Uses::Image);
+
 		assert_eq!(builder.get_name(), None);
 		assert_eq!(builder.get_format(), Formats::RGBA8UNORM);
 		assert_eq!(builder.extent, Extent::cube(0, 0, 0));
@@ -204,12 +205,14 @@ mod tests {
 	#[test]
 	fn private_image_handle_round_trips_index_and_variant() {
 		let handle = ImageHandle::new(9);
+
 		assert_eq!(handle.index(), 9);
 		assert!(matches!(PrivateHandles::from(handle), PrivateHandles::Image(value) if value == handle));
 	}
 
 	#[test]
 	fn mip_extent_halves_non_power_of_two_dimensions_without_changing_dimensionality() {
+
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 0), Extent::rectangle(17, 9));
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 1), Extent::rectangle(8, 4));
 		assert_eq!(mip_extent(Extent::rectangle(17, 9), 4), Extent::rectangle(1, 1));

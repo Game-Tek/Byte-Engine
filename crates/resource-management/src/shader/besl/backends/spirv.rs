@@ -83,6 +83,7 @@ mod compilation {
 
 				match node_ref {
 					besl::Nodes::Function { name, .. } => {
+
 						assert_eq!(name, "main");
 					}
 					_ => panic!("Root node must be a function node."),
@@ -125,16 +126,19 @@ mod compilation {
 			assert_eq!(bindings.len(), 3);
 
 			let buffer_binding = &bindings[0];
+
 			assert_eq!(buffer_binding.slot, 0);
 			assert_eq!(buffer_binding.read, true);
 			assert_eq!(buffer_binding.write, true);
 
 			let image_binding = &bindings[1];
+
 			assert_eq!(image_binding.slot, 1);
 			assert_eq!(image_binding.read, false);
 			assert_eq!(image_binding.write, true);
 
 			let texture_binding = &bindings[2];
+
 			assert_eq!(texture_binding.slot, 2);
 			assert_eq!(texture_binding.read, true);
 			assert_eq!(texture_binding.write, false);

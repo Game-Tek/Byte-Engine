@@ -511,14 +511,17 @@ mod tests {
 		let mut server_output = Vec::new();
 
 		client.advance(now, &mut client_output).expect("expected test value");
+
 		assert_eq!(client_output[0].len(), CONNECTION_DATAGRAM_SIZE);
 		server
 			.process_datagram(client_output[0].as_bytes(), now, &mut server_output)
 			.expect("expected test value");
+
 		assert_eq!(server_output[0].len(), CHALLENGE_DATAGRAM_SIZE);
 		client
 			.process_datagram(server_output[0].as_bytes(), now, &mut client_output)
 			.expect("expected test value");
+
 		assert_eq!(client_output[0].len(), CONNECTION_DATAGRAM_SIZE);
 	}
 
@@ -671,6 +674,7 @@ mod tests {
 		client
 			.advance(now, &mut outbound)
 			.expect("client should encode maximum-size data");
+
 		assert_eq!(outbound.len(), 1);
 		assert_eq!(outbound[0].len(), MAX_BETP_DATAGRAM_SIZE);
 		betp::read_packet(outbound[0].as_bytes()).expect("client packet should be valid");
@@ -679,6 +683,7 @@ mod tests {
 		server
 			.advance(now, &mut outbound)
 			.expect("server should encode maximum-size data");
+
 		assert_eq!(outbound.len(), 1);
 		assert_eq!(outbound[0].len(), MAX_BETP_DATAGRAM_SIZE);
 		betp::read_packet(outbound[0].as_bytes()).expect("server packet should be valid");

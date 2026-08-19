@@ -91,6 +91,7 @@ mod tests {
 		let mut cube = Cube::new(Vector::<LocalSpace>::new(1.0, 2.0, 3.0));
 		sphere.set_position(Point::new(4.0, 5.0, 6.0));
 		cube.set_position(Point::new(-1.0, -2.0, -3.0));
+
 		assert_eq!(sphere.position(), Point::new(4.0, 5.0, 6.0));
 		assert_eq!(cube.position(), Point::new(-1.0, -2.0, -3.0));
 		assert!(matches!(cube.shape(), Shapes::Cube { size } if size == Vector::new(1.0, 2.0, 3.0)));

@@ -428,10 +428,12 @@ mod tests {
 				}),
 			},
 		);
+
 		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);
 		model.tracks[0].node = 2;
+
 		assert!(model.solve(&storage).await.is_err());
 	}
 
@@ -445,10 +447,12 @@ mod tests {
 			in_tangents: vec![[0.0; 3]],
 			out_tangents: vec![[0.0; 3], [f32::NAN; 3]],
 		});
+
 		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);
 		model.duration = f32::INFINITY;
+
 		assert!(model.solve(&storage).await.is_err());
 	}
 
@@ -460,6 +464,7 @@ mod tests {
 			times: vec![0.0],
 			values: vec![[0.0; 4]],
 		});
+
 		assert!(model.solve(&storage).await.is_err());
 
 		let mut model = valid_model(&storage);

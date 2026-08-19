@@ -25,6 +25,7 @@ impl Image {
 	pub fn from_rgba(width: u32, height: u32, pixels: impl Into<Vec<u8>>) -> Self {
 		let pixels = pixels.into();
 		let expected_len = width as usize * height as usize * 4;
+
 		assert_eq!(
 			pixels.len(),
 			expected_len,
@@ -79,6 +80,7 @@ impl Image {
 	pub fn set_rgba(&mut self, width: u32, height: u32, pixels: impl Into<Vec<u8>>) {
 		let pixels = pixels.into();
 		let expected_len = width as usize * height as usize * 4;
+
 		assert_eq!(
 			pixels.len(),
 			expected_len,

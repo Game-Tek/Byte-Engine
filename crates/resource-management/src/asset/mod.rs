@@ -4,22 +4,10 @@ use std::{alloc::Allocator, io::ErrorKind};
 
 use serde_json::{Map, Value};
 
-pub mod asset_handler;
-pub mod asset_manager;
 mod audio_utils;
 mod bake_memory;
-
-pub mod bema_asset_handler;
-pub mod besl_shader_asset_handler;
-pub mod exr_asset_handler;
-pub mod fbx_asset_handler;
-pub mod gltf_asset_handler;
-pub mod ies_asset_handler;
-pub mod lut_asset_handler;
-pub mod ogg_asset_handler;
-pub mod pipeline_asset_handler;
-pub mod png_asset_handler;
-pub mod wav_asset_handler;
+pub mod handler;
+pub mod manager;
 
 #[cfg(debug_assertions)]
 pub mod resource_trace;
@@ -28,6 +16,7 @@ pub mod resource_trace;
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
 
 pub type BEADType = Value;
+
 pub type JsonObject = Map<String, Value>;
 
 /// Parses authored JSON5 text into a Serde JSON value.
@@ -47,6 +36,7 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 	let Some(value) = spec.and_then(|spec| spec.get("default_resource")) else {
 		return Ok(None);
 	};
+
 	let Some(value) = value.as_str() else {
 		return Err("`default_resource` must be the string `mesh` or `animation`".to_string());
 	};
@@ -64,11 +54,11 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 
 /// Stores one generated model and returns the serialized reference used by its parent resource.
 pub(crate) fn store_model<M: crate::Model>(
-	context: asset_handler::BakeContext<'_>,
+	context: handler::BakeContext<'_>,
 	id: &str,
 	model: M,
 	data: &[u8],
-) -> Result<crate::ReferenceModel<M>, asset_handler::LoadErrors> {
+) -> Result<crate::ReferenceModel<M>, handler::LoadErrors> {
 	context
 		.store_generated(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
 		.map(Into::into)
@@ -95,7 +85,9 @@ pub(crate) fn sanitize_material_name(name: &str) -> String {
 }
 
 #[cfg(test)]
+
 mod container_default_resource_tests {
+
 	use super::{container_default_resource, ContainerDefaultResource};
 
 	#[test]
@@ -105,10 +97,12 @@ mod container_default_resource_tests {
 			("Animation", ContainerDefaultResource::Animation),
 		] {
 			let spec = super::parse_json(&format!(r#"{{ "default_resource": "{value}" }}"#)).unwrap();
+
 			assert_eq!(container_default_resource(Some(&spec)), Ok(Some(expected)));
 		}
 
 		let skeleton = super::parse_json(r#"{ "default_resource": "skeleton" }"#).unwrap();
+
 		assert!(container_default_resource(Some(&skeleton)).is_err());
 	}
 }
@@ -155,7 +149,9 @@ pub async fn read_asset_from_source<'a>(
 			let path = base_path.unwrap_or(std::path::Path::new(""));
 
 			let path = path.join(base.as_ref());
+
 			let spec_path = path.with_added_extension("bead");
+
 			let format = path
 				.extension()
 				.and_then(|extension| extension.to_str())
@@ -163,6 +159,7 @@ pub async fn read_asset_from_source<'a>(
 				.to_string();
 
 			let spec = read_asset_spec(&spec_path);
+
 			let source_bytes = read_asset_bytes(&path, allocator);
 
 			let (spec, source_bytes) = std::future::join!(spec, source_bytes).await;
@@ -186,7 +183,9 @@ async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>
 
 	if let Some(spec_bytes) = spec_bytes {
 		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
+
 		let spec = parse_json(spec).or(Err(()))?;
+
 		Ok(Some(spec))
 	} else {
 		Ok(None)
@@ -201,8 +200,11 @@ async fn read_asset_bytes<'a>(path: &std::path::Path, allocator: &'a dyn Allocat
 		Ok(mapped_file) => Ok(AssetStorageBytes::MappedFile(mapped_file)),
 		Err(_) => {
 			let source_bytes = read(path).await.or(Err(()))?;
+
 			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
+
 			source_data.extend_from_slice(&source_bytes);
+
 			Ok(AssetStorageBytes::Allocated(source_data.into_boxed_slice()))
 		}
 	}

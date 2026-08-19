@@ -24,6 +24,7 @@ impl PipelineManager {
 				.name("Vertex Positions")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		let indeces_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index)
 				.name("Indeces")
@@ -35,6 +36,7 @@ impl PipelineManager {
 				.name("Camera Data Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+
 		let instance_data_buffer = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Instance Data Buffer")
@@ -42,6 +44,7 @@ impl PipelineManager {
 		);
 
 		let vertex_shader = load_besl_shader(context, resources, "rendering/simple/vertex.besl", "Vertex Shader");
+
 		let fragment_shader = load_besl_shader(context, resources, "rendering/simple/fragment.besl", "Fragment Shader");
 
 		let pipeline = context.create_raster_pipeline(
@@ -95,14 +98,18 @@ impl PipelineManager {
 				}
 
 				let positions = generator.positions();
+
 				let indices = generator.indices();
+
 				debug_assert!(
 					indices.iter().all(|&index| u16::try_from(index).is_ok()),
 					"Simple mesh index exceeds u16. The most likely cause is submitting geometry that is too large for the simple pipeline."
 				);
+
 				let indices = indices.iter().map(|&index| index as u16);
 
 				let vertex_count = positions.len();
+
 				let index_count = indices.len();
 
 				let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
@@ -112,7 +119,9 @@ impl PipelineManager {
 					.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
 
 				let vertex_buffer_offset = mesh_ref.vertex_offset();
+
 				let index_buffer_offset = mesh_ref.index_offset();
+
 				debug_assert!(
 					vertex_buffer_offset
 						.checked_add(vertex_count)
@@ -121,9 +130,11 @@ impl PipelineManager {
 				);
 
 				vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
+
 				frame.sync_buffer(self.vertex_positions_buffer);
 
 				let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
+
 				debug_assert!(
 					index_buffer_offset
 						.checked_add(index_count)
@@ -144,6 +155,7 @@ impl PipelineManager {
 			}
 			_ => {
 				log::warn!("SimpleRenderModel does not support non-generated meshes");
+
 				return;
 			}
 		};
@@ -184,6 +196,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches_in(frame_allocator);
+
 		let instance_batches = frame_allocator.alloc_slice_copy(&instance_batches);
 
 		let commands = sinks
@@ -213,11 +226,13 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			)
 			.name("main"),
 		);
+
 		let depth = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image)
 				.name("depth")
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
+
 		self.sinks.push(RenderPass::new(
 			render_pass_builder.context(),
 			self.camera_data_buffer.into(),
@@ -252,7 +267,7 @@ use ghi::{
 	frame::Frame,
 };
 use math::{AffineShaderMatrix, Matrix, ShaderMatrix};
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
+use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 use smallvec::SmallVec;
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -284,7 +299,9 @@ use crate::{
 };
 
 #[cfg(test)]
+
 mod tests {
+
 	use besl::vm::{builtin_position_slot, input_slot, output_slot, DescriptorBindings, ResourceSlot, Value};
 	use resource_management::shader::{
 		besl::backends::{hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
@@ -317,6 +334,7 @@ mod tests {
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
+
 			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
 		}
 	}
@@ -324,27 +342,37 @@ mod tests {
 	/// Executes the production simple fragment shader for one instance and object-space position.
 	fn run_fragment(instance_index: u32, local_position: [f32; 3]) -> [f32; 4] {
 		let program = compile(create_simple_fragment_program());
+
 		let mut instance = input_buffer(&program, 0);
+
 		let mut position = input_buffer(&program, 1);
+
 		let mut output = output_buffer(&program, 0);
+
 		instance
 			.write("in_instance_index", Value::U32(instance_index))
 			.expect("Failed to seed the instance index. The most likely cause is a simple fragment interface type mismatch.");
+
 		position
 			.write("in_local_position", Value::Vec3F(local_position))
 			.expect("Failed to seed the local position. The most likely cause is a simple fragment interface type mismatch.");
 
 		{
 			let mut descriptors = DescriptorBindings::new();
+
 			descriptors.bind_buffer(input_slot(0), &mut instance);
+
 			descriptors.bind_buffer(input_slot(1), &mut position);
+
 			descriptors.bind_buffer(output_slot(0), &mut output);
+
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
 		let Ok(Value::Vec4F(color)) = output.read("out_albedo") else {
 			panic!("Expected vec4 fragment output")
 		};
+
 		color
 	}
 
@@ -352,17 +380,25 @@ mod tests {
 	#[test]
 	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
 		let program = compile(create_simple_vertex_program());
+
 		let mut cameras = buffer(&program, ResourceSlot::new(0));
+
 		let mut instances = buffer(&program, ResourceSlot::new(1));
+
 		let mut input_position = input_buffer(&program, 0);
+
 		let mut input_instance = input_buffer(&program, 1);
+
 		let mut output_position = builtin_position_buffer(&program);
+
 		let mut output_instance = output_buffer(&program, 0);
+
 		let mut output_local = output_buffer(&program, 1);
 
 		cameras
 			.write_indexed_field("cameras", 0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
 			.expect("Failed to seed camera matrix. The most likely cause is a struct buffer layout mismatch.");
+
 		instances
 			.write_indexed(
 				"transforms",
@@ -370,22 +406,32 @@ mod tests {
 				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]),
 			)
 			.expect("Failed to seed instance transform. The most likely cause is a compact transform buffer layout mismatch.");
+
 		input_position
 			.write("in_position", Value::Vec3F([1.0, 2.0, 3.0]))
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
+
 		input_instance
 			.write("instance_id", Value::U32(3))
 			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
 
 		{
 			let mut descriptors = DescriptorBindings::new();
+
 			descriptors.bind_buffer(ResourceSlot::new(0), &mut cameras);
+
 			descriptors.bind_buffer(ResourceSlot::new(1), &mut instances);
+
 			descriptors.bind_buffer(input_slot(0), &mut input_position);
+
 			descriptors.bind_buffer(input_slot(1), &mut input_instance);
+
 			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
+
 			descriptors.bind_buffer(output_slot(0), &mut output_instance);
+
 			descriptors.bind_buffer(output_slot(1), &mut output_local);
+
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
@@ -398,7 +444,9 @@ mod tests {
 	#[test]
 	fn simple_fragment_besl_vm_produces_palette_and_grid_colors() {
 		assert_vec4_close(run_fragment(0, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
+
 		assert_vec4_close(run_fragment(0, [0.0; 3]), [0.945, 0.56, 0.56, 1.0]);
+
 		assert_vec4_close(run_fragment(8, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
 	}
 }

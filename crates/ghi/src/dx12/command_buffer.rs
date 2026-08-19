@@ -308,6 +308,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	{
 		let offset = offset as usize;
 		let size = std::mem::size_of::<T>();
+
 		assert!(
 			offset % 4 == 0 && size % 4 == 0,
 			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."

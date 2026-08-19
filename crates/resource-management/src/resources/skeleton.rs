@@ -438,6 +438,7 @@ mod tests {
 			.solve(&TestStorageBackend::new())
 			.await
 			.expect("A parent-before-child skeleton should solve");
+
 		assert_eq!(skeleton.nodes[1].parent, Some(0));
 		assert_eq!(skeleton.nodes[1].rest_local, child_pose);
 	}
@@ -639,12 +640,14 @@ mod tests {
 			}],
 		};
 		let mut no_output = [];
+
 		assert_eq!(
 			binding.write_matrix_palette(&[], &mut no_output),
 			Err(SkinPaletteError::OutputLength { expected: 1, actual: 0 })
 		);
 
 		let mut output = [identity_affine_matrix4x3_columns()];
+
 		assert_eq!(
 			binding.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output),
 			Err(SkinPaletteError::NodeOutOfRange {
@@ -668,6 +671,7 @@ mod tests {
 		};
 		let sentinel = [[[-1.0; 3]; 4]; 2];
 		let mut output = sentinel;
+
 		assert!(binding
 			.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output)
 			.is_err());

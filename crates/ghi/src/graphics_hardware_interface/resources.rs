@@ -188,6 +188,7 @@ impl AttachmentInformation {
 
 	/// Selects one array layer for every draw in the render pass.
 	pub fn layer(mut self, layer: u32) -> Self {
+
 		assert!(
 			self.layer_count.is_none(),
 			"Cannot select one attachment layer after enabling layered rendering. The most likely cause is that layer and layers were both called for the same attachment."
@@ -203,6 +204,7 @@ impl AttachmentInformation {
 		let layer_count = std::num::NonZeroU32::new(layer_count).expect(
 			"Layered rendering requires at least one attachment layer. The most likely cause is that an empty layer range was passed to AttachmentInformation::layers.",
 		);
+
 		assert!(
 			self.layer.is_none(),
 			"Cannot enable layered rendering after selecting one attachment layer. The most likely cause is that layer and layers were both called for the same attachment."
@@ -214,6 +216,7 @@ impl AttachmentInformation {
 	/// Returns the pass-wide layer count after checking that all attachments agree.
 	pub(crate) fn render_pass_layer_count(attachments: &[Self]) -> u32 {
 		let layer_count = attachments.first().and_then(|attachment| attachment.layer_count);
+
 		assert!(
 			attachments.iter().all(|attachment| attachment.layer_count == layer_count),
 			"Render-pass attachments use different layer counts. The most likely cause is that layered rendering was enabled on only some attachments."

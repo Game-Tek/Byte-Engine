@@ -119,12 +119,10 @@ mod tests {
 		assert!(cone.color.x > cone.color.z);
 		assert_eq!(cone.class(), LightClasses::Cone);
 		assert!(cone.as_string().contains("ConeLight"));
-
 		assert_eq!(point.position, Point::new(1.0, 2.0, 3.0));
 		assert_eq!(point.color, Vec3f::new(250.0, 250.0, 250.0));
 		assert_eq!(point.class(), LightClasses::Point);
 		assert!(point.as_string().contains("PointLight"));
-
 		assert_eq!(
 			directional.direction,
 			Vector::new(-1.0, -2.0, -3.0).normalized().expect("nonzero direction")

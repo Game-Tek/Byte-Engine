@@ -155,6 +155,7 @@ mod tests {
 
 	#[test]
 	fn raw_construction_rejects_invalid_quaternions() {
+
 		assert_eq!(
 			Orientation::try_from_maths(Quatf::new(f32::NAN, 0.0, 0.0, 1.0)),
 			Err(OrientationError::NonFiniteQuaternion)

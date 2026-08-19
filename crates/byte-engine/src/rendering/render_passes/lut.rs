@@ -199,12 +199,14 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 
 /// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
 fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
+
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."
 	);
 
 	let expected_size = expected_lut_payload_size(lut);
+
 	assert_eq!(
 		lut_bytes.len(),
 		expected_size,
@@ -216,6 +218,7 @@ fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_
 		.expected_entry_count(lut.size)
 		.expect("Invalid LUT dimensions. The most likely cause is that the LUT size overflowed during texture upload.");
 	let expected_upload_size = texel_count * 4 * std::mem::size_of::<u16>();
+
 	assert_eq!(
 		upload_target.len(),
 		expected_upload_size,
@@ -323,6 +326,7 @@ mod tests {
 			.iter()
 			.find(|binding| binding.name == "lut_texture")
 			.expect("Canonical LUT shader should retain its 3D texture binding");
+
 		assert!(matches!(
 			lut_texture.kind,
 			resource_management::shader::besl::evaluation::BindingKind::CombinedImageSampler {
@@ -333,6 +337,7 @@ mod tests {
 			.iter()
 			.find(|binding| binding.name == "parameters")
 			.unwrap_or_else(|| panic!("Canonical LUT shader should retain its parameter buffer: {bindings:?}"));
+
 		assert!(parameters.read && !parameters.write);
 		assert_eq!(
 			parameters.kind,

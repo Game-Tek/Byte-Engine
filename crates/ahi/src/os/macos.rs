@@ -578,16 +578,19 @@ mod tests {
 
 	#[test]
 	fn default_output_is_the_first_macos_component_candidate() {
+
 		assert_eq!(output_component_subtypes()[0], kAudioUnitSubType_DefaultOutput);
 	}
 
 	#[test]
 	fn input_io_is_disabled_for_non_default_output_units() {
+
 		assert_eq!(IO_DISABLED, 0);
 	}
 
 	#[test]
 	fn ring_rejects_zero_capacity() {
+
 		assert!(SpscByteRing::new(0).is_err());
 	}
 
@@ -613,6 +616,7 @@ mod tests {
 
 		let mut popped = [0u8; 8];
 		let read = ring.pop_into_slice(&mut popped);
+
 		assert_eq!(read, 8);
 		assert_eq!(popped, [0xAB; 8]);
 	}
@@ -622,27 +626,34 @@ mod tests {
 		let ring = SpscByteRing::new(8).unwrap();
 
 		let first = ring.with_write_chunk(6, |chunk| {
+
 			assert_eq!(chunk.len(), 6);
 			chunk.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
 			chunk.len()
 		});
+
 		assert_eq!(first, 6);
 
 		let mut dropped = [0u8; 4];
+
 		assert_eq!(ring.pop_into_slice(&mut dropped), 4);
 
 		let second = ring.with_write_chunk(6, |chunk| {
+
 			assert_eq!(chunk.len(), 2);
 			chunk.copy_from_slice(&[7, 8]);
 			chunk.len()
 		});
+
 		assert_eq!(second, 2);
 
 		let third = ring.with_write_chunk(6, |chunk| {
+
 			assert_eq!(chunk.len(), 4);
 			chunk.copy_from_slice(&[9, 10, 11, 12]);
 			chunk.len()
 		});
+
 		assert_eq!(third, 4);
 	}
 
@@ -650,6 +661,7 @@ mod tests {
 	fn pop_returns_zero_when_empty() {
 		let ring = SpscByteRing::new(8).unwrap();
 		let mut destination = [0u8; 8];
+
 		assert_eq!(ring.pop_into_slice(&mut destination), 0);
 	}
 
@@ -666,9 +678,9 @@ mod tests {
 		);
 
 		let mut first_pop = [0u8; 5];
+
 		assert_eq!(ring.pop_into_slice(&mut first_pop), 5);
 		assert_eq!(first_pop, [1, 2, 3, 4, 5]);
-
 		assert_eq!(
 			ring.with_write_chunk(7, |chunk| {
 				assert_eq!(chunk.len(), 2);
@@ -677,7 +689,6 @@ mod tests {
 			}),
 			2
 		);
-
 		assert_eq!(
 			ring.with_write_chunk(7, |chunk| {
 				assert_eq!(chunk.len(), 5);
@@ -688,6 +699,7 @@ mod tests {
 		);
 
 		let mut second_pop = [0u8; 8];
+
 		assert_eq!(ring.pop_into_slice(&mut second_pop), 8);
 		assert_eq!(second_pop, [6, 7, 8, 9, 10, 11, 12, 13]);
 	}
@@ -695,6 +707,7 @@ mod tests {
 	#[test]
 	fn wait_for_available_write_blocks_until_space_is_freed() {
 		let ring = std::sync::Arc::new(SpscByteRing::new(4).unwrap());
+
 		assert_eq!(
 			ring.with_write_chunk(4, |chunk| {
 				chunk.copy_from_slice(&[1, 2, 3, 4]);
@@ -714,6 +727,7 @@ mod tests {
 		assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
 
 		let mut destination = [0u8; 1];
+
 		assert_eq!(ring.pop_into_slice(&mut destination), 1);
 		assert_eq!(destination, [1]);
 

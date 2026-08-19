@@ -138,6 +138,7 @@ mod tests {
 		assert!(fetcher.get(id(99)).is_none());
 
 		let root = fetcher.get(id(1)).expect("root");
+
 		assert_eq!(root.children().ids().collect::<Vec<_>>(), [id(3), id(2)]);
 		assert_eq!(
 			root.children()
@@ -148,6 +149,7 @@ mod tests {
 		);
 
 		let leaf_parent = fetcher.get(id(4)).expect("leaf").parent().expect("leaf parent");
+
 		assert_eq!(leaf_parent.id(), id(2));
 		assert_eq!(leaf_parent.element().expect("resolved parent").element().name, "left");
 	}
@@ -168,10 +170,12 @@ mod tests {
 		};
 
 		let children = fetcher.get(id(1)).expect("root").children();
+
 		assert_eq!(children.ids().collect::<Vec<_>>(), [id(9)]);
 		assert_eq!(children.elements().count(), 0);
 
 		let parent = fetcher.get(id(5)).expect("orphan").parent().expect("recorded parent");
+
 		assert_eq!(parent.id(), id(8));
 		assert!(parent.element().is_none());
 	}

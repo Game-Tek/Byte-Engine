@@ -39,6 +39,7 @@ mod tests {
 	#[test]
 	fn point_at_uses_the_unit_direction() {
 		let ray: Ray<WorldSpace> = Ray::new(Point::origin(), UnitVector::z_axis());
+
 		assert_eq!(ray.point_at(2.5), Point::new(0.0, 0.0, 2.5));
 	}
 }

@@ -122,6 +122,7 @@ pub struct Stream {
 impl Stream {
 	/// Returns the number of logical elements (not bytes) in the stream.
 	pub fn count(&self) -> usize {
+
 		assert!(
 			self.stride > 0,
 			"Stream stride is zero. The most likely cause is malformed resource metadata for a typed stream."
@@ -226,6 +227,7 @@ mod tests {
 
 	#[test]
 	fn bit_depths_convert_to_their_exact_number_of_bits() {
+
 		assert_eq!(usize::from(BitDepths::Eight), 8);
 		assert_eq!(usize::from(BitDepths::Sixteen), 16);
 		assert_eq!(usize::from(BitDepths::TwentyFour), 24);
@@ -246,6 +248,7 @@ mod tests {
 			(IntegralTypes::F64, 8),
 		];
 		for (kind, expected) in integral_sizes {
+
 			assert_eq!(kind.size(), expected);
 		}
 
@@ -266,6 +269,7 @@ mod tests {
 				channel: 0,
 			},
 		];
+
 		assert_eq!(components.size(), 12 + 8 + 8);
 	}
 
@@ -277,6 +281,7 @@ mod tests {
 			size: 120,
 			stride: 12,
 		};
+
 		assert_eq!(stream.count(), 10);
 	}
 

@@ -31,6 +31,7 @@ fn decode_lookup_texture(encoded: &str, expected_byte_count: usize, name: &str) 
 	decoder.read_to_end(&mut pixels).unwrap_or_else(|error| {
 		panic!("Failed to decompress the SMAA {name}. The most likely cause is a damaged vendored LUT: {error}")
 	});
+
 	assert_eq!(
 		pixels.len(),
 		expected_byte_count,
@@ -364,6 +365,7 @@ mod tests {
 	fn smaa_reference_luts_keep_their_canonical_payloads() {
 		let area = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
 		let search = decode_lookup_texture(SEARCH_TEXTURE, SEARCH_TEXTURE_BYTE_COUNT, "search texture");
+
 		assert_eq!(fnv1a(&area), 0x247a58bbba65292d);
 		assert_eq!(fnv1a(&search), 0x21c1fcf0aa631065);
 	}
@@ -389,6 +391,7 @@ mod tests {
 			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
 		}
 		let resolved = rgba(&result, [4, 4]);
+
 		assert!(
 			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
 			"The fused reference diagonal lookup must blend the black center toward its white neighbors."
@@ -417,6 +420,7 @@ mod tests {
 			run_resolve_workgroup(&mut source, &mut edges, &mut area, &mut search, &mut result, origin);
 		}
 		let resolved = rgba(&result, [4, 4]);
+
 		assert!(
 			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
 			"The fused reference area lookup must blend the black center toward its white neighbors."
@@ -474,6 +478,7 @@ mod tests {
 				.generate(&settings, &main)
 				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to MSL."));
 			if name == "blend and neighborhood" {
+
 				assert!(
 					source.contains("half"),
 					"SMAA weights must remain half precision in Metal source."

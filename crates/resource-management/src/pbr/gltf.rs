@@ -122,6 +122,7 @@ mod tests {
 		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Opaque);
 		assert_eq!(brdf.validate(), Ok(()));
 		let surface = expect_surface(&brdf);
+
 		assert_eq!(
 			brdf.nodes[surface.base_color.index()],
 			BrdfNode::Constant(BrdfValue::Vector4([1.0, 1.0, 1.0, 1.0]))
@@ -167,6 +168,7 @@ mod tests {
 		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Mask(0.25));
 		assert_eq!(brdf.validate(), Ok(()));
 		let surface = expect_surface(&brdf);
+
 		assert_eq!(
 			brdf.nodes[surface.base_color.index()],
 			BrdfNode::Constant(BrdfValue::Vector4([0.25, 0.5, 0.75, 0.8]))
@@ -203,6 +205,7 @@ mod tests {
 		assert_eq!(brdf.validate(), Ok(()));
 		let surface = expect_surface(&brdf);
 		let base_color_multiply = expect_multiply(&brdf, surface.base_color);
+
 		assert_eq!(
 			brdf.nodes[base_color_multiply.left.index()],
 			BrdfNode::Constant(BrdfValue::Vector4([0.2, 0.3, 0.4, 0.5]))
@@ -216,6 +219,7 @@ mod tests {
 		);
 
 		let metallic_multiply = expect_multiply(&brdf, surface.metallic);
+
 		assert_eq!(
 			brdf.nodes[metallic_multiply.left.index()],
 			BrdfNode::Constant(BrdfValue::Scalar(0.7))
@@ -236,6 +240,7 @@ mod tests {
 		);
 
 		let roughness_multiply = expect_multiply(&brdf, surface.roughness);
+
 		assert_eq!(
 			brdf.nodes[roughness_multiply.left.index()],
 			BrdfNode::Constant(BrdfValue::Scalar(0.8))
@@ -249,6 +254,7 @@ mod tests {
 		);
 
 		let emission = expect_emission(&brdf, surface.emission.unwrap());
+
 		assert!(matches!(brdf.nodes[emission.color.index()], BrdfNode::Multiply { .. }));
 	}
 
@@ -270,6 +276,7 @@ mod tests {
 		let surface = expect_surface(&brdf);
 		let normal_id = surface.normal.unwrap();
 		let occlusion_id = surface.occlusion.unwrap();
+
 		assert_eq!(
 			brdf.nodes[normal_id.index()],
 			BrdfNode::NormalMap {

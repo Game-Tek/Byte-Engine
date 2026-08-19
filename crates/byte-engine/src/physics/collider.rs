@@ -443,6 +443,7 @@ mod tests {
 	#[test]
 	fn support_points_keep_local_positions_distinct_from_directions() {
 		let sphere = Shapes::sphere(2.0);
+
 		assert_eq!(sphere.support_point(Vector::new(3.0, 0.0, 0.0)), Point::new(2.0, 0.0, 0.0));
 		assert_eq!(sphere.support_point(Vector::zero()), Point::origin());
 	}
@@ -450,12 +451,14 @@ mod tests {
 	#[test]
 	fn cube_bounds_preserve_half_extents() {
 		let cube = Shapes::cube(Vector::new(1.0, 2.0, 3.0));
+
 		assert_eq!(cube.bounds().min(), Point::new(-1.0, -2.0, -3.0));
 		assert_eq!(cube.bounds().max(), Point::new(1.0, 2.0, 3.0));
 	}
 
 	#[test]
 	fn tetrahedron_rejects_degenerate_clouds() {
+
 		assert!(build_tetrahedron([Point::new(1.0, 2.0, 3.0); 4].into_iter()).is_none());
 	}
 

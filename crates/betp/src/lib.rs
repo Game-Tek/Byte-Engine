@@ -300,6 +300,7 @@ mod tests {
 		] {
 			let mut bytes = [0u8; PACKET_HEADER_SIZE];
 			write_packet_header(&mut bytes, PacketHeader::new(packet_type)).expect("header capacity is exact");
+
 			assert_eq!(&bytes[..4], b"BETP");
 			assert_eq!(bytes[4], packet_type as u8);
 			assert_eq!(read_packet_header(&bytes), Ok(PacketHeader::new(packet_type)));
@@ -308,6 +309,7 @@ mod tests {
 
 	#[test]
 	fn malformed_headers_report_distinct_causes() {
+
 		assert_eq!(read_packet_header(b"BET"), Err(PacketReadError::ShortHeader));
 		assert_eq!(read_packet_header(b"NOPE\x04"), Err(PacketReadError::WrongProtocol));
 		assert_eq!(read_packet_header(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
@@ -323,6 +325,7 @@ mod tests {
 			},
 		] {
 			let message = error.to_string();
+
 			assert!(message.contains("most likely cause"));
 			assert!(message.ends_with('.'));
 		}
@@ -337,6 +340,7 @@ mod tests {
 
 	#[test]
 	fn every_packet_variant_round_trips_through_the_canonical_wire_format() {
+
 		assert_eq!(CONNECTION_PACKET_SIZE, 13);
 		assert_eq!(CHALLENGE_PACKET_SIZE, 21);
 		assert_eq!(DATA_PACKET_SIZE, 1045);
@@ -404,6 +408,7 @@ mod tests {
 
 	#[test]
 	fn complete_packet_decoding_rejects_malformed_headers_and_the_reserved_type() {
+
 		assert_eq!(read_packet(b"BET"), Err(PacketReadError::ShortHeader));
 		assert_eq!(read_packet(b"NOPE\x01\0\0\0\0\0\0\0\0"), Err(PacketReadError::WrongProtocol));
 		assert_eq!(read_packet(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
@@ -415,6 +420,7 @@ mod tests {
 		let mut bytes = [0u8; CONNECTION_STATUS_SIZE];
 		write_connection_status(&mut bytes, ConnectionStatus::new(0x1122, 0x3344, 0x55667788))
 			.expect("status capacity is exact");
+
 		assert_eq!(bytes, [0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
 	}
 
@@ -422,23 +428,27 @@ mod tests {
 	fn every_packet_variant_serializes_header_and_complete_payload() {
 		let mut request = [0u8; 13];
 		write_packet(&mut request, Packets::from(ConnectionRequestPacket::new(0x0102030405060708))).unwrap();
+
 		assert_eq!(&request[..5], b"BETP\x01");
 		assert_eq!(&request[5..], &0x0102030405060708u64.to_le_bytes());
 
 		let mut challenge = [0u8; 21];
 		write_packet(&mut challenge, Packets::from(ChallengePacket::new(11, 22))).unwrap();
+
 		assert_eq!(&challenge[..5], b"BETP\x02");
 		assert_eq!(&challenge[5..13], &11u64.to_le_bytes());
 		assert_eq!(&challenge[13..21], &22u64.to_le_bytes());
 
 		let mut response = [0u8; 13];
 		write_packet(&mut response, Packets::from(ChallengeResponsePacket::new(33))).unwrap();
+
 		assert_eq!(&response[..5], b"BETP\x03");
 		assert_eq!(&response[5..], &33u64.to_le_bytes());
 
 		let status = ConnectionStatus::new(0x1122, 0x3344, 0x55667788);
 		let mut data = [0u8; 5 + 8 + 8 + 1024];
 		write_packet(&mut data, Packets::Data(DataPacket::new(44, status, [0xAB; 1024]))).unwrap();
+
 		assert_eq!(&data[..5], b"BETP\x04");
 		assert_eq!(&data[5..13], &44u64.to_le_bytes());
 		assert_eq!(&data[13..21], &[0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
@@ -446,6 +456,7 @@ mod tests {
 
 		let mut disconnect = [0u8; 13];
 		write_packet(&mut disconnect, Packets::from(DisconnectPacket::new(55))).unwrap();
+
 		assert_eq!(&disconnect[..5], b"BETP\x05");
 		assert_eq!(&disconnect[5..], &55u64.to_le_bytes());
 	}
@@ -453,26 +464,31 @@ mod tests {
 	#[test]
 	fn insufficient_packet_capacity_fails_without_partial_writes() {
 		let mut bytes = [0xCC; 12];
+
 		assert_eq!(write_packet(&mut bytes, Packets::from(ConnectionRequestPacket::new(1))), None);
 		assert_eq!(bytes, [0xCC; 12]);
 
 		let mut header = [0xCC; PACKET_HEADER_SIZE - 1];
+
 		assert_eq!(write_packet_header(&mut header, PacketHeader::new(PacketType::Data)), None);
 	}
 
 	#[test]
 	fn sequence_order_is_antisymmetric_across_wraparound() {
+
 		assert!(!sequence_greater_than(7, 7));
 		assert!(sequence_greater_than(1, 0));
 		assert!(sequence_greater_than(0, u16::MAX));
 		assert!(!sequence_greater_than(u16::MAX, 0));
 		// The ambiguous half-range is resolved toward the numerically larger value so ordering remains antisymmetric.
+
 		assert!(sequence_greater_than(32_768, 0));
 		assert!(!sequence_greater_than(0, 32_768));
 
 		for base in [0u16, 1, 1024, 32767, 65534, 65535] {
 			for delta in [1u16, 2, 127, 32767] {
 				let newer = base.wrapping_add(delta);
+
 				assert!(sequence_greater_than(newer, base), "base={base}, delta={delta}");
 				assert!(!sequence_greater_than(base, newer), "base={base}, delta={delta}");
 			}

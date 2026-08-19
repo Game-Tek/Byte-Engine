@@ -240,6 +240,7 @@ impl RenderInfo {
 	/// Adds one active primitive to its authored material phase.
 	pub(crate) fn push_active_instance(&mut self, instance: Instance, material_index: u32, alpha_mode: &AlphaMode) {
 		let material_index = material_index as usize;
+
 		assert!(
 			material_index < MAX_MATERIALS,
 			"Visibility material index is out of range. The most likely cause is that an active primitive references a material beyond MAX_MATERIALS."

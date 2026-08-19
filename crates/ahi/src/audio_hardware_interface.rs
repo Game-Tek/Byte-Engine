@@ -192,6 +192,7 @@ mod tests {
 	#[test]
 	fn test_default_ahi_hardware_parameters() {
 		let params = HardwareParameters::new();
+
 		assert_eq!(params.sample_rate, 48000);
 		assert_eq!(params.channels, 2);
 		assert_eq!(params.bit_depth, 16);
@@ -249,6 +250,7 @@ mod tests {
 			AudioPlayError::UnsupportedFormat,
 		] {
 			let message = error.to_string();
+
 			assert!(message.contains("failed") || message.contains("unsupported"));
 			assert!(message.contains("most likely cause"));
 		}

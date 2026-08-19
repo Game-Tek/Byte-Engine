@@ -9,6 +9,7 @@ impl Context {
 		descriptor_alignment: u64,
 		reserved_size: u64,
 	) -> DescriptorHeapArena {
+
 		assert!(
 			size <= u32::MAX as u64,
 			"Vulkan descriptor heap exceeds the 32-bit push-index address space. The most likely cause is an implementation reservation larger than the mapping interface supports.",
@@ -47,9 +48,11 @@ impl Context {
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
 		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
 		let base_offset = aligned_address - device_address;
+
 		assert!(base_offset + size <= buffer_size);
 
 		let application_offset = crate::vulkan::align_up(reserved_size, descriptor_alignment);
+
 		assert!(
 			application_offset < size,
 			"Vulkan descriptor heap has no application-owned range. The most likely cause is that the implementation reservation consumes the device's maximum heap size.",
@@ -85,6 +88,7 @@ impl Context {
 		)
 		.checked_add(properties.sampler_descriptor_size)
 		.unwrap();
+
 		assert!(
 			resource_minimum <= properties.max_resource_heap_size,
 			"Vulkan resource heap limits are inconsistent. The most likely cause is that the implementation reservation leaves no room for one resource descriptor.",
@@ -219,6 +223,7 @@ impl Context {
 		sets: &[graphics_hardware_interface::DescriptorSetHandle],
 	) {
 		for set in sets {
+
 			assert!(
 				(set.0 as usize) < self.descriptor_sets.len(),
 				"Invalid Vulkan descriptor set. The most likely cause is that a bound handle came from another context.",
@@ -228,6 +233,7 @@ impl Context {
 		for resource in &layout.resources {
 			let descriptor = resource.descriptor;
 			for set in sets {
+
 				assert!(
 					self.descriptor_sets[set.0 as usize]
 						.descriptors
@@ -245,6 +251,7 @@ impl Context {
 						.contains_key(&descriptor.slot())
 				})
 				.count();
+
 			assert!(
 				owners <= 1,
 				"Overlapping retained Vulkan descriptor sets. The most likely cause is that two bound sets write the same active flat resource slot.",
@@ -252,6 +259,7 @@ impl Context {
 
 			let elements = self.descriptors_at_slot(sets, descriptor.slot());
 			if descriptor.count() == 1 {
+
 				assert!(
 					elements.is_some_and(|elements| elements.contains_key(&0)),
 					"Missing retained Vulkan descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
@@ -260,6 +268,7 @@ impl Context {
 			}
 			if let Some(elements) = elements {
 				for (&array_element, retained) in elements {
+
 					assert!(
 						array_element < descriptor.count(),
 						"Vulkan descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
@@ -422,6 +431,7 @@ impl Context {
 		base_mip_level: u32,
 		level_count: u32,
 	) -> vk::ImageViewCreateInfo<'static> {
+
 		assert!(
 			base_mip_level < image.mip_levels,
 			"Vulkan image descriptor mip level is out of range. The most likely cause is that the selected mip exceeds the image mip count. mip_level={base_mip_level}, mip_levels={}",
@@ -435,6 +445,7 @@ impl Context {
 		let array_layer_count = image.layers.map_or(1, NonZeroU32::get);
 		let (vk_view_type, base_array_layer, layer_count) = match view_type {
 			crate::TextureViewTypes::Texture2D => {
+
 				assert!(
 					layer.is_none() && image.layers.is_none() && image.extent.depth().max(1) == 1,
 					"Vulkan 2D descriptor view mismatch. The most likely cause is that a layered or 3D image was written to a Texture2D shader resource."
@@ -446,6 +457,7 @@ impl Context {
 					"Vulkan array descriptor view mismatch. The most likely cause is that a non-array image was written to a Texture2DArray shader resource.",
 				);
 				let base = layer.unwrap_or(0);
+
 				assert!(
 					base < layers,
 					"Vulkan image layer is out of range. The most likely cause is an invalid combined-image-sampler layer."
@@ -457,6 +469,7 @@ impl Context {
 				)
 			}
 			crate::TextureViewTypes::TextureCube => {
+
 				assert!(
 					layer.is_none() && image.cube_compatible && array_layer_count == 6,
 					"Vulkan cubemap descriptor view mismatch. The most likely cause is that the image is not a six-layer cube-compatible image."
@@ -464,6 +477,7 @@ impl Context {
 				(vk::ImageViewType::CUBE, 0, 6)
 			}
 			crate::TextureViewTypes::TextureCubeArray => {
+
 				assert!(
 					layer.is_none() && image.cube_array_compatible && array_layer_count.is_multiple_of(6),
 					"Vulkan cube-array descriptor view mismatch. The most likely cause is that the image is not a cube-array-compatible image."
@@ -471,6 +485,7 @@ impl Context {
 				(vk::ImageViewType::CUBE_ARRAY, 0, array_layer_count)
 			}
 			crate::TextureViewTypes::Texture3D => {
+
 				assert!(
 					layer.is_none() && image.layers.is_none() && image.extent.depth() > 1,
 					"Vulkan 3D descriptor view mismatch. The most likely cause is that a 2D image was written to a Texture3D shader resource."
@@ -563,6 +578,7 @@ impl Context {
 						graphics_hardware_interface::Ranges::Whole => buffer.size as u64,
 						graphics_hardware_interface::Ranges::Size(size) => size as u64,
 					};
+
 					assert!(
 						size > 0 && size <= buffer.size as u64,
 						"Invalid Vulkan buffer descriptor range. The most likely cause is that a descriptor exceeds its backing buffer."

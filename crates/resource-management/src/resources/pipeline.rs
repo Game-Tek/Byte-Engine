@@ -120,6 +120,7 @@ mod tests {
 		let PipelineKind::Raster { attachments, .. } = pipeline.kind else {
 			panic!("Pipeline fixture must deserialize as a raster pipeline.");
 		};
+
 		assert!(matches!(attachments[0].format, Format::U32));
 		assert!(matches!(attachments[1].format, Format::Depth16));
 	}

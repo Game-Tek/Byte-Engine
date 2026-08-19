@@ -15,7 +15,9 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame,
 };
-use resource_management::{asset::bema_asset_handler::ProgramGenerator, shader::generator::ShaderGenerationSettings};
+use resource_management::{
+	asset::handler::implementations::bema::ProgramGenerator, shader::generator::ShaderGenerationSettings,
+};
 use utils::{
 	hash::{HashMap, HashMapExt},
 	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
@@ -56,6 +58,7 @@ impl RenderPass {
 		index: usize,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(None);
+
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(0), camera_data_buffer),
 			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
@@ -84,23 +87,29 @@ impl RenderPass {
 		};
 
 		let vertex_buffer = sm.vertex_positions_buffer;
+
 		let index_buffer = sm.indeces_buffer;
+
 		let pipeline = sm.pipeline;
+
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
 
 		move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
+
 			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer).index_type(ghi::DataTypes::U16));
 
 			let c = c.start_render_pass(extent, t);
 
 			let c = c.bind_raster_pipeline(pipeline);
+
 			c.bind_descriptor_sets(&[descriptor_set]);
 
 			for batch in instance_batches.iter() {
 				c.write_push_constant(0, batch.base_instance() as u32);
+
 				c.draw_indexed(
 					batch.index_count() as u32,
 					batch.instance_count() as u32,

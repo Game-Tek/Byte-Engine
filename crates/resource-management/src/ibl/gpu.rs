@@ -836,6 +836,7 @@ fn copy_output_region(atlas: &[u8], atlas_width: u32, atlas_y_offset: u32, face_
 mod tests {
 	#[test]
 	fn push_constants_match_every_native_shader_layout() {
+
 		assert_eq!(std::mem::size_of::<GPUIBLPushConstants>(), 112);
 	}
 
@@ -938,6 +939,7 @@ mod tests {
 			for channel in 0..3 {
 				let gpu_value = f16::from_le_bytes([gpu_pixel[channel * 2], gpu_pixel[channel * 2 + 1]]).to_f32();
 				let cpu_value = f16::from_le_bytes([cpu_pixel[channel * 2], cpu_pixel[channel * 2 + 1]]).to_f32();
+
 				assert!(
 					(gpu_value - cpu_value).abs() <= 0.01,
 					"GPU base cubemap pixel {pixel_index} channel {channel} differs from CPU: GPU={gpu_value}, CPU={cpu_value}"
@@ -961,11 +963,13 @@ mod tests {
 		}
 
 		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
+
 		assert_eq!(&baked.data[..source.len()], source.as_slice());
 		for (pixel_index, pixel) in baked.data[source.len()..].chunks_exact(BYTES_PER_RGBA16F_PIXEL).enumerate() {
 			let decoded = std::array::from_fn::<_, 4, _>(|channel| {
 				f16::from_le_bytes([pixel[channel * 2], pixel[channel * 2 + 1]]).to_f32()
 			});
+
 			assert_eq!(decoded, [color[0], color[1], color[2], 1.0], "generated pixel {pixel_index}");
 		}
 	}

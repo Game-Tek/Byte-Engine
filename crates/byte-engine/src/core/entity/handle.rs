@@ -145,6 +145,7 @@ mod tests {
 		let erased: Handle<dyn Any> = concrete.clone();
 
 		let restored = erased.downcast::<String>().expect("matching concrete type");
+
 		assert_eq!(restored.as_str(), "mesh");
 		assert_eq!(restored, concrete);
 		assert!(erased.downcast::<u64>().is_none());
@@ -155,6 +156,7 @@ mod tests {
 		let weak = {
 			let strong = Handle::from(42u32);
 			let weak = strong.weak();
+
 			assert_eq!(*weak.upgrade().expect("strong handle is alive"), 42);
 			weak
 		};
@@ -165,10 +167,12 @@ mod tests {
 	#[test]
 	fn mutable_access_requires_unique_ownership() {
 		let mut handle = Handle::from(vec![1, 2]);
+
 		assert_eq!(handle.try_map_mut(|values| values.push(3)), Some(()));
 		assert_eq!(&*handle, &[1, 2, 3]);
 
 		let clone = handle.clone();
+
 		assert_eq!(handle.try_map_mut(|values| values.clear()), None);
 		assert_eq!(&*clone, &[1, 2, 3]);
 	}

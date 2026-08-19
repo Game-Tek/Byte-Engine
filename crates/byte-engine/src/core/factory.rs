@@ -266,6 +266,7 @@ mod tests {
 
 		let created = listener.read().expect("source creation");
 		let derived = listener.read().expect("derived creation");
+
 		assert_eq!(created.handle(), derived.handle());
 		assert_eq!(derived.into_data(), "derived");
 	}
@@ -279,6 +280,7 @@ mod tests {
 		factory.create(30);
 
 		let history = factory.drain_created_before_listener();
+
 		assert_eq!(history.len(), 2);
 		assert_eq!(history[0].handle(), &before_a);
 		assert_eq!(history[1].handle(), &before_b);
@@ -294,6 +296,7 @@ mod tests {
 
 		let handle = clone.create(7);
 		let message = listener.read().expect("clone publishes to shared channel");
+
 		assert_eq!(message.handle(), &handle);
 		assert_eq!(message.data(), &7);
 	}

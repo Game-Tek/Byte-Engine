@@ -624,6 +624,7 @@ mod tests {
 		queue_render_pass_startup_parameters(&parameters, &configuration);
 
 		let update = port.read().expect("render-pass startup configuration");
+
 		assert_eq!(update.parameter(), "render.pass.bloom");
 		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::from("bypassed"));
 		assert!(port.read().is_none());

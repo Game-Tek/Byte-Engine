@@ -43,6 +43,7 @@ mod tests {
 
 	#[test]
 	fn platform_artifact_mapping_uses_binary_runtime_formats() {
+
 		assert!(matches!(
 			platform_shader_artifact(PlatformShaderLanguage::Glsl, None),
 			ShaderArtifact::Spirv
@@ -52,6 +53,7 @@ mod tests {
 			ShaderArtifact::Dxil
 		));
 		let metal_entry_point = crate::shader::besl::backends::msl::MSL_ENTRY_POINT;
+
 		assert!(matches!(
 			platform_shader_artifact(PlatformShaderLanguage::Msl, Some(metal_entry_point)),
 			ShaderArtifact::Mtlb { entry_point } if entry_point == metal_entry_point

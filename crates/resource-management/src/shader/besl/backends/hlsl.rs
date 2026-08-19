@@ -25,6 +25,7 @@ mod tests {
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
+
 			assert!(
 				$haystack.contains($needle),
 				"Expected string to contain '{}', but it did not. String: '{}'",
@@ -36,6 +37,7 @@ mod tests {
 
 	macro_rules! assert_string_does_not_contain {
 		($haystack:expr, $needle:expr) => {
+
 			assert!(
 				!$haystack.contains($needle),
 				"Expected string not to contain '{}', but it did. String: '{}'",
@@ -112,7 +114,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(32)), &main)
 			.expect("Expected subgroup fixture to lower to HLSL");
-
 		assert_string_contains!(shader, "WaveActiveBallot(group_thread_index<4)");
 		assert_string_contains!(shader, "WaveReadLaneAt(group_thread_index,leader)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
@@ -126,7 +127,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected vec4u16 HLSL generation");
-
 		assert_string_contains!(shader, "uint16_t4 value;");
 		assert_string_does_not_contain!(shader, "struct vec4u16");
 	}
@@ -140,7 +140,6 @@ mod tests {
 				&generator::tests::packed_vec4f_meshlet_binding(),
 			)
 			.expect("Expected packed_vec4f HLSL generation");
-
 		assert_string_contains!(shader, "float4 center_radius;float4 cone_apex_cutoff;");
 		assert_string_does_not_contain!(shader, "struct packed_vec4f");
 	}
@@ -152,7 +151,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected vec2u16 HLSL generation");
-
 		assert_string_contains!(shader, "RWStructuredBuffer<uint16_t2> buff : register(u0, space0);");
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<uint2> buff");
 	}
@@ -166,7 +164,6 @@ mod tests {
 				&generator::tests::vec2f16_array_binding(),
 			)
 			.expect("Expected vec2f16 HLSL generation");
-
 		assert_string_contains!(shader, "RWStructuredBuffer<float16_t2> buff : register(u0, space0);");
 		assert_string_does_not_contain!(shader, "RWStructuredBuffer<float2> buff");
 	}
@@ -180,7 +177,6 @@ mod tests {
 				&generator::tests::mixed_f16_storage_binding(),
 			)
 			.expect("Expected f16 HLSL generation");
-
 		assert_string_contains!(shader, "float16_t scalar;");
 		assert_string_contains!(shader, "float16_t2 uv;");
 		assert_string_contains!(shader, "float16_t3 normal;");
@@ -225,7 +221,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected vector access shader source to generate HLSL");
-
 		assert_string_contains!(shader, "float component=vector.x;");
 		assert_string_contains!(shader, "float indexed_component=vector[1];");
 		assert_string_contains!(shader, "uint joint_component=joints.x;");
@@ -270,7 +265,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected user struct constructor shader source to generate HLSL");
-
 		assert_string_contains!(
 			shader,
 			"Pair pair=besl_construct_Pair(float4(1.0,1.0,1.0,1.0),float4(2.0,2.0,2.0,2.0));"
@@ -352,7 +346,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected affine-matrix shader source to generate HLSL");
-
 		assert_string_contains!(shader, "return mul(position, model);");
 		assert_string_contains!(
 			shader,
@@ -456,7 +449,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected buffered matrix-column shader source to generate HLSL");
-
 		assert_string_contains!(shader, "results[0]=transpose(wrapped[0].matrix)[1];");
 		assert_string_contains!(shader, "results[1]=transpose(matrices[0])[2];");
 		assert_string_contains!(shader, "results[2]=transpose(wrapped[0].matrix+matrices[0])[3];");
@@ -517,7 +509,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::task(utils::Extent::line(32), 32), &main)
 			.expect("Expected task shader source to generate HLSL");
-
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
@@ -568,7 +559,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
 			.expect("Expected mesh shader source to generate HLSL");
-
 		assert_string_contains!(shader, "struct ObjectPayload{uint32_t meshlet_indices[32];};");
 		assert_string_contains!(shader, "struct VertexOutput{float4 position : SV_Position;};");
 		assert_string_contains!(shader, "struct PrimitiveOutput{");
@@ -613,7 +603,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected array texture binding shader source to generate HLSL");
-
 		assert_string_contains!(shader, "Texture2DArray<float4> shadow_map : register(t11, space0);");
 		assert_string_does_not_contain!(shader, "Texture2DArray<float4><float4>");
 	}
@@ -626,7 +615,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "static const float color_x=1.0f;");
 		assert_string_contains!(shader, "static const float color_y=1.0f;");
 		assert_string_contains!(shader, "static const float color_z=1.0f;");
@@ -643,7 +631,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void besl_main(float3 color : TEXCOORD0){color;}");
 	}
 
@@ -655,7 +642,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void besl_main(out float3 color : TEXCOORD0){color;}");
 	}
 
@@ -670,7 +656,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Expected packed integer fragment HLSL generation");
-
 		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0");
 		assert_string_contains!(vertex_shader, "nointerpolation out uint16_t4 packed_output : TEXCOORD1");
 		assert_string_contains!(fragment_shader, "nointerpolation uint16_t2 packed_input : TEXCOORD0");
@@ -687,7 +672,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void besl_main(){float3 albedo=float3(1.0,0.0,0.0);albedo;}");
 	}
 
@@ -720,7 +704,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "float4 texel=texture.Load(int3(coord, 0));");
 	}
 
@@ -811,7 +794,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "uint2 _besl_image_size;");
 		assert_string_contains!(shader, "image.GetDimensions(_besl_image_size.x, _besl_image_size.y);");
 		assert_string_contains!(shader, "if (any(coord >= _besl_image_size)) { return; }");
@@ -927,7 +909,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
 		assert_string_contains!(shader, "uint2 extent;output_image.GetDimensions(extent.x, extent.y);");
@@ -955,7 +936,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::new(32, 16, 1)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "[numthreads(32, 16, 1)]void besl_main(");
 		assert_string_does_not_contain!(shader, "[numthreads(32, 16, 1)]#pragma");
 	}
@@ -1001,7 +981,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "StructuredBuffer<uint32_t> meshes : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter : register(u1, space0);");
 		assert_string_contains!(shader, "uint32_t instance_index=meshes[0];");
@@ -1054,7 +1033,6 @@ mod tests {
 		let shader = Generator::new()
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Failed to generate HLSL for packed narrow buffers. The most likely cause is unsupported buffer access.");
-
 		assert_string_contains!(shader, "vertex_indices[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
 		assert_string_contains!(shader, "primitive_indices[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
 	}
@@ -1107,7 +1085,6 @@ mod tests {
 			.expect(
 				"Failed to generate HLSL for read-write narrow buffers. The most likely cause is unsupported packed assignment.",
 			);
-
 		assert_string_contains!(shader, "RWStructuredBuffer<uint> bytes : register(u0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint> shorts : register(u1, space0);");
 		assert_string_contains!(shader, "bytes[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
@@ -1159,7 +1136,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Expected compare-exchange source to lower to HLSL");
-
 		assert_string_contains!(
 			shader,
 			"uint32_t previous;InterlockedCompareExchange(shared_keys[group_thread_index], 4294967295, 7, previous);"
@@ -1257,7 +1233,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "[numthreads(8, 8, 1)]void besl_main(");
 		assert_string_contains!(shader, "uint32_t item_index=index_image[coord];");
 		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
@@ -1339,7 +1314,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"struct _parameters{float4x4 inverse_view_projection;float4 sun_direction;};"
@@ -1367,7 +1341,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"void used_by_used(){}void used(){used_by_used();}void besl_main(){used();}"
@@ -1382,7 +1355,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(
 			shader,
 			"struct Vertex{float3 position;float3 normal;};Vertex use_vertex(){}void besl_main(){use_vertex();}"
@@ -1397,7 +1369,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "struct PushConstant{uint32_t material_id;};");
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 		assert_string_contains!(shader, "void besl_main(){push_constant;}");
@@ -1434,7 +1405,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected push-constant shader source to generate HLSL");
-
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space0);");
 		assert_string_does_not_contain!(shader, "vk::push_constant");
@@ -1476,7 +1446,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
 		assert_string_contains!(shader, "void used(){}");
 		assert_string_contains!(shader, "output.position = float4(0, 0, 0, 1)");
@@ -1490,7 +1459,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "void besl_main(){0 + 1.0 * 2;}");
 	}
 
@@ -1546,7 +1514,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "static const float PI = 3.14;");
 		assert_string_contains!(shader, "void besl_main(){PI;}");
 	}
@@ -1569,7 +1536,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "if(n<1){n=2;}");
 	}
 
@@ -1589,7 +1555,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
 	}
 
@@ -1612,7 +1577,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
 	}
 
@@ -1634,7 +1598,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "max(1.0,2.0)");
 		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
 	}
@@ -1657,7 +1620,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "static const float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 		assert_string_does_not_contain!(shader, "WEIGHTS[3]");
@@ -1693,7 +1655,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Expected scalar arrays to lower to HLSL vectors");
-
 		assert_string_contains!(shader, "float3 scalar_f32()");
 		assert_string_contains!(shader, "uint16_t3 scalar_u16()");
 		assert_string_contains!(shader, "uint3 scalar_u32()");
@@ -1719,7 +1680,6 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(shader, "float value=lerp(0.0,1.0,0.5);");
 		assert_string_does_not_contain!(shader, "mix(");
 	}
@@ -1732,14 +1692,12 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(minified_shader, "float besl_main(){return 1.0;}");
 
 		let pretty_shader = Generator::new()
 			.minified(false)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-
 		assert_string_contains!(pretty_shader, "float besl_main() {\n\treturn 1.0;\n}\n");
 	}
 }

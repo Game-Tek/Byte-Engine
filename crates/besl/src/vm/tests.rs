@@ -293,6 +293,7 @@ fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member
 
 #[test]
 fn apply_arithmetic_supports_all_basic_scalar_operations() {
+
 	assert_eq!(
 		super::apply_arithmetic(super::ArithmeticOperator::Add, &super::Value::U32(2), &super::Value::U32(3))
 			.expect("Expected addition to succeed"),
@@ -522,6 +523,7 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 	let executable = compile_test_program(script, Some(root));
 	let slot = ResourceSlot::new(30);
 	let layout = executable.buffer_layout(slot).expect("Expected vec4u16 buffer layout");
+
 	assert_eq!(layout.member("value").unwrap().value_type().size(), 8);
 	assert_eq!(layout.member("last").unwrap().offset(), 8);
 	let mut buffer = Buffer::new(layout.clone());
@@ -579,6 +581,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 	let executable = compile_test_program(script, Some(root));
 	let slot = ResourceSlot::new(31);
 	let layout = executable.buffer_layout(slot).expect("Expected f16 buffer layout");
+
 	assert_eq!(layout.member("value").unwrap().value_type().size(), 4);
 	assert_eq!(layout.member("component").unwrap().value_type().size(), 2);
 	assert_eq!(layout.member("component").unwrap().offset(), 16);
@@ -587,6 +590,7 @@ fn executable_program_round_trips_f16_arithmetic_casts_and_packed_buffer_values(
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	let half = |value| super::f16::from_f32(value);
+
 	assert_eq!(buffer.read("value").unwrap(), Value::Vec2F16([half(2.25), half(2.5)]));
 	assert_eq!(buffer.read("narrowed").unwrap(), Value::Vec2F16([half(3.5), half(4.25)]));
 	assert_eq!(buffer.read("widened").unwrap(), Value::Vec2F([3.5, 4.25]));
@@ -2098,6 +2102,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	let values = read_f32s(&buffer, 14);
+
 	assert!((values[0] - 2.5).abs() < 1e-6);
 	assert!((values[1] - 3.0).abs() < 1e-6);
 	assert!((values[2] - std::f32::consts::E).abs() < 1e-5);
@@ -2196,6 +2201,7 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	let values = read_f32s(&buffer, 2);
+
 	assert!((values[0] - 2.5).abs() < 1e-6);
 	assert!((values[1] - 1.0).abs() < 1e-6);
 }
@@ -2216,11 +2222,13 @@ fn execution_limit_stops_an_infinite_loop() {
 	let error = executable
 		.run_main_with_config(&mut descriptors, &ExecutionConfig::new(32))
 		.expect_err("An infinite loop must exhaust its explicit instruction budget");
+
 	assert_eq!(error, VmError::InstructionLimitExceeded { limit: 32 });
 }
 
 #[test]
 fn reflect_preserves_the_exact_non_unit_normal_semantics() {
+
 	assert_eq!(
 		reflect_vector([1.0, 2.0], [2.0, 0.0]).expect("Reflect is defined for every finite normal"),
 		[-7.0, 2.0]
@@ -2271,6 +2279,7 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 			.run_main(&mut descriptors)
 			.expect("Expected descriptor-handle execution");
 	}
+
 	assert_eq!(
 		result.read("color").expect("Expected color"),
 		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
@@ -2303,6 +2312,7 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 	let executable = compile_test_program(script, Some(root));
 	let mut result = buffer_for_slot(&executable, ResourceSlot::new(32));
 	run_with_buffer(&executable, ResourceSlot::new(32), &mut result);
+
 	assert_eq!(result.read("value").expect("Expected selected weight"), Value::F32(0.75));
 }
 
@@ -2331,6 +2341,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 			.run_main(&mut descriptors)
 			.expect("Expected mesh capture execution");
 	}
+
 	assert_eq!(mesh_outputs.vertex_count(), 1);
 	assert_eq!(mesh_outputs.primitive_count(), 1);
 	assert_eq!(mesh_outputs.vertex_position(0), Some([1.0, 2.0, 3.0, 1.0]));
@@ -2452,6 +2463,7 @@ fn task_workgroup_reuse_clears_stale_payload_values() {
 		executable
 			.run_workgroup(&mut descriptors, &[config])
 			.expect("Task capture reuse failed. The most likely cause is stale workgroup or task-output state.");
+
 		assert_eq!(outputs.mesh_output_count(), Some(expected_count));
 	}
 
@@ -2588,6 +2600,7 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 	}
 
 	for lane in 0..32 {
+
 		assert_eq!(
 			result.read_indexed("values", lane).expect("Expected first subgroup result"),
 			Value::U32(21)
@@ -2596,6 +2609,7 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 		assert_eq!(result.read_indexed("lane_indices", lane), Ok(Value::U32(lane as u32)));
 	}
 	for lane in 32..64 {
+
 		assert_eq!(
 			result.read_indexed("values", lane).expect("Expected second subgroup result"),
 			Value::U32(53)
@@ -2662,6 +2676,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 			.run_workgroup(&mut descriptors, &[ExecutionConfig::new(32).with_thread_position(0)])
 			.expect("Initial workgroup execution failed. The most likely cause is broken workgroup storage initialization.");
 	}
+
 	assert_eq!(outputs.mesh_output_count(), Some(1));
 
 	let error = {
@@ -2674,6 +2689,7 @@ fn task_workgroup_reuse_clears_shared_storage() {
 				"Stale workgroup storage was visible. The most likely cause is that scheduler reuse did not clear shared values.",
 			)
 	};
+
 	assert_eq!(
 		error,
 		VmError::UninitializedWorkgroupValue {
@@ -2895,6 +2911,7 @@ fn mesh_output_counts_respect_execution_limits_before_resizing() {
 	let config = ExecutionConfig::new(32)
 		.with_max_mesh_vertex_count(1)
 		.with_max_mesh_primitive_count(3);
+
 	assert_eq!(config.max_mesh_vertex_count(), 1);
 	assert_eq!(config.max_mesh_primitive_count(), 3);
 
@@ -2929,6 +2946,7 @@ fn mesh_output_counts_respect_execution_limits_before_resizing() {
 			.run_main_with_config(&mut descriptors, &primitive_config)
 			.expect_err("Primitive counts must use their independent limit")
 	};
+
 	assert_eq!(
 		primitive_error,
 		VmError::MeshOutputCountLimitExceeded {
@@ -3016,6 +3034,7 @@ fn specialization_values_select_x_and_y_components() {
 			.expect("Expected specialized executable");
 		let mut result = buffer_for_slot(&executable, ResourceSlot::new(33));
 		run_with_buffer(&executable, ResourceSlot::new(33), &mut result);
+
 		assert_eq!(
 			result.read("value").expect("Expected specialization result"),
 			Value::F32(expected)

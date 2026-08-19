@@ -37,6 +37,7 @@ fn application_opener_discards_a_store_with_a_mismatched_resource_management_sig
 	{
 		let _storage = RedbStorageBackend::new(path.clone());
 	}
+
 	assert!(
 		!stale_resource.exists(),
 		"a stale resource must be removed before an application can read it"
@@ -67,6 +68,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 		let storage = RedbStorageBackend::open_read_only(path.clone()).unwrap();
 		let (_, reader) = storage.read(first_id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
+
 		assert_eq!(backing.as_slice(), b"first payload");
 	}
 
@@ -82,6 +84,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 		let storage = RedbStorageBackend::open_read_only(path.clone()).unwrap();
 		let (_, reader) = storage.read(second_id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
+
 		assert_eq!(backing.as_slice(), b"second payload");
 	}
 

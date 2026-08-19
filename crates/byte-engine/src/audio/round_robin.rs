@@ -49,6 +49,7 @@ mod tests {
 	#[test]
 	fn empty_source_remains_empty_without_panicking() {
 		let mut source = RoundRobin::new(Vec::new());
+
 		assert_eq!(source.get(), None);
 		assert_eq!(source.get(), None);
 		assert!(source.get_assets().is_empty());

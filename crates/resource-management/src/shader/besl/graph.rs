@@ -102,6 +102,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 			name,
 			..
 		} => {
+
 			assert_eq!(name, "main");
 
 			for p in params {

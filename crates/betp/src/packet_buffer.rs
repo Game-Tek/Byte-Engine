@@ -164,6 +164,7 @@ mod tests {
 		buffer.add(make_packet::<8>(10, 1), 7, true);
 
 		let entry = buffer.buffer[0].expect("expected a packet in the first slot");
+
 		assert_eq!(entry.packet.connection_status.sequence, 10);
 		assert_eq!(entry.connection_id, 7);
 		assert!(entry.reliable);
@@ -297,6 +298,7 @@ mod tests {
 			.iter()
 			.filter_map(|packet| packet.map(|packet| packet.packet.connection_status.sequence))
 			.collect();
+
 		assert!(!sequences.contains(&1));
 		assert!(sequences.contains(&2));
 	}
@@ -307,6 +309,7 @@ mod tests {
 		buffer.add(make_packet::<8>(1, 1), 1, true);
 
 		for _ in 0..MAX_RELIABLE_SEND_ATTEMPTS {
+
 			assert_eq!(buffer.gather_unsent_packets_for_retry().len(), 1);
 		}
 
@@ -325,12 +328,14 @@ mod tests {
 		buffer.acknowledge_packets(2, 0b1_0101);
 
 		for sequence in [2, 0, u16::MAX - 1] {
+
 			assert!(buffer
 				.buffer
 				.iter()
 				.all(|entry| { entry.is_none_or(|entry| entry.packet.connection_status.sequence != sequence) }));
 		}
 		for sequence in [u16::MAX, 1, 3, 4, 5] {
+
 			assert!(buffer
 				.buffer
 				.iter()

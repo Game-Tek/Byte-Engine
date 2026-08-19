@@ -45,6 +45,7 @@ mod tests {
 	#[test]
 	fn time_intervals_fire_during_the_frame_that_crosses_each_boundary() {
 		let interval = Interval::Time(MediaTime::from_millis(100));
+
 		assert!(interval.is_now(MediaTime::from_millis(200), MediaTime::from_millis(16), 0));
 		assert!(interval.is_now(MediaTime::from_millis(305), MediaTime::from_millis(16), 0));
 		assert!(!interval.is_now(MediaTime::from_millis(350), MediaTime::from_millis(16), 0));
@@ -52,6 +53,7 @@ mod tests {
 
 	#[test]
 	fn zero_intervals_are_well_defined_as_every_tick() {
+
 		assert!(Interval::Frames(0).is_now(MediaTime::ZERO, MediaTime::ZERO, 17));
 		assert!(Interval::Time(MediaTime::ZERO).is_now(MediaTime::from_seconds(1), MediaTime::ZERO, 17));
 	}
@@ -59,16 +61,20 @@ mod tests {
 	#[test]
 	fn task_constructors_encode_distinct_scheduling_contracts() {
 		let tick = Task::tick(|| {});
+
 		assert!(tick.every.is_none() && tick.lifetime.is_none() && tick.delay.is_none());
 
 		let every = Task::every(2u32, || {});
+
 		assert!(matches!(every.every, Some(Interval::Frames(2))));
 		assert!(every.lifetime.is_none() && every.delay.is_none());
 
 		let once = Task::once(|| {});
+
 		assert!(matches!(once.lifetime, Some(Interval::Frames(1))));
 
 		let delayed = Task::r#in(MediaTime::from_millis(10), || {});
+
 		assert!(matches!(delayed.delay, Some(Interval::Time(duration)) if duration == MediaTime::from_millis(10)));
 	}
 }

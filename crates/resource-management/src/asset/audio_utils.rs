@@ -52,6 +52,7 @@ mod tests {
 
 	#[test]
 	fn bit_depth_from_bits_per_sample_maps_supported_pcm_depths() {
+
 		assert_eq!(bit_depth_from_bits_per_sample(8), Some(BitDepths::Eight));
 		assert_eq!(bit_depth_from_bits_per_sample(16), Some(BitDepths::Sixteen));
 		assert_eq!(bit_depth_from_bits_per_sample(24), Some(BitDepths::TwentyFour));
@@ -61,6 +62,7 @@ mod tests {
 
 	#[test]
 	fn bytes_per_sample_reports_pcm_byte_width() {
+
 		assert_eq!(bytes_per_sample(BitDepths::Eight), 1);
 		assert_eq!(bytes_per_sample(BitDepths::Sixteen), 2);
 		assert_eq!(bytes_per_sample(BitDepths::TwentyFour), 3);
@@ -69,6 +71,7 @@ mod tests {
 
 	#[test]
 	fn sample_count_from_pcm_len_counts_interleaved_frames() {
+
 		assert_eq!(sample_count_from_pcm_len(16, 2, BitDepths::Sixteen), 4);
 		assert_eq!(sample_count_from_pcm_len(18, 2, BitDepths::TwentyFour), 3);
 	}
@@ -78,18 +81,22 @@ mod tests {
 		let mut data = Vec::new();
 		push_pcm_sample(&mut data, -1.0, BitDepths::Eight);
 		push_pcm_sample(&mut data, 1.0, BitDepths::Eight);
+
 		assert_eq!(data, [0, 255]);
 
 		let mut data = Vec::new();
 		push_pcm_sample(&mut data, 1.0, BitDepths::Sixteen);
+
 		assert_eq!(data, i16::MAX.to_le_bytes());
 
 		let mut data = Vec::new();
 		push_pcm_sample(&mut data, 1.0, BitDepths::TwentyFour);
+
 		assert_eq!(data, [0xff, 0xff, 0x7f]);
 
 		let mut data = Vec::new();
 		push_pcm_sample(&mut data, 1.0, BitDepths::ThirtyTwo);
+
 		assert_eq!(data, i32::MAX.to_le_bytes());
 	}
 }

@@ -407,6 +407,7 @@ mod tests {
 
 	#[test]
 	fn animation_frame_duration_is_capped_for_all_drivers() {
+
 		assert!((capped_frame_duration(MediaTime::from_seconds(1)).as_seconds_f32() - MAX_STEP).abs() < f32::EPSILON);
 		assert!((capped_frame_duration(MediaTime::from_millis(16)).as_seconds_f32() - 0.016).abs() < f32::EPSILON);
 	}
@@ -424,13 +425,11 @@ mod tests {
 		assert_eq!(ease_in_out_driver.value(), 0.0);
 		assert_eq!(emphasized_out_driver.value(), 0.0);
 		assert_eq!(back_out_driver.value(), 0.0);
-
 		assert_eq!(ease_in_driver.finish(), 1.0);
 		assert_eq!(ease_out_driver.finish(), 1.0);
 		assert_eq!(ease_in_out_driver.finish(), 1.0);
 		assert_eq!(emphasized_out_driver.finish(), 1.0);
 		assert_eq!(back_out_driver.finish(), 1.0);
-
 		assert_eq!(ease_in(-1.0).value(), 1.0);
 	}
 
@@ -480,8 +479,8 @@ mod tests {
 		let mut driver = back_out(1.0, 1.70158);
 
 		driver.advance(MediaTime::from_millis(600));
-		assert!(driver.value() > 1.0);
 
+		assert!(driver.value() > 1.0);
 		assert_eq!(driver.finish(), 1.0);
 	}
 }

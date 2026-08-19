@@ -126,6 +126,7 @@ fn connected_pair(client_salt: u64, server_salt: u64, current_time: Instant) -> 
 	pair.client
 		.process_datagram(server_output[0].as_bytes(), current_time, &mut client_output)
 		.unwrap();
+
 	assert_eq!(
 		pair.server
 			.process_datagram(client_output[0].as_bytes(), current_time, &mut server_output),
@@ -151,6 +152,7 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 
 	pair.client.send(true, request);
 	pair.client.advance(start, &mut scratch).unwrap();
+
 	assert_eq!(scratch.len(), 1);
 	link.schedule(Destination::Server, scratch[0].clone(), DeliveryPlan::Drop);
 
@@ -192,6 +194,7 @@ fn reliable_exchange_survives_loss_duplication_delay_and_reordering_without_dupl
 		1
 	);
 	pair.client.advance(start + Duration::from_millis(7), &mut scratch).unwrap();
+
 	assert!(scratch.is_empty(), "the peer acknowledgement must retire the reliable send");
 	assert!(link.queue.is_empty());
 }
@@ -201,6 +204,7 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 	let start = Instant::now();
 	let mut pair_a = connected_pair(0x1111, 0x2222, start);
 	let mut pair_b = connected_pair(0xAAAA, 0x5555, start);
+
 	assert_ne!(pair_a.client.connection_id(), pair_b.client.connection_id());
 	let mut datagrams = Vec::new();
 	let mut scratch = Vec::new();
@@ -221,7 +225,6 @@ fn misrouted_peer_traffic_cannot_deliver_or_refresh_another_session() {
 			.process_datagram(from_a.as_bytes(), start + Duration::from_secs(4), &mut scratch,),
 		Ok(DatagramOutcome::Accepted([0xA1; 1024]))
 	);
-
 	assert_eq!(
 		pair_b.server.advance(start + Duration::from_secs(6), &mut scratch),
 		Ok(DatagramOutcome::Disconnected {

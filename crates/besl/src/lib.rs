@@ -131,11 +131,13 @@ mod tests {
 
 		match node.node_mut() {
 			Nodes::Struct { name, fields } => {
+
 				assert_eq!(*name, "Light");
 				assert_eq!(fields.len(), 3);
 
 				match fields[0].node_mut() {
 					Nodes::Member { name, r#type } => {
+
 						assert_eq!(*name, "position");
 						assert_eq!(r#type, "vec3f");
 					}
@@ -144,6 +146,7 @@ mod tests {
 
 				match fields[2].node_mut() {
 					Nodes::Member { name, r#type } => {
+
 						assert_eq!(*name, "indices");
 						assert_eq!(r#type, "u32[3]");
 					}

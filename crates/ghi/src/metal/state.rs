@@ -156,6 +156,7 @@ pub mod queue {
 
 		// Starts a fresh recording cycle with the command's paired allocator and residency set.
 		fn begin(&self, label: Option<&str>, debug_labels: bool) {
+
 			assert_eq!(
 				self.inner.state.get(),
 				NativeCommandState::Idle,
@@ -281,6 +282,7 @@ pub mod queue {
 				let command_pool = command.inner.command_pool.upgrade().expect(
 					"Metal 4 command pool is missing. The most likely cause is that a native command outlived its context queue.",
 				);
+
 				assert!(
 					Rc::ptr_eq(&first_pool, &command_pool),
 					"Metal 4 command batch submission failed. The most likely cause is that command buffers from different queues were batched together.",
@@ -326,6 +328,7 @@ pub mod queue {
 			};
 			for command in commands {
 				let previous_feedback = command.inner.commit_feedback.replace(Some(commit_feedback.clone()));
+
 				assert!(
 					previous_feedback.is_none(),
 					"Metal 4 commit feedback registration failed. The most likely cause is that a native command was submitted more than once without being recycled.",
@@ -369,6 +372,7 @@ pub mod queue {
 					.inner
 					.completion_event
 					.waitUntilSignaledValue_timeoutMS(completion_value, u64::MAX);
+
 				assert!(
 					completed,
 					"Metal shared-event wait failed. The most likely cause is that the GPU did not signal the submitted completion token. token={completion_value}",

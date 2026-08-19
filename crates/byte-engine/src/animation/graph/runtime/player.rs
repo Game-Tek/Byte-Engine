@@ -818,11 +818,13 @@ mod tests {
 			AnimationGraphPlayer::new(&graph, &target, Some(RootMotionSettings::full("root"))).expect("player should build");
 
 		let initial = player.advance(MediaTime::ZERO, &false, &mut pool).expect("initial pose");
+
 		assert_eq!(initial.local_pose()[0], LocalTransform::identity());
 		let root_motion = player
 			.advance(MediaTime::from_millis(500), &false, &mut pool)
 			.expect("idle pose")
 			.root_motion();
+
 		assert_eq!(root_motion.translation, [0.5, 0.0, 0.0]);
 		assert_eq!(
 			player
@@ -834,6 +836,7 @@ mod tests {
 		);
 
 		let switched = player.advance(MediaTime::ZERO, &true, &mut pool).expect("run transition");
+
 		assert_eq!(switched.root_motion().translation, [0.0; 3]);
 		assert_eq!(player.state(), Some(run.id));
 		assert_eq!(
@@ -880,10 +883,12 @@ mod tests {
 		player
 			.advance(MediaTime::ZERO, &true, &mut pool)
 			.expect("queues start-walk clip");
+
 		assert_eq!(player.state(), Some(idle.id));
 		player
 			.advance(MediaTime::ZERO, &false, &mut pool)
 			.expect("cancels stale start-walk request");
+
 		assert_eq!(player.state(), Some(idle.id));
 
 		pool.admit("start.animation".into(), start_animation);
@@ -891,14 +896,17 @@ mod tests {
 		player
 			.advance(MediaTime::ZERO, &true, &mut pool)
 			.expect("starts transition state");
+
 		assert_eq!(player.state(), Some(start_walk.id));
 		player
 			.advance(MediaTime::from_seconds(1), &false, &mut pool)
 			.expect("finishes transition-state clip");
+
 		assert_eq!(player.state(), Some(start_walk.id));
 		player
 			.advance(MediaTime::ZERO, &false, &mut pool)
 			.expect("enters completion state despite its entry condition changing");
+
 		assert_eq!(player.state(), Some(walk.id));
 	}
 
@@ -937,10 +945,12 @@ mod tests {
 		player
 			.advance(MediaTime::ZERO, &true, &mut pool)
 			.expect("starts the walk transition clip");
+
 		assert_eq!(player.state(), Some(start_walk.id));
 		player
 			.advance(MediaTime::ZERO, &false, &mut pool)
 			.expect("interrupts the walk transition clip");
+
 		assert_eq!(player.state(), Some(stop_walk.id));
 		player
 			.advance(MediaTime::from_seconds(1), &false, &mut pool)
@@ -948,6 +958,7 @@ mod tests {
 		player
 			.advance(MediaTime::ZERO, &false, &mut pool)
 			.expect("enters idle after the stop transition clip");
+
 		assert_eq!(player.state(), Some(idle.id));
 	}
 
@@ -977,6 +988,7 @@ mod tests {
 				},
 			],
 		};
+
 		assert!(matches!(
 			AnimationGraphPlayer::new(&graph, &duplicate_target, Some(RootMotionSettings::full("Hips"))),
 			Err(super::AnimationGraphPlayerError::DuplicateRootMotionNodeName { name }) if name == "Hips"
@@ -1074,6 +1086,7 @@ mod tests {
 		.expect("player should build");
 
 		let initial = player.advance(MediaTime::ZERO, &(), &mut pool).expect("initial pose");
+
 		assert_eq!(initial.root_motion().translation, [0.0; 3]);
 		let first = player
 			.advance(MediaTime::from_millis(750), &(), &mut pool)
@@ -1081,6 +1094,7 @@ mod tests {
 		math::assert_float_eq!(first.root_motion().translation[0], -0.75);
 		math::assert_float_eq!(first.root_motion().translation[1], 0.0);
 		math::assert_float_eq!(first.root_motion().translation[2], 0.0);
+
 		assert_eq!(first.local_pose()[3].translation, [15.0, 107.5, 0.0]);
 		assert_ne!(first.local_pose()[3].rotation, LocalTransform::identity().rotation);
 
@@ -1090,6 +1104,7 @@ mod tests {
 		math::assert_float_eq!(wrapped.root_motion().translation[0], -0.5);
 		math::assert_float_eq!(wrapped.root_motion().translation[1], 0.0);
 		math::assert_float_eq!(wrapped.root_motion().translation[2], 0.0);
+
 		assert_eq!(wrapped.local_pose()[3].translation, [5.0, 102.5, 0.0]);
 		assert_ne!(wrapped.local_pose()[3].rotation, LocalTransform::identity().rotation);
 	}

@@ -186,6 +186,7 @@ mod tests {
 	fn generated_sphere_has_consistent_stream_lengths_and_valid_indices() {
 		let sphere = SphereMeshGenerator::from_radius(2.0);
 		let positions = sphere.positions();
+
 		assert_eq!(positions.len(), 81);
 		assert_eq!(sphere.normals().len(), positions.len());
 		assert_eq!(sphere.tangents().len(), positions.len());
@@ -207,6 +208,7 @@ mod tests {
 		{
 			let position = vector(*position);
 			let normal = vector(*normal);
+
 			assert!((length(position) - 2.5).abs() < 1e-4);
 			assert!((length(normal) - 1.0).abs() < 1e-4);
 			assert!((length(*tangent) - 1.0).abs() < 1e-4);
@@ -227,6 +229,7 @@ mod tests {
 		for row in 0..=8 {
 			let first = row * 9;
 			let last = first + 8;
+
 			assert_eq!(uvs[first], (0.0, row as f32 / 8.0));
 			assert_eq!(uvs[last], (1.0, row as f32 / 8.0));
 			assert!(length(vector(positions[first]) - vector(positions[last])) < 1e-4);
@@ -249,6 +252,7 @@ mod tests {
 
 	#[test]
 	fn hash_is_stable_for_equal_geometry_and_changes_with_radius() {
+
 		assert_eq!(
 			SphereMeshGenerator::from_radius(1.0).hash(),
 			SphereMeshGenerator::from_radius(1.0).hash()

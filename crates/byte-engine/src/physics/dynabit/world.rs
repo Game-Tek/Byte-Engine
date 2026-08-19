@@ -346,6 +346,7 @@ mod tests {
 		let contacts = world
 			.detect_collisions_from_pairs(&pairs, dt)
 			.collect::<SmallVec<[Contact; 8]>>();
+
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
@@ -388,6 +389,7 @@ mod tests {
 
 		assert_eq!(world.bodies.len(), 1);
 		let index = world.handles_to_bodies[&handle];
+
 		assert_eq!(world.bodies[index].position, replacement_position);
 		assert_eq!(world.bodies[index].linear_velocity, replacement_velocity);
 	}

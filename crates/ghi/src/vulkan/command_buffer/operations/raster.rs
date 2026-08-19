@@ -98,6 +98,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 	fn end_render_pass(&mut self) {
 		// A pass with no draws must still begin so attachment clear/load/store operations execute.
 		self.begin_rendering_if_needed();
+
 		assert!(
 			self.active_rendering,
 			"No Vulkan render pass is active. The most likely cause is that end_render_pass was called without start_render_pass.",
@@ -123,6 +124,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 			"Invalid Vulkan push-data range. The most likely cause is that the offset and data size overflow addressable memory.",
 		);
 		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
+
 		assert!(
 			offset % 4 == 0 && size % 4 == 0 && end <= layout.push_constant_size as usize,
 			"Invalid Vulkan push-data write. The most likely cause is that the offset or data size is not four-byte aligned or exceeds the pipeline's declared push-constant ranges.",

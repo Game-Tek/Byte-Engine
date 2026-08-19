@@ -242,6 +242,7 @@ impl BrdfMaterialBuilder {
 
 	pub fn add(&mut self, node: BrdfNode) -> BrdfNodeId {
 		let index = self.nodes.len();
+
 		assert!(
 			index <= u32::MAX as usize,
 			"BRDF material node count exceeded u32::MAX. The most likely cause is an invalid importer producing an unbounded graph."

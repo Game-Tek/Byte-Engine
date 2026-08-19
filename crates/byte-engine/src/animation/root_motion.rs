@@ -153,6 +153,7 @@ mod tests {
 		let mut current = [root([3.0, 0.0, 1.0], FRAC_PI_2)];
 		let reference = LocalTransform::identity();
 		let delta = extract_root_motion(&previous, &mut current, 0, reference).expect("expected test value");
+
 		assert_eq!(delta.translation, [2.0, 0.0, 1.0]);
 		assert_eq!(current[0].translation, reference.translation);
 		assert_eq!(current[0].rotation, reference.rotation);
@@ -167,6 +168,7 @@ mod tests {
 			root([0.0, 0.0, 0.0], 0.0),
 			root([2.0, 0.0, 0.0], 0.0),
 		);
+
 		assert_eq!(
 			delta,
 			RootMotionDelta {

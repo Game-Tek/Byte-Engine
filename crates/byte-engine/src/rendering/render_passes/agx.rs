@@ -106,12 +106,14 @@ mod tests {
 			2e-5,
 		);
 		let highlight = run_agx_vm(&program, [16.0, 16.0, 16.0, 0.0]);
+
 		assert!(
 			highlight[0] > 0.98 && (highlight[0] - highlight[1]).abs() < 2e-4 && (highlight[1] - highlight[2]).abs() < 2e-4,
 			"Invalid AGX neutral highlight. The most likely cause is missing display encoding or an incorrect color-space transform: {highlight:?}"
 		);
 
 		let warm = run_agx_vm(&program, [1.0, 0.5, 0.25, 0.0]);
+
 		assert!(
 			warm[0] > warm[1] && warm[1] > warm[2],
 			"Invalid AGX channel ordering. The most likely cause is an incorrect color-space transform: {warm:?}"

@@ -235,6 +235,7 @@ impl DescriptorHeapArena {
 	}
 
 	pub(crate) fn host_range(&self, offset: u32, size: u64) -> vk::HostAddressRangeEXT<'_> {
+
 		assert!(offset as u64 + size <= self.size);
 		let size = usize::try_from(size).expect(
 			"Vulkan descriptor range exceeds addressable host memory. The most likely cause is an invalid descriptor size.",
@@ -552,6 +553,7 @@ mod descriptor_heap_arena_tests {
 		let mut arena = arena();
 		let first = arena.allocate(32, 32);
 		let second = arena.allocate(64, 64);
+
 		assert_eq!((first, second), (64, 128));
 
 		arena.release(first, 32);
@@ -565,6 +567,7 @@ mod descriptor_heap_arena_tests {
 		let mut arena = arena();
 		let first = arena.allocate(16, 16);
 		let aligned = arena.allocate(32, 64);
+
 		assert_eq!((first, aligned), (64, 128));
 
 		arena.release(first, 16);

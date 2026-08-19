@@ -4,8 +4,8 @@ use super::{
 };
 #[cfg(debug_assertions)]
 use crate::asset::{
-	asset_handler::LoadErrors,
-	asset_manager::{AssetManager, LoadMessages},
+	handler::LoadErrors,
+	manager::{AssetManager, LoadMessages},
 	ResourceTrace,
 };
 use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
@@ -13,12 +13,14 @@ use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel
 /// The `ResourceUpdate` struct identifies a successfully rebaked development resource.
 #[cfg(debug_assertions)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+
 pub struct ResourceUpdate {
 	id: String,
 	class: String,
 }
 
 #[cfg(debug_assertions)]
+
 impl ResourceUpdate {
 	pub(crate) fn new(id: String, class: String) -> Self {
 		Self { id, class }
@@ -37,9 +39,11 @@ impl ResourceUpdate {
 
 /// The `ResourceUpdateListener` struct receives successful development resource replacements.
 #[cfg(debug_assertions)]
+
 pub struct ResourceUpdateListener(std::sync::mpsc::Receiver<ResourceUpdate>);
 
 #[cfg(debug_assertions)]
+
 impl ResourceUpdateListener {
 	/// Returns the next queued update without blocking the consuming system.
 	pub fn read(&self) -> Option<ResourceUpdate> {
@@ -50,13 +54,17 @@ impl ResourceUpdateListener {
 /// The `ResourceUpdateBroadcaster` struct connects development asset baking to resource consumers.
 #[cfg(debug_assertions)]
 #[derive(Default)]
+
 pub(crate) struct ResourceUpdateBroadcaster(utils::sync::Mutex<Vec<std::sync::mpsc::Sender<ResourceUpdate>>>);
 
 #[cfg(debug_assertions)]
+
 impl ResourceUpdateBroadcaster {
 	pub(crate) fn listener(&self) -> ResourceUpdateListener {
 		let (sender, receiver) = std::sync::mpsc::channel();
+
 		self.0.lock().push(sender);
+
 		ResourceUpdateListener(receiver)
 	}
 
@@ -66,10 +74,12 @@ impl ResourceUpdateBroadcaster {
 }
 
 #[cfg(debug_assertions)]
+
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
 /// Adds engine asset setup guidance only when an engine asset failed to load and its source root is inaccessible.
 #[cfg(debug_assertions)]
+
 fn asset_lookup_error(message: &str, id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
 	let byte_engine_root_inaccessible = matches!(
 		error,
@@ -141,7 +151,9 @@ impl ResourceManager {
 	///
 	/// Panics when asset management was already installed on this resource manager.
 	#[cfg(debug_assertions)]
+
 	pub fn set_asset_manager(&self, asset_manager: AssetManager) {
+
 		assert!(
 			self.try_set_asset_manager(asset_manager).is_ok(),
 			"Failed to set up resource manager. The most likely cause is that asset management was installed more than once or uses a different destination resource store."
@@ -150,20 +162,25 @@ impl ResourceManager {
 
 	/// Attempts to install the development asset manager without replacing an existing one.
 	#[cfg(debug_assertions)]
+
 	pub fn try_set_asset_manager(&self, asset_manager: AssetManager) -> Result<(), AssetManager> {
 		if !asset_manager.uses_resource_storage(&self.storage_backend) {
 			return Err(asset_manager);
 		}
+
 		self.asset_manager.set(asset_manager)?;
+
 		self.asset_manager
 			.get()
 			.unwrap()
 			.start_watching(std::sync::Arc::clone(&self.resource_updates));
+
 		Ok(())
 	}
 
 	/// Subscribes to resources replaced after successful development rebakes.
 	#[cfg(debug_assertions)]
+
 	pub fn resource_updates(&self) -> ResourceUpdateListener {
 		self.resource_updates.listener()
 	}
@@ -173,6 +190,7 @@ impl ResourceManager {
 	/// Next, call [`ResourceTrace::items`] with the resource ID shown by the
 	/// editor or other development tool.
 	#[cfg(debug_assertions)]
+
 	pub fn resource_trace(&self) -> Option<&ResourceTrace> {
 		self.asset_manager.get().map(AssetManager::resource_trace)
 	}
@@ -204,9 +222,12 @@ impl ResourceManager {
 						let message = format!(
 							"Failed to load asset. The asset manager could not bake the resource. Asset manager error: {error:?}."
 						);
+
 						asset_lookup_error(&message, id, &error, asset_manager)
 					})?;
+
 					asset_manager.track_resource(&resource);
+
 					resource.into()
 				} else if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
 					resource.into()
@@ -214,6 +235,7 @@ impl ResourceManager {
 					return Err("Resource does not exist and an asset manager is not available.".to_string());
 				}
 			}
+
 			#[cfg(not(debug_assertions))]
 			{
 				if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
@@ -247,12 +269,16 @@ impl ResourceManager {
 			.iter()
 			.enumerate()
 			.map(|(index, id)| async move { self.request(id).await.map(|resource| (index, resource)) });
+
 		let completed = utils::r#async::stream::iter(requests)
 			.buffer_unordered(max_concurrency.max(1))
 			.collect::<Vec<_>>()
 			.await;
+
 		let mut completed = completed.into_iter().collect::<Result<Vec<_>, _>>()?;
+
 		completed.sort_unstable_by_key(|(index, _)| *index);
+
 		Ok(completed.into_iter().map(|(_, resource)| resource).collect())
 	}
 
@@ -276,8 +302,10 @@ impl ResourceManager {
 			.await?;
 
 		let mut items = Vec::with_capacity(page.items.len());
+
 		for (resource, _) in page.items {
 			let model: ReferenceModel<T::Model> = resource.into();
+
 			items.push(model.solve(self.get_storage_backend()).await.unwrap());
 		}
 
@@ -289,7 +317,9 @@ impl ResourceManager {
 }
 
 #[cfg(test)]
+
 mod tests {
+
 	use super::ResourceManager;
 	use crate::{
 		asset::ResourceId,
@@ -303,15 +333,18 @@ mod tests {
 	#[r#async::test]
 	async fn stored_request_awaits_metadata_and_preserves_deferred_payload_loading() {
 		let storage = TestStorageBackend::new();
+
 		let audio = Audio {
 			bit_depth: BitDepths::Sixteen,
 			channel_count: 1,
 			sample_rate: 48_000,
 			sample_count: 2,
 		};
+
 		storage
 			.store(ProcessedAsset::new(ResourceId::new("audio/loop.wav"), audio), &[1, 2, 3, 4])
 			.unwrap();
+
 		let resource_manager = ResourceManager::new(storage);
 
 		let mut reference = resource_manager
@@ -323,16 +356,20 @@ mod tests {
 		assert_eq!(reference.resource().channel_count, audio.channel_count);
 		assert_eq!(reference.resource().sample_rate, audio.sample_rate);
 		assert_eq!(reference.resource().sample_count, audio.sample_count);
+
 		let loaded = reference
 			.load(ReadTargetsMut::backing_storage())
 			.await
 			.expect("deferred payload");
+
 		assert_eq!(loaded.buffer(), Some([1, 2, 3, 4].as_slice()));
 	}
 }
 
 #[cfg(all(test, debug_assertions))]
+
 mod debug_tests {
+
 	use std::{
 		fs,
 		sync::{
@@ -347,8 +384,8 @@ mod debug_tests {
 	use super::ResourceManager;
 	use crate::{
 		asset::{
-			asset_handler::{AssetHandler, BakeContext, LoadErrors},
-			asset_manager::AssetManager,
+			handler::{AssetHandler, BakeContext, LoadErrors},
+			manager::AssetManager,
 			storage_backend::{tests::TestStorageBackend as AssetTestStorageBackend, FileStorageBackend},
 			ResourceId, ResourceTraceLevel,
 		},
@@ -388,7 +425,9 @@ mod debug_tests {
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
+
 			let (source, ..) = context.resolve(id).await?;
+
 			context.store_primary(
 				ProcessedAsset::new(
 					id,
@@ -415,16 +454,19 @@ mod debug_tests {
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
+
 			self.started
 				.lock()
 				.take()
 				.expect("the test handler should start once")
 				.announce(())
 				.expect("test startup announcement should be open");
+
 			self.release
 				.listen()
 				.await
 				.expect("test release announcement should remain open");
+
 			context.store_primary(
 				ProcessedAsset::new(
 					id,
@@ -454,20 +496,28 @@ mod debug_tests {
 
 	fn resource_manager_with_file_assets(path: std::path::PathBuf) -> ResourceManager {
 		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
+
 		let mut asset_manager = AssetManager::new_shared(FileStorageBackend::new(path), Arc::clone(&storage));
+
 		asset_manager.add_asset_handler(ResolvingAssetHandler);
+
 		let resource_manager = ResourceManager::new_shared(storage);
+
 		resource_manager.set_asset_manager(asset_manager);
+
 		resource_manager
 	}
 
 	#[test]
 	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
 		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
+
 		let resource_manager = Arc::new(ResourceManager::new_shared(Arc::clone(&storage)));
+
 		let renderer_reference = Arc::downgrade(&resource_manager);
 
 		resource_manager.set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), Arc::clone(&storage)));
+
 		assert!(renderer_reference.upgrade().is_some());
 		assert!(resource_manager.resource_trace().is_some());
 		assert!(resource_manager
@@ -478,6 +528,7 @@ mod debug_tests {
 	#[r#async::test]
 	async fn inaccessible_engine_asset_root_suggests_configuring_the_symlink() {
 		let assets = temporary_asset_directory("missing-root");
+
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
 		let error = resource_manager
@@ -487,13 +538,16 @@ mod debug_tests {
 
 		assert!(error.contains("The 'byte-engine' path in the assets directory is inaccessible"));
 		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
+
 		fs::remove_dir_all(assets).unwrap();
 	}
 
 	#[r#async::test]
 	async fn individual_asset_failure_omits_engine_symlink_hint_when_root_is_accessible() {
 		let assets = temporary_asset_directory("accessible-root");
+
 		fs::create_dir_all(assets.join("byte-engine")).unwrap();
+
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
 		let error = resource_manager
@@ -505,28 +559,39 @@ mod debug_tests {
 			error,
 			"Failed to load asset. The asset manager could not bake the resource. Asset manager error: FailedToBake { asset: \"byte-engine/missing.test\", error: AssetCouldNotBeLoaded }."
 		);
+
 		let trace = resource_manager
 			.resource_trace()
 			.expect("installed asset management should expose its trace");
+
 		let items = trace.items("byte-engine/missing.test");
+
 		assert_eq!(items.len(), 1);
 		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+
 		fs::remove_dir_all(assets).unwrap();
 	}
 
 	#[r#async::test]
 	async fn concurrent_resource_requests_share_one_missing_asset_bake() {
 		let invocations = Arc::new(AtomicUsize::new(0));
+
 		let (started, started_announcement) = announcement::Announcement::new();
+
 		let (release, release_announcement) = announcement::Announcement::new();
+
 		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
+
 		let mut asset_manager = AssetManager::new_shared(AssetTestStorageBackend::new(), Arc::clone(&storage));
+
 		asset_manager.add_asset_handler(CoordinatingShaderHandler {
 			invocations: Arc::clone(&invocations),
 			started: Mutex::new(Some(started)),
 			release: release_announcement.listener(),
 		});
+
 		let resource_manager = ResourceManager::new_shared(storage);
+
 		resource_manager.set_asset_manager(asset_manager);
 
 		let release_handler = async {
@@ -535,8 +600,10 @@ mod debug_tests {
 				.listen()
 				.await
 				.expect("asset bake should start");
+
 			release.announce(()).expect("release should be announced once");
 		};
+
 		let requests = async {
 			std::future::join!(
 				resource_manager.request::<Shader>("shared.test"),
@@ -544,6 +611,7 @@ mod debug_tests {
 			)
 			.await
 		};
+
 		let (_, (first, second)) = std::future::join!(release_handler, requests).await;
 
 		assert!(first.is_ok());
@@ -554,28 +622,38 @@ mod debug_tests {
 	#[r#async::test]
 	async fn debug_resource_requests_rebake_only_after_the_requested_asset_changes() {
 		let invocations = Arc::new(AtomicUsize::new(0));
+
 		let asset_storage = AssetTestStorageBackend::new();
+
 		asset_storage.add_file("versioned.test", b"first shader");
+
 		let storage = StorageBackendHarness::new(ResourceTestStorageBackend::new()).into_shared();
+
 		let mut asset_manager = AssetManager::new_shared(asset_storage.clone(), Arc::clone(&storage));
+
 		asset_manager.add_asset_handler(VersionedShaderHandler {
 			invocations: Arc::clone(&invocations),
 		});
+
 		let resource_manager = ResourceManager::new_shared(storage);
+
 		resource_manager.set_asset_manager(asset_manager);
 
 		let first = resource_manager
 			.request::<Shader>("versioned.test")
 			.await
 			.expect("initial debug request should bake");
+
 		let unchanged = resource_manager
 			.request::<Shader>("versioned.test")
 			.await
 			.expect("unchanged debug request should reuse the resource");
+
 		assert_eq!(first.hash(), unchanged.hash());
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
 		asset_storage.add_file("versioned.test", b"changed shader source");
+
 		let changed = resource_manager
 			.request::<Shader>("versioned.test")
 			.await
@@ -587,13 +665,16 @@ mod debug_tests {
 }
 
 #[cfg(all(test, not(debug_assertions)))]
+
 mod release_tests {
+
 	use super::ResourceManager;
 	use crate::{r#async, resource::storage_backend::tests::TestStorageBackend, resources::material::Shader};
 
 	#[r#async::test]
 	async fn missing_release_resource_fails_without_running_asset_processors() {
 		let resource_manager = ResourceManager::new(TestStorageBackend::new());
+
 		let result = resource_manager.request::<Shader>("missing/render-pass.besl").await;
 
 		assert!(

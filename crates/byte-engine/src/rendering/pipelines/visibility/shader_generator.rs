@@ -8,9 +8,11 @@ pub use scope::{VisibilityShaderGenerator, VisibilityShaderScope};
 pub(super) use sources::*;
 
 #[cfg(test)]
+
 mod tests {
+
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
-	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
+	use resource_management::asset::{handler::implementations::bema::ProgramGenerator, JsonObject};
 	use resource_management::pbr::{
 		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
 		BrdfValue,
@@ -83,12 +85,16 @@ mod tests {
 	/// Generates the production Metal material shader for source-shape regressions.
 	fn material_msl(shader_source: &str, material: &JsonObject) -> String {
 		let shader_node = besl::parse(shader_source).expect("Test material source should parse.");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = besl::lex(shader_generator.transform(shader_node, material))
 			.expect("Material evaluation should produce valid BESL.");
+
 		let main = shader.get_main().expect(
 			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
 		);
+
 		MSLShaderGenerator::new()
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to emit the Metal material pass. The most likely cause is an invalid visibility shader contract.")
@@ -97,6 +103,7 @@ mod tests {
 	/// Guards the algebraic decoder shape so compact normals do not reintroduce transcendental work per shaded pixel.
 	#[test]
 	fn octahedral_decoder_uses_abs_and_step_and_defers_normalization() {
+
 		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("sqrt("));
 		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("normalize("));
 		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("abs("));
@@ -121,7 +128,9 @@ mod tests {
 	#[test]
 	fn material_fresnel_uses_multiplication_for_fifth_powers() {
 		let source = super::MATERIAL_EVALUATION_SUFFIX_SOURCE;
+
 		assert!(!source.contains("f16(5.0)"));
+
 		for base in ["view_fresnel", "half_view_fresnel", "light_fresnel"] {
 			assert!(source.contains(&format!("{base}_squared * {base}_squared * {base}_base")));
 		}
@@ -131,7 +140,9 @@ mod tests {
 	#[test]
 	fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
 		let source = r#"
 			main: fn () -> void {
 				for (let index: u32 = 0; index < 5; index = index + 1) {
@@ -139,8 +150,10 @@ mod tests {
 				}
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the octahedral decoder VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			super::parse_besl_function(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
 			besl::ParserNode::binding(
@@ -158,11 +171,15 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the octahedral decoder VM test. The most likely cause is an unresolved portable decoder operation.",
 		));
+
 		let mut inputs = buffer(&executable, INPUT_SLOT);
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let cases = [
 			([32768, 32768], [0.0, 0.0, 1.0]),
 			([65535, 32768], [1.0, 0.0, 0.0]),
@@ -170,14 +187,19 @@ mod tests {
 			([32768, 65535], [0.0, 1.0, 0.0]),
 			([65535, 65535], [0.0, 0.0, -1.0]),
 		];
+
 		for (index, (encoded, _)) in cases.iter().enumerate() {
 			inputs
 				.write_indexed("values", index, Value::Vec2U16(*encoded))
 				.expect("Failed to initialize an octahedral input. The most likely cause is a drifted packed-vector layout.");
 		}
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (index, (_, expected)) in cases.iter().enumerate() {
@@ -187,6 +209,7 @@ mod tests {
 			else {
 				panic!("Unexpected decoded-normal type. The most likely cause is a VM packed-vector regression.");
 			};
+
 			assert!(
 				actual
 					.iter()
@@ -203,7 +226,9 @@ mod tests {
 	#[test]
 	fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
 		let source = r#"
 			main: fn () -> void {
 				for (let index: u32 = 0; index < 5; index = index + 1) {
@@ -215,8 +240,10 @@ mod tests {
 				}
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the IES UV VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			super::parse_besl_function(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
 			super::parse_besl_function(super::IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
@@ -242,11 +269,15 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the IES UV VM test. The most likely cause is an unresolved portable IES coordinate operation.",
 		));
+
 		let mut inputs = buffer(&executable, INPUT_SLOT);
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let cases = [
 			([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [65535, 32768], [0.0, 0.5]),
 			([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [65535, 32768], [0.25, 0.5]),
@@ -254,20 +285,27 @@ mod tests {
 			([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [32768, 65535], [0.25, 0.5]),
 			([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [65535, 32768], [0.0, 0.5]),
 		];
+
 		for (index, (emission_direction, axis, c0_tangent, _)) in cases.iter().enumerate() {
 			inputs
 				.write_indexed("emission_directions", index, Value::Vec3F(*emission_direction))
 				.expect("Failed to initialize an IES emission direction. The most likely cause is a drifted VM vector layout.");
+
 			inputs
 				.write_indexed("axes", index, Value::Vec3F(*axis))
 				.expect("Failed to initialize an IES axis. The most likely cause is a drifted VM vector layout.");
+
 			inputs
 				.write_indexed("c0_tangents", index, Value::Vec2U16(*c0_tangent))
 				.expect("Failed to initialize an IES C0 tangent. The most likely cause is a drifted packed-vector layout.");
 		}
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(INPUT_SLOT, &mut inputs);
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (index, (_, _, _, expected)) in cases.iter().enumerate() {
@@ -277,8 +315,10 @@ mod tests {
 			else {
 				panic!("Unexpected IES UV type. The most likely cause is a VM vector-layout regression.");
 			};
+
 			// C0 lies on the duplicated horizontal seam, so packed-vector rounding may wrap a value just below zero to one.
 			let horizontal_delta = (actual[0] - expected[0]).abs();
+
 			let horizontal_delta = horizontal_delta.min(1.0 - horizontal_delta);
 			assert!(
 				horizontal_delta <= 0.0001 && (actual[1] - expected[1]).abs() <= 0.0001,
@@ -290,13 +330,17 @@ mod tests {
 	#[test]
 	fn skinned_material_path_selects_geometry_before_static_attribute_loads() {
 		let material = material_metadata! { "variables": [] };
+
 		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
+
 		let selection = source
 			.find("mesh.skinned_base_vertex_index")
 			.expect("Generated material shader should select static or skinned geometry.");
+
 		let static_position_load = source
 			.find("vertex_positions->positions[triangle_vertex_indices[0]]")
 			.expect("Generated material shader should retain the static geometry path.");
+
 		let static_normal_load = source
 			.find("vertex_normals->normals[triangle_vertex_indices[0]]")
 			.expect("Generated material shader should retain the static normal path.");
@@ -308,8 +352,8 @@ mod tests {
 	#[test]
 	fn material_vertex_indices_are_batched() {
 		let material = material_metadata! { "variables": [] };
-		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
 
+		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
 		assert!(source.contains("uint3 compute_vertex_indices("));
 		assert!(source.contains("uint3 triangle_vertex_indices = compute_vertex_indices("));
 		assert!(!source.contains("compute_vertex_index("));
@@ -322,8 +366,8 @@ mod tests {
 		let material = material_metadata! {
 			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
 		};
-		let source = material_msl("main: fn () -> void { albedo = sample_material(base_color); }", &material);
 
+		let source = material_msl("main: fn () -> void { albedo = sample_material(base_color); }", &material);
 		assert!(source.contains("TriangleInterpolation compute_triangle_interpolation("));
 		assert!(source.contains("triangle_raw_ddx"));
 		assert_eq!(source.matches("float inverse_determinant").count(), 1);
@@ -338,27 +382,33 @@ mod tests {
 				{ "name": "normal_map", "data_type": "Texture2D" }
 			]
 		};
+
 		let shader_node =
 			besl::parse("main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }")
 				.expect("Textured material should parse.");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = besl::lex(shader_generator.transform(shader_node, &material))
 			.expect("Textured material should produce valid BESL.");
+
 		let main = shader
 			.get_main()
 			.expect("Textured material should have a compute entry point.");
+
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
 
 		let glsl = GLSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Textured material should lower to GLSL.");
+
 		let hlsl = HLSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Textured material should lower to HLSL.");
+
 		let msl = MSLShaderGenerator::new()
 			.generate(&settings, &main)
 			.expect("Textured material should lower to MSL.");
-
 		assert!(glsl.contains("textureGrad(textures[nonuniformEXT("));
 		assert!(glsl.contains("vertex_uv, uv_derivative_x, uv_derivative_y"));
 		assert!(hlsl.contains(".SampleGrad(textures_sampler, vertex_uv, uv_derivative_x, uv_derivative_y)"));
@@ -379,6 +429,7 @@ mod tests {
 	#[test]
 	fn material_reconstruction_specializes_for_texture_and_normal_usage() {
 		let constant_material = material_metadata! { "variables": [] };
+
 		let constant = material_msl(
 			"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
 			&constant_material,
@@ -390,6 +441,7 @@ mod tests {
 		let textured_material = material_metadata! {
 			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
 		};
+
 		let textured = material_msl(
 			"main: fn () -> void { albedo = sample_material(base_color); }",
 			&textured_material,
@@ -401,6 +453,7 @@ mod tests {
 		let normal_material = material_metadata! {
 			"variables": [{ "name": "normal_map", "data_type": "Texture2D" }]
 		};
+
 		let normal = material_msl(
 			"main: fn () -> void { normal = sample_normal(normal_map); }",
 			&normal_material,
@@ -465,8 +518,11 @@ mod tests {
 				}
 			]
 		};
+
 		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); }";
+
 		let shader_node = besl::parse(shader_source).expect("expected test value");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
 		let shader = shader_generator.transform(shader_node, &material);
@@ -488,10 +544,15 @@ mod tests {
 				}
 			]
 		};
+
 		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }";
+
 		let shader_node = besl::parse(shader_source).expect("expected test value");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = shader_generator.transform(shader_node, &material);
+
 		besl::lex(shader).expect("expected test value");
 	}
 
@@ -506,14 +567,19 @@ mod tests {
 				}
 			]
 		};
+
 		let shader_node =
 			besl::parse("main: fn () -> void { normal = sample_normal(normal_map); }").expect("test material should parse");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = besl::lex(shader_generator.transform(shader_node, &material))
 			.expect("material evaluation should produce valid BESL");
+
 		let main = shader.get_main().expect(
 			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
 		);
+
 		let source = HLSLShaderGenerator::new()
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect(
@@ -536,6 +602,7 @@ mod tests {
 	#[test]
 	fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				let identity: mat4f = mat4f(
@@ -567,9 +634,11 @@ mod tests {
 				);
 			}
 		"#;
+
 		let mut root = besl::parse(source).expect(
 			"Failed to parse the cone-shadow receiver-plane VM test. The most likely cause is invalid BESL test syntax.",
 		);
+
 		root.add(vec![
 			super::parse_besl_function(super::SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),
 			besl::ParserNode::binding(
@@ -587,21 +656,29 @@ mod tests {
 				true,
 			),
 		]);
+
 		let program = besl::lex(root).expect(
 			"Failed to lex the cone-shadow receiver-plane VM test. The most likely cause is an unresolved portable shadow helper.",
 		);
+
 		let executable = compile(program);
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		let Value::Vec2F(gradient) = results.read("gradient").expect("Missing receiver-plane gradient.") else {
 			panic!("Unexpected receiver-plane gradient type. The most likely cause is a VM output-layout regression.");
 		};
+
 		let Value::F32(corrected_depth) = results.read("corrected_depth").expect("Missing corrected receiver depth.") else {
 			panic!("Unexpected corrected receiver-depth type. The most likely cause is a VM output-layout regression.");
 		};
+
 		let Value::Vec2F(degenerate) = results
 			.read("degenerate")
 			.expect("Missing degenerate receiver-plane gradient.")
@@ -630,7 +707,9 @@ mod tests {
 	#[test]
 	fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 		const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
 		let source = r#"
 			main: fn () -> void {
 				results.fully_lit = 0;
@@ -651,8 +730,10 @@ mod tests {
 				}
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the directional-shadow probe VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			besl::ParserNode::binding(
 				"directional_shadow_depth_pyramid",
@@ -681,19 +762,25 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the directional-shadow probe VM test. The most likely cause is an unresolved portable texture operation.",
 		));
 
 		let cascade_depths = [0.2, 0.4, 0.7, 0.9];
+
 		let mut base_depths = (0..8)
 			.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
 			.collect::<Vec<_>>();
+
 		// Cascade zero contains a blocker in the neighboring 4x4 cell. A maximum
 		// gather may conservatively include it even when the footprint stays in cell zero.
 		base_depths[0] = [0.2, 0.0, 0.0, 1.0];
+
 		base_depths[1] = [0.9, 0.0, 0.0, 1.0];
+
 		let mut pyramid = texture_2d(2, 8, &base_depths);
+
 		pyramid.add_mip(texture_2d(
 			1,
 			4,
@@ -704,10 +791,15 @@ mod tests {
 				[0.9, 0.0, 0.0, 1.0],
 			],
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_texture(PYRAMID_SLOT, &mut pyramid);
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (name, expected) in [
@@ -719,6 +811,7 @@ mod tests {
 			let Value::U32(actual) = results.read(name).expect("directional shadow probe result") else {
 				panic!("Unexpected directional shadow probe result type for {name}.");
 			};
+
 			assert_eq!(actual, expected, "Unexpected directional shadow probe result for {name}.");
 		}
 	}
@@ -727,7 +820,9 @@ mod tests {
 	#[test]
 	fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 		const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+
 		let source = r#"
 			main: fn () -> void {
 				results.lit = sample_directional_shadow_tap(
@@ -738,8 +833,10 @@ mod tests {
 				);
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the directional-shadow tap VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			besl::ParserNode::binding(
 				"shadow_map",
@@ -764,11 +861,14 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the directional-shadow tap VM test. The most likely cause is an unresolved portable texture operation.",
 		));
+
 		let mut shadow_map = Texture::new_3d(4, 4, 1)
 			.expect("Failed to create the directional shadow fixture. The most likely cause is an invalid extent.");
+
 		for y in 0..4 {
 			for x in 0..4 {
 				shadow_map
@@ -776,19 +876,26 @@ mod tests {
 					.expect("Failed to initialize the directional shadow fixture.");
 			}
 		}
+
 		shadow_map
 			.write_3d([2, 2, 0], [0.9, 0.0, 0.0, 1.0])
 			.expect("Failed to initialize the directional shadow blocker.");
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (name, expected) in [("lit", 1.0), ("blocked", 0.0)] {
 			let Value::F32(actual) = results.read(name).expect("directional shadow tap result") else {
 				panic!("Unexpected directional shadow tap result type for {name}.");
 			};
+
 			assert_eq!(actual, expected, "Unexpected directional shadow tap result for {name}.");
 		}
 	}
@@ -797,6 +904,7 @@ mod tests {
 	#[test]
 	fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				results.center = point_shadow_receiver_depth(vec3f(0.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
@@ -804,8 +912,10 @@ mod tests {
 				results.adjacent_face = point_shadow_receiver_depth(vec3f(6.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the point-shadow depth VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			super::parse_besl_function(super::POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
 			besl::ParserNode::binding(
@@ -823,22 +933,31 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the point-shadow depth VM test. The most likely cause is an unresolved portable depth operation.",
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		let read = |name| {
 			let Value::F32(value) = results.read(name).expect("point-shadow receiver depth result") else {
 				panic!("Unexpected point-shadow receiver depth result type for {name}.");
 			};
+
 			value
 		};
+
 		let center = read("center");
+
 		let off_axis = read("off_axis");
+
 		let adjacent_face = read("adjacent_face");
 		assert!((center - off_axis).abs() < 0.000001);
 		assert!(adjacent_face < center);
@@ -848,6 +967,7 @@ mod tests {
 	#[test]
 	fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				let sample_direction: vec3f = normalize(vec3f(1.0, 0.0 - 5.0, 0.0));
@@ -860,9 +980,11 @@ mod tests {
 				results.y = receiver.y;
 			}
 		"#;
+
 		let mut root = besl::parse(source).expect(
 			"Failed to parse the point-shadow receiver-plane VM test. The most likely cause is invalid BESL test syntax.",
 		);
+
 		root.add(vec![
 			super::parse_besl_function(super::POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
 			besl::ParserNode::binding(
@@ -876,20 +998,27 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the point-shadow receiver-plane VM test. The most likely cause is an unresolved portable vector operation.",
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		let Value::F32(receiver_x) = results.read("x").expect("point-shadow receiver-plane x result") else {
 			panic!("Unexpected point-shadow receiver-plane x result type.");
 		};
+
 		let Value::F32(receiver_y) = results.read("y").expect("point-shadow receiver-plane y result") else {
 			panic!("Unexpected point-shadow receiver-plane y result type.");
 		};
+
 		assert!((receiver_x - 1.0).abs() < 0.000001);
 		assert!((receiver_y + 5.0).abs() < 0.000001);
 	}
@@ -898,6 +1027,7 @@ mod tests {
 	#[test]
 	fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				results.large = point_shadow_receiver_plane_normal(
@@ -910,9 +1040,11 @@ mod tests {
 				).z;
 			}
 		"#;
+
 		let mut root = besl::parse(source).expect(
 			"Failed to parse the point-shadow receiver-plane scale VM test. The most likely cause is invalid BESL test syntax.",
 		);
+
 		root.add(vec![
 			super::parse_besl_function(
 				super::POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
@@ -932,18 +1064,24 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the point-shadow receiver-plane scale VM test. The most likely cause is an unresolved portable vector operation.",
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for name in ["large", "small"] {
 			let Value::F32(actual) = results.read(name).expect("point-shadow receiver-plane scale result") else {
 				panic!("Unexpected point-shadow receiver-plane scale result type for {name}.");
 			};
+
 			assert!(
 				(actual - 1.0).abs() < 0.000001,
 				"Unexpected point-shadow receiver-plane scale result for {name}."
@@ -955,6 +1093,7 @@ mod tests {
 	#[test]
 	fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)));
@@ -962,9 +1101,11 @@ mod tests {
 				results.z_over_x = direction.z / direction.x;
 			}
 		"#;
+
 		let mut root = besl::parse(source).expect(
 			"Failed to parse the point-shadow texel-center VM test. The most likely cause is invalid BESL test syntax.",
 		);
+
 		root.add(vec![
 			super::parse_besl_function(super::POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
 			besl::ParserNode::binding(
@@ -981,18 +1122,24 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the point-shadow texel-center VM test. The most likely cause is an unresolved portable vector operation.",
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (name, expected) in [("y_over_x", -0.25097656), ("z_over_x", 0.10058594)] {
 			let Value::F32(actual) = results.read(name).expect("point-shadow texel-center result") else {
 				panic!("Unexpected point-shadow texel-center result type for {name}.");
 			};
+
 			assert!(
 				(actual - expected).abs() < 0.000001,
 				"Unexpected point-shadow texel-center result for {name}."
@@ -1004,6 +1151,7 @@ mod tests {
 	#[test]
 	fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_besl_vm() {
 		const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
+
 		let source = r#"
 			main: fn () -> void {
 				results.blocker_beyond_far = point_shadow_occlusion(0.4, 0.0 - 0.01, 110.0, 0.1, 100.0);
@@ -1012,8 +1160,10 @@ mod tests {
 				results.lit_inside = point_shadow_occlusion(0.1, 0.2, 10.0, 0.1, 100.0);
 			}
 		"#;
+
 		let mut root = besl::parse(source)
 			.expect("Failed to parse the point-shadow occlusion VM test. The most likely cause is invalid BESL test syntax.");
+
 		root.add(vec![
 			super::parse_besl_function(super::POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
 			besl::ParserNode::binding(
@@ -1032,12 +1182,17 @@ mod tests {
 				true,
 			),
 		]);
+
 		let executable = compile(besl::lex(root).expect(
 			"Failed to lex the point-shadow occlusion VM test. The most likely cause is an unresolved portable comparison.",
 		));
+
 		let mut results = buffer(&executable, RESULT_SLOT);
+
 		let mut descriptors = DescriptorBindings::new();
+
 		descriptors.bind_buffer(RESULT_SLOT, &mut results);
+
 		run_at(&executable, &mut descriptors, [0, 0]);
 
 		for (name, expected) in [
@@ -1049,6 +1204,7 @@ mod tests {
 			let Value::F32(actual) = results.read(name).expect("point-shadow occlusion result") else {
 				panic!("Unexpected point-shadow occlusion result type for {name}.");
 			};
+
 			assert_eq!(actual, expected, "Unexpected point-shadow occlusion result for {name}.");
 		}
 	}
@@ -1071,10 +1227,14 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
+
 		let shader_node =
 			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = shader_generator.transform(shader_node, &material);
+
 		besl::lex(shader).expect("expected test value");
 	}
 
@@ -1084,11 +1244,16 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
+
 		let shader_node =
 			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
+
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
 		let shader = besl::lex(shader_generator.transform(shader_node, &material)).expect("expected test value");
+
 		let main = shader.get_main().expect("expected material evaluation main");
+
 		let source = MSLShaderGenerator::new()
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("expected valid Metal material evaluation source");
@@ -1119,11 +1284,13 @@ mod tests {
 		let material = material_metadata! {
 			"variables": []
 		};
+
 		let shader_node =
 			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-		let shader = shader_generator.transform(shader_node, &material);
 
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
+		let shader = shader_generator.transform(shader_node, &material);
 		assert!(
 			!parser_node_contains_raw_code(&shader),
 			"Material evaluation and its shared lighting helpers must remain portable BESL instead of embedding backend source."

@@ -151,6 +151,7 @@ mod tests {
 		device.get_texture_slice_mut(image).copy_from_slice(&[3, 4, 5, 6]);
 
 		let copy = device.copy_image_to_cpu(image);
+
 		assert_eq!(device.get_image_data(copy), &[3, 4, 5, 6]);
 	}
 
@@ -169,8 +170,10 @@ mod tests {
 		drop(frame);
 
 		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
+
 		assert_eq!(device.get_image_data(copy), &[7, 8, 9, 10]);
 		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
+
 		assert_eq!(device.get_image_data(copy), &[0, 0, 0, 0]);
 	}
 
@@ -264,6 +267,7 @@ mod tests {
 
 		assert_eq!(device.upload_resource_count(), 1);
 		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
+
 		assert_eq!(device.get_image_data(copy), &[5, 6, 7, 8]);
 
 		{
@@ -275,6 +279,7 @@ mod tests {
 
 		assert_eq!(device.upload_resource_count(), 2);
 		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
+
 		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
 	}
 
@@ -325,6 +330,7 @@ mod tests {
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.queue_texture_sync_for_sequence(image.into(), 2);
+
 		assert_eq!(device.pending_texture_sync_count(), 1);
 
 		device.set_frames_in_flight(2);
@@ -625,6 +631,7 @@ mod tests {
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 0);
+
 		assert_eq!(device.uav_barrier_count(), 0);
 		assert_eq!(
 			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 0),
@@ -632,6 +639,7 @@ mod tests {
 		);
 
 		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 1);
+
 		assert_eq!(device.uav_barrier_count(), 0);
 		assert_eq!(
 			device.tracked_image_resource_state_for_sequence(crate::ImageHandle(image.into()), 1),
@@ -918,11 +926,13 @@ mod tests {
 		};
 
 		bind(&mut device);
+
 		assert_eq!(device.descriptor_write_count(), 1);
 		assert_eq!(device.descriptor_materialization_count(), 1);
 
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, first_buffer.into())]);
 		bind(&mut device);
+
 		assert_eq!(device.descriptor_write_count(), 1);
 
 		let replacement = device.build_dynamic_buffer::<[f32; 16]>(
@@ -930,13 +940,17 @@ mod tests {
 		);
 		device.write(&[crate::DescriptorWrite::buffer(set, slot, replacement.into())]);
 		bind(&mut device);
+
 		assert_eq!(device.descriptor_write_count(), 2);
 		bind(&mut device);
+
 		assert_eq!(device.descriptor_write_count(), 2);
 
 		device.resize_buffer(replacement, std::mem::size_of::<[f32; 32]>());
+
 		assert_eq!(device.descriptor_materialization_count(), 0);
 		bind(&mut device);
+
 		assert_eq!(device.descriptor_write_count(), 3);
 	}
 
@@ -976,6 +990,7 @@ StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 	#[test]
 	fn native_16_bit_hlsl_requires_capability_and_only_upgrades_affected_shader_targets() {
 		let error = Device::native_16_bit_support_error("uint16_t4 joints;", false);
+
 		assert_eq!(
 			error,
 			Some("DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.")
@@ -1259,6 +1274,7 @@ void main() {
 		let detached_raster = factory.create_raster_pipeline(
 			crate::pipelines::raster::Builder::new(&[], &vertex_elements, &raster_shaders, &render_targets).depth_write(false),
 		);
+
 		assert!(!detached_raster.depth_write);
 		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
@@ -1713,8 +1729,10 @@ void main() {
 			&[255, 0, 0, 255]
 		);
 		let bottom_left = (extent.width() * (extent.height() - 1) * 4) as usize;
+
 		assert_eq!(&pixels[bottom_left..bottom_left + 4], &[0, 0, 255, 255]);
 		let bottom_right = ((extent.width() * extent.height() - 1) * 4) as usize;
+
 		assert_eq!(&pixels[bottom_right..bottom_right + 4], &[0, 255, 0, 255]);
 	}
 
@@ -1753,6 +1771,7 @@ void main() {
 			&[],
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
+
 		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 		let command_buffer = device.create_command_buffer(Some("storage swapchain present"), queue_handle);
 		let synchronizer = device.create_synchronizer(None, true);
@@ -1948,6 +1967,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		if device.supports_native_mesh_shaders() {
+
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -1955,6 +1975,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 				device.graphics_pipeline_state_last_error()
 			);
 		} else {
+
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 		}
 	}
@@ -2045,6 +2066,7 @@ void main(
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
 		if device.supports_native_mesh_shaders() {
+
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -2052,6 +2074,7 @@ void main(
 				device.graphics_pipeline_state_last_error()
 			);
 		} else {
+
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 		}
 	}
@@ -2119,10 +2142,12 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		if device.supports_native_mesh_shaders() {
+
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
 			assert_eq!(device.pipeline_state_bind_count(), 1);
 			assert_eq!(device.mesh_dispatch_encode_count(), 1);
 		} else {
+
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 			assert_eq!(device.mesh_dispatch_encode_count(), 0);
 		}
@@ -2171,6 +2196,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		if device.supports_native_mesh_shaders() {
+
 			assert_eq!(
 				device.pipeline_has_native_state(pipeline),
 				Some(true),
@@ -2179,6 +2205,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			);
 			assert_eq!(device.mesh_dispatch_encode_count(), 1);
 		} else {
+
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
 			assert_eq!(device.mesh_dispatch_encode_count(), 0);
 		}
@@ -2432,6 +2459,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 				.optimized_clear_value(crate::ClearValue::Depth(1.0)),
 		);
 		let command_buffer = device.create_command_buffer(Some("retained attachment views"), queue_handle);
+
 		assert_eq!(device.render_target_view_count(), 1);
 		assert_eq!(device.depth_stencil_view_count(), 1);
 		assert_eq!(device.render_target_view_allocation_count(), 1);
@@ -2539,6 +2567,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.pipeline_descriptor_slot(pipeline, sampled_slot, 0, false), Some(2));
 		assert_eq!(device.pipeline_descriptor_slot(pipeline, sampled_slot, 0, true), Some(0));
 		let records = device.descriptor_table_bind_records();
+
 		assert_eq!(records.len(), 2);
 		assert!(!records[0].sampler_heap);
 		assert!(records[1].sampler_heap);
@@ -2714,6 +2743,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		)
 		.end_render_pass();
 		drop(recording);
+
 		assert_eq!(
 			device.tracked_image_resource_state(image),
 			Some(D3D12_RESOURCE_STATE_RENDER_TARGET)
@@ -2843,6 +2873,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		let records = device.sampler_descriptor_write_records();
+
 		assert_eq!(records.len(), 1);
 		assert_eq!(records[0].filter.0, 469);
 		assert_eq!(records[0].address_mode.0, 2);
@@ -3047,6 +3078,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		let copy = device.copy_image_to_cpu(image);
+
 		assert_eq!(
 			device.get_image_data(copy),
 			&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -3084,6 +3116,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		let copy = device.copy_image_to_cpu(image);
+
 		assert_eq!(device.get_image_data(copy), payload);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
@@ -3110,6 +3143,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		let copy = device.copy_image_to_cpu(image);
+
 		assert_eq!(device.get_image_data(copy), &pixel);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
@@ -3137,6 +3171,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		let copy = device.copy_image_to_cpu(image);
+
 		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
@@ -3165,10 +3200,12 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 				&[(image.into(), crate::ClearValue::Integer(value, 0, 0, 0))],
 			);
 			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+
 			assert_eq!(device.upload_resource_count(), 1);
 		}
 		let recording = device.create_command_buffer_recording(command_buffer);
 		drop(recording);
+
 		assert_eq!(device.upload_resource_count(), 0);
 	}
 
@@ -3245,6 +3282,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 
 		device.wait_for_synchronizer(synchronizer);
+
 		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
 		assert_eq!(device.native_command_list_execute_count(), 1);
 		assert_eq!(device.empty_command_list_skip_count(), 0);
@@ -3391,9 +3429,11 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
+
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 
 		device.resize_buffer(buffer, std::mem::size_of::<[u32; 8]>());
+
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -3427,9 +3467,11 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
+
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 
 		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4));
+
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
@@ -3603,6 +3645,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let bottom_level_size = device.bottom_level_acceleration_structure_size(bottom_level).unwrap();
 		// DXR prebuild sizes depend on the active adapter and driver, but allocations must stay aligned and
 		// large enough for the backend fallback layout.
+
 		assert_eq!(top_level_size % 256, 0);
 		assert!(top_level_size >= 512);
 		assert_eq!(bottom_level_size % 256, 0);
@@ -3708,6 +3751,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		device.write_sbt_entry(sbt.into(), 32, pipeline, miss);
 
 		let bytes = device.buffer_bytes(sbt.into(), 64).expect("SBT bytes should be available.");
+
 		assert_eq!(device.shader_binding_table_write_count(), 2);
 		assert_eq!(&bytes[0..8], b"DX12SBT\0");
 		assert_eq!(&bytes[32..40], b"DX12SBT\0");
@@ -3817,9 +3861,11 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 		assert_eq!(device.ray_tracing_state_object_create_attempt_count(), 1);
 		if device.supports_native_ray_tracing() {
+
 			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(true));
 			assert_eq!(device.ray_tracing_shader_identifier_count(pipeline), Some(3));
 		} else {
+
 			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(false));
 		}
 	}
@@ -3973,6 +4019,7 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 		drop(recording);
 
 		let copy = device.copy_image_to_cpu(destination);
+
 		assert_eq!(device.get_image_data(copy), &[10, 20, 30, 40]);
 		assert_eq!(device.texture_copy_count(), 1);
 		assert_eq!(device.image_is_in_common_state(source), Some(true));

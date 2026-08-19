@@ -84,11 +84,13 @@ mod tests {
 	fn test_make_request() {
 		let mut local = Local::new();
 		let packet_header = local.get_sequence_number();
+
 		assert_eq!(packet_header, 0);
 
 		local.acknowledge_packet(0);
 
 		let packet_info = local.get_packet_data(0);
+
 		assert_eq!(packet_info, Some(PacketInfo { acked: true }));
 
 		for _i in 1..1024 {
@@ -98,8 +100,10 @@ mod tests {
 		local.get_sequence_number();
 
 		let packet_info = local.get_packet_data(0); // Although indices wrap around, the packet with sequence 0 must not be valid anymore.
+
 		assert_eq!(packet_info, None);
 		let packet_info = local.get_packet_data(1024);
+
 		assert_eq!(packet_info, Some(PacketInfo { acked: false }));
 	}
 
@@ -107,30 +111,40 @@ mod tests {
 	fn test_get_packet_data() {
 		let mut local = Local::new();
 		let packet_header = local.get_packet_data(0);
+
 		assert_eq!(packet_header, None);
 		let packet_header = local.get_packet_data(1023);
+
 		assert_eq!(packet_header, None);
 
 		local.get_sequence_number();
 		let packet_header = local.get_packet_data(0);
+
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
 		let packet_header = local.get_packet_data(1023);
+
 		assert_eq!(packet_header, None);
 
 		local.get_sequence_number();
 		let packet_header = local.get_packet_data(0);
+
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
 		let packet_header = local.get_packet_data(1023);
+
 		assert_eq!(packet_header, None);
 		let packet_header = local.get_packet_data(1);
+
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
 
 		local.acknowledge_packet(0);
 		let packet_header = local.get_packet_data(0);
+
 		assert_eq!(packet_header, Some(PacketInfo { acked: true }));
 		let packet_header = local.get_packet_data(1023);
+
 		assert_eq!(packet_header, None);
 		let packet_header = local.get_packet_data(1);
+
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
 	}
 
@@ -232,15 +246,18 @@ mod tests {
 		local.get_sequence_number();
 
 		local.acknowledge_packets(0, 1 << 31);
+
 		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
 
 		local.acknowledge_packets(0, (1 << 31) | 1);
+
 		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: true }));
 	}
 
 	#[test]
 	fn same_slot_sequence_from_another_generation_cannot_acknowledge_a_send() {
 		let mut local = Local::new();
+
 		assert_eq!(local.get_sequence_number(), 0);
 
 		local.acknowledge_packet(PACKET_HISTORY as u16);
@@ -253,6 +270,7 @@ mod tests {
 		let mut local = Local::new();
 
 		for expected in 0..=u16::MAX {
+
 			assert_eq!(local.get_sequence_number(), expected);
 		}
 
@@ -260,7 +278,6 @@ mod tests {
 		assert_eq!(local.get_packet_data(0), None);
 		assert_eq!(local.unacknowledged_packets().count(), PACKET_HISTORY);
 		assert!(local.unacknowledged_packets().any(|sequence| sequence == u16::MAX));
-
 		assert_eq!(local.get_sequence_number(), 0);
 		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
 		assert_eq!(local.get_packet_data(64_512), None);
@@ -283,6 +300,7 @@ mod tests {
 		for sequence in (64_520..=u16::MAX).chain(0..8) {
 			let distance = ack.wrapping_sub(sequence);
 			let expected_acknowledged = distance < u32::BITS as u16 && (ack_bitfield >> distance) & 1 == 1;
+
 			assert_eq!(
 				local.get_packet_data(sequence),
 				Some(PacketInfo {

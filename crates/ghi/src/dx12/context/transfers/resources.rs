@@ -494,6 +494,7 @@ impl Device {
 
 	/// Rejects attachment layers that cannot address the native image array.
 	pub(crate) fn validate_attachment_layer(array_layers: u32, layer: Option<u32>) {
+
 		assert!(
 			array_layers > 0 && layer.is_none_or(|layer| layer < array_layers),
 			"Invalid DX12 attachment layer. The most likely cause is that the render pass requested an array layer outside the image."
@@ -503,6 +504,7 @@ impl Device {
 	/// Rejects layered attachment declarations that exceed the native image view.
 	pub(crate) fn validate_attachment_layers(array_layers: u32, layer: Option<u32>, layer_count: u32) {
 		Self::validate_attachment_layer(array_layers, layer);
+
 		assert!(
 			layer_count > 0 && layer_count <= array_layers,
 			"Invalid DX12 attachment layer count. The most likely cause is that the render pass requested more layers than the image provides."
@@ -539,6 +541,7 @@ impl Device {
 
 	/// Maps a retained CPU descriptor slot back to its layer selection.
 	pub(crate) fn attachment_descriptor_layers(array_layers: u32, slot: u32) -> (Option<u32>, u32) {
+
 		assert!(
 			slot < Self::attachment_descriptor_count(array_layers),
 			"Invalid DX12 attachment descriptor slot. The most likely cause is that attachment materialization exceeded its retained descriptor heap."

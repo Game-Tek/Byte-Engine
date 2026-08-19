@@ -569,6 +569,7 @@ mod tests {
 	#[test]
 	fn pool_configuration_exposes_its_strict_byte_budget() {
 		let config = AnimationPoolConfig::new(NonZeroUsize::new(128).expect("non-zero budget"));
+
 		assert_eq!(config.byte_budget(), 128);
 		assert_eq!(super::ANIMATION_LOAD_QUEUE_CAPACITY, 64);
 		let _ = std::mem::size_of::<AnimationPool>();
@@ -586,6 +587,7 @@ mod tests {
 
 		first_pool.admit("idle.animation".into(), idle);
 		first_pool.admit("walk.animation".into(), walk);
+
 		assert!(matches!(
 			first_pool.entries.get(&AnimationLease::new("walk.animation")),
 			Some(AnimationPoolEntry::Resident(_))
@@ -595,6 +597,7 @@ mod tests {
 			.drain_events()
 			.any(|event| matches!(event, AnimationPoolEvent::Evicted { resource_id } if resource_id == "idle.animation")));
 		let evicted_idle = AnimationLease::new("idle.animation");
+
 		assert_eq!(first_pool.request(&evicted_idle), AnimationPoolRequest::Loading);
 
 		let idle = test_animation("idle", 1.0);
@@ -604,10 +607,13 @@ mod tests {
 		pool.admit("idle.animation".into(), idle);
 		let idle_lease = AnimationLease::new("idle.animation");
 		let walk_lease = AnimationLease::new("walk.animation");
+
 		assert_eq!(pool.request(&idle_lease), AnimationPoolRequest::Ready);
 		let pinned = pool.acquire(&idle_lease).expect("expected cached idle animation");
+
 		assert_eq!(pinned.entry.lease_count.get(), 1);
 		drop(pinned);
+
 		assert_eq!(
 			match pool.entries.get(&idle_lease) {
 				Some(AnimationPoolEntry::Resident(entry)) => entry.lease_count.get(),
@@ -617,6 +623,7 @@ mod tests {
 		);
 
 		pool.admit("walk.animation".into(), walk);
+
 		assert!(!pool.entries.contains_key(&idle_lease));
 		assert_eq!(pool.request(&walk_lease), AnimationPoolRequest::Ready);
 	}
@@ -655,6 +662,7 @@ mod tests {
 			Some(AnimationPoolEntry::Resident(entry)) => entry.region,
 			_ => panic!("second animation should remain resident"),
 		};
+
 		assert!(first.end() <= second.offset || second.end() <= first.offset);
 	}
 

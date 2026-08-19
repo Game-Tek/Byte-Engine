@@ -206,6 +206,7 @@ mod tests {
 		drop(first);
 		let replacement = budget.try_acquire().unwrap();
 		drop((second, replacement));
+
 		assert_eq!(*budget.retained_bytes.lock(), 0);
 	}
 
@@ -220,8 +221,10 @@ mod tests {
 		assert!(*budget.retained_bytes.lock() > 1024);
 		drop(data);
 		drop(allocator);
+
 		assert_eq!(*budget.retained_bytes.lock(), 1024);
 		drop(memory_scope);
+
 		assert_eq!(*budget.retained_bytes.lock(), 0);
 	}
 }

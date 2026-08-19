@@ -679,6 +679,7 @@ mod tests {
 
 	#[test]
 	fn pcm_conversion_preserves_zero_endpoints_and_monotonic_order() {
+
 		assert_eq!(i16_to_f32(i16::MIN), -1.0);
 		assert_eq!(i16_to_f32(0), 0.0);
 		assert!(i16_to_f32(i16::MAX) < 1.0);
@@ -688,6 +689,7 @@ mod tests {
 
 		let samples = [-1.0, -0.5, 0.0, 0.5, 1.0];
 		for pair in samples.windows(2) {
+
 			assert!(f32_to_i16(pair[0]) < f32_to_i16(pair[1]));
 		}
 	}
@@ -714,6 +716,7 @@ mod tests {
 		let mut buffer = [0.5; 4];
 
 		render_sources(&sources, 48_000, &mut buffer);
+
 		assert_eq!(buffer, [0.65; 4]);
 		assert_eq!(*observed.lock().expect("expected test value"), [(48_000, 128), (48_000, 256)]);
 	}
@@ -801,8 +804,10 @@ mod tests {
 	}
 
 	fn assert_samples_close(actual: &[f32], expected: &[f32]) {
+
 		assert_eq!(actual.len(), expected.len());
 		for (actual, expected) in actual.iter().zip(expected) {
+
 			assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
 		}
 	}
@@ -841,12 +846,14 @@ mod tests {
 		let mut same_rate = sample_node(&[0.0, 1.0, 2.0], 48_000, SamplePlaybackMode::Once);
 		let mut same_rate_output = [0.0; 5];
 		render_sample_node(&mut same_rate, 48_000, &mut same_rate_output);
+
 		assert_eq!(same_rate_output, [0.0, 1.0, 2.0, 0.0, 0.0]);
 		assert!(same_rate.finished);
 
 		let mut upsampled = sample_node(&[0.0, 1.0, 2.0], 2, SamplePlaybackMode::Once);
 		let mut upsampled_output = [0.0; 6];
 		render_sample_node(&mut upsampled, 4, &mut upsampled_output);
+
 		assert_eq!(upsampled_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
 		assert!(upsampled.finished);
 	}
@@ -878,6 +885,7 @@ mod tests {
 		assert_samples_close(&first, &expected[..3]);
 		assert_samples_close(&second, &expected[3..]);
 		assert_samples_close(&whole, &expected);
+
 		assert_eq!(split.source_frame, contiguous.source_frame);
 		assert_eq!(split.rate_phase, contiguous.rate_phase);
 	}
@@ -909,6 +917,7 @@ mod tests {
 		);
 		let mut faster_output = [0.0; 5];
 		render_graph(&mut faster, 4, &mut faster_output);
+
 		assert_eq!(faster_output, [0.0, 2.0, 4.0, 0.0, 0.0]);
 		assert!(faster.finished());
 
@@ -924,6 +933,7 @@ mod tests {
 		);
 		let mut slower_output = [0.0; 6];
 		render_graph(&mut slower, 4, &mut slower_output);
+
 		assert_eq!(slower_output, [0.0, 0.5, 1.0, 1.5, 2.0, 2.0]);
 		assert!(slower.finished());
 	}
@@ -1007,6 +1017,7 @@ mod tests {
 
 		assert_samples_close(&first, &whole[..3]);
 		assert_samples_close(&second, &whole[3..]);
+
 		assert_eq!(split.sample.source_frame, contiguous.sample.source_frame);
 		assert_eq!(split.sample.rate_phase, contiguous.sample.rate_phase);
 	}
@@ -1060,11 +1071,13 @@ mod tests {
 		let drain_latency = graph.drain_latency;
 		let mut first = [0.0; 4];
 		render_graph(&mut graph, 48_000, &mut first);
+
 		assert_eq!(graph.drain_remaining, Some(drain_latency - 2));
 		assert!(!graph.finished());
 
 		let mut tail = vec![0.0; drain_latency - 2];
 		render_graph(&mut graph, 48_000, &mut tail);
+
 		assert_eq!(graph.drain_remaining, Some(0));
 		assert!(graph.finished());
 	}

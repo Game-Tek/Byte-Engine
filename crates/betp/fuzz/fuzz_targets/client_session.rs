@@ -46,6 +46,7 @@ fn make_session(state: &StartingState, client_salt: u64, server_salt: u64) -> (S
 
 	let connection_id = client_salt ^ server_salt;
 	let challenge = ChallengePacket::new(client_salt, server_salt).into();
+
 	assert!(session.update(&[challenge]).is_ok());
 	if matches!(state, StartingState::Connecting) {
 		return (session, Some(connection_id));
@@ -114,6 +115,7 @@ fuzz_target!(|input: Input| {
 			Operation::Send { reliable, fill } => {
 				if session.is_connected() {
 					session.send(*reliable, [*fill; 1024]);
+
 					assert!(session.is_connected());
 				}
 			}
@@ -131,6 +133,7 @@ fuzz_target!(|input: Input| {
 				let was_connected = session.is_connected();
 				session.disconnect();
 				if was_connected {
+
 					assert!(!session.is_connected());
 				}
 			}
@@ -144,6 +147,7 @@ fuzz_target!(|input: Input| {
 				let packet = make_data_packet(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
 				let result = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}
@@ -158,12 +162,14 @@ fuzz_target!(|input: Input| {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let invalid = make_data_packet(other_connection_id(id), *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[invalid], &mut connection_id, &mut updates_left);
+
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
 					// Valid traffic immediately after rejected traffic proves the error stays peer-local and recoverable.
 					let valid = make_data_packet(id, *sequence, *ack, *ack_bitfield, *fill);
 					let result = update_session(&mut session, &[valid], &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {
@@ -186,6 +192,7 @@ fuzz_target!(|input: Input| {
 				];
 				let result = update_session(&mut session, &packets, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}
@@ -195,11 +202,13 @@ fuzz_target!(|input: Input| {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let packet = DisconnectPacket::new(id).into();
 					let result = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
+
 					assert!(matches!(result, Some(Ok(output)) if output.is_empty()));
 					assert!(!session.is_connected());
 
 					if updates_left > 0 {
 						let result = update_session(&mut session, &[], &mut connection_id, &mut updates_left);
+
 						assert!(
 							matches!(result, Some(Ok(output)) if matches!(output.as_slice(), [Packets::Disconnect(packet)] if packet.get_connection_id() == id))
 						);
@@ -214,11 +223,13 @@ fuzz_target!(|input: Input| {
 					let id = connection_id.expect("connected client must have a negotiated identity");
 					let invalid = DisconnectPacket::new(other_connection_id(id)).into();
 					let result = update_session(&mut session, &[invalid], &mut connection_id, &mut updates_left);
+
 					assert!(matches!(result, Some(Err(Errors::BadConnectionId))));
 					assert!(session.is_connected());
 
 					let valid = make_data_packet(id, 0, 0, 0, 0);
 					let result = update_session(&mut session, &[valid], &mut connection_id, &mut updates_left);
+
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				} else {

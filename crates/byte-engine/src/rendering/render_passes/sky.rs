@@ -366,6 +366,7 @@ mod tests {
 	}
 
 	fn assert_finite_nonnegative_color(color: [f32; 4], name: &str) {
+
 		assert!(
 			color[..3].iter().all(|channel| channel.is_finite() && *channel >= 0.0),
 			"Invalid {name} VM output. The most likely cause is unstable atmosphere integration: {color:?}"
@@ -375,6 +376,7 @@ mod tests {
 	#[test]
 	fn sky_view_cache_rebuilds_for_initialization_and_height_changes_only() {
 		let height = 2.0_f32.to_bits();
+
 		assert!(super::should_rebuild_sky_view(false, None, height));
 		assert!(super::should_rebuild_sky_view(true, None, height));
 		assert!(super::should_rebuild_sky_view(true, Some(3.0_f32.to_bits()), height));
@@ -397,6 +399,7 @@ mod tests {
 
 		let transmission = rgba(&output, [0, 0]);
 		assert_finite_nonnegative_color(transmission, "sky transmittance");
+
 		assert!(
 			transmission[..3].iter().all(|channel| *channel <= 1.0),
 			"Out-of-range sky transmittance. The most likely cause is an invalid optical-depth sign: {transmission:?}"
@@ -421,6 +424,7 @@ mod tests {
 
 		let scattering = rgba(&output, [0, 0]);
 		assert_finite_nonnegative_color(scattering, "sky-view");
+
 		assert!(
 			scattering[..3].iter().any(|channel| *channel > 0.0),
 			"Empty sky-view VM output. The most likely cause is an invalid atmosphere interval: {scattering:?}"
@@ -460,6 +464,7 @@ mod tests {
 		drop(background_descriptors);
 
 		let background = rgba(&background_target, [0, 0]);
+
 		assert!(
 			background[..3]
 				.iter()

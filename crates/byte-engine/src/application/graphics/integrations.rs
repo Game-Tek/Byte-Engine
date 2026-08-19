@@ -292,6 +292,7 @@ mod tests {
 	#[test]
 	fn parses_artnet_ipv4_parameter() {
 		let parameter = Parameter::new("artnet.bind-address", "2.0.0.15");
+
 		assert_eq!(
 			parse_artnet_ipv4_parameter(Some(&parameter), Ipv4Addr::UNSPECIFIED),
 			Ipv4Addr::new(2, 0, 0, 15)

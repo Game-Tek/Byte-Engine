@@ -952,6 +952,7 @@ mod tests {
 
 		let root = &first.streams[0];
 		let specular_zero = &first.streams[1];
+
 		assert_eq!(root.name(), IMAGE_BASE_MIP_STREAM_NAME);
 		assert_eq!(root.offset(), 0);
 		assert_eq!(root.size(), 4 * 2 * BYTES_PER_RGBA16F_PIXEL);
@@ -961,11 +962,13 @@ mod tests {
 		assert_eq!(first.streams.last().unwrap().name(), IBL_DIFFUSE_IRRADIANCE_STREAM_NAME);
 
 		for pixel in first.data[root.offset()..root.offset() + root.size()].chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+
 			assert_eq!(decode_pixel(pixel), [color[0], color[1], color[2], 0.25]);
 		}
 		for stream in &first.streams[1..] {
 			let bytes = &first.data[stream.offset()..stream.offset() + stream.size()];
 			for pixel in bytes.chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+
 				assert_eq!(decode_pixel(pixel), [color[0], color[1], color[2], 1.0]);
 			}
 		}
@@ -976,6 +979,7 @@ mod tests {
 			.iter()
 			.enumerate()
 		{
+
 			assert_eq!(stream.name(), ibl_prefiltered_specular_stream_name(level as u32));
 			assert_eq!(stream.offset(), expected_offset);
 			assert_eq!(
@@ -985,6 +989,7 @@ mod tests {
 			expected_offset += stream.size();
 			expected_face_size = (expected_face_size / 2).max(1);
 		}
+
 		assert_eq!(first.streams.last().unwrap().offset(), expected_offset);
 		assert_eq!(expected_offset + first.streams.last().unwrap().size(), first.data.len());
 	}
@@ -1004,6 +1009,7 @@ mod tests {
 		for pixel in baked.data[specular_zero.offset()..specular_zero.offset() + specular_zero.size()]
 			.chunks_exact(BYTES_PER_RGBA16F_PIXEL)
 		{
+
 			assert_eq!(decode_pixel(pixel), [2.0, 3.0, 4.0, 1.0]);
 		}
 	}
@@ -1029,6 +1035,7 @@ mod tests {
 			[0.0, 0.0, -1.0],
 		];
 		for (face, expected) in expected.into_iter().enumerate() {
+
 			assert_eq!(super::cubemap_texel_direction(face as u32, 0, 0, 1), expected);
 		}
 	}
@@ -1085,6 +1092,7 @@ mod tests {
 
 	#[test]
 	fn malformed_source_layout_is_rejected_before_allocation() {
+
 		assert_eq!(
 			bake_image_ibl_in(Extent::rectangle(0, 2), &[], &Global).err(),
 			Some(IBLBakeError::ZeroDimensions)

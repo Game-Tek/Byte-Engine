@@ -102,6 +102,7 @@ mod tests {
 			"value: workgroup<u32>",
 		] {
 			let tokens = tokenize(source).expect("invalid declaration should still tokenize");
+
 			assert!(parse(&tokens).is_err(), "expected `{source}` to be rejected");
 		}
 	}
@@ -131,12 +132,12 @@ mod tests {
 		else {
 			panic!("expected source descriptor");
 		};
+
 		assert_eq!(*resource_type, "Texture2D");
 		assert_eq!(*slot, 3);
 		assert!(*read);
 		assert!(!*write);
 		assert_eq!(*count, None);
-
 		assert!(matches!(
 			root["result"].node(),
 			Nodes::Descriptor {
@@ -227,6 +228,7 @@ mod tests {
 		let Nodes::Scope { children, .. } = root.node() else {
 			panic!("expected root scope");
 		};
+
 		assert!(matches!(
 			children.as_slice(),
 			[Node {
@@ -244,6 +246,7 @@ mod tests {
 			"texture: descriptor<Texture2D>;",
 		] {
 			let tokens = tokenize(source).expect("descriptor source should tokenize");
+
 			assert!(parse(&tokens).is_err(), "malformed descriptor should be rejected: {source}");
 		}
 	}
@@ -255,6 +258,7 @@ mod tests {
 			"data: descriptor<Data<rgba16f>, 0, read>;",
 		] {
 			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
+
 			assert!(
 				parse(&tokens).is_err(),
 				"non-storage image descriptor format should be rejected: {source}"
@@ -263,6 +267,7 @@ mod tests {
 	}
 
 	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
+
 		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
 	}
 
@@ -286,12 +291,14 @@ mod tests {
 
 	fn assert_struct(node: &Node) {
 		if let Nodes::Struct { name, fields } = &node.node {
+
 			assert_eq!(*name, "Light");
 			assert_eq!(fields.len(), 2);
 
 			let position = &fields[0];
 
 			if let Nodes::Member { name, r#type } = &position.node {
+
 				assert_eq!(*name, "position");
 				assert_eq!(r#type, "vec3f");
 			} else {
@@ -301,6 +308,7 @@ mod tests {
 			let color = &fields[1];
 
 			if let Nodes::Member { name, r#type } = &color.node {
+
 				assert_eq!(*name, "color");
 				assert_eq!(r#type, "vec3f");
 			} else {
@@ -326,6 +334,7 @@ Light: struct {
 		// program.types.get("Light").expect("Failed to get Light type");
 
 		if let Nodes::Struct { name, .. } = node.node {
+
 			assert_eq!(name, "root");
 			assert_struct(&node["Light"]);
 		}
@@ -340,6 +349,7 @@ Light: struct {
 			..
 		} = &node.node
 		{
+
 			assert_eq!(*name, "main");
 			assert_eq!(params.len(), 0);
 			assert_eq!(*return_type, TypeName::Named("void"));
@@ -353,9 +363,11 @@ Light: struct {
 				right: function_call,
 			}) = &statement.node
 			{
+
 				assert_eq!(*name, "=");
 
 				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &var_decl.node {
+
 					assert_eq!(*name, "position");
 					assert_named_type(r#type, "vec4f");
 				} else {
@@ -364,11 +376,13 @@ Light: struct {
 
 				if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &function_call.node {
 					assert_named_type(name, "vec4");
+
 					assert_eq!(parameters.len(), 4);
 
 					let x_param = &parameters[0];
 
 					if let Nodes::Expression(Expressions::Literal { value }) = &x_param.node {
+
 						assert_eq!(value, "0.0");
 					} else {
 						panic!("Not a literal");
@@ -396,6 +410,7 @@ main: fn () -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { name, .. } = node.node {
+
 			assert_eq!(name, "root");
 			assert_function(&node["main"]);
 		} else {
@@ -422,12 +437,14 @@ main: fn () -> void {
 			..
 		} = &function.node
 		{
+
 			assert_eq!(*name, "add");
 			assert_eq!(params.len(), 2);
 			assert_eq!(*return_type, TypeName::Named("f32"));
 			assert_eq!(statements.len(), 1);
 
 			if let Nodes::Parameter { name, r#type } = &params[0].node {
+
 				assert_eq!(*name, "lhs");
 				assert_eq!(*r#type, TypeName::Named("f32"));
 			} else {
@@ -437,6 +454,7 @@ main: fn () -> void {
 			if let Nodes::Expression(Expressions::Return { value }) = &statements[0].node {
 				let value = value.as_ref().expect("Expected return value");
 				if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
+
 					assert_eq!(*name, "+");
 				} else {
 					panic!("Expected return operator");
@@ -462,6 +480,7 @@ main: fn () -> void {
 		let Nodes::Function { params, return_type, .. } = &function.node else {
 			panic!("Expected function");
 		};
+
 		assert_eq!(
 			*return_type,
 			TypeName::Array {
@@ -472,6 +491,7 @@ main: fn () -> void {
 		let Nodes::Parameter { r#type, .. } = &params[0].node else {
 			panic!("Expected parameter");
 		};
+
 		assert_eq!(
 			*r#type,
 			TypeName::Array {
@@ -502,11 +522,11 @@ main: fn () -> void {
 			..
 		} = &main_node.node
 		{
+
 			assert_eq!(*name, "main");
 			assert_eq!(statements.len(), 2);
 			assert_eq!(*return_type, TypeName::Named("void"));
 			assert_eq!(params.len(), 0);
-
 			assert_eq!(statements.len(), 2);
 
 			let statement0 = &statements[0];
@@ -517,6 +537,7 @@ main: fn () -> void {
 				right: multiply,
 			}) = &statement0.node
 			{
+
 				assert_eq!(*name, "=");
 
 				if let Nodes::Expression(Expressions::VariableDeclaration { .. }) = var_decl.node {
@@ -530,6 +551,7 @@ main: fn () -> void {
 					right: literal,
 				}) = &multiply.node
 				{
+
 					assert_eq!(*name, "*");
 
 					if let Nodes::Expression(Expressions::Call { name, .. }) = &vec4.node {
@@ -539,6 +561,7 @@ main: fn () -> void {
 					}
 
 					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
+
 						assert_eq!(value, "2.0");
 					} else {
 						panic!("Not a literal");
@@ -584,6 +607,7 @@ main: fn () -> void {
 		};
 
 		assert_named_type(&name, "vec4f");
+
 		assert_eq!(parameters.len(), 4);
 	}
 
@@ -638,11 +662,13 @@ main: fn () -> void {
 		print_tree(&node);
 
 		if let Nodes::Scope { children, .. } = &node.node {
+
 			assert_eq!(children.len(), 1);
 
 			let main_node = &node["main"];
 
 			if let Nodes::Function { name, statements, .. } = &main_node.node {
+
 				assert_eq!(*name, "main");
 				assert_eq!(statements.len(), 3);
 
@@ -654,6 +680,7 @@ main: fn () -> void {
 					right: literal,
 				}) = &statement1.node
 				{
+
 					assert_eq!(*name, "=");
 
 					if let Nodes::Expression(Expressions::Accessor {
@@ -662,12 +689,14 @@ main: fn () -> void {
 					}) = &accessor.node
 					{
 						if let Nodes::Expression(Expressions::Member { name }) = &position.node {
+
 							assert_eq!(name, "position");
 						} else {
 							panic!("Not a member");
 						}
 
 						if let Nodes::Expression(Expressions::Member { name }) = &y.node {
+
 							assert_eq!(name, "y");
 						} else {
 							panic!("Not a member");
@@ -677,6 +706,7 @@ main: fn () -> void {
 					}
 
 					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
+
 						assert_eq!(value, "2.0");
 					} else {
 						panic!("Not a literal");
@@ -728,6 +758,7 @@ main: fn () -> void {
 			let member_node = &node["color"];
 
 			if let Nodes::Member { name, r#type } = &member_node.node {
+
 				assert_eq!(*name, "color");
 				assert_eq!(r#type, "In<vec4f>");
 			} else {
@@ -750,6 +781,7 @@ main: fn () -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = node.node {
+
 			assert_eq!(children.len(), 3);
 		}
 	}
@@ -766,6 +798,7 @@ main: fn () -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = node.node {
+
 			assert_eq!(children.len(), 1);
 		}
 	}
@@ -781,20 +814,24 @@ main: fn () -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = &node.node {
+
 			assert_eq!(children.len(), 1);
 
 			let main_node = &node["main"];
 
 			if let Nodes::Function { name, statements, .. } = &main_node.node {
+
 				assert_eq!(*name, "main");
 				assert_eq!(statements.len(), 1);
 
 				let statement = &statements[0];
 
 				if let Nodes::Expression(Expressions::Operator { name, left, right }) = &statement.node {
+
 					assert_eq!(*name, "=");
 
 					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &left.node {
+
 						assert_eq!(*name, "n");
 						assert_named_type(r#type, "f32");
 					} else {
@@ -804,9 +841,11 @@ main: fn () -> void {
 					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
 						if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &left.node {
 							assert_named_type(name, "intrinsic");
+
 							assert_eq!(parameters.len(), 1);
 
 							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
+
 								assert_eq!(value, "0");
 							} else {
 								panic!("Not a literal");
@@ -816,6 +855,7 @@ main: fn () -> void {
 						}
 
 						if let Nodes::Expression(Expressions::Member { name }) = &right.node {
+
 							assert_eq!(name, "y");
 						} else {
 							panic!("Not a member");
@@ -849,6 +889,7 @@ main: fn () -> void {
 			let statement = &statements[0];
 			if let Nodes::Expression(Expressions::Operator { right, .. }) = &statement.node {
 				if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
+
 					assert!(matches!(&left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
 					assert!(matches!(
 						right.node,
@@ -920,6 +961,7 @@ main: fn () -> void {
 		let Nodes::Conditional { statements, .. } = &statements[0].node else {
 			panic!("Expected conditional");
 		};
+
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
 	}
 
@@ -933,15 +975,18 @@ PI: const f32 = 3.14;
 		let node = parse(&tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = &node.node {
+
 			assert_eq!(children.len(), 1);
 
 			let const_node = &node["PI"];
 
 			if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
+
 				assert_eq!(*name, "PI");
 				assert_named_type(r#type, "f32");
 
 				if let Nodes::Expression(Expressions::Literal { value }) = &value.node {
+
 					assert_eq!(*value, "3.14");
 				} else {
 					panic!("Expected a literal value, got: {:?}", value.node);
@@ -966,10 +1011,12 @@ TAU: const f32 = 3.14 * 2.0;
 		let const_node = &node["TAU"];
 
 		if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
+
 			assert_eq!(*name, "TAU");
 			assert_named_type(r#type, "f32");
 
 			if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
+
 				assert_eq!(*name, "*");
 			} else {
 				panic!("Expected an operator expression, got: {:?}", value.node);
@@ -991,6 +1038,7 @@ TAU: const f32 = 3.14 * 2.0;
 		let const_node = &node["WEIGHTS"];
 
 		if let Nodes::Const { name, r#type, value } = &const_node.node {
+
 			assert_eq!(*name, "WEIGHTS");
 			assert_eq!(
 				r#type,
@@ -1001,6 +1049,7 @@ TAU: const f32 = 3.14 * 2.0;
 			);
 
 			if let Nodes::Expression(Expressions::Call { name, parameters }) = &value.node {
+
 				assert_eq!(
 					name,
 					&TypeName::Array {
@@ -1052,17 +1101,17 @@ main: fn () -> void {
 
 		let main_node = &node["main"];
 		if let Nodes::Function { statements, .. } = &main_node.node {
+
 			assert_eq!(statements.len(), 2);
 
 			let conditional = &statements[1];
 			if let Nodes::Conditional { condition, statements } = &conditional.node {
-				assert_eq!(statements.len(), 1);
 
+				assert_eq!(statements.len(), 1);
 				assert!(matches!(
 					condition.node,
 					Nodes::Expression(Expressions::Operator { name, .. }) if name == "<"
 				));
-
 				assert!(matches!(
 					statements[0].node,
 					Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
@@ -1139,13 +1188,14 @@ main: fn () -> void {
 		let Nodes::Expression(Expressions::Operator { name, right, .. }) = &statements[0].node else {
 			panic!("Expected assignment expression");
 		};
+
 		assert_eq!(*name, "=");
 
 		let Nodes::Expression(Expressions::Operator { name, left, right }) = &right.node else {
 			panic!("Expected bitwise or expression");
 		};
-		assert_eq!(*name, "|");
 
+		assert_eq!(*name, "|");
 		assert!(matches!(
 			left.node,
 			Nodes::Expression(Expressions::Operator { name, .. }) if name == "<<"
@@ -1172,6 +1222,7 @@ compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32)
 		let tokens = tokenize(source).expect("Failed to tokenize");
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["compute_vertex_position"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
@@ -1190,6 +1241,7 @@ compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec
 		println!("Tokens: {:?}", tokens.tokens);
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["compute_triangle"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
@@ -1205,6 +1257,7 @@ main: fn () -> void {
 		println!("Tokens: {:?}", tokens.tokens);
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["main"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
@@ -1221,6 +1274,7 @@ main: fn () -> void {
 		let tokens = tokenize(source).expect("Failed to tokenize");
 		let node = parse(&tokens).expect("Failed to parse push-constant comparison");
 		let func = &node["main"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
@@ -1239,6 +1293,7 @@ main: fn () -> void {
 		let tokens = tokenize(source).expect("Failed to tokenize");
 		let node = parse(&tokens).expect("Failed to parse grouped conditional arithmetic");
 		let func = &node["main"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
@@ -1270,6 +1325,7 @@ process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
 		let tokens = tokenize(source).expect("Failed to tokenize");
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["process_meshlet"];
+
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 

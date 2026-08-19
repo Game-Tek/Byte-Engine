@@ -63,6 +63,7 @@ mod tests {
 	#[test]
 	fn string_ids_use_stable_md5_bytes_and_hex_round_trip() {
 		let id = ResourceId::from("hello");
+
 		assert_eq!(id.to_hex(), "5d41402abc4b2a76b9719d911017c592");
 		assert_eq!(ResourceId::from_uid_hex(&id.to_hex()), Some(id));
 		assert_eq!(ResourceId::from_uid_hex("5D41402ABC4B2A76B9719D911017C592"), Some(id));
@@ -70,6 +71,7 @@ mod tests {
 
 	#[test]
 	fn hex_parser_rejects_wrong_length_and_non_hex_input() {
+
 		assert_eq!(ResourceId::from_uid_hex("abc"), None);
 		assert_eq!(ResourceId::from_uid_hex("zz41402abc4b2a76b9719d911017c592"), None);
 	}

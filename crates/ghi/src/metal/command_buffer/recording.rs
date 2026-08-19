@@ -8,6 +8,7 @@ impl PushUploadArena<'_> {
 		command: &queue::NativeCommand,
 		bytes: &[u8],
 	) -> mtl::MTLGPUAddress {
+
 		assert!(
 			!bytes.is_empty(),
 			"Empty Metal push upload. The most likely cause is that a zero-sized push-constant layout was marked dirty."
@@ -395,6 +396,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Updates one stage table and associates it with the active encoder before its next snapshot command.
 	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
+
 		assert!(
 			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
 			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
@@ -486,6 +488,7 @@ impl<'a> CommandBufferRecording<'a> {
 			let left = &self.device.descriptor_sets[left_handle.0 as usize];
 			for right_handle in self.bound_descriptor_set_handles.iter().skip(left_index + 1) {
 				let right = &self.device.descriptor_sets[right_handle.0 as usize];
+
 				assert!(
 					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
 					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
@@ -499,6 +502,7 @@ impl<'a> CommandBufferRecording<'a> {
 			let range_end = resource_range_end(descriptor);
 			for set_handle in &self.bound_descriptor_set_handles {
 				let descriptor_set = &self.device.descriptor_sets[set_handle.0 as usize];
+
 				assert!(
 					descriptor_set
 						.descriptors
@@ -517,6 +521,7 @@ impl<'a> CommandBufferRecording<'a> {
 						.any(|slot| (range_start..range_end).contains(&slot.index()))
 				})
 				.count();
+
 			assert!(
 				owner_count <= 1,
 				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own slots within the same active shader resource range.",
@@ -524,6 +529,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 			let descriptors = self.descriptors_at_slot(descriptor.slot());
 			if descriptor.count() == 1 {
+
 				assert!(
 					descriptors.is_some_and(|descriptors| descriptors.contains_key(&0)),
 					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
@@ -533,6 +539,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 			if let Some(descriptors) = descriptors {
 				for (&array_element, &value) in descriptors {
+
 					assert!(
 						array_element < descriptor.count(),
 						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
@@ -580,6 +587,7 @@ impl<'a> CommandBufferRecording<'a> {
 		if !self.render_vertex_buffers_dirty {
 			return;
 		}
+
 		assert!(
 			self.bound_vertex_buffers.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
 			"Too many Metal vertex buffers were bound. The most likely cause is that a vertex binding overlaps the reserved push-constant slot."

@@ -99,6 +99,7 @@ mod tests {
 	fn test_function() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -131,6 +132,7 @@ mod tests {
 	fn test_operators() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -165,6 +167,7 @@ mod tests {
 	fn test_bitwise_operators() {
 		let source = "fn main() -> void { value = 1 << 8 | 2 & 255; }";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec!["fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "&", "255", ";", "}"]
@@ -175,6 +178,7 @@ mod tests {
 	fn test_struct() {
 		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -188,12 +192,14 @@ mod tests {
 	fn test_member() {
 		let source = "color: In<vec4f>;";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(tokens.tokens, vec!["color", ":", "In", "<", "vec4f", ">", ";"]);
 	}
 
 	#[test]
 	fn resource_descriptors_preserve_flat_arguments() {
 		let tokens = tokenize("textures: descriptor<Texture2D, 5, read, 16>;").unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -218,6 +224,7 @@ mod tests {
 	fn test_for_loop() {
 		let source = "main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { value = value + i; } }";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -231,6 +238,7 @@ mod tests {
 	fn test_comparison_and_logical_operators() {
 		let source = "main: fn () -> void { if (a >= b || c != d && e <= f && g > h) { continue; } }";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -244,6 +252,7 @@ mod tests {
 	fn line_comments_are_ignored_without_consuming_adjacent_tokens() {
 		let source = "main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment";
 		let tokens = tokenize(source).unwrap();
+
 		assert_eq!(
 			tokens.tokens,
 			vec![
@@ -256,6 +265,7 @@ mod tests {
 	#[test]
 	fn numeric_identifier_suffix_does_not_consume_member_accessor() {
 		let tokens = tokenize("matrix0.column0 + 1.25").unwrap();
+
 		assert_eq!(tokens.tokens, vec!["matrix0", ".", "column0", "+", "1.25"]);
 	}
 }

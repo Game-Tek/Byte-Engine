@@ -224,6 +224,7 @@ mod tests {
 	#[test]
 	fn test_box() {
 		let b = Box::fixed(1920, 1080);
+
 		assert_eq!(b.scaling_x, Scalings::Fixed { value: 1920 });
 		assert_eq!(b.scaling_y, Scalings::Fixed { value: 1080 });
 		assert_eq!(b.direction_x, Direction::Positive);
@@ -241,11 +242,11 @@ mod tests {
 		root.add_child(child);
 
 		let layout = evaluate_layout(&root);
+
 		assert_eq!(layout.width(), 1920);
 		assert_eq!(layout.height(), 1080);
 		assert_eq!(layout.index, None);
 		assert_eq!(layout.children.len(), 1);
-
 		assert_eq!(layout.children[0].width(), 960);
 		assert_eq!(layout.children[0].height(), 1080);
 		assert_eq!(layout.children[0].index, Some(0));
@@ -265,16 +266,15 @@ mod tests {
 		root.add_child(child_b);
 
 		let layout = evaluate_layout(&root);
+
 		assert_eq!(layout.width(), 1920);
 		assert_eq!(layout.height(), 1080);
 		assert_eq!(layout.children.len(), 2);
-
 		assert_eq!(layout.children[0].x, -480);
 		assert_eq!(layout.children[0].y, 0);
 		assert_eq!(layout.children[0].width(), 960);
 		assert_eq!(layout.children[0].height(), 1080);
 		assert_eq!(layout.children[0].index, Some(0));
-
 		assert_eq!(layout.children[1].x, 480);
 		assert_eq!(layout.children[1].y, 0);
 		assert_eq!(layout.children[1].width(), 960);
@@ -296,16 +296,15 @@ mod tests {
 		root.add_child(child_b);
 
 		let layout = evaluate_layout(&root);
+
 		assert_eq!(layout.width(), 1000);
 		assert_eq!(layout.height(), 1000);
 		assert_eq!(layout.children.len(), 2);
-
 		assert_eq!(layout.children[0].x, 0);
 		assert_eq!(layout.children[0].y, 250);
 		assert_eq!(layout.children[0].width(), 1000);
 		assert_eq!(layout.children[0].height(), 500);
 		assert_eq!(layout.children[0].index, Some(0));
-
 		assert_eq!(layout.children[1].x, 0);
 		assert_eq!(layout.children[1].y, -250);
 		assert_eq!(layout.children[1].width(), 1000);

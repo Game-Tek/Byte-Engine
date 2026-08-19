@@ -81,6 +81,7 @@ mod tests {
 	#[test]
 	fn defaults_define_linear_clamped_weighted_sampling() {
 		let builder = Builder::new();
+
 		assert_eq!(builder.filtering_mode, FilteringModes::Linear);
 		assert_eq!(builder.reduction_mode, SamplingReductionModes::WeightedAverage);
 		assert_eq!(builder.mip_map_mode, FilteringModes::Linear);

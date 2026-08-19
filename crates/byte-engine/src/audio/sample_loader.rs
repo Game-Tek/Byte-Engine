@@ -85,6 +85,7 @@ mod tests {
 			scalar_count: samples.len(),
 		};
 		let resident_bytes = layout.decoded_byte_count().unwrap();
+
 		assert!(pool.make_room(resident_bytes));
 		let region = pool.take_region(samples.len()).expect("test arena region");
 		pool.storage[region.offset..region.end()].copy_from_slice(samples);
@@ -96,6 +97,7 @@ mod tests {
 	}
 
 	fn release(pool: &mut AudioSamplePool, queue: &AudioSampleReleaseQueue, lease: AudioSampleLease) {
+
 		assert!(queue.push(lease.into_id()));
 		pool.release_returned(queue);
 	}
@@ -110,6 +112,7 @@ mod tests {
 	#[test]
 	fn decoder_normalizes_supported_little_endian_pcm_depths() {
 		let eight = decode(metadata(BitDepths::Eight, 1, 3), &[0, 128, 255]).expect("expected test value");
+
 		assert_eq!(&*eight, &[-1.0, 0.0, 127.0 / 128.0]);
 
 		let mut sixteen_bytes = Vec::new();
@@ -117,12 +120,14 @@ mod tests {
 			sixteen_bytes.extend_from_slice(&sample.to_le_bytes());
 		}
 		let sixteen = decode(metadata(BitDepths::Sixteen, 1, 3), &sixteen_bytes).expect("expected test value");
+
 		assert_eq!(sixteen[0], -1.0);
 		assert_eq!(sixteen[1], 0.0);
 		assert!((sixteen[2] - i16::MAX as f32 / 32_768.0).abs() < f32::EPSILON);
 
 		let twenty_four_bytes = [0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0x7f];
 		let twenty_four = decode(metadata(BitDepths::TwentyFour, 1, 3), &twenty_four_bytes).expect("expected test value");
+
 		assert_eq!(twenty_four[0], -1.0);
 		assert_eq!(twenty_four[1], 0.0);
 		assert!((twenty_four[2] - 8_388_607.0 / 8_388_608.0).abs() < f32::EPSILON);
@@ -132,6 +137,7 @@ mod tests {
 			thirty_two_bytes.extend_from_slice(&sample.to_le_bytes());
 		}
 		let thirty_two = decode(metadata(BitDepths::ThirtyTwo, 1, 3), &thirty_two_bytes).expect("expected test value");
+
 		assert_eq!(thirty_two[0], -1.0);
 		assert_eq!(thirty_two[1], 0.0);
 		assert!(thirty_two[2] > 0.99);
@@ -140,6 +146,7 @@ mod tests {
 	#[test]
 	fn decoder_validates_exact_interleaved_payload_length() {
 		let error = decode(metadata(BitDepths::Sixteen, 2, 2), &[0; 6]).unwrap_err();
+
 		assert!(error.contains("requires 8"));
 		assert!(decode(metadata(BitDepths::Sixteen, 0, 2), &[]).is_err());
 		assert!(decode(metadata(BitDepths::Sixteen, 3, 2), &[0; 12]).is_err());
@@ -165,6 +172,7 @@ mod tests {
 			),
 			AudioSampleCacheKey::new("tone.wav", 7, metadata(BitDepths::Sixteen, 1, 3)),
 		] {
+
 			assert_ne!(key, distinct);
 		}
 	}
@@ -172,6 +180,7 @@ mod tests {
 	#[test]
 	fn stereo_frames_are_downmixed_to_mono() {
 		let sample = AudioSampleLease::for_test(48_000, 2, Box::from([1.0, -1.0, 0.5, 0.25]));
+
 		assert_eq!(sample.mono_frame(0), 0.0);
 		assert_eq!(sample.mono_frame(1), 0.375);
 	}
@@ -192,11 +201,14 @@ mod tests {
 
 		let active_id = active.id();
 		drop(active);
+
 		assert!(!pool.make_room(4));
 		assert!(releases.push(active_id));
 		pool.release_returned(&releases);
+
 		assert!(!pool.make_room(4));
 		release(&mut pool, &releases, second);
+
 		assert!(pool.make_room(4));
 		let replacement = insert_normalized(&mut pool, "replacement.wav", 2, &[0.5]);
 
@@ -231,10 +243,12 @@ mod tests {
 		let first = pool.take_region(2).expect("first region");
 		let second = pool.take_region(2).expect("second region");
 		let third = pool.take_region(2).expect("third region");
+
 		assert!(pool.free_regions.is_empty());
 
 		pool.return_region(first);
 		pool.return_region(third);
+
 		assert_eq!(pool.free_regions, [first, third]);
 		pool.return_region(second);
 
@@ -252,6 +266,7 @@ mod tests {
 		let mut pool = pool(8);
 		let metadata = metadata(BitDepths::Sixteen, 1, 2);
 		let layout = AudioSampleLayout::new(metadata).unwrap();
+
 		assert!(pool.make_room(layout.decoded_byte_count().unwrap()));
 
 		let error = pool
@@ -293,16 +308,20 @@ mod tests {
 		let first = insert_normalized(&mut pool, "first.wav", 1, &[0.0]);
 		let stale_id = first.id();
 		release(&mut pool, &releases, first);
+
 		assert!(pool.make_room(4));
 
 		let second = insert_normalized(&mut pool, "second.wav", 2, &[1.0]);
+
 		assert_eq!(second.id().slot, stale_id.slot);
 		assert_ne!(second.id().generation, stale_id.generation);
 		assert!(releases.push(stale_id));
 		pool.release_returned(&releases);
+
 		assert!(!pool.make_room(4));
 
 		release(&mut pool, &releases, second);
+
 		assert!(pool.make_room(4));
 	}
 
@@ -310,38 +329,46 @@ mod tests {
 	fn release_queue_is_bounded_fifo_and_reuses_wrapped_slots() {
 		let queue = AudioSampleReleaseQueue::new();
 		for slot in 0..AUDIO_SAMPLE_RELEASE_CAPACITY {
+
 			assert!(queue.push(AudioSampleLeaseId {
 				slot: u8::try_from(slot % AUDIO_GRAPH_CAPACITY).unwrap(),
 				generation: slot as u64,
 			}));
 		}
+
 		assert!(!queue.push(AudioSampleLeaseId {
 			slot: 0,
 			generation: 999
 		}));
 
 		for generation in 0..AUDIO_SAMPLE_RELEASE_CAPACITY / 2 {
+
 			assert_eq!(queue.pop().expect("queued release").generation, generation as u64);
 		}
 		for generation in AUDIO_SAMPLE_RELEASE_CAPACITY..AUDIO_SAMPLE_RELEASE_CAPACITY + 16 {
+
 			assert!(queue.push(AudioSampleLeaseId {
 				slot: 0,
 				generation: generation as u64,
 			}));
 		}
 		for generation in AUDIO_SAMPLE_RELEASE_CAPACITY / 2..AUDIO_SAMPLE_RELEASE_CAPACITY + 16 {
+
 			assert_eq!(queue.pop().expect("queued release").generation, generation as u64);
 		}
+
 		assert!(queue.pop().is_none());
 	}
 
 	#[test]
 	fn decoded_sample_size_is_checked_before_pool_admission() {
+
 		assert_eq!(
 			AudioSampleLayout::new(metadata(BitDepths::Eight, 2, 2)).and_then(AudioSampleLayout::decoded_byte_count),
 			Ok(16)
 		);
 		let mut pool = pool(8);
+
 		assert!(!pool.make_room(16));
 		assert_eq!(pool.resident_bytes, 0);
 	}
@@ -359,12 +386,14 @@ mod tests {
 
 		assert!(client.queue(handle, r#loop(sample("first.wav")).compile().expect("expected test value"), 0));
 		let first_generation = client.pending[0].generation;
+
 		assert!(client.queue(
 			handle,
 			gain(sample("second.wav"), 0.25).compile().expect("expected test value"),
 			0
 		));
 		let second_generation = client.pending[0].generation;
+
 		assert_ne!(first_generation, second_generation);
 
 		completion_sender
@@ -380,6 +409,7 @@ mod tests {
 		client.update(|handle, _, plan| {
 			created.push((handle, plan.playback_mode, plan.output_gain));
 		});
+
 		assert!(created.is_empty());
 		assert_eq!(client.pending.len(), 1);
 		assert_eq!(client.lease_release_epoch, 1);
@@ -395,6 +425,7 @@ mod tests {
 		client.update(|handle, _, plan| {
 			created.push((handle, plan.playback_mode, plan.output_gain));
 		});
+
 		assert_eq!(created, [(handle, SamplePlaybackMode::Once, 0.25)]);
 		assert!(client.pending.is_empty());
 	}
@@ -435,6 +466,7 @@ mod tests {
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
 		let mut factory = Factory::new();
 		let handle = factory.create(());
+
 		assert!(client.queue(
 			handle,
 			r#loop(sample("replacement.wav")).compile().expect("expected test value"),
@@ -450,10 +482,11 @@ mod tests {
 			.send(AudioLoadCompletion::WaitingForCapacity { request })
 			.expect("expected test value");
 		client.update(|_, _, _| panic!("capacity-blocked load must not create a graph"));
-		assert!(client.pending[0].waiting_for_capacity);
 
+		assert!(client.pending[0].waiting_for_capacity);
 		assert!(client.return_lease(lease([0.0]).id()));
 		client.submit_requests();
+
 		assert!(matches!(
 			command_receiver.try_recv().expect("expected test value"),
 			Some(request) if request.handle == handle
@@ -469,6 +502,7 @@ mod tests {
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
 		let mut factory = Factory::new();
 		let handle = factory.create(());
+
 		assert!(client.queue(handle, sample("racing.wav").compile().expect("expected test value"), 0));
 		client.submit_requests();
 		let Some(request) = command_receiver.try_recv().expect("expected test value") else {
@@ -481,9 +515,11 @@ mod tests {
 			.send(AudioLoadCompletion::WaitingForCapacity { request })
 			.expect("expected test value");
 		client.update(|_, _, _| panic!("capacity-blocked load must not create a graph"));
+
 		assert!(!client.pending[0].waiting_for_capacity);
 
 		client.submit_requests();
+
 		assert!(matches!(
 			command_receiver.try_recv().expect("expected test value"),
 			Some(request) if request.handle == handle

@@ -24,6 +24,7 @@ mod tests {
 			.unwrap_or_else(|| panic!("Expected built-in type '{type_name}'"));
 		let layout = reflected_storage_type_layout(&r#type, target, false, &mut HashSet::new())
 			.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
+
 		assert_eq!(layout, expected, "Unexpected '{type_name}' layout for {target:?}");
 	}
 
@@ -142,18 +143,22 @@ mod tests {
 		} else {
 			vec![Some(12), Some(2), Some(1284)]
 		};
+
 		assert_eq!(strides, expected);
 	}
 
 	#[test]
 	fn storage_layout_target_matches_the_compiled_backend() {
 		#[cfg(target_vendor = "apple")]
+
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Msl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Hlsl);
 
 		#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
+
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::GlslScalar);
 	}
 
@@ -230,6 +235,7 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
+
 			assert_eq!(reflected_storage_buffer_stride_for_target(&members, target), Ok(20));
 		}
 
@@ -243,6 +249,7 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
+
 			assert_eq!(reflected_storage_buffer_stride_for_target(&uv_array, target), Ok(4));
 		}
 	}
@@ -260,6 +267,7 @@ mod tests {
 			(StorageLayoutTarget::Msl, 1, 2),
 			(StorageLayoutTarget::GlslScalar, 1, 2),
 		] {
+
 			assert_eq!(reflected_storage_buffer_stride_for_target(&bytes, target), Ok(byte_stride));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&words, target), Ok(word_stride));
 		}
@@ -306,6 +314,7 @@ mod tests {
 			for ((type_name, matrix), (size, alignment)) in matrices.iter().zip(expected) {
 				let layout = reflected_storage_type_layout(matrix, target, false, &mut HashSet::new())
 					.unwrap_or_else(|error| panic!("Expected '{type_name}' layout for {target:?}: {error}"));
+
 				assert_eq!(layout, StorageLayout { size, alignment });
 			}
 		}
@@ -349,6 +358,7 @@ mod tests {
 
 		// Metal emits packed_float3 only for the direct array member. Direct
 		// scalar members and fields nested inside Mixed retain native float3.
+
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Hlsl),
 			Ok(12)
@@ -366,6 +376,7 @@ mod tests {
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
+
 			assert_eq!(
 				reflected_storage_buffer_stride_for_target(&flattened_positions, target),
 				Ok(12)
@@ -461,6 +472,7 @@ mod tests {
 			(StorageLayoutTarget::Msl, 80, 176),
 			(StorageLayoutTarget::GlslScalar, 80, 176),
 		] {
+
 			assert_eq!(
 				reflected_storage_buffer_stride_for_target(&mesh_buffer, target),
 				Ok(mesh_stride)
@@ -499,6 +511,7 @@ mod tests {
 		let bindings = ProgramEvaluation::from_main(&main)
 			.expect("Expected sampled binding metadata to evaluate")
 			.into_bindings();
+
 		assert_eq!(bindings[0].count, 3);
 		assert_eq!(
 			bindings[0].kind,
@@ -624,6 +637,7 @@ mod tests {
 		let main = program.get_main().expect("Expected dead binding fixture main function");
 
 		let evaluation = ProgramEvaluation::from_main(&main).expect("Expected optimized reflection");
+
 		assert!(evaluation.bindings().is_empty(), "Dead local binding reached reflection");
 	}
 

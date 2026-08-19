@@ -281,6 +281,7 @@ mod tests {
 
 	#[test]
 	fn edge_feather_constructors_store_per_edge_widths() {
+
 		assert_eq!(
 			EdgeFeather::edges(1.0, 2.0, 3.0, 4.0),
 			EdgeFeather {
@@ -297,6 +298,7 @@ mod tests {
 
 	#[test]
 	fn edge_feather_sanitizes_invalid_widths() {
+
 		assert_eq!(
 			EdgeFeather::edges(-1.0, f32::NAN, f32::INFINITY, 4.0),
 			EdgeFeather {
@@ -310,6 +312,7 @@ mod tests {
 
 	#[test]
 	fn backdrop_blur_radius_sanitizes_invalid_values() {
+
 		assert_eq!(ConcreteLayer::default().backdrop_blur(-1.0).backdrop_blur_radius(), 0.0);
 		assert_eq!(ConcreteLayer::default().backdrop_blur(f32::NAN).backdrop_blur_radius(), 0.0);
 		assert_eq!(

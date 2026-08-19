@@ -870,6 +870,7 @@ mod tests {
 			&["albedo", "metalness", "roughness", "normal", "occlusion", "emission"],
 		);
 		let statements = main_statements(&program);
+
 		assert_eq!(statements.len(), 11);
 		assert_texture_sample_binding(&statements[0], "material_texture_sample_0", "material_texture_3");
 		assert_texture_sample_binding(&statements[2], "material_texture_sample_1", "material_texture_4");
@@ -892,6 +893,7 @@ mod tests {
 			assignment_right(surface_assignment(&program, "normal")),
 			"decode_material_normal_f16",
 		);
+
 		assert_eq!(normal.len(), 1);
 		assert_member_expression(&normal[0], "material_texture_sample_2");
 
@@ -900,6 +902,7 @@ mod tests {
 
 		let emission = assignment_right(surface_assignment(&program, "emission"));
 		let parameters = assert_call(emission, "vec3f16");
+
 		assert_eq!(parameters.len(), 3);
 		for (parameter, channel) in parameters.iter().zip(["x", "y", "z"]) {
 			let source = assert_accessor_channel(parameter, channel);
@@ -939,10 +942,12 @@ mod tests {
 		let program = generate_textured_brdf_program(&material).expect("material should generate");
 
 		let bindings = texture_sample_bindings(&program);
+
 		assert_eq!(bindings.len(), 1);
 		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
 
 		for name in ["albedo", "metalness", "roughness", "normal", "occlusion", "emission"] {
+
 			assert_eq!(
 				count_calls(assignment_right(surface_assignment(&program, name)), "sample_material"),
 				0,
@@ -954,6 +959,7 @@ mod tests {
 			assignment_right(surface_assignment(&program, "normal")),
 			"scale_material_normal_xy_f16",
 		);
+
 		assert_eq!(normal_parameters.len(), 2);
 		let decoded_parameters = assert_call(&normal_parameters[0], "decode_material_normal_f16");
 		assert_member_expression(&decoded_parameters[0], "material_texture_sample_0");
@@ -986,6 +992,7 @@ mod tests {
 		let program = generate_textured_brdf_program(&material).expect("material should generate");
 
 		let bindings = texture_sample_bindings(&program);
+
 		assert_eq!(bindings.len(), 2);
 		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
 		assert_texture_sample_binding(bindings[1], "material_texture_sample_1", "material_texture_3");
@@ -1090,6 +1097,7 @@ mod tests {
 			else {
 				panic!("Expected assignment statement");
 			};
+
 			assert_eq!(*operator, "=");
 			assert!(
 				matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name: member }) if member == name)
@@ -1147,6 +1155,7 @@ mod tests {
 
 	fn assert_sample_call(node: &besl::parser::Node<'_>, name: &str, variable: &str) {
 		let parameters = assert_call(node, name);
+
 		assert_eq!(parameters.len(), 1);
 		assert_member_expression(&parameters[0], variable);
 	}
@@ -1156,14 +1165,17 @@ mod tests {
 		else {
 			panic!("Expected texture sample assignment");
 		};
+
 		assert_eq!(*name, "=");
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::VariableDeclaration { name, r#type }) = left.node()
 		else {
 			panic!("Expected texture sample local declaration");
 		};
+
 		assert_eq!(name.as_ref(), local_name);
 		assert!(matches!(r#type, besl::parser::TypeName::Named(name) if *name == "vec4f16"));
 		let sample = assert_call(right, "vec4f16");
+
 		assert_eq!(sample.len(), 1);
 		assert_sample_call(&sample[0], "sample_material", texture_slot);
 	}
@@ -1172,6 +1184,7 @@ mod tests {
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) = node.node() else {
 			panic!("Expected call expression");
 		};
+
 		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == expected_name));
 		parameters
 	}
@@ -1212,6 +1225,7 @@ mod tests {
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) = node.node() else {
 			panic!("Expected member expression");
 		};
+
 		assert_eq!(name.as_ref(), expected_name);
 	}
 
@@ -1219,11 +1233,13 @@ mod tests {
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) = node.node() else {
 			panic!("Expected vec4f16 call");
 		};
+
 		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == "vec4f16"));
 		assert_eq!(parameters.len(), 4);
 
 		for (parameter, expected) in parameters.iter().zip(expected.iter()) {
 			let literal = assert_call(parameter, "f16");
+
 			assert_eq!(literal.len(), 1);
 			assert!(
 				matches!(literal[0].node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) if value == expected)

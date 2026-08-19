@@ -140,6 +140,7 @@ mod tests {
 	fn anchor_position_and_transform_mutation_share_state() {
 		let mut anchor = Anchor::new(Transform::from_position(Point::new(1.0, 2.0, 3.0)));
 		anchor.set_position(Point::new(4.0, 5.0, 6.0));
+
 		assert_eq!(anchor.transform().get_position(), Point::new(4.0, 5.0, 6.0));
 	}
 

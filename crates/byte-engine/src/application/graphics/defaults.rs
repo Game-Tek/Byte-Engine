@@ -16,9 +16,12 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
 		let generator = VisibilityShaderGenerator::new(true, false, false, false, false, false, true, true);
+
 		setup_default_resource_and_asset_management(application, generator);
 	}
+
 	setup_default_input(application);
+
 	setup_default_pipeline_compilation(application);
 
 	let mut loading_tasks = build_deferred_tasks_queue();
@@ -43,18 +46,23 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 /// passes that request asynchronous pipelines.
 pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication) {
 	let servers = application.renderer.take_pipeline_compilation_servers();
+
 	for server in servers {
 		application
 			.threads
 			.push(Thread::new(application.application_events.1.clone(), move |mut events| {
 				let runtime = build_single_threaded_async_runtime();
+
 				runtime.enter(|| {
 					runtime.spawn(server.run()).detach();
+
 					loop {
 						if matches!(events.try_recv(), Ok(Events::Close)) {
 							return;
 						}
+
 						let ready = runtime.run();
+
 						runtime.poll_with(Some(if ready {
 							std::time::Duration::ZERO
 						} else {
@@ -85,9 +93,11 @@ pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks
 					}
 
 					let has_ready_tasks = runtime.run();
+
 					let timeout = has_ready_tasks
 						.then_some(std::time::Duration::ZERO)
 						.or(Some(std::time::Duration::from_millis(6)));
+
 					runtime.poll_with(timeout);
 				}
 			});
@@ -99,6 +109,7 @@ pub fn build_single_threaded_async_runtime() -> compio::runtime::Runtime {
 }
 
 pub type DeferredTask = Box<dyn FnOnce(&compio::runtime::Runtime) + Send>;
+
 pub type DeferredTasks = Vec<DeferredTask>;
 
 pub fn build_deferred_tasks_queue() -> DeferredTasks {
@@ -125,15 +136,18 @@ pub fn setup_default_resource_and_asset_management(
 	#[cfg(not(debug_assertions))]
 	{
 		let _ = (application, generator);
+
 		return;
 	}
 
 	#[cfg(debug_assertions)]
 	{
 		let generator = std::sync::Arc::new(generator);
+
 		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
+
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
 		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> =
@@ -147,32 +161,50 @@ pub fn setup_default_resource_and_asset_management(
 				});
 
 		let mut material_asset_handler = BEMAAssetHandler::new();
+
 		material_asset_handler.set_shader_generator(generator.clone());
+
 		asset_manager.add_asset_handler(material_asset_handler);
 
 		let mut fbx_asset_handler = FBXAssetHandler::new();
+
 		fbx_asset_handler.set_shader_generator(generator.clone());
+
 		fbx_asset_handler.set_material_mip_generator(material_mip_generator.clone());
+
 		asset_manager.add_asset_handler(fbx_asset_handler);
 
 		let mut gltf_asset_handler = GLTFAssetHandler::new();
+
 		gltf_asset_handler.set_shader_generator(generator);
+
 		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
+
 		asset_manager.add_asset_handler(gltf_asset_handler);
+
 		register_default_image_asset_handlers(&mut asset_manager);
-		asset_manager.add_asset_handler(resource_management::asset::pipeline_asset_handler::PipelineAssetHandler);
+
+		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::pipeline::PipelineAssetHandler);
+
 		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
 			log::warn!(
 				"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
 			);
 			IBLGenerator::new()
 		});
+
 		asset_manager.add_asset_handler(EXRAssetHandler::new(ibl_generator));
+
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
+
 		asset_manager.add_asset_handler(WAVAssetHandler::new());
+
 		asset_manager.add_asset_handler(OGGAssetHandler::new());
+
 		let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
+
 		besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
+
 		asset_manager.add_asset_handler(besl_shader_asset_handler);
 
 		application.resource_manager.set_asset_manager(asset_manager);
@@ -181,8 +213,10 @@ pub fn setup_default_resource_and_asset_management(
 
 /// Registers source image formats loaded lazily by the default debug application.
 #[cfg(debug_assertions)]
+
 fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
+
 	asset_manager.add_asset_handler(IESAssetHandler::new());
 }
 
@@ -193,13 +227,19 @@ fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 /// window events and emits their resolved action values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let input_system = &mut application.input_system;
+
 	let mouse = register_mouse_device_class(input_system);
+
 	let keyboard = register_keyboard_device_class(input_system);
+
 	let gamepad = register_gamepad_device_class(input_system);
+
 	application.gamepad_device_class_handle = Some(gamepad);
 
 	input_system.create_device(&mouse);
+
 	input_system.create_device(&keyboard);
+
 	input_system.create_device(&gamepad);
 }
 
@@ -215,13 +255,17 @@ pub fn setup_default_audio(
 	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
 	let graphs_created_before_setup = application.world.audio_graph_factory_mut().drain_created_before_listener();
+
 	if !graphs_created_before_setup.is_empty() {
 		log::warn!(
 			"Audio graphs created before audio setup were ignored. The audio worker must be installed before graphs are created."
 		);
 	}
+
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
+
 	let mut deletions_listener = application.world.delete_channel().listener();
+
 	let (mut sample_loader_client, sample_loader) =
 		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());
 
@@ -243,6 +287,7 @@ pub fn setup_default_audio(
 				};
 
 				let span = debug_span!("Render audio");
+
 				let _entered = span.enter();
 
 				loop {
@@ -256,19 +301,24 @@ pub fn setup_default_audio(
 
 					while let Some(message) = audio_graphs_listener.read() {
 						let handle = *message.handle();
+
 						// A derived creation replaces the old generation before
 						// any completion can be adopted for the same handle.
 						audio_system.remove_audio_graph(handle);
+
 						sample_loader_client.queue(handle, message.into_data(), audio_system.audio_graph_count());
 					}
 
 					while let Some(message) = deletions_listener.read() {
 						let handle = message.into_handle();
+
 						sample_loader_client.remove(handle);
+
 						audio_system.remove_audio_graph(handle);
 					}
 
 					audio_system.flush_sample_lease_releases(|id| sample_loader_client.return_lease(id));
+
 					sample_loader_client.update(|handle, sample, render_plan| {
 						audio_system.create_audio_graph(handle, sample, render_plan);
 					});
@@ -292,19 +342,22 @@ impl<T, E: std::fmt::Display> LogResult for Result<T, E> {
 		if let Err(error) = &self {
 			log::warn!("{error}");
 		}
+
 		self
 	}
 }
 
 use std::num::{NonZero, NonZeroUsize};
 
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
+use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 #[cfg(debug_assertions)]
 use resource_management::asset::{
-	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
-	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-	ies_asset_handler::IESAssetHandler, lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler,
-	png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, FileStorageBackend,
+	handler::implementations::bema::BEMAAssetHandler, handler::implementations::besl::BESLShaderAssetHandler,
+	handler::implementations::exr::EXRAssetHandler, handler::implementations::fbx::FBXAssetHandler,
+	handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
+	handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
+	handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
+	FileStorageBackend,
 };
 #[cfg(debug_assertions)]
 use resource_management::{
@@ -331,11 +384,13 @@ use crate::{
 };
 
 #[cfg(all(test, debug_assertions))]
+
 mod tests {
+
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use resource_management::{
-		asset::{asset_manager::AssetManager, FileStorageBackend},
+		asset::{manager::AssetManager, FileStorageBackend},
 		resource::storage_backend::redb_storage_backend::RedbStorageBackend,
 	};
 
@@ -344,19 +399,25 @@ mod tests {
 	#[test]
 	fn default_image_handlers_support_ies_profiles() {
 		static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
 		let root = std::env::temp_dir().join(format!(
 			"byte-engine-default-image-handlers-{}-{}",
 			std::process::id(),
 			NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
 		));
+
 		let assets = root.join("assets");
+
 		let resources = root.join("resources");
+
 		let mut asset_manager = AssetManager::new(FileStorageBackend::new(assets), RedbStorageBackend::new(resources));
 
 		register_default_image_asset_handlers(&mut asset_manager);
 
 		assert!(asset_manager.supports("lights/profile.ies"));
+
 		drop(asset_manager);
+
 		std::fs::remove_dir_all(root).expect("the default image-handler test directory must be removable");
 	}
 }

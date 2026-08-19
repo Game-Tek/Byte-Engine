@@ -5,7 +5,7 @@ pub struct WAVAssetHandler {}
 
 impl WAVAssetHandler {
 	/// Parses a WAV buffer into audio metadata and a borrowed PCM payload.
-	fn decode_wav(data: &[u8]) -> Result<(Audio, &[u8]), String> {
+	fn decode_wav(data: &[u8]) -> Result<(AudioDescription, &[u8]), String> {
 		fn read_u16(bytes: &[u8], offset: usize, name: &str) -> Result<u16, String> {
 			let bytes = bytes
 				.get(offset..offset + 2)
@@ -106,11 +106,11 @@ impl WAVAssetHandler {
 						);
 					}
 
-					let bit_depth = bit_depth_from_bits_per_sample(bits_per_sample).ok_or_else(|| {
+					let bit_depth = wav_bit_depth(bits_per_sample).ok_or_else(|| {
 						"Unsupported bit depth. The WAV header likely reports an unsupported format.".to_string()
 					})?;
 
-					wav_format = Some((bit_depth, num_channels, sample_rate, bits_per_sample));
+					wav_format = Some((bit_depth, num_channels, sample_rate));
 				}
 				b"data" => pcm_data = Some(chunk),
 				_ => {}
@@ -119,22 +119,18 @@ impl WAVAssetHandler {
 			offset = chunk_end + (chunk_size % 2);
 		}
 
-		let (bit_depth, num_channels, sample_rate) = wav_format
-			.map(|(bit_depth, num_channels, sample_rate, _bits_per_sample)| (bit_depth, num_channels, sample_rate))
-			.ok_or_else(|| "Missing fmt chunk. The WAV file likely has no format description.".to_string())?;
+		let (bit_depth, num_channels, sample_rate) =
+			wav_format.ok_or_else(|| "Missing fmt chunk. The WAV file likely has no format description.".to_string())?;
 
 		let data = pcm_data.ok_or_else(|| "Missing data chunk. The WAV file likely has no PCM payload.".to_string())?;
 
-		let sample_count = sample_count_from_pcm_len(data.len(), num_channels, bit_depth);
-
-		let audio_resource = Audio {
+		let description = AudioDescription {
 			bit_depth,
 			channel_count: num_channels,
 			sample_rate,
-			sample_count,
 		};
 
-		Ok((audio_resource, data))
+		Ok((description, data))
 	}
 
 	pub fn new() -> WAVAssetHandler {
@@ -156,28 +152,22 @@ impl AssetHandler for WAVAssetHandler {
 
 		let (data, _, dt) = context.resolve(url).await?;
 
-		let allocator = context.allocator();
-
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (audio_resource, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+		let (description, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
-		let mut output = Vec::with_capacity_in(pcm_data.len(), allocator);
+		let (asset, data) = process_audio(url, description, |sink| sink.set_interleaved_pcm(pcm_data))?;
 
-		output.extend_from_slice(pcm_data);
-
-		let (asset, data) = process_audio_in(url, audio_resource, output.into_boxed_slice())?;
-
-		context.store_primary(asset, &data)
+		context.store_primary(asset, data.as_ref())
 	}
 }
 
 #[cfg(test)]
 
 mod tests {
-
+	use super::wav_bit_depth;
 	use crate::{
 		asset::{self, handler::implementations::wav::WAVAssetHandler, manager::AssetManager, ResourceId},
 		r#async, resource,
@@ -257,6 +247,15 @@ mod tests {
 	}
 
 	#[test]
+	fn wav_bit_depth_maps_supported_integer_pcm_widths() {
+		assert_eq!(wav_bit_depth(8), Some(BitDepths::Eight));
+		assert_eq!(wav_bit_depth(16), Some(BitDepths::Sixteen));
+		assert_eq!(wav_bit_depth(24), Some(BitDepths::TwentyFour));
+		assert_eq!(wav_bit_depth(32), Some(BitDepths::ThirtyTwo));
+		assert_eq!(wav_bit_depth(12), None);
+	}
+
+	#[test]
 	fn decode_wav_skips_extra_metadata_chunks() {
 		let pcm = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -272,7 +271,6 @@ mod tests {
 		assert_eq!(audio.bit_depth, BitDepths::Sixteen);
 		assert_eq!(audio.channel_count, 2);
 		assert_eq!(audio.sample_rate, 44_100);
-		assert_eq!(audio.sample_count, 2);
 		assert_eq!(data, pcm);
 	}
 
@@ -299,7 +297,6 @@ mod tests {
 		let (audio, data) = WAVAssetHandler::decode_wav(&wav).expect("WAV should decode");
 
 		assert_eq!(audio.bit_depth, BitDepths::Sixteen);
-		assert_eq!(audio.sample_count, 1);
 		assert_eq!(data, pcm);
 	}
 
@@ -347,5 +344,18 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
-use crate::asset::audio_utils::{bit_depth_from_bits_per_sample, sample_count_from_pcm_len};
-use crate::{processors::processor::implementations::audio::process_audio_in, resources::audio::Audio};
+use crate::{
+	processors::processor::implementations::audio::{process_audio, AudioDescription},
+	types::BitDepths,
+};
+
+/// Converts a WAV bits-per-sample value into the corresponding PCM bit depth.
+fn wav_bit_depth(bits_per_sample: u16) -> Option<BitDepths> {
+	match bits_per_sample {
+		8 => Some(BitDepths::Eight),
+		16 => Some(BitDepths::Sixteen),
+		24 => Some(BitDepths::TwentyFour),
+		32 => Some(BitDepths::ThirtyTwo),
+		_ => None,
+	}
+}

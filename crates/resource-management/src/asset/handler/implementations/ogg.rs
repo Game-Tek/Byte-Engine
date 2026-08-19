@@ -4,46 +4,31 @@ pub struct OGGAssetHandler {
 }
 
 impl OGGAssetHandler {
-	/// Decodes an OGG Vorbis buffer into audio metadata and allocator-backed PCM data.
+	/// Decodes an OGG Vorbis buffer through the common audio processor.
 	fn decode_ogg<'a>(
-		data: &[u8],
+		id: ResourceId<'_>,
+		data: &'a [u8],
 		bit_depth: BitDepths,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(Audio, Box<[u8], &'a dyn std::alloc::Allocator>), String> {
+	) -> Result<(ProcessedAsset, Cow<'a, [u8]>), LoadErrors> {
 		use std::io::Cursor;
 
-		let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data))
-			.map_err(|_| "Failed to decode OGG data. The file is likely corrupt or not Vorbis encoded.".to_string())?;
+		let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data)).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let sample_rate = decoder.sampling_frequency().get();
 
-		let channel_count = decoder.channels().get();
-
-		let bytes_per_sample = bytes_per_sample(bit_depth);
-
-		let mut data = Vec::with_capacity_in(channel_count as usize * sample_rate as usize * bytes_per_sample, allocator);
-
-		while let Some(block) = decoder
-			.decode_audio_block()
-			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
-		{
-			let samples = block.samples();
-
-			append_interleaved_pcm(&mut data, samples, bit_depth)?;
-		}
-
-		let sample_count = sample_count_from_pcm_len(data.len(), channel_count as u16, bit_depth);
-
-		let channel_count = channel_count as u16;
-
-		let audio_resource = Audio {
+		let description = AudioDescription {
 			bit_depth,
-			channel_count,
+			channel_count: u16::from(decoder.channels().get()),
 			sample_rate,
-			sample_count,
 		};
 
-		Ok((audio_resource, data.into_boxed_slice()))
+		process_audio(id, description, |sink| {
+			while let Some(block) = decoder.decode_audio_block().map_err(|_| LoadErrors::FailedToProcess)? {
+				sink.append_planar_f32(block.samples())?;
+			}
+
+			Ok(())
+		})
 	}
 
 	pub fn new() -> OGGAssetHandler {
@@ -72,44 +57,16 @@ impl AssetHandler for OGGAssetHandler {
 
 		let (data, _, dt) = context.resolve(url).await?;
 
-		let allocator = context.allocator();
-
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		// The source bytes borrow the bake allocator, so decoding stays in this task.
-		let (audio_resource, data) =
-			Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		// The decoder lends each planar block until the next decode call, so the
+		// common sink consumes every block before requesting the next one.
+		let (asset, data) = Self::decode_ogg(url, &data, self.bit_depth)?;
 
-		let (asset, data) = process_audio_in(url, audio_resource, data)?;
-
-		context.store_primary(asset, &data)
+		context.store_primary(asset, data.as_ref())
 	}
-}
-
-/// Appends a planar decoder block in the interleaved frame order expected by
-/// the runtime audio resource contract.
-fn append_interleaved_pcm<A: std::alloc::Allocator>(
-	data: &mut Vec<u8, A>,
-	channels: &[&[f32]],
-	bit_depth: BitDepths,
-) -> Result<(), String> {
-	let Some(frame_count) = channels.first().map(|channel| channel.len()) else {
-		return Ok(());
-	};
-
-	if channels.iter().any(|channel| channel.len() != frame_count) {
-		return Err("Invalid OGG channel block. The decoder returned channels with different frame counts.".to_string());
-	}
-
-	for frame in 0..frame_count {
-		for channel in channels {
-			push_pcm_sample(data, channel[frame], bit_depth);
-		}
-	}
-
-	Ok(())
 }
 
 impl Default for OGGAssetHandler {
@@ -120,9 +77,6 @@ impl Default for OGGAssetHandler {
 
 #[cfg(test)]
 mod tests {
-	use std::alloc::Global;
-
-	use super::append_interleaved_pcm;
 	use crate::{
 		asset::{self, handler::implementations::ogg::OGGAssetHandler, manager::AssetManager, ResourceId},
 		r#async, resource,
@@ -181,8 +135,9 @@ mod tests {
 			(BitDepths::TwentyFour, 3),
 			(BitDepths::ThirtyTwo, 4),
 		] {
-			let (audio, data) =
-				OGGAssetHandler::decode_ogg(&ogg, bit_depth, &std::alloc::Global).expect("Generated OGG should decode");
+			let (asset, data) = OGGAssetHandler::decode_ogg(ResourceId::new("generated.ogg"), &ogg, bit_depth)
+				.expect("Generated OGG should decode");
+			let audio: Audio = crate::from_slice(&asset.resource).unwrap();
 
 			assert_eq!(audio.bit_depth, bit_depth);
 			assert_eq!(audio.channel_count, 1);
@@ -190,24 +145,6 @@ mod tests {
 			assert_eq!(audio.sample_count, 1024);
 			assert_eq!(data.len(), 1024 * bytes_per_sample);
 		}
-	}
-
-	#[test]
-	fn planar_decoder_channels_are_written_as_interleaved_pcm_frames() {
-		let left = [-1.0, 0.0, 1.0];
-
-		let right = [0.5, 0.0, -0.5];
-
-		let mut bytes = Vec::new_in(Global);
-
-		append_interleaved_pcm(&mut bytes, &[&left, &right], BitDepths::Sixteen).unwrap();
-
-		let samples: Vec<i16> = bytes
-			.chunks_exact(2)
-			.map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
-			.collect();
-
-		assert_eq!(samples, [-32_767, 16_384, 0, 0, 32_767, -16_384]);
 	}
 
 	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.
@@ -234,9 +171,14 @@ mod tests {
 	}
 }
 
+use std::borrow::Cow;
+
 use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
-use crate::asset::audio_utils::{bytes_per_sample, push_pcm_sample, sample_count_from_pcm_len};
-use crate::{processors::processor::implementations::audio::process_audio_in, resources::audio::Audio, types::BitDepths};
+use crate::{
+	processors::processor::implementations::audio::{process_audio, AudioDescription},
+	types::BitDepths,
+	ProcessedAsset,
+};

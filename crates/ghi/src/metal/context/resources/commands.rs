@@ -17,13 +17,14 @@ impl Context {
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::super::CommandBufferRecording<'a> {
-		self.create_command_buffer_recording_with_frame_key(command_buffer_handle, None)
+		self.create_command_buffer_recording_with_frame_key_in(command_buffer_handle, None, &std::alloc::Global)
 	}
 
-	pub(crate) fn create_command_buffer_recording_with_frame_key<'a>(
+	pub(crate) fn create_command_buffer_recording_with_frame_key_in<'a>(
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> super::super::CommandBufferRecording<'a> {
 		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
@@ -63,8 +64,9 @@ impl Context {
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
-			SmallVec::new(),
+			Vec::new_in(allocator),
 			autorelease_pool,
+			allocator,
 		)
 	}
 }

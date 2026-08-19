@@ -1,6 +1,6 @@
 use super::*;
 
-impl PushUploadArena {
+impl PushUploadArena<'_> {
 	/// Copies one push-constant state into a unique aligned range and returns its GPU address.
 	fn upload(
 		&mut self,
@@ -112,13 +112,15 @@ impl<'a> CommandBufferRecording<'a> {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: queue::NativeCommand,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
-		drawables: SmallVec<
-			[(
+		drawables: Vec<
+			(
 				graphics_hardware_interface::SwapchainHandle,
 				Retained<ProtocolObject<dyn CAMetalDrawable>>,
-			); 4],
+			),
+			&'a dyn std::alloc::Allocator,
 		>,
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let mut resource_tracker = std::mem::take(commit.resource_tracker);
@@ -135,7 +137,7 @@ impl<'a> CommandBufferRecording<'a> {
 			sequence_index,
 			command_buffer,
 			#[cfg(debug_assertions)]
-			debug_regions: SmallVec::new(),
+			debug_regions: Vec::new_in(allocator),
 			#[cfg(debug_assertions)]
 			compute_debug_region_depth: 0,
 			#[cfg(debug_assertions)]
@@ -152,7 +154,7 @@ impl<'a> CommandBufferRecording<'a> {
 			render_vertex_buffers_dirty: false,
 			encoded_vertex_buffer_count: 0,
 			bound_index_buffer: None,
-			push_constant_data: SmallVec::new(),
+			push_constant_data: Vec::new_in(allocator),
 			compute_push_constants_dirty: false,
 			render_push_constants_dirty: false,
 			active_compute_encoder: None,
@@ -161,7 +163,7 @@ impl<'a> CommandBufferRecording<'a> {
 			next_encoder_id: 0,
 			resource_tracker,
 			argument_tables: CommandArgumentTables::default(),
-			push_upload_arena: PushUploadArena::default(),
+			push_upload_arena: PushUploadArena::new_in(allocator),
 			encoded_compute_pipeline: None,
 			encoded_render_pipeline: None,
 			applied_compute_descriptor_binding: None,

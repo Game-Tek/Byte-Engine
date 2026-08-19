@@ -276,9 +276,16 @@ pub(super) struct PushUploadPage {
 }
 
 /// The `PushUploadArena` struct provides aligned, non-overlapping push-constant ranges for one command recording.
-#[derive(Default)]
-pub(super) struct PushUploadArena {
-	pages: SmallVec<[PushUploadPage; 2]>,
+pub(super) struct PushUploadArena<'a> {
+	pages: Vec<PushUploadPage, &'a dyn std::alloc::Allocator>,
+}
+
+impl<'a> PushUploadArena<'a> {
+	fn new_in(allocator: &'a dyn std::alloc::Allocator) -> Self {
+		Self {
+			pages: Vec::new_in(allocator),
+		}
+	}
 }
 
 /// Returns the next aligned upload offset when the requested range fits in the current page.
@@ -287,7 +294,7 @@ fn push_upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usi
 	(aligned.checked_add(size)? <= capacity).then_some(aligned)
 }
 
-// TODO: use frame allocator for this
+/// The `CommandBufferRecording` struct scopes Metal command encoding and its temporary host allocations.
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
 	commit: RecordingCommit<'a>,
@@ -296,7 +303,7 @@ pub struct CommandBufferRecording<'a> {
 	sequence_index: u8,
 	command_buffer: queue::NativeCommand,
 	#[cfg(debug_assertions)]
-	debug_regions: SmallVec<[Retained<NSString>; 8]>,
+	debug_regions: Vec<Retained<NSString>, &'a dyn std::alloc::Allocator>,
 	#[cfg(debug_assertions)]
 	compute_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
@@ -312,7 +319,7 @@ pub struct CommandBufferRecording<'a> {
 	render_vertex_buffers_dirty: bool,
 	encoded_vertex_buffer_count: usize,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
-	push_constant_data: SmallVec<[u8; 128]>,
+	push_constant_data: Vec<u8, &'a dyn std::alloc::Allocator>,
 	compute_push_constants_dirty: bool,
 	render_push_constants_dirty: bool,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
@@ -321,17 +328,18 @@ pub struct CommandBufferRecording<'a> {
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,
 	argument_tables: CommandArgumentTables,
-	push_upload_arena: PushUploadArena,
+	push_upload_arena: PushUploadArena<'a>,
 	encoded_compute_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	encoded_render_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,
 	applied_render_descriptor_binding: Option<AppliedDescriptorBinding>,
 	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
-	drawables: SmallVec<
-		[(
+	drawables: Vec<
+		(
 			graphics_hardware_interface::SwapchainHandle,
 			Retained<ProtocolObject<dyn CAMetalDrawable>>,
-		); 4],
+		),
+		&'a dyn std::alloc::Allocator,
 	>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }

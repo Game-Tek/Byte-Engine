@@ -18,6 +18,7 @@ pub struct Frame<'a> {
 	queue_handle: graphics_hardware_interface::QueueHandle,
 	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>), &'a dyn std::alloc::Allocator>,
 	device: &'a mut context::Context,
+	allocator: &'a dyn std::alloc::Allocator,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
 
@@ -47,6 +48,7 @@ impl<'a> Frame<'a> {
 			queue_handle,
 			drawables: Vec::new_in(allocator),
 			device,
+			allocator,
 			_autorelease_pool: pool,
 		}
 	}
@@ -159,14 +161,17 @@ impl Frame<'_> {
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::CommandBufferRecording<'a> {
-		let drawables = self
-			.drawables
-			.iter()
-			.map(|(swapchain, drawable)| (*swapchain, drawable.clone()))
-			.collect::<SmallVec<[_; 4]>>();
-		let mut recording = self
-			.device
-			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key));
+		let mut drawables = Vec::with_capacity_in(self.drawables.len(), self.allocator);
+		drawables.extend(
+			self.drawables
+				.iter()
+				.map(|(swapchain, drawable)| (*swapchain, drawable.clone())),
+		);
+		let mut recording = self.device.create_command_buffer_recording_with_frame_key_in(
+			command_buffer_handle,
+			Some(self.frame_key),
+			self.allocator,
+		);
 		recording.attach_drawables(drawables.into_iter());
 		recording
 	}
@@ -432,8 +437,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		self.device
-			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key))
+		Frame::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn acquire_swapchain_image(

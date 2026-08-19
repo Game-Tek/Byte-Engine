@@ -24,8 +24,8 @@ mod tests {
 		decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path, finite_material_component,
 		finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton, import_fbx_skin_binding,
 		load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin,
-		select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, MaterialKey,
-		ResolvedFbxMaterials,
+		select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError,
+		FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
 	};
 	use crate::{
 		asset::{
@@ -33,10 +33,7 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
 		},
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
-		processors::processor::implementations::mesh::{
-			MeshAttributeData, MeshIndexData, MeshPrimitiveSource, MeshProcessor, MeshSource, OwnedMeshSource,
-			TriangleFrontFaceWinding,
-		},
+		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh, TriangleFrontFaceWinding},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
@@ -93,7 +90,7 @@ mod tests {
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		source_to_skeleton: &[u32],
 		allocator: &'a dyn Allocator,
-	) -> Result<OwnedMeshSource<&'a dyn Allocator>, FbxImportError> {
+	) -> Result<ProcessedMesh, FbxMeshProcessingError> {
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 
 		import_fbx_meshes(
@@ -101,6 +98,7 @@ mod tests {
 			materials,
 			skeleton,
 			source_to_skeleton,
+			MeshProcessor::new(),
 			allocator,
 			&mut culled_polygons,
 		)
@@ -167,9 +165,7 @@ mod tests {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
 
-		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
-
-		let processed = MeshProcessor::new().process(&source).expect("fixture mesh should process");
+		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
 
 		assert!(processed.mesh.skeleton.is_none());
 		assert!(processed.mesh.skins.is_empty());
@@ -207,15 +203,9 @@ mod tests {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
 
-		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
-
-		let primitive = source.primitive(0).expect("fixture should contain one primitive");
-
-		let Some(MeshAttributeData::F32x2(uvs)) = primitive.attribute(VertexSemantics::UV, 0) else {
-			panic!("FBX fixture should contain f32 UV data");
-		};
-
-		assert_eq!(uvs, &[[0.0, 1.0], [1.0, 0.75], [0.25, 0.0]]);
+		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
+		let uvs = primitive_f32_values::<2>(&processed, 0, VertexSemantics::UV);
+		assert_eq!(uvs, [[0.0, 1.0], [1.0, 0.75], [0.25, 0.0]]);
 	}
 
 	#[test]
@@ -226,21 +216,20 @@ mod tests {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
 
-		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global)
+		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global)
 			.expect("degenerate polygons should be discarded without rejecting valid geometry");
-
-		let primitive = source.primitive(0).expect("valid triangle should remain");
-
-		let Some(MeshAttributeData::F32x3(positions)) = primitive.attribute(VertexSemantics::Position, 0) else {
-			panic!("FBX fixture should contain f32 position data");
-		};
-
-		let Some(MeshIndexData::U32(indices)) = primitive.indices(IndexStreamTypes::Triangles) else {
-			panic!("FBX fixture should contain triangle indices");
-		};
-
-		assert_eq!(positions.len(), 3);
-		assert_eq!(indices.len(), 3);
+		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
+		assert_eq!(
+			processed.mesh.primitives[0]
+				.streams
+				.iter()
+				.find(|stream| {
+					stream.stream_type == crate::types::Streams::Indices(crate::types::IndexStreamTypes::Triangles)
+				})
+				.expect("triangle stream should exist")
+				.size,
+			6
+		);
 	}
 
 	#[test]
@@ -361,7 +350,9 @@ mod tests {
 				&imported_skeleton.source_to_skeleton,
 				&Global,
 			),
-			Err(FbxImportError::NonInvertibleAnimatedMeshTransform)
+			Err(FbxMeshProcessingError::Import(
+				FbxImportError::NonInvertibleAnimatedMeshTransform
+			))
 		));
 	}
 
@@ -452,7 +443,7 @@ mod tests {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
 
-		let source = import_test_fbx_meshes(
+		let processed = import_test_fbx_meshes(
 			&scene,
 			&materials,
 			Some(skeleton.clone()),
@@ -460,10 +451,6 @@ mod tests {
 			&Global,
 		)
 		.expect("skinned fixture mesh should import");
-
-		let processed = MeshProcessor::new()
-			.process(&source)
-			.expect("skinned fixture mesh should process");
 
 		assert_eq!(processed.mesh.skeleton.as_ref().map(|value| value.id()), Some(skeleton.id()));
 		assert_eq!(processed.mesh.skins.len(), 1);
@@ -676,11 +663,8 @@ mod tests {
 
 		let materials = fixture_materials(&scene);
 
-		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("material-part mesh should import");
-
-		let processed = MeshProcessor::new()
-			.process(&source)
-			.expect("material-part mesh should process");
+		let processed =
+			import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("material-part mesh should import");
 
 		let material_ids = processed
 			.mesh
@@ -1063,26 +1047,70 @@ mod tests {
 
 	/// Computes the first triangle's signed XY area after applying MeshProcessor's clockwise index convention.
 	fn first_clockwise_triangle_area(scene: &ufbx::Scene) -> f32 {
-		let source =
+		let processed =
 			import_test_fbx_meshes(scene, &fixture_materials(scene), None, &[], &Global).expect("fixture mesh should import");
-
-		let primitive = source.primitive(0).expect("fixture should contain a primitive");
-
-		let Some(MeshAttributeData::F32x3(positions)) = primitive.attribute(VertexSemantics::Position, 0) else {
-			panic!("FBX fixture should contain f32 position data");
-		};
-
-		let Some(MeshIndexData::U32(indices)) = primitive.indices(IndexStreamTypes::Triangles) else {
-			panic!("FBX fixture should contain triangle indices");
-		};
-
+		let positions = primitive_f32_values::<3>(&processed, 0, VertexSemantics::Position);
+		let indices = primitive_triangle_indices(&processed, 0);
 		let first = positions[indices[0] as usize];
-
-		let second = positions[indices[2] as usize];
-
-		let third = positions[indices[1] as usize];
+		let second = positions[indices[1] as usize];
+		let third = positions[indices[2] as usize];
 
 		(second[0] - first[0]) * (third[1] - first[1]) - (second[1] - first[1]) * (third[0] - first[0])
+	}
+
+	/// Decodes one primitive's packed floating-point stream from the processed aggregate buffer.
+	fn primitive_f32_values<const N: usize>(
+		processed: &ProcessedMesh,
+		primitive_index: usize,
+		semantic: VertexSemantics,
+	) -> Vec<[f32; N]> {
+		let stream_type = crate::types::Streams::Vertices(semantic);
+		let aggregate = processed
+			.mesh
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("aggregate vertex stream should exist");
+		let primitive = processed.mesh.primitives[primitive_index]
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("primitive vertex stream should exist");
+		let begin = aggregate.offset + primitive.offset;
+		processed.buffer[begin..begin + primitive.size]
+			.chunks_exact(N * 4)
+			.map(|bytes| {
+				std::array::from_fn(|component| {
+					let offset = component * 4;
+					f32::from_le_bytes(
+						bytes[offset..offset + 4]
+							.try_into()
+							.expect("component should contain four bytes"),
+					)
+				})
+			})
+			.collect()
+	}
+
+	/// Decodes one primitive's optimized u16 triangle stream from the processed aggregate buffer.
+	fn primitive_triangle_indices(processed: &ProcessedMesh, primitive_index: usize) -> Vec<u16> {
+		let stream_type = crate::types::Streams::Indices(crate::types::IndexStreamTypes::Triangles);
+		let aggregate = processed
+			.mesh
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("aggregate triangle stream should exist");
+		let primitive = processed.mesh.primitives[primitive_index]
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == stream_type)
+			.expect("primitive triangle stream should exist");
+		let begin = aggregate.offset + primitive.offset;
+		processed.buffer[begin..begin + primitive.size]
+			.chunks_exact(2)
+			.map(|bytes| u16::from_le_bytes(bytes.try_into().expect("index should contain two bytes")))
+			.collect()
 	}
 
 	/// Extracts the constant metallic-roughness values produced by the focused material fixtures.
@@ -1193,8 +1221,8 @@ use crate::{
 			gamma_from_semantic, process_image_with_mip_backend_in, ImageDescription, Semantic,
 		},
 		processor::implementations::mesh::{
-			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
-			TriangleFrontFaceWinding,
+			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
+			ProcessedMesh, TriangleFrontFaceWinding, VertexSkin,
 		},
 	},
 	r#async::spawn_cpu_task,

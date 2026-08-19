@@ -318,15 +318,7 @@ impl AssetHandler for GLTFAssetHandler {
 		let flat_mesh_tree = {
 			primitives_and_transform
 				.iter()
-				.map(|(primitive, transform, transform_node, skin)| {
-					(
-						primitive,
-						primitive.reader(|buffer| Some(&buffers[buffer.index()])),
-						*transform,
-						*transform_node,
-						*skin,
-					)
-				})
+				.map(|(primitive, transform, transform_node, skin)| (primitive, *transform, *transform_node, *skin))
 		};
 
 		let skeleton = if !retain_skeleton {
@@ -357,178 +349,55 @@ impl AssetHandler for GLTFAssetHandler {
 			resolved_materials.push(material);
 		}
 
-		let primitives = flat_mesh_tree
-			.zip(material_indices_per_primitive)
-			.map(|((primitive, reader, transform, transform_node, skin), material_index)| {
-				validate_gltf_flattened_animation_transform(transform, transform_node).map_err(|error| {
-					log::error!("Failed to import glTF animated mesh transform '{}': {error}", url.as_ref());
+		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
+		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
 
-					LoadErrors::FailedToProcess
-				})?;
+		let mut mesh_processor = MeshProcessor::new()
+			.with_triangle_front_face_winding(self.triangle_front_face_winding)
+			.begin(vertex_layout, skeleton, skin_bindings)
+			.map_err(|error| {
+				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
 
-				validate_gltf_skin_attribute_sets(primitive, skin.is_some()).map_err(|error| {
-					log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
+		for ((primitive, transform, transform_node, skin), material_index) in flat_mesh_tree.zip(material_indices_per_primitive)
+		{
+			validate_gltf_flattened_animation_transform(transform, transform_node).map_err(|error| {
+				log::error!("Failed to import glTF animated mesh transform '{}': {error}", url.as_ref());
 
-					LoadErrors::FailedToProcess
-				})?;
+				LoadErrors::FailedToProcess
+			})?;
 
-				let material = resolved_materials[material_index].clone();
+			validate_gltf_skin_attribute_sets(primitive, skin.is_some()).map_err(|error| {
+				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
 
-				let triangle_indices =
-					reader
-						.read_indices()
-						.ok_or_else(|| {
-							log::error!("glTF primitive has no triangle indices. The most likely cause is an unindexed source primitive.");
+				LoadErrors::FailedToProcess
+			})?;
 
-							LoadErrors::FailedToProcess
-						})?
-						.into_u32()
-						.collect::<Vec<u32>>();
-
-				let positions = reader
-					.read_positions()
-					.ok_or_else(|| {
-						log::error!("glTF primitive has no positions. The most likely cause is a missing or malformed POSITION accessor.");
-
-						LoadErrors::FailedToProcess
-					})?
-					.map(|position| {
-						let position = maths_rs::Vec3f::new(position[0], position[1], position[2]);
-
-						let transformed = transform * position;
-
-						[transformed[0], transformed[1], transformed[2]]
-					})
-					.collect::<Vec<_>>();
-
-				let vertex_count = positions.len();
-
-				let bounds = bounding_box_from_positions(&positions).ok_or_else(|| {
-					log::error!(
-						"glTF primitive bounds are invalid. The most likely cause is empty or non-finite position data."
-					);
-
-					LoadErrors::FailedToProcess
-				})?;
-
-				let mut primitive = OwnedMeshPrimitive::new(material, bounds, triangle_indices);
-
-				primitive.set_transform_node(transform_node);
-
-				primitive.set_skin(skin);
-
-				primitive.add_attribute(OwnedMeshAttribute::new(
-					VertexSemantics::Position,
-					0,
-					OwnedMeshAttributeData::F32x3(positions),
-				));
-
-				if has_vertex_component(&vertex_layout, VertexSemantics::Normal, 0) {
-					let normals = reader.read_normals().ok_or(LoadErrors::FailedToProcess)?;
-
-					let normal_transform = gltf_normal_transform(transform).map_err(|error| {
-						log::error!("Failed to import glTF vertex normals '{}': {error}", url.as_ref());
-
-						LoadErrors::FailedToProcess
-					})?;
-
-					let normals = normals
-						.map(|normal| transform_gltf_unit_direction(&normal_transform, normal))
-						.collect::<Result<Vec<_>, _>>()
-						.map_err(|error| {
-							log::error!("Failed to import glTF vertex normals '{}': {error}", url.as_ref());
-
-							LoadErrors::FailedToProcess
-						})?;
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::Normal,
-						0,
-						OwnedMeshAttributeData::F32x3(normals),
-					));
+			let source = GltfPrimitiveSource::new(
+				primitive,
+				&buffers,
+				&resolved_materials[material_index],
+				transform,
+				transform_node,
+				skin,
+				skin.map(|skin| skin_joint_counts[skin as usize]),
+				primitive_attributes,
+			);
+			mesh_processor.push_primitive(&source).map_err(|error| {
+				match error {
+					MeshPrimitiveProcessingError::Source(error) => {
+						log::error!("Failed to import glTF mesh '{}': {error}", url.as_ref());
+					}
+					MeshPrimitiveProcessingError::Processing(error) => {
+						log::error!("Failed to process glTF mesh '{}': {error}", url.as_ref());
+					}
 				}
-
-				if has_vertex_component(&vertex_layout, VertexSemantics::Tangent, 0) {
-					let tangents = reader.read_tangents().ok_or(LoadErrors::FailedToProcess)?;
-
-					let orientation = gltf_transform_orientation(transform).map_err(|error| {
-						log::error!("Failed to import glTF vertex tangents '{}': {error}", url.as_ref());
-
-						LoadErrors::FailedToProcess
-					})?;
-
-					let tangents = tangents
-						.map(|tangent| transform_gltf_tangent(&transform, orientation, tangent))
-						.collect::<Result<Vec<_>, _>>()
-						.map_err(|error| {
-							log::error!("Failed to import glTF vertex tangents '{}': {error}", url.as_ref());
-
-							LoadErrors::FailedToProcess
-						})?;
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::Tangent,
-						0,
-						OwnedMeshAttributeData::F32x4(tangents),
-					));
-				}
-
-				if has_vertex_component(&vertex_layout, VertexSemantics::Color, 0) {
-					let colors = reader.read_colors(0).ok_or(LoadErrors::FailedToProcess)?;
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::Color,
-						0,
-						OwnedMeshAttributeData::F32x4(colors.into_rgba_f32().collect()),
-					));
-				}
-
-				if has_vertex_component(&vertex_layout, VertexSemantics::UV, 0) {
-					let uvs = reader.read_tex_coords(0).ok_or(LoadErrors::FailedToProcess)?;
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::UV,
-						0,
-						OwnedMeshAttributeData::F32x2(uvs.into_f32().collect()),
-					));
-				}
-
-				if let Some(skin) = skin {
-					let joint_count = skin_bindings[skin as usize].len();
-
-					let (joints, weights) = import_gltf_vertex_skin(&reader, vertex_count, joint_count).map_err(|error| {
-						log::error!("Failed to import glTF vertex skin '{}': {error}", url.as_ref());
-
-						LoadErrors::FailedToProcess
-					})?;
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::Joints,
-						0,
-						OwnedMeshAttributeData::U16x4(joints),
-					));
-
-					primitive.add_attribute(OwnedMeshAttribute::new(
-						VertexSemantics::Weights,
-						0,
-						OwnedMeshAttributeData::F32x4(weights),
-					));
-				}
-
-				Ok::<_, LoadErrors>(primitive)
-			})
-			.collect::<Result<Vec<_>, _>>()?;
-
-		let mut mesh_source = OwnedMeshSource::new(vertex_layout, primitives).with_skins(skin_bindings);
-
-		if let Some(skeleton) = skeleton {
-			mesh_source = mesh_source.with_skeleton(skeleton);
+				LoadErrors::FailedToProcess
+			})?;
 		}
 
-		let mesh = MeshProcessor::new()
-			.with_triangle_front_face_winding(self.triangle_front_face_winding)
-			.process_owned(mesh_source)
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let mesh = mesh_processor.finish();
 
 		context.store_primary(
 			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),

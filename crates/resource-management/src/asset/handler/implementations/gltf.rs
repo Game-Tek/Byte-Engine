@@ -1224,9 +1224,7 @@ use crate::{
 		processor::implementations::image::{
 			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, Semantic,
 		},
-		processor::implementations::mesh::{
-			MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
-		},
+		processor::implementations::mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, VertexSkin},
 	},
 	r#async::spawn_cpu_task,
 	resource,

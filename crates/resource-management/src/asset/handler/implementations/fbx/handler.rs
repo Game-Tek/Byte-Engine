@@ -211,34 +211,22 @@ impl AssetHandler for FBXAssetHandler {
 
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 
-		let source = import_fbx_meshes(
+		let mesh = import_fbx_meshes(
 			&scene,
 			&materials,
 			skeleton,
 			&source_to_skeleton,
+			MeshProcessor::new().with_triangle_front_face_winding(self.triangle_front_face_winding),
 			allocator,
 			&mut culled_polygons,
 		);
 
 		culled_polygons.trace(context);
 
-		let source = source.map_err(|error| {
-			context.error(format_args!("Failed to import FBX mesh '{}': {error}", url.as_ref()));
-
+		let mesh = mesh.map_err(|error| {
+			context.error(format_args!("Failed to process FBX mesh '{}': {error}", url.as_ref()));
 			LoadErrors::FailedToProcess
 		})?;
-
-		let mesh = MeshProcessor::new()
-			.with_triangle_front_face_winding(self.triangle_front_face_winding)
-			.process_owned(source)
-			.map_err(|error| {
-				context.error(format_args!(
-					"Failed to process FBX mesh '{}'. The most likely cause is unsupported or malformed mesh data: {error}",
-					url.as_ref()
-				));
-
-				LoadErrors::FailedToProcess
-			})?;
 
 		context.store_primary(
 			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),

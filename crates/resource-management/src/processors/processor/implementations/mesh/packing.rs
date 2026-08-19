@@ -1,4 +1,4 @@
-/// The `MeshProcessor` struct packs normalized mesh data into the resource-management mesh stream format.
+/// The `MeshProcessor` struct configures the common mesh-processing pipeline used after format-specific import.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeshProcessor {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
@@ -22,209 +22,300 @@ impl MeshProcessor {
 		self
 	}
 
-	/// Packs source primitives and retains validated skeletal metadata alongside their vertex streams.
-	pub fn process<T: MeshSource>(&self, source: &T) -> Result<ProcessedMesh, MeshProcessingError> {
-		validate_vertex_layout(source.vertex_layout())?;
-		validate_skin_source(source)?;
-		self.process_validated(source, source.skeleton().cloned(), source.skins().to_vec())
-	}
-
-	/// Consumes processor-owned source data so large skeleton and skin metadata can move into the result without cloning.
-	pub fn process_owned<A: Allocator>(&self, mut source: OwnedMeshSource<A>) -> Result<ProcessedMesh, MeshProcessingError> {
-		validate_vertex_layout(source.vertex_layout())?;
-		validate_skin_source(&source)?;
-		let skeleton = source.skeleton.take();
-		let skins = std::mem::take(&mut source.skins);
-		self.process_validated(&source, skeleton, skins)
-	}
-
-	/// Packs a validated source while moving or cloning metadata according to the caller's ownership model.
-	fn process_validated<T: MeshSource>(
-		&self,
-		source: &T,
+	/// Starts a short-lived processing session that borrows one source primitive at a time.
+	///
+	/// Call [`MeshProcessorSession::push_primitive`] for each imported primitive, then call
+	/// [`MeshProcessorSession::finish`] to produce the stored mesh and stream payload.
+	pub fn begin(
+		self,
+		vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
-	) -> Result<ProcessedMesh, MeshProcessingError> {
-		let active_vertex_layout = active_vertex_layout(source);
-		let vertex_streams = ordered_vertex_streams(&active_vertex_layout);
-		let stream_order = make_stream_order(&vertex_streams);
-		let mut packed_blocks = stream_order
+	) -> Result<MeshProcessorSession, MeshProcessingError> {
+		validate_vertex_layout(&vertex_layout)?;
+		let skeleton_nodes = skeleton_node_count(skeleton.as_ref())?;
+		for (skin_index, skin) in skins.iter().enumerate() {
+			validate_skin_binding(skin_index, skin, skeleton_nodes)?;
+		}
+
+		let mut stream_order = vertex_layout
 			.iter()
-			.map(|stream_type| PackedStreamBlock::new(*stream_type))
+			.map(|component| Streams::Vertices(component.semantic))
 			.collect::<Vec<_>>();
-		let mut primitives = Vec::with_capacity(source.primitive_count());
+		stream_order.sort_by_key(|stream| match stream {
+			Streams::Vertices(semantic) => vertex_semantic_order(*semantic),
+			_ => usize::MAX,
+		});
+		stream_order.extend([
+			Streams::Indices(IndexStreamTypes::Vertices),
+			Streams::Indices(IndexStreamTypes::Triangles),
+			Streams::Indices(IndexStreamTypes::Meshlets),
+			Streams::Meshlets,
+		]);
 
-		for primitive in source.primitives() {
-			let packed_primitive = self.pack_primitive(primitive, &vertex_streams, &mut packed_blocks)?;
-			primitives.push(packed_primitive);
-		}
-
-		let mut next_offset = 0usize;
-		let mut mesh_streams = Vec::with_capacity(packed_blocks.len());
-		let mut stream_descriptions = Vec::with_capacity(packed_blocks.len());
-		let mut buffer = Vec::new();
-
-		for block in packed_blocks {
-			let size = block.total_size();
-			mesh_streams.push(Stream {
-				offset: next_offset,
-				size,
-				stream_type: block.stream_type,
-				stride: stream_stride(block.stream_type),
-			});
-			stream_descriptions.push(StreamDescription::new(stream_name(block.stream_type), size, next_offset));
-			next_offset += size;
-			buffer.extend(block.into_bytes());
-		}
-
-		Ok(ProcessedMesh {
-			mesh: MeshModel {
-				skeleton,
-				skins,
-				vertex_components: active_vertex_layout,
-				streams: mesh_streams,
-				primitives,
-			},
-			stream_descriptions,
-			buffer: buffer.into_boxed_slice(),
+		Ok(MeshProcessorSession {
+			triangle_front_face_winding: self.triangle_front_face_winding,
+			vertex_layout,
+			skeleton,
+			skeleton_nodes,
+			skins,
+			blocks: stream_order.into_iter().map(PackedStreamBlock::new).collect(),
+			primitives: Vec::new(),
+			scratch: MeshProcessingScratch::default(),
 		})
 	}
+}
 
-	/// Packs one primitive into the shared stream blocks used by the resulting mesh resource.
-	fn pack_primitive<T: MeshPrimitiveSource>(
-		&self,
-		primitive: T,
-		vertex_streams: &[(VertexSemantics, u32)],
-		packed_blocks: &mut [PackedStreamBlock],
-	) -> Result<PrimitiveModel, MeshProcessingError> {
-		let position_data = primitive
-			.attribute(VertexSemantics::Position, 0)
-			.ok_or(MeshProcessingError::MissingPositionAttribute)?;
-		let position_count = position_data.len();
+/// The `MeshPrimitiveProcessingError` enum preserves source-format failures alongside common processor failures.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MeshPrimitiveProcessingError<E> {
+	Source(E),
+	Processing(MeshProcessingError),
+}
 
-		if primitive.vertex_count() != position_count {
-			return Err(MeshProcessingError::InconsistentVertexCount);
+/// The `MeshProcessorSession` struct keeps reusable scratch and final stream writers alive across borrowed primitives.
+pub struct MeshProcessorSession {
+	triangle_front_face_winding: TriangleFrontFaceWinding,
+	vertex_layout: Vec<VertexComponent>,
+	skeleton: Option<ReferenceModel<SkeletonModel>>,
+	skeleton_nodes: Option<usize>,
+	skins: Vec<SkinBinding>,
+	blocks: Vec<PackedStreamBlock>,
+	primitives: Vec<PrimitiveModel>,
+	scratch: MeshProcessingScratch,
+}
+
+impl MeshProcessorSession {
+	/// Adds a final skin binding and returns the palette index that a later source primitive should reference.
+	pub fn add_skin(&mut self, skin: SkinBinding) -> Result<u32, MeshProcessingError> {
+		let skin_index = self.skins.len();
+		validate_skin_binding(skin_index, &skin, self.skeleton_nodes)?;
+		let skin_index =
+			u32::try_from(skin_index).map_err(|_| MeshProcessingError::TooManySkinBindings { skins: skin_index })?;
+		self.skins.push(skin);
+		Ok(skin_index)
+	}
+
+	/// Processes one borrowed primitive immediately so the handler can reuse its source-format scratch afterward.
+	pub fn push_primitive<P: MeshPrimitiveSource>(
+		&mut self,
+		primitive: &P,
+	) -> Result<(), MeshPrimitiveProcessingError<P::Error>> {
+		self.scratch.block_lengths.clear();
+		self.scratch
+			.block_lengths
+			.extend(self.blocks.iter().map(|block| block.bytes.len()));
+
+		let result = self.push_primitive_inner(primitive);
+		if result.is_err() {
+			for (block, &length) in self.blocks.iter_mut().zip(&self.scratch.block_lengths) {
+				block.bytes.truncate(length);
+			}
 		}
+		result
+	}
 
-		let position_bytes = match position_data {
-			MeshAttributeData::F32x3(values) => values
-				.iter()
-				.map(|position| [position[0], position[1], position[2]])
-				.collect::<Vec<_>>(),
-			_ => return Err(MeshProcessingError::InvalidAttributeFormat(VertexSemantics::Position)),
-		};
-
-		let triangle_indices = primitive
-			.indices(IndexStreamTypes::Triangles)
-			.ok_or(MeshProcessingError::MissingTriangleIndices)?;
-		let triangle_indices =
-			orient_triangle_indices_for_front_face(triangle_indices.to_u32_vec(), self.triangle_front_face_winding);
-
-		if !triangle_indices.len().is_multiple_of(3) {
-			return Err(MeshProcessingError::InvalidTriangleIndexCount);
+	/// Packs one primitive into aggregate stream writers while using scratch only for meshopt's random-access inputs.
+	fn push_primitive_inner<P: MeshPrimitiveSource>(
+		&mut self,
+		primitive: &P,
+	) -> Result<(), MeshPrimitiveProcessingError<P::Error>> {
+		let primitive_index = self.primitives.len();
+		let positions = primitive.positions().map_err(MeshPrimitiveProcessingError::Source)?;
+		let position_count = positions.len();
+		self.scratch.positions.clear();
+		self.scratch.positions.reserve(position_count);
+		for position in positions {
+			self.scratch
+				.positions
+				.push(position.map_err(MeshPrimitiveProcessingError::Source)?);
 		}
+		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshPrimitiveProcessingError::Processing(
+			MeshProcessingError::InvalidPositionData,
+		))?;
 
-		let optimized_triangle_indices = meshopt::optimize_vertex_cache(&triangle_indices, position_count);
-		let meshlet_source_bytes = position_bytes
-			.iter()
-			.flat_map(|position| position.iter().flat_map(|component| component.to_le_bytes()))
-			.collect::<Vec<u8>>();
-		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(&meshlet_source_bytes, 12, 0)
-			.map_err(|_| MeshProcessingError::FailedToBuildMeshlets)?;
+		let indices = primitive.indices().map_err(MeshPrimitiveProcessingError::Source)?;
+		self.scratch.indices.clear();
+		self.scratch.indices.reserve(indices.len());
+		for index in indices {
+			self.scratch
+				.indices
+				.push(index.map_err(MeshPrimitiveProcessingError::Source)?);
+		}
+		if !self.scratch.indices.len().is_multiple_of(3) {
+			return Err(MeshPrimitiveProcessingError::Processing(
+				MeshProcessingError::InvalidTriangleIndexCount,
+			));
+		}
+		orient_triangle_indices_in_place(&mut self.scratch.indices, self.triangle_front_face_winding);
+		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
+
+		self.scratch.position_bytes.clear();
+		self.scratch.position_bytes.reserve(position_count.saturating_mul(12));
+		for position in &self.scratch.positions {
+			write_f32_components(&mut self.scratch.position_bytes, position);
+		}
+		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(&self.scratch.position_bytes, 12, 0)
+			.map_err(|_| MeshPrimitiveProcessingError::Processing(MeshProcessingError::FailedToBuildMeshlets))?;
 		let meshlets = meshopt::clusterize::build_meshlets(
-			&optimized_triangle_indices,
+			&self.scratch.indices,
 			&meshlet_vertex_adapter,
 			MESHLET_MAX_VERTICES,
 			MESHLET_MAX_TRIANGLES,
 			MESHLET_CONE_WEIGHT,
 		);
 
-		let mut primitive_streams = Vec::with_capacity(vertex_streams.len() + 4);
+		let vertex_skin = primitive.vertex_skin().map_err(MeshPrimitiveProcessingError::Source)?;
+		validate_primitive_metadata(
+			primitive_index,
+			primitive.transform_node(),
+			primitive.skin(),
+			vertex_skin.is_some(),
+			&self.vertex_layout,
+			self.skeleton_nodes,
+			&self.skins,
+		)
+		.map_err(MeshPrimitiveProcessingError::Processing)?;
 
-		for &(semantic, channel) in vertex_streams {
-			let Some(data) = primitive.attribute(semantic, channel) else {
-				continue;
-			};
-
-			if data.len() != position_count {
-				return Err(MeshProcessingError::AttributeLengthMismatch(semantic, channel));
-			}
-
-			let stream_type = Streams::Vertices(semantic);
-			let block = packed_blocks
-				.iter_mut()
-				.find(|block| block.stream_type == stream_type)
-				.expect("vertex stream block should exist");
-			let stride = stream_stride(stream_type);
-
-			if data.element_size() != stride {
-				return Err(MeshProcessingError::InvalidAttributeFormat(semantic));
-			}
-
-			let offset = block.total_size();
-			let bytes = data.to_bytes();
-			let size = bytes.len();
-			block.chunks.push(bytes);
-			primitive_streams.push(Stream {
-				offset,
-				size,
-				stream_type,
-				stride,
-			});
+		let mut primitive_streams = Vec::with_capacity(self.vertex_layout.len() + 4);
+		primitive_streams.push(append_f32_slice(
+			&mut self.blocks,
+			Streams::Vertices(VertexSemantics::Position),
+			&self.scratch.positions,
+		));
+		append_optional_f32(
+			&mut primitive_streams,
+			&mut self.blocks,
+			VertexSemantics::Normal,
+			position_count,
+			primitive.normals().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut primitive_streams,
+			&mut self.blocks,
+			VertexSemantics::Tangent,
+			position_count,
+			primitive.tangents().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut primitive_streams,
+			&mut self.blocks,
+			VertexSemantics::BiTangent,
+			position_count,
+			primitive.bitangents().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut primitive_streams,
+			&mut self.blocks,
+			VertexSemantics::UV,
+			position_count,
+			primitive.uvs().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut primitive_streams,
+			&mut self.blocks,
+			VertexSemantics::Color,
+			position_count,
+			primitive.colors().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		if let Some(vertex_skin) = vertex_skin {
+			append_vertex_skin(
+				&mut primitive_streams,
+				&mut self.blocks,
+				primitive_index,
+				position_count,
+				vertex_skin,
+				&self.skins[primitive.skin().expect("validated skinned primitive") as usize],
+			)?;
 		}
 
-		let vertex_indices_bytes = meshlets
-			.iter()
-			.flat_map(|meshlet| meshlet.vertices.iter().map(|index| *index as u16).flat_map(u16::to_le_bytes))
-			.collect::<Vec<u8>>();
-		append_stream(
-			&mut primitive_streams,
-			packed_blocks,
+		primitive_streams.push(append_generated_stream(
+			&mut self.blocks,
 			Streams::Indices(IndexStreamTypes::Vertices),
-			vertex_indices_bytes,
-		);
-
-		let triangle_indices_bytes = optimized_triangle_indices
-			.iter()
-			.map(|index| *index as u16)
-			.flat_map(u16::to_le_bytes)
-			.collect::<Vec<u8>>();
-		append_stream(
-			&mut primitive_streams,
-			packed_blocks,
+			|bytes| {
+				for meshlet in meshlets.iter() {
+					for &index in meshlet.vertices {
+						bytes.extend((index as u16).to_le_bytes());
+					}
+				}
+			},
+		));
+		primitive_streams.push(append_generated_stream(
+			&mut self.blocks,
 			Streams::Indices(IndexStreamTypes::Triangles),
-			triangle_indices_bytes,
-		);
-
-		let meshlet_indices_bytes = meshlets
-			.iter()
-			.flat_map(|meshlet| meshlet.triangles.iter().copied())
-			.collect::<Vec<u8>>();
-		append_stream(
-			&mut primitive_streams,
-			packed_blocks,
+			|bytes| {
+				for &index in &self.scratch.indices {
+					bytes.extend((index as u16).to_le_bytes());
+				}
+			},
+		));
+		primitive_streams.push(append_generated_stream(
+			&mut self.blocks,
 			Streams::Indices(IndexStreamTypes::Meshlets),
-			meshlet_indices_bytes,
-		);
-
-		let meshlet_bytes = meshlets
-			.iter()
-			.flat_map(|meshlet| {
+			|bytes| {
+				for meshlet in meshlets.iter() {
+					bytes.extend_from_slice(meshlet.triangles);
+				}
+			},
+		));
+		primitive_streams.push(append_generated_stream(&mut self.blocks, Streams::Meshlets, |bytes| {
+			for meshlet in meshlets.iter() {
 				let bounds = meshopt::clusterize::compute_meshlet_bounds(meshlet, &meshlet_vertex_adapter);
-				meshlet_stream_record_bytes(meshlet, &bounds)
-			})
-			.collect::<Vec<u8>>();
-		append_stream(&mut primitive_streams, packed_blocks, Streams::Meshlets, meshlet_bytes);
+				write_meshlet_record(bytes, meshlet, &bounds);
+			}
+		}));
 
-		Ok(PrimitiveModel {
+		self.primitives.push(PrimitiveModel {
 			material: primitive.material().clone(),
 			transform_node: primitive.transform_node(),
 			skin: primitive.skin(),
 			streams: primitive_streams,
 			quantization: None,
-			bounding_box: primitive.bounding_box(),
+			bounding_box: bounds,
 			vertex_count: position_count as u32,
-		})
+		});
+		Ok(())
+	}
+
+	/// Finishes aggregate stream offsets and moves final metadata into the stored mesh resource.
+	pub fn finish(self) -> ProcessedMesh {
+		let active_vertex_components = self
+			.vertex_layout
+			.into_iter()
+			.filter(|component| {
+				self.blocks
+					.iter()
+					.find(|block| block.stream_type == Streams::Vertices(component.semantic))
+					.is_some_and(|block| !block.bytes.is_empty())
+			})
+			.collect::<Vec<_>>();
+		let total_size = self.blocks.iter().map(|block| block.bytes.len()).sum();
+		let mut buffer = Vec::with_capacity(total_size);
+		let mut streams = Vec::with_capacity(self.blocks.len());
+		let mut stream_descriptions = Vec::with_capacity(self.blocks.len());
+		for block in self.blocks.into_iter().filter(|block| !block.bytes.is_empty()) {
+			let offset = buffer.len();
+			let size = block.bytes.len();
+			streams.push(Stream {
+				offset,
+				size,
+				stream_type: block.stream_type,
+				stride: stream_stride(block.stream_type),
+			});
+			stream_descriptions.push(StreamDescription::new(stream_name(block.stream_type), size, offset));
+			buffer.extend(block.bytes);
+		}
+		ProcessedMesh {
+			mesh: MeshModel {
+				skeleton: self.skeleton,
+				skins: self.skins,
+				vertex_components: active_vertex_components,
+				streams,
+				primitives: self.primitives,
+			},
+			stream_descriptions,
+			buffer: buffer.into_boxed_slice(),
+		}
 	}
 }
 
@@ -235,84 +326,179 @@ pub struct ProcessedMesh {
 	pub stream_descriptions: Vec<StreamDescription>,
 	pub buffer: Box<[u8]>,
 }
-#[derive(Debug)]
+
+#[derive(Default)]
+struct MeshProcessingScratch {
+	positions: Vec<[f32; 3]>,
+	indices: Vec<u32>,
+	position_bytes: Vec<u8>,
+	block_lengths: Vec<usize>,
+}
+
 struct PackedStreamBlock {
 	stream_type: Streams,
-	chunks: Vec<Vec<u8>>,
+	bytes: Vec<u8>,
 }
 
 impl PackedStreamBlock {
 	fn new(stream_type: Streams) -> Self {
 		Self {
 			stream_type,
-			chunks: Vec::new(),
+			bytes: Vec::new(),
 		}
 	}
-
-	fn total_size(&self) -> usize {
-		self.chunks.iter().map(Vec::len).sum()
-	}
-
-	fn into_bytes(self) -> Vec<u8> {
-		self.chunks.into_iter().flatten().collect()
-	}
-}
-/// Returns the subset of the declared vertex layout that is backed by primitive data.
-fn active_vertex_layout<T: MeshSource>(source: &T) -> Vec<VertexComponent> {
-	source
-		.vertex_layout()
-		.iter()
-		.filter(|component| {
-			source
-				.primitives()
-				.any(|primitive| primitive.attribute(component.semantic, component.channel).is_some())
-		})
-		.cloned()
-		.collect()
 }
 
-fn ordered_vertex_streams(vertex_layout: &[VertexComponent]) -> Vec<(VertexSemantics, u32)> {
-	let mut streams = vertex_layout
-		.iter()
-		.map(|component| (component.semantic, component.channel))
-		.collect::<Vec<_>>();
-	streams.sort_by_key(|(semantic, channel)| (vertex_semantic_order(*semantic), *channel));
-	streams
+fn append_f32_slice<const N: usize>(blocks: &mut [PackedStreamBlock], stream_type: Streams, values: &[[f32; N]]) -> Stream {
+	append_generated_stream(blocks, stream_type, |bytes| {
+		for value in values {
+			write_f32_components(bytes, value);
+		}
+	})
 }
 
-fn make_stream_order(vertex_streams: &[(VertexSemantics, u32)]) -> Vec<Streams> {
-	let mut streams = vertex_streams
-		.iter()
-		.map(|(semantic, _)| Streams::Vertices(*semantic))
-		.collect::<Vec<_>>();
-	streams.extend([
-		Streams::Indices(IndexStreamTypes::Vertices),
-		Streams::Indices(IndexStreamTypes::Triangles),
-		Streams::Indices(IndexStreamTypes::Meshlets),
-		Streams::Meshlets,
-	]);
-	streams
-}
-
-fn append_stream(
+fn append_optional_f32<const N: usize, I, E>(
 	primitive_streams: &mut Vec<Stream>,
-	packed_blocks: &mut [PackedStreamBlock],
-	stream_type: Streams,
-	bytes: Vec<u8>,
-) {
-	let block = packed_blocks
-		.iter_mut()
-		.find(|block| block.stream_type == stream_type)
-		.expect("packed stream block should exist");
-	let offset = block.total_size();
-	let size = bytes.len();
-	block.chunks.push(bytes);
+	blocks: &mut [PackedStreamBlock],
+	semantic: VertexSemantics,
+	position_count: usize,
+	values: Option<I>,
+) -> Result<(), MeshPrimitiveProcessingError<E>>
+where
+	I: ExactSizeIterator<Item = Result<[f32; N], E>>,
+{
+	let Some(values) = values else {
+		return Ok(());
+	};
+	if values.len() != position_count {
+		return Err(MeshPrimitiveProcessingError::Processing(
+			MeshProcessingError::AttributeLengthMismatch(semantic, 0),
+		));
+	}
+	let stream_type = Streams::Vertices(semantic);
+	let block =
+		blocks
+			.iter_mut()
+			.find(|block| block.stream_type == stream_type)
+			.ok_or(MeshPrimitiveProcessingError::Processing(
+				MeshProcessingError::MissingAttribute(semantic, 0),
+			))?;
+	let offset = block.bytes.len();
+	for value in values {
+		write_f32_components(&mut block.bytes, &value.map_err(MeshPrimitiveProcessingError::Source)?);
+	}
 	primitive_streams.push(Stream {
 		offset,
-		size,
+		size: block.bytes.len() - offset,
 		stream_type,
 		stride: stream_stride(stream_type),
 	});
+	Ok(())
+}
+
+fn append_vertex_skin<I, E>(
+	primitive_streams: &mut Vec<Stream>,
+	blocks: &mut [PackedStreamBlock],
+	primitive: usize,
+	position_count: usize,
+	values: I,
+	skin: &SkinBinding,
+) -> Result<(), MeshPrimitiveProcessingError<E>>
+where
+	I: ExactSizeIterator<Item = Result<VertexSkin, E>>,
+{
+	if values.len() != position_count {
+		return Err(MeshPrimitiveProcessingError::Processing(
+			MeshProcessingError::SkinVertexCountMismatch {
+				primitive,
+				values: values.len(),
+				positions: position_count,
+			},
+		));
+	}
+	let joints_index = blocks
+		.iter()
+		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Joints))
+		.ok_or(MeshPrimitiveProcessingError::Processing(
+			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Joints),
+		))?;
+	let weights_index = blocks
+		.iter()
+		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Weights))
+		.ok_or(MeshPrimitiveProcessingError::Processing(
+			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Weights),
+		))?;
+	let joints_offset = blocks[joints_index].bytes.len();
+	let weights_offset = blocks[weights_index].bytes.len();
+	for (vertex, value) in values.enumerate() {
+		let value = value.map_err(MeshPrimitiveProcessingError::Source)?;
+		validate_vertex_skin(primitive, vertex, value, skin).map_err(MeshPrimitiveProcessingError::Processing)?;
+		for joint in value.joints {
+			blocks[joints_index].bytes.extend(joint.to_le_bytes());
+		}
+		write_f32_components(&mut blocks[weights_index].bytes, &value.weights);
+	}
+	for (index, offset, semantic) in [
+		(joints_index, joints_offset, VertexSemantics::Joints),
+		(weights_index, weights_offset, VertexSemantics::Weights),
+	] {
+		let stream_type = Streams::Vertices(semantic);
+		primitive_streams.push(Stream {
+			offset,
+			size: blocks[index].bytes.len() - offset,
+			stream_type,
+			stride: stream_stride(stream_type),
+		});
+	}
+	Ok(())
+}
+
+fn append_generated_stream(blocks: &mut [PackedStreamBlock], stream_type: Streams, write: impl FnOnce(&mut Vec<u8>)) -> Stream {
+	let block = blocks
+		.iter_mut()
+		.find(|block| block.stream_type == stream_type)
+		.expect("processor stream order should contain every generated stream");
+	let offset = block.bytes.len();
+	write(&mut block.bytes);
+	Stream {
+		offset,
+		size: block.bytes.len() - offset,
+		stream_type,
+		stride: stream_stride(stream_type),
+	}
+}
+
+fn write_f32_components<const N: usize>(bytes: &mut Vec<u8>, value: &[f32; N]) {
+	for component in value {
+		bytes.extend(component.to_le_bytes());
+	}
+}
+
+fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> {
+	let first = *positions.first()?;
+	if first.iter().any(|component| !component.is_finite()) {
+		return None;
+	}
+	let mut minimum = first;
+	let mut maximum = first;
+	for position in &positions[1..] {
+		if position.iter().any(|component| !component.is_finite()) {
+			return None;
+		}
+		for axis in 0..3 {
+			minimum[axis] = minimum[axis].min(position[axis]);
+			maximum[axis] = maximum[axis].max(position[axis]);
+		}
+	}
+	Some([minimum, maximum])
+}
+
+fn orient_triangle_indices_in_place(indices: &mut [u32], winding: TriangleFrontFaceWinding) {
+	if winding == TriangleFrontFaceWinding::Clockwise {
+		for triangle in indices.chunks_exact_mut(3) {
+			triangle.swap(1, 2);
+		}
+	}
 }
 
 pub fn orient_triangle_indices_for_front_face(mut indices: Vec<u32>, winding: TriangleFrontFaceWinding) -> Vec<u32> {
@@ -321,29 +507,12 @@ pub fn orient_triangle_indices_for_front_face(mut indices: Vec<u32>, winding: Tr
 		0,
 		"Triangle index streams must be emitted in groups of three"
 	);
-
-	if winding == TriangleFrontFaceWinding::Clockwise {
-		for triangle in indices.chunks_exact_mut(3) {
-			triangle.swap(1, 2);
-		}
-	}
-
+	orient_triangle_indices_in_place(&mut indices, winding);
 	indices
 }
 
-fn stream_stride(stream_type: Streams) -> usize {
-	match stream_type {
-		Streams::Vertices(semantic) => semantic.size(),
-		Streams::Indices(IndexStreamTypes::Vertices) => IntegralTypes::U16.size(),
-		Streams::Indices(IndexStreamTypes::Triangles) => IntegralTypes::U16.size(),
-		Streams::Indices(IndexStreamTypes::Meshlets) => IntegralTypes::U8.size(),
-		Streams::Meshlets => MESHLET_STREAM_STRIDE,
-	}
-}
-
-/// Packs a meshopt meshlet and its object-space bounds into the meshlet resource stream.
-fn meshlet_stream_record_bytes(meshlet: meshopt::clusterize::Meshlet<'_>, bounds: &meshopt::clusterize::Bounds) -> Vec<u8> {
-	let mut bytes = Vec::with_capacity(MESHLET_STREAM_STRIDE);
+fn write_meshlet_record(bytes: &mut Vec<u8>, meshlet: meshopt::clusterize::Meshlet<'_>, bounds: &meshopt::clusterize::Bounds) {
+	let offset = bytes.len();
 	bytes.push(meshlet.vertices.len() as u8);
 	bytes.push((meshlet.triangles.len() / 3) as u8);
 	bytes.extend([0u8; 2]);
@@ -356,9 +525,16 @@ fn meshlet_stream_record_bytes(meshlet: meshopt::clusterize::Meshlet<'_>, bounds
 	for value in bounds.cone_axis.iter().copied().chain([0.0]) {
 		bytes.extend(value.to_le_bytes());
 	}
+	debug_assert_eq!(bytes.len() - offset, MESHLET_STREAM_STRIDE);
+}
 
-	debug_assert_eq!(bytes.len(), MESHLET_STREAM_STRIDE);
-	bytes
+fn stream_stride(stream_type: Streams) -> usize {
+	match stream_type {
+		Streams::Vertices(semantic) => semantic.size(),
+		Streams::Indices(IndexStreamTypes::Vertices | IndexStreamTypes::Triangles) => IntegralTypes::U16.size(),
+		Streams::Indices(IndexStreamTypes::Meshlets) => IntegralTypes::U8.size(),
+		Streams::Meshlets => MESHLET_STREAM_STRIDE,
+	}
 }
 
 fn stream_name(stream_type: Streams) -> &'static str {
@@ -378,7 +554,7 @@ fn stream_name(stream_type: Streams) -> &'static str {
 	}
 }
 
-fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
+const fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
 	match semantic {
 		VertexSemantics::Position => 0,
 		VertexSemantics::Normal => 1,
@@ -404,11 +580,12 @@ const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
 pub(super) const MESHLET_STREAM_STRIDE: usize = 52;
 
-use std::alloc::Allocator;
-
 use super::{
-	source::{MeshAttributeData, MeshPrimitiveSource, MeshSource, OwnedMeshSource},
-	validation::{validate_skin_source, validate_vertex_layout, MeshProcessingError},
+	source::{MeshPrimitiveSource, VertexSkin},
+	validation::{
+		skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout, validate_vertex_skin,
+		MeshProcessingError,
+	},
 };
 use crate::{
 	resources::{

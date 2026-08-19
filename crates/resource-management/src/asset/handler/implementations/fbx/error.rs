@@ -19,7 +19,6 @@ pub(crate) enum FbxImportError {
 	MissingSkinBone,
 	MissingFallbackJoint,
 	TooManyJoints,
-	TooManySkinBindings,
 	MultipleSkinDeformers,
 	UnsupportedBlendedDualQuaternionSkinning,
 	NonInvertibleSkinTransform,
@@ -98,10 +97,6 @@ impl fmt::Display for FbxImportError {
 			Self::TooManyJoints => write!(
 				formatter,
 				"FBX skin has too many joints. The most likely cause is a joint palette larger than the engine's u16 joint stream."
-			),
-			Self::TooManySkinBindings => write!(
-				formatter,
-				"FBX has too many skin bindings. The most likely cause is more skinned mesh instances than the resource format can index."
 			),
 			Self::MultipleSkinDeformers => write!(
 				formatter,

@@ -806,7 +806,129 @@ pub(crate) fn adjust_gltf_inverse_bind(
 	Ok(affine_matrix4x3_from_matrix4(adjusted))
 }
 
-/// Reads both supported glTF influence sets, keeps the strongest four, and normalizes the fixed GPU stream shape.
+/// The `GltfVertexSkinIterator` struct normalizes borrowed glTF influence sets without staging per-primitive vectors.
+pub(crate) struct GltfVertexSkinIterator<'a> {
+	set0_joints: gltf::mesh::util::joints::CastingIter<'a, gltf::mesh::util::joints::U16>,
+	set0_weights: gltf::mesh::util::weights::CastingIter<'a, gltf::mesh::util::weights::F32>,
+	set1: Option<(
+		gltf::mesh::util::joints::CastingIter<'a, gltf::mesh::util::joints::U16>,
+		gltf::mesh::util::weights::CastingIter<'a, gltf::mesh::util::weights::F32>,
+	)>,
+	joint_count: usize,
+}
+
+impl<'a> GltfVertexSkinIterator<'a> {
+	/// Creates an influence iterator after validating that every accessor can yield one value per vertex.
+	pub(crate) fn new<'document, F>(
+		reader: &gltf::mesh::Reader<'document, 'a, F>,
+		vertex_count: usize,
+		joint_count: usize,
+	) -> Result<Self, GltfSkeletalImportError>
+	where
+		F: Clone + Fn(gltf::Buffer<'document>) -> Option<&'a [u8]>,
+	{
+		let set0_joints = reader.read_joints(0);
+		let set0_weights = reader.read_weights(0);
+		if set0_joints.is_some() != set0_weights.is_some() {
+			return Err(GltfSkeletalImportError::UnpairedSkinAttributes(0));
+		}
+		let (Some(set0_joints), Some(set0_weights)) = (set0_joints, set0_weights) else {
+			return Err(GltfSkeletalImportError::MissingSkinAttributes);
+		};
+		let set0_joints = set0_joints.into_u16();
+		let set0_weights = set0_weights.into_f32();
+
+		let set1_joints = reader.read_joints(1);
+		let set1_weights = reader.read_weights(1);
+		if set1_joints.is_some() != set1_weights.is_some() {
+			return Err(GltfSkeletalImportError::UnpairedSkinAttributes(1));
+		}
+		let set1 = match (set1_joints, set1_weights) {
+			(Some(joints), Some(weights)) => Some((joints.into_u16(), weights.into_f32())),
+			(None, None) => None,
+			_ => unreachable!("paired skin attributes were checked above"),
+		};
+
+		if set0_joints.len() != vertex_count
+			|| set0_weights.len() != vertex_count
+			|| set1
+				.as_ref()
+				.is_some_and(|(joints, weights)| joints.len() != vertex_count || weights.len() != vertex_count)
+		{
+			return Err(GltfSkeletalImportError::MismatchedSkinAttributeCount);
+		}
+
+		Ok(Self {
+			set0_joints,
+			set0_weights,
+			set1,
+			joint_count,
+		})
+	}
+}
+
+impl ExactSizeIterator for GltfVertexSkinIterator<'_> {}
+
+impl Iterator for GltfVertexSkinIterator<'_> {
+	type Item = Result<VertexSkin, GltfSkeletalImportError>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let joints = self.set0_joints.next()?;
+		let weights = match self.set0_weights.next() {
+			Some(weights) => weights,
+			None => return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount)),
+		};
+		let mut influences = [(0u16, 0.0f32); 8];
+		for influence in 0..4 {
+			influences[influence] = (joints[influence], weights[influence]);
+		}
+		let influence_count = if let Some((joints, weights)) = &mut self.set1 {
+			let Some(joints) = joints.next() else {
+				return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount));
+			};
+			let Some(weights) = weights.next() else {
+				return Some(Err(GltfSkeletalImportError::MismatchedSkinAttributeCount));
+			};
+			for influence in 0..4 {
+				influences[influence + 4] = (joints[influence], weights[influence]);
+			}
+			8
+		} else {
+			4
+		};
+
+		for &(joint, weight) in &influences[..influence_count] {
+			if joint as usize >= self.joint_count {
+				return Some(Err(GltfSkeletalImportError::SkinJointOutOfRange));
+			}
+			if !weight.is_finite() || weight < 0.0 {
+				return Some(Err(GltfSkeletalImportError::InvalidSkinWeight));
+			}
+		}
+		influences[..influence_count]
+			.sort_unstable_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+		let total = influences[..4].iter().map(|(_, weight)| *weight).sum::<f32>();
+		if !total.is_finite() || total <= f32::EPSILON {
+			return Some(Err(GltfSkeletalImportError::InvalidSkinWeight));
+		}
+		let mut vertex_skin = VertexSkin {
+			joints: [0; 4],
+			weights: [0.0; 4],
+		};
+		for influence in 0..4 {
+			vertex_skin.joints[influence] = influences[influence].0;
+			vertex_skin.weights[influence] = influences[influence].1 / total;
+		}
+		Some(Ok(vertex_skin))
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.set0_joints.size_hint()
+	}
+}
+
+/// Reads both supported glTF influence sets into owned values for callers that need retained skin data.
+#[cfg(test)]
 pub(crate) fn import_gltf_vertex_skin<'a, 's, F>(
 	reader: &gltf::mesh::Reader<'a, 's, F>,
 	vertex_count: usize,
@@ -815,113 +937,8 @@ pub(crate) fn import_gltf_vertex_skin<'a, 's, F>(
 where
 	F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
 {
-	let set0_joints = reader.read_joints(0);
-
-	let set0_weights = reader.read_weights(0);
-
-	if set0_joints.is_some() != set0_weights.is_some() {
-		return Err(GltfSkeletalImportError::UnpairedSkinAttributes(0));
-	}
-
-	let (Some(set0_joints), Some(set0_weights)) = (set0_joints, set0_weights) else {
-		return Err(GltfSkeletalImportError::MissingSkinAttributes);
-	};
-
-	let mut set0_joints = set0_joints.into_u16();
-
-	let mut set0_weights = set0_weights.into_f32();
-
-	let set1_joints = reader.read_joints(1);
-
-	let set1_weights = reader.read_weights(1);
-
-	if set1_joints.is_some() != set1_weights.is_some() {
-		return Err(GltfSkeletalImportError::UnpairedSkinAttributes(1));
-	}
-
-	let mut set1 = match (set1_joints, set1_weights) {
-		(Some(joints), Some(weights)) => Some((joints.into_u16(), weights.into_f32())),
-		(None, None) => None,
-		_ => unreachable!("paired skin attributes were checked above"),
-	};
-
-	if set0_joints.len() != vertex_count
-		|| set0_weights.len() != vertex_count
-		|| set1
-			.as_ref()
-			.is_some_and(|(joints, weights)| joints.len() != vertex_count || weights.len() != vertex_count)
-	{
-		return Err(GltfSkeletalImportError::MismatchedSkinAttributeCount);
-	}
-
-	let mut output_joints = Vec::with_capacity(vertex_count);
-
-	let mut output_weights = Vec::with_capacity(vertex_count);
-
-	for _ in 0..vertex_count {
-		let mut influences = [(0u16, 0.0f32); 8];
-
-		let joints = set0_joints
-			.next()
-			.ok_or(GltfSkeletalImportError::MismatchedSkinAttributeCount)?;
-
-		let weights = set0_weights
-			.next()
-			.ok_or(GltfSkeletalImportError::MismatchedSkinAttributeCount)?;
-
-		for influence in 0..4 {
-			influences[influence] = (joints[influence], weights[influence]);
-		}
-
-		let influence_count = if let Some((joints, weights)) = &mut set1 {
-			let joints = joints.next().ok_or(GltfSkeletalImportError::MismatchedSkinAttributeCount)?;
-
-			let weights = weights.next().ok_or(GltfSkeletalImportError::MismatchedSkinAttributeCount)?;
-
-			for influence in 0..4 {
-				influences[influence + 4] = (joints[influence], weights[influence]);
-			}
-
-			8
-		} else {
-			4
-		};
-
-		for &(joint, weight) in &influences[..influence_count] {
-			if joint as usize >= joint_count {
-				return Err(GltfSkeletalImportError::SkinJointOutOfRange);
-			}
-
-			if !weight.is_finite() || weight < 0.0 {
-				return Err(GltfSkeletalImportError::InvalidSkinWeight);
-			}
-		}
-
-		influences[..influence_count]
-			.sort_unstable_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-
-		let total = influences[..4].iter().map(|(_, weight)| *weight).sum::<f32>();
-
-		if !total.is_finite() || total <= f32::EPSILON {
-			return Err(GltfSkeletalImportError::InvalidSkinWeight);
-		}
-
-		let mut joints = [0u16; 4];
-
-		let mut weights = [0.0f32; 4];
-
-		for influence in 0..4 {
-			joints[influence] = influences[influence].0;
-
-			weights[influence] = influences[influence].1 / total;
-		}
-
-		output_joints.push(joints);
-
-		output_weights.push(weights);
-	}
-
-	Ok((output_joints, output_weights))
+	let vertex_skin = GltfVertexSkinIterator::new(reader, vertex_count, joint_count)?.collect::<Result<Vec<_>, _>>()?;
+	Ok(vertex_skin.into_iter().map(|value| (value.joints, value.weights)).unzip())
 }
 
 /// Validates the paired influence sets consumed by skinned instances while allowing a shared mesh to be instanced rigidly.
@@ -1004,31 +1021,4 @@ pub(crate) fn include_skin_vertex_layout(
 	}
 
 	Ok(normalized)
-}
-
-/// Recomputes finite bounds after node transforms are baked into flattened vertex positions.
-pub(crate) fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> {
-	let first = *positions.first()?;
-
-	if first.iter().any(|component| !component.is_finite()) {
-		return None;
-	}
-
-	let mut minimum = first;
-
-	let mut maximum = first;
-
-	for position in &positions[1..] {
-		if position.iter().any(|component| !component.is_finite()) {
-			return None;
-		}
-
-		for axis in 0..3 {
-			minimum[axis] = minimum[axis].min(position[axis]);
-
-			maximum[axis] = maximum[axis].max(position[axis]);
-		}
-	}
-
-	Some([minimum, maximum])
 }

@@ -11,8 +11,8 @@ pub(crate) struct ResolvedFbxMaterials {
 }
 
 impl ResolvedFbxMaterials {
-	pub(crate) fn get(&self, key: MaterialKey) -> Result<ReferenceModel<VariantModel>, FbxImportError> {
-		self.materials.get(&key).cloned().ok_or(FbxImportError::MissingMaterial)
+	pub(crate) fn get(&self, key: MaterialKey) -> Result<&ReferenceModel<VariantModel>, FbxImportError> {
+		self.materials.get(&key).ok_or(FbxImportError::MissingMaterial)
 	}
 }
 

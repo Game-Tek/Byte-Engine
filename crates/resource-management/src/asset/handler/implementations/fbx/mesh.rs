@@ -117,6 +117,240 @@ impl<'a> FbxMeshImportContext<'a> {
 	}
 }
 
+/// The `FbxMeshProcessingError` enum preserves importer diagnostics and common mesh-processing failures.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FbxMeshProcessingError {
+	Import(FbxImportError),
+	Processing(MeshProcessingError),
+}
+
+impl std::fmt::Display for FbxMeshProcessingError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Import(error) => error.fmt(formatter),
+			Self::Processing(error) => error.fmt(formatter),
+		}
+	}
+}
+
+impl std::error::Error for FbxMeshProcessingError {}
+
+impl From<FbxImportError> for FbxMeshProcessingError {
+	fn from(error: FbxImportError) -> Self {
+		Self::Import(error)
+	}
+}
+
+impl From<MeshProcessingError> for FbxMeshProcessingError {
+	fn from(error: MeshProcessingError) -> Self {
+		Self::Processing(error)
+	}
+}
+
+/// The `FbxPrimitiveSource` struct lends remapped FBX corners to the common processor without materializing attributes.
+pub(crate) struct FbxPrimitiveSource<'context, 'scene, 'batch> {
+	context: &'context FbxMeshImportContext<'scene>,
+	material: &'batch ReferenceModel<VariantModel>,
+	source_corners: &'batch [u32],
+	indices: &'batch [u32],
+}
+
+impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
+	pub(crate) fn new(
+		context: &'context FbxMeshImportContext<'scene>,
+		material: &'batch ReferenceModel<VariantModel>,
+		batch: &'batch RemappedCorners<'_>,
+	) -> Result<Self, FbxImportError> {
+		if batch.source_corners.is_empty() {
+			return Err(FbxImportError::EmptyPrimitive);
+		}
+		Ok(Self {
+			context,
+			material,
+			source_corners: &batch.source_corners,
+			indices: &batch.indices,
+		})
+	}
+
+	fn corner(&self, source_corner: u32) -> Result<usize, FbxImportError> {
+		let corner = source_corner as usize;
+		if corner >= self.context.mesh.num_indices {
+			return Err(FbxImportError::InvalidCornerIndex);
+		}
+		Ok(corner)
+	}
+
+	fn normal(&self, corner: usize) -> Result<Option<[f32; 3]>, FbxImportError> {
+		self.context
+			.normal_matrix
+			.as_ref()
+			.map(|matrix| normalized_direction(matrix, self.context.mesh.vertex_normal[corner]))
+			.transpose()
+	}
+
+	fn tangent_frame(&self, corner: usize) -> Result<(Option<[f32; 3]>, Option<[f32; 3]>, Option<[f32; 3]>), FbxImportError> {
+		let normal = self.normal(corner)?;
+		let transformed_bitangent = self
+			.context
+			.source_attributes
+			.contains(VertexSemantics::BiTangent)
+			.then(|| {
+				normalized_direction(
+					&self.context.node.geometry_to_world,
+					self.context.mesh.vertex_bitangent[corner],
+				)
+			})
+			.transpose()?;
+		let tangent = self
+			.context
+			.source_attributes
+			.contains(VertexSemantics::Tangent)
+			.then(|| normalized_direction(&self.context.node.geometry_to_world, self.context.mesh.vertex_tangent[corner]))
+			.transpose()?
+			.map(|tangent| match normal {
+				Some(normal) => orthogonalized_direction(tangent, normal),
+				None => Ok(tangent),
+			})
+			.transpose()?;
+		Ok((normal, tangent, transformed_bitangent))
+	}
+}
+
+impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
+	type Error = FbxImportError;
+
+	fn material(&self) -> &ReferenceModel<VariantModel> {
+		self.material
+	}
+
+	fn transform_node(&self) -> Option<u32> {
+		self.context.transform_node
+	}
+
+	fn skin(&self) -> Option<u32> {
+		self.context.skin_index
+	}
+
+	fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error> {
+		Ok(self.indices.iter().enumerate().map(|(index, _)| {
+			let source_index = if self.context.mirrored {
+				match index % 3 {
+					1 => index + 1,
+					2 => index - 1,
+					_ => index,
+				}
+			} else {
+				index
+			};
+			self.indices
+				.get(source_index)
+				.copied()
+				.ok_or(FbxImportError::InvalidTriangleCount)
+		}))
+	}
+
+	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_, Self::Error> {
+		Ok(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			let position = ufbx::transform_position(
+				&self.context.node.geometry_to_world,
+				self.context.mesh.vertex_position[corner],
+			);
+			vec3_to_f32(position, "mesh position")
+		}))
+	}
+
+	fn normals(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
+		if self.context.normal_matrix.is_none() {
+			return Ok(None);
+		}
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			self.normal(corner)?.ok_or(FbxImportError::ZeroDirection)
+		})))
+	}
+
+	fn tangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 4], Self::Error>> + '_>, Self::Error> {
+		if !self.context.source_attributes.contains(VertexSemantics::Tangent) {
+			return Ok(None);
+		}
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			let (normal, tangent, bitangent) = self.tangent_frame(corner)?;
+			let tangent = tangent.ok_or(FbxImportError::ZeroDirection)?;
+			let handedness = match (normal, bitangent) {
+				(Some(normal), Some(bitangent)) => tangent_handedness(normal, tangent, bitangent),
+				_ => 1.0,
+			};
+			Ok([tangent[0], tangent[1], tangent[2], handedness])
+		})))
+	}
+
+	fn bitangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
+		if !self.context.source_attributes.contains(VertexSemantics::BiTangent) {
+			return Ok(None);
+		}
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			let (normal, tangent, transformed_bitangent) = self.tangent_frame(corner)?;
+			match (normal, tangent, transformed_bitangent) {
+				(Some(normal), Some(tangent), Some(bitangent)) => {
+					let handedness = tangent_handedness(normal, tangent, bitangent);
+					Ok(scale_vec3(cross_vec3(normal, tangent), handedness))
+				}
+				(Some(normal), None, Some(bitangent)) => orthogonalized_direction(bitangent, normal),
+				(_, _, Some(bitangent)) => Ok(bitangent),
+				(_, _, None) => Err(FbxImportError::ZeroDirection),
+			}
+		})))
+	}
+
+	fn uvs(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 2], Self::Error>> + '_>, Self::Error> {
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			if self.context.source_attributes.contains(VertexSemantics::UV) {
+				let uv = self.context.mesh.vertex_uv[corner];
+				Ok([finite_f32(uv.x, "mesh UV")?, 1.0 - finite_f32(uv.y, "mesh UV")?])
+			} else {
+				Ok([0.0, 0.0])
+			}
+		})))
+	}
+
+	fn colors(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 4], Self::Error>> + '_>, Self::Error> {
+		if !self.context.source_attributes.contains(VertexSemantics::Color) {
+			return Ok(None);
+		}
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			let color = self.context.mesh.vertex_color[corner];
+			Ok([
+				finite_f32(color.x, "mesh color")?,
+				finite_f32(color.y, "mesh color")?,
+				finite_f32(color.z, "mesh color")?,
+				finite_f32(color.w, "mesh color")?,
+			])
+		})))
+	}
+
+	fn vertex_skin(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<VertexSkin, Self::Error>> + '_>, Self::Error> {
+		let Some(skin) = self.context.skin else {
+			return Ok(None);
+		};
+		Ok(Some(self.source_corners.iter().map(|&source_corner| {
+			let corner = self.corner(source_corner)?;
+			let logical_vertex = *self
+				.context
+				.mesh
+				.vertex_indices
+				.get(corner)
+				.ok_or(FbxImportError::InvalidCornerIndex)? as usize;
+			let (joints, weights) = skin_weights(skin, logical_vertex, self.context.fallback_joint)?;
+			Ok(VertexSkin { joints, weights })
+		})))
+	}
+}
+
 /// Selects one deformer whose joint weights can use the engine's automatic skinning path.
 pub(crate) fn select_fbx_skin(mesh: &ufbx::Mesh) -> Result<Option<&ufbx::SkinDeformer>, FbxImportError> {
 	if mesh.skin_deformers.len() > 1 {
@@ -262,7 +496,6 @@ pub(crate) fn matrix_to_columns(matrix: &ufbx::Matrix) -> Result<AffineMatrix4x3
 
 /// The `FbxMeshAllocationEstimates` struct carries scene-derived capacities for reusable importer buffers.
 pub(crate) struct FbxMeshAllocationEstimates {
-	primitives: usize,
 	scratch: usize,
 	corners: usize,
 	remap: usize,
@@ -271,7 +504,6 @@ pub(crate) struct FbxMeshAllocationEstimates {
 /// Estimates common-case primitive count and worst-case reusable scratch sizes from ufbx metadata.
 pub(crate) fn fbx_mesh_allocation_estimates(scene: &ufbx::Scene) -> FbxMeshAllocationEstimates {
 	let mut estimates = FbxMeshAllocationEstimates {
-		primitives: 0,
 		scratch: 3,
 		corners: 0,
 		remap: 0,
@@ -290,64 +522,89 @@ pub(crate) fn fbx_mesh_allocation_estimates(scene: &ufbx::Scene) -> FbxMeshAlloc
 
 		estimates.remap = estimates.remap.max(mesh.num_indices);
 
-		let (mesh_corners, mesh_primitives) = if mesh.material_parts.is_empty() {
-			let corners = mesh.num_triangles.saturating_mul(3);
-
-			(corners, corners.div_ceil(MAX_PRIMITIVE_VERTICES).max(1))
+		let mesh_corners = if mesh.material_parts.is_empty() {
+			mesh.num_triangles.saturating_mul(3)
 		} else {
-			let corners = mesh
-				.material_parts
+			mesh.material_parts
 				.iter()
 				.map(|part| part.num_triangles.saturating_mul(3))
 				.max()
-				.unwrap_or(0);
-
-			let primitives = mesh.material_parts.iter().fold(0usize, |count, part| {
-				count.saturating_add(part.num_triangles.saturating_mul(3).div_ceil(MAX_PRIMITIVE_VERTICES).max(1))
-			});
-
-			(corners, primitives)
+				.unwrap_or(0)
 		};
-
-		estimates.primitives = estimates.primitives.saturating_add(mesh_primitives);
-
 		estimates.corners = estimates.corners.max(mesh_corners);
 	}
 
 	estimates
 }
 
-/// Imports every mesh instance and material part into processor-owned, per-corner vertex data.
+/// Builds the final engine vertex layout once from the FBX meshes that can contribute primitives.
+pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
+	let mut semantics = VertexAttributeMask::default();
+	for node in &scene.nodes {
+		let Some(mesh) = node.mesh.as_ref() else {
+			continue;
+		};
+		if mesh.num_indices == 0 || mesh.num_faces == 0 || mesh.num_triangles == 0 {
+			continue;
+		}
+		semantics.insert(VertexSemantics::Position);
+		semantics.insert(VertexSemantics::UV);
+		for semantic in [
+			VertexSemantics::Normal,
+			VertexSemantics::Tangent,
+			VertexSemantics::BiTangent,
+			VertexSemantics::Color,
+		] {
+			if VertexAttributeMask::from_mesh(mesh).contains(semantic) {
+				semantics.insert(semantic);
+			}
+		}
+		if !mesh.skin_deformers.is_empty() {
+			semantics.insert(VertexSemantics::Joints);
+			semantics.insert(VertexSemantics::Weights);
+		}
+	}
+
+	[
+		(VertexSemantics::Position, "vec3f"),
+		(VertexSemantics::Normal, "vec3f"),
+		(VertexSemantics::Tangent, "vec4f"),
+		(VertexSemantics::BiTangent, "vec3f"),
+		(VertexSemantics::UV, "vec2f"),
+		(VertexSemantics::Color, "vec4f"),
+		(VertexSemantics::Joints, "vec4u16"),
+		(VertexSemantics::Weights, "vec4f"),
+	]
+	.into_iter()
+	.filter(|(semantic, _)| semantics.contains(*semantic))
+	.map(|(semantic, format)| VertexComponent {
+		semantic,
+		format: format.to_string(),
+		channel: 0,
+	})
+	.collect()
+}
+
+/// Streams every mesh instance and material part through the common processor while reusing FBX topology scratch.
 pub(crate) fn import_fbx_meshes<'a>(
 	scene: &ufbx::Scene,
 	materials: &ResolvedFbxMaterials,
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	source_to_skeleton: &[u32],
+	mesh_processor: MeshProcessor,
 	allocator: &'a dyn Allocator,
 	culled_polygons: &mut FbxCulledPolygonCounts,
-) -> Result<OwnedMeshSource<&'a dyn Allocator>, FbxImportError> {
+) -> Result<ProcessedMesh, FbxMeshProcessingError> {
 	let estimates = fbx_mesh_allocation_estimates(scene);
-
-	let mut layout = Vec::with_capacity_in(8, allocator);
-
-	let mut layout_semantics = VertexAttributeMask::default();
-
-	let mut primitives = Vec::with_capacity_in(estimates.primitives, allocator);
+	let vertex_layout = fbx_vertex_layout(scene);
+	let mut processor = mesh_processor.begin(vertex_layout, skeleton, Vec::new())?;
+	let mut primitive_count = 0usize;
 
 	let mut scratch = Vec::with_capacity_in(estimates.scratch, allocator);
 
 	let mut corners = Vec::with_capacity_in(estimates.corners, allocator);
 
 	let mut remap = Vec::with_capacity_in(estimates.remap, allocator);
-
-	let skin_capacity = scene
-		.nodes
-		.iter()
-		.filter_map(|node| node.mesh.as_ref())
-		.filter(|mesh| !mesh.skin_deformers.is_empty())
-		.count();
-
-	let mut skins = Vec::with_capacity(skin_capacity);
 
 	for node in &scene.nodes {
 		let Some(mesh) = node.mesh.as_ref() else {
@@ -361,11 +618,8 @@ pub(crate) fn import_fbx_meshes<'a>(
 		let skin = select_fbx_skin(mesh)?;
 
 		let (skin_index, fallback_joint) = if let Some(skin) = skin {
-			let skin_index = u32::try_from(skins.len()).map_err(|_| FbxImportError::TooManySkinBindings)?;
-
 			let (binding, fallback_joint) = import_fbx_skin_binding(node, skin, source_to_skeleton)?;
-
-			skins.push(binding);
+			let skin_index = processor.add_skin(binding)?;
 
 			(Some(skin_index), fallback_joint)
 		} else {
@@ -406,17 +660,8 @@ pub(crate) fn import_fbx_meshes<'a>(
 				}
 			}
 
-			import_fbx_material_corners(
-				&context,
-				0,
-				&corners,
-				&mut remap,
-				materials,
-				&mut layout,
-				&mut layout_semantics,
-				&mut primitives,
-				allocator,
-			)?;
+			import_fbx_material_corners(&context, 0, &corners, &mut remap, materials, &mut processor, allocator)
+				.map(|count| primitive_count += count)?;
 		} else {
 			for part in &mesh.material_parts {
 				corners.clear();
@@ -451,56 +696,45 @@ pub(crate) fn import_fbx_meshes<'a>(
 					&corners,
 					&mut remap,
 					materials,
-					&mut layout,
-					&mut layout_semantics,
-					&mut primitives,
+					&mut processor,
 					allocator,
-				)?;
+				)
+				.map(|count| primitive_count += count)?;
 			}
 		}
 	}
 
-	if primitives.is_empty() {
-		return Err(FbxImportError::NoMesh);
+	if primitive_count == 0 {
+		return Err(FbxImportError::NoMesh.into());
 	}
-
-	let mut source = OwnedMeshSource::new(layout, primitives).with_skins(skins);
-
-	source.set_skeleton(skeleton);
-
-	Ok(source)
+	Ok(processor.finish())
 }
 
-/// Imports one triangulated material part immediately so source-corner storage can be reused by the next part.
+/// Processes one triangulated material part immediately so source-corner storage can be reused by the next part.
 pub(crate) fn import_fbx_material_corners<'a>(
 	context: &FbxMeshImportContext<'_>,
 	material_slot: usize,
 	corners: &[u32],
 	remap: &mut [u32],
 	materials: &ResolvedFbxMaterials,
-	layout: &mut Vec<VertexComponent, &'a dyn Allocator>,
-	layout_semantics: &mut VertexAttributeMask,
-	primitives: &mut Vec<OwnedMeshPrimitive<&'a dyn Allocator>, &'a dyn Allocator>,
+	processor: &mut MeshProcessorSession,
 	allocator: &'a dyn Allocator,
-) -> Result<(), FbxImportError> {
+) -> Result<usize, FbxMeshProcessingError> {
 	if corners.is_empty() {
-		return Ok(());
+		return Ok(0);
 	}
 
 	let material = materials.get(material_key_for_slot(context.material_node, context.mesh, material_slot))?;
-
+	let mut processed = 0;
 	for batch in remap_triangle_corners(context.mesh.num_indices, corners, remap, allocator)? {
-		primitives.push(import_fbx_primitive(
-			context,
-			material.clone(),
-			batch,
-			layout,
-			layout_semantics,
-			allocator,
-		)?);
+		let source = FbxPrimitiveSource::new(context, material, &batch)?;
+		processor.push_primitive(&source).map_err(|error| match error {
+			MeshPrimitiveProcessingError::Source(error) => FbxMeshProcessingError::Import(error),
+			MeshPrimitiveProcessingError::Processing(error) => FbxMeshProcessingError::Processing(error),
+		})?;
+		processed += 1;
 	}
-
-	Ok(())
+	Ok(processed)
 }
 
 /// The `TriangulatedFaceAppendResult` enum records whether a source face produced triangles or was malformed.
@@ -705,282 +939,6 @@ pub(crate) fn remap_triangle_corners<'a>(
 	}
 
 	Ok(batches)
-}
-
-/// Extracts one remapped FBX primitive while respecting independent per-corner attribute indices.
-pub(crate) fn import_fbx_primitive<'a>(
-	context: &FbxMeshImportContext<'_>,
-	material: ReferenceModel<VariantModel>,
-	batch: RemappedCorners<'a>,
-	layout: &mut Vec<VertexComponent, &'a dyn Allocator>,
-	layout_semantics: &mut VertexAttributeMask,
-	allocator: &'a dyn Allocator,
-) -> Result<OwnedMeshPrimitive<&'a dyn Allocator>, FbxImportError> {
-	if batch.source_corners.is_empty() {
-		return Err(FbxImportError::EmptyPrimitive);
-	}
-
-	let mesh = context.mesh;
-
-	let mut positions = Vec::with_capacity_in(batch.source_corners.len(), allocator);
-
-	let mut minimum = [f32::INFINITY; 3];
-
-	let mut maximum = [f32::NEG_INFINITY; 3];
-
-	let mut normals = context
-		.normal_matrix
-		.is_some()
-		.then(|| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	let mut tangents = context
-		.source_attributes
-		.contains(VertexSemantics::Tangent)
-		.then(|| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	let mut bitangents = context
-		.source_attributes
-		.contains(VertexSemantics::BiTangent)
-		.then(|| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	// Visibility rendering requires a UV stream even for untextured materials, so absent FBX UVs use the origin.
-	let mut uvs = Vec::with_capacity_in(batch.source_corners.len(), allocator);
-
-	let mut colors = context
-		.source_attributes
-		.contains(VertexSemantics::Color)
-		.then(|| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	let mut joints = context
-		.skin
-		.map(|_| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	let mut weights = context
-		.skin
-		.map(|_| Vec::with_capacity_in(batch.source_corners.len(), allocator));
-
-	for &source_corner in &batch.source_corners {
-		let corner = source_corner as usize;
-
-		let position = ufbx::transform_position(&context.node.geometry_to_world, mesh.vertex_position[corner]);
-
-		let position = vec3_to_f32(position, "mesh position")?;
-
-		for axis in 0..3 {
-			minimum[axis] = minimum[axis].min(position[axis]);
-
-			maximum[axis] = maximum[axis].max(position[axis]);
-		}
-
-		positions.push(position);
-
-		// Build a world-space orthonormal tangent frame so non-uniform instance scales do not skew shading inputs.
-		let normal = context
-			.normal_matrix
-			.as_ref()
-			.map(|normal_matrix| normalized_direction(normal_matrix, mesh.vertex_normal[corner]))
-			.transpose()?;
-
-		let transformed_bitangent = context
-			.source_attributes
-			.contains(VertexSemantics::BiTangent)
-			.then(|| normalized_direction(&context.node.geometry_to_world, mesh.vertex_bitangent[corner]))
-			.transpose()?;
-
-		let tangent = context
-			.source_attributes
-			.contains(VertexSemantics::Tangent)
-			.then(|| normalized_direction(&context.node.geometry_to_world, mesh.vertex_tangent[corner]))
-			.transpose()?
-			.map(|tangent| match normal {
-				Some(normal) => orthogonalized_direction(tangent, normal),
-				None => Ok(tangent),
-			})
-			.transpose()?;
-
-		if let Some(values) = normals.as_mut() {
-			values.push(normal.expect("normal output exists only when the FBX normal attribute exists"));
-		}
-
-		if let Some(values) = tangents.as_mut() {
-			let tangent = tangent.expect("tangent output exists only when the FBX tangent attribute exists");
-
-			let handedness = match (normal, transformed_bitangent) {
-				(Some(normal), Some(bitangent)) => tangent_handedness(normal, tangent, bitangent),
-				_ => 1.0,
-			};
-
-			values.push([tangent[0], tangent[1], tangent[2], handedness]);
-		}
-
-		if let Some(values) = bitangents.as_mut() {
-			let bitangent = match (normal, tangent, transformed_bitangent) {
-				(Some(normal), Some(tangent), Some(bitangent)) => {
-					let handedness = tangent_handedness(normal, tangent, bitangent);
-
-					scale_vec3(cross_vec3(normal, tangent), handedness)
-				}
-				(Some(normal), None, Some(bitangent)) => orthogonalized_direction(bitangent, normal)?,
-				(_, _, Some(bitangent)) => bitangent,
-				(_, _, None) => unreachable!("bitangent output exists only when the FBX bitangent attribute exists"),
-			};
-
-			values.push(bitangent);
-		}
-
-		if context.source_attributes.contains(VertexSemantics::UV) {
-			let uv = mesh.vertex_uv[corner];
-
-			// FBX UVs are bottom-left based, while baked image rows and material sampling are top-left based.
-			uvs.push([finite_f32(uv.x, "mesh UV")?, 1.0 - finite_f32(uv.y, "mesh UV")?]);
-		} else {
-			uvs.push([0.0, 0.0]);
-		}
-
-		if let Some(values) = colors.as_mut() {
-			let color = mesh.vertex_color[corner];
-
-			values.push([
-				finite_f32(color.x, "mesh color")?,
-				finite_f32(color.y, "mesh color")?,
-				finite_f32(color.z, "mesh color")?,
-				finite_f32(color.w, "mesh color")?,
-			]);
-		}
-
-		if let (Some(skin), Some(joints), Some(weights)) = (context.skin, joints.as_mut(), weights.as_mut()) {
-			let logical_vertex = *mesh.vertex_indices.get(corner).ok_or(FbxImportError::InvalidCornerIndex)? as usize;
-
-			let (vertex_joints, vertex_weights) = skin_weights(skin, logical_vertex, context.fallback_joint)?;
-
-			joints.push(vertex_joints);
-
-			weights.push(vertex_weights);
-		}
-	}
-
-	let bounds = [minimum, maximum];
-
-	let mut triangle_indices = batch.indices;
-
-	if context.mirrored {
-		// Preserve the configured global front face when an authored instance mirrors its flattened geometry.
-		for triangle in triangle_indices.chunks_exact_mut(3) {
-			triangle.swap(1, 2);
-		}
-	}
-
-	let mut primitive = OwnedMeshPrimitive::new_in(material, bounds, triangle_indices, allocator);
-
-	primitive.set_transform_node(context.transform_node);
-
-	primitive.set_skin(context.skin_index);
-
-	add_mesh_attribute(
-		&mut primitive,
-		layout,
-		layout_semantics,
-		VertexSemantics::Position,
-		"vec3f",
-		OwnedMeshAttributeData::F32x3(positions),
-	);
-
-	if let Some(values) = normals {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::Normal,
-			"vec3f",
-			OwnedMeshAttributeData::F32x3(values),
-		);
-	}
-
-	if let Some(values) = tangents {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::Tangent,
-			"vec4f",
-			OwnedMeshAttributeData::F32x4(values),
-		);
-	}
-
-	if let Some(values) = bitangents {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::BiTangent,
-			"vec3f",
-			OwnedMeshAttributeData::F32x3(values),
-		);
-	}
-
-	add_mesh_attribute(
-		&mut primitive,
-		layout,
-		layout_semantics,
-		VertexSemantics::UV,
-		"vec2f",
-		OwnedMeshAttributeData::F32x2(uvs),
-	);
-
-	if let Some(values) = colors {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::Color,
-			"vec4f",
-			OwnedMeshAttributeData::F32x4(values),
-		);
-	}
-
-	if let Some(values) = joints {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::Joints,
-			"vec4u16",
-			OwnedMeshAttributeData::U16x4(values),
-		);
-	}
-
-	if let Some(values) = weights {
-		add_mesh_attribute(
-			&mut primitive,
-			layout,
-			layout_semantics,
-			VertexSemantics::Weights,
-			"vec4f",
-			OwnedMeshAttributeData::F32x4(values),
-		);
-	}
-
-	Ok(primitive)
-}
-
-/// Adds attribute payload and records its shared layout declaration on first use.
-pub(crate) fn add_mesh_attribute<'a>(
-	primitive: &mut OwnedMeshPrimitive<&'a dyn Allocator>,
-	layout: &mut Vec<VertexComponent, &'a dyn Allocator>,
-	layout_semantics: &mut VertexAttributeMask,
-	semantic: VertexSemantics,
-	format: &str,
-	data: OwnedMeshAttributeData<&'a dyn Allocator>,
-) {
-	if layout_semantics.insert(semantic) {
-		layout.push(VertexComponent {
-			semantic,
-			format: format.to_string(),
-			channel: 0,
-		});
-	}
-
-	primitive.add_attribute(OwnedMeshAttribute::new(semantic, 0, data));
 }
 
 /// Selects and normalizes the four strongest influences, routing unweighted vertices to the animated mesh-node fallback.

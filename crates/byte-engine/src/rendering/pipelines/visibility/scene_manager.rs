@@ -343,8 +343,8 @@ mod tests {
 				candela: 100.0,
 				reference_distance_m: 1.0,
 			},
-			20.0_f32.to_radians(),
-			35.0_f32.to_radians(),
+			math::Degrees::new(20.0).to_radians(),
+			math::Degrees::new(35.0).to_radians(),
 		)
 		.expect("physical cone light");
 		let light_data = VisibilitySceneManager::make_light_data(
@@ -365,8 +365,11 @@ mod tests {
 
 	#[test]
 	fn ies_point_light_data_activates_only_after_its_profile_upload() {
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::y_axis(), std::f32::consts::FRAC_PI_2)
-			.expect("finite IES orientation");
+		let orientation = Orientation::try_from_axis_angle(
+			UnitVector::<WorldSpace>::y_axis(),
+			math::Radians::new(std::f32::consts::FRAC_PI_2),
+		)
+		.expect("finite IES orientation");
 		let light = PointLight::new_ies(
 			Point::new(1.0, 2.0, 3.0),
 			orientation,
@@ -400,16 +403,19 @@ mod tests {
 
 	#[test]
 	fn ies_cone_light_data_applies_profile_scale_and_packs_the_c0_tangent() {
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), std::f32::consts::FRAC_PI_2)
-			.expect("finite IES orientation");
+		let orientation = Orientation::try_from_axis_angle(
+			UnitVector::<WorldSpace>::x_axis(),
+			math::Radians::new(std::f32::consts::FRAC_PI_2),
+		)
+		.expect("finite IES orientation");
 		let light = ConeLight::new_ies(
 			Point::origin(),
 			orientation,
 			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
 			1.0,
 			"lights/spot.ies",
-			0.25,
-			0.5,
+			math::Radians::new(0.25),
+			math::Radians::new(0.5),
 		)
 		.expect("physical IES cone light");
 		let light_data = VisibilitySceneManager::make_light_data(

@@ -105,7 +105,8 @@ impl PhysicsBody {
 		let delta_orientation = angular_step
 			.normalize_with_length()
 			.map(|(axis, angle)| {
-				Orientation::try_from_axis_angle(axis, angle).expect("a finite unit axis and finite angle form an orientation")
+				Orientation::try_from_axis_angle(axis, math::Radians::new(angle))
+					.expect("a finite unit axis and finite angle form an orientation")
 			})
 			.unwrap_or_else(|_| Orientation::identity());
 		self.orientation = delta_orientation.compose(self.orientation);

@@ -174,8 +174,11 @@ mod tests {
 
 	#[test]
 	fn ies_point_keeps_its_profile_and_complete_orientation() {
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), std::f32::consts::FRAC_PI_2)
-			.expect("finite IES orientation");
+		let orientation = Orientation::try_from_axis_angle(
+			UnitVector::<WorldSpace>::x_axis(),
+			math::Radians::new(std::f32::consts::FRAC_PI_2),
+		)
+		.expect("finite IES orientation");
 		let light = PointLight::new_ies(
 			Point::origin(),
 			orientation,

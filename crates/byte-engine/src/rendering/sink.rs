@@ -49,7 +49,14 @@ mod tests {
 
 	#[test]
 	fn sink_keeps_view_extent_index_and_derived_matrix_consistent() {
-		let view = View::new_perspective(60.0, 16.0 / 9.0, 0.1, 500.0, Point::origin(), UnitVector::z_axis());
+		let view = View::new_perspective(
+			math::Degrees::new(60.0),
+			16.0 / 9.0,
+			0.1,
+			500.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
 		let extent = Extent::rectangle(1_920, 1_080);
 		let sink = Sink::new(view, extent, 3);
 

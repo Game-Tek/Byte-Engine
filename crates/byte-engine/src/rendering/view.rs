@@ -1,4 +1,4 @@
-use math::{inverse, orthographic_matrix, projection_matrix, Matrix, Plane, Point, UnitVector, Vector, WorldSpace};
+use math::{inverse, orthographic_matrix, projection_matrix, Degrees, Matrix, Plane, Point, UnitVector, Vector, WorldSpace};
 use maths_rs::{mat::MatTranslate as _, Vec3f, Vec4f};
 
 use crate::gameplay::transform::Transform;
@@ -12,13 +12,20 @@ pub struct View {
 
 	near: f32,
 	far: f32,
-	y_fov: f32,
+	y_fov: Degrees,
 	aspect_ratio: f32,
 }
 
 impl View {
 	/// Creates a perspective view for camera-style scene rendering.
-	pub fn new_perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32, position: Point, direction: UnitVector) -> Self {
+	pub fn new_perspective(
+		fov: Degrees,
+		aspect_ratio: f32,
+		near: f32,
+		far: f32,
+		position: Point,
+		direction: UnitVector,
+	) -> Self {
 		Self {
 			projection: projection_matrix(fov, aspect_ratio, near, far),
 			view: world_view_matrix(position, direction),
@@ -31,7 +38,7 @@ impl View {
 
 	/// Creates a perspective view with an explicit up direction when a stable image orientation matters.
 	pub fn new_perspective_with_up(
-		fov: f32,
+		fov: Degrees,
 		aspect_ratio: f32,
 		near: f32,
 		far: f32,
@@ -69,7 +76,7 @@ impl View {
 			view: world_view_matrix(position, direction),
 			near,
 			far,
-			y_fov: 0.0,
+			y_fov: Degrees::new(0.0),
 			aspect_ratio: 0.0,
 		}
 	}
@@ -119,12 +126,12 @@ impl View {
 	}
 
 	/// Returns the horizontal field of view derived from the vertical field of view.
-	pub fn x_fov(&self) -> f32 {
-		self.y_fov * self.aspect_ratio
+	pub fn x_fov(&self) -> Degrees {
+		Degrees::new(self.y_fov.value() * self.aspect_ratio)
 	}
 
 	/// Returns the vertical field of view used by perspective projections.
-	pub fn y_fov(&self) -> f32 {
+	pub fn y_fov(&self) -> Degrees {
 		self.y_fov
 	}
 
@@ -140,7 +147,7 @@ impl View {
 
 	/// Returns the horizontal and vertical fields of view.
 	pub fn fov(&self) -> [f32; 2] {
-		[self.x_fov(), self.y_fov()]
+		[self.x_fov().value(), self.y_fov().value()]
 	}
 
 	/// Returns the width-to-height aspect ratio used by perspective projections.
@@ -247,7 +254,7 @@ mod tests {
 
 	#[test]
 	fn perspective_view_returns_world_space_frustum_points() {
-		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let corners = view.get_frustum_corners();
 
 		assert_point_near(corners[0], Point::new(-100.0, -100.0, 100.0));
@@ -265,7 +272,7 @@ mod tests {
 
 	#[test]
 	fn frustum_planes_keep_checked_world_space_normals() {
-		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let view = View::new_perspective(Degrees::new(90.0), 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
 		let planes = view.get_frustum_planes();
 
 		assert!((planes[0].normal().x() - 0.707).abs() < 0.001);

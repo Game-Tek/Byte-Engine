@@ -1,4 +1,4 @@
-use math::{direction_from_orientation, orientation_from_direction, Orientation, Point, UnitVector, WorldSpace};
+use math::{direction_from_orientation, orientation_from_direction, Orientation, Point, Radians, UnitVector, WorldSpace};
 use maths_rs::Vec3f;
 
 use super::{IesProfile, LightColor, PhotometricError, PhotometricIntensity};
@@ -19,8 +19,8 @@ pub struct ConeLight {
 	pub position: Point,
 	orientation: Orientation,
 	pub color: Vec3f,
-	pub inner_angle: f32,
-	pub outer_angle: f32,
+	pub inner_angle: Radians,
+	pub outer_angle: Radians,
 	ies_profile: Option<IesProfile>,
 	shadow_near_override: Option<f32>,
 	shadow_far_override: Option<f32>,
@@ -44,8 +44,8 @@ impl ConeLight {
 		direction: UnitVector,
 		color: LightColor,
 		intensity: PhotometricIntensity,
-		inner_angle: f32,
-		outer_angle: f32,
+		inner_angle: Radians,
+		outer_angle: Radians,
 	) -> Result<Self, PhotometricError> {
 		Self::validate_angles(inner_angle, outer_angle);
 		let chromaticity = color.resolve()?;
@@ -89,8 +89,8 @@ impl ConeLight {
 		color: LightColor,
 		dimmer: f32,
 		ies_profile_resource_id: impl Into<String>,
-		inner_angle: f32,
-		outer_angle: f32,
+		inner_angle: Radians,
+		outer_angle: Radians,
 	) -> Result<Self, PhotometricError> {
 		Self::validate_angles(inner_angle, outer_angle);
 		let chromaticity = color.resolve()?;
@@ -137,13 +137,13 @@ impl ConeLight {
 	}
 
 	/// Validates the angular range shared by uniform and IES-backed cone lights.
-	fn validate_angles(inner_angle: f32, outer_angle: f32) {
+	fn validate_angles(inner_angle: Radians, outer_angle: Radians) {
 		assert!(
-			inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= 0.0 && inner_angle < outer_angle,
+			inner_angle.is_finite() && outer_angle.is_finite() && inner_angle >= Radians::new(0.0) && inner_angle < outer_angle,
 			"Invalid cone light angles. The most likely cause is that the angles are not finite or the inner angle is not smaller than the outer angle."
 		);
 		assert!(
-			outer_angle <= std::f32::consts::PI,
+			outer_angle <= Radians::new(std::f32::consts::PI),
 			"Invalid cone light outer angle. The most likely cause is that the supplied half angle exceeds pi radians."
 		);
 	}
@@ -179,7 +179,7 @@ impl ConeLight {
 
 	/// Returns whether this light's cone fits in one perspective shadow view.
 	pub fn supports_shadow_mapping(&self) -> bool {
-		self.outer_angle < std::f32::consts::FRAC_PI_2
+		self.outer_angle < Radians::new(std::f32::consts::FRAC_PI_2)
 	}
 }
 
@@ -207,7 +207,7 @@ impl Inspectable for ConeLight {
 
 #[cfg(test)]
 mod tests {
-	use math::{direction_from_orientation, Orientation, Point, UnitVector, WorldSpace};
+	use math::{direction_from_orientation, Orientation, Point, Radians, UnitVector, WorldSpace};
 
 	use super::ConeLight;
 	use crate::rendering::lights::{IesProfile, LightColor, PhotometricIntensity};
@@ -222,16 +222,17 @@ mod tests {
 
 	#[test]
 	fn ies_cone_keeps_its_profile_and_complete_orientation() {
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::y_axis(), std::f32::consts::FRAC_PI_2)
-			.expect("finite IES orientation");
+		let orientation =
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::y_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
+				.expect("finite IES orientation");
 		let light = ConeLight::new_ies(
 			Point::origin(),
 			orientation,
 			LightColor::Kelvin(4_500.0),
 			0.25,
 			"lights/office.ies",
-			0.25,
-			0.5,
+			Radians::new(0.25),
+			Radians::new(0.5),
 		)
 		.expect("physical IES cone light");
 		let expected_c0 = orientation
@@ -255,8 +256,8 @@ mod tests {
 			-UnitVector::y_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
-			0.25,
-			0.5,
+			Radians::new(0.25),
+			Radians::new(0.5),
 		)
 		.expect("physical cone light")
 		.with_shadow_range(0.2, 75.0);
@@ -272,8 +273,8 @@ mod tests {
 			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
-			0.25,
-			0.5,
+			Radians::new(0.25),
+			Radians::new(0.5),
 		)
 		.expect("physical cone light")
 		.with_shadow_range(0.2, 75.0)
@@ -291,8 +292,8 @@ mod tests {
 			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
-			0.25,
-			std::f32::consts::PI,
+			Radians::new(0.25),
+			Radians::new(std::f32::consts::PI),
 		)
 		.expect("physical cone light");
 

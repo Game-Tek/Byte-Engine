@@ -2,7 +2,7 @@ use std::fmt;
 
 use maths_rs::Quatf;
 
-use crate::{orientation_from_direction, Matrix, UnitVector, Vector};
+use crate::{orientation_from_direction, Matrix, Radians, UnitVector, Vector};
 
 /// The `Orientation` struct provides a normalized, finite rotation for engine transforms.
 ///
@@ -65,16 +65,16 @@ impl Orientation {
 		})
 	}
 
-	/// Creates a rotation around a checked axis by a finite angle in radians.
+	/// Creates a rotation around a checked axis by a finite [`Radians`] value.
 	///
 	/// Use [`crate::from_rotation`] only when the destination specifically requires a [`Matrix`].
-	pub fn try_from_axis_angle<Space>(axis: UnitVector<Space>, angle: f32) -> Result<Self, OrientationError> {
+	pub fn try_from_axis_angle<Space>(axis: UnitVector<Space>, angle: Radians) -> Result<Self, OrientationError> {
 		if !angle.is_finite() {
 			return Err(OrientationError::NonFiniteAngle);
 		}
 
 		// The axis is already finite and unit length; normalization protects the invariant from rounding.
-		Self::try_from_maths(Quatf::from_axis_angle(axis.into_maths(), angle))
+		Self::try_from_maths(Quatf::from_axis_angle(axis.into_maths(), angle.value()))
 	}
 
 	/// Returns this orientation as an explicit raw [`crate::Quaternion`] for a maths integration boundary.
@@ -144,7 +144,7 @@ mod tests {
 	use maths_rs::Quatf;
 
 	use super::{Orientation, OrientationError};
-	use crate::{UnitVector, Vector, WorldSpace};
+	use crate::{Radians, UnitVector, Vector, WorldSpace};
 
 	#[test]
 	fn raw_construction_normalizes_finite_quaternions() {
@@ -168,7 +168,8 @@ mod tests {
 	#[test]
 	fn axis_angle_construction_rotates_a_world_vector() {
 		let orientation =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::z_axis(), std::f32::consts::FRAC_PI_2).unwrap();
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::z_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
+				.unwrap();
 		let rotated = orientation.rotate_vector(Vector::<WorldSpace>::new(1.0, 0.0, 0.0));
 
 		assert!(rotated.x().abs() < 0.0001);
@@ -179,9 +180,11 @@ mod tests {
 	#[test]
 	fn composition_matches_sequential_rotation() {
 		let around_x =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), std::f32::consts::FRAC_PI_2).unwrap();
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
+				.unwrap();
 		let around_z =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::z_axis(), std::f32::consts::FRAC_PI_2).unwrap();
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::z_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
+				.unwrap();
 		let vector = Vector::<WorldSpace>::new(0.0, 1.0, 0.0);
 
 		let composed = around_z.compose(around_x).rotate_vector(vector);

@@ -311,7 +311,14 @@ mod tests {
 	/// Builds the production sky parameter layout with deterministic default atmosphere values.
 	fn default_parameters(program: &besl::vm::ExecutableProgram, parameter_slot: ResourceSlot) -> Buffer {
 		let settings = super::AtmosphereSkyRenderPassSettings::default();
-		let view = crate::rendering::View::new_perspective(60.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let view = crate::rendering::View::new_perspective(
+			math::Degrees::new(60.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
 		let inverse_view_projection = ShaderMatrix::from(inverse(view.view_projection())).0;
 		let sun_direction = settings.sun_direction;
 		let mut parameters = buffer(program, parameter_slot);

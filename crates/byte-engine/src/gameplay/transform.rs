@@ -186,8 +186,8 @@ mod tests {
 
 	#[test]
 	fn transformable_traits_share_one_transform() {
-		let orientation =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), 0.25).expect("finite axis-angle orientation");
+		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), math::Radians::new(0.25))
+			.expect("finite axis-angle orientation");
 		let mut entity = SpatialEntity {
 			transform: Transform::default(),
 		};

@@ -13,6 +13,8 @@
 //! - [`Orientation`] → [`Quaternion`]: call [`Orientation::into_maths`] when an integration requires the raw quaternion.
 //! - [`Orientation`] → [`Matrix`]: call [`Orientation::into_matrix`] when rendering or physics requires a homogeneous rotation matrix.
 //! - axis and angle → [`Orientation`]: call [`Orientation::try_from_axis_angle`]. Use [`from_rotation`] only when the destination specifically requires a matrix.
+//! - [`Degrees`] ↔ [`Radians`]: call [`Degrees::to_radians`] or [`Radians::to_degrees`]. APIs use
+//!   the unit they require, so construct the matching branded value at an input boundary.
 //!
 //! A direction does not contain roll, so converting an [`Orientation`] to a [`UnitVector`] and back cannot preserve the original orientation. Keep an [`Orientation`] when you need the complete rotation.
 //!
@@ -24,6 +26,7 @@
 //! [`Orientation`], [`UnitVector`], or axis and angle if you will need it after building a matrix.
 //! The crate also does not extract an axis and angle from an [`Orientation`].
 
+mod angle;
 mod geometry;
 mod orientation;
 mod scale;
@@ -35,6 +38,7 @@ pub mod ray;
 pub mod sphere;
 
 pub use aabb::AABB;
+pub use angle::{Degrees, Radians};
 pub use geometry::{NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace};
 use maths_rs::mat::{MatNew4, MatTranspose as _};
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
@@ -200,11 +204,11 @@ pub fn from_normal<Space>(normal: UnitVector<Space>) -> Matrix {
 /// Use [`Orientation::try_from_axis_angle`] when you need to compose or retain the rotation. Call
 /// this function when the destination specifically requires a [`Matrix`].
 ///
-/// There is no matching matrix-to-axis-angle conversion. Retain `axis` and `theta` if you will
+/// There is no matching matrix-to-axis-angle conversion. Retain `axis` and `angle` if you will
 /// need them later.
-pub fn from_rotation<Space>(axis: UnitVector<Space>, theta: f32) -> Matrix {
-	let c = theta.cos();
-	let s = -theta.sin();
+pub fn from_rotation<Space>(axis: UnitVector<Space>, angle: Radians) -> Matrix {
+	let c = angle.cos();
+	let s = -angle.sin();
 	let one_minus_c = 1.0 - c;
 	let x = axis.x();
 	let y = axis.y();
@@ -263,9 +267,11 @@ pub fn direction_from_orientation(orientation: Orientation) -> UnitVector {
 	UnitVector::try_from_vector(rotated_forward).expect("valid orientations preserve unit directions")
 }
 
-/// Returns a left-handed perspective projection matrix with a zero-to-one depth range.
-pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> Matrix {
-	let h = 1.0 / (fov * 0.5).to_radians().tan();
+/// Returns a left-handed perspective projection matrix from a vertical field of view in degrees.
+///
+/// The resulting matrix uses a zero-to-one depth range.
+pub fn projection_matrix(fov: Degrees, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> Matrix {
+	let h = 1.0 / (fov.to_radians() * 0.5).tan();
 	let w = h / aspect_ratio;
 	let range = far_plane - near_plane;
 	let a = -near_plane / range;

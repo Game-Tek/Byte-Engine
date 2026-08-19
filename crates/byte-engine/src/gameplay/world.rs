@@ -269,11 +269,11 @@ mod tests {
 		let handle: Handle = world.create(Camera::new()).into();
 		let _ = cameras.read().expect("camera creation");
 
-		world.set(Camera::new().with_fov(72.0)).on(handle);
+		world.set(Camera::new().with_fov(math::Degrees::new(72.0))).on(handle);
 
 		let update = cameras.read().expect("camera update");
 
 		assert_eq!(update.handle(), &handle);
-		assert_eq!(update.data().vertical_fov(), 72.0);
+		assert_eq!(update.data().vertical_fov(), math::Degrees::new(72.0));
 	}
 }

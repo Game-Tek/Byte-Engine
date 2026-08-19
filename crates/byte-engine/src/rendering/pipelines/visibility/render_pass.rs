@@ -154,7 +154,7 @@ mod tests {
 	fn fast_gtao_view_reconstructs_pixel_rays_and_reversed_depth() {
 		let extent = Extent::rectangle(1920, 1080);
 		let view = View::new_perspective(
-			60.0,
+			math::Degrees::new(60.0),
 			extent.width() as f32 / extent.height() as f32,
 			0.1,
 			100.0,
@@ -211,7 +211,7 @@ mod tests {
 		let extent_x = 1920i32;
 		let extent_y = 1080i32;
 
-		let proj = math::projection_matrix(fov, aspect, near, far);
+		let proj = math::projection_matrix(math::Degrees::new(fov), aspect, near, far);
 		let inv_proj = inverse(proj);
 
 		// Simulate what the GTAO shader does: reconstruct positions for center + neighbors
@@ -308,7 +308,7 @@ mod tests {
 		let extent_x = 1920i32;
 		let extent_y = 1080i32;
 
-		let proj = math::projection_matrix(fov, aspect, near, far);
+		let proj = math::projection_matrix(math::Degrees::new(fov), aspect, near, far);
 		let inv_proj = inverse(proj);
 
 		let reconstruct = |px: i32, py: i32, depth: f32| -> Vec3f {

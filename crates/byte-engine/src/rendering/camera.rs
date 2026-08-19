@@ -3,7 +3,7 @@
 pub struct Camera {
 	position: Point,
 	orientation: Orientation,
-	fov: f32,
+	fov: Degrees,
 	aspect_ratio: f32,
 	aperture: f32,
 	focus_distance: f32,
@@ -15,7 +15,7 @@ impl Camera {
 		Self {
 			position: Point::origin(),
 			orientation: Orientation::identity(),
-			fov: 45.0,
+			fov: Degrees::new(45.0),
 			aspect_ratio: 1.0,
 			aperture: 0.0,
 			focus_distance: 0.0,
@@ -23,7 +23,7 @@ impl Camera {
 	}
 
 	/// Returns the camera's vertical field of view.
-	pub fn vertical_fov(&self) -> f32 {
+	pub fn vertical_fov(&self) -> Degrees {
 		self.fov
 	}
 
@@ -70,13 +70,13 @@ impl Camera {
 	}
 
 	/// Sets the vertical field of view used by perspective rendering.
-	pub fn with_fov(mut self, fov: f32) -> Self {
+	pub fn with_fov(mut self, fov: Degrees) -> Self {
 		self.set_fov(fov);
 		self
 	}
 
 	/// Sets the vertical field of view used by perspective rendering.
-	pub fn set_fov(&mut self, fov: f32) {
+	pub fn set_fov(&mut self, fov: Degrees) {
 		self.fov = fov;
 	}
 
@@ -104,9 +104,9 @@ impl Inspectable for Camera {
 	fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
 		match key {
 			"fov" => {
-				self.set_fov(value.parse().map_err(|e| {
+				self.set_fov(Degrees::new(value.parse().map_err(|e| {
 					format!("Invalid camera field value. The most likely cause is that fov is not a number: {e}")
-				})?);
+				})?));
 				Ok(())
 			}
 			_ => Err(format!(
@@ -132,7 +132,7 @@ mod tests {
 
 		assert_eq!(camera.position(), Point::origin());
 		assert_eq!(camera.direction(), UnitVector::z_axis());
-		assert_eq!(camera.vertical_fov(), 45.0);
+		assert_eq!(camera.vertical_fov(), Degrees::new(45.0));
 		assert_eq!(camera.aspect_ratio(), 1.0);
 		assert_eq!(camera.aperture(), 0.0);
 		assert_eq!(camera.focus_distance(), 0.0);
@@ -154,28 +154,28 @@ mod tests {
 	fn position_orientation_and_inspector_updates_share_camera_state() {
 		let mut camera = Camera::new();
 		camera.set_position(Point::new(1.0, 2.0, 3.0));
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<math::WorldSpace>::y_axis(), 0.5)
+		let orientation = Orientation::try_from_axis_angle(UnitVector::<math::WorldSpace>::y_axis(), math::Radians::new(0.5))
 			.expect("finite angle around a checked axis");
 		<Camera as Orientable>::set_orientation(&mut camera, orientation);
 		camera.set("fov", "72.5").expect("numeric field of view");
 
 		assert_eq!(camera.position(), Point::new(1.0, 2.0, 3.0));
-		assert_eq!(camera.vertical_fov(), 72.5);
+		assert_eq!(camera.vertical_fov(), Degrees::new(72.5));
 		assert!(camera.as_string().contains("72.5"));
 
 		let invalid = camera.set("fov", "wide").expect_err("non-numeric field of view");
 
 		assert!(invalid.contains("most likely cause"));
-		assert_eq!(camera.vertical_fov(), 72.5);
+		assert_eq!(camera.vertical_fov(), Degrees::new(72.5));
 
 		let unknown = camera.set("exposure", "1").expect_err("unsupported field");
 
 		assert!(unknown.contains("most likely cause"));
-		assert_eq!(camera.vertical_fov(), 72.5);
+		assert_eq!(camera.vertical_fov(), Degrees::new(72.5));
 	}
 }
 
-use math::{direction_from_orientation, orientation_from_direction, Orientation, Point, UnitVector, Vector};
+use math::{direction_from_orientation, orientation_from_direction, Degrees, Orientation, Point, UnitVector, Vector};
 
 use crate::core::{Entity, EntityHandle};
 use crate::inspector::Inspectable;

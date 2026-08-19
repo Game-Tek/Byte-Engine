@@ -188,7 +188,7 @@ impl PhotometricIntensity {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when a required magnitude, distance, or area is not positive and finite.
-	pub fn cone_candela(self, inner_angle: f32, outer_angle: f32) -> Result<f32, PhotometricError> {
+	pub fn cone_candela(self, inner_angle: math::Radians, outer_angle: math::Radians) -> Result<f32, PhotometricError> {
 		let effective_solid_angle = std::f32::consts::PI * (2.0 - inner_angle.cos() - outer_angle.cos());
 		self.local_candela(effective_solid_angle)
 	}
@@ -360,8 +360,8 @@ mod tests {
 
 	#[test]
 	fn cone_flux_uses_the_soft_cone_effective_solid_angle() {
-		let inner = 20.0_f32.to_radians();
-		let outer = 40.0_f32.to_radians();
+		let inner = math::Degrees::new(20.0).to_radians();
+		let outer = math::Degrees::new(40.0).to_radians();
 		let solid_angle = std::f32::consts::PI * (2.0 - inner.cos() - outer.cos());
 		let intensity = PhotometricIntensity::LuminousFlux {
 			lumens: 250.0 * solid_angle,

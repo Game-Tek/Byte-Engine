@@ -693,8 +693,8 @@ mod tests {
 				candela: 100.0,
 				reference_distance_m: 1.0,
 			},
-			15.0_f32.to_radians(),
-			30.0_f32.to_radians(),
+			math::Degrees::new(15.0).to_radians(),
+			math::Degrees::new(30.0).to_radians(),
 		)
 		.expect("physical cone light")
 	}
@@ -715,7 +715,7 @@ mod tests {
 	/// Creates a visibility sink for shadow-selection tests.
 	fn sink(position: Point) -> Sink {
 		Sink::new(
-			View::new_perspective(90.0, 1.0, 0.1, 100.0, position, UnitVector::z_axis()),
+			View::new_perspective(math::Degrees::new(90.0), 1.0, 0.1, 100.0, position, UnitVector::z_axis()),
 			Extent::square(1),
 			0,
 		)
@@ -733,8 +733,8 @@ mod tests {
 						candela: 100.0,
 						reference_distance_m: 1.0,
 					},
-					0.25,
-					std::f32::consts::PI,
+					math::Radians::new(0.25),
+					math::Radians::new(std::f32::consts::PI),
 				)
 				.expect("physical cone light"),
 			),
@@ -1045,7 +1045,7 @@ mod tests {
 
 			let ndc = clip / clip.w;
 
-			assert!((view.y_fov() - 90.0).abs() < 0.0001);
+			assert!((view.y_fov().value() - 90.0).abs() < 0.0001);
 			assert_eq!(view.near(), 0.2);
 			assert_eq!(view.far(), 50.0);
 			assert!(ndc.x.abs() < 0.0001 && ndc.y.abs() < 0.0001);
@@ -1128,7 +1128,7 @@ mod tests {
 
 		let automatic_far = (100.0 / CONE_SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
-		assert!((view.y_fov() - 60.0).abs() < 0.0001);
+		assert!((view.y_fov().value() - 60.0).abs() < 0.0001);
 		assert_eq!(view.near(), CONE_SHADOW_NEAR_M);
 		assert_eq!(CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, 0.125);
 		assert!((view.far() - automatic_far).abs() < 0.0001);

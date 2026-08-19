@@ -784,7 +784,7 @@ mod tests {
 	fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
 		let near = 0.1f32;
 		let far = 100.0f32;
-		let projection = math::projection_matrix(60.0, width as f32 / height as f32, near, far);
+		let projection = math::projection_matrix(math::Degrees::new(60.0), width as f32 / height as f32, near, far);
 		let projection_x = projection[0];
 		let projection_y = projection[5];
 		let width = width as f32;
@@ -873,7 +873,7 @@ mod tests {
 	/// Executes GTAO over a flat floor whose pixel footprint crosses the former absolute normal cutoff.
 	fn run_gtao_floor_fixture(program: &ExecutableProgram, camera_height: f32, coordinate: [u32; 2]) -> [f32; 4] {
 		const EXTENT: u32 = 64;
-		let projection = math::projection_matrix(60.0, 1.0, 0.1, 100.0);
+		let projection = math::projection_matrix(math::Degrees::new(60.0), 1.0, 0.1, 100.0);
 		let ray_mul_y = -2.0 / (EXTENT as f32 * projection[5]);
 		let ray_add_y = (1.0 - 1.0 / EXTENT as f32) / projection[5];
 		let mut linear_depth = vec![[0.0, 0.0, 0.0, 1.0]; (EXTENT * EXTENT) as usize];

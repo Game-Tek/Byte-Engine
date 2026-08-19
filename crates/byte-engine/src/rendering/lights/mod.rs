@@ -99,8 +99,8 @@ mod tests {
 				lumens: 1_000.0,
 				directional_beam_area_m2: 1.0,
 			},
-			15.0_f32.to_radians(),
-			25.0_f32.to_radians(),
+			math::Degrees::new(15.0).to_radians(),
+			math::Degrees::new(25.0).to_radians(),
 		)
 		.expect("physical cone light");
 		let point = PointLight::new(Point::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
@@ -139,8 +139,8 @@ mod tests {
 			-UnitVector::y_axis(),
 			white(),
 			candela(100.0),
-			0.25,
-			0.5,
+			math::Radians::new(0.25),
+			math::Radians::new(0.5),
 		)
 		.expect("physical cone light");
 		let point = PointLight::new(Point::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");

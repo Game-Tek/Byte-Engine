@@ -329,7 +329,7 @@ pub(crate) fn make_point_shadow_view(
 		5 => (-UnitVector::z_axis(), UnitVector::y_axis()),
 		_ => unreachable!("Point shadow face is invalid. The most likely cause is a cube map dispatch outside its six faces."),
 	};
-	View::new_perspective_with_up(90.0, 1.0, near, far, light.position, direction, up)
+	View::new_perspective_with_up(math::Degrees::new(90.0), 1.0, near, far, light.position, direction, up)
 }
 
 /// Returns the conservative sphere that bounds cone-shadow coverage.
@@ -390,7 +390,7 @@ pub(crate) fn shadow_view_importance(bounds: math::Sphere, sink: &Sink) -> Optio
 	let center_x = clip_center.x / clip_center.w;
 	let center_y = clip_center.y / clip_center.w;
 	let depth_to_nearest_bound = depth - radius;
-	let (radius_x, radius_y) = if view.y_fov() > 0.0 {
+	let (radius_x, radius_y) = if view.y_fov() > math::Degrees::new(0.0) {
 		(
 			radius * projection[0].abs() / depth_to_nearest_bound,
 			radius * projection[5].abs() / depth_to_nearest_bound,

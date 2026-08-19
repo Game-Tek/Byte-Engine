@@ -116,7 +116,14 @@ mod tests {
 
 	#[test]
 	fn cascade_split_ranges_partition_the_camera_frustum() {
-		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let camera_view = View::new_perspective(
+			math::Degrees::new(90.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
 		let ranges = make_cascade_split_ranges(camera_view, 4).collect::<SmallVec<[(f32, f32); 4]>>();
 
 		assert_eq!(ranges.len(), 4);
@@ -127,7 +134,14 @@ mod tests {
 
 	#[test]
 	fn cascade_views_keep_the_frustum_center_inside_light_depth() {
-		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let camera_view = View::new_perspective(
+			math::Degrees::new(90.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
 		let shadow_view = make_csm_views(camera_view, UnitVector::z_axis(), 1, 2048)
 			.next()
 			.expect("a shadow cascade view");
@@ -141,7 +155,7 @@ mod tests {
 	#[test]
 	fn cascade_radius_is_quantized_to_texel_steps() {
 		let view = View::new_perspective(
-			75.0,
+			math::Degrees::new(75.0),
 			16.0 / 9.0,
 			0.1,
 			100.0,
@@ -158,7 +172,7 @@ mod tests {
 	#[test]
 	fn texel_snapping_aligns_the_cascade_center() {
 		let view = View::new_perspective(
-			75.0,
+			math::Degrees::new(75.0),
 			16.0 / 9.0,
 			0.1,
 			100.0,
@@ -189,7 +203,14 @@ mod tests {
 	fn shadow_view_matrices_are_orthonormal_for_cardinal_and_diagonal_directions() {
 		use maths_rs::{dot, length, Vec3f};
 
-		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Point::origin(), UnitVector::z_axis());
+		let camera_view = View::new_perspective(
+			math::Degrees::new(90.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
 		let directions = [
 			UnitVector::y_axis(),
 			-UnitVector::y_axis(),
@@ -218,7 +239,14 @@ mod tests {
 
 	#[test]
 	fn zenith_light_keeps_vertical_casters_on_one_shadow_texel_column() {
-		let camera_view = View::new_perspective(75.0, 1.0, 0.1, 100.0, Point::new(0.0, 2.0, 0.0), UnitVector::z_axis());
+		let camera_view = View::new_perspective(
+			math::Degrees::new(75.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::new(0.0, 2.0, 0.0),
+			UnitVector::z_axis(),
+		);
 		let floor = Vec4f::new(1.25, 0.0, 5.0, 1.0);
 		let caster = Vec4f::new(1.25, 3.0, 5.0, 1.0);
 

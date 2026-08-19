@@ -204,7 +204,7 @@ pub(crate) fn resolve_gltf_uri(mesh_url: ResourceId<'_>, uri: &str) -> Result<St
 pub(crate) fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Data, LoadErrors> {
 	let image = image::load_from_memory(bytes).map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let rgba = image.to_rgba8();
+	let rgba = image.into_rgba8();
 
 	let (width, height) = rgba.dimensions();
 
@@ -224,33 +224,32 @@ pub(crate) fn store_gltf_image(
 	semantic: Semantic,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<crate::SerializableResource, LoadErrors> {
-	let format = gltf_image_format(image.format)?;
+	let (channels, encoding) = gltf_image_source_layout(image.format)?;
+	let extent = Extent::rectangle(image.width, image.height);
 
 	let image_description = ImageDescription {
-		format,
-		extent: Extent::rectangle(image.width, image.height),
 		semantic,
 		gamma: gamma_from_semantic(semantic),
 		generate_mipmaps: mip_backend.is_some(),
 	};
+	let source = ImageSource::new(extent, channels, encoding, &image.pixels);
 
-	let (resource, data) = process_image_with_mip_backend_in(
-		id,
-		image_description,
-		image.pixels.into_boxed_slice(),
-		context.allocator(),
-		mip_backend,
-	)?;
+	let (resource, data) = process_image_with_mip_backend_in(id, image_description, source, context.allocator(), mip_backend)?;
 
 	context.store_resource(resource, &data)
 }
 
-pub(crate) fn gltf_image_format(format: gltf::image::Format) -> Result<Formats, LoadErrors> {
+/// Maps glTF decoder layouts to the source metadata consumed by the common image processor.
+pub(crate) fn gltf_image_source_layout(format: gltf::image::Format) -> Result<(SourceChannels, SourceEncoding), LoadErrors> {
 	match format {
-		gltf::image::Format::R8G8B8 => Ok(Formats::RGB8),
-		gltf::image::Format::R8G8B8A8 => Ok(Formats::RGBA8),
-		gltf::image::Format::R16G16B16 => Ok(Formats::RGB16),
-		gltf::image::Format::R16G16B16A16 => Ok(Formats::RGBA16),
+		gltf::image::Format::R8 => Ok((SourceChannels::Luminance, SourceEncoding::U8)),
+		gltf::image::Format::R8G8 => Ok((SourceChannels::LuminanceAlpha, SourceEncoding::U8)),
+		gltf::image::Format::R8G8B8 => Ok((SourceChannels::RGB, SourceEncoding::U8)),
+		gltf::image::Format::R8G8B8A8 => Ok((SourceChannels::RGBA, SourceEncoding::U8)),
+		gltf::image::Format::R16 => Ok((SourceChannels::Luminance, SourceEncoding::U16NativeEndian)),
+		gltf::image::Format::R16G16 => Ok((SourceChannels::LuminanceAlpha, SourceEncoding::U16NativeEndian)),
+		gltf::image::Format::R16G16B16 => Ok((SourceChannels::RGB, SourceEncoding::U16NativeEndian)),
+		gltf::image::Format::R16G16B16A16 => Ok((SourceChannels::RGBA, SourceEncoding::U16NativeEndian)),
 		_ => Err(LoadErrors::UnsupportedType),
 	}
 }

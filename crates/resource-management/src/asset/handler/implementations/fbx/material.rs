@@ -278,15 +278,19 @@ pub(crate) async fn load_and_store_fbx_texture(
 	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
 
 	let description = ImageDescription {
-		format: Formats::RGBA8,
-		extent: Extent::rectangle(width, height),
 		semantic: Semantic::Albedo,
 		gamma: gamma_from_semantic(Semantic::Albedo),
 		generate_mipmaps: mip_backend.is_some(),
 	};
+	let source = ImageSource::new(
+		Extent::rectangle(width, height),
+		SourceChannels::RGBA,
+		SourceEncoding::U8,
+		&pixels,
+	);
 
 	let (resource, data) =
-		process_image_with_mip_backend_in(ResourceId::new(id), description, pixels, context.allocator(), mip_backend)?;
+		process_image_with_mip_backend_in(ResourceId::new(id), description, source, context.allocator(), mip_backend)?;
 
 	context.store_resource(resource, &data).map(Into::into)
 }
@@ -334,7 +338,7 @@ pub(crate) async fn load_fbx_texture_image(
 pub(crate) fn decode_fbx_texture_image(bytes: &[u8]) -> Result<(Box<[u8]>, u32, u32), LoadErrors> {
 	let image = image::load_from_memory(bytes).map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let rgba = image.to_rgba8();
+	let rgba = image.into_rgba8();
 
 	let (width, height) = rgba.dimensions();
 

@@ -1222,7 +1222,8 @@ use crate::{
 	},
 	processors::{
 		processor::implementations::image::{
-			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, Semantic,
+			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, ImageSource,
+			Semantic, SourceChannels, SourceEncoding,
 		},
 		processor::implementations::mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, VertexSkin},
 	},

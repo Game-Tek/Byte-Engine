@@ -1,3 +1,8 @@
+mod source;
+
+use source::{append_canonical_image_in, canonicalize_image_in, CanonicalImageData};
+pub use source::{ImageSource, SourceChannels, SourceEncoding};
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {
 	Albedo,
@@ -12,10 +17,9 @@ pub enum Semantic {
 	Other,
 }
 
+/// The `ImageDescription` struct selects semantic processing, gamma, and mip generation for one decoded image.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ImageDescription {
-	pub format: Formats,
-	pub extent: Extent,
 	pub gamma: Gamma,
 	pub semantic: Semantic,
 	/// When `true`, a full power-of-two mip chain is generated and stored after the base level.
@@ -31,33 +35,33 @@ impl Description for ImageDescription {
 pub fn process_image<'a>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
-	buffer: Box<[u8]>,
+	source: ImageSource<'_>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	process_image_in(id, description, buffer, Global)
+	process_image_in(id, description, source, Global)
 }
 
 /// Processes image pixels using the provided allocator for transient and output buffers.
-pub fn process_image_in<'a, A: Allocator + Clone, B: Allocator>(
+pub fn process_image_in<'a, A: Allocator + Clone>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
-	buffer: Box<[u8], B>,
+	source: ImageSource<'_>,
 	allocator: A,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	process_image_with_mip_backend_in(id, description, buffer, allocator, None)
+	process_image_with_mip_backend_in(id, description, source, allocator, None)
 }
 
 /// Processes image pixels and delegates requested lower mip levels to an optional offline backend.
 ///
 /// Material importers pass their GPU backend here. Standalone image handlers should call [`process_image_in`] so their
 /// authored texture payload remains unchanged.
-pub fn process_image_with_mip_backend_in<'a, A: Allocator + Clone, B: Allocator>(
+pub fn process_image_with_mip_backend_in<'a, A: Allocator + Clone>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
-	buffer: Box<[u8], B>,
+	source: ImageSource<'_>,
 	allocator: A,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image_in(&description, buffer, allocator, mip_backend)?;
+	let (resource, buffer, streams) = produce_image_in(&description, source, allocator, mip_backend)?;
 
 	let asset = ProcessedAsset::new(id, resource);
 
@@ -71,56 +75,47 @@ pub fn process_image_with_mip_backend_in<'a, A: Allocator + Clone, B: Allocator>
 }
 
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
-	let tokens = tokenize_asset_name(name.as_ref());
-
-	if has_suffix_token_sequence(&tokens, &["base", "color"])
-		|| has_suffix_token_sequence(&tokens, &["albedo"])
-		|| has_suffix_token_sequence(&tokens, &["diffuse"])
+	let name = name.as_ref();
+	if has_suffix_token_sequence(name, &["base", "color"])
+		|| has_suffix_token_sequence(name, &["albedo"])
+		|| has_suffix_token_sequence(name, &["diffuse"])
 	{
 		Semantic::Albedo
-	} else if has_suffix_token_sequence(&tokens, &["normal"]) {
+	} else if has_suffix_token_sequence(name, &["normal"]) {
 		Semantic::Normal
-	} else if has_suffix_token_sequence(&tokens, &["metallic"]) {
+	} else if has_suffix_token_sequence(name, &["metallic"]) {
 		Semantic::Metallic
-	} else if has_suffix_token_sequence(&tokens, &["roughness"]) {
+	} else if has_suffix_token_sequence(name, &["roughness"]) {
 		Semantic::Roughness
-	} else if has_suffix_token_sequence(&tokens, &["emissive"]) {
+	} else if has_suffix_token_sequence(name, &["emissive"]) {
 		Semantic::Emissive
-	} else if has_suffix_token_sequence(&tokens, &["height"]) {
+	} else if has_suffix_token_sequence(name, &["height"]) {
 		Semantic::Height
-	} else if has_suffix_token_sequence(&tokens, &["opacity"]) {
+	} else if has_suffix_token_sequence(name, &["opacity"]) {
 		Semantic::Opacity
-	} else if has_suffix_token_sequence(&tokens, &["displacement"]) {
+	} else if has_suffix_token_sequence(name, &["displacement"]) {
 		Semantic::Displacement
-	} else if has_suffix_token_sequence(&tokens, &["ao"]) {
+	} else if has_suffix_token_sequence(name, &["ao"]) {
 		Semantic::AO
 	} else {
 		Semantic::Other
 	}
 }
 
-fn tokenize_asset_name(name: &str) -> Vec<String> {
+fn has_suffix_token_sequence(name: &str, sequence: &[&str]) -> bool {
 	let name = std::path::Path::new(name)
 		.file_stem()
 		.and_then(|stem| stem.to_str())
 		.unwrap_or(name);
-
-	name.split(|character: char| !character.is_alphanumeric())
+	let mut tokens = name
+		.split(|character: char| !character.is_alphanumeric())
 		.filter(|token| !token.is_empty())
-		.map(|token| token.to_ascii_lowercase())
-		.collect()
-}
-
-fn has_suffix_token_sequence(tokens: &[String], sequence: &[&str]) -> bool {
-	if sequence.is_empty() || sequence.len() > tokens.len() {
-		return false;
-	}
-
-	tokens[tokens.len() - sequence.len()..]
-		.iter()
-		.map(String::as_str)
-		.zip(sequence.iter().copied())
-		.all(|(token, expected)| token == expected)
+		.rev();
+	!sequence.is_empty()
+		&& sequence
+			.iter()
+			.rev()
+			.all(|expected| tokens.next().is_some_and(|token| token.eq_ignore_ascii_case(expected)))
 }
 
 pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
@@ -203,130 +198,61 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 	}
 }
 
-fn produce_image_in<A: Allocator + Clone, B: Allocator>(
+/// Produces one final image payload while retaining intermediate storage only when later stages require random access.
+fn produce_image_in<A: Allocator + Clone>(
 	description: &ImageDescription,
-	buffer: Box<[u8], B>,
+	source: ImageSource<'_>,
 	allocator: A,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<(Image, Box<[u8], A>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
-		format,
-		extent,
 		semantic,
 		gamma,
 		generate_mipmaps,
 	} = description;
+	let source_format = source.natural_format().ok_or(LoadErrors::FailedToProcess)?;
+	let extent = source.extent;
 
 	let compress = should_compress_for_semantic(*semantic);
 
-	let output_format = determine_image_format(*format, compress, *semantic, *gamma);
-
-	// Convert the source data into the uncompressed intermediate that mip generation and BC
-	// compression both expect as input (always RGBA8 for BC targets, otherwise the natural format).
-	let intermediate: Box<[u8], A> = match (format, output_format) {
-		(Formats::RGB8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB | Formats::BC5 | Formats::BC5SNORM) => {
-			rgb8_to_rgba8_in(*extent, &buffer, allocator.clone())
-		}
-		(Formats::RGBA8, Formats::BC5 | Formats::BC5SNORM) => {
-			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator.clone());
-
-			for y in 0..extent.height() {
-				let source_row = &buffer[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-				let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-				for x in 0..extent.width() {
-					let source_pixel = &source_row[(x * 4) as usize..][..4];
-
-					let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-
-					dest_pixel[..3].copy_from_slice(&source_pixel[..3]);
-
-					dest_pixel[3] = 0xFF;
-				}
-			}
-
-			buf
-		}
-		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => copy_slice_in(&buffer, allocator.clone()),
-		(Formats::RGB16, Formats::BC5 | Formats::BC5SNORM) => {
-			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator.clone());
-
-			for y in 0..extent.height() {
-				let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
-
-				let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-				for x in 0..extent.width() {
-					let source_pixel = &source_row[(x * 6) as usize..][..6];
-
-					let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-
-					let x = u16::from_le_bytes([source_pixel[0], source_pixel[1]]);
-
-					let y = u16::from_le_bytes([source_pixel[2], source_pixel[3]]);
-
-					let x: u8 = (x / 256) as u8;
-
-					let y: u8 = (y / 256) as u8;
-
-					dest_pixel[0] = x;
-
-					dest_pixel[1] = y;
-
-					dest_pixel[2] = 0x00;
-
-					dest_pixel[3] = 0xFF;
-				}
-			}
-
-			buf
-		}
-		(Formats::RGB16, Formats::RGBA16) => {
-			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 8, allocator.clone());
-
-			for y in 0..extent.height() {
-				let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
-
-				let dest_row = &mut buf[(y * extent.width() * 8) as usize..][..(extent.width() * 8) as usize];
-
-				for x in 0..extent.width() {
-					let source_pixel = &source_row[(x * 6) as usize..][..6];
-
-					let dest_pixel = &mut dest_row[(x * 8) as usize..][..8];
-
-					dest_pixel[..6].copy_from_slice(source_pixel);
-
-					dest_pixel[6] = 0xFF;
-
-					dest_pixel[7] = 0xFF;
-				}
-			}
-
-			buf
-		}
-		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8_in(*extent, &buffer, allocator.clone()),
-		(Formats::RGBA16, Formats::RGBA16) => copy_slice_in(&buffer, allocator.clone()),
-		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
-		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
-		(Formats::R16F, Formats::R16F) => copy_slice_in(&buffer, allocator.clone()),
-		(Formats::RGBA16F, Formats::RGBA16F) => copy_slice_in(&buffer, allocator.clone()),
-		_ => {
-			panic!("Unsupported format: {:#?}", format);
-		}
-	};
+	let output_format = determine_image_format(source_format, compress, *semantic, *gamma);
+	let block_compressed = matches!(
+		output_format,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB
+	);
+	if !*generate_mipmaps && !block_compressed {
+		let encoded_size = encoded_mip_level_size(output_format, extent).ok_or(LoadErrors::FailedToProcess)?;
+		let mut data = Vec::with_capacity_in(encoded_size, allocator);
+		append_canonical_image_in(source, output_format, &mut data).ok_or(LoadErrors::FailedToProcess)?;
+		let data = data.into_boxed_slice();
+		return Ok((
+			Image {
+				format: output_format,
+				extent: image_resource_extent(output_format, extent),
+				gamma: *gamma,
+				mip_count: 1,
+				ibl: None,
+				photometry: None,
+			},
+			data,
+			Some(vec![StreamDescription::new("mip[0]", encoded_size, 0)]),
+		));
+	}
 
 	// The format of the `intermediate` buffer — used for mip generation.
 	let intermediate_format = match output_format {
 		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => Formats::RGBA8,
 		_ => output_format,
 	};
+	let intermediate =
+		canonicalize_image_in(source, intermediate_format, allocator.clone()).ok_or(LoadErrors::FailedToProcess)?;
+	let intermediate = intermediate.as_slice();
 
 	let (mip_count, data, streams) = if *generate_mipmaps {
 		let level_count = crate::resources::mips::mip_level_count(extent.width(), extent.height())
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
-		let encoded_size = encoded_mip_chain_size(output_format, *extent).ok_or(LoadErrors::FailedToProcess)?;
+		let encoded_size = encoded_mip_chain_size(output_format, extent).ok_or(LoadErrors::FailedToProcess)?;
 
 		let mut all_data = Vec::with_capacity_in(encoded_size, allocator.clone());
 
@@ -334,65 +260,50 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 
 		let mut offset: usize = 0;
 
-		// GPU backends return owned lower levels because generation runs on a context-owning worker. Keep the base borrowed
-		// from the converted intermediate so the common path still avoids another full-resolution allocation.
-		if let Some(mip_backend) = mip_backend {
-			let lower_levels = mip_backend
-				.generate_lower_levels(intermediate_format, extent.width(), extent.height(), &intermediate)
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+		// Both backends return one packed lower-level allocation. The common encoder keeps the borrowed base level separate.
+		let lower_levels = match mip_backend {
+			Some(mip_backend) => {
+				mip_backend.generate_lower_levels(intermediate_format, extent.width(), extent.height(), intermediate)
+			}
+			None => CPUMipGenerationBackend.generate_lower_levels(
+				intermediate_format,
+				extent.width(),
+				extent.height(),
+				intermediate,
+			),
+		}
+		.map_err(|_| LoadErrors::FailedToProcess)?;
 
+		append_encoded_mip(
+			output_format,
+			extent,
+			intermediate,
+			0,
+			&mut all_data,
+			&mut streams,
+			&mut offset,
+			allocator.clone(),
+		);
+
+		for (lower_index, level) in lower_levels.levels().enumerate() {
 			append_encoded_mip(
 				output_format,
-				*extent,
-				&intermediate,
-				0,
+				Extent::rectangle(level.width, level.height),
+				level.data,
+				lower_index + 1,
 				&mut all_data,
 				&mut streams,
 				&mut offset,
 				allocator.clone(),
 			);
-
-			for (lower_index, level) in lower_levels.levels().enumerate() {
-				append_encoded_mip(
-					output_format,
-					Extent::rectangle(level.width, level.height),
-					level.data,
-					lower_index + 1,
-					&mut all_data,
-					&mut streams,
-					&mut offset,
-					allocator.clone(),
-				);
-			}
-
-			(1 + lower_levels.len() as u32, all_data.into_boxed_slice(), Some(streams))
-		} else {
-			let chain = generate_mip_chain_in(
-				intermediate_format,
-				extent.width(),
-				extent.height(),
-				&intermediate,
-				allocator.clone(),
-			)
-			.map_err(|_| LoadErrors::FailedToProcess)?;
-
-			for (index, level) in chain.levels().enumerate() {
-				append_encoded_mip(
-					output_format,
-					Extent::rectangle(level.width, level.height),
-					level.data,
-					index,
-					&mut all_data,
-					&mut streams,
-					&mut offset,
-					allocator.clone(),
-				);
-			}
-
-			(chain.len() as u32, all_data.into_boxed_slice(), Some(streams))
 		}
+
+		(1 + lower_levels.len() as u32, all_data.into_boxed_slice(), Some(streams))
 	} else {
-		let data = compress_bc_level_in(output_format, *extent, &intermediate, allocator.clone());
+		let encoded_size = encoded_mip_level_size(output_format, extent).ok_or(LoadErrors::FailedToProcess)?;
+		let mut data = Vec::with_capacity_in(encoded_size, allocator.clone());
+		append_encoded_level(output_format, extent, intermediate, &mut data, allocator.clone());
+		let data = data.into_boxed_slice();
 
 		let streams = Some(vec![StreamDescription::new("mip[0]", data.len(), 0)]);
 
@@ -402,7 +313,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 	Ok((
 		Image {
 			format: output_format,
-			extent: image_resource_extent(output_format, *extent),
+			extent: image_resource_extent(output_format, extent),
 			gamma: *gamma,
 			mip_count,
 			ibl: None,
@@ -425,17 +336,7 @@ fn append_encoded_mip<A: Allocator + Clone>(
 	allocator: A,
 ) {
 	let start = output.len();
-
-	if matches!(
-		output_format,
-		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB
-	) {
-		let compressed = compress_bc_level_in(output_format, extent, data, allocator);
-
-		output.extend_from_slice(&compressed);
-	} else {
-		output.extend_from_slice(data);
-	}
+	append_encoded_level(output_format, extent, data, output, allocator);
 
 	let size = output.len() - start;
 
@@ -451,14 +352,7 @@ fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> {
 	let mut total = 0usize;
 
 	loop {
-		let level_size = match format {
-			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => (width.div_ceil(4) as usize)
-				.checked_mul(height.div_ceil(4) as usize)?
-				.checked_mul(16)?,
-			Formats::RGBA8 => (width as usize).checked_mul(height as usize)?.checked_mul(4)?,
-			Formats::RGBA16 | Formats::RGBA16F => (width as usize).checked_mul(height as usize)?.checked_mul(8)?,
-			_ => return None,
-		};
+		let level_size = encoded_mip_level_size(format, Extent::rectangle(width, height))?;
 
 		total = total.checked_add(level_size)?;
 
@@ -469,6 +363,24 @@ fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> {
 		width = (width / 2).max(1);
 
 		height = (height / 2).max(1);
+	}
+}
+
+fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<usize> {
+	match format {
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => (extent.width().div_ceil(4) as usize)
+			.checked_mul(extent.height().div_ceil(4) as usize)?
+			.checked_mul(16),
+		Formats::RGBA8 => (extent.width() as usize)
+			.checked_mul(extent.height() as usize)?
+			.checked_mul(4),
+		Formats::R16F => (extent.width() as usize)
+			.checked_mul(extent.height() as usize)?
+			.checked_mul(2),
+		Formats::RGBA16 | Formats::RGBA16F => (extent.width() as usize)
+			.checked_mul(extent.height() as usize)?
+			.checked_mul(8),
+		_ => None,
 	}
 }
 
@@ -483,16 +395,19 @@ fn image_resource_extent(format: Formats, extent: Extent) -> [u32; 3] {
 /// uncompressed formats. Accepts an RGBA8 surface for BC targets, or the natural format otherwise.
 #[cfg(test)]
 fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box<[u8]> {
-	compress_bc_level_in(output_format, extent, data, Global)
+	let mut output = Vec::new();
+	append_encoded_level(output_format, extent, data, &mut output, Global);
+	output.into_boxed_slice()
 }
 
-/// Compresses or copies one mip level using the provided allocator for padding and output buffers.
-fn compress_bc_level_in<A: Allocator + Clone>(
+/// Appends one compressed or uncompressed mip directly to its final packed writer.
+fn append_encoded_level<A: Allocator + Clone>(
 	output_format: Formats,
 	extent: Extent,
 	data: &[u8],
+	output: &mut Vec<u8, A>,
 	allocator: A,
-) -> Box<[u8], A> {
+) {
 	match output_format {
 		Formats::BC5 | Formats::BC5SNORM => {
 			// RgSurface<2> expects tightly packed RG pairs (2 bytes per pixel),
@@ -518,10 +433,11 @@ fn compress_bc_level_in<A: Allocator + Clone>(
 					compressed.len()
 				);
 
-			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
+			output.extend_from_slice(&compressed);
 		}
 		Formats::BC7 | Formats::BC7SRGB => {
 			let (data, width, height) = rgba8_bc_compression_surface_in(extent, data, allocator.clone());
+			let data = data.as_slice();
 
 			let expected_surface_bytes = width as usize * height as usize * 4;
 
@@ -533,13 +449,13 @@ fn compress_bc_level_in<A: Allocator + Clone>(
 			);
 
 			let rgba_surface = intel_tex_2::RgbaSurface {
-				data: &data,
+				data,
 				width,
 				height,
 				stride: width * 4,
 			};
 
-			let settings = bc7_compression_settings(&data);
+			let settings = bc7_compression_settings(data);
 
 			let compressed = intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface);
 
@@ -552,19 +468,15 @@ fn compress_bc_level_in<A: Allocator + Clone>(
 				compressed.len()
 			);
 
-			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
+			output.extend_from_slice(&compressed);
 		}
-		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 | Formats::RGBA16F => {
-			let mut output = Vec::with_capacity_in(data.len(), allocator);
-
+		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 | Formats::R16F | Formats::RGBA16F => {
 			output.extend_from_slice(data);
-
-			output.into_boxed_slice()
 		}
 		_ => {
 			panic!("Unsupported format")
 		}
-	}
+	};
 }
 
 #[cfg(test)]
@@ -573,13 +485,18 @@ mod tests {
 
 	use super::{
 		bc7_compression_settings, compress_bc_level, determine_image_format, guess_semantic_from_name, process_image,
-		rga_to_rg_surface, should_compress_for_semantic, ImageDescription, Semantic,
+		rga_to_rg_surface, rgba8_bc_compression_surface_in, should_compress_for_semantic, CanonicalImageData, ImageDescription,
+		ImageSource, Semantic,
 	};
 	use crate::{
 		asset::ResourceId,
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
+
+	fn image_source(extent: Extent, format: Formats, data: &[u8]) -> ImageSource<'_> {
+		ImageSource::from_format(extent, format, data).expect("test format should be a supported image source")
+	}
 
 	#[test]
 	fn extracts_semantic_from_asset_name() {
@@ -678,18 +595,18 @@ mod tests {
 
 	#[test]
 	fn process_image_expands_rgb8_into_rgba8_without_compression() {
+		let extent = Extent::rectangle(2, 1);
 		let description = ImageDescription {
-			format: Formats::RGB8,
-			extent: Extent::rectangle(2, 1),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Other,
 			generate_mipmaps: false,
 		};
+		let source = [1, 2, 3, 4, 5, 6];
 
 		let (asset, data) = process_image(
 			ResourceId::new("textures/test.png"),
 			description,
-			vec![1, 2, 3, 4, 5, 6].into_boxed_slice(),
+			image_source(extent, Formats::RGB8, &source),
 		)
 		.expect("Image processing should succeed");
 
@@ -705,9 +622,8 @@ mod tests {
 
 	#[test]
 	fn process_image_compresses_normal_map_to_bc5() {
+		let extent = Extent::rectangle(4, 4);
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Normal,
 			generate_mipmaps: false,
@@ -715,8 +631,12 @@ mod tests {
 
 		let source = vec![128_u8; 4 * 4 * 4].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/normal.png"), description, source)
-			.expect("Normal map processing should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/normal.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("Normal map processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -814,9 +734,8 @@ mod tests {
 
 	#[test]
 	fn process_image_compresses_srgb_albedo_to_bc7_srgb() {
+		let extent = Extent::rectangle(5, 7);
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(5, 7),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Albedo,
 			generate_mipmaps: false,
@@ -824,8 +743,12 @@ mod tests {
 
 		let source = vec![128_u8; 5 * 7 * 4].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/albedo.png"), description, source)
-			.expect("Albedo image processing should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/albedo.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("Albedo image processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -840,9 +763,8 @@ mod tests {
 		// Regression: the old code built an RGBA16 intermediate (8 bytes/pixel) but passed it to
 		// the BC7 compressor with stride = width * 4 (an RGBA8 stride), halving the effective row
 		// width and producing horizontal stripes. The correct path converts RGB16 → RGBA8 first.
+		let extent = Extent::rectangle(4, 4);
 		let description = ImageDescription {
-			format: Formats::RGB16,
-			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Albedo,
 			generate_mipmaps: false,
@@ -851,8 +773,12 @@ mod tests {
 		// RGB16: 3 channels × 2 bytes = 6 bytes per pixel
 		let source = vec![128_u8; 4 * 4 * 6].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/albedo16.png"), description, source)
-			.expect("RGB16 albedo processing should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/albedo16.png"),
+			description,
+			image_source(extent, Formats::RGB16, &source),
+		)
+		.expect("RGB16 albedo processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -867,9 +793,8 @@ mod tests {
 	fn process_image_compresses_rgba16_normal_to_bc5() {
 		// BC5 compresses RGBA16 normal maps by first converting to RGBA8
 		// and then compressing R and G channels with BC5.
+		let extent = Extent::rectangle(4, 4);
 		let description = ImageDescription {
-			format: Formats::RGBA16,
-			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Normal,
 			generate_mipmaps: false,
@@ -878,8 +803,12 @@ mod tests {
 		// RGBA16: 4 channels × 2 bytes = 8 bytes per pixel
 		let source = vec![128_u8; 4 * 4 * 8].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/normal16.png"), description, source)
-			.expect("RGBA16 normal map processing should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/normal16.png"),
+			description,
+			image_source(extent, Formats::RGBA16, &source),
+		)
+		.expect("RGBA16 normal map processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -901,10 +830,22 @@ mod tests {
 	}
 
 	#[test]
+	fn bc7_borrows_block_aligned_input_and_allocates_only_for_padding() {
+		let aligned = [0_u8; 4 * 4 * 4];
+		let (surface, width, height) = rgba8_bc_compression_surface_in(Extent::rectangle(4, 4), &aligned, std::alloc::Global);
+		assert!(matches!(surface, CanonicalImageData::Borrowed(_)));
+		assert_eq!((width, height), (4, 4));
+
+		let unaligned = [0_u8; 5 * 4 * 4];
+		let (surface, width, height) = rgba8_bc_compression_surface_in(Extent::rectangle(5, 4), &unaligned, std::alloc::Global);
+		assert!(matches!(surface, CanonicalImageData::Owned(_)));
+		assert_eq!((width, height), (8, 4));
+	}
+
+	#[test]
 	fn process_image_without_mipmaps_stores_mip_count_one() {
+		let extent = Extent::rectangle(4, 4);
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Other,
 			generate_mipmaps: false,
@@ -912,8 +853,12 @@ mod tests {
 
 		let source = vec![128_u8; 4 * 4 * 4].into_boxed_slice();
 
-		let (asset, _data) =
-			process_image(ResourceId::new("textures/test.png"), description, source).expect("Image processing should succeed");
+		let (asset, _data) = process_image(
+			ResourceId::new("textures/test.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("Image processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -926,10 +871,9 @@ mod tests {
 		let width = 4_u32;
 
 		let height = 4_u32;
+		let extent = Extent::rectangle(width, height);
 
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(width, height),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Other,
 			generate_mipmaps: true,
@@ -937,8 +881,12 @@ mod tests {
 
 		let source = vec![200_u8; (width * height * 4) as usize].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/mip_rgba8.png"), description, source)
-			.expect("Mip generation should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/mip_rgba8.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("Mip generation should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -960,10 +908,9 @@ mod tests {
 		let width = 8_u32;
 
 		let height = 8_u32;
+		let extent = Extent::rectangle(width, height);
 
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(width, height),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Normal,
 			generate_mipmaps: true,
@@ -972,8 +919,12 @@ mod tests {
 		// RGBA8: 4 bytes/pixel
 		let source = vec![128_u8; (width * height * 4) as usize].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/mip_normal_bc5.png"), description, source)
-			.expect("BC5 mip generation should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/mip_normal_bc5.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("BC5 mip generation should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -997,10 +948,9 @@ mod tests {
 		let width = 8_u32;
 
 		let height = 8_u32;
+		let extent = Extent::rectangle(width, height);
 
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(width, height),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Albedo,
 			generate_mipmaps: true,
@@ -1008,8 +958,12 @@ mod tests {
 
 		let source = vec![128_u8; (width * height * 4) as usize].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/mip_albedo_bc7.png"), description, source)
-			.expect("BC7 mip generation should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/mip_albedo_bc7.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("BC7 mip generation should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -1030,10 +984,9 @@ mod tests {
 		let width = 5_u32;
 
 		let height = 3_u32;
+		let extent = Extent::rectangle(width, height);
 
 		let description = ImageDescription {
-			format: Formats::RGBA8,
-			extent: Extent::rectangle(width, height),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Other,
 			generate_mipmaps: true,
@@ -1041,8 +994,12 @@ mod tests {
 
 		let source = vec![100_u8; (width * height * 4) as usize].into_boxed_slice();
 
-		let (asset, data) = process_image(ResourceId::new("textures/mip_npot.png"), description, source)
-			.expect("Non-power-of-two mip generation should succeed");
+		let (asset, data) = process_image(
+			ResourceId::new("textures/mip_npot.png"),
+			description,
+			image_source(extent, Formats::RGBA8, &source),
+		)
+		.expect("Non-power-of-two mip generation should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
@@ -1055,83 +1012,6 @@ mod tests {
 
 		assert_eq!(data.len(), expected_bytes);
 	}
-}
-
-/// Expands an RGB8 image into RGBA8 using caller-provided storage.
-fn rgb8_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
-	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
-
-	for y in 0..extent.height() {
-		let source_row = &buffer[(y * extent.width() * 3) as usize..][..(extent.width() * 3) as usize];
-
-		let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-		for x in 0..extent.width() {
-			let source_pixel = &source_row[(x * 3) as usize..][..3];
-
-			let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-
-			dest_pixel[..3].copy_from_slice(source_pixel);
-
-			dest_pixel[3] = 0xFF;
-		}
-	}
-
-	buf
-}
-
-/// Converts RGB16 data to RGBA8 using caller-provided storage.
-fn rgb16_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
-	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
-
-	for y in 0..extent.height() {
-		let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
-
-		let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-		for x in 0..extent.width() {
-			let source_pixel = &source_row[(x * 6) as usize..][..6];
-
-			let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-
-			dest_pixel[0] = source_pixel[1];
-
-			dest_pixel[1] = source_pixel[3];
-
-			dest_pixel[2] = source_pixel[5];
-
-			dest_pixel[3] = 0xFF;
-		}
-	}
-
-	buf
-}
-
-/// Converts RGBA16 data to RGBA8 using caller-provided storage.
-fn rgba16_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
-	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
-
-	for y in 0..extent.height() {
-		let source_row = &buffer[(y * extent.width() * 8) as usize..][..(extent.width() * 8) as usize];
-
-		let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-
-		for x in 0..extent.width() {
-			let source_pixel = &source_row[(x * 8) as usize..][..8];
-
-			let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-
-			dest_pixel[0] = source_pixel[1];
-
-			dest_pixel[1] = source_pixel[3];
-
-			dest_pixel[2] = source_pixel[5];
-
-			dest_pixel[3] = source_pixel[7];
-		}
-	}
-
-	buf
 }
 
 /// Selects BC7 compressor settings that favor quality enough to avoid visible block-row artifacts.
@@ -1150,7 +1030,7 @@ fn rgba8_bc_compression_surface_in<A: Allocator + Clone>(
 	extent: Extent,
 	data: &[u8],
 	allocator: A,
-) -> (Box<[u8], A>, u32, u32) {
+) -> (CanonicalImageData<'_, A>, u32, u32) {
 	let width = extent.width().max(1);
 
 	let height = extent.height().max(1);
@@ -1167,6 +1047,9 @@ fn rgba8_bc_compression_surface_in<A: Allocator + Clone>(
 	let padded_width = width.next_multiple_of(4);
 
 	let padded_height = height.next_multiple_of(4);
+	if padded_width == width && padded_height == height {
+		return (CanonicalImageData::Borrowed(data), width, height);
+	}
 
 	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 4, allocator);
 
@@ -1184,7 +1067,7 @@ fn rgba8_bc_compression_surface_in<A: Allocator + Clone>(
 		}
 	}
 
-	(padded, padded_width, padded_height)
+	(CanonicalImageData::Owned(padded), padded_width, padded_height)
 }
 
 /// Produces a tightly packed RG surface (2 bytes per pixel) from RGBA8 data,
@@ -1233,18 +1116,6 @@ fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<
 	buffer.into_boxed_slice()
 }
 
-fn copy_slice_in<A: Allocator + Clone>(buffer: &[u8], allocator: A) -> Box<[u8], A> {
-	let mut output = Vec::with_capacity_in(buffer.len(), allocator);
-
-	output.extend_from_slice(buffer);
-
-	output.into_boxed_slice()
-}
-
-fn move_boxed_slice_in<A: Allocator + Clone>(buffer: Box<[u8]>, allocator: A) -> Box<[u8], A> {
-	copy_slice_in(&buffer, allocator)
-}
-
 use std::alloc::{Allocator, Global};
 
 use utils::Extent;
@@ -1253,7 +1124,7 @@ use crate::{
 	asset::{handler::LoadErrors, resource_id::ResourceIdBase, ResourceId},
 	resources::{
 		image::Image,
-		mips::{generate_mip_chain_in, MipGenerationBackend},
+		mips::{CPUMipGenerationBackend, MipGenerationBackend},
 	},
 	types::{Formats, Gamma},
 	Description, ProcessedAsset, StreamDescription,

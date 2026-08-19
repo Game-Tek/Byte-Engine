@@ -36,66 +36,32 @@ impl AssetHandler for PNGAssetHandler {
 
 		let transformations = self.transformations;
 
-		// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
-		let decoded = {
-			let mut buffer;
+		if !matches!(dt.as_str(), "png" | "image/png") {
+			return Err(LoadErrors::UnsupportedType);
+		}
 
-			let extent;
+		let cursor = std::io::Cursor::new(data);
+		let mut decoder = png::Decoder::new(cursor);
+		decoder.set_transformations(transformations);
+		let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+		let Some(size) = reader.output_buffer_size() else {
+			return Err(LoadErrors::FailedToProcess);
+		};
+		let mut buffer = Vec::with_capacity_in(size, allocator);
+		buffer.resize(size, 0);
+		let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+		buffer.truncate(info.buffer_size());
 
-			let gamma: Gamma;
-
-			let format;
-
-			match dt.as_str() {
-				"png" | "image/png" => {
-					let cursor = std::io::Cursor::new(data);
-
-					let mut decoder = png::Decoder::new(cursor);
-
-					decoder.set_transformations(transformations);
-
-					let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-
-					let Some(size) = reader.output_buffer_size() else {
-						return Err(LoadErrors::FailedToProcess);
-					};
-
-					buffer = Vec::with_capacity_in(size, allocator);
-
-					buffer.resize(size, 0);
-
-					let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
-
-					buffer.truncate(info.buffer_size());
-
-					extent = Extent::rectangle(info.width, info.height);
-
-					gamma = png_gamma(reader.info(), semantic);
-
-					(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
-				}
-				_ => {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let description = ImageDescription {
-				format,
-				extent,
-				semantic,
-				gamma,
-				generate_mipmaps: false,
-			};
-
-			Ok(DecodedImage {
-				data: buffer.into(),
-				description,
-			})
-		}?;
-
-		let DecodedImage { data, description } = decoded;
-
-		let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		let extent = Extent::rectangle(info.width, info.height);
+		let gamma = png_gamma(reader.info(), semantic);
+		let (channels, encoding) = png_source_layout(info.color_type, info.bit_depth)?;
+		let description = ImageDescription {
+			semantic,
+			gamma,
+			generate_mipmaps: false,
+		};
+		let source = ImageSource::new(extent, channels, encoding, &buffer);
+		let (asset, data) = process_image_in(url, description, source, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		context.store_primary(asset, &data)
 	}
@@ -105,11 +71,6 @@ impl Default for PNGAssetHandler {
 	fn default() -> Self {
 		Self::new()
 	}
-}
-
-struct DecodedImage<'a> {
-	data: Box<[u8], &'a dyn Allocator>,
-	description: ImageDescription,
 }
 
 /// Determines the image gamma from PNG metadata before falling back to the asset semantic.
@@ -125,103 +86,24 @@ fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::processor::imple
 		.unwrap_or(gamma_from_semantic(semantic))
 }
 
-/// Normalizes PNG decoder output into formats supported by the image processor.
-fn normalize_png_buffer<'a>(
-	mut buffer: Vec<u8, &'a dyn Allocator>,
+/// Maps PNG decoder output into the source layout normalized by the common image processor.
+fn png_source_layout(
 	color_type: png::ColorType,
 	bit_depth: png::BitDepth,
-	extent: Extent,
-	allocator: &'a dyn Allocator,
-) -> Result<(Vec<u8, &'a dyn Allocator>, Formats), LoadErrors> {
-	let format = match (color_type, bit_depth) {
-		(png::ColorType::Rgb, png::BitDepth::Eight) => Formats::RGB8,
-		(png::ColorType::Rgb, png::BitDepth::Sixteen) => Formats::RGB16,
-		(png::ColorType::Rgba, png::BitDepth::Eight) => Formats::RGBA8,
-		(png::ColorType::Rgba, png::BitDepth::Sixteen) => Formats::RGBA16,
-		(png::ColorType::Grayscale, png::BitDepth::Eight) => {
-			return Ok((grayscale8_to_rgb8(&buffer, allocator), Formats::RGB8));
-		}
-		(png::ColorType::Grayscale, png::BitDepth::Sixteen) => {
-			swap_16_bit_png_samples(&mut buffer);
-
-			return Ok((grayscale16_to_rgb16(&buffer, extent, allocator), Formats::RGB16));
-		}
-		(png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
-			return Ok((grayscale_alpha8_to_rgba8(&buffer, allocator), Formats::RGBA8));
-		}
+) -> Result<(SourceChannels, SourceEncoding), LoadErrors> {
+	match (color_type, bit_depth) {
+		(png::ColorType::Grayscale, png::BitDepth::Eight) => Ok((SourceChannels::Luminance, SourceEncoding::U8)),
+		(png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => Ok((SourceChannels::LuminanceAlpha, SourceEncoding::U8)),
+		(png::ColorType::Rgb, png::BitDepth::Eight) => Ok((SourceChannels::RGB, SourceEncoding::U8)),
+		(png::ColorType::Rgba, png::BitDepth::Eight) => Ok((SourceChannels::RGBA, SourceEncoding::U8)),
+		(png::ColorType::Grayscale, png::BitDepth::Sixteen) => Ok((SourceChannels::Luminance, SourceEncoding::U16BigEndian)),
 		(png::ColorType::GrayscaleAlpha, png::BitDepth::Sixteen) => {
-			swap_16_bit_png_samples(&mut buffer);
-
-			return Ok((grayscale_alpha16_to_rgba16(&buffer, extent, allocator), Formats::RGBA16));
+			Ok((SourceChannels::LuminanceAlpha, SourceEncoding::U16BigEndian))
 		}
-		_ => return Err(LoadErrors::FailedToProcess),
-	};
-
-	if bit_depth == png::BitDepth::Sixteen {
-		swap_16_bit_png_samples(&mut buffer);
+		(png::ColorType::Rgb, png::BitDepth::Sixteen) => Ok((SourceChannels::RGB, SourceEncoding::U16BigEndian)),
+		(png::ColorType::Rgba, png::BitDepth::Sixteen) => Ok((SourceChannels::RGBA, SourceEncoding::U16BigEndian)),
+		_ => Err(LoadErrors::FailedToProcess),
 	}
-
-	Ok((buffer, format))
-}
-
-fn swap_16_bit_png_samples(buffer: &mut [u8]) {
-	for sample in buffer.chunks_exact_mut(2) {
-		sample.swap(0, 1);
-	}
-}
-
-fn grayscale8_to_rgb8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
-	let mut output = Vec::with_capacity_in(buffer.len() * 3, allocator);
-
-	for value in buffer {
-		output.extend_from_slice(&[*value, *value, *value]);
-	}
-
-	output
-}
-
-fn grayscale16_to_rgb16<'a>(buffer: &[u8], extent: Extent, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
-	let mut output = Vec::with_capacity_in(extent.width() as usize * extent.height() as usize * 6, allocator);
-
-	for value in buffer.chunks_exact(2) {
-		output.extend_from_slice(value);
-
-		output.extend_from_slice(value);
-
-		output.extend_from_slice(value);
-	}
-
-	output
-}
-
-fn grayscale_alpha8_to_rgba8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
-	let mut output = Vec::with_capacity_in(buffer.len() * 2, allocator);
-
-	for pixel in buffer.chunks_exact(2) {
-		output.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
-	}
-
-	output
-}
-
-fn grayscale_alpha16_to_rgba16<'a>(buffer: &[u8], extent: Extent, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
-	let mut output = Vec::with_capacity_in(extent.width() as usize * extent.height() as usize * 8, allocator);
-
-	for pixel in buffer.chunks_exact(4) {
-		let gray = &pixel[0..2];
-
-		let alpha = &pixel[2..4];
-
-		output.extend_from_slice(gray);
-
-		output.extend_from_slice(gray);
-
-		output.extend_from_slice(gray);
-
-		output.extend_from_slice(alpha);
-	}
-
-	output
 }
 
 #[cfg(test)]
@@ -323,8 +205,6 @@ mod tests {
 	}
 }
 
-use std::alloc::Allocator;
-
 use utils::Extent;
 
 use super::{
@@ -333,7 +213,8 @@ use super::{
 };
 use crate::{
 	processors::processor::implementations::image::{
-		gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription,
+		gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, ImageSource, SourceChannels,
+		SourceEncoding,
 	},
-	types::{Formats, Gamma},
+	types::Gamma,
 };

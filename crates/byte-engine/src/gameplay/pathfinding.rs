@@ -1,4 +1,14 @@
-//! Generic path finding utilities.
+//! Graph search and XZ-plane navigation-mesh path finding.
+//!
+//! Use [`a_star`] for an arbitrary graph. Use [`NavigationMesh::find_path`] when indexed convex
+//! navigation polygons should produce a string-pulled world-space path.
+
+mod navigation_mesh;
+
+pub use navigation_mesh::{
+	string_pull, string_pull_into, NavigationMesh, NavigationMeshBuildError, NavigationPathError, NavigationPortal,
+	NavigationVertexHandle, StringPullError,
+};
 
 /// Finds the lowest-cost path from `start` to `target`.
 ///

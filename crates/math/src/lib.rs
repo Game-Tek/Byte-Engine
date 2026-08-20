@@ -39,7 +39,10 @@ pub mod sphere;
 
 pub use aabb::AABB;
 pub use angle::{Degrees, Radians};
-pub use geometry::{NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace};
+pub use geometry::{
+	barycentric_xz, distance_xz, is_finite, point_on_segment_xz, segments_intersect_xz, signed_area_xz, NormalizationError,
+	Point, UnitVector, Unnormalized, Vector, WorldSpace,
+};
 use maths_rs::mat::{MatNew4, MatTranspose as _};
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
 ///

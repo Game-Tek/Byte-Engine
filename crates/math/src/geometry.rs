@@ -113,6 +113,90 @@ impl<Space> Default for Point<Space> {
 	}
 }
 
+/// Returns whether all coordinates in `point` are finite.
+pub fn is_finite<Space>(point: Point<Space>) -> bool {
+	point.x().is_finite() && point.y().is_finite() && point.z().is_finite()
+}
+
+/// Returns the distance between two points after projecting them onto XZ.
+pub fn distance_xz<Space>(first: Point<Space>, second: Point<Space>) -> f32 {
+	let x = second.x() - first.x();
+	let z = second.z() - first.z();
+	x.hypot(z)
+}
+
+/// Returns twice the signed area of the XZ triangle formed by three points.
+///
+/// A positive result means `third` lies counterclockwise from the directed `first`-to-`second`
+/// edge. A negative result means clockwise, and zero means collinear.
+pub fn signed_area_xz<Space>(first: Point<Space>, second: Point<Space>, third: Point<Space>) -> f32 {
+	(second.x() - first.x()) * (third.z() - first.z()) - (second.z() - first.z()) * (third.x() - first.x())
+}
+
+/// Returns barycentric weights for `point` inside the XZ projection of a triangle.
+///
+/// Returns [`None`] for a degenerate triangle or a point outside the projected triangle. The
+/// returned weights correspond to `first`, `second`, and `third` and sum to one within `f32`
+/// precision.
+pub fn barycentric_xz<Space>(
+	point: Point<Space>,
+	first: Point<Space>,
+	second: Point<Space>,
+	third: Point<Space>,
+) -> Option<[f32; 3]> {
+	let denominator = signed_area_xz(first, second, third);
+	if denominator == 0.0 {
+		return None;
+	}
+
+	let weights = [
+		signed_area_xz(point, second, third) / denominator,
+		signed_area_xz(point, third, first) / denominator,
+		signed_area_xz(point, first, second) / denominator,
+	];
+	weights
+		.iter()
+		.all(|&weight| weight >= -orientation_tolerance(weight))
+		.then_some(weights)
+}
+
+/// Returns whether `point` lies on the closed XZ line segment from `start` to `end`.
+///
+/// The caller must establish collinearity first, for example with [`signed_area_xz`].
+pub fn point_on_segment_xz<Space>(point: Point<Space>, start: Point<Space>, end: Point<Space>) -> bool {
+	let x = point.x();
+	let z = point.z();
+	x >= start.x().min(end.x()) && x <= start.x().max(end.x()) && z >= start.z().min(end.z()) && z <= start.z().max(end.z())
+}
+
+/// Returns whether two closed line segments intersect after projection onto XZ.
+pub fn segments_intersect_xz<Space>(
+	first: Point<Space>,
+	second: Point<Space>,
+	third: Point<Space>,
+	fourth: Point<Space>,
+) -> bool {
+	let first_side = signed_area_xz(first, second, third);
+	let second_side = signed_area_xz(first, second, fourth);
+	let third_side = signed_area_xz(third, fourth, first);
+	let fourth_side = signed_area_xz(third, fourth, second);
+
+	if first_side == 0.0 && point_on_segment_xz(third, first, second)
+		|| second_side == 0.0 && point_on_segment_xz(fourth, first, second)
+		|| third_side == 0.0 && point_on_segment_xz(first, third, fourth)
+		|| fourth_side == 0.0 && point_on_segment_xz(second, third, fourth)
+	{
+		return true;
+	}
+
+	((first_side > 0.0 && second_side < 0.0) || (first_side < 0.0 && second_side > 0.0))
+		&& ((third_side > 0.0 && fourth_side < 0.0) || (third_side < 0.0 && fourth_side > 0.0))
+}
+
+fn orientation_tolerance(value: f32) -> f32 {
+	f32::EPSILON * 16.0 * value.abs().max(1.0)
+}
+
 /// The `Vector` struct represents a displacement in one coordinate space and tracks whether its length is validated.
 #[repr(transparent)]
 pub struct Vector<Space = WorldSpace, State = Unnormalized> {
@@ -568,6 +652,45 @@ mod tests {
 	use super::*;
 
 	struct LocalSpace;
+
+	fn point(x: f32, z: f32) -> Point<LocalSpace> {
+		Point::new(x, 0.0, z)
+	}
+
+	#[test]
+	fn xz_queries_report_finiteness_distance_and_orientation() {
+		assert!(is_finite(point(1.0, 2.0)));
+		assert!(!is_finite(Point::<LocalSpace>::new(f32::NAN, 0.0, 0.0)));
+		assert_eq!(
+			distance_xz(Point::<LocalSpace>::new(0.0, -10.0, 0.0), Point::new(3.0, 20.0, 4.0)),
+			5.0
+		);
+		assert!(signed_area_xz(point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0)) > 0.0);
+		assert!(signed_area_xz(point(0.0, 0.0), point(2.0, 0.0), point(1.0, -1.0)) < 0.0);
+	}
+
+	#[test]
+	fn barycentric_xz_returns_weights_only_inside_a_projected_triangle() {
+		let first = point(0.0, 0.0);
+		let second = point(2.0, 0.0);
+		let third = point(0.0, 2.0);
+
+		assert_eq!(barycentric_xz(point(0.5, 0.5), first, second, third), Some([0.5, 0.25, 0.25]));
+		assert_eq!(barycentric_xz(point(2.0, 2.0), first, second, third), None);
+		assert_eq!(barycentric_xz(point(0.0, 0.0), first, first, first), None);
+	}
+
+	#[test]
+	fn xz_segment_queries_include_crossings_and_collinear_boundaries() {
+		let start = point(0.0, 0.0);
+		let end = point(2.0, 2.0);
+
+		assert!(point_on_segment_xz(point(1.0, 1.0), start, end));
+		assert!(!point_on_segment_xz(point(3.0, 3.0), start, end));
+		assert!(segments_intersect_xz(start, end, point(0.0, 2.0), point(2.0, 0.0)));
+		assert!(segments_intersect_xz(start, end, point(1.0, 1.0), point(3.0, 3.0)));
+		assert!(!segments_intersect_xz(start, end, point(3.0, 2.0), point(4.0, 3.0)));
+	}
 
 	#[test]
 	fn affine_operations_keep_points_and_vectors_distinct() {

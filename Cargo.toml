@@ -16,6 +16,8 @@ lto = "off"
 
 [profile.bench]
 debug = true
+# This nightly corrupts macOS proc-macro dylibs when the bench profile inherits release stripping.
+strip = false
 
 [profile.release]
 lto = "fat"

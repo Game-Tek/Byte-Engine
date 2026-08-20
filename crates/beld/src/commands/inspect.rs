@@ -2,7 +2,7 @@
 use resource_management::ResourceTraceItem;
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid},
+	resource::{ReadStorageBackend, ReDBStorageBackend, ResourceId as ResourceUid},
 };
 use serde_json::{json, Value};
 
@@ -89,7 +89,7 @@ pub(super) fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem],
 	Ok(())
 }
 
-async fn read_resource(storage_backend: &RedbStorageBackend, id: &str) -> Option<resource_management::SerializableResource> {
+async fn read_resource(storage_backend: &ReDBStorageBackend, id: &str) -> Option<resource_management::SerializableResource> {
 	if let Some(uid) = ResourceUid::from_uid_hex(id) {
 		if let Some((resource, _)) = storage_backend.read_uid(uid).await {
 			return Some(resource);

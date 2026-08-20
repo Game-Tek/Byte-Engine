@@ -391,7 +391,7 @@ mod tests {
 
 	use resource_management::{
 		asset::{manager::AssetManager, FileStorageBackend},
-		resource::storage_backend::redb_storage_backend::RedbStorageBackend,
+		resource::storage_backend::redb::ReDBStorageBackend,
 	};
 
 	use super::register_default_image_asset_handlers;
@@ -410,7 +410,7 @@ mod tests {
 
 		let resources = root.join("resources");
 
-		let mut asset_manager = AssetManager::new(FileStorageBackend::new(assets), RedbStorageBackend::new(resources));
+		let mut asset_manager = AssetManager::new(FileStorageBackend::new(assets), ReDBStorageBackend::new(resources));
 
 		register_default_image_asset_handlers(&mut asset_manager);
 

@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend as _, RedbStorageBackend, ResourceStorageMode, WriteStorageBackend as _},
+	resource::{ReadStorageBackend as _, ReDBStorageBackend, ResourceStorageMode, WriteStorageBackend as _},
 	Model, ProcessedAsset,
 };
 
@@ -35,7 +35,7 @@ fn application_opener_discards_a_store_with_a_mismatched_resource_management_sig
 
 	// This is the public opener used by applications. It must synchronize the marker before any stale value can be read.
 	{
-		let _storage = RedbStorageBackend::new(path.clone());
+		let _storage = ReDBStorageBackend::new(path.clone());
 	}
 
 	assert!(
@@ -56,17 +56,17 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	let path = temporary_store();
 	let first_id = ResourceId::new("first.fixture");
 	{
-		let storage = RedbStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+		let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
 		storage
 			.store(ProcessedAsset::new(first_id, StoredFixture), b"first payload")
 			.await
 			.unwrap();
 	}
 
-	assert!(RedbStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).is_err());
+	assert!(ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).is_err());
 
 	{
-		let storage = RedbStorageBackend::open_read_only(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
 		let (_, reader) = storage.read(first_id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
 
@@ -76,14 +76,14 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	// The default writable opener discovers the packed mode instead of reverting the existing store to separate files.
 	let second_id = ResourceId::new("second.fixture");
 	{
-		let storage = RedbStorageBackend::new_writable(path.clone());
+		let storage = ReDBStorageBackend::new_writable(path.clone());
 		storage
 			.store(ProcessedAsset::new(second_id, StoredFixture), b"second payload")
 			.await
 			.unwrap();
 	}
 	{
-		let storage = RedbStorageBackend::open_read_only(path.clone()).unwrap();
+		let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
 		let (_, reader) = storage.read(second_id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
 

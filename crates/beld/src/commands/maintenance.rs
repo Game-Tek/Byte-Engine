@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend},
+	resource::{ReadStorageBackend, ReDBStorageBackend, WriteStorageBackend},
 };
 
 use crate::commands::shared::open_read_only_storage;
@@ -41,7 +41,7 @@ pub async fn list(destination_path: String) -> Result<(), i32> {
 	}
 }
 pub fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
-	let storage_backend = RedbStorageBackend::new_writable(destination_path.into());
+	let storage_backend = ReDBStorageBackend::new_writable(destination_path.into());
 
 	let mut ok = true;
 

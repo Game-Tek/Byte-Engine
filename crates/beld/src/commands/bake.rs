@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, path::Path, time::Instant};
 
 use resource_management::{
 	asset::{manager::AssetManager, FileStorageBackend},
-	resource::{RedbStorageBackend, ResourceStorageMode},
+	resource::{ReDBStorageBackend, ResourceStorageMode},
 };
 use utils::{r#async::StreamExt, sync::Arc};
 
@@ -22,12 +22,12 @@ pub fn bake(
 	let destination_path = destination_path.into();
 
 	let resource_storage_backend = match storage_mode {
-		Some(mode) => RedbStorageBackend::new_writable_with_mode(destination_path, mode).map_err(|error| {
+		Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode).map_err(|error| {
 			log::error!("Failed to bake resources. {error}");
 
 			1
 		})?,
-		None => RedbStorageBackend::new_writable(destination_path),
+		None => ReDBStorageBackend::new_writable(destination_path),
 	};
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);

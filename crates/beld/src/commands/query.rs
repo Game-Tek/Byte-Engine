@@ -1,6 +1,6 @@
 use resource_management::resource::{
 	storage_backend::{Query, QueryCursor, QueryError},
-	ReadStorageBackend, RedbStorageBackend,
+	ReadStorageBackend, ReDBStorageBackend,
 };
 
 use crate::{
@@ -82,7 +82,7 @@ pub(super) fn query_error_message(error: QueryError) -> &'static str {
 
 /// Prints query results in a compact human-readable form.
 async fn print_human_query_page(
-	storage_backend: &RedbStorageBackend,
+	storage_backend: &ReDBStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,
@@ -113,7 +113,7 @@ async fn print_human_query_page(
 
 /// Prints query results as JSON for scripts and editor integrations.
 async fn print_json_query_page(
-	storage_backend: &RedbStorageBackend,
+	storage_backend: &ReDBStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,

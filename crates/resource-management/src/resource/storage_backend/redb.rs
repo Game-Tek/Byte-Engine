@@ -5,7 +5,7 @@
 //! metadata with rkyv.
 
 /// The `RedbStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
-pub struct RedbStorageBackend {
+pub struct ReDBStorageBackend {
 	db: RedbDatabase,
 	base_path: std::path::PathBuf,
 	storage_mode: ResourceStorageMode,
@@ -18,7 +18,7 @@ enum RedbDatabase {
 	ReadOnly(redb::ReadOnlyDatabase),
 }
 
-impl RedbStorageBackend {
+impl ReDBStorageBackend {
 	/// Opens an application resource store and synchronizes its resource-management signature.
 	///
 	/// Debug applications can update their resource cache. Release applications keep a compatible
@@ -133,7 +133,7 @@ impl RedbStorageBackend {
 			ResourceStorageMode::Packed => Some(PackedResourceReservations::open(&base_path.join(PACKED_RESOURCES_FILE))?),
 		};
 
-		Ok(RedbStorageBackend {
+		Ok(ReDBStorageBackend {
 			db,
 			base_path,
 			storage_mode,
@@ -397,7 +397,7 @@ impl RedbStorageBackend {
 	}
 }
 
-impl ReadStorageBackend for RedbStorageBackend {
+impl ReadStorageBackend for ReDBStorageBackend {
 	fn list(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
 		r#async::future(async {
 			let mut resources = Vec::new();
@@ -519,7 +519,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 	}
 }
 
-impl WriteStorageBackend for RedbStorageBackend {
+impl WriteStorageBackend for ReDBStorageBackend {
 	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
 		let write = match &self.db {
 			RedbDatabase::Writable(db) => db
@@ -612,7 +612,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 	}
 }
 
-impl ResourceTransactionCommit for RedbStorageBackend {
+impl ResourceTransactionCommit for ReDBStorageBackend {
 	/// Publishes payload location and metadata only after the writer satisfies its exact-size reservation.
 	fn commit_resource(
 		&self,
@@ -677,7 +677,7 @@ impl ResourceTransactionCommit for RedbStorageBackend {
 	}
 }
 
-impl StorageBackend for RedbStorageBackend {}
+impl StorageBackend for ReDBStorageBackend {}
 
 /// The `PackedResourceReservations` struct serializes the next unreserved byte offset for packed resources.
 struct PackedResourceReservations {
@@ -910,7 +910,7 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use super::{
-		validate_resource_management_signature, RedbStorageBackend, ResourceStorageMode, PACKED_RESOURCES_FILE,
+		validate_resource_management_signature, ReDBStorageBackend, ResourceStorageMode, PACKED_RESOURCES_FILE,
 		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE,
 	};
 	use crate::{
@@ -973,7 +973,7 @@ mod tests {
 		}
 	}
 
-	fn backend_with_mode(storage_mode: ResourceStorageMode) -> RedbStorageBackend {
+	fn backend_with_mode(storage_mode: ResourceStorageMode) -> ReDBStorageBackend {
 		static NEXT_BACKEND_ID: AtomicUsize = AtomicUsize::new(0);
 
 		let unique = format!(
@@ -981,10 +981,10 @@ mod tests {
 			std::process::id(),
 			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
 		);
-		RedbStorageBackend::new_writable_with_mode(std::env::temp_dir().join(unique), storage_mode).unwrap()
+		ReDBStorageBackend::new_writable_with_mode(std::env::temp_dir().join(unique), storage_mode).unwrap()
 	}
 
-	fn backend() -> RedbStorageBackend {
+	fn backend() -> ReDBStorageBackend {
 		backend_with_mode(ResourceStorageMode::Files)
 	}
 
@@ -1000,7 +1000,7 @@ mod tests {
 				entry
 					.file_name()
 					.to_string_lossy()
-					.starts_with(super::STAGED_RESOURCE_FILE_PREFIX)
+					.starts_with(redb::STAGED_RESOURCE_FILE_PREFIX)
 			})
 			.collect::<Vec<_>>();
 
@@ -1378,12 +1378,12 @@ mod tests {
 		std::fs::remove_dir_all(resources_path).unwrap();
 	}
 
-	async fn store_mock<T: Model>(backend: &RedbStorageBackend, id: &str, resource: T) {
+	async fn store_mock<T: Model>(backend: &ReDBStorageBackend, id: &str, resource: T) {
 		let asset = ProcessedAsset::new(crate::asset::ResourceId::new(id), resource);
 		backend.store(asset, id.as_bytes()).await.unwrap();
 	}
 
-	async fn query_ids(backend: &RedbStorageBackend, query: Query) -> (Vec<String>, Option<super::QueryCursor>) {
+	async fn query_ids(backend: &ReDBStorageBackend, query: Query) -> (Vec<String>, Option<super::QueryCursor>) {
 		let page = backend.query(query).await.unwrap();
 		(page.items.into_iter().map(|(resource, _)| resource.id).collect(), page.cursor)
 	}

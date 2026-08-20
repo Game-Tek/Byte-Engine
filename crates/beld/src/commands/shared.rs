@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{storage_backend::QueryCursor, ReadStorageBackend, RedbStorageBackend},
+	resource::{storage_backend::QueryCursor, ReadStorageBackend, ReDBStorageBackend},
 	QueryableValue,
 };
 #[cfg(debug_assertions)]
@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]
-pub(super) async fn read_resource_trace(storage_backend: &RedbStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
+pub(super) async fn read_resource_trace(storage_backend: &ReDBStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
 	storage_backend.read_trace(ResourceId::new(id)).await.map_err(|error| {
 		log::error!(
 			"Failed to read the resource trace for '{}'. The most likely cause is an unreadable resources database. Error: {}",
@@ -221,8 +221,8 @@ fn print_indent(indent: usize) {
 }
 
 /// Opens a BELD read command without allowing signature synchronization to replace persisted resources.
-pub(super) fn open_read_only_storage(destination_path: String, operation: &str) -> Result<RedbStorageBackend, i32> {
-	RedbStorageBackend::open_read_only(destination_path.into()).map_err(|error| {
+pub(super) fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
+	ReDBStorageBackend::open_read_only(destination_path.into()).map_err(|error| {
 		log::error!(
 			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
 			operation,

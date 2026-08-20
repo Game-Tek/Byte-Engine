@@ -27,7 +27,7 @@ mod tests {
 	};
 	#[cfg(debug_assertions)]
 	use resource_management::{
-		resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend},
+		resource::{ReadStorageBackend, ReDBStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
@@ -160,7 +160,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			RedbStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
@@ -186,7 +186,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			RedbStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
@@ -216,7 +216,7 @@ mod tests {
 
 		let asset_manager = get_asset_manager(
 			FileStorageBackend::new(root.clone()),
-			RedbStorageBackend::new(root.join("test-resources")),
+			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
@@ -257,7 +257,7 @@ mod tests {
 		);
 
 		let executor = resource_management::r#async::Executor::new().unwrap();
-		let resource_storage = RedbStorageBackend::new(resources_path.clone());
+		let resource_storage = ReDBStorageBackend::new(resources_path.clone());
 		let failed_trace = executor
 			.block_on(resource_storage.read_trace(ResourceId::new("broken.png")))
 			.unwrap();

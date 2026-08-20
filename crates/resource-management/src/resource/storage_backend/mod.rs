@@ -1,6 +1,6 @@
 //! Store, retrieve, and query baked resources through interchangeable backends.
 
-pub mod redb_storage_backend;
+pub mod redb;
 mod transaction;
 
 pub use transaction::ResourceTransaction;

@@ -109,7 +109,7 @@ mod tests {
 	use resource_management::{
 		asset::{storage_backend::FileStorageBackend, ResourceId, StorageBackend},
 		r#async::Executor,
-		resource::storage_backend::{redb_storage_backend::RedbStorageBackend, ReadStorageBackend},
+		resource::storage_backend::{redb::ReDBStorageBackend, ReadStorageBackend},
 		resources::mesh::MeshModel,
 		ReferenceModel,
 	};
@@ -130,7 +130,7 @@ mod tests {
 			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 		));
 
-		let asset_manager = get_asset_manager(EmptyAssetStorage, RedbStorageBackend::new(resources_path.clone()));
+		let asset_manager = get_asset_manager(EmptyAssetStorage, ReDBStorageBackend::new(resources_path.clone()));
 
 		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
 		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
@@ -171,7 +171,7 @@ mod tests {
 
 			let asset_manager = get_asset_manager(
 				FileStorageBackend::new(assets_path),
-				RedbStorageBackend::new(resources_path.clone()),
+				ReDBStorageBackend::new(resources_path.clone()),
 			);
 
 			let mesh: ReferenceModel<MeshModel> = asset_manager.bake_if_not_exists("triangle_move.fbx").await.expect(
@@ -180,7 +180,7 @@ mod tests {
 
 			drop(asset_manager);
 
-			let resource_storage = RedbStorageBackend::new(resources_path);
+			let resource_storage = ReDBStorageBackend::new(resources_path);
 
 			let (serialized, _) = resource_storage
 				.read(ResourceId::new("triangle_move.fbx"))

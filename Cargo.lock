@@ -165,7 +165,7 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "beld"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "byte-engine",
  "byte-engine-resource-management",
@@ -212,7 +212,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-engine"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "artnet_protocol",
  "base64",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-ahi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alsa",
  "objc2-audio-toolbox",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-besl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "byte-engine-besl-derive",
  "divan",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-besl-derive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "quote",
  "syn",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-betp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "byte-engine-utils",
  "tinyvec",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-ghi"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ash",
  "bitflags 2.13.0",
@@ -313,14 +313,14 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-math"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "maths-rs",
 ]
 
 [[package]]
 name = "byte-engine-resource-management"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "announcement",
  "base64",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-utils"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures",
  "gxhash",

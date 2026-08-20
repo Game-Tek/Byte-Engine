@@ -5,7 +5,7 @@ use std::f32::consts::TAU;
 /// The `AudioGraphTime` struct identifies when a processed block starts in one
 /// graph playback.
 ///
-/// Use [`Self::seconds_at`] for non-periodic timing inside [`fns::custom`]. For
+/// Use [`Self::seconds_at`] for non-periodic timing inside [`crate::audio::graph::fns::custom`]. For
 /// periodic waveforms, use [`Self::periodic_phase_step`] and
 /// [`Self::advance_periodic_phase`] to retain a bounded phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

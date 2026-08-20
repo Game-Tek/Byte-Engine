@@ -26,8 +26,8 @@
 //!    the owning object, and send [`AnimationGraphPose::global_pose`] to
 //!    rendering.
 //!
-//! The graph player owns its evaluation buffers. The existing
-//! [`crate::rendering::UpdatePose`] message owns its matrix vector, so copying
+//! The graph player owns its evaluation buffers. The renderer's `UpdatePose`
+//! message owns its matrix vector, so copying
 //! at that cross-system boundary is currently intentional. See
 //! `crates/byte-engine/examples/animation_graph.rs` for the complete headed
 //! application sequence.
@@ -45,7 +45,9 @@ pub struct AnimationStateId(usize);
 /// The `AnimationPlayback` enum selects whether a state clip repeats or stops at its final pose.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnimationPlayback {
+	/// Restarts the clip from its first sample after it reaches its duration.
 	Loop,
+	/// Holds the clip's final sample after it reaches its duration.
 	Once,
 }
 
@@ -535,35 +537,57 @@ impl<I> AnimationGraphBuilder<I> {
 /// The `AnimationGraphBuildError` enum reports invalid graph authoring input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnimationGraphBuildError {
+	/// The selected initial state is outside the graph being built.
 	InitialStateOutOfRange {
+		/// The invalid initial state index.
 		state: usize,
+		/// The number of states available in the graph.
 		state_count: usize,
 	},
+	/// A state cannot be identified because its name is empty.
 	EmptyStateName {
+		/// The index of the unnamed state.
 		state: usize,
 	},
+	/// A state cannot load its clip because its resource ID is empty.
 	EmptyResourceId {
+		/// The index of the state with no resource ID.
 		state: usize,
 	},
+	/// A state name cannot identify one state because another state uses it.
 	DuplicateStateName {
+		/// The name shared by multiple states.
 		name: String,
 	},
+	/// A transition cannot start because its source is outside the graph.
 	TransitionSourceOutOfRange {
+		/// The invalid source state index.
 		state: usize,
+		/// The number of states available in the graph.
 		state_count: usize,
 	},
+	/// A transition cannot complete because its target is outside the graph.
 	TransitionTargetOutOfRange {
+		/// The invalid target state index.
 		state: usize,
+		/// The number of states available in the graph.
 		state_count: usize,
 	},
+	/// A transition state cannot complete because its clip uses looping playback.
 	TransitionStateMustPlayOnce {
+		/// The index of the transition state with looping playback.
 		state: usize,
 	},
+	/// A transition state cannot complete because its completion state is outside the graph.
 	TransitionStateCompletionOutOfRange {
+		/// The index of the transition state.
 		state: usize,
+		/// The invalid completion state index.
 		completion: usize,
+		/// The number of states available in the graph.
 		state_count: usize,
 	},
+	/// A transition cannot be built with a duration before [`MediaTime::ZERO`].
 	NegativeTransitionDuration,
 }
 

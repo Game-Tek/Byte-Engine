@@ -27,8 +27,8 @@ pub mod window;
 
 pub mod frame_resources;
 mod graphics_hardware_interface;
-pub mod render_debugger;
 pub mod io;
+pub mod render_debugger;
 
 pub mod debug;
 pub mod factory;

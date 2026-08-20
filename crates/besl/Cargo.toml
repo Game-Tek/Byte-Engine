@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine-besl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Byte-Engine shader language parser, lexer, and derive integration."
@@ -21,7 +21,7 @@ name = "vm"
 harness = false
 
 [dependencies]
-besl-derive = { package = "byte-engine-besl-derive", path = "../besl-derive", version = "0.1.0" }
+besl-derive = { package = "byte-engine-besl-derive", path = "../besl-derive", version = "0.2.0" }
 half = "2.7.1"
 
 [dev-dependencies]

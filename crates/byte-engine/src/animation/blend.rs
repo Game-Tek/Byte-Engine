@@ -112,10 +112,12 @@ impl BlendSpace1D {
 		Ok(Self { positions })
 	}
 
+	/// Returns the number of samples and weights required by [`Self::write_weights`].
 	pub fn len(&self) -> usize {
 		self.positions.len()
 	}
 
+	/// Returns whether the blend space contains no samples.
 	pub fn is_empty(&self) -> bool {
 		self.positions.is_empty()
 	}
@@ -149,7 +151,10 @@ impl BlendSpace1D {
 
 /// The `BlendTriangle` struct identifies three sample indices forming one non-degenerate 2D blend region.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BlendTriangle(pub [usize; 3]);
+pub struct BlendTriangle(
+	/// Sample indices ordered around the triangle.
+	pub [usize; 3],
+);
 
 /// The `BlendSpace2D` struct stores validated points and triangles for allocation-free directional blending.
 #[derive(Clone, Debug, PartialEq)]
@@ -198,10 +203,12 @@ impl BlendSpace2D {
 		Ok(Self { positions, triangles })
 	}
 
+	/// Returns the number of samples and weights required by [`Self::write_weights`].
 	pub fn len(&self) -> usize {
 		self.positions.len()
 	}
 
+	/// Returns whether the blend space contains no samples.
 	pub fn is_empty(&self) -> bool {
 		self.positions.is_empty()
 	}
@@ -248,11 +255,26 @@ impl BlendSpace2D {
 	}
 }
 
+/// Errors returned when local poses cannot be blended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlendError {
-	InputCount { poses: usize, weights: usize },
-	PoseLength { expected: usize, actual: usize },
+	/// The pose and weight counts differ, or no poses were supplied.
+	InputCount {
+		/// Number of supplied poses.
+		poses: usize,
+		/// Number of supplied weights.
+		weights: usize,
+	},
+	/// An input pose does not match the output node count.
+	PoseLength {
+		/// Required node count.
+		expected: usize,
+		/// Supplied node count.
+		actual: usize,
+	},
+	/// A weight is negative or non-finite.
 	InvalidWeight,
+	/// All supplied weights are zero.
 	ZeroWeight,
 }
 
@@ -281,15 +303,38 @@ impl std::fmt::Display for BlendError {
 
 impl std::error::Error for BlendError {}
 
+/// Errors returned when constructing or evaluating a blend space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlendSpaceError {
-	NotEnoughSamples { minimum: usize },
+	/// The blend space has fewer samples than its topology requires.
+	NotEnoughSamples {
+		/// Minimum supported sample count.
+		minimum: usize,
+	},
+	/// A sample position contains a non-finite component.
 	NonFiniteSample,
+	/// One-dimensional sample positions are unsorted or duplicated.
 	SamplesNotStrictlyAscending,
+	/// A two-dimensional blend space has no triangles.
 	NoTriangles,
-	TriangleSampleOutOfRange { triangle: usize },
-	DegenerateTriangle { triangle: usize },
-	OutputLength { expected: usize, actual: usize },
+	/// A triangle references a sample outside the position list.
+	TriangleSampleOutOfRange {
+		/// Index of the invalid triangle.
+		triangle: usize,
+	},
+	/// A triangle uses repeated or collinear sample positions.
+	DegenerateTriangle {
+		/// Index of the degenerate triangle.
+		triangle: usize,
+	},
+	/// The output slice cannot hold one weight per sample.
+	OutputLength {
+		/// Required output length.
+		expected: usize,
+		/// Supplied output length.
+		actual: usize,
+	},
+	/// The evaluation parameter contains a non-finite component.
 	NonFiniteParameter,
 }
 

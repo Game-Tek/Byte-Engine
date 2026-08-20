@@ -7,11 +7,14 @@ use super::math::{conjugate_quaternion, multiply_quaternion, nlerp_quaternion};
 /// The `RootMotionDelta` struct carries one frame's local translation and rotation change to gameplay.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RootMotionDelta {
+	/// Translation to apply in the skeleton root's parent space.
 	pub translation: [f32; 3],
+	/// Rotation to apply after the previous root rotation.
 	pub rotation: [f32; 4],
 }
 
 impl RootMotionDelta {
+	/// The delta that preserves the current gameplay transform.
 	pub const IDENTITY: Self = Self {
 		translation: [0.0; 3],
 		rotation: [0.0, 0.0, 0.0, 1.0],
@@ -99,10 +102,23 @@ pub fn forward_loop_root_motion(
 	RootMotionDelta::between(previous, loop_end).then(RootMotionDelta::between(loop_start, current))
 }
 
+/// Errors returned when root motion cannot be extracted from a pose pair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RootMotionError {
-	PoseLength { previous: usize, current: usize },
-	RootNodeOutOfRange { root_node: usize, pose_len: usize },
+	/// The previous and current poses have different node counts.
+	PoseLength {
+		/// Previous pose node count.
+		previous: usize,
+		/// Current pose node count.
+		current: usize,
+	},
+	/// The selected root node is outside the pose.
+	RootNodeOutOfRange {
+		/// Requested root node index.
+		root_node: usize,
+		/// Available pose node count.
+		pose_len: usize,
+	},
 }
 
 impl std::fmt::Display for RootMotionError {

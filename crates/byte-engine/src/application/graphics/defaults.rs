@@ -74,6 +74,10 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 	}
 }
 
+/// Runs deferred loading tasks on an application-owned asynchronous worker.
+///
+/// Build `tasks` with [`build_deferred_tasks_queue`], then launch the worker
+/// after every subsystem has registered its loading work.
 pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {
 	application
 		.threads
@@ -104,14 +108,21 @@ pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks
 		}));
 }
 
+/// Creates the single-threaded runtime used by default background workers.
 pub fn build_single_threaded_async_runtime() -> compio::runtime::Runtime {
 	compio::runtime::Runtime::new().unwrap()
 }
 
+/// A loading operation that spawns its work on the provided runtime.
 pub type DeferredTask = Box<dyn FnOnce(&compio::runtime::Runtime) + Send>;
 
+/// The loading operations collected while default subsystems are configured.
 pub type DeferredTasks = Vec<DeferredTask>;
 
+/// Creates a deferred-task queue sized for the default graphics setup.
+///
+/// Add subsystem loading tasks, then pass the queue to
+/// [`launch_deferred_tasks_thread`].
 pub fn build_deferred_tasks_queue() -> DeferredTasks {
 	Vec::with_capacity(8)
 }

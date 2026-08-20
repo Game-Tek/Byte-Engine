@@ -2,7 +2,7 @@
 use resource_management::ResourceTraceItem;
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend, ReDBStorageBackend, ResourceId as ResourceUid},
+	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid},
 };
 use serde_json::{json, Value};
 

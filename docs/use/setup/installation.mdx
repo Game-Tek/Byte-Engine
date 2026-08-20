@@ -1,32 +1,113 @@
 ---
-title: Install Byte Engine
-description: How to install the Byte Engine on your system.
+title: Install Byte-Engine
+description: Add a published release or the latest source version to your Rust application.
 icon: Package
 ---
 
-Add Byte Engine to your Rust application:
+Choose the installation method based on whether you need a published release or the latest unreleased engine changes.
 
-```bash
-cargo add byte-engine@0.1.0
+## Install from crates.io
+
+Add the latest published Byte-Engine release to your application crate:
+
+```sh
+cargo add byte-engine
 ```
 
-Byte Engine uses unstable Rust features. Add a `rust-toolchain.toml` file that
-selects the engine's supported nightly toolchain:
+Cargo adds the published package version to your crate's `Cargo.toml`.
+
+Byte-Engine uses unstable Rust features. Pin the supported nightly toolchain in your application workspace's `rust-toolchain.toml`:
 
 ```toml
 [toolchain]
 channel = "nightly-2026-05-31"
 ```
 
-Next, follow the [environment setup guide](/docs/use/setup/environment) for your
-platform's graphics, audio, and native build dependencies.
+Next, complete the [environment setup guide](/docs/use/setup/environment) for your platform's graphics, audio, and native build dependencies.
 
-## Use an unreleased revision
+## Use the latest source from Git
 
-To test work that has not reached crates.io, add the Git repository:
+The latest engine changes may not be available on crates.io yet. Use a Git dependency when you want Cargo to fetch the source directly:
 
-```bash
+```sh
 cargo add byte-engine --git https://github.com/Game-Tek/Byte-Engine
 ```
 
-For engine development, clone the repository and use a path dependency instead.
+Use a local path dependency instead when you want to pull updates yourself, inspect the engine source, or modify the engine alongside your application.
+
+### Arrange the local workspaces
+
+Use a shared parent directory for the engine repository and your application workspace. This layout matches the Byte-Engine sandbox workspace:
+
+```text
+development/
+├── Byte-Engine/
+│   └── crates/
+│       └── byte-engine/
+└── my-game/
+    ├── Cargo.toml
+    ├── rust-toolchain.toml
+    └── game/
+        ├── Cargo.toml
+        └── src/
+            └── main.rs
+```
+
+From the shared parent directory, clone Byte-Engine:
+
+```sh
+git clone https://github.com/Game-Tek/Byte-Engine.git
+```
+
+If your directories use different names or locations, adjust the dependency paths in the following steps.
+
+### Configure the application workspace
+
+List your application crate in `my-game/Cargo.toml`:
+
+```toml
+[workspace]
+members = ["game"]
+resolver = "2"
+```
+
+Add the same supported nightly toolchain shown above to `my-game/rust-toolchain.toml`.
+
+### Add the engine crate
+
+From `my-game/game/`, add the local checkout with Cargo:
+
+```sh
+cargo add byte-engine --path ../../Byte-Engine/crates/byte-engine
+```
+
+This command adds the following dependency to `my-game/game/Cargo.toml`:
+
+```toml
+[dependencies]
+byte-engine = { path = "../../Byte-Engine/crates/byte-engine" }
+```
+
+Cargo resolves a path dependency from the `Cargo.toml` that declares it. In this layout, `../../Byte-Engine` moves from `my-game/game/` to the shared `development/` directory and then enters the engine checkout.
+
+If your application also uses a lower-level engine crate directly, add its package name and local path. For example:
+
+```toml
+[dependencies]
+byte-engine = { path = "../../Byte-Engine/crates/byte-engine" }
+ghi = { package = "byte-engine-ghi", path = "../../Byte-Engine/crates/ghi" }
+resource-management = { package = "byte-engine-resource-management", path = "../../Byte-Engine/crates/resource-management" }
+utils = { package = "byte-engine-utils", path = "../../Byte-Engine/crates/utils" }
+```
+
+Most applications only need the `byte-engine` dependency.
+
+### Verify the local setup
+
+After completing the environment setup, run this command from `my-game/`:
+
+```sh
+cargo check -p game
+```
+
+Cargo builds the application against the local Byte-Engine checkout. Pull changes in `Byte-Engine/` whenever you want to update the engine, then run the check again.

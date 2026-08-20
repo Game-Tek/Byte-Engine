@@ -911,7 +911,7 @@ mod tests {
 
 	use super::{
 		validate_resource_management_signature, ReDBStorageBackend, ResourceStorageMode, PACKED_RESOURCES_FILE,
-		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE,
+		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE, STAGED_RESOURCE_FILE_PREFIX,
 	};
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
@@ -996,12 +996,7 @@ mod tests {
 		let staging_files = std::fs::read_dir(&backend.base_path)
 			.unwrap()
 			.filter_map(Result::ok)
-			.filter(|entry| {
-				entry
-					.file_name()
-					.to_string_lossy()
-					.starts_with(redb::STAGED_RESOURCE_FILE_PREFIX)
-			})
+			.filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGED_RESOURCE_FILE_PREFIX))
 			.collect::<Vec<_>>();
 
 		assert_eq!(transaction.expected_size(), 4096);

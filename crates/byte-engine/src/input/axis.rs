@@ -8,10 +8,12 @@ use math::{NormalizationError, UnitVector, Vector};
 ///
 /// Use `Axis2` for device-relative values passed through [`super::Value`]. It
 /// deliberately has no world-space meaning. Next, use it in a
-/// [`super::TriggerDescription`] or an action [`super::ValueMapping`].
+/// [`super::input_trigger::TriggerDescription`] or an action [`super::ValueMapping`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Axis2 {
+	/// The horizontal input channel.
 	pub x: f32,
+	/// The vertical input channel.
 	pub y: f32,
 }
 
@@ -60,11 +62,14 @@ impl Add for Axis2 {
 ///
 /// Use `Axis3` for device-relative values passed through [`super::Value`]. It
 /// deliberately has no world-space meaning. Next, use it in a
-/// [`super::TriggerDescription`] or an action [`super::ValueMapping`].
+/// [`super::input_trigger::TriggerDescription`] or an action [`super::ValueMapping`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Axis3 {
+	/// The first input channel, conventionally horizontal.
 	pub x: f32,
+	/// The second input channel, conventionally vertical.
 	pub y: f32,
+	/// The third input channel, conventionally depth.
 	pub z: f32,
 }
 

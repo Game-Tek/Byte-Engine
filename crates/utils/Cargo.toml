@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine-utils"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Shared allocation, async, synchronization, collection, and geometry utilities for Byte-Engine."

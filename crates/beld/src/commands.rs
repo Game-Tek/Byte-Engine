@@ -27,7 +27,7 @@ mod tests {
 	};
 	#[cfg(debug_assertions)]
 	use resource_management::{
-		resource::{ReadStorageBackend, ReDBStorageBackend, WriteStorageBackend},
+		resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,

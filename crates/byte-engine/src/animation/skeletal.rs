@@ -62,8 +62,8 @@ pub fn write_global_pose(
 /// Samples an animation clip into global matrices for a compatible target skeleton.
 ///
 /// The caller owns all pose storage so a retained animation player can reuse it each
-/// frame without allocating. Next, send the resulting matrices through
-/// [`crate::rendering::UpdatePose`] for the renderable that owns the target skeleton.
+/// frame without allocating. Next, send the resulting matrices through the renderer's
+/// `UpdatePose` message for the renderable that owns the target skeleton.
 pub fn sample_pose(
 	animation: &Animation,
 	target_skeleton: &Skeleton,
@@ -325,9 +325,16 @@ fn hermite_vector<const N: usize>(
 	})
 }
 
+/// The `PoseError` enum identifies local poses that cannot be converted to global matrices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PoseError {
-	LocalPoseLength { expected: usize, actual: usize },
+	/// The local pose and skeleton contain different numbers of nodes.
+	LocalPoseLength {
+		/// The number of transforms required by the skeleton.
+		expected: usize,
+		/// The number of transforms supplied by the local pose.
+		actual: usize,
+	},
 }
 
 impl std::fmt::Display for PoseError {
@@ -346,9 +353,20 @@ impl std::error::Error for PoseError {}
 /// The `AnimationComparisonError` enum identifies invalid inputs to bone-position comparison.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnimationComparisonError {
+	/// A sample time is NaN or infinite.
 	NonFiniteTime,
-	SkeletonNodeCountMismatch { first: usize, second: usize },
-	SkeletonLayoutMismatch { node: usize },
+	/// The animations use skeletons with different node counts.
+	SkeletonNodeCountMismatch {
+		/// The first animation's node count.
+		first: usize,
+		/// The second animation's node count.
+		second: usize,
+	},
+	/// The skeletons use different names or parent links at one node.
+	SkeletonLayoutMismatch {
+		/// The index of the first incompatible node.
+		node: usize,
+	},
 }
 
 impl std::fmt::Display for AnimationComparisonError {

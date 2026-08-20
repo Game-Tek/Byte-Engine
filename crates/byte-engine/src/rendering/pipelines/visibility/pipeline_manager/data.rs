@@ -79,7 +79,7 @@ pub(crate) struct IesProfileTexture {
 ///
 /// `color` stores RGB illuminance in lux for directional lights and RGB luminous intensity in candela for local lights.
 /// IES-backed local lights resolve their calibrated candela scale into `color` on the CPU, so the shader only samples
-/// a normalized profile when [`Self::ies_profile_texture`] is not [`NO_IES_PROFILE_TEXTURE`]. Their C0 tangent uses
+/// a normalized profile when `ies_profile_texture` is not `NO_IES_PROFILE_TEXTURE`. Their C0 tangent uses
 /// the same compact octahedral encoding as other runtime unit vectors.
 #[repr(C)]
 #[derive(Copy, Clone)]

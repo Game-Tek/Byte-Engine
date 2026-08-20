@@ -88,25 +88,38 @@ enum AnimationLoadCompletion {
 /// The `AnimationPoolRequest` enum reports whether a lease can be sampled immediately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnimationPoolRequest {
+	/// Acquire and sample the requested clip.
 	Ready,
+	/// Wait while the requested clip loads asynchronously.
 	Loading,
+	/// Retry when loading or residency capacity becomes available.
 	WaitingForCapacity,
+	/// Handle the load failure or call [`AnimationPool::retry`].
 	Failed,
 }
 
 /// The `AnimationPoolEvent` enum reports load outcomes that require application-level handling.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnimationPoolEvent {
+	/// Handle a resource that could not be loaded.
 	LoadFailed {
+		/// The identifier of the resource that failed to load.
 		resource_id: String,
+		/// The load error reported by the resource system.
 		error: String,
 	},
+	/// Increase the pool budget or use a smaller animation resource.
 	Oversized {
+		/// The identifier of the resource that exceeded the pool budget.
 		resource_id: String,
+		/// The estimated decoded size required by the resource.
 		resident_bytes: usize,
+		/// The maximum decoded size available to the pool.
 		byte_budget: usize,
 	},
+	/// Request the resource again before its next use.
 	Evicted {
+		/// The identifier of the resource removed from the resident cache.
 		resource_id: String,
 	},
 }

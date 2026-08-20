@@ -1,6 +1,6 @@
 use resource_management::resource::{
 	storage_backend::{Query, QueryCursor, QueryError},
-	ReadStorageBackend, ReDBStorageBackend,
+	ReDBStorageBackend, ReadStorageBackend,
 };
 
 use crate::{

@@ -107,25 +107,13 @@ fn main() {
 }
 ```
 
-Add the published engine to your application:
+Install the latest published Byte-Engine release from crates.io:
 
 ```sh
-cargo add byte-engine@0.1.0
+cargo add byte-engine
 ```
 
-To follow an unreleased revision, use a Git dependency:
-
-```toml
-[dependencies]
-byte-engine = { git = "https://github.com/Game-Tek/Byte-Engine", package = "byte-engine" }
-```
-
-For faster local development, use a path dependency:
-
-```toml
-[dependencies]
-byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
-```
+Getting the latest unreleased changes requires pulling Byte-Engine from Git and installing it with one of the additional methods in the [docs](https://byte-engine.0x44491229.dev/docs/use/setup/installation).
 
 ## 🗺️ Explore the workspace
 

@@ -50,8 +50,11 @@ impl SpecializedComputePipelineRequest {
 /// The `PipelineState` enum reports the published state of a pipeline request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PipelineState {
+	/// Compilation is queued or still running.
 	Pending,
+	/// Compilation succeeded and published this pipeline handle.
 	Ready(ghi::PipelineHandle),
+	/// Loading or compilation failed.
 	Failed,
 }
 

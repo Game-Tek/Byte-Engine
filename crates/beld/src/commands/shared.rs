@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{storage_backend::QueryCursor, ReadStorageBackend, ReDBStorageBackend},
+	resource::{storage_backend::QueryCursor, ReDBStorageBackend, ReadStorageBackend},
 	QueryableValue,
 };
 #[cfg(debug_assertions)]

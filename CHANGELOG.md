@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 - 2026-08-20
+
+- Added skeletal animation sampling, blending, inertialization, root motion, animation graphs, and reusable runtime players.
+- Added block-based audio graph processing with custom processors, pitch shifting, random and round-robin selection, and sample-accurate playback time.
+- Added navigation-mesh pathfinding and funnel-based corridor simplification.
+- Expanded GHI allocation and I/O APIs while advancing the Direct3D 12, Metal, and Vulkan backends.
+- Made resource loading asynchronous and improved baking with dependency tracking, request coalescing, streaming writes, and queryable storage.
+- Added and optimized rendering paths for GTAO, shadows, environment maps, tone mapping, SMAA, visibility, and material evaluation.
+- Reorganized public modules and resource APIs. This release contains breaking API changes from `0.1.x`.
+
 ## 0.1.1 - 2026-07-23
 
 - Configured docs.rs builds to enable the AES and SSE2 target features required by `gxhash`.

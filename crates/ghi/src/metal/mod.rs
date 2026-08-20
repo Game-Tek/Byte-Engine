@@ -24,8 +24,8 @@ use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 use crate::PrivateHandles;
 
-mod pipeline;
 mod io;
+mod pipeline;
 mod resources;
 mod state;
 mod synchronization;

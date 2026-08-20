@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend as _, ReDBStorageBackend, ResourceStorageMode, WriteStorageBackend as _},
+	resource::{ReDBStorageBackend, ReadStorageBackend as _, ResourceStorageMode, WriteStorageBackend as _},
 	Model, ProcessedAsset,
 };
 

@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "A composable Rust game engine focused on graphics, input, audio, physics, and retained UI."
@@ -47,14 +47,14 @@ harness = false
 base64 = { version = "0.13.1", optional = true }
 flate2 = { version = "1.1.9", optional = true }
 serde_json = "1.0.140"
-utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
-ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.1", optional = true }
-ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.1.0", optional = true }
-besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0", optional = true }
-resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1" }
-math = { package = "byte-engine-math", path = "../math", version = "0.1.0" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
+ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.2.0", optional = true }
+ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.2.0", optional = true }
+besl = { package = "byte-engine-besl", path = "../besl", version = "0.2.0", optional = true }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.2.0" }
+math = { package = "byte-engine-math", path = "../math", version = "0.2.0" }
 maths-rs = "1.0.0"
-betp = { package = "byte-engine-betp", path = "../betp", version = "0.1.1", optional = true }
+betp = { package = "byte-engine-betp", path = "../betp", version = "0.2.0", optional = true }
 
 serde = "1.0.219"
 log = "0.4.26"

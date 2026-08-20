@@ -30,10 +30,12 @@ impl PoseInertializer {
 		}
 	}
 
+	/// Returns the node count required for poses passed to [`Self::begin`] and [`Self::apply`].
 	pub fn node_count(&self) -> usize {
 		self.nodes.len()
 	}
 
+	/// Returns whether [`Self::apply`] is still smoothing a transition.
 	pub fn is_active(&self) -> bool {
 		self.active
 	}
@@ -184,11 +186,21 @@ struct InertializedTransform {
 	scale_velocity: [f32; 3],
 }
 
+/// Errors returned when a pose transition cannot be initialized or advanced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InertializationError {
-	PoseLength { expected: usize, actual: usize },
+	/// A pose does not match the inertializer's node count.
+	PoseLength {
+		/// Node count configured by [`PoseInertializer::new`].
+		expected: usize,
+		/// Supplied pose node count.
+		actual: usize,
+	},
+	/// The interval between source samples is zero, negative, or non-finite.
 	InvalidSampleDelta,
+	/// The requested transition duration is negative or non-finite.
 	InvalidDuration,
+	/// The frame interval used to advance the transition is negative or non-finite.
 	InvalidAdvanceDelta,
 }
 

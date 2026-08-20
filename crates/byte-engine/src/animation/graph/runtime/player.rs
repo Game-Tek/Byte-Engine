@@ -557,8 +557,17 @@ impl<'graph, I> AnimationGraphPlayer<'graph, 'static, I> {
 /// The `AnimationGraphPlayerError` enum reports invalid player inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnimationGraphPlayerError {
-	RootMotionNodeNotFound { name: String },
-	DuplicateRootMotionNodeName { name: String },
+	/// Choose a root-motion node that exists in the target skeleton.
+	RootMotionNodeNotFound {
+		/// The requested root-motion node name.
+		name: String,
+	},
+	/// Choose a root-motion node name that is unique in the target skeleton.
+	DuplicateRootMotionNodeName {
+		/// The ambiguous root-motion node name.
+		name: String,
+	},
+	/// Pass a nonnegative frame duration to [`AnimationGraphPlayer::advance`].
 	NegativeDelta,
 }
 

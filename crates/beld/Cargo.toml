@@ -1,6 +1,7 @@
 [package]
 name = "beld"
-version = "0.1.1"
+version = "0.2.0"
+publish = false
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Command-line asset baking and resource inspection for Byte-Engine."
@@ -17,9 +18,9 @@ rustc-args = ["-C", "target-feature=+aes,+sse2"]
 rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [dependencies]
-byte-engine = { path = "../byte-engine", version = "0.1.1" }
-utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
-resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.1", features = ["gpu-ibl", "gpu-mips"] }
+byte-engine = { path = "../byte-engine", version = "0.2.0" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.2.0", features = ["gpu-ibl", "gpu-mips"] }
 
 clap = { version = "4.5.32", features = ["derive"] }
 simple_logger = "5.0.0"

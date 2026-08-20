@@ -497,7 +497,6 @@ fn string_pull_from_corridor<Space>(
 			} else {
 				push_distinct(path, left);
 				apex = left;
-				left = apex;
 				right = apex;
 				portal_index = left_index + 1;
 				right_index = left_index;

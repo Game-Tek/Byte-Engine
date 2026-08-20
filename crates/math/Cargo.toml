@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine-math"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Branded, allocation-free geometry types used across Byte-Engine."

@@ -7,7 +7,9 @@
 /// [`crate::ui::Engine::set_cursor_position`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiPoint {
+	/// The horizontal UI coordinate.
 	pub x: f32,
+	/// The vertical UI coordinate.
 	pub y: f32,
 }
 
@@ -31,7 +33,9 @@ impl UiPoint {
 /// [`crate::ui::layout::snapshot::Snapshot::move_cursor`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiVector {
+	/// The horizontal UI displacement.
 	pub x: f32,
+	/// The vertical UI displacement.
 	pub y: f32,
 }
 

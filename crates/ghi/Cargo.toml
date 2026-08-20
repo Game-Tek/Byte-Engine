@@ -1,6 +1,6 @@
 [package]
 name = "byte-engine-ghi"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Facundo Villa <facundovilla961@gmail.com>"]
 description = "Graphics hardware interface layer used by Byte-Engine."
@@ -21,7 +21,7 @@ rustc-args = ["-C", "target-feature=+aes,+sse2"]
 rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [dependencies]
-utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.1" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
 
 bitflags = "2.9.0"
 smallvec = "1.15.1"

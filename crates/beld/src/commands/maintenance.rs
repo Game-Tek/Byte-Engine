@@ -1,6 +1,6 @@
 use resource_management::{
 	asset::ResourceId,
-	resource::{ReadStorageBackend, ReDBStorageBackend, WriteStorageBackend},
+	resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
 };
 
 use crate::commands::shared::open_read_only_storage;

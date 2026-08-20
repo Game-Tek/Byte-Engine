@@ -65,7 +65,10 @@ impl AssetHandler for OGGAssetHandler {
 		// common sink consumes every block before requesting the next one.
 		let (asset, data) = Self::decode_ogg(url, &data, self.bit_depth)?;
 
-		context.store_primary(asset, data.as_ref())
+		match data {
+			Cow::Borrowed(data) => context.store_primary(asset, data).await,
+			Cow::Owned(data) => context.store_primary_owned(asset, data).await,
+		}
 	}
 }
 

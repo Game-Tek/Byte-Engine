@@ -77,7 +77,7 @@ impl AssetHandler for IESAssetHandler {
 			photometry: Some(ImagePhotometry { intensity_scale_candela }),
 		};
 
-		context.store_primary(ProcessedAsset::new(url, image), &data)
+		context.store_primary(ProcessedAsset::new(url, image), &data).await
 	}
 }
 

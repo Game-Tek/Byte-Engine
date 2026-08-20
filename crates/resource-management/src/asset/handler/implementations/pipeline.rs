@@ -38,7 +38,7 @@ impl AssetHandler for PipelineAssetHandler {
 			}
 		}
 
-		context.store_primary(ProcessedAsset::new(id, pipeline), &[])
+		context.store_primary(ProcessedAsset::new(id, pipeline), &[]).await
 	}
 }
 

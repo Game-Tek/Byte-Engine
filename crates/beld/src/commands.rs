@@ -269,8 +269,8 @@ mod tests {
 			.is_none());
 
 		let successful_id = ResourceId::new("successful.audio");
-		resource_storage
-			.store(
+		executor
+			.block_on(resource_storage.store(
 				ProcessedAsset::new(
 					successful_id,
 					Audio {
@@ -281,7 +281,7 @@ mod tests {
 					},
 				),
 				&[],
-			)
+			))
 			.unwrap();
 		resource_storage
 			.replace_trace(

@@ -86,7 +86,7 @@ pub(crate) async fn generate_gltf_material_variant(
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
+	let shader = store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await?;
 
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
@@ -100,7 +100,7 @@ pub(crate) async fn generate_gltf_material_variant(
 		parameters: Vec::new(),
 	};
 
-	let material = store_model::<MaterialModel>(context, &material_id, material, &[])?;
+	let material = store_model::<MaterialModel>(context, &material_id, material, &[]).await?;
 
 	let variant = VariantModel {
 		material,
@@ -108,7 +108,7 @@ pub(crate) async fn generate_gltf_material_variant(
 		alpha_mode,
 	};
 
-	store_model::<VariantModel>(context, &variant_id, variant, &[])
+	store_model::<VariantModel>(context, &variant_id, variant, &[]).await
 }
 
 /// Extracts the glTF base-color alpha expression into the compact masked-raster contract.

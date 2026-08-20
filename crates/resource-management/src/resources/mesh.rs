@@ -518,6 +518,7 @@ mod tests {
 		};
 		let reference: ReferenceModel<SkeletonModel> = storage
 			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), model), &[])
+			.await
 			.expect("Test skeleton should store")
 			.into();
 		reference.solve(storage).await.expect("Test skeleton should solve")

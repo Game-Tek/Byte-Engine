@@ -124,7 +124,7 @@ impl AssetHandler for GLTFAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]);
+			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
 		}
 
 		let default_resource = if url.get_fragment().is_none() {
@@ -177,7 +177,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 				let skeleton_id = generated_gltf_skeleton_id(source_id);
 
-				let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?;
+				let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
 
 				let animation = import_gltf_animation(&gltf, &buffers, fragment.as_ref(), &graph.source_to_dense, skeleton)
 					.map_err(|error| {
@@ -186,7 +186,7 @@ impl AssetHandler for GLTFAssetHandler {
 						LoadErrors::FailedToProcess
 					})?;
 
-				return context.store_primary(ProcessedAsset::new(url, animation), &[]);
+				return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 			}
 
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
@@ -195,7 +195,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let semantic = guess_semantic_from_name(url.get_base());
 
-			store_gltf_image(context, url, image, semantic, None)?;
+			store_gltf_image(context, url, image, semantic, None).await?;
 
 			return Ok(());
 		}
@@ -209,7 +209,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let skeleton_id = generated_gltf_skeleton_id(source_id);
 
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
 
 			let animation =
 				import_gltf_animation(&gltf, &buffers, DEFAULT_ANIMATION_FRAGMENT, &graph.source_to_dense, skeleton).map_err(
@@ -220,7 +220,7 @@ impl AssetHandler for GLTFAssetHandler {
 					},
 				)?;
 
-			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 		}
 
 		let spec = spec.as_ref();
@@ -326,7 +326,7 @@ impl AssetHandler for GLTFAssetHandler {
 		} else {
 			let skeleton_id = generated_gltf_skeleton_id(source_id);
 
-			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?)
+			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?)
 		};
 
 		let (unique_materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
@@ -397,11 +397,14 @@ impl AssetHandler for GLTFAssetHandler {
 			})?;
 		}
 
-		let mesh = mesh_processor.finish();
+		let mut transaction = context.begin_resource(url, mesh_processor.payload_size()).await?;
+		let (mesh, stream_descriptions) = mesh_processor
+			.finish_into_resource(&mut transaction)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
 
-		context.store_primary(
-			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
-			&mesh.buffer,
-		)
+		context
+			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
+			.await
 	}
 }

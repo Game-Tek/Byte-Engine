@@ -159,8 +159,13 @@ impl AssetHandler for WAVAssetHandler {
 		let (description, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let (asset, data) = process_audio(url, description, |sink| sink.set_interleaved_pcm(pcm_data))?;
+		let mut transaction = context.begin_resource(url, data.len()).await?;
+		transaction
+			.write_all(data.as_ref())
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
 
-		context.store_primary(asset, data.as_ref())
+		context.commit_primary(transaction, asset).await
 	}
 }
 

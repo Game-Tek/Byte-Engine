@@ -586,6 +586,7 @@ pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
 }
 
 /// Streams every mesh instance and material part through the common processor while reusing FBX topology scratch.
+#[allow(dead_code)] // Buffer-owning callers still use this utility outside the direct storage path.
 pub(crate) fn import_fbx_meshes<'a>(
 	scene: &ufbx::Scene,
 	materials: &ResolvedFbxMaterials,
@@ -595,6 +596,28 @@ pub(crate) fn import_fbx_meshes<'a>(
 	allocator: &'a dyn Allocator,
 	culled_polygons: &mut FbxCulledPolygonCounts,
 ) -> Result<ProcessedMesh, FbxMeshProcessingError> {
+	Ok(import_fbx_mesh_session(
+		scene,
+		materials,
+		skeleton,
+		source_to_skeleton,
+		mesh_processor,
+		allocator,
+		culled_polygons,
+	)?
+	.finish())
+}
+
+/// Streams FBX primitives into a session that can write its final blocks directly to resource storage.
+pub(crate) fn import_fbx_mesh_session<'a>(
+	scene: &ufbx::Scene,
+	materials: &ResolvedFbxMaterials,
+	skeleton: Option<ReferenceModel<SkeletonModel>>,
+	source_to_skeleton: &[u32],
+	mesh_processor: MeshProcessor,
+	allocator: &'a dyn Allocator,
+	culled_polygons: &mut FbxCulledPolygonCounts,
+) -> Result<MeshProcessorSession, FbxMeshProcessingError> {
 	let estimates = fbx_mesh_allocation_estimates(scene);
 	let vertex_layout = fbx_vertex_layout(scene);
 	let mut processor = mesh_processor.begin(vertex_layout, skeleton, Vec::new())?;
@@ -707,7 +730,7 @@ pub(crate) fn import_fbx_meshes<'a>(
 	if primitive_count == 0 {
 		return Err(FbxImportError::NoMesh.into());
 	}
-	Ok(processor.finish())
+	Ok(processor)
 }
 
 /// Processes one triangulated material part immediately so source-corner storage can be reused by the next part.

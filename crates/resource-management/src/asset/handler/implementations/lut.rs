@@ -114,7 +114,7 @@ impl AssetHandler for LUTAssetHandler {
 
 		let (resource, data) = process_lut(url, parsed.description, parsed.entries)?;
 
-		context.store_primary(resource, &data)
+		context.store_primary_owned(resource, data).await
 	}
 }
 

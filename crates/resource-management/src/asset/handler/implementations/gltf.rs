@@ -1210,7 +1210,7 @@ use super::{
 	container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,
+	sanitize_material_name, store_model, store_model_owned, ContainerDefaultResource, ResourceId,
 };
 use crate::asset::handler::implementations::bema::{compile_shader_program, ProgramGenerator};
 pub use crate::processors::processor::implementations::mesh::TriangleFrontFaceWinding;

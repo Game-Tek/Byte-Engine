@@ -75,6 +75,39 @@ mod tests {
 	}
 
 	#[test]
+	fn finish_into_writes_the_owned_payload_layout_without_a_combined_buffer() {
+		let layout = vec![
+			component(VertexSemantics::Position),
+			component(VertexSemantics::Normal),
+			component(VertexSemantics::UV),
+		];
+		let expected = process(
+			layout.clone(),
+			&[TestPrimitive::triangle().with_normals().with_uvs()],
+			None,
+			Vec::new(),
+		)
+		.unwrap();
+		let mut session = MeshProcessor::new().begin(layout, None, Vec::new()).unwrap();
+		session
+			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
+			.unwrap();
+		let payload_size = session.payload_size();
+		let mut payload = Vec::new();
+		let (mesh, stream_descriptions) = session.finish_into(&mut payload).unwrap();
+
+		assert_eq!(payload_size, expected.buffer.len());
+		assert_eq!(payload, expected.buffer.as_ref());
+		assert_eq!(mesh.streams.len(), expected.mesh.streams.len());
+		assert_eq!(stream_descriptions.len(), expected.stream_descriptions.len());
+		for (actual, expected) in stream_descriptions.iter().zip(&expected.stream_descriptions) {
+			assert_eq!(actual.name(), expected.name());
+			assert_eq!(actual.size(), expected.size());
+			assert_eq!(actual.offset(), expected.offset());
+		}
+	}
+
+	#[test]
 	fn preserves_skin_metadata_and_streams() {
 		let skeleton = test_skeleton(1);
 		let primitive = TestPrimitive::triangle()

@@ -324,6 +324,7 @@ mod tests {
 
 		storage
 			.store(ProcessedAsset::new(ResourceId::new("audio/loop.wav"), audio), &[1, 2, 3, 4])
+			.await
 			.unwrap();
 
 		let resource_manager = ResourceManager::new(storage);
@@ -407,22 +408,24 @@ mod debug_tests {
 
 			let (source, ..) = context.resolve(id).await?;
 
-			context.store_primary(
-				ProcessedAsset::new(
-					id,
-					Shader {
-						id: id.to_string(),
-						stage: ShaderTypes::Compute,
-						interface: ShaderInterface {
-							workgroup_size: None,
-							bindings: Vec::new(),
+			context
+				.store_primary(
+					ProcessedAsset::new(
+						id,
+						Shader {
+							id: id.to_string(),
+							stage: ShaderTypes::Compute,
+							interface: ShaderInterface {
+								workgroup_size: None,
+								bindings: Vec::new(),
+							},
+							artifact: ShaderArtifact::Spirv,
+							source_hash: 0,
 						},
-						artifact: ShaderArtifact::Spirv,
-						source_hash: 0,
-					},
-				),
-				&source,
-			)
+					),
+					&source,
+				)
+				.await
 		}
 	}
 
@@ -446,22 +449,24 @@ mod debug_tests {
 				.await
 				.expect("test release announcement should remain open");
 
-			context.store_primary(
-				ProcessedAsset::new(
-					id,
-					Shader {
-						id: id.to_string(),
-						stage: ShaderTypes::Compute,
-						interface: ShaderInterface {
-							workgroup_size: None,
-							bindings: Vec::new(),
+			context
+				.store_primary(
+					ProcessedAsset::new(
+						id,
+						Shader {
+							id: id.to_string(),
+							stage: ShaderTypes::Compute,
+							interface: ShaderInterface {
+								workgroup_size: None,
+								bindings: Vec::new(),
+							},
+							artifact: ShaderArtifact::Spirv,
+							source_hash: 0,
 						},
-						artifact: ShaderArtifact::Spirv,
-						source_hash: 0,
-					},
-				),
-				&[],
-			)
+					),
+					&[],
+				)
+				.await
 		}
 	}
 

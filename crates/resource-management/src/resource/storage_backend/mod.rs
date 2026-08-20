@@ -1,6 +1,10 @@
 //! Store, retrieve, and query baked resources through interchangeable backends.
 
 pub mod redb_storage_backend;
+mod transaction;
+
+pub use transaction::ResourceTransaction;
+use transaction::{ResourceTransactionCommit, ResourceWriteOutput, ResourceWriter, StagedResourceFile};
 
 pub trait StorageBackend: ReadStorageBackend + WriteStorageBackend {}
 pub trait DynStorageBackend: DynReadStorageBackend + DynWriteStorageBackend {}
@@ -52,15 +56,62 @@ pub trait DynReadStorageBackend: Send + Sync {
 
 pub trait WriteStorageBackend: Sync + Send {
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
-	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
+
+	/// Reserves exact payload storage before a processor starts writing.
+	///
+	/// Await [`ResourceTransaction::write_all`] until exactly `size` bytes have
+	/// been accepted, then await [`ResourceTransaction::commit`].
+	fn begin_resource<'a>(
+		&'a self,
+		id: ResourceId<'_>,
+		size: usize,
+	) -> impl Future<Output = Result<ResourceTransaction<'a>, ()>> + 'a;
+
+	fn store<'a>(
+		&'a self,
+		resource: ProcessedAsset,
+		data: &'a [u8],
+	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
 		self.store_in(resource, data, &std::alloc::Global)
 	}
-	fn store_in(
-		&self,
+
+	/// Stores an owned payload without copying large buffers through the file staging buffer.
+	fn store_owned<'a, T: compio::buf::IoBuf>(
+		&'a self,
 		resource: ProcessedAsset,
-		data: &[u8],
-		allocator: &dyn std::alloc::Allocator,
-	) -> Result<SerializableResource, ()>;
+		data: T,
+	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
+		self.store_owned_in(resource, data, &std::alloc::Global)
+	}
+
+	/// Stores an owned payload while using `allocator` for serialized resource metadata.
+	fn store_owned_in<'a, T: compio::buf::IoBuf>(
+		&'a self,
+		resource: ProcessedAsset,
+		data: T,
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
+		async move {
+			let size = data.buf_len();
+			let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
+			let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
+			result.map_err(|_| ())?;
+			transaction.commit(resource, allocator).await
+		}
+	}
+
+	fn store_in<'a>(
+		&'a self,
+		resource: ProcessedAsset,
+		data: &'a [u8],
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
+		async move {
+			let mut transaction = self.begin_resource(ResourceId::new(resource.id()), data.len()).await?;
+			transaction.write_all(data).await.map_err(|_| ())?;
+			transaction.commit(resource, allocator).await
+		}
+	}
 
 	fn sync<T: ReadStorageBackend>(&self, _: &T) {}
 
@@ -75,13 +126,14 @@ pub trait WriteStorageBackend: Sync + Send {
 
 pub trait DynWriteStorageBackend: Send + Sync {
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
-	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()>;
-	fn store_in(
-		&self,
+	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>>;
+	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
+	fn store_in<'a>(
+		&'a self,
 		resource: ProcessedAsset,
-		data: &[u8],
-		allocator: &dyn std::alloc::Allocator,
-	) -> Result<SerializableResource, ()>;
+		data: &'a [u8],
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		Ok(())
@@ -232,17 +284,21 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 		self.delete(id)
 	}
 
-	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
-		self.store(resource, data)
+	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>> {
+		Box::pin(WriteStorageBackend::begin_resource(self, id, size))
 	}
 
-	fn store_in(
-		&self,
+	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>> {
+		Box::pin(WriteStorageBackend::store(self, resource, data))
+	}
+
+	fn store_in<'a>(
+		&'a self,
 		resource: ProcessedAsset,
-		data: &[u8],
-		allocator: &dyn std::alloc::Allocator,
-	) -> Result<SerializableResource, ()> {
-		self.store_in(resource, data, allocator)
+		data: &'a [u8],
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> BoxedFuture<'a, Result<SerializableResource, ()>> {
+		Box::pin(WriteStorageBackend::store_in(self, resource, data, allocator))
 	}
 
 	#[cfg(debug_assertions)]
@@ -259,7 +315,7 @@ impl<T: ReadStorageBackend + WriteStorageBackend> DynStorageBackend for T {}
 
 #[cfg(test)]
 pub mod tests {
-	use std::{hash::Hasher, sync::Arc};
+	use std::sync::Arc;
 
 	use gxhash::HashMapExt;
 	use utils::{hash::HashMap, sync::Mutex};
@@ -389,31 +445,16 @@ pub mod tests {
 			Ok(())
 		}
 
-		fn store_in(
-			&self,
-			resource: ProcessedAsset,
-			data: &[u8],
-			allocator: &dyn std::alloc::Allocator,
-		) -> Result<SerializableResource, ()> {
-			let id = resource.id.clone();
-			let size = data.len();
-
-			let hash = {
-				let mut hasher = gxhash::GxHasher::with_seed(961961961961961);
-
-				std::hash::Hasher::write(&mut hasher, data); // Hash binary data (For identifying the resource)
-
-				hasher.finish()
-			};
-
-			let container = resource.into_serializable(hash, size);
-			let serialized_container = crate::to_vec_in(&container, allocator).unwrap();
-
-			self.resources
-				.lock()
-				.insert(id, (serialized_container.to_vec().into(), data.into()));
-
-			Ok(container)
+		fn begin_resource<'a>(
+			&'a self,
+			id: ResourceId<'_>,
+			size: usize,
+		) -> impl Future<Output = Result<ResourceTransaction<'a>, ()>> + 'a {
+			let resource_id = crate::resource::ResourceId::from(id.as_ref());
+			async move {
+				let writer = ResourceWriter::memory(size)?;
+				Ok(ResourceTransaction::new(self, resource_id, None, writer))
+			}
 		}
 
 		#[cfg(debug_assertions)]
@@ -429,6 +470,30 @@ pub mod tests {
 
 		fn sync<'s, 'a, T: ReadStorageBackend>(&'s self, _: &'a T) -> () {
 			{}
+		}
+	}
+
+	impl ResourceTransactionCommit for TestStorageBackend {
+		fn commit_resource(
+			&self,
+			_resource_id: crate::resource::ResourceId,
+			_backend_offset: Option<u64>,
+			resource: ProcessedAsset,
+			output: ResourceWriteOutput,
+			allocator: &dyn std::alloc::Allocator,
+		) -> Result<SerializableResource, ()> {
+			let id = resource.id().to_string();
+			let hash = output.hash();
+			let size = output.size();
+			let data = output.into_memory()?;
+			let container = resource.into_serializable(hash, size);
+			let serialized_container = crate::to_vec_in(&container, allocator).map_err(|_| ())?;
+
+			self.resources
+				.lock()
+				.insert(id, (serialized_container.to_vec().into(), data.into_boxed_slice()));
+
+			Ok(container)
 		}
 	}
 

@@ -52,7 +52,7 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 }
 
 /// Stores one generated model and returns the serialized reference used by its parent resource.
-pub(crate) fn store_model<M: crate::Model>(
+pub(crate) async fn store_model<M: crate::Model>(
 	context: handler::BakeContext<'_>,
 	id: &str,
 	model: M,
@@ -60,6 +60,20 @@ pub(crate) fn store_model<M: crate::Model>(
 ) -> Result<crate::ReferenceModel<M>, handler::LoadErrors> {
 	context
 		.store_generated(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+		.await
+		.map(Into::into)
+}
+
+/// Stores one generated model by moving an owned payload into resource storage.
+pub(crate) async fn store_model_owned<M: crate::Model, T: compio::buf::IoBuf>(
+	context: handler::BakeContext<'_>,
+	id: &str,
+	model: M,
+	data: T,
+) -> Result<crate::ReferenceModel<M>, handler::LoadErrors> {
+	context
+		.store_generated_owned(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+		.await
 		.map(Into::into)
 }
 

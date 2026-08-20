@@ -72,7 +72,7 @@ impl IBLGenerator {
 	}
 
 	/// Generates IBL textures from one decoded RGBA16F image and stores the complete image resource.
-	pub fn generate_and_store(
+	pub async fn generate_and_store(
 		&self,
 		context: BakeContext<'_>,
 		url: ResourceId<'_>,
@@ -91,7 +91,8 @@ impl IBLGenerator {
 						baked.ibl,
 						baked.streams,
 						&baked.data,
-					);
+					)
+					.await;
 				}
 				Err(error) => context.warn(format!(
 					"GPU environment-map generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
@@ -106,7 +107,7 @@ impl IBLGenerator {
 			LoadErrors::FailedToProcess
 		})?;
 
-		store_baked_image(context, url, baked.root_extent, baked.ibl, baked.streams, &baked.data)
+		store_baked_image(context, url, baked.root_extent, baked.ibl, baked.streams, &baked.data).await
 	}
 
 	#[cfg(all(test, feature = "gpu-ibl"))]
@@ -119,7 +120,7 @@ impl IBLGenerator {
 }
 
 /// Stores a decoded HDR image and its generated IBL streams without changing processor-owned data.
-fn store_baked_image(
+async fn store_baked_image(
 	context: BakeContext<'_>,
 	url: ResourceId<'_>,
 	root_extent: [u32; 3],
@@ -138,7 +139,7 @@ fn store_baked_image(
 
 	let asset = ProcessedAsset::new(url, image).with_streams(streams);
 
-	context.store_primary(asset, data)
+	context.store_primary(asset, data).await
 }
 
 use utils::Extent;

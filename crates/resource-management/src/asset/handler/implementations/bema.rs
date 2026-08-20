@@ -192,7 +192,7 @@ impl AssetHandler for BEMAAssetHandler {
 
 			let resource = ProcessedAsset::new(url, resource);
 
-			context.store_primary(resource, &[])
+			context.store_primary(resource, &[]).await
 		} else {
 			let parent_material_url = asset["parent"].as_str().unwrap();
 
@@ -255,7 +255,7 @@ impl AssetHandler for BEMAAssetHandler {
 				},
 			);
 
-			context.store_primary(resource, &[])
+			context.store_primary(resource, &[]).await
 		}
 	}
 }
@@ -456,7 +456,8 @@ async fn compile_and_store_shader(
 		.map_err(|_| LoadErrors::FailedToProcess)?;
 
 	context
-		.store_generated(ProcessedAsset::new(path, shader), &result_shader_bytes)
+		.store_generated_owned(ProcessedAsset::new(path, shader), result_shader_bytes)
+		.await
 		.map(Into::into)
 }
 

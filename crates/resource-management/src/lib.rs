@@ -173,6 +173,11 @@ impl ProcessedAsset {
 		}
 	}
 
+	/// Returns the stable ID that storage must publish for this resource.
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+
 	/// Attaches the source versions observed while the asset handler produced this resource.
 	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
 		self.asset_dependencies = asset_dependencies;

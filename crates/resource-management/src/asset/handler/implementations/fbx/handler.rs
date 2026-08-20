@@ -121,12 +121,14 @@ impl AssetHandler for FBXAssetHandler {
 			})?;
 
 			if fragment.as_ref() == SKELETON_FRAGMENT {
-				return context.store_primary(ProcessedAsset::new(url, imported_skeleton.model), &[]);
+				return context
+					.store_primary(ProcessedAsset::new(url, imported_skeleton.model), &[])
+					.await;
 			}
 
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
 
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[]).await?;
 
 			let animation = import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton)
 				.map_err(|error| {
@@ -135,7 +137,7 @@ impl AssetHandler for FBXAssetHandler {
 					LoadErrors::FailedToProcess
 				})?;
 
-			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 		}
 
 		let default_resource = select_unfragmented_fbx_resource(&scene, spec.as_ref()).map_err(|error| {
@@ -158,7 +160,7 @@ impl AssetHandler for FBXAssetHandler {
 
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
 
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[]).await?;
 
 			let animation = import_fbx_animation(
 				&scene,
@@ -175,7 +177,7 @@ impl AssetHandler for FBXAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 		}
 
 		let imported_skeleton = (scene.meshes.iter().any(|mesh| !mesh.skin_deformers.is_empty())
@@ -192,7 +194,7 @@ impl AssetHandler for FBXAssetHandler {
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
 
 			(
-				Some(store_model::<SkeletonModel>(context, &skeleton_id, imported.model, &[])?),
+				Some(store_model::<SkeletonModel>(context, &skeleton_id, imported.model, &[]).await?),
 				imported.source_to_skeleton,
 			)
 		} else {
@@ -211,7 +213,7 @@ impl AssetHandler for FBXAssetHandler {
 
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 
-		let mesh = import_fbx_meshes(
+		let mesh = import_fbx_mesh_session(
 			&scene,
 			&materials,
 			skeleton,
@@ -228,9 +230,14 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		context.store_primary(
-			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
-			&mesh.buffer,
-		)
+		let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
+		let (mesh, stream_descriptions) = mesh
+			.finish_into_resource(&mut transaction)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
+
+		context
+			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
+			.await
 	}
 }

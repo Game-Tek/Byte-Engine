@@ -136,7 +136,9 @@ impl AssetHandler for EXRAssetHandler {
 
 		let extent = decoded.extent.filter(|_| decoded.valid).ok_or(LoadErrors::FailedToProcess)?;
 
-		self.ibl_generator.generate_and_store(context, url, extent, &decoded.data)
+		self.ibl_generator
+			.generate_and_store(context, url, extent, &decoded.data)
+			.await
 	}
 }
 

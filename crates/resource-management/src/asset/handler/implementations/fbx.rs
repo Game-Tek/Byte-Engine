@@ -117,23 +117,25 @@ mod tests {
 		}
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
-			context.store_primary(
-				ProcessedAsset::new(
-					id,
-					VariantModel {
-						material: ReferenceModel::<MaterialModel>::new_serialized(
-							"materials/test.material",
-							0,
-							0,
-							Vec::new(),
-							None,
-						),
-						variables: Vec::new(),
-						alpha_mode: AlphaMode::Opaque,
-					},
-				),
-				&[],
-			)
+			context
+				.store_primary(
+					ProcessedAsset::new(
+						id,
+						VariantModel {
+							material: ReferenceModel::<MaterialModel>::new_serialized(
+								"materials/test.material",
+								0,
+								0,
+								Vec::new(),
+								None,
+							),
+							variables: Vec::new(),
+							alpha_mode: AlphaMode::Opaque,
+						},
+					),
+					&[],
+				)
+				.await
 		}
 	}
 
@@ -1207,7 +1209,7 @@ use super::{
 	container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,
+	sanitize_material_name, store_model, store_model_owned, ContainerDefaultResource, ResourceId,
 };
 use crate::asset::handler::implementations::bema::{compile_shader_program, ProgramGenerator};
 use crate::{

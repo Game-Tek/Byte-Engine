@@ -59,6 +59,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 		let storage = RedbStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
 		storage
 			.store(ProcessedAsset::new(first_id, StoredFixture), b"first payload")
+			.await
 			.unwrap();
 	}
 
@@ -78,6 +79,7 @@ async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 		let storage = RedbStorageBackend::new_writable(path.clone());
 		storage
 			.store(ProcessedAsset::new(second_id, StoredFixture), b"second payload")
+			.await
 			.unwrap();
 	}
 	{

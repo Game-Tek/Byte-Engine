@@ -63,7 +63,7 @@ impl AssetHandler for PNGAssetHandler {
 		let source = ImageSource::new(extent, channels, encoding, &buffer);
 		let (asset, data) = process_image_in(url, description, source, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
 
-		context.store_primary(asset, &data)
+		context.store_primary(asset, &data).await
 	}
 }
 

@@ -76,7 +76,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-		context.store_primary(ProcessedAsset::new(id, shader), &bytes)
+		context.store_primary_owned(ProcessedAsset::new(id, shader), bytes).await
 	}
 }
 

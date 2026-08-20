@@ -300,24 +300,46 @@ impl<'a> BakeContext<'a> {
 		}
 	}
 
-	/// Stores the requested resource after all of its generated dependencies are ready.
-	pub fn store_primary(&self, resource: ProcessedAsset, data: &[u8]) -> Result<(), LoadErrors> {
-		if resource.id != self.primary_id.as_ref() {
+	/// Reserves exact resource storage before a processor starts writing its payload.
+	///
+	/// Write exactly `size` bytes through [`resource::ResourceTransaction::write_all`], then pass the
+	/// transaction to [`Self::commit_primary`], [`Self::commit_resource`], or
+	/// [`Self::commit_generated`].
+	pub async fn begin_resource(
+		&self,
+		id: ResourceId<'_>,
+		size: usize,
+	) -> Result<resource::ResourceTransaction<'_>, LoadErrors> {
+		self.resource_storage_backend
+			.begin_resource(id, size)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)
+	}
+
+	/// Commits the requested primary resource after its transaction has written the declared payload.
+	pub async fn commit_primary(
+		&self,
+		transaction: resource::ResourceTransaction<'_>,
+		resource: ProcessedAsset,
+	) -> Result<(), LoadErrors> {
+		if resource.id() != self.primary_id.as_ref() {
 			return Err(LoadErrors::PrimaryResourceIdMismatch);
 		}
 
-		self.store_resource(resource, data).map(|_| ())
+		self.commit_resource(transaction, resource).await.map(|_| ())
 	}
 
-	/// Stores a resource and records it as the requested primary when its ID matches the current bake.
-	pub fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
-		let is_primary = resource.id == self.primary_id.as_ref();
-
+	/// Commits a resource and records it as primary when its ID matches the current bake.
+	pub async fn commit_resource(
+		&self,
+		transaction: resource::ResourceTransaction<'_>,
+		resource: ProcessedAsset,
+	) -> Result<SerializableResource, LoadErrors> {
+		let is_primary = resource.id() == self.primary_id.as_ref();
 		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
-
-		let resource = self
-			.resource_storage_backend
-			.store_in(resource, data, self.allocator)
+		let resource = transaction
+			.commit(resource, self.allocator)
+			.await
 			.map_err(|_| LoadErrors::FailedToStore)?;
 
 		if is_primary {
@@ -327,13 +349,97 @@ impl<'a> BakeContext<'a> {
 		Ok(resource)
 	}
 
+	/// Commits a generated dependency without marking the requested primary as stored.
+	pub async fn commit_generated(
+		&self,
+		transaction: resource::ResourceTransaction<'_>,
+		resource: ProcessedAsset,
+	) -> Result<SerializableResource, LoadErrors> {
+		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+
+		transaction
+			.commit(resource, self.allocator)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)
+	}
+
+	/// Stores the requested resource after all of its generated dependencies are ready.
+	pub async fn store_primary(&self, resource: ProcessedAsset, data: &[u8]) -> Result<(), LoadErrors> {
+		if resource.id != self.primary_id.as_ref() {
+			return Err(LoadErrors::PrimaryResourceIdMismatch);
+		}
+
+		self.store_resource(resource, data).await.map(|_| ())
+	}
+
+	/// Stores an owned primary payload and moves large buffers directly into asynchronous file writes.
+	pub async fn store_primary_owned<T: compio::buf::IoBuf>(
+		&self,
+		resource: ProcessedAsset,
+		data: T,
+	) -> Result<(), LoadErrors> {
+		if resource.id != self.primary_id.as_ref() {
+			return Err(LoadErrors::PrimaryResourceIdMismatch);
+		}
+
+		self.store_resource_owned(resource, data).await.map(|_| ())
+	}
+
+	/// Stores a resource and records it as the requested primary when its ID matches the current bake.
+	pub async fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
+		let is_primary = resource.id == self.primary_id.as_ref();
+
+		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+
+		let resource = self
+			.resource_storage_backend
+			.store_in(resource, data, self.allocator)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
+
+		if is_primary {
+			self.primary_stored.set(true);
+		}
+
+		Ok(resource)
+	}
+
+	/// Stores an owned payload and records it as primary when its ID matches the current bake.
+	pub async fn store_resource_owned<T: compio::buf::IoBuf>(
+		&self,
+		resource: ProcessedAsset,
+		data: T,
+	) -> Result<SerializableResource, LoadErrors> {
+		let size = data.buf_len();
+		let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
+		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
+		result.map_err(|_| LoadErrors::FailedToStore)?;
+
+		self.commit_resource(transaction, resource).await
+	}
+
 	/// Stores a generated dependency and returns the serialized metadata used by parent resources.
-	pub fn store_generated(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
+	pub async fn store_generated(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
 		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
 
 		self.resource_storage_backend
 			.store_in(resource, data, self.allocator)
+			.await
 			.map_err(|_| LoadErrors::FailedToStore)
+	}
+
+	/// Stores an owned generated dependency without marking the requested primary as stored.
+	pub async fn store_generated_owned<T: compio::buf::IoBuf>(
+		&self,
+		resource: ProcessedAsset,
+		data: T,
+	) -> Result<SerializableResource, LoadErrors> {
+		let size = data.buf_len();
+		let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
+		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
+		result.map_err(|_| LoadErrors::FailedToStore)?;
+
+		self.commit_generated(transaction, resource).await
 	}
 
 	/// Returns deterministic source provenance for persisted resource metadata.

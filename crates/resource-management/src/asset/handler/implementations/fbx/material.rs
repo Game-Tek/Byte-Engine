@@ -190,7 +190,7 @@ pub(crate) async fn generate_fbx_material(
 			LoadErrors::FailedToProcess
 		})?;
 
-	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
+	let shader = store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await?;
 
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
@@ -204,7 +204,7 @@ pub(crate) async fn generate_fbx_material(
 		parameters: Vec::new(),
 	};
 
-	let material = store_model::<MaterialModel>(context, &material_id, material, &[])?;
+	let material = store_model::<MaterialModel>(context, &material_id, material, &[]).await?;
 
 	let variant = VariantModel {
 		material,
@@ -212,7 +212,7 @@ pub(crate) async fn generate_fbx_material(
 		alpha_mode,
 	};
 
-	store_model::<VariantModel>(context, &variant_id, variant, &[])
+	store_model::<VariantModel>(context, &variant_id, variant, &[]).await
 }
 
 pub(crate) fn fbx_material_coverage(material: &crate::pbr::BrdfMaterialDescription) -> MaterialCoverage {
@@ -292,7 +292,7 @@ pub(crate) async fn load_and_store_fbx_texture(
 	let (resource, data) =
 		process_image_with_mip_backend_in(ResourceId::new(id), description, source, context.allocator(), mip_backend)?;
 
-	context.store_resource(resource, &data).map(Into::into)
+	context.store_resource(resource, &data).await.map(Into::into)
 }
 
 /// Decodes a texture embedded in the FBX or resolves its file-local image through the current asset backend.

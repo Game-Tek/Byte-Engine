@@ -217,7 +217,7 @@ pub(crate) fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Da
 }
 
 /// Processes decoded glTF pixels and stores their image metadata and binary payload.
-pub(crate) fn store_gltf_image(
+pub(crate) async fn store_gltf_image(
 	context: BakeContext<'_>,
 	id: ResourceId<'_>,
 	image: gltf::image::Data,
@@ -236,7 +236,7 @@ pub(crate) fn store_gltf_image(
 
 	let (resource, data) = process_image_with_mip_backend_in(id, image_description, source, context.allocator(), mip_backend)?;
 
-	context.store_resource(resource, &data)
+	context.store_resource(resource, &data).await
 }
 
 /// Maps glTF decoder layouts to the source metadata consumed by the common image processor.
@@ -404,7 +404,9 @@ pub(crate) async fn load_and_store_gltf_image(
 	let image_data =
 		load_gltf_image_data(context.asset_storage_backend(), mesh_url, image, buffers, context.allocator()).await?;
 
-	store_gltf_image(context, ResourceId::new(id), image_data, semantic, mip_backend).map(Into::into)
+	store_gltf_image(context, ResourceId::new(id), image_data, semantic, mip_backend)
+		.await
+		.map(Into::into)
 }
 
 pub(crate) fn generated_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {

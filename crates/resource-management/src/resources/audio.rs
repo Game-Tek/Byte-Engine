@@ -38,6 +38,7 @@ mod tests {
 		let storage = TestStorageBackend::new();
 		storage
 			.store(ProcessedAsset::new(ResourceId::new("sound.audio"), audio), &[1, 2, 3, 4, 5])
+			.await
 			.unwrap();
 
 		let reference = model.solve(&storage).await.expect("stored audio metadata");

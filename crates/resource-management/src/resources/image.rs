@@ -120,6 +120,7 @@ mod tests {
 		let storage = TestStorageBackend::new();
 		storage
 			.store(ProcessedAsset::new(ResourceId::new("texture.image"), image), &[1, 2, 3])
+			.await
 			.unwrap();
 
 		let reference = model.solve(&storage).await.expect("stored image metadata");
@@ -162,6 +163,7 @@ mod tests {
 				ProcessedAsset::new_with_serialized("broken.image", "Image", vec![1, 2, 3]),
 				&[],
 			)
+			.await
 			.unwrap();
 		let broken = ReferenceModel::new("broken.image", 0, 0, &image, None);
 

@@ -25,7 +25,8 @@ impl MeshProcessor {
 	/// Starts a short-lived processing session that borrows one source primitive at a time.
 	///
 	/// Call [`MeshProcessorSession::push_primitive`] for each imported primitive, then call
-	/// [`MeshProcessorSession::finish`] to produce the stored mesh and stream payload.
+	/// [`MeshProcessorSession::finish_into`] to write the payload directly, or
+	/// [`MeshProcessorSession::finish`] when the caller needs an owned payload.
 	pub fn begin(
 		self,
 		vertex_layout: Vec<VertexComponent>,
@@ -277,8 +278,58 @@ impl MeshProcessorSession {
 		Ok(())
 	}
 
+	/// Returns the exact number of bytes that [`Self::finish_into`] will write.
+	pub fn payload_size(&self) -> usize {
+		self.blocks.iter().map(|block| block.bytes.len()).sum()
+	}
+
+	/// Finishes stream offsets and writes each completed stream directly to `writer`.
+	///
+	/// `W` remains generic so stream writes do not use dynamic dispatch. Reserve
+	/// [`Self::payload_size`] bytes before calling this method.
+	pub fn finish_into<W: std::io::Write>(self, writer: &mut W) -> std::io::Result<(MeshModel, Vec<StreamDescription>)> {
+		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+		for block in blocks {
+			std::io::Write::write_all(writer, &block.bytes)?;
+		}
+		Ok((mesh, stream_descriptions))
+	}
+
+	/// Finishes stream offsets and asynchronously writes each completed stream into resource storage.
+	///
+	/// Reserve [`Self::payload_size`] bytes before calling this method. Use
+	/// [`Self::finish_into`] for a synchronous non-resource sink.
+	pub async fn finish_into_resource(
+		self,
+		writer: &mut crate::resource::ResourceTransaction<'_>,
+	) -> std::io::Result<(MeshModel, Vec<StreamDescription>)> {
+		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+		for block in blocks {
+			let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut *writer, block.bytes).await;
+			result?;
+		}
+		Ok((mesh, stream_descriptions))
+	}
+
 	/// Finishes aggregate stream offsets and moves final metadata into the stored mesh resource.
+	///
+	/// Use [`Self::finish_into`] when the payload can go directly to resource storage.
 	pub fn finish(self) -> ProcessedMesh {
+		let mut buffer = Vec::with_capacity(self.payload_size());
+		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+		for block in blocks {
+			buffer.extend_from_slice(&block.bytes);
+		}
+
+		ProcessedMesh {
+			mesh,
+			stream_descriptions,
+			buffer: buffer.into_boxed_slice(),
+		}
+	}
+
+	/// Builds final stream metadata once before a caller moves each completed block to its selected sink.
+	fn finish_parts(mut self) -> (MeshModel, Vec<StreamDescription>, Vec<PackedStreamBlock>) {
 		let active_vertex_components = self
 			.vertex_layout
 			.into_iter()
@@ -289,12 +340,11 @@ impl MeshProcessorSession {
 					.is_some_and(|block| !block.bytes.is_empty())
 			})
 			.collect::<Vec<_>>();
-		let total_size = self.blocks.iter().map(|block| block.bytes.len()).sum();
-		let mut buffer = Vec::with_capacity(total_size);
+		self.blocks.retain(|block| !block.bytes.is_empty());
 		let mut streams = Vec::with_capacity(self.blocks.len());
 		let mut stream_descriptions = Vec::with_capacity(self.blocks.len());
-		for block in self.blocks.into_iter().filter(|block| !block.bytes.is_empty()) {
-			let offset = buffer.len();
+		let mut offset = 0;
+		for block in &self.blocks {
 			let size = block.bytes.len();
 			streams.push(Stream {
 				offset,
@@ -303,10 +353,10 @@ impl MeshProcessorSession {
 				stride: stream_stride(block.stream_type),
 			});
 			stream_descriptions.push(StreamDescription::new(stream_name(block.stream_type), size, offset));
-			buffer.extend(block.bytes);
+			offset += size;
 		}
-		ProcessedMesh {
-			mesh: MeshModel {
+		(
+			MeshModel {
 				skeleton: self.skeleton,
 				skins: self.skins,
 				vertex_components: active_vertex_components,
@@ -314,8 +364,8 @@ impl MeshProcessorSession {
 				primitives: self.primitives,
 			},
 			stream_descriptions,
-			buffer: buffer.into_boxed_slice(),
-		}
+			self.blocks,
+		)
 	}
 }
 

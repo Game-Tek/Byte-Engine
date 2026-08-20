@@ -864,7 +864,7 @@ pub mod tests {
 				_ => {}
 			}
 
-			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source)
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source).await
 		}
 	}
 
@@ -921,7 +921,7 @@ pub mod tests {
 				context.bake_dependency::<TestResource>("child.test").await?;
 			}
 
-			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await
 		}
 	}
 
@@ -935,7 +935,7 @@ pub mod tests {
 
 			context.bake_dependencies::<TestResource>(&dependencies, 2).await?;
 
-			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await
 		}
 	}
 
@@ -966,7 +966,7 @@ pub mod tests {
 			if self.fail {
 				Err(LoadErrors::FailedToProcess)
 			} else {
-				context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+				context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await
 			}
 		}
 	}
@@ -1022,13 +1022,13 @@ pub mod tests {
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 			match id.get_base().as_ref() {
-				"example.test" => context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]),
+				"example.test" => context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await,
 				"messages.test" => {
 					context.info("Imported test metadata.");
 
 					context.warn(format_args!("Discarded {} optional test value.", 1));
 
-					context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+					context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]).await
 				}
 				"failed.test" => {
 					context
@@ -1038,7 +1038,9 @@ pub mod tests {
 				}
 				"unstored.test" => Ok(()),
 				"mismatched.test" => {
-					context.store_primary(ProcessedAsset::new(ResourceId::new("other.test"), TestResource {}), &[])
+					context
+						.store_primary(ProcessedAsset::new(ResourceId::new("other.test"), TestResource {}), &[])
+						.await
 				}
 				_ => Err(LoadErrors::AssetCouldNotBeLoaded),
 			}

@@ -38,7 +38,7 @@ pub struct Renderer {
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
-	cameras: SmallVec<[(Handle, Camera); 16]>,
+	cameras: SmallVec<[(Handle, Camera, Transform); 16]>,
 
 	render_targets: RenderTargets,
 	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
@@ -489,13 +489,13 @@ impl Renderer {
 			while let Some(message) = transforms_listener.read() {
 				let handle = *message.handle();
 
-				if let Some(camera) = self
-					.cameras
-					.iter_mut()
-					.find_map(|(h, camera)| if handle == *h { Some(camera) } else { None })
+				if let Some((camera, transform)) =
+					self.cameras
+						.iter_mut()
+						.find_map(|(h, camera, transform)| if handle == *h { Some((camera, transform)) } else { None })
 				{
-					camera.set_position(message.transform().get_position());
-					camera.set_orientation(message.transform().get_orientation());
+					transform.set_position(message.transform().get_position());
+					transform.set_orientation(message.transform().get_orientation());
 				}
 			}
 		}
@@ -581,14 +581,14 @@ impl Renderer {
 								continue;
 							};
 
-							let Some(camera) = cameras
+							let Some((camera, transform)) = cameras
 								.iter()
-								.find_map(|(handle, camera)| if handle == camera_handle { Some(camera) } else { None })
+								.find_map(|(handle, camera, transform)| if handle == camera_handle { Some((camera, transform)) } else { None })
 							else {
 								continue;
 							};
 
-							let view = make_perspective_view_from_camera(camera, extent);
+							let view = make_perspective_view_from_camera(camera, transform, extent);
 							sinks.push(Sink::new(view, extent, *sink_id));
 						}
 					}
@@ -784,16 +784,16 @@ impl Renderer {
 	}
 
 	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
-		if let Some((_, existing_camera)) = self
+		if let Some((_, existing_camera, _)) = self
 			.cameras
 			.iter_mut()
-			.find(|(existing_handle, _)| *existing_handle == handle)
+			.find(|(existing_handle, ..)| *existing_handle == handle)
 		{
 			*existing_camera = camera;
 			return;
 		}
 
-		self.cameras.push((handle, camera));
+		self.cameras.push((handle, camera, Transform::default()));
 	}
 }
 /// The `SwapchainCapture` struct defers one swapchain-to-buffer capture until the next frame.
@@ -902,7 +902,6 @@ use super::{
 	},
 	targets::RenderTargets,
 };
-use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState};
 use crate::{
 	application::parameters::Parameters,
 	configuration::{Configuration, ConfigurationPort},
@@ -921,4 +920,8 @@ use crate::{
 		Camera, Sink, View,
 	},
 	space::Orientable as _,
+};
+use crate::{
+	gameplay::Transform,
+	rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState},
 };

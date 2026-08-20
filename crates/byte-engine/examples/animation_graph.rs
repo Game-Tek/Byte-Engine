@@ -19,7 +19,7 @@ use byte_engine::{
 		},
 		Application, Parameter,
 	},
-	core::{channel::Channel as _, EntityHandle},
+	core::{channel::Channel as _, Creator as _, EntityHandle},
 	gameplay::{Object, Transform, TransformationUpdate},
 	rendering::{window::Window, Camera, UpdatePose},
 	MediaTime,
@@ -186,14 +186,16 @@ fn main() {
 
 /// Creates the renderer-facing objects that receive root-motion and pose updates.
 fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Handle {
-	let mut camera = Camera::new();
-	camera.set_position(Point::new(0.0, 1.5, 5.0));
-	camera.set_direction(
-		Vector::new(0.0, -0.15, -1.0)
-			.normalized()
-			.expect("camera direction is non-zero"),
-	);
-	let camera = app.world_mut().camera_factory_mut().create(camera);
+	let camera = Camera::new();
+	let camera = app
+		.world_mut()
+		.create(camera)
+		.with(Transform::new(
+			Point::new(0.0, 1.5, 5.0),
+			Scale::identity(),
+			Orientation::identity(),
+		))
+		.into();
 
 	let mut window = Window::new("Animation Graph", Extent::rectangle(1280, 720));
 	window.attach(camera);

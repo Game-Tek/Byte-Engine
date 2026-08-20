@@ -199,6 +199,16 @@ impl Creator<Camera> for DefaultWorld {
 	}
 }
 
+impl Creator<Transform> for DefaultWorld {
+	fn publish(&mut self, handle: Option<Handle>, transform: Transform) -> Handle {
+		// Transforms use targeted updates instead of a retained factory, but creation
+		// still needs to support both standalone and shared-handle creation.
+		let handle = handle.unwrap_or_else(Handle::new);
+		self.transforms.send(TransformationUpdate::new(handle, transform));
+		handle
+	}
+}
+
 impl Creator<Environment> for DefaultWorld {
 	fn publish(&mut self, handle: Option<Handle>, environment: Environment) -> Handle {
 		publish_to_factory(&mut self.environment_factory, handle, environment)
@@ -261,6 +271,20 @@ use crate::{
 mod tests {
 	use super::*;
 	use crate::core::{listener::Listener, targeted_message::MessageTargeter};
+
+	#[test]
+	fn camera_and_transform_creation_share_a_handle() {
+		let mut world = DefaultWorld::new();
+		let mut cameras = world.camera_factory().listener();
+		let mut transforms = world.transforms_channel().listener();
+
+		let handle: Handle = world.create(Camera::new()).with(Transform::identity()).into();
+
+		let camera = cameras.read().expect("camera creation");
+		let transform = transforms.read().expect("transform creation");
+		assert_eq!(camera.handle(), &handle);
+		assert_eq!(transform.handle(), &handle);
+	}
 
 	#[test]
 	fn camera_set_publishes_an_upsert_under_the_existing_handle() {

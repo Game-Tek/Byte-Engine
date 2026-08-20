@@ -97,15 +97,13 @@ impl<T: Clone> Factory<T> {
 	/// [`Self::listener`]. Pass the returned handle to [`Self::derive`] when a
 	/// second factory publishes another representation of the same entity.
 	pub fn create(&mut self, data: T) -> Handle {
-		let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-		let handle = Handle(id);
+		let handle = Handle::new();
 		let message = CreateMessage::new(handle, data);
 
 		self.record_creation_before_listener(&message);
 		self.channel.send(message);
 
-		Handle(id)
+		handle
 	}
 
 	/// Creates multiple entities in a single statically-sized batch.
@@ -192,6 +190,13 @@ impl<T: Clone> TargetedMessage for CreateMessage<T> {
 /// The [`Handle`] struct identifies one creation stream entry across consuming
 /// systems.
 pub struct Handle(u32);
+
+impl Handle {
+	/// Allocates an identity shared by factory creations and message-backed components.
+	pub(crate) fn new() -> Self {
+		Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+	}
+}
 
 #[cfg(test)]
 mod tests {

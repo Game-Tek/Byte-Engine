@@ -16,6 +16,7 @@
 
 use ::utils::Extent;
 use ghi::context::ContextCreate as _;
+use math::direction_from_orientation;
 
 #[doc(hidden)]
 pub mod common_shader_generator;
@@ -89,6 +90,8 @@ pub use renderer::{RenderTargets, Renderer, Settings};
 pub use sink::Sink;
 pub use view::View;
 pub use window::{Features, Window};
+
+use crate::space::{Orientable, Positionable};
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
@@ -167,8 +170,8 @@ pub fn create_shader_from_source(
 }
 
 /// Builds a perspective [`View`] from a scene camera and render target extent.
-pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {
-	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.direction(), camera.vertical_fov());
+pub fn make_perspective_view_from_camera<T: Positionable + Orientable>(camera: &Camera, po: &T, extent: Extent) -> View {
+	let (camera_position, camera_orientation, fov_y) = (po.position(), po.orientation(), camera.vertical_fov());
 	debug_assert!(
 		extent.width() > 0 && extent.height() > 0,
 		"Perspective extent is empty. The most likely cause is building a camera view before the render target is sized."
@@ -180,5 +183,12 @@ pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> Vie
 
 	let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 
-	View::new_perspective(fov_y, aspect_ratio, 0.1f32, 100f32, camera_position, camera_orientation)
+	View::new_perspective(
+		fov_y,
+		aspect_ratio,
+		0.1f32,
+		100f32,
+		camera_position,
+		direction_from_orientation(camera_orientation),
+	)
 }

@@ -98,6 +98,26 @@ impl From<&Transform> for Matrix {
 	}
 }
 
+impl Positionable for Transform {
+	fn position(&self) -> Point {
+		self.position
+	}
+
+	fn set_position(&mut self, position: Point) {
+		self.position = position;
+	}
+}
+
+impl Orientable for Transform {
+	fn orientation(&self) -> Orientation {
+		self.orientation
+	}
+
+	fn set_orientation(&mut self, orientation: Orientation) {
+		self.orientation = orientation;
+	}
+}
+
 /// The `TransformationUpdate` struct carries a complete entity transform through a channel.
 ///
 /// Call [`Self::apply`] to publish a transform update to systems that own the target entity.
@@ -220,9 +240,12 @@ mod tests {
 use math::{Matrix, Orientation, Point, Scale};
 use maths_rs::mat::{MatScale as _, MatTranslate as _};
 
-use crate::core::{
-	channel::{Channel as _, DefaultChannel},
-	factory::Handle,
-	message::Message,
-	targeted_message::TargetedMessage,
+use crate::{
+	core::{
+		channel::{Channel as _, DefaultChannel},
+		factory::Handle,
+		message::Message,
+		targeted_message::TargetedMessage,
+	},
+	space::{Orientable, Positionable},
 };

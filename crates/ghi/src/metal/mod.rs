@@ -25,10 +25,12 @@ use crate::image::ImageHandle;
 use crate::PrivateHandles;
 
 mod pipeline;
+mod io;
 mod resources;
 mod state;
 mod synchronization;
 mod types;
+pub use io::{ResourceIoQueue, ResourceIoTicket};
 pub(crate) mod utils {
 	use objc2_metal as mtl;
 	use utils::Extent;

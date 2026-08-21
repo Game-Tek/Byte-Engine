@@ -1,29 +1,54 @@
-//! Renderable mesh contracts and the standard transform-backed mesh entity.
+//! Renderable mesh payloads and their geometry sources.
 //!
-//! Use [`Mesh`] for common resource or generated geometry. Implement
-//! [`RenderableMesh`] on custom entities that own a transform and expose a
-//! [`MeshSource`], then create them through
-//! [`crate::gameplay::world::DefaultWorld::renderable_factory_mut`].
+//! Use [`RenderableMesh`] to publish resource-backed or generated geometry to a
+//! rendering pipeline. Transform updates are published separately through the
+//! world transform channel.
 
 use std::sync::Arc;
 
 use maths_rs::Vec3f;
 
-use crate::{
-	core::{Entity, EntityHandle},
-	gameplay::transform::Transform,
-	rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator},
-	space::Transformable,
-};
+use crate::rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator};
 
-/// The [`RenderableMesh`] trait supplies geometry and transform state to scene pipeline managers.
-pub trait RenderableMesh: Transformable {
-	fn get_mesh(&self) -> &MeshSource;
+/// The `RenderableMesh` struct carries geometry source data from gameplay to rendering.
+#[derive(Clone)]
+pub struct RenderableMesh {
+	source: MeshSource,
 }
 
+impl RenderableMesh {
+	/// Creates a renderable mesh backed by a named resource.
+	pub fn resource(id: &'static str) -> Self {
+		Self {
+			source: MeshSource::Resource(id),
+		}
+	}
+
+	/// Creates a renderable mesh backed by a procedural mesh generator.
+	pub fn generated(generator: Arc<dyn MeshGenerator>) -> Self {
+		Self {
+			source: MeshSource::Generated(generator),
+		}
+	}
+
+	/// Creates a procedurally generated sphere with the requested radius.
+	pub fn sphere(radius: f32) -> Self {
+		Self::generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
+	}
+
+	/// Creates a procedurally generated box from unbranded mesh-space half extents.
+	pub fn r#box(size: Vec3f) -> Self {
+		Self::generated(Arc::new(BoxMeshGenerator::from_size(size)))
+	}
+
+	/// Returns the geometry source consumed by the rendering pipeline.
+	pub fn source(&self) -> &MeshSource {
+		&self.source
+	}
+}
+
+/// The `MeshSource` enum selects resource-backed or procedurally generated geometry.
 #[derive(Clone)]
-/// The [`MeshSource`] enum selects resource-backed or procedurally generated
-/// geometry.
 pub enum MeshSource {
 	Resource(&'static str),
 	Generated(Arc<dyn MeshGenerator>),
@@ -43,30 +68,5 @@ impl MeshSource {
 impl From<Arc<dyn MeshGenerator>> for MeshSource {
 	fn from(generator: Arc<dyn MeshGenerator>) -> Self {
 		MeshSource::Generated(generator)
-	}
-}
-
-#[derive(Clone)]
-/// The [`Mesh`] struct provides the standard transformable renderable entity.
-pub struct Mesh {
-	source: MeshSource,
-	transform: Transform,
-}
-
-impl Entity for Mesh {}
-
-impl Transformable for Mesh {
-	fn transform(&self) -> &Transform {
-		&self.transform
-	}
-
-	fn transform_mut(&mut self) -> &mut Transform {
-		&mut self.transform
-	}
-}
-
-impl RenderableMesh for Mesh {
-	fn get_mesh(&self) -> &MeshSource {
-		&self.source
 	}
 }

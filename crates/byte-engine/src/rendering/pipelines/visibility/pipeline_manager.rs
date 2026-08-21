@@ -115,6 +115,8 @@ pub struct VisibilityPipelineManager {
 	resource_manager: VisibilityPipelineResourceManagerClient,
 	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
 	pending_renderables: Vec<PendingRenderableInstance>,
+	// TODO: Replace this temporary map with proper retained component storage.
+	renderable_transforms: HashMap<Handle, Transform>,
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
 	loaded_textures: HashSet<u32>,
@@ -145,8 +147,6 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.apply_gtao_configuration();
 
 		self.adopt_resource_completions(frame);
-
-		self.process_transform_updates();
 
 		self.refresh_material_pipelines();
 
@@ -609,6 +609,7 @@ mod tests {
 
 	use super::manager::{
 		cached_skin_palette, ies_intensity_scale, reserve_deformed_vertex_range, resolved_ies_profile_texture,
+		retained_renderable_transform,
 	};
 	use super::{
 		collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_importance, make_cone_shadow_view,
@@ -636,6 +637,38 @@ mod tests {
 		VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VIEW_DATA_BUFFER_STRIDE,
 	};
 	use crate::rendering::{Sink, View};
+
+	#[test]
+	fn early_renderable_transform_is_available_when_mesh_becomes_resident() {
+		let mut handles = Factory::new();
+		let handle = handles.create(());
+		let transform = Transform::from_position(Point::new(4.0, 5.0, 6.0));
+		let mut retained_transforms = HashMap::default();
+
+		retained_transforms.insert(handle, transform.clone());
+
+		assert_eq!(
+			retained_renderable_transform(&retained_transforms, handle).get_matrix(),
+			transform.get_matrix()
+		);
+	}
+
+	#[test]
+	fn renderable_transform_upsert_replaces_the_value_used_at_residency() {
+		let mut handles = Factory::new();
+		let handle = handles.create(());
+		let first = Transform::from_position(Point::new(1.0, 2.0, 3.0));
+		let replacement = Transform::from_position(Point::new(7.0, 8.0, 9.0));
+		let mut retained_transforms = HashMap::default();
+
+		retained_transforms.insert(handle, first);
+		retained_transforms.insert(handle, replacement.clone());
+
+		assert_eq!(
+			retained_renderable_transform(&retained_transforms, handle).get_matrix(),
+			replacement.get_matrix()
+		);
+	}
 
 	#[test]
 	fn renderable_admission_waits_for_every_primitive_dependency() {
@@ -1592,4 +1625,4 @@ use crate::rendering::{
 	Environment, RenderableMesh, Sink,
 };
 use crate::resource_management::{self};
-use crate::space::{Orientable as _, Positionable as _, Transformable as _};
+use crate::space::{Orientable as _, Positionable as _};

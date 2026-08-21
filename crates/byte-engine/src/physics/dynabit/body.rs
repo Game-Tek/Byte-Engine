@@ -1,6 +1,6 @@
 use math::{
 	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere_dynamic},
-	Orientation, Point, Sphere, Vector, AABB,
+	Orientation, Point, Scale, Sphere, Vector, AABB,
 };
 use maths_rs::{
 	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
@@ -21,6 +21,7 @@ pub struct PhysicsBody {
 	pub(crate) collision_shape: Shapes,
 	pub(crate) position: Point,
 	pub(crate) orientation: Orientation,
+	pub(crate) scale: Scale,
 	pub(crate) acceleration: Vector,
 	pub(crate) linear_velocity: Vector,
 	pub(crate) angular_velocity: Vector,
@@ -163,6 +164,7 @@ mod tests {
 			collision_shape: Shapes::Sphere { radius: 1.0 },
 			position: Point::origin(),
 			orientation: Orientation::identity(),
+			scale: Scale::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::new(0.0, 1.0, 0.0),

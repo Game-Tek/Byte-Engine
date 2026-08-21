@@ -151,6 +151,7 @@ mod tests {
 			collision_shape: Shapes::Sphere { radius: 0.5 },
 			position,
 			orientation: Orientation::identity(),
+			scale: math::Scale::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),

@@ -5,7 +5,8 @@ use crate::{physics::LocalSpace, space::Positionable};
 
 /// The `Collider` trait provides collision geometry and material response to a physics world.
 ///
-/// Physical entities usually implement this trait as part of [`crate::physics::Body`].
+/// Use this trait for gameplay geometry queries. Dynabit bodies carry their collision
+/// geometry directly in a [`crate::physics::Body`] payload.
 pub trait Collider: Positionable {
 	/// Returns collider-local geometry.
 	fn shape(&self) -> Shapes;

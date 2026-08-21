@@ -8,6 +8,8 @@ pub struct PipelineManager {
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) pipeline: ghi::PipelineHandle,
+	// TODO: Replace this temporary map with proper retained component storage.
+	renderable_transforms: HashMap<Handle, Transform>,
 	sinks: Vec<RenderPass>,
 }
 
@@ -74,20 +76,17 @@ impl PipelineManager {
 
 			pipeline,
 
+			renderable_transforms: HashMap::new(),
 			sinks: Vec::with_capacity(4),
 		}
 	}
 
-	pub fn create_mesh(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		handle: Handle,
-		entity: EntityHandle<dyn RenderableMesh>,
-	) {
-		// Creation messages are upserts so a handle cannot retain a stale render instance.
-		self.remove_mesh(handle);
+	/// Creates or replaces a mesh instance while preserving transform updates received before creation.
+	pub fn create_mesh(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, renderable: RenderableMesh) {
+		// Creation messages are upserts, but the latest independently published transform must survive replacement.
+		self.remove_mesh_instance(handle);
 
-		let mesh = entity.get_mesh();
+		let mesh = renderable.source();
 
 		let mesh_id = match mesh {
 			MeshSource::Generated(generator) => 'a: {
@@ -164,22 +163,31 @@ impl PipelineManager {
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
-		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
-
-		instance_data_buffer[instace_id.index()] = entity.transform().get_matrix().into();
+		let transform = self.renderable_transforms.get(&handle).cloned().unwrap_or_default();
+		instance_data_buffer[instace_id.index()] = transform.get_matrix().into();
 	}
 
-	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix) {
+	/// Retains the latest transform and applies it immediately when the mesh instance is resident.
+	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: &Transform) {
+		self.renderable_transforms.insert(handle, transform.clone());
+
 		let Some(idx) = self.mesh_buffers_stats.get_instance_id(handle) else {
 			return;
 		};
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
-		instance_data_buffer[idx.index()] = transform.into();
+		instance_data_buffer[idx.index()] = transform.get_matrix().into();
 	}
 
+	/// Removes a mesh and any transform retained for later creation.
 	pub fn remove_mesh(&mut self, handle: Handle) {
+		self.remove_mesh_instance(handle);
+		self.renderable_transforms.remove(&handle);
+	}
+
+	/// Removes only resident instance state so an upsert can reuse the retained transform.
+	fn remove_mesh_instance(&mut self, handle: Handle) {
 		let Some(instance_id) = self.mesh_buffers_stats.get_instance_id(handle) else {
 			return;
 		};
@@ -266,7 +274,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame,
 };
-use math::{AffineShaderMatrix, Matrix, ShaderMatrix};
+use math::{AffineShaderMatrix, ShaderMatrix};
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 use smallvec::SmallVec;
 use utils::{
@@ -282,9 +290,9 @@ use crate::{
 		entity::{self},
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
-		Entity, EntityHandle,
+		Entity,
 	},
-	gameplay::transform::TransformationUpdate,
+	gameplay::transform::Transform,
 	rendering::Camera,
 	rendering::{
 		lights::{Light, Lights},

@@ -1,4 +1,4 @@
-use std::{alloc::Allocator, ops::Deref};
+use std::alloc::Allocator;
 
 use math::{Scale, Vector};
 use utils::{
@@ -13,7 +13,6 @@ use crate::{
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
-		EntityHandle,
 	},
 	gameplay::transform::{Transform, TransformationUpdate},
 	physics::{
@@ -24,7 +23,6 @@ use crate::{
 		},
 		intersection::broadphase,
 	},
-	space::{Orientable, Positionable},
 	time::MediaTime,
 };
 
@@ -33,7 +31,7 @@ use crate::{
 pub struct World {
 	bodies: StableVec<PhysicsBody>,
 	gravity: Vector,
-	body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
+	body_listener: DefaultListener<CreateMessage<Body>>,
 	body_delete_listener: DefaultListener<DeleteMessage>,
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 }
@@ -41,7 +39,7 @@ pub struct World {
 impl World {
 	/// Creates a Dynabit world connected to body creation and deletion channels.
 	pub fn new(
-		body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
+		body_listener: DefaultListener<CreateMessage<Body>>,
 		body_delete_listener: DefaultListener<DeleteMessage>,
 	) -> Self {
 		Self {
@@ -85,13 +83,14 @@ impl World {
 		while let Some(message) = self.body_listener.read() {
 			let handle = *message.handle();
 			let body = message.into_data();
-			self.create_body(handle, body.deref());
+			self.create_body(handle, body);
 		}
 		while let Some(message) = transforms_rx.read() {
 			if let Some(index) = self.handles_to_bodies.get(message.handle()).copied() {
 				let body = &mut self.bodies[index];
 				body.position = message.transform().get_position();
 				body.orientation = message.transform().get_orientation();
+				body.scale = message.transform().scale();
 			}
 		}
 
@@ -135,7 +134,7 @@ impl World {
 			body.update(dt);
 			transforms_tx.send(TransformationUpdate::new(
 				body.handle,
-				Transform::new(body.position, Scale::identity(), body.orientation),
+				Transform::new(body.position, body.scale, body.orientation),
 			));
 		}
 	}
@@ -236,7 +235,7 @@ impl World {
 		}
 	}
 
-	fn create_body(&mut self, handle: Handle, body: &dyn Body) {
+	fn create_body(&mut self, handle: Handle, body: Body) {
 		// Creation messages are upserts so one entity handle always owns at most one simulated body.
 		self.remove_body(handle);
 
@@ -247,18 +246,25 @@ impl World {
 			"Dynamic body mass is invalid. The most likely cause is creating a body with a nonpositive or non-finite mass."
 		);
 		let inv_mass = if body_type == BodyTypes::Dynamic { 1.0 / mass } else { 0.0 };
+		let linear_velocity = body.velocity();
+		let center_of_mass = body.center_of_mass();
+		let elasticity = body.elasticity();
+		let friction = body.friction();
+		let collision_shape = body.into_shape();
 		let index = self.bodies.push(PhysicsBody {
 			body_type,
-			position: body.position(),
-			orientation: body.orientation(),
-			linear_velocity: body.velocity(),
+			// Spatial state arrives independently through TransformationUpdate.
+			position: math::Point::origin(),
+			orientation: math::Orientation::identity(),
+			scale: Scale::identity(),
+			linear_velocity,
 			angular_velocity: Vector::zero(),
 			acceleration: Vector::zero(),
-			collision_shape: body.shape(),
+			collision_shape,
 			inv_mass,
-			center_of_mass: body.center_of_mass(),
-			elasticity: body.elasticity(),
-			friction: body.friction(),
+			center_of_mass,
+			elasticity,
+			friction,
 			handle,
 		});
 		self.handles_to_bodies.insert(handle, index);
@@ -288,7 +294,6 @@ mod tests {
 	use super::*;
 	use crate::{
 		core::{channel::DefaultChannel, factory::Factory},
-		gameplay::Object,
 		physics::collider::Shapes,
 	};
 
@@ -298,7 +303,7 @@ mod tests {
 	}
 
 	fn make_world() -> World {
-		let body_factory = Factory::<EntityHandle<dyn Body>>::new();
+		let body_factory = Factory::<Body>::new();
 		let delete_channel = DefaultChannel::new();
 		World::new(body_factory.listener(), delete_channel.listener())
 	}
@@ -311,6 +316,7 @@ mod tests {
 			},
 			position: math::Point::origin(),
 			orientation: Orientation::identity(),
+			scale: Scale::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::zero(),
@@ -328,6 +334,7 @@ mod tests {
 			collision_shape: Shapes::Sphere { radius },
 			position,
 			orientation: Orientation::identity(),
+			scale: Scale::identity(),
 			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),
@@ -377,21 +384,67 @@ mod tests {
 	fn creation_with_an_existing_handle_replaces_the_registered_body() {
 		let mut world = make_world();
 		let handle = test_handle();
-		let first = Object::sphere(1.0);
-		let mut replacement = Object::sphere(2.0);
-		let replacement_position = math::Point::new(3.0, 2.0, 1.0);
+		let first = Body::new(BodyTypes::Dynamic, Shapes::sphere(1.0));
 		let replacement_velocity = Vector::new(4.0, 5.0, 6.0);
-		replacement.set_position(replacement_position);
-		replacement.set_velocity(replacement_velocity);
+		let replacement = Body::new(BodyTypes::Dynamic, Shapes::sphere(2.0)).with_velocity(replacement_velocity);
 
-		world.create_body(handle, &first);
-		world.create_body(handle, &replacement);
+		world.create_body(handle, first);
+		world.create_body(handle, replacement);
 
 		assert_eq!(world.bodies.len(), 1);
 		let index = world.handles_to_bodies[&handle];
-
-		assert_eq!(world.bodies[index].position, replacement_position);
+		assert_eq!(world.bodies[index].position, math::Point::origin());
 		assert_eq!(world.bodies[index].linear_velocity, replacement_velocity);
+		assert!(matches!(
+			&world.bodies[index].collision_shape,
+			Shapes::Sphere { radius } if *radius == 2.0
+		));
+	}
+
+	#[test]
+	fn transformation_update_after_creation_sets_all_spatial_state() {
+		let mut body_factory = Factory::<Body>::new();
+		let delete_channel = DefaultChannel::new();
+		let mut world = World::new(body_factory.listener(), delete_channel.listener());
+		let mut transforms = DefaultChannel::new();
+		let mut transforms_rx = transforms.listener();
+		let handle = body_factory.create(Body::new(BodyTypes::Static, Shapes::sphere(1.0)));
+		let expected = Transform::new(
+			math::Point::new(3.0, 2.0, 1.0),
+			Scale::new(2.0, 3.0, 4.0),
+			Orientation::identity(),
+		);
+		transforms.send(TransformationUpdate::new(handle, expected.clone()));
+
+		world.update(
+			Time::new(MediaTime::ZERO, MediaTime::ZERO),
+			&mut transforms_rx,
+			&mut transforms,
+			&mut bumpalo::Bump::new(),
+		);
+
+		let body = &world.bodies[world.handles_to_bodies[&handle]];
+		assert_eq!(body.position, expected.get_position());
+		assert_eq!(body.orientation, expected.get_orientation());
+		assert_eq!(body.scale, expected.scale());
+	}
+
+	#[test]
+	fn published_transform_preserves_scale() {
+		let mut world = make_world();
+		let mut body = make_dynamic_sphere_body(math::Point::origin(), Vector::zero(), 1.0);
+		body.scale = Scale::new(2.0, 3.0, 4.0);
+		let expected_scale = body.scale;
+		let handle = body.handle;
+		world.bodies.push(body);
+		let mut transforms = DefaultChannel::new();
+		let mut transforms_rx = transforms.listener();
+
+		world.update_bodies(MediaTime::ZERO, &mut transforms);
+
+		let update = transforms_rx.read().expect("dynamic body transform update");
+		assert_eq!(*update.handle(), handle);
+		assert_eq!(update.transform().scale(), expected_scale);
 	}
 
 	#[test]

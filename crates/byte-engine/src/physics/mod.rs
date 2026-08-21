@@ -1,8 +1,9 @@
 //! Physics contracts and the built-in Dynabit simulation.
 //!
-//! Implement [`Body`] and [`Collider`] on world entities that participate in
-//! simulation. Collider geometry uses [`LocalSpace`], while simulated positions,
-//! velocities, and contacts remain in the engine world space.
+//! Create [`Body`] payloads for entities that participate in simulation. Collider
+//! geometry uses [`LocalSpace`], while simulated positions, velocities, and contacts
+//! remain in the engine world space. Publish a transform under the same entity handle
+//! to place the body in the world.
 
 #[doc(hidden)]
 pub mod body;

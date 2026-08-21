@@ -13,7 +13,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	struct CustomPipelineManager {
 		pipeline_manager: SimplePipelineManager,
-		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		mesh_receiver: DefaultListener<CreateMessage<RenderableMesh>>,
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		transforms_listener: DefaultListener<TransformationUpdate>,
 	}
@@ -33,7 +33,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 			while let Some(message) = self.transforms_listener.read() {
 				self.pipeline_manager
-					.update_transform(frame, *message.handle(), message.transform().get_matrix());
+					.update_transform(frame, *message.handle(), message.transform());
 			}
 
 			while let Some(message) = self.mesh_delete_receiver.read() {
@@ -144,9 +144,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		light_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_lights: VecDeque<CreateMessage<Lights>>,
-		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		mesh_receiver: DefaultListener<CreateMessage<RenderableMesh>>,
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
-		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		pending_meshes: VecDeque<CreateMessage<RenderableMesh>>,
 		pose_receiver: DefaultListener<UpdatePose>,
 		environment_receiver: DefaultListener<CreateMessage<Environment>>,
 		pending_environments: VecDeque<CreateMessage<Environment>>,
@@ -221,6 +221,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			self.request_pending_environments();
 			self.process_pose_updates();
 
+			self.visibility_pipeline_manager.process_transform_updates();
 			self.process_deletions();
 
 			self.visibility_pipeline_manager.prepare(frame, sinks, frame_allocator)

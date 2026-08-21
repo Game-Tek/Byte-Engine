@@ -153,10 +153,10 @@ pub(crate) fn write_material_texture_indices(
 	false
 }
 
-/// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
+/// The `RenderEntity` struct preserves an owned renderable payload beside its resident scene instance.
 pub struct RenderEntity {
 	pub(crate) handle: Handle,
-	pub(crate) entity: EntityHandle<dyn RenderableMesh>,
+	pub(crate) renderable: RenderableMesh,
 	pub(crate) shader_mesh: ShaderMesh,
 	pub(crate) skinning: Option<RenderSkin>,
 }
@@ -176,10 +176,10 @@ pub(crate) struct RenderSkin {
 	pub(crate) skeleton_node_count: u32,
 }
 
-/// The `PendingRenderableInstance` struct associates a scene renderable with the mesh resource it is waiting for.
+/// The `PendingRenderableInstance` struct associates an owned renderable payload with the mesh resource it is waiting for.
 pub(crate) struct PendingRenderableInstance {
 	pub(crate) handle: Handle,
-	pub(crate) entity: EntityHandle<dyn RenderableMesh>,
+	pub(crate) renderable: RenderableMesh,
 	pub(crate) mesh_key: VisibilityMeshKey,
 }
 

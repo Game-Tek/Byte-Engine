@@ -1,14 +1,20 @@
 use super::*;
 use crate::rendering::lights::IesProfile;
 
+/// Returns the latest retained transform for scene creation, or identity when no update has arrived.
+pub(super) fn retained_renderable_transform(transforms: &HashMap<Handle, Transform>, handle: Handle) -> Transform {
+	transforms.get(&handle).cloned().unwrap_or_default()
+}
+
 impl VisibilityPipelineManager {
-	/// Applies a renderable's current world transform to every registered primitive.
+	/// Retains a renderable's latest world transform and applies it to every registered primitive.
 	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &crate::gameplay::transform::Transform) {
+		self.renderable_transforms.insert(handle, transform.clone());
 		self.scene.update_renderable_transform(handle, transform);
 		self.scene.update_light_transform(handle, transform);
 	}
 
-	/// Applies transform messages after resource completions have registered their scene instances.
+	/// Retains queued transforms before resource adoption and applies them to already registered scene instances.
 	pub(crate) fn process_transform_updates(&mut self) {
 		while let Some(message) = self.transforms_listener.read() {
 			self.update_transform(*message.handle(), message.transform());
@@ -159,6 +165,7 @@ impl VisibilityPipelineManager {
 			resource_manager,
 			requested_meshes: std::collections::HashSet::new(),
 			pending_renderables: Vec::new(),
+			renderable_transforms: HashMap::new(),
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
@@ -222,11 +229,11 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
-	pub(crate) fn request_mesh(&mut self, handle: Handle, renderable: EntityHandle<dyn RenderableMesh>) {
-		// Creation messages are upserts across both pending requests and resolved scene instances.
-		self.remove_mesh(handle);
+	pub(crate) fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
+		// Creation messages are upserts, but the latest independently published transform must survive replacement.
+		self.remove_mesh_instance(handle);
 
-		let source = renderable.get_mesh().clone();
+		let source = renderable.source().clone();
 		let mesh_key = VisibilityMeshKey::from_source(&source);
 		if self.requested_meshes.insert(mesh_key.clone()) {
 			let source_kind = match &source {
@@ -238,13 +245,20 @@ impl VisibilityPipelineManager {
 		}
 		self.pending_renderables.push(PendingRenderableInstance {
 			handle,
-			entity: renderable,
+			renderable,
 			mesh_key: mesh_key.clone(),
 		});
 		self.resolve_pending_renderables_for_mesh(&mesh_key);
 	}
 
+	/// Removes a renderable and any transform retained for asynchronous creation.
 	pub(crate) fn remove_mesh(&mut self, handle: Handle) {
+		self.remove_mesh_instance(handle);
+		self.renderable_transforms.remove(&handle);
+	}
+
+	/// Removes pending and resident instance state so an upsert can reuse the retained transform.
+	fn remove_mesh_instance(&mut self, handle: Handle) {
 		self.pending_renderables
 			.retain(|pending_renderable| pending_renderable.handle != handle);
 		self.scene.remove_renderable(handle);
@@ -739,14 +753,16 @@ impl VisibilityPipelineManager {
 				continue;
 			}
 
-			let model = pending_renderable.entity.transform().get_matrix().into();
+			let model = retained_renderable_transform(&self.renderable_transforms, pending_renderable.handle)
+				.get_matrix()
+				.into();
 			resolved_renderables += 1;
 			for primitive in &mesh.primitives {
 				added_primitives += 1;
 				added_meshlets += primitive.meshlet_count;
 				self.scene.add_render_entity(RenderEntity {
 					handle: pending_renderable.handle,
-					entity: pending_renderable.entity.clone(),
+					renderable: pending_renderable.renderable.clone(),
 					shader_mesh: ShaderMesh {
 						model,
 						material_index: primitive.material_index,

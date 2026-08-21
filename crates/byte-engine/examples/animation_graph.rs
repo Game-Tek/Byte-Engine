@@ -19,9 +19,9 @@ use byte_engine::{
 		},
 		Application, Parameter,
 	},
-	core::{channel::Channel as _, Creator as _, EntityHandle},
-	gameplay::{Object, Transform, TransformationUpdate},
-	rendering::{window::Window, Camera, UpdatePose},
+	core::{channel::Channel as _, Creator as _},
+	gameplay::{Transform, TransformationUpdate},
+	rendering::{window::Window, Camera, RenderableMesh, UpdatePose},
 	MediaTime,
 };
 use math::{Orientation, Point, Quaternion, Scale, Vector};
@@ -201,12 +201,8 @@ fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Ha
 	window.attach(camera);
 	app.window_factory_mut().create(window);
 
-	let object = Object::new(
-		MODEL_RESOURCE,
-		Transform::from_position(Point::origin()),
-		byte_engine::physics::BodyTypes::Static,
-		Vector::zero(),
-	);
-	let renderable = app.world_mut().renderable_factory_mut().create(EntityHandle::from(object));
-	renderable
+	app.world_mut()
+		.create(RenderableMesh::resource(MODEL_RESOURCE))
+		.with(Transform::from_position(Point::origin()))
+		.into()
 }

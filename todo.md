@@ -25,6 +25,7 @@
 - Prefer `SmallVec` for normally tiny GHI collections such as swapchains, command buffers, descriptor sets, present drawables, and semaphores.
 - Replace Vulkan command recording's full device state-map clones with immutable base state plus recording-local changes, and clean up the transition implementation.
 - Replace render-target linear lookups with direct `(SinkId, ResourceId) -> ImageIndex` maps and per-sink image lists.
+- Replace the temporary simple and visibility pipeline renderable-transform maps with proper retained component storage.
 - Precompute render-pass resource access and attachment templates instead of rebuilding hash maps and vectors each frame.
 - Remove material names from non-debug visibility builds.
 - Add reusable or allocator-aware listener draining.

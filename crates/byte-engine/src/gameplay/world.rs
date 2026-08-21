@@ -9,12 +9,12 @@
 /// The [`DefaultWorld`] struct owns the standard entity factories and coordinates
 /// transform, physics, anchoring, and deletion updates.
 pub struct DefaultWorld {
-	body_factory: Factory<EntityHandle<dyn physics::Body>>,
+	body_factory: Factory<physics::Body>,
 	transforms: DefaultChannel<TransformationUpdate>,
 	deletes: DefaultChannel<DeleteMessage>,
 	poses: DefaultChannel<UpdatePose>,
 	cameras: Factory<Camera>,
-	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
+	renderable_factory: Factory<RenderableMesh>,
 	light_factory: Factory<Lights>,
 	environment_factory: Factory<Environment>,
 	audio_graph_factory: AudioGraphFactory,
@@ -71,11 +71,11 @@ impl DefaultWorld {
 		self.physics_system.process_pending_deletions();
 	}
 
-	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
+	pub fn body_factory(&self) -> &Factory<physics::Body> {
 		&self.body_factory
 	}
 
-	pub fn body_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn physics::Body>> {
+	pub fn body_factory_mut(&mut self) -> &mut Factory<physics::Body> {
 		&mut self.body_factory
 	}
 
@@ -103,11 +103,11 @@ impl DefaultWorld {
 		&mut self.poses
 	}
 
-	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {
+	pub fn renderable_factory(&self) -> &Factory<RenderableMesh> {
 		&self.renderable_factory
 	}
 
-	pub fn renderable_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn RenderableMesh>> {
+	pub fn renderable_factory_mut(&mut self) -> &mut Factory<RenderableMesh> {
 		&mut self.renderable_factory
 	}
 
@@ -215,14 +215,14 @@ impl Creator<Environment> for DefaultWorld {
 	}
 }
 
-impl Creator<EntityHandle<dyn physics::Body>> for DefaultWorld {
-	fn publish(&mut self, handle: Option<Handle>, body: EntityHandle<dyn physics::Body>) -> Handle {
+impl Creator<physics::Body> for DefaultWorld {
+	fn publish(&mut self, handle: Option<Handle>, body: physics::Body) -> Handle {
 		publish_to_factory(&mut self.body_factory, handle, body)
 	}
 }
 
-impl Creator<EntityHandle<dyn RenderableMesh>> for DefaultWorld {
-	fn publish(&mut self, handle: Option<Handle>, renderable: EntityHandle<dyn RenderableMesh>) -> Handle {
+impl Creator<RenderableMesh> for DefaultWorld {
+	fn publish(&mut self, handle: Option<Handle>, renderable: RenderableMesh) -> Handle {
 		publish_to_factory(&mut self.renderable_factory, handle, renderable)
 	}
 }
@@ -260,7 +260,6 @@ use crate::{
 		message::{DeleteMessage, Message},
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
-		EntityHandle,
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate, Transform},
 	physics::{self, dynabit},
@@ -271,6 +270,27 @@ use crate::{
 mod tests {
 	use super::*;
 	use crate::core::{listener::Listener, targeted_message::MessageTargeter};
+
+	#[test]
+	fn renderable_body_and_transform_creation_share_a_handle() {
+		let mut world = DefaultWorld::new();
+		let mut renderables = world.renderable_factory().listener();
+		let mut bodies = world.body_factory().listener();
+		let mut transforms = world.transforms_channel().listener();
+
+		let handle: Handle = world
+			.create(RenderableMesh::sphere(1.0))
+			.with(physics::Body::new(
+				physics::BodyTypes::Dynamic,
+				physics::Shapes::Sphere { radius: 1.0 },
+			))
+			.with(Transform::from_position(math::Point::new(1.0, 2.0, 3.0)))
+			.into();
+
+		assert_eq!(renderables.read().expect("renderable creation").handle(), &handle);
+		assert_eq!(bodies.read().expect("body creation").handle(), &handle);
+		assert_eq!(transforms.read().expect("transform creation").handle(), &handle);
+	}
 
 	#[test]
 	fn camera_and_transform_creation_share_a_handle() {

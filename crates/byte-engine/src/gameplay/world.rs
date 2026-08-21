@@ -287,6 +287,31 @@ mod tests {
 	}
 
 	#[test]
+	fn light_and_transform_creation_share_a_handle() {
+		let mut world = DefaultWorld::new();
+		let mut lights = world.light_factory().listener();
+		let mut transforms = world.transforms_channel().listener();
+		let light = PointLight::new(
+			crate::rendering::LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			crate::rendering::PhotometricIntensity::LuminousIntensity {
+				candela: 100.0,
+				reference_distance_m: 1.0,
+			},
+		)
+		.expect("physical point light");
+
+		let handle: Handle = world
+			.create(light)
+			.with(Transform::from_position(math::Point::new(1.0, 2.0, 3.0)))
+			.into();
+
+		let light = lights.read().expect("light creation");
+		let transform = transforms.read().expect("transform creation");
+		assert_eq!(light.handle(), &handle);
+		assert_eq!(transform.handle(), &handle);
+	}
+
+	#[test]
 	fn camera_set_publishes_an_upsert_under_the_existing_handle() {
 		let mut world = DefaultWorld::new();
 		let mut cameras = world.camera_factory().listener();

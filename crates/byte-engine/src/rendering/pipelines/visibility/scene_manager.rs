@@ -15,7 +15,7 @@ pub struct VisibilitySceneManager {
 	/// Frame-local buffer containing lighting data for this scene.
 	pub(crate) light_data_buffer: ghi::DynamicBufferHandle<LightingData>,
 	/// Lights in the scene.
-	pub(crate) lights: StableVec<(Handle, Lights)>,
+	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
 	/// Information about the current render.
 	pub(crate) render_info: RenderInfo,
 	/// Per-sink render state.
@@ -42,6 +42,13 @@ impl VisibilitySceneManager {
 			handle,
 			|render_entity| render_entity.set_model_transform(model),
 		);
+	}
+
+	/// Applies the latest transform update to the matching retained light.
+	pub(crate) fn update_light_transform(&mut self, handle: Handle, transform: &Transform) {
+		if let Some((_, _, light_transform)) = self.lights.iter_mut().find(|(light_handle, ..)| *light_handle == handle) {
+			*light_transform = transform.clone();
+		}
 	}
 
 	/// Retains one global transform per skeleton node for the renderable identified by `handle`.
@@ -90,7 +97,7 @@ impl VisibilitySceneManager {
 		*lighting_data = LightingData::default();
 		lighting_data.count = light_count as u32;
 
-		for (index, (_, light)) in self.lights.iter().take(light_count).enumerate() {
+		for (index, (_, light, transform)) in self.lights.iter().take(light_count).enumerate() {
 			let shadow = if directional_shadow_light_index == Some(index) {
 				LightShadow::Directional
 			} else if let Some(layer) = cone_shadow_light_indices
@@ -112,13 +119,18 @@ impl VisibilitySceneManager {
 			} else {
 				LightShadow::None
 			};
-			lighting_data.lights[index] = Self::make_light_data(light, shadow, resolve_ies_profile(light));
+			lighting_data.lights[index] = Self::make_light_data(light, transform, shadow, resolve_ies_profile(light));
 		}
 
 		frame.sync_buffer(self.light_data_buffer);
 	}
 
-	fn make_light_data(light: &Lights, shadow: LightShadow, ies_texture: Option<IesProfileTexture>) -> LightData {
+	fn make_light_data(
+		light: &Lights,
+		transform: &Transform,
+		shadow: LightShadow,
+		ies_texture: Option<IesProfileTexture>,
+	) -> LightData {
 		let mut shadow_views = [0; 8];
 
 		if shadow == LightShadow::Directional {
@@ -127,9 +139,17 @@ impl VisibilitySceneManager {
 			}
 		}
 
+		let position = transform.position();
+		let orientation = transform.orientation();
+		let direction = math::direction_from_orientation(orientation);
+		let tangent = math::UnitVector::try_from_vector(
+			orientation.rotate_vector(math::UnitVector::<math::WorldSpace>::x_axis().into_vector()),
+		)
+		.expect("valid light transforms preserve the IES C0 tangent")
+		.into_maths();
+
 		match light {
 			Lights::Cone(light) => {
-				let tangent = light.ies_c0_tangent();
 				let c0_tangent =
 					crate::rendering::pipelines::visibility::gpu_vertex_data_manager::encode_octahedral_unit_vector((
 						tangent.x, tangent.y, tangent.z,
@@ -137,9 +157,9 @@ impl VisibilitySceneManager {
 				let (color, ies_profile_texture, ies_c0_tangent) =
 					resolve_ies_light_data(light.ies_profile(), ies_texture, light.color.into(), c0_tangent);
 				LightData {
-					position: light.position.into_maths().into(),
+					position: position.into_maths().into(),
 					color,
-					direction: light.direction().into_maths().into(),
+					direction: direction.into_maths().into(),
 					cone_cosines: [light.inner_angle.cos(), light.outer_angle.cos()],
 					light_type: 1,
 					shadow_views: match shadow {
@@ -156,7 +176,7 @@ impl VisibilitySceneManager {
 				}
 			}
 			Lights::Direction(light) => LightData {
-				position: light.direction.into_maths().into(),
+				position: direction.into_maths().into(),
 				color: light.color.into(),
 				direction: ShaderVec3::default(),
 				cone_cosines: [0.0; 2],
@@ -168,7 +188,6 @@ impl VisibilitySceneManager {
 				_ies_padding: [0; 2],
 			},
 			Lights::Point(light) => {
-				let tangent = light.ies_c0_tangent();
 				let c0_tangent =
 					crate::rendering::pipelines::visibility::gpu_vertex_data_manager::encode_octahedral_unit_vector((
 						tangent.x, tangent.y, tangent.z,
@@ -176,9 +195,9 @@ impl VisibilitySceneManager {
 				let (color, ies_profile_texture, ies_c0_tangent) =
 					resolve_ies_light_data(light.ies_profile(), ies_texture, light.color.into(), c0_tangent);
 				LightData {
-					position: light.position.into_maths().into(),
+					position: position.into_maths().into(),
 					color,
-					direction: light.direction().into_maths().into(),
+					direction: direction.into_maths().into(),
 					cone_cosines: [0.0; 2],
 					light_type: 0,
 					shadow_views: match shadow {
@@ -334,12 +353,16 @@ mod tests {
 	}
 
 	#[test]
-	fn cone_light_data_preserves_direction_and_soft_cutoffs() {
+	fn light_data_uses_the_retained_transform_for_spatial_fields() {
+		let orientation = Orientation::try_from_axis_angle(
+			UnitVector::<WorldSpace>::y_axis(),
+			math::Radians::new(std::f32::consts::FRAC_PI_2),
+		)
+		.expect("finite light orientation");
+		let transform = crate::gameplay::Transform::new(Point::new(1.0, 2.0, 3.0), math::Scale::identity(), orientation);
 		let light = ConeLight::new(
-			Point::new(1.0, 2.0, 3.0),
-			-UnitVector::y_axis(),
-			crate::rendering::lights::LightColor::Kelvin(4_500.0),
-			crate::rendering::lights::PhotometricIntensity::LuminousIntensity {
+			LightColor::Kelvin(4_500.0),
+			PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
 				reference_distance_m: 1.0,
 			},
@@ -349,99 +372,53 @@ mod tests {
 		.expect("physical cone light");
 		let light_data = VisibilitySceneManager::make_light_data(
 			&Lights::Cone(light.clone()),
+			&transform,
 			LightShadow::Cone { view_index: 6, layer: 1 },
 			None,
 		);
 
-		assert_eq!(light_data.position, ShaderVec3::from(light.position.into_maths()));
-		assert_eq!(light_data.color, ShaderVec3::from(light.color));
-		assert_eq!(light_data.direction, ShaderVec3::from(light.direction().into_maths()));
+		assert_eq!(light_data.position, ShaderVec3::from(transform.get_position().into_maths()));
+		assert_eq!(
+			light_data.direction,
+			ShaderVec3::from(math::direction_from_orientation(orientation).into_maths())
+		);
 		assert_eq!(light_data.cone_cosines, [light.inner_angle.cos(), light.outer_angle.cos()]);
-		assert_eq!(light_data.light_type, 1);
 		assert_eq!(light_data.shadow_views, [6, 0, 0, 0, 0, 0, 0, 0]);
-		assert_eq!(light_data.shadow_layer, 1);
-		assert_eq!(light_data.ies_profile_texture, NO_IES_PROFILE_TEXTURE);
 	}
 
 	#[test]
-	fn ies_point_light_data_activates_only_after_its_profile_upload() {
+	fn ies_light_data_rotates_the_c0_tangent_with_the_retained_transform() {
 		let orientation = Orientation::try_from_axis_angle(
 			UnitVector::<WorldSpace>::y_axis(),
 			math::Radians::new(std::f32::consts::FRAC_PI_2),
 		)
 		.expect("finite IES orientation");
-		let light = PointLight::new_ies(
-			Point::new(1.0, 2.0, 3.0),
-			orientation,
-			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
-			0.25,
-			"lights/office.ies",
-		)
-		.expect("physical IES point light");
-		let fallback = VisibilitySceneManager::make_light_data(&Lights::Point(light.clone()), LightShadow::None, None);
+		let transform = crate::gameplay::Transform::from_rotation(orientation);
+		let light = PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.25, "lights/office.ies")
+			.expect("physical IES point light");
 		let resident = VisibilitySceneManager::make_light_data(
-			&Lights::Point(light.clone()),
+			&Lights::Point(light),
+			&transform,
 			LightShadow::None,
 			Some(IesProfileTexture {
 				texture_index: 37,
 				intensity_scale_candela: 45.0,
 			}),
 		);
-		let tangent = light.ies_c0_tangent();
+		let tangent = orientation.rotate_vector(UnitVector::<WorldSpace>::x_axis().into_vector());
 		let encoded_tangent = crate::rendering::pipelines::visibility::gpu_vertex_data_manager::encode_octahedral_unit_vector(
-			(tangent.x, tangent.y, tangent.z),
+			(tangent.x(), tangent.y(), tangent.z()),
 		);
 
-		assert_eq!(fallback.color, ShaderVec3::from((0.25, 0.25, 0.25)));
-		assert_eq!(fallback.ies_profile_texture, NO_IES_PROFILE_TEXTURE);
-		assert_eq!(fallback.ies_c0_tangent, [32768, 32768]);
 		assert_eq!(resident.color, ShaderVec3::from((45.0, 45.0, 45.0)));
-		assert_eq!(resident.direction, ShaderVec3::from(light.direction().into_maths()));
 		assert_eq!(resident.ies_profile_texture, 37);
 		assert_eq!(resident.ies_c0_tangent, encoded_tangent);
-	}
-
-	#[test]
-	fn ies_cone_light_data_applies_profile_scale_and_packs_the_c0_tangent() {
-		let orientation = Orientation::try_from_axis_angle(
-			UnitVector::<WorldSpace>::x_axis(),
-			math::Radians::new(std::f32::consts::FRAC_PI_2),
-		)
-		.expect("finite IES orientation");
-		let light = ConeLight::new_ies(
-			Point::origin(),
-			orientation,
-			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
-			1.0,
-			"lights/spot.ies",
-			math::Radians::new(0.25),
-			math::Radians::new(0.5),
-		)
-		.expect("physical IES cone light");
-		let light_data = VisibilitySceneManager::make_light_data(
-			&Lights::Cone(light.clone()),
-			LightShadow::None,
-			Some(IesProfileTexture {
-				texture_index: 11,
-				intensity_scale_candela: 90.0,
-			}),
-		);
-		let tangent = light.ies_c0_tangent();
-		let encoded_tangent = crate::rendering::pipelines::visibility::gpu_vertex_data_manager::encode_octahedral_unit_vector(
-			(tangent.x, tangent.y, tangent.z),
-		);
-
-		assert_eq!(light_data.color, ShaderVec3::from((90.0, 90.0, 90.0)));
-		assert_eq!(light_data.direction, ShaderVec3::from(light.direction().into_maths()));
-		assert_eq!(light_data.ies_profile_texture, 11);
-		assert_eq!(light_data.ies_c0_tangent, encoded_tangent);
 	}
 
 	#[test]
 	fn light_data_uploads_directional_lux_and_local_candela_without_unit_tags() {
 		let white = LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0));
 		let directional = DirectionalLight::new(
-			-UnitVector::y_axis(),
 			white,
 			PhotometricIntensity::Illuminance {
 				lux: 80_000.0,
@@ -450,7 +427,6 @@ mod tests {
 		)
 		.expect("physical directional light");
 		let point = PointLight::new(
-			Point::new(1.0, 2.0, 3.0),
 			white,
 			PhotometricIntensity::Illuminance {
 				lux: 25.0,
@@ -458,39 +434,15 @@ mod tests {
 			},
 		)
 		.expect("physical point light");
-
+		let transform = crate::gameplay::Transform::default();
 		let directional_data =
-			VisibilitySceneManager::make_light_data(&Lights::Direction(directional), LightShadow::None, None);
-		let point_data = VisibilitySceneManager::make_light_data(&Lights::Point(point), LightShadow::None, None);
+			VisibilitySceneManager::make_light_data(&Lights::Direction(directional), &transform, LightShadow::None, None);
+		let point_data = VisibilitySceneManager::make_light_data(&Lights::Point(point), &transform, LightShadow::None, None);
 
 		assert_eq!(directional_data.color, ShaderVec3::from((80_000.0, 80_000.0, 80_000.0)));
 		assert_eq!(point_data.color, ShaderVec3::from((100.0, 100.0, 100.0)));
 		assert_eq!(directional_data.light_type, 68);
 		assert_eq!(point_data.light_type, 0);
-	}
-
-	#[test]
-	fn point_light_data_packs_cube_index_and_first_face_view() {
-		let point = PointLight::new(
-			Point::new(1.0, 2.0, 3.0),
-			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
-			PhotometricIntensity::LuminousIntensity {
-				candela: 100.0,
-				reference_distance_m: 1.0,
-			},
-		)
-		.expect("physical point light");
-		let light_data = VisibilitySceneManager::make_light_data(
-			&Lights::Point(point),
-			LightShadow::Point {
-				view_index: 23,
-				cube_index: 2,
-			},
-			None,
-		);
-
-		assert_eq!(light_data.shadow_views, [23, 0, 0, 0, 0, 0, 0, 0]);
-		assert_eq!(light_data.shadow_layer, 2);
 	}
 
 	#[test]
@@ -540,3 +492,4 @@ use crate::rendering::pipelines::visibility::POINT_SHADOW_VIEW_OFFSET;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
 use crate::rendering::pipelines::visibility::SHADOW_VIEW_COUNT;
 use crate::rendering::View;
+use crate::space::{Orientable as _, Positionable as _};

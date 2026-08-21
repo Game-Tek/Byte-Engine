@@ -2,7 +2,9 @@
 ///
 /// Use it through [`super::ConeLight::new_ies`] or [`super::PointLight::new_ies`]. The visibility
 /// pipeline loads the named image asynchronously and applies its dimmed calibrated luminous-intensity
-/// map after the upload completes. The owning light's [`math::Orientation`] defines the profile's C0 plane.
+/// map after the upload completes. The light entity's associated [`crate::gameplay::Transform`] controls
+/// the profile orientation: local `+X` defines the C0 tangent, local `+Y` defines C90, and local `+Z`
+/// defines the emission axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IesProfile {
 	resource_id: String,

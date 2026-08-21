@@ -1,12 +1,12 @@
 use super::*;
 
 /// The `ShadowLightSelection` struct retains the bounded directional and local-light shadow work for one frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ShadowLightSelection<'a> {
 	pub(crate) directional: Option<(usize, UnitVector)>,
-	pub(crate) cones: [Option<(usize, &'a ConeLight)>; MAX_CONE_SHADOW_POOL_CAPACITY],
+	pub(crate) cones: [Option<(usize, &'a ConeLight, &'a Transform)>; MAX_CONE_SHADOW_POOL_CAPACITY],
 	pub(crate) eligible_cone_count: usize,
-	pub(crate) points: [Option<(usize, &'a PointLight)>; MAX_POINT_SHADOW_POOL_CAPACITY],
+	pub(crate) points: [Option<(usize, &'a PointLight, &'a Transform)>; MAX_POINT_SHADOW_POOL_CAPACITY],
 	pub(crate) eligible_point_count: usize,
 }
 
@@ -15,6 +15,7 @@ pub(crate) struct ShadowLightSelection<'a> {
 pub(crate) struct ShadowLightCandidate<'a, T> {
 	index: usize,
 	light: &'a T,
+	transform: &'a Transform,
 	intensity_scale_candela: f32,
 }
 
@@ -28,7 +29,7 @@ impl<T> Clone for ShadowLightCandidate<'_, T> {
 
 /// Selects analytic local shadow casters from the light prefix uploaded to material evaluation.
 pub(crate) fn select_shadow_lights<'a>(
-	lights: impl Iterator<Item = &'a Lights>,
+	lights: impl Iterator<Item = (&'a Lights, &'a Transform)>,
 	sinks: &[Sink],
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
@@ -44,7 +45,7 @@ pub(crate) fn select_shadow_lights<'a>(
 
 /// Selects local shadow casters using each resident IES profile's calibrated peak candela scale.
 pub(crate) fn select_shadow_lights_with_intensity_scale<'a>(
-	lights: impl Iterator<Item = &'a Lights>,
+	lights: impl Iterator<Item = (&'a Lights, &'a Transform)>,
 	sinks: &[Sink],
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
@@ -58,32 +59,36 @@ pub(crate) fn select_shadow_lights_with_intensity_scale<'a>(
 	let mut cone_candidates = SmallVec::<[ShadowLightCandidate<'a, ConeLight>; MAX_LIGHTS]>::new();
 	let mut point_candidates = SmallVec::<[ShadowLightCandidate<'a, PointLight>; MAX_LIGHTS]>::new();
 
-	for (index, light) in lights.take(MAX_LIGHTS).enumerate() {
+	for (index, (light, transform)) in lights.take(MAX_LIGHTS).enumerate() {
 		let intensity_scale_candela = light_intensity_scale_candela(light);
 		match light {
-			Lights::Direction(light) if selection.directional.is_none() => {
-				selection.directional = Some((index, light.direction));
+			Lights::Direction(_) if selection.directional.is_none() => {
+				selection.directional = Some((index, math::direction_from_orientation(transform.orientation())));
 			}
 			Lights::Cone(light)
 				if cone_light_has_brightness(light, intensity_scale_candela) && light.supports_shadow_mapping() =>
 			{
-				if shadow_light_is_visible_in_any_sink(light, sinks, |light, sink| {
-					cone_shadow_importance(light, intensity_scale_candela, sink)
-				}) {
+				if sinks
+					.iter()
+					.any(|sink| cone_shadow_importance(light, transform, intensity_scale_candela, sink).is_some())
+				{
 					cone_candidates.push(ShadowLightCandidate {
 						index,
 						light,
+						transform,
 						intensity_scale_candela,
 					});
 				}
 			}
 			Lights::Point(light) if point_light_has_brightness(light, intensity_scale_candela) => {
-				if shadow_light_is_visible_in_any_sink(light, sinks, |light, sink| {
-					point_shadow_importance(light, intensity_scale_candela, sink)
-				}) {
+				if sinks
+					.iter()
+					.any(|sink| point_shadow_importance(light, transform, intensity_scale_candela, sink).is_some())
+				{
 					point_candidates.push(ShadowLightCandidate {
 						index,
 						light,
+						transform,
 						intensity_scale_candela,
 					});
 				}
@@ -97,14 +102,16 @@ pub(crate) fn select_shadow_lights_with_intensity_scale<'a>(
 		&mut cone_candidates,
 		sinks,
 		cone_shadow_map_pool_capacity,
-		|candidate, sink| cone_shadow_importance(candidate.light, candidate.intensity_scale_candela, sink),
+		|candidate, sink| cone_shadow_importance(candidate.light, candidate.transform, candidate.intensity_scale_candela, sink),
 	);
 	selection.eligible_point_count = point_candidates.len();
 	selection.points = select_fair_shadow_lights(
 		&mut point_candidates,
 		sinks,
 		point_shadow_map_pool_capacity,
-		|candidate, sink| point_shadow_importance(candidate.light, candidate.intensity_scale_candela, sink),
+		|candidate, sink| {
+			point_shadow_importance(candidate.light, candidate.transform, candidate.intensity_scale_candela, sink)
+		},
 	);
 
 	selection
@@ -125,7 +132,7 @@ pub(crate) fn select_fair_shadow_lights<'a, T, const N: usize>(
 	sinks: &[Sink],
 	pool_capacity: usize,
 	importance: impl Fn(&ShadowLightCandidate<T>, &Sink) -> Option<f32>,
-) -> [Option<(usize, &'a T)>; N] {
+) -> [Option<(usize, &'a T, &'a Transform)>; N] {
 	let capacity = pool_capacity.min(N);
 	let mut selection = [None; N];
 	let mut selection_count = 0;
@@ -143,11 +150,11 @@ pub(crate) fn select_fair_shadow_lights<'a, T, const N: usize>(
 			if selection[..selection_count]
 				.iter()
 				.flatten()
-				.any(|(index, _)| *index == candidate.index)
+				.any(|(index, ..)| *index == candidate.index)
 			{
 				continue;
 			}
-			selection[selection_count] = Some((candidate.index, candidate.light));
+			selection[selection_count] = Some((candidate.index, candidate.light, candidate.transform));
 			selection_count += 1;
 		}
 	}
@@ -300,21 +307,27 @@ pub(crate) fn point_light_peak_candela(light: &PointLight, intensity_scale_cande
 }
 
 /// Builds the perspective view used to cull and render one cone-light shadow layer.
-pub(crate) fn make_cone_shadow_view(light: &ConeLight, exposure_scale: f32, intensity_scale_candela: f32) -> View {
+pub(crate) fn make_cone_shadow_view(
+	light: &ConeLight,
+	transform: &Transform,
+	exposure_scale: f32,
+	intensity_scale_candela: f32,
+) -> View {
 	let (near, far) = resolve_cone_shadow_range(light, exposure_scale, intensity_scale_candela);
 	View::new_perspective(
 		(light.outer_angle * 2.0).to_degrees(),
 		1.0,
 		near,
 		far,
-		light.position,
-		light.direction(),
+		transform.position(),
+		math::direction_from_orientation(transform.orientation()),
 	)
 }
 
 /// Builds one of the six perspective views used to render a point-light cube shadow map.
 pub(crate) fn make_point_shadow_view(
 	light: &PointLight,
+	transform: &Transform,
 	face: usize,
 	exposure_scale: f32,
 	intensity_scale_candela: f32,
@@ -329,31 +342,44 @@ pub(crate) fn make_point_shadow_view(
 		5 => (-UnitVector::z_axis(), UnitVector::y_axis()),
 		_ => unreachable!("Point shadow face is invalid. The most likely cause is a cube map dispatch outside its six faces."),
 	};
-	View::new_perspective_with_up(math::Degrees::new(90.0), 1.0, near, far, light.position, direction, up)
+	View::new_perspective_with_up(math::Degrees::new(90.0), 1.0, near, far, transform.position(), direction, up)
 }
 
 /// Returns the conservative sphere that bounds cone-shadow coverage.
-pub(crate) fn cone_shadow_bounds(light: &ConeLight, intensity_scale_candela: f32) -> math::Sphere {
+pub(crate) fn cone_shadow_bounds(light: &ConeLight, transform: &Transform, intensity_scale_candela: f32) -> math::Sphere {
 	let (_, far) = resolve_cone_shadow_range(light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
 	let cosine = light.outer_angle.cos();
 	let enclosing_radius = far / (2.0 * cosine * cosine);
-	math::Sphere::new(light.position + light.direction() * enclosing_radius, enclosing_radius)
+	math::Sphere::new(
+		transform.position() + math::direction_from_orientation(transform.orientation()) * enclosing_radius,
+		enclosing_radius,
+	)
 }
 
 /// Returns the conservative sphere that bounds point-shadow coverage.
-pub(crate) fn point_shadow_bounds(light: &PointLight, intensity_scale_candela: f32) -> math::Sphere {
+pub(crate) fn point_shadow_bounds(light: &PointLight, transform: &Transform, intensity_scale_candela: f32) -> math::Sphere {
 	let (_, far) = resolve_point_shadow_range(light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
-	math::Sphere::new(light.position, far)
+	math::Sphere::new(transform.position(), far)
 }
 
 /// Returns the estimated screen coverage of a cone-shadow candidate in one sink.
-pub(crate) fn cone_shadow_importance(light: &ConeLight, intensity_scale_candela: f32, sink: &Sink) -> Option<f32> {
-	shadow_view_importance(cone_shadow_bounds(light, intensity_scale_candela), sink)
+pub(crate) fn cone_shadow_importance(
+	light: &ConeLight,
+	transform: &Transform,
+	intensity_scale_candela: f32,
+	sink: &Sink,
+) -> Option<f32> {
+	shadow_view_importance(cone_shadow_bounds(light, transform, intensity_scale_candela), sink)
 }
 
 /// Returns the estimated screen coverage of a point-shadow candidate in one sink.
-pub(crate) fn point_shadow_importance(light: &PointLight, intensity_scale_candela: f32, sink: &Sink) -> Option<f32> {
-	shadow_view_importance(point_shadow_bounds(light, intensity_scale_candela), sink)
+pub(crate) fn point_shadow_importance(
+	light: &PointLight,
+	transform: &Transform,
+	intensity_scale_candela: f32,
+	sink: &Sink,
+) -> Option<f32> {
+	shadow_view_importance(point_shadow_bounds(light, transform, intensity_scale_candela), sink)
 }
 
 /// Returns the estimated number of sink pixels covered by a local light's conservative bound.

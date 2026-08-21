@@ -1,18 +1,8 @@
-use math::UnitVector;
-use maths_rs::Vec3f;
-
-use super::{LightColor, PhotometricError, PhotometricIntensity};
-use crate::{
-	core::{Entity, EntityHandle},
-	inspector::Inspectable,
-	rendering::lights::{Light, LightClasses},
-};
-
-/// The `DirectionalLight` struct provides parallel scene lighting from a distant
-/// source, such as the sun.
+/// The `DirectionalLight` struct provides photometric settings for parallel scene lighting from a distant source.
+///
+/// Use the associated [`crate::gameplay::Transform`] to orient sources such as the sun.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalLight {
-	pub direction: UnitVector,
 	pub color: Vec3f,
 }
 
@@ -25,11 +15,10 @@ impl DirectionalLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	pub fn new(direction: UnitVector, color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
+	pub fn new(color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
 		let chromaticity = color.resolve()?;
 		let lux = intensity.directional_lux()?;
 		Ok(Self {
-			direction,
 			color: Vec3f::new(chromaticity.x * lux, chromaticity.y * lux, chromaticity.z * lux),
 		})
 	}
@@ -46,3 +35,12 @@ impl Inspectable for DirectionalLight {
 		format!("{:?}", self)
 	}
 }
+
+use maths_rs::Vec3f;
+
+use super::{LightColor, PhotometricError, PhotometricIntensity};
+use crate::{
+	core::{Entity, EntityHandle},
+	inspector::Inspectable,
+	rendering::lights::{Light, LightClasses},
+};

@@ -1,23 +1,10 @@
-use math::{direction_from_orientation, orientation_from_direction, Orientation, Point, Radians, UnitVector, WorldSpace};
-use maths_rs::Vec3f;
-
-use super::{IesProfile, LightColor, PhotometricError, PhotometricIntensity};
-use crate::{
-	core::{Entity, EntityHandle},
-	inspector::Inspectable,
-	rendering::lights::{Light, LightClasses},
-	space::Orientable,
-};
-
-/// The `ConeLight` struct provides local lighting constrained to a directed cone.
+/// The `ConeLight` struct provides photometric settings for local lighting constrained to a cone.
 ///
-/// Use it for spotlights, flashlights, and other emitters that need a soft transition
-/// between a fully lit inner cone and an unlit outer cone. Cone angles are half angles
-/// measured in radians from `direction`.
+/// Use it for spotlights, flashlights, and other emitters that need a soft transition between a
+/// fully lit inner cone and an unlit outer cone. Cone angles are half angles measured in radians
+/// from the associated [`crate::gameplay::Transform`]'s forward direction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConeLight {
-	pub position: Point,
-	orientation: Orientation,
 	pub color: Vec3f,
 	pub inner_angle: Radians,
 	pub outer_angle: Radians,
@@ -38,10 +25,8 @@ impl ConeLight {
 	/// # Errors
 	///
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
-	/// Invalid angles panic because they cannot form a valid cone view; `UnitVector` has already validated the direction.
+	/// Invalid angles panic because they cannot form a valid cone view.
 	pub fn new(
-		position: Point,
-		direction: UnitVector,
 		color: LightColor,
 		intensity: PhotometricIntensity,
 		inner_angle: Radians,
@@ -51,8 +36,6 @@ impl ConeLight {
 		let chromaticity = color.resolve()?;
 		let candela = intensity.cone_candela(inner_angle, outer_angle)?;
 		Ok(Self {
-			position,
-			orientation: orientation_from_direction(direction),
 			color: Vec3f::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
 			inner_angle,
 			outer_angle,
@@ -64,9 +47,9 @@ impl ConeLight {
 
 	/// Creates a cone light whose calibrated intensity and angular distribution come from a baked IES profile.
 	///
-	/// `orientation` maps local `+Z` to the emission axis, local `+X` to the IES C0 tangent, and
-	/// local `+Y` to the C90 tangent. Use [`math::orientation_from_direction`] only when a canonical
-	/// zero-roll C0 plane is sufficient. `color` tints the profile with unit luminance. `dimmer` is a
+	/// The associated [`crate::gameplay::Transform`] maps local `+Z` to the emission axis, local `+X`
+	/// to the IES C0 tangent, and local `+Y` to the C90 tangent. `color` tints the profile with unit
+	/// luminance. `dimmer` is a
 	/// linear fraction from `0.0` for off through `1.0` for the measured output. The visibility pipeline
 	/// resolves `ies_profile_resource_id` asynchronously, then uses its dimmed candela scale and intensity
 	/// map. Until that upload completes, the light uses its dimmed unit-luminance color as a low-intensity
@@ -84,8 +67,6 @@ impl ConeLight {
 	/// `ies_profile_resource_id` is empty. The most likely cause is an invalid cone shape, dimmer, or
 	/// missing baked `.ies` resource path.
 	pub fn new_ies(
-		position: Point,
-		orientation: Orientation,
 		color: LightColor,
 		dimmer: f32,
 		ies_profile_resource_id: impl Into<String>,
@@ -95,8 +76,6 @@ impl ConeLight {
 		Self::validate_angles(inner_angle, outer_angle);
 		let chromaticity = color.resolve()?;
 		Ok(Self {
-			position,
-			orientation,
 			color: chromaticity,
 			inner_angle,
 			outer_angle,
@@ -106,34 +85,9 @@ impl ConeLight {
 		})
 	}
 
-	/// Returns the checked emission axis used by cone lighting and an optional IES profile.
-	pub fn direction(&self) -> UnitVector {
-		direction_from_orientation(self.orientation)
-	}
-
-	/// Builds this light with a checked emission axis and a canonical zero-roll IES frame.
-	pub fn with_direction(mut self, direction: UnitVector) -> Self {
-		self.set_direction(direction);
-		self
-	}
-
-	/// Sets the emission axis and replaces any IES C0 frame with the canonical zero-roll frame.
-	///
-	/// Use [`Orientable::set_orientation`] when an IES profile must retain an explicit C0 plane.
-	pub fn set_direction(&mut self, direction: UnitVector) {
-		self.orientation = orientation_from_direction(direction);
-	}
-
 	/// Returns the optional IES profile that supplies this cone light's intensity distribution.
 	pub fn ies_profile(&self) -> Option<&IesProfile> {
 		self.ies_profile.as_ref()
-	}
-
-	/// Returns the world-space C0 tangent for compact IES GPU packing.
-	pub(crate) fn ies_c0_tangent(&self) -> Vec3f {
-		self.orientation
-			.rotate_vector(UnitVector::<WorldSpace>::x_axis().into_vector())
-			.into_maths()
 	}
 
 	/// Validates the angular range shared by uniform and IES-backed cone lights.
@@ -189,16 +143,6 @@ impl Light for ConeLight {
 	}
 }
 
-impl Orientable for ConeLight {
-	fn orientation(&self) -> Orientation {
-		self.orientation
-	}
-
-	fn set_orientation(&mut self, orientation: Orientation) {
-		self.orientation = orientation;
-	}
-}
-
 impl Inspectable for ConeLight {
 	fn as_string(&self) -> String {
 		format!("{:?}", self)
@@ -207,11 +151,10 @@ impl Inspectable for ConeLight {
 
 #[cfg(test)]
 mod tests {
-	use math::{direction_from_orientation, Orientation, Point, Radians, UnitVector, WorldSpace};
+	use math::Radians;
 
 	use super::ConeLight;
 	use crate::rendering::lights::{IesProfile, LightColor, PhotometricIntensity};
-	use crate::space::Orientable;
 
 	fn intensity() -> PhotometricIntensity {
 		PhotometricIntensity::LuminousIntensity {
@@ -221,13 +164,8 @@ mod tests {
 	}
 
 	#[test]
-	fn ies_cone_keeps_its_profile_and_complete_orientation() {
-		let orientation =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::y_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
-				.expect("finite IES orientation");
+	fn ies_cone_keeps_its_profile() {
 		let light = ConeLight::new_ies(
-			Point::origin(),
-			orientation,
 			LightColor::Kelvin(4_500.0),
 			0.25,
 			"lights/office.ies",
@@ -235,25 +173,17 @@ mod tests {
 			Radians::new(0.5),
 		)
 		.expect("physical IES cone light");
-		let expected_c0 = orientation
-			.rotate_vector(UnitVector::<WorldSpace>::x_axis().into_vector())
-			.into_maths();
 
 		assert_eq!(
 			light.ies_profile().map(|profile| profile.resource_id()),
 			Some("lights/office.ies")
 		);
 		assert_eq!(light.ies_profile().map(IesProfile::dimmer), Some(0.25));
-		assert_eq!(light.orientation(), orientation);
-		assert_eq!(light.direction(), direction_from_orientation(orientation));
-		assert_eq!(light.ies_c0_tangent(), expected_c0);
 	}
 
 	#[test]
 	fn cone_light_keeps_shadow_range_overrides() {
 		let light = ConeLight::new(
-			Point::new(1.0, 2.0, 3.0),
-			-UnitVector::y_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			Radians::new(0.25),
@@ -269,8 +199,6 @@ mod tests {
 	#[test]
 	fn individual_shadow_range_overrides_replace_only_their_endpoint() {
 		let light = ConeLight::new(
-			Point::origin(),
-			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			Radians::new(0.25),
@@ -288,8 +216,6 @@ mod tests {
 	#[test]
 	fn cone_light_wider_than_a_perspective_view_remains_valid_but_unshadowed() {
 		let light = ConeLight::new(
-			Point::origin(),
-			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			intensity(),
 			Radians::new(0.25),
@@ -300,3 +226,13 @@ mod tests {
 		assert!(!light.supports_shadow_mapping());
 	}
 }
+
+use math::Radians;
+use maths_rs::Vec3f;
+
+use super::{IesProfile, LightColor, PhotometricError, PhotometricIntensity};
+use crate::{
+	core::{Entity, EntityHandle},
+	inspector::Inspectable,
+	rendering::lights::{Light, LightClasses},
+};

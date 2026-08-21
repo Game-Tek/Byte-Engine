@@ -1,12 +1,13 @@
 //! Light entities consumed by scene rendering pipelines.
 //!
 //! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values and submit them through
-//! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. Use [`ConeLight::new_ies`] or
-//! [`PointLight::new_ies`] with an [`math::Orientation`] when a local fixture uses a measured IES
-//! profile. [`Lights`] is
-//! the erased representation used by the world factory.
+//! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. The associated
+//! [`crate::gameplay::Transform`] controls each light's position and orientation. For measured IES
+//! profiles, the transform also controls the emission axis and C0 plane. Use [`ConeLight::new_ies`]
+//! or [`PointLight::new_ies`] to attach the profile. [`Lights`] is the erased representation used by
+//! the world factory.
 //!
-//! Light positions and photometric reference distances use meters. The renderer resolves authored
+//! Transform positions and photometric reference distances use meters. The renderer resolves authored
 //! units on the CPU and sends scene-referred RGB lux or candela to the GPU.
 //!
 //! Follow the [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
@@ -72,7 +73,6 @@ impl From<DirectionalLight> for Lights {
 
 #[cfg(test)]
 mod tests {
-	use math::{Point, UnitVector, Vector};
 	use maths_rs::Vec3f;
 
 	use super::*;
@@ -90,10 +90,8 @@ mod tests {
 	}
 
 	#[test]
-	fn concrete_lights_preserve_spatial_state_temperature_color_and_class() {
+	fn concrete_lights_preserve_photometric_state_and_class() {
 		let cone = ConeLight::new(
-			Point::new(1.0, 2.0, 3.0),
-			-UnitVector::y_axis(),
 			LightColor::Kelvin(3_200.0),
 			PhotometricIntensity::LuminousFlux {
 				lumens: 1_000.0,
@@ -103,9 +101,8 @@ mod tests {
 			math::Degrees::new(25.0).to_radians(),
 		)
 		.expect("physical cone light");
-		let point = PointLight::new(Point::new(1.0, 2.0, 3.0), white(), candela(250.0)).expect("physical point light");
+		let point = PointLight::new(white(), candela(250.0)).expect("physical point light");
 		let directional = DirectionalLight::new(
-			Vector::new(-1.0, -2.0, -3.0).normalized().expect("nonzero direction"),
 			white(),
 			PhotometricIntensity::Illuminance {
 				lux: 10_000.0,
@@ -114,19 +111,12 @@ mod tests {
 		)
 		.expect("physical directional light");
 
-		assert_eq!(cone.position, Point::new(1.0, 2.0, 3.0));
-		assert_eq!(cone.direction(), -UnitVector::y_axis());
 		assert!(cone.color.x > cone.color.z);
 		assert_eq!(cone.class(), LightClasses::Cone);
 		assert!(cone.as_string().contains("ConeLight"));
-		assert_eq!(point.position, Point::new(1.0, 2.0, 3.0));
 		assert_eq!(point.color, Vec3f::new(250.0, 250.0, 250.0));
 		assert_eq!(point.class(), LightClasses::Point);
 		assert!(point.as_string().contains("PointLight"));
-		assert_eq!(
-			directional.direction,
-			Vector::new(-1.0, -2.0, -3.0).normalized().expect("nonzero direction")
-		);
 		assert_eq!(directional.color, Vec3f::new(10_000.0, 10_000.0, 10_000.0));
 		assert_eq!(directional.class(), LightClasses::Directional);
 		assert!(directional.as_string().contains("DirectionalLight"));
@@ -134,18 +124,10 @@ mod tests {
 
 	#[test]
 	fn erased_light_conversion_preserves_the_concrete_variant_and_payload() {
-		let cone = ConeLight::new(
-			Point::new(0.0, 2.0, 0.0),
-			-UnitVector::y_axis(),
-			white(),
-			candela(100.0),
-			math::Radians::new(0.25),
-			math::Radians::new(0.5),
-		)
-		.expect("physical cone light");
-		let point = PointLight::new(Point::new(1.0, 0.0, 0.0), white(), candela(100.0)).expect("physical point light");
+		let cone = ConeLight::new(white(), candela(100.0), math::Radians::new(0.25), math::Radians::new(0.5))
+			.expect("physical cone light");
+		let point = PointLight::new(white(), candela(100.0)).expect("physical point light");
 		let directional = DirectionalLight::new(
-			-UnitVector::y_axis(),
 			white(),
 			PhotometricIntensity::Illuminance {
 				lux: 5_000.0,
@@ -155,9 +137,7 @@ mod tests {
 		.expect("physical directional light");
 
 		assert!(matches!(Lights::from(cone.clone()), Lights::Cone(light) if light == cone));
-		assert!(
-			matches!(Lights::from(point.clone()), Lights::Point(light) if light.position == point.position && light.color == point.color)
-		);
+		assert!(matches!(Lights::from(point.clone()), Lights::Point(light) if light == point));
 		assert!(matches!(Lights::from(directional.clone()), Lights::Direction(light) if light == directional));
 	}
 }

@@ -157,7 +157,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let loaded_ies_profiles = &self.loaded_ies_profiles;
 
 		let shadow_lights = select_shadow_lights_with_intensity_scale(
-			self.scene.lights.iter().map(|(_, light)| light),
+			self.scene.lights.iter().map(|(_, light, transform)| (light, transform)),
 			sinks,
 			self.cone_shadow_map_pool_capacity,
 			self.point_shadow_map_pool_capacity,
@@ -213,12 +213,13 @@ impl PipelineManager for VisibilityPipelineManager {
 			}
 
 			for (layer, shadow_light) in shadow_lights.cones.iter().enumerate() {
-				if let Some((_, light)) = shadow_light {
+				if let Some((_, light, transform)) = shadow_light {
 					let intensity_scale_candela =
 						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
 
 					views_data_buffer[CONE_SHADOW_VIEW_OFFSET + layer] = Self::make_shader_view_data(make_cone_shadow_view(
 						*light,
+						transform,
 						CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
 						intensity_scale_candela,
 					));
@@ -226,7 +227,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			}
 
 			for (cube_index, shadow_light) in shadow_lights.points.iter().enumerate() {
-				if let Some((_, light)) = shadow_light {
+				if let Some((_, light, transform)) = shadow_light {
 					let intensity_scale_candela =
 						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
 
@@ -234,6 +235,7 @@ impl PipelineManager for VisibilityPipelineManager {
 						views_data_buffer[POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT + face] =
 							Self::make_shader_view_data(make_point_shadow_view(
 								*light,
+								transform,
 								face,
 								POINT_SHADOW_DEFAULT_EXPOSURE_SCALE,
 								intensity_scale_candela,
@@ -247,9 +249,9 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let directional_shadow_light_index = shadow_lights.directional.map(|(index, _)| index);
 
-		let cone_shadow_light_indices = shadow_lights.cones.map(|light| light.map(|(index, _)| index));
+		let cone_shadow_light_indices = shadow_lights.cones.map(|light| light.map(|(index, ..)| index));
 
-		let point_shadow_light_indices = shadow_lights.points.map(|light| light.map(|(index, _)| index));
+		let point_shadow_light_indices = shadow_lights.points.map(|light| light.map(|(index, ..)| index));
 
 		self.scene.write_light_data(
 			frame,
@@ -610,8 +612,8 @@ mod tests {
 	};
 	use super::{
 		collect_incomplete_renderables, cone_light_has_brightness, cone_shadow_importance, make_cone_shadow_view,
-		make_point_shadow_view, point_light_has_brightness, point_shadow_importance, resolve_cone_shadow_range,
-		resolve_point_shadow_range, select_shadow_lights, select_shadow_lights_with_intensity_scale,
+		make_point_shadow_view, point_light_has_brightness, point_shadow_bounds, point_shadow_importance,
+		resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights, select_shadow_lights_with_intensity_scale,
 		write_material_texture_indices, IesProfileTexture, Instance, LightData, LightingData, MaterialData, RenderInfo,
 		ShaderMesh, ShaderViewData, SkinningPaletteCacheEntry, VisibilityPipelineSettings, AO_MAP_BINDING,
 		CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, CONE_SHADOW_EXPOSURE_THRESHOLD_LUX, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_NEAR_M,
@@ -622,6 +624,7 @@ mod tests {
 		SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
+	use crate::gameplay::Transform;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
 	use crate::rendering::pipelines::visibility::skinning::SkinningPaletteKind;
@@ -684,10 +687,8 @@ mod tests {
 	}
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
-	fn cone(position_x: f32) -> ConeLight {
+	fn cone(_position_x: f32) -> ConeLight {
 		ConeLight::new(
-			Point::new(position_x, 2.0, 3.0),
-			UnitVector::z_axis(),
 			LightColor::Kelvin(4_500.0),
 			PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
@@ -700,9 +701,8 @@ mod tests {
 	}
 
 	/// Creates one compact shadow-capable point light for selection and projection tests.
-	fn point(position_x: f32) -> PointLight {
+	fn point(_position_x: f32) -> PointLight {
 		PointLight::new(
-			Point::new(position_x, 2.0, 3.0),
 			LightColor::Kelvin(4_500.0),
 			PhotometricIntensity::LuminousIntensity {
 				candela: 100.0,
@@ -710,6 +710,11 @@ mod tests {
 			},
 		)
 		.expect("physical point light")
+	}
+
+	/// Creates the retained transform paired with a local-light test payload.
+	fn light_transform(position_x: f32) -> Transform {
+		Transform::from_position(Point::new(position_x, 2.0, 3.0))
 	}
 
 	/// Creates a visibility sink for shadow-selection tests.
@@ -726,8 +731,6 @@ mod tests {
 		let lights = [
 			Lights::Cone(
 				ConeLight::new(
-					Point::origin(),
-					UnitVector::z_axis(),
 					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
@@ -741,7 +744,6 @@ mod tests {
 			Lights::Cone(cone(0.0)),
 			Lights::Point(
 				PointLight::new(
-					Point::origin(),
 					LightColor::Kelvin(4_500.0),
 					PhotometricIntensity::LuminousIntensity {
 						candela: 100.0,
@@ -752,7 +754,6 @@ mod tests {
 			),
 			Lights::Direction(
 				DirectionalLight::new(
-					-UnitVector::y_axis(),
 					LightColor::Kelvin(6_500.0),
 					PhotometricIntensity::Illuminance {
 						lux: 100_000.0,
@@ -766,9 +767,19 @@ mod tests {
 			Lights::Cone(cone(3.0)),
 			Lights::Cone(cone(4.0)),
 		];
+		let transforms = [
+			light_transform(0.0),
+			light_transform(0.0),
+			light_transform(0.0),
+			Transform::from_rotation(math::orientation_from_direction(-UnitVector::<math::WorldSpace>::y_axis())),
+			light_transform(1.0),
+			light_transform(2.0),
+			light_transform(3.0),
+			light_transform(4.0),
+		];
 
 		let selection = select_shadow_lights(
-			lights.iter(),
+			lights.iter().zip(&transforms),
 			&[sink(Point::origin())],
 			DEFAULT_CONE_SHADOW_POOL_CAPACITY,
 			DEFAULT_POINT_SHADOW_POOL_CAPACITY,
@@ -776,12 +787,17 @@ mod tests {
 
 		assert_eq!(selection.directional.map(|(index, _)| index), Some(3));
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[1, 4, 5, 6]
 		);
 		assert_eq!(selection.eligible_cone_count, 5);
 		assert_eq!(
-			selection.points.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection
+				.points
+				.iter()
+				.flatten()
+				.map(|(index, ..)| *index)
+				.collect::<Vec<_>>(),
 			[2]
 		);
 		assert_eq!(selection.eligible_point_count, 1);
@@ -797,25 +813,26 @@ mod tests {
 			Lights::Cone(visible_in_second_sink.clone()),
 			Lights::Cone(outside_all_sinks.clone()),
 		];
+		let transforms = [light_transform(100.0), light_transform(500.0)];
 
 		let sinks = [sink(Point::origin()), sink(Point::new(100.0, 0.0, 0.0))];
 
 		assert!(sinks
 			.iter()
-			.any(|sink| cone_shadow_importance(&visible_in_second_sink, 1.0, sink).is_some()));
+			.any(|sink| cone_shadow_importance(&visible_in_second_sink, &transforms[0], 1.0, sink).is_some()));
 		assert!(sinks
 			.iter()
-			.all(|sink| cone_shadow_importance(&outside_all_sinks, 1.0, sink).is_none()));
+			.all(|sink| cone_shadow_importance(&outside_all_sinks, &transforms[1], 1.0, sink).is_none()));
 
 		let selection = select_shadow_lights(
-			lights.iter(),
+			lights.iter().zip(&transforms),
 			&sinks,
 			DEFAULT_CONE_SHADOW_POOL_CAPACITY,
 			DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 		);
 
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[0]
 		);
 		assert_eq!(selection.eligible_cone_count, 1);
@@ -824,15 +841,17 @@ mod tests {
 	#[test]
 	fn cone_shadow_pool_assigns_its_limited_layers_to_visible_lights() {
 		let lights = [Lights::Cone(cone(0.0)), Lights::Cone(cone(1.0))];
+		let transforms = [light_transform(0.0), light_transform(1.0)];
 
 		let sinks = [sink(Point::origin())];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
-		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let empty_selection =
+			select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[0]
 		);
 		assert_eq!(selection.eligible_cone_count, 2);
@@ -846,13 +865,14 @@ mod tests {
 			Lights::Cone(cone(8.0).with_shadow_far(5.0)),
 			Lights::Cone(cone(0.0).with_shadow_far(5.0)),
 		];
+		let transforms = [light_transform(8.0), light_transform(0.0)];
 
 		let sinks = [sink(Point::origin())];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[1]
 		);
 	}
@@ -867,6 +887,14 @@ mod tests {
 			Lights::Cone(cone(100.0).with_shadow_far(20.0)),
 			Lights::Cone(cone(200.0).with_shadow_far(20.0)),
 		];
+		let transforms = [
+			light_transform(0.0),
+			light_transform(1.0),
+			light_transform(2.0),
+			light_transform(3.0),
+			light_transform(100.0),
+			light_transform(200.0),
+		];
 
 		let sinks = [
 			sink(Point::origin()),
@@ -874,10 +902,10 @@ mod tests {
 			sink(Point::new(200.0, 0.0, 0.0)),
 		];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 4, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 4, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[0, 4, 5, 1]
 		);
 	}
@@ -889,15 +917,16 @@ mod tests {
 		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
 
 		let lights = [Lights::Cone(unlit.clone()), Lights::Cone(cone(1.0))];
+		let transforms = [light_transform(0.0), light_transform(1.0)];
 
 		let sinks = [sink(Point::origin())];
 
 		assert!(!cone_light_has_brightness(&unlit, 1.0));
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(
-			selection.cones.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection.cones.iter().flatten().map(|(index, ..)| *index).collect::<Vec<_>>(),
 			[1]
 		);
 		assert_eq!(selection.eligible_cone_count, 1);
@@ -910,15 +939,21 @@ mod tests {
 			Lights::Point(point(1.0)),
 			Lights::Point(point(2.0)),
 		];
+		let transforms = [light_transform(0.0), light_transform(1.0), light_transform(2.0)];
 
 		let sinks = [sink(Point::origin())];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 0, 2);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, 2);
 
-		let empty_selection = select_shadow_lights(lights.iter(), &sinks, 0, 0);
+		let empty_selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, 0);
 
 		assert_eq!(
-			selection.points.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection
+				.points
+				.iter()
+				.flatten()
+				.map(|(index, ..)| *index)
+				.collect::<Vec<_>>(),
 			[0, 1]
 		);
 		assert_eq!(selection.eligible_point_count, 3);
@@ -932,13 +967,19 @@ mod tests {
 			Lights::Point(point(3.5).with_shadow_far(1.0)),
 			Lights::Point(point(0.0).with_shadow_far(1.0)),
 		];
+		let transforms = [light_transform(3.5), light_transform(0.0)];
 
 		let sinks = [sink(Point::origin())];
 
-		let selection = select_shadow_lights(lights.iter(), &sinks, 0, 1);
+		let selection = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, 1);
 
 		assert_eq!(
-			selection.points.iter().flatten().map(|(index, _)| *index).collect::<Vec<_>>(),
+			selection
+				.points
+				.iter()
+				.flatten()
+				.map(|(index, ..)| *index)
+				.collect::<Vec<_>>(),
 			[1]
 		);
 	}
@@ -946,14 +987,8 @@ mod tests {
 	#[test]
 	fn resolved_ies_profile_texture_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
-			PointLight::new_ies(
-				Point::origin(),
-				Orientation::identity(),
-				LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
-				0.5,
-				"lights/office.ies",
-			)
-			.expect("physical IES point light"),
+			PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
+				.expect("physical IES point light"),
 		);
 
 		let analytic_light = Lights::Point(point(0.0));
@@ -983,16 +1018,11 @@ mod tests {
 	/// Verifies a resident profile's dimmed peak intensity drives both local-shadow range and selection.
 	#[test]
 	fn ies_profile_scale_expands_point_shadow_coverage() {
-		let light = PointLight::new_ies(
-			Point::new(20.0, 2.0, 3.0),
-			Orientation::identity(),
-			LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)),
-			0.5,
-			"lights/office.ies",
-		)
-		.expect("physical IES point light");
+		let light = PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
+			.expect("physical IES point light");
 
 		let lights = [Lights::Point(light.clone())];
+		let transforms = [light_transform(20.0)];
 
 		let sinks = [sink(Point::origin())];
 
@@ -1006,9 +1036,9 @@ mod tests {
 			},
 		);
 
-		let fallback = select_shadow_lights(lights.iter(), &sinks, 0, 1);
+		let fallback = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, 1);
 
-		let resident = select_shadow_lights_with_intensity_scale(lights.iter(), &sinks, 0, 1, |light| {
+		let resident = select_shadow_lights_with_intensity_scale(lights.iter().zip(&transforms), &sinks, 0, 1, |light| {
 			resolved_ies_profile_texture(light, &profiles).map_or(1.0, |profile| profile.intensity_scale_candela)
 		});
 
@@ -1018,7 +1048,7 @@ mod tests {
 
 		assert!(fallback.points.iter().all(Option::is_none));
 		assert_eq!(fallback.eligible_point_count, 0);
-		assert_eq!(resident.points[0].map(|(index, _)| index), Some(0));
+		assert_eq!(resident.points[0].map(|(index, ..)| index), Some(0));
 		assert_eq!(resident.eligible_point_count, 1);
 		assert!((resident_far / fallback_far - 90.0_f32.sqrt()).abs() < 0.0001);
 	}
@@ -1026,6 +1056,7 @@ mod tests {
 	#[test]
 	fn point_shadow_views_cover_every_cube_direction_and_range() {
 		let light = point(1.0).with_shadow_range(0.2, 50.0);
+		let transform = light_transform(1.0);
 
 		let directions = [
 			UnitVector::x_axis(),
@@ -1037,9 +1068,9 @@ mod tests {
 		];
 
 		for (face, direction) in directions.into_iter().enumerate() {
-			let view = make_point_shadow_view(&light, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+			let view = make_point_shadow_view(&light, &transform, face, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 
-			let point = (light.position + direction * 10.0).into_maths();
+			let point = (transform.get_position() + direction * 10.0).into_maths();
 
 			let clip = view.view_projection() * Vec4f::new(point.x, point.y, point.z, 1.0);
 
@@ -1052,9 +1083,10 @@ mod tests {
 			assert!((0.0..=1.0).contains(&ndc.z));
 		}
 
-		let positive_y_view = make_point_shadow_view(&light, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let positive_y_view = make_point_shadow_view(&light, &transform, 2, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 
-		let right_of_positive_y_face = (light.position + UnitVector::y_axis() * 10.0 + UnitVector::x_axis()).into_maths();
+		let right_of_positive_y_face =
+			(transform.get_position() + UnitVector::y_axis() * 10.0 + UnitVector::x_axis()).into_maths();
 
 		let clip = positive_y_view.view_projection()
 			* Vec4f::new(
@@ -1070,6 +1102,7 @@ mod tests {
 	#[test]
 	fn point_shadow_range_uses_manual_endpoints_and_visibility() {
 		let light = point(500.0).with_shadow_range(-4.0, f32::NAN);
+		let transform = light_transform(500.0);
 
 		let (near, far) = resolve_point_shadow_range(&light, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 
@@ -1077,10 +1110,16 @@ mod tests {
 
 		assert_eq!(near, POINT_SHADOW_NEAR_M);
 		assert_eq!(far, automatic_far);
-		assert!(point_shadow_importance(&light.clone().with_shadow_far(20.0), 1.0, &sink(Point::origin())).is_none());
 		assert!(
-			point_shadow_importance(&point(100.0).with_shadow_far(20.0), 1.0, &sink(Point::new(100.0, 0.0, 0.0))).is_some()
+			point_shadow_importance(&light.clone().with_shadow_far(20.0), &transform, 1.0, &sink(Point::origin())).is_none()
 		);
+		assert!(point_shadow_importance(
+			&point(100.0).with_shadow_far(20.0),
+			&light_transform(100.0),
+			1.0,
+			&sink(Point::new(100.0, 0.0, 0.0)),
+		)
+		.is_some());
 
 		let mut unlit = point(0.0);
 
@@ -1115,10 +1154,11 @@ mod tests {
 	#[test]
 	fn cone_shadow_view_uses_the_light_projection_and_automatic_clip_range() {
 		let light = cone(1.0);
+		let transform = light_transform(1.0);
 
-		let view = make_cone_shadow_view(&light, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let view = make_cone_shadow_view(&light, &transform, CONE_SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 
-		let point = light.position + light.direction() * 10.0;
+		let point = transform.get_position() + math::direction_from_orientation(transform.get_orientation()) * 10.0;
 
 		let point = point.into_maths();
 
@@ -1515,6 +1555,7 @@ use crate::core::{
 	listener::{DefaultListener, Listener as _},
 	Entity, EntityHandle,
 };
+use crate::gameplay::Transform;
 use crate::ghi;
 use crate::rendering::lights::{ConeLight, DirectionalLight, Light, Lights, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
@@ -1551,4 +1592,4 @@ use crate::rendering::{
 	Environment, RenderableMesh, Sink,
 };
 use crate::resource_management::{self};
-use crate::space::Transformable as _;
+use crate::space::{Orientable as _, Positionable as _, Transformable as _};

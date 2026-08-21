@@ -5,6 +5,7 @@ impl VisibilityPipelineManager {
 	/// Applies a renderable's current world transform to every registered primitive.
 	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &crate::gameplay::transform::Transform) {
 		self.scene.update_renderable_transform(handle, transform);
+		self.scene.update_light_transform(handle, transform);
 	}
 
 	/// Applies transform messages after resource completions have registered their scene instances.
@@ -197,7 +198,7 @@ impl VisibilityPipelineManager {
 		if let Some(resource_id) = ies_profile_resource_id(&light) {
 			self.resource_manager.request_image(resource_id.to_owned());
 		}
-		self.scene.lights.push((handle, light));
+		self.scene.lights.push((handle, light, Transform::default()));
 	}
 
 	/// Selects an environment and requests its baked lighting resources.
@@ -212,7 +213,7 @@ impl VisibilityPipelineManager {
 			.scene
 			.lights
 			.handled_iter()
-			.find(|(_, (light_handle, _))| *light_handle == handle)
+			.find(|(_, (light_handle, ..))| *light_handle == handle)
 		else {
 			return;
 		};
@@ -320,7 +321,7 @@ impl VisibilityPipelineManager {
 						.scene
 						.lights
 						.iter()
-						.any(|(_, light)| ies_profile_resource_id(light) == Some(key.as_str()))
+						.any(|(_, light, _)| ies_profile_resource_id(light) == Some(key.as_str()))
 					{
 						warn!(
 							"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See https://byte-engine.0x44491229.dev/docs/use/lighting#use-an-ies-profile",

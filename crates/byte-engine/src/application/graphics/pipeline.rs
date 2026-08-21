@@ -411,13 +411,17 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 }
 
 /// Installs the atmosphere sky pass used as a post-scene background.
-pub fn setup_atmosphere_sky_render_pass(
-	application: &mut GraphicsApplication,
-	settings: crate::rendering::render_passes::sky::AtmosphereSkyRenderPassSettings,
-) {
+pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
+	// Keep channel handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
+	let light_channel = application.world().light_factory().listener().clone_channel();
+	let transform_channel = application.world().transforms_channel().clone();
 	let renderer = &mut application.renderer;
 
 	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-		Box::new(AtmosphereSkyRenderPass::with_settings(render_pass_builder, settings))
+		Box::new(AtmosphereSkyRenderPass::new(
+			render_pass_builder,
+			light_channel.listener(),
+			transform_channel.listener(),
+		))
 	});
 }

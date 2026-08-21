@@ -8,10 +8,11 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
-	core::Entity,
+	core::{factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}, Entity},
+	gameplay::transform::TransformationUpdate,
 	rendering::{
 		render_pass::{allocate_render_command, simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
-		Sink,
+		Lights, Sink,
 	},
 };
 
@@ -85,6 +86,9 @@ pub struct AtmosphereSkyRenderPass {
 	composite_pass: simple_compute::Pass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
+	light_listener: DefaultListener<CreateMessage<Lights>>,
+	transform_listener: DefaultListener<TransformationUpdate>,
+	directional_light: Option<Handle>,
 	transmittance_valid: bool,
 	sky_view_camera_height: Option<u32>,
 }
@@ -92,13 +96,15 @@ pub struct AtmosphereSkyRenderPass {
 impl Entity for AtmosphereSkyRenderPass {}
 
 impl AtmosphereSkyRenderPass {
-	/// Creates a sky pass with physically plausible default atmosphere settings.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		Self::with_settings(render_pass_builder, AtmosphereSkyRenderPassSettings::default())
-	}
-
-	/// Creates a sky pass with caller-supplied atmosphere settings.
-	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: AtmosphereSkyRenderPassSettings) -> Self {
+	/// Creates a sky pass with default atmosphere settings and world-light listeners.
+	///
+	/// The newest directional light controls the sun direction. Publish that light's transform next so the sky can use its orientation.
+	pub fn new(
+		render_pass_builder: &mut RenderPassBuilder,
+		light_listener: DefaultListener<CreateMessage<Lights>>,
+		transform_listener: DefaultListener<TransformationUpdate>,
+	) -> Self {
+		let settings = AtmosphereSkyRenderPassSettings::default();
 		let depth = render_pass_builder.read_from("depth");
 		let _main_read = render_pass_builder.read_from("main");
 		let main = render_pass_builder.render_to("main");
@@ -192,8 +198,28 @@ impl AtmosphereSkyRenderPass {
 			composite_pass,
 			parameters,
 			settings,
+			light_listener,
+			transform_listener,
+			directional_light: None,
 			transmittance_valid: false,
 			sky_view_camera_height: None,
+		}
+	}
+
+	/// Adopts the newest directional light and applies its latest orientation to the sky.
+	fn update_sun_direction(&mut self) {
+		while let Some(message) = self.light_listener.read() {
+			if matches!(message.data(), Lights::Direction(_)) {
+				self.directional_light = Some(*message.handle());
+			}
+		}
+
+		while let Some(message) = self.transform_listener.read() {
+			if self.directional_light == Some(*message.handle()) {
+				// Directional-light orientation points along ray travel; the atmosphere needs the direction toward the sun.
+				self.settings.sun_direction = -math::direction_from_orientation(message.transform().get_orientation());
+				self.sky_view_camera_height = None;
+			}
 		}
 	}
 
@@ -256,6 +282,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		self.update_sun_direction();
 		let transmittance_pass = self.transmittance_pass.ready(frame)?;
 		let sky_view_pass = self.sky_view_pass.ready(frame)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
@@ -292,6 +319,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		_sink: &Sink,
 		_frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		self.update_sun_direction();
 		None
 	}
 }

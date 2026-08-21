@@ -475,6 +475,40 @@ impl StagedResourceFile {
 			Err(_) => Err(()),
 		}
 	}
+
+	/// Encodes the staged decoded bytes into one native GPU I/O container before publication.
+	#[cfg(feature = "gpu-processing")]
+	fn compress(self, destination: &std::path::Path, compression: super::super::reader::ResourceCompression) -> Result<(), ()> {
+		if destination.exists() {
+			return Ok(());
+		}
+
+		let source = std::fs::File::open(&self.path).map_err(|_| ())?;
+		let decoded = unsafe { memmap2::MmapOptions::new().map(&source) }.map_err(|_| ())?;
+		let compressed_staging = self.path.with_extension("compressed");
+		let method = match compression {
+			super::super::reader::ResourceCompression::None => return Err(()),
+			super::super::reader::ResourceCompression::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+		};
+
+		if ghi::io::write_compressed_file(&compressed_staging, method, &decoded).is_err() {
+			let _ = std::fs::remove_file(&compressed_staging);
+			return Err(());
+		}
+		drop(decoded);
+
+		match std::fs::rename(&compressed_staging, destination) {
+			Ok(()) => Ok(()),
+			Err(_) if destination.exists() => {
+				let _ = std::fs::remove_file(compressed_staging);
+				Ok(())
+			}
+			Err(_) => {
+				let _ = std::fs::remove_file(compressed_staging);
+				Err(())
+			}
+		}
+	}
 }
 
 impl Drop for StagedResourceFile {
@@ -528,6 +562,26 @@ impl ResourceWriteOutput {
 		match self.target {
 			FinishedResourceWriteTarget::StagedFile(file) => file.persist(destination, expected_size),
 			_ => Err(()),
+		}
+	}
+
+	pub(super) fn persist_compressed_file(
+		self,
+		destination: &std::path::Path,
+		compression: super::super::reader::ResourceCompression,
+	) -> Result<(), ()> {
+		#[cfg(feature = "gpu-processing")]
+		{
+			match self.target {
+				FinishedResourceWriteTarget::StagedFile(file) => file.compress(destination, compression),
+				_ => Err(()),
+			}
+		}
+
+		#[cfg(not(feature = "gpu-processing"))]
+		{
+			let _ = (destination, compression);
+			Err(())
 		}
 	}
 }

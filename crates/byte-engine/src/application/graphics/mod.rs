@@ -90,7 +90,8 @@ impl Application for GraphicsApplication {
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
 		// Opening an application store first removes resources baked by an incompatible engine revision.
-		let resource_storage = ReDBStorageBackend::new(resources_path);
+		let resource_storage = ReDBStorageBackend::new_writable_with_settings(resources_path, ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4)).unwrap(); // TODO: revise this
+
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		let action_factory = Factory::new();
@@ -655,7 +656,7 @@ use std::{collections::VecDeque, sync::Arc, thread};
 
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{
-	resource::{resource_manager::ResourceManager, ReDBStorageBackend},
+	resource::{ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings, resource_manager::ResourceManager},
 	resources::material::Material,
 };
 use smallvec::SmallVec;

@@ -178,6 +178,15 @@ impl ProcessedAsset {
 		&self.id
 	}
 
+	/// Returns the resource class used by storage policy decisions.
+	pub fn class(&self) -> &str {
+		&self.class
+	}
+
+	pub(crate) fn serialized_metadata(&self) -> &[u8] {
+		&self.resource
+	}
+
 	/// Attaches the source versions observed while the asset handler produced this resource.
 	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
 		self.asset_dependencies = asset_dependencies;

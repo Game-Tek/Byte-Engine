@@ -83,6 +83,9 @@ enum Commands {
 		/// By default, BELD uses half of the system memory available when the command starts.
 		#[arg(long = "memory-budget-mib", value_parser = parse_memory_budget_mib)]
 		memory_budget: Option<NonZeroUsize>,
+		/// Native transport compression for baked texture files.
+		#[arg(long, value_enum)]
+		texture_compression: Option<TextureCompression>,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]
@@ -101,6 +104,21 @@ enum Commands {
 enum StorageMode {
 	Files,
 	Packed,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TextureCompression {
+	None,
+	MetalIoLz4,
+}
+
+impl From<TextureCompression> for resource_management::resource::ResourceCompression {
+	fn from(value: TextureCompression) -> Self {
+		match value {
+			TextureCompression::None => Self::None,
+			TextureCompression::MetalIoLz4 => Self::MetalIoLz4,
+		}
+	}
 }
 
 impl From<StorageMode> for resource_management::resource::ResourceStorageMode {
@@ -160,11 +178,16 @@ fn main() -> Result<(), i32> {
 			format,
 		} => executor.block_on(commands::query(destination_path, class, properties, limit, cursor, format)),
 		Commands::Inspect { id, format } => executor.block_on(commands::inspect(destination_path, id, format)),
-		Commands::Bake { ids, memory_budget } => commands::bake(
+		Commands::Bake {
+			ids,
+			memory_budget,
+			texture_compression,
+		} => commands::bake(
 			source_path,
 			destination_path,
 			ids,
 			storage_mode,
+			texture_compression.map(Into::into),
 			bake_memory_budget(memory_budget),
 		),
 		Commands::Delete { ids } => commands::delete(destination_path, ids),
@@ -219,7 +242,7 @@ fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoi
 mod tests {
 	use clap::Parser as _;
 
-	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat, StorageMode};
+	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat, StorageMode, TextureCompression};
 
 	fn args(values: &[&str]) -> Vec<String> {
 		values.iter().map(|value| (*value).to_string()).collect()
@@ -295,7 +318,8 @@ mod tests {
 			cli.command,
 			Commands::Bake {
 				ids,
-				memory_budget: None
+				memory_budget: None,
+				texture_compression: None,
 			} if ids.is_empty()
 		));
 
@@ -306,6 +330,8 @@ mod tests {
 			"bake",
 			"--memory-budget-mib",
 			"1536",
+			"--texture-compression",
+			"metal-io-lz4",
 			"mesh.gltf",
 			"mesh.gltf#skeleton",
 		])
@@ -316,7 +342,8 @@ mod tests {
 			cli.command,
 			Commands::Bake {
 				ids,
-				memory_budget: Some(memory_budget)
+				memory_budget: Some(memory_budget),
+				texture_compression: Some(TextureCompression::MetalIoLz4),
 			} if ids == ["mesh.gltf", "mesh.gltf#skeleton"] && memory_budget.get() == 1536 * 1024 * 1024
 		));
 	}

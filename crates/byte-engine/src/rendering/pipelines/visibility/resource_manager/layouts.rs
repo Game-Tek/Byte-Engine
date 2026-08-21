@@ -1,13 +1,13 @@
 use super::*;
 
-pub(super) struct MipStreamName {
+pub(crate) struct MipStreamName {
 	bytes: [u8; 16],
 	len: usize,
 }
 
 impl MipStreamName {
 	/// Formats one bounded mip stream identifier into inline storage.
-	pub(super) fn new(level: u32) -> Self {
+	pub(crate) fn new(level: u32) -> Self {
 		let mut bytes = [0_u8; 16];
 		bytes[..4].copy_from_slice(b"mip[");
 		let mut digits = [0_u8; 10];
@@ -29,7 +29,7 @@ impl MipStreamName {
 		Self { bytes, len }
 	}
 
-	pub(super) fn as_str(&self) -> &str {
+	pub(crate) fn as_str(&self) -> &str {
 		std::str::from_utf8(&self.bytes[..self.len]).expect("Mip stream names contain only ASCII bytes.")
 	}
 }
@@ -47,7 +47,7 @@ pub(super) struct TextureUploadLayout {
 }
 
 /// Computes the independently uploaded extent for one material texture mip level.
-pub(super) fn texture_mip_extent(base_extent: Extent, level: u32) -> Extent {
+pub(crate) fn texture_mip_extent(base_extent: Extent, level: u32) -> Extent {
 	Extent::new(
 		(base_extent.width() >> level).max(1),
 		(base_extent.height() >> level).max(1),
@@ -131,7 +131,7 @@ pub(super) fn pack_texture_rows_in_place(bytes: &mut [u8], layout: &TextureUploa
 }
 
 /// Converts a resource-management image format into the matching GHI image format.
-pub(super) fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> ghi::Formats {
+pub(crate) fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> ghi::Formats {
 	match format {
 		resource_management::types::Formats::RG8 => ghi::Formats::RG8UNORM,
 		resource_management::types::Formats::R16F => ghi::Formats::R16F,

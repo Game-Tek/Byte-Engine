@@ -251,6 +251,7 @@ mod tests {
 				resources_path.to_string_lossy().into_owned(),
 				Vec::new(),
 				None,
+				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
 			),
 			Err(1)

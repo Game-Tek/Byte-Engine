@@ -76,6 +76,24 @@ impl ResourceIoCompression {
 	}
 }
 
+/// Writes one backend-native compressed file from decoded bytes.
+///
+/// Offline resource tools use this function to create files accepted by
+/// [`ResourceIoQueue::open_file`]. The selected backend must support the same
+/// compression method at runtime.
+pub fn write_compressed_file(path: &Path, compression: ResourceIoCompression, decoded: &[u8]) -> Result<(), ResourceIoError> {
+	#[cfg(target_os = "macos")]
+	{
+		crate::metal::write_compressed_file(path, compression, decoded)
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	{
+		let _ = (path, decoded);
+		Err(ResourceIoError::UnsupportedCompression(compression))
+	}
+}
+
 /// Selects the relative scheduling priority for a resource-I/O queue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ResourceIoPriority {

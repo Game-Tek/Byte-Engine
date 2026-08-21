@@ -151,6 +151,10 @@ impl VisibilityPipelineManager {
 			context.create_factory(),
 			pipeline_manager.clone(),
 		));
+		#[cfg(target_os = "macos")]
+		let resource_io_queue = context
+			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Visibility Texture I/O"))
+			.expect("Visibility texture I/O queue could not be created. The most likely cause is unavailable native storage support.");
 		Self {
 			pipeline_manager,
 			materials_data,
@@ -163,6 +167,10 @@ impl VisibilityPipelineManager {
 			skinning_dual_quaternion_palette_scratch: Vec::new(),
 			skinning_palette_cache: Vec::new(),
 			resource_manager,
+			#[cfg(target_os = "macos")]
+			resource_io_queue,
+			#[cfg(target_os = "macos")]
+			pending_texture_io: Vec::new(),
 			requested_meshes: std::collections::HashSet::new(),
 			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::new(),
@@ -265,6 +273,8 @@ impl VisibilityPipelineManager {
 	}
 
 	pub(crate) fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
+		#[cfg(target_os = "macos")]
+		self.poll_texture_io(frame);
 		let completions = self.resource_manager.drain_completions();
 		if !completions.is_empty() {
 			log::debug!("Visibility resource completions received: count={}", completions.len());
@@ -306,6 +316,32 @@ impl VisibilityPipelineManager {
 					self.resource_manager
 						.enqueue_texture_upload(key, index, image, sampler, upload, photometry);
 				}
+				#[cfg(target_os = "macos")]
+				VisibilityResourceCompletion::GpuImageReady {
+					key,
+					index,
+					image,
+					sampler,
+					resource,
+					photometry,
+				} => {
+					let image = ghi::BaseImageHandle::from(frame.intern_image(image));
+					let sampler = frame.intern_sampler(sampler);
+					if let Err(error) = self.submit_texture_io(key.clone(), index, image, sampler, resource, photometry) {
+						log::error!(
+							"Visibility texture I/O submission failed for {}. The most likely cause is incompatible compressed texture data. Error: {}",
+							key,
+							error
+						);
+					}
+				}
+				#[cfg(not(target_os = "macos"))]
+				VisibilityResourceCompletion::GpuImageReady { key, .. } => {
+					log::error!(
+						"Visibility texture I/O is unavailable for {}. The most likely cause is that a Metal-compressed resource store was opened on another backend.",
+						key
+					);
+				}
 				VisibilityResourceCompletion::EnvironmentReady { id, environment } => {
 					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
 						let upload = environment.intern(id, frame);
@@ -319,37 +355,7 @@ impl VisibilityPipelineManager {
 					sampler,
 					photometry,
 				} => {
-					log::debug!("Visibility texture upload adopted: index={}", index);
-					self.write_texture_descriptors(frame, index, image, sampler);
-					let profile_texture = photometry.and_then(|photometry| {
-						(photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0).then_some(
-							IesProfileTexture {
-								texture_index: index,
-								intensity_scale_candela: photometry.intensity_scale_candela,
-							},
-						)
-					});
-					if let Some(profile_texture) = profile_texture {
-						self.loaded_ies_profiles.insert(key.into_string(), profile_texture);
-					} else if self
-						.scene
-						.lights
-						.iter()
-						.any(|(_, light, _)| ies_profile_resource_id(light) == Some(key.as_str()))
-					{
-						warn!(
-							"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See https://byte-engine.0x44491229.dev/docs/use/lighting#use-an-ies-profile",
-							key
-						);
-					}
-					if self.loaded_textures.insert(index)
-						&& self
-							.loaded_materials
-							.values()
-							.any(|material| material.texture_indices.contains(&index))
-					{
-						self.rebuild_material_lists();
-					}
+					self.adopt_texture_completion(frame, key, index, image, sampler, photometry);
 				}
 				VisibilityResourceCompletion::EnvironmentUploadReady {
 					id,
@@ -378,6 +384,163 @@ impl VisibilityPipelineManager {
 					);
 				}
 			}
+		}
+	}
+
+	/// Submits every persisted mip directly into one interned image.
+	#[cfg(target_os = "macos")]
+	fn submit_texture_io(
+		&mut self,
+		key: VisibilityTextureKey,
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+		mut resource: Reference<ResourceImage>,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
+	) -> Result<(), String> {
+		let format = resource_image_format_to_ghi(resource.resource().format);
+		let extent = Extent::from(resource.resource().extent);
+		let mip_count = resource.resource().mip_count.max(1);
+		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
+			.map_err(|_| "the compressed texture has an invalid zero-sized extent".to_string())?;
+		if mip_count > available_mip_count {
+			return Err(format!(
+				"the compressed texture declares {mip_count} mips but its extent supports {available_mip_count}"
+			));
+		}
+		let backing = crate::rendering::resource_loading::block_on(resource.consume_reader().into_backing_storage())
+			.map_err(|_| "the compressed resource reader did not return its backing".to_string())?;
+		let resource_management::resource::ResourceReaderBacking::Gpu(backing) = backing else {
+			return Err("the compressed texture returned CPU-readable backing".to_string());
+		};
+		let compression = match backing.compression() {
+			resource_management::resource::ResourceCompression::None => ghi::io::ResourceIoCompression::None,
+			resource_management::resource::ResourceCompression::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+		};
+		let file = self
+			.resource_io_queue
+			.open_file(
+				ghi::io::ResourceIoFileDescriptor::new(backing.path())
+					.compression(compression)
+					.name(resource.id()),
+			)
+			.map_err(|error| error.to_string())?;
+		let streams = resource.streams();
+		let mut requests = SmallVec::<[ghi::io::ResourceIoRequest; 16]>::new();
+
+		for mip_level in 0..mip_count {
+			let name = MipStreamName::new(mip_level);
+			let decoded_offset = match streams {
+				Some(streams) => streams
+					.iter()
+					.find(|stream| stream.name() == name.as_str())
+					.map(|stream| stream.offset())
+					.ok_or_else(|| format!("the compressed texture is missing stream '{}'", name.as_str()))?,
+				None if mip_count == 1 => 0,
+				None => return Err("the compressed mip chain has no stream descriptions".to_string()),
+			};
+			let mip_extent = texture_mip_extent(extent, mip_level);
+			let (bytes_per_row, _, bytes_per_image) =
+				format.compact_copy_layout(mip_extent.width().max(1), mip_extent.height().max(1));
+			requests.push(
+				ghi::io::ResourceIoImageLoad::new(
+					ghi::io::ResourceIoFileRegion::new(file, decoded_offset),
+					image,
+					0,
+					mip_level,
+					mip_extent,
+					bytes_per_row,
+					bytes_per_image,
+				)
+				.into(),
+			);
+		}
+
+		let ticket = self
+			.resource_io_queue
+			.submit(Some(key.as_str()), &requests)
+			.map_err(|error| error.to_string())?;
+		self.pending_texture_io.push(PendingTextureIo {
+			key,
+			index,
+			image,
+			sampler,
+			photometry,
+			ticket,
+		});
+		Ok(())
+	}
+
+	/// Publishes completed texture I/O and removes failed native requests.
+	#[cfg(target_os = "macos")]
+	fn poll_texture_io(&mut self, frame: &mut ghi::implementation::Frame) {
+		let mut index = 0;
+		while index < self.pending_texture_io.len() {
+			match self.pending_texture_io[index].ticket.status() {
+				ghi::io::ResourceIoStatus::Pending => index += 1,
+				ghi::io::ResourceIoStatus::Complete => {
+					let completed = self.pending_texture_io.swap_remove(index);
+					self.adopt_texture_completion(
+						frame,
+						completed.key,
+						completed.index,
+						completed.image,
+						completed.sampler,
+						completed.photometry,
+					);
+				}
+				status => {
+					let failed = self.pending_texture_io.swap_remove(index);
+					log::error!(
+						"Visibility texture I/O failed for {} with status {:?}. The most likely cause is unreadable or incompatible compressed texture data.",
+						failed.key,
+						status
+					);
+				}
+			}
+		}
+	}
+
+	/// Publishes one texture after either transfer or native resource I/O completes.
+	fn adopt_texture_completion(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		key: VisibilityTextureKey,
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
+	) {
+		log::debug!("Visibility texture upload adopted: index={}", index);
+		self.write_texture_descriptors(frame, index, image, sampler);
+		let profile_texture = photometry.and_then(|photometry| {
+			(photometry.intensity_scale_candela.is_finite() && photometry.intensity_scale_candela > 0.0).then_some(
+				IesProfileTexture {
+					texture_index: index,
+					intensity_scale_candela: photometry.intensity_scale_candela,
+				},
+			)
+		});
+		if let Some(profile_texture) = profile_texture {
+			self.loaded_ies_profiles.insert(key.into_string(), profile_texture);
+		} else if self
+			.scene
+			.lights
+			.iter()
+			.any(|(_, light, _)| ies_profile_resource_id(light) == Some(key.as_str()))
+		{
+			warn!(
+				"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See https://byte-engine.0x44491229.dev/docs/use/lighting#use-an-ies-profile",
+				key
+			);
+		}
+		if self.loaded_textures.insert(index)
+			&& self
+				.loaded_materials
+				.values()
+				.any(|material| material.texture_indices.contains(&index))
+		{
+			self.rebuild_material_lists();
 		}
 	}
 

@@ -30,6 +30,7 @@ mod resources;
 mod state;
 mod synchronization;
 mod types;
+pub(crate) use io::write_compressed_file;
 pub use io::{ResourceIoQueue, ResourceIoTicket};
 pub(crate) mod utils {
 	use objc2_metal as mtl;

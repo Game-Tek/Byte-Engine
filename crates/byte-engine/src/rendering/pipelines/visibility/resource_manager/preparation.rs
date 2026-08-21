@@ -251,8 +251,25 @@ impl VisibilityPipelineResourceManager {
 		let upload_staging = self.upload_staging.clone();
 		let failure_key = key.clone();
 		self.spawn_preparation(async move {
-			match Self::prepare_texture(resource_manager, upload_staging, key, index).await {
-				Ok(texture) => VisibilityTransferCommand::TexturePrepared { texture },
+			let resource: Result<Reference<ResourceImage>, ()> = resource_manager.request(key.as_str()).await.map_err(|error| {
+				log::error!(
+					"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {}",
+					key,
+					error
+				);
+			});
+			match resource {
+				Ok(resource) if resource.is_gpu_backed() => VisibilityTransferCommand::TextureResourceLoaded {
+					key,
+					index,
+					resource,
+				},
+				Ok(resource) => match Self::prepare_texture(resource, upload_staging, key, index).await {
+					Ok(texture) => VisibilityTransferCommand::TexturePrepared { texture },
+					Err(()) => VisibilityTransferCommand::PreparationFailed {
+						key: VisibilityResourceKey::Texture(failure_key),
+					},
+				},
 				Err(()) => VisibilityTransferCommand::PreparationFailed {
 					key: VisibilityResourceKey::Texture(failure_key),
 				},
@@ -262,19 +279,12 @@ impl VisibilityPipelineResourceManager {
 
 	/// Loads one texture into owned row-padded data without borrowing transfer memory.
 	async fn prepare_texture(
-		resource_manager: EntityHandle<ResourceManager>,
+		mut reference: Reference<ResourceImage>,
 		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
 		key: VisibilityTextureKey,
 		index: u32,
 	) -> Result<PreparedTexture, ()> {
 		let id = key.as_str();
-		let mut reference: Reference<ResourceImage> = resource_manager.request(id).await.map_err(|error| {
-			log::error!(
-				"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {}",
-				id,
-				error
-			);
-		})?;
 		let texture = reference.resource();
 		let format = resource_image_format_to_ghi(texture.format);
 		let extent = Extent::from(texture.extent);
@@ -383,32 +393,10 @@ impl VisibilityPipelineResourceManager {
 			upload,
 			photometry,
 		} = texture;
-		let Some(device) = self.resource_factory.as_mut() else {
-			log::error!(
-				"Visibility texture creation failed for {}. The most likely cause is that material pipeline creation was configured without a factory.",
-				name
-			);
-			self.send_completion(VisibilityResourceCompletion::Failed {
-				key: VisibilityResourceKey::Texture(key),
-			});
+		let Some((image, sampler)) = self.build_texture_objects(&key, &name, format, extent, mip_count, photometry.is_some())
+		else {
 			return;
 		};
-
-		let image = device.build_image(
-			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name(&name)
-				.extent(extent)
-				.mip_levels(mip_count)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.use_case(ghi::UseCases::STATIC),
-		);
-
-		let sampler_builder = if photometry.is_some() {
-			photometric_profile_sampler_builder()
-		} else {
-			default_material_sampler_builder()
-		};
-		let sampler = device.build_sampler(sampler_builder.max_lod((mip_count - 1) as f32));
 
 		self.send_completion(VisibilityResourceCompletion::ImageReady {
 			key,
@@ -418,6 +406,74 @@ impl VisibilityPipelineResourceManager {
 			upload,
 			photometry,
 		});
+	}
+
+	/// Creates detached texture objects while retaining the compressed resource for direct GPU I/O.
+	pub(super) fn adopt_loaded_gpu_texture(
+		&mut self,
+		key: VisibilityTextureKey,
+		index: u32,
+		resource: Reference<ResourceImage>,
+	) {
+		let texture = resource.resource();
+		let name = resource.id().to_string();
+		let format = resource_image_format_to_ghi(texture.format);
+		let extent = Extent::from(texture.extent);
+		let mip_count = texture.mip_count.max(1);
+		let photometry = texture
+			.photometry
+			.clone()
+			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
+		let Some((image, sampler)) = self.build_texture_objects(&key, &name, format, extent, mip_count, photometry.is_some())
+		else {
+			return;
+		};
+
+		self.send_completion(VisibilityResourceCompletion::GpuImageReady {
+			key,
+			index,
+			image,
+			sampler,
+			resource,
+			photometry,
+		});
+	}
+
+	/// Builds the detached image and sampler shared by raw and compressed texture paths.
+	fn build_texture_objects(
+		&mut self,
+		key: &VisibilityTextureKey,
+		name: &str,
+		format: ghi::Formats,
+		extent: Extent,
+		mip_count: u32,
+		photometric: bool,
+	) -> Option<(ghi::factory::FactoryImage, ghi::factory::FactorySampler)> {
+		let Some(device) = self.resource_factory.as_mut() else {
+			log::error!(
+				"Visibility texture creation failed for {}. The most likely cause is that material pipeline creation was configured without a factory.",
+				name
+			);
+			self.send_completion(VisibilityResourceCompletion::Failed {
+				key: VisibilityResourceKey::Texture(key.clone()),
+			});
+			return None;
+		};
+		let image = device.build_image(
+			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name(name)
+				.extent(extent)
+				.mip_levels(mip_count)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.use_case(ghi::UseCases::STATIC),
+		);
+		let sampler_builder = if photometric {
+			photometric_profile_sampler_builder()
+		} else {
+			default_material_sampler_builder()
+		};
+		let sampler = device.build_sampler(sampler_builder.max_lod((mip_count - 1) as f32));
+		Some((image, sampler))
 	}
 
 	/// Starts one environment's complete CPU preparation without holding the transfer scheduler.

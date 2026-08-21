@@ -26,6 +26,17 @@ struct EnvironmentTexture {
 	sampler: ghi::SamplerHandle,
 }
 
+/// The `PendingTextureIo` struct retains one texture until native resource I/O completes.
+#[cfg(target_os = "macos")]
+struct PendingTextureIo {
+	key: VisibilityTextureKey,
+	index: u32,
+	image: ghi::BaseImageHandle,
+	sampler: ghi::SamplerHandle,
+	photometry: Option<resource_management::resources::image::ImagePhotometry>,
+	ticket: ghi::implementation::ResourceIoTicket,
+}
+
 /// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 
@@ -113,6 +124,10 @@ pub struct VisibilityPipelineManager {
 	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
 	skinning_palette_cache: Vec<SkinningPaletteCacheEntry>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
+	#[cfg(target_os = "macos")]
+	resource_io_queue: ghi::implementation::ResourceIoQueue,
+	#[cfg(target_os = "macos")]
+	pending_texture_io: Vec<PendingTextureIo>,
 	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
 	pending_renderables: Vec<PendingRenderableInstance>,
 	// TODO: Replace this temporary map with proper retained component storage.
@@ -1563,6 +1578,10 @@ use ghi::command_buffer::{
 };
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
+#[cfg(target_os = "macos")]
+use ghi::io::{ResourceIoContext as _, ResourceIoQueue as _, ResourceIoTicket as _};
+#[cfg(target_os = "macos")]
+use ghi::Size as _;
 use log::{error, warn};
 use math::{AffineShaderMatrix, Matrix, ShaderMatrix, UnitVector};
 use maths_rs::Vec4f;
@@ -1598,8 +1617,8 @@ use crate::rendering::pipelines::visibility::render_pass::{
 	VisibilityPipelineRenderPass, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT,
 };
 use crate::rendering::pipelines::visibility::resource_manager::{
-	MaterialPipelineConfig, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
-	IBL_SPECULAR_LEVEL_COUNT,
+	resource_image_format_to_ghi, texture_mip_extent, MaterialPipelineConfig, MipStreamName, VisibilityMeshKey,
+	VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion, VisibilityTextureKey, IBL_SPECULAR_LEVEL_COUNT,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{

@@ -88,6 +88,16 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		&mut self.resource
 	}
 
+	/// Returns the named decoded ranges in the resource's binary data.
+	pub fn streams(&self) -> Option<&[StreamDescription]> {
+		self.streams.as_deref()
+	}
+
+	/// Returns whether the deferred data must be loaded through native GPU resource I/O.
+	pub fn is_gpu_backed(&self) -> bool {
+		self.reader.as_ref().is_some_and(|reader| reader.is_gpu_backed())
+	}
+
 	pub fn into_resource(self) -> T {
 		self.resource
 	}

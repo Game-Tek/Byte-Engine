@@ -12,15 +12,60 @@ use crate::{r#async::BoxedFuture, StreamDescription};
 pub enum ResourceReaderBacking {
 	Buffer(Box<[u8]>),
 	MappedFile(MappedFileBacking),
+	/// Data that must be decoded directly into a GPU resource by a native storage queue.
+	Gpu(ResourceGpuBacking),
 }
 
 impl ResourceReaderBacking {
-	/// Returns the resource bytes from the current backing storage.
-	pub fn as_slice(&self) -> &[u8] {
+	/// Returns resource bytes when the backing is CPU-readable.
+	pub fn try_as_slice(&self) -> Option<&[u8]> {
 		match self {
-			ResourceReaderBacking::Buffer(buffer) => buffer,
-			ResourceReaderBacking::MappedFile(mapped_file) => mapped_file.as_slice(),
+			ResourceReaderBacking::Buffer(buffer) => Some(buffer),
+			ResourceReaderBacking::MappedFile(mapped_file) => Some(mapped_file.as_slice()),
+			ResourceReaderBacking::Gpu(_) => None,
 		}
+	}
+
+	/// Returns resource bytes from CPU-readable backing storage.
+	///
+	/// # Panics
+	///
+	/// Panics when the backing requires native GPU resource I/O. Use
+	/// [`Self::try_as_slice`] when either backing kind is valid.
+	pub fn as_slice(&self) -> &[u8] {
+		self.try_as_slice().expect(
+			"Resource backing is not CPU-readable. The most likely cause is that compressed GPU data was passed to a CPU-only consumer.",
+		)
+	}
+}
+
+/// Selects the native container encoding used by GPU-backed resource data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ResourceCompression {
+	#[default]
+	None,
+	MetalIoLz4,
+}
+
+/// The `ResourceGpuBacking` struct provides the source file required by native GPU resource I/O.
+#[derive(Debug)]
+pub struct ResourceGpuBacking {
+	path: std::path::PathBuf,
+	compression: ResourceCompression,
+}
+
+impl ResourceGpuBacking {
+	/// Creates a direct GPU source for one compressed resource file.
+	pub fn new(path: std::path::PathBuf, compression: ResourceCompression) -> Self {
+		Self { path, compression }
+	}
+
+	pub fn path(&self) -> &std::path::Path {
+		&self.path
+	}
+
+	pub fn compression(&self) -> ResourceCompression {
+		self.compression
 	}
 }
 
@@ -59,6 +104,11 @@ impl MappedFileBacking {
 
 /// The `ResourceReader` trait provides binary data for one [`Reference`](crate::Reference).
 pub trait ResourceReader: Send + Sync + Debug {
+	/// Returns whether this reader owns a native GPU I/O source instead of CPU-readable bytes.
+	fn is_gpu_backed(&self) -> bool {
+		false
+	}
+
 	fn read_into<'b, 'c: 'b, 'a: 'b>(
 		&'b mut self,
 		stream_descriptions: Option<&'c [StreamDescription]>,

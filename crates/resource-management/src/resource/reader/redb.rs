@@ -30,16 +30,27 @@ impl FileResourceReader {
 		};
 		Ok(Self { backing })
 	}
+
+	/// Creates a reader that transfers ownership of a native GPU I/O source instead of mapping CPU bytes.
+	pub fn new_gpu(path: std::path::PathBuf, compression: super::ResourceCompression) -> Self {
+		Self {
+			backing: ResourceReaderBacking::Gpu(super::ResourceGpuBacking::new(path, compression)),
+		}
+	}
 }
 
 impl ResourceReader for FileResourceReader {
+	fn is_gpu_backed(&self) -> bool {
+		matches!(self.backing, ResourceReaderBacking::Gpu(_))
+	}
+
 	fn read_into<'b, 'c: 'b, 'a: 'b>(
 		&'b mut self,
 		stream_descriptions: Option<&'c [StreamDescription]>,
 		read_target: ReadTargetsMut<'a>,
 	) -> BoxedFuture<'b, Result<ReadTargets<'a>, ()>> {
 		r#async::future(async move {
-			let data = self.backing.as_slice();
+			let data = self.backing.try_as_slice().ok_or(())?;
 			match read_target {
 				ReadTargetsMut::Buffer { buffer, offset, size } => {
 					let read_len = size

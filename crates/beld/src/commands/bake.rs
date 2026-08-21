@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, path::Path, time::Instant};
 
 use resource_management::{
 	asset::{manager::AssetManager, FileStorageBackend},
-	resource::{ReDBStorageBackend, ResourceStorageMode},
+	resource::{ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings},
 };
 use utils::{r#async::StreamExt, sync::Arc};
 
@@ -13,6 +13,7 @@ pub fn bake(
 	destination_path: String,
 	ids: Vec<String>,
 	storage_mode: Option<ResourceStorageMode>,
+	texture_compression: Option<ResourceCompression>,
 	memory_budget: NonZeroUsize,
 ) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
@@ -21,13 +22,24 @@ pub fn bake(
 
 	let destination_path = destination_path.into();
 
-	let resource_storage_backend = match storage_mode {
-		Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode).map_err(|error| {
+	let resource_storage_backend = match texture_compression {
+		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
+			destination_path,
+			ResourceStorageSettings::new(storage_mode.unwrap_or_default()).image_compression(compression),
+		)
+		.map_err(|error| {
 			log::error!("Failed to bake resources. {error}");
 
 			1
 		})?,
-		None => ReDBStorageBackend::new_writable(destination_path),
+		None => match storage_mode {
+			Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode).map_err(|error| {
+				log::error!("Failed to bake resources. {error}");
+
+				1
+			})?,
+			None => ReDBStorageBackend::new_writable(destination_path),
+		},
 	};
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend);

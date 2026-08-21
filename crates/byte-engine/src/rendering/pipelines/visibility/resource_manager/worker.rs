@@ -411,6 +411,9 @@ impl VisibilityPipelineResourceManagerWorker {
 			VisibilityTransferCommand::TexturePrepared { texture } => {
 				self.resource_manager.adopt_prepared_texture(texture);
 			}
+			VisibilityTransferCommand::TextureResourceLoaded { key, index, resource } => {
+				self.resource_manager.adopt_loaded_gpu_texture(key, index, resource);
+			}
 			VisibilityTransferCommand::RequestImage { key } => {
 				self.resource_manager.request_image(key);
 			}

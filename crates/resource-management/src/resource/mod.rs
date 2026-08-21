@@ -13,10 +13,11 @@ pub mod reader;
 
 pub use read_target::ReadTargets;
 pub use read_target::ReadTargetsMut;
+pub use reader::{ResourceCompression, ResourceGpuBacking, ResourceReaderBacking};
 pub use resource_id::ResourceId;
 #[cfg(debug_assertions)]
 pub use resource_manager::{ResourceUpdate, ResourceUpdateListener};
-pub use storage_backend::redb::{ReDBStorageBackend, ResourceStorageMode};
+pub use storage_backend::redb::{ReDBStorageBackend, ResourceStorageMode, ResourceStorageSettings};
 pub use storage_backend::{
 	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, ReadStorageBackend, ResourceTransaction, StorageBackend,
 	WriteStorageBackend,

@@ -19,7 +19,7 @@ impl<'a> ReadTargets<'a> {
 		match self {
 			ReadTargets::Box(buffer) => Some(buffer),
 			ReadTargets::Buffer(buffer) => Some(buffer),
-			ReadTargets::Backing(backing) => Some(backing.as_slice()),
+			ReadTargets::Backing(backing) => backing.try_as_slice(),
 			_ => None,
 		}
 	}

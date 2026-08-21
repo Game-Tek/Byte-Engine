@@ -51,6 +51,53 @@ fn application_opener_discards_a_store_with_a_mismatched_resource_management_sig
 	std::fs::remove_dir_all(&path).unwrap();
 }
 
+#[cfg(all(target_os = "macos", feature = "gpu-processing"))]
+#[resource_management::r#async::test]
+async fn metal_texture_compression_persists_across_read_only_reopen() {
+	use resource_management::{
+		resource::{ResourceCompression, ResourceReaderBacking, ResourceStorageSettings},
+		resources::image::Image,
+		types::{Formats, Gamma},
+		StreamDescription,
+	};
+
+	let path = temporary_store();
+	let id = ResourceId::new("texture.image");
+	let decoded = [3_u8; 4 * 4 * 4];
+	{
+		let storage = ReDBStorageBackend::new_writable_with_settings(
+			path.clone(),
+			ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4),
+		)
+		.unwrap();
+		let image = ProcessedAsset::new(
+			id,
+			Image {
+				format: Formats::RGBA8,
+				gamma: Gamma::Linear,
+				extent: [4, 4, 1],
+				mip_count: 1,
+				ibl: None,
+				photometry: None,
+			},
+		)
+		.with_streams(vec![StreamDescription::new("mip[0]", decoded.len(), 0)]);
+		storage.store(image, &decoded).await.unwrap();
+	}
+
+	let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
+	let (_, reader) = storage.read(id).await.unwrap();
+	let backing = reader.into_backing_storage().await.unwrap();
+	let ResourceReaderBacking::Gpu(backing) = backing else {
+		panic!("Compressed texture reopened as CPU data. The most likely cause is that its per-resource encoding was not persisted.");
+	};
+
+	assert_eq!(backing.compression(), ResourceCompression::MetalIoLz4);
+	assert!(backing.path().exists());
+	drop(storage);
+	std::fs::remove_dir_all(path).unwrap();
+}
+
 #[resource_management::r#async::test]
 async fn packed_mode_persists_across_writable_and_read_only_reopens() {
 	let path = temporary_store();

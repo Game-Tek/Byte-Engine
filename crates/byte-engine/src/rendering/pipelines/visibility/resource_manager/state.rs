@@ -62,6 +62,14 @@ pub(crate) enum VisibilityResourceCompletion {
 		upload: TextureUpload,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
+	GpuImageReady {
+		key: VisibilityTextureKey,
+		index: u32,
+		image: ghi::factory::FactoryImage,
+		sampler: ghi::factory::FactorySampler,
+		resource: Reference<ResourceImage>,
+		photometry: Option<resource_management::resources::image::ImagePhotometry>,
+	},
 	EnvironmentReady {
 		id: String,
 		environment: FactoryEnvironment,
@@ -109,6 +117,11 @@ pub(crate) enum VisibilityTransferCommand {
 
 	TexturePrepared {
 		texture: PreparedTexture,
+	},
+	TextureResourceLoaded {
+		key: VisibilityTextureKey,
+		index: u32,
+		resource: Reference<ResourceImage>,
 	},
 	RequestImage {
 		key: VisibilityTextureKey,

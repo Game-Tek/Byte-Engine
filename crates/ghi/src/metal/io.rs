@@ -342,6 +342,55 @@ fn metal_resource_io_capabilities() -> ResourceIoCapabilities {
 	}
 }
 
+/// Creates one Metal I/O compression container without copying the decoded payload.
+pub(crate) fn write_compressed_file(
+	path: &std::path::Path,
+	compression: ResourceIoCompression,
+	decoded: &[u8],
+) -> Result<(), ResourceIoError> {
+	use std::ffi::{c_void, CString};
+
+	use objc2_metal::{
+		MTLIOCompressionContextAppendData, MTLIOCompressionContextDefaultChunkSize, MTLIOCompressionStatus,
+		MTLIOCreateCompressionContext, MTLIOFlushAndDestroyCompressionContext,
+	};
+
+	let method = metal_compression_method(compression).ok_or(ResourceIoError::UnsupportedCompression(compression))?;
+	let path = path.to_str().ok_or(ResourceIoError::InvalidPath)?;
+	let path = CString::new(path).map_err(|_| ResourceIoError::InvalidPath)?;
+	let context = unsafe {
+		MTLIOCreateCompressionContext(
+			NonNull::new(path.as_ptr() as *mut _).ok_or(ResourceIoError::InvalidPath)?,
+			method,
+			MTLIOCompressionContextDefaultChunkSize(),
+		)
+	};
+	if context.is_null() {
+		return Err(ResourceIoError::FileOpen(
+			"Metal could not create the compression container".to_string(),
+		));
+	}
+
+	if !decoded.is_empty() {
+		unsafe {
+			MTLIOCompressionContextAppendData(
+				context,
+				NonNull::new(decoded.as_ptr() as *mut c_void).expect("A nonempty slice has a non-null data pointer."),
+				decoded.len(),
+			);
+		}
+	}
+	let status = unsafe { MTLIOFlushAndDestroyCompressionContext(context) };
+	if status != MTLIOCompressionStatus::Complete {
+		let _ = std::fs::remove_file(path.to_string_lossy().as_ref());
+		return Err(ResourceIoError::Execution(format!(
+			"Metal compression ended with status {status:?}"
+		)));
+	}
+
+	Ok(())
+}
+
 /// Converts a native error into the localized diagnostic retained by the GHI error.
 fn native_error_message(error: &NSError) -> String {
 	error.localizedDescription().to_string()
@@ -349,15 +398,9 @@ fn native_error_message(error: &NSError) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::ffi::{c_void, CString};
 	use std::fs;
 	use std::path::Path;
 	use std::sync::atomic::{AtomicU64, Ordering};
-
-	use objc2_metal::{
-		MTLIOCompressionContextAppendData, MTLIOCompressionContextDefaultChunkSize, MTLIOCompressionStatus,
-		MTLIOCreateCompressionContext, MTLIOFlushAndDestroyCompressionContext,
-	};
 
 	use super::*;
 	use crate::device::Device as _;
@@ -387,29 +430,8 @@ mod tests {
 
 	/// Produces a native Metal compression container for exercising runtime decode.
 	fn write_lz4_container(path: &Path, bytes: &[u8]) {
-		let path = CString::new(path.to_str().expect("temporary path should be UTF-8")).expect("path should not contain NUL");
-		let context = unsafe {
-			MTLIOCreateCompressionContext(
-				NonNull::new(path.as_ptr() as *mut _).expect("C path pointer should not be null"),
-				MTLIOCompressionMethod::LZ4,
-				MTLIOCompressionContextDefaultChunkSize(),
-			)
-		};
-		assert!(
-			!context.is_null(),
-			"Metal compression context creation failed. The most likely cause is an invalid temporary file path."
-		);
-		unsafe {
-			MTLIOCompressionContextAppendData(
-				context,
-				NonNull::new(bytes.as_ptr() as *mut c_void).expect("test data should not be empty"),
-				bytes.len(),
-			);
-			assert_eq!(
-				MTLIOFlushAndDestroyCompressionContext(context),
-				MTLIOCompressionStatus::Complete
-			);
-		}
+		super::write_compressed_file(path, ResourceIoCompression::Lz4, bytes)
+			.expect("Metal compression context should produce the test container");
 	}
 
 	#[test]
@@ -469,6 +491,49 @@ mod tests {
 		drop(queue);
 		assert_eq!(context.get_buffer_slice(destination), BYTES);
 		fs::remove_file(path).expect("remove compressed resource-I/O test file");
+	}
+
+	#[test]
+	fn lz4_file_load_decompresses_into_an_image() {
+		const BYTES: &[u8; 16] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+		let path = temporary_path("lz4-image");
+		write_lz4_container(&path, BYTES);
+		let mut context = test_context();
+		let image = context.build_image(
+			crate::image::Builder::new(
+				crate::Formats::RGBA8UNORM,
+				crate::Uses::Image | crate::Uses::TransferDestination,
+			)
+			.name("Metal I/O Compressed Image")
+			.extent(utils::Extent::rectangle(2, 2))
+			.device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let mut queue = context
+			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
+			.expect("Metal I/O compressed image queue");
+		let file = queue
+			.open_file(ResourceIoFileDescriptor::new(&path).compression(ResourceIoCompression::Lz4))
+			.expect("compressed Metal I/O image source");
+		let request = ResourceIoImageLoad::new(
+			ResourceIoFileRegion::new(file, 0),
+			image,
+			0,
+			0,
+			utils::Extent::rectangle(2, 2),
+			8,
+			16,
+		)
+		.into();
+		let ticket = queue
+			.submit(Some("LZ4 Image Load"), &[request])
+			.expect("compressed Metal I/O image batch");
+
+		ticket.wait().expect("compressed Metal I/O image completion");
+		drop(ticket);
+		drop(queue);
+		let copy = crate::TextureCopyHandle(image.0 .0);
+		assert_eq!(context.get_image_data(copy), BYTES);
+		fs::remove_file(path).expect("remove compressed resource-I/O image test file");
 	}
 
 	#[test]

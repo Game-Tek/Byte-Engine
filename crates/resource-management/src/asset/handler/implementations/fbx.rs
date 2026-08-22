@@ -21,11 +21,11 @@ mod tests {
 	};
 
 	use super::{
-		decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path, finite_material_component,
-		finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton, import_fbx_skin_binding,
-		load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path, select_fbx_skin,
-		select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError,
-		FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
+		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
+		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton,
+		import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path,
+		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts,
+		FbxImportError, FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
 	};
 	use crate::{
 		asset::{
@@ -41,7 +41,7 @@ mod tests {
 			image::Image,
 			material::{MaterialModel, ValueModel, VariantModel},
 			mesh::MeshModel,
-			skeleton::{SkeletonModel, SkinJoint},
+			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinJoint},
 		},
 		types::{AlphaMode, IndexStreamTypes, VertexSemantics},
 		ReferenceModel,
@@ -269,6 +269,45 @@ mod tests {
 		assert!(base_area.abs() > f32::EPSILON);
 		assert_eq!(right_handed_area.signum(), base_area.signum());
 		assert_eq!(mirrored_area.signum(), base_area.signum());
+	}
+
+	#[test]
+	fn maps_animation_nodes_around_target_only_helpers() {
+		let source = SkeletonModel {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("Root".into()),
+					parent: None,
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: Some(0),
+					rest_local: LocalTransform::identity(),
+				},
+			],
+		};
+		let target = SkeletonModel {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("Root".into()),
+					parent: None,
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some("ik_foot_root".into()),
+					parent: Some(0),
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: Some(0),
+					rest_local: LocalTransform::identity(),
+				},
+			],
+		};
+
+		assert_eq!(canonical_animation_node_map(&source, &target), Ok(vec![0, 2]));
 	}
 
 	#[test]
@@ -931,7 +970,14 @@ mod tests {
 
 		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
 
-		asset_storage.add_file("triangle_move.fbx.bead", br#"{ "default_resource": "animation" }"#);
+		asset_storage.add_file(
+			"triangle_move.fbx.bead",
+			br#"{
+				// Animation sidecars use JSON5 and may select a canonical skeleton dependency.
+				default_resource: 'animation',
+				skeleton: 'triangle_move.fbx#skeleton',
+			}"#,
+		);
 
 		let resource_storage = ResourceTestStorageBackend::new();
 
@@ -945,6 +991,8 @@ mod tests {
 			.expect("the BEAD default should override mesh-first FBX dispatch");
 
 		assert_eq!(animation.class(), "Animation");
+		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation metadata should decode");
+		assert_eq!(animation.skeleton.id().as_ref(), "triangle_move.fbx#skeleton");
 	}
 
 	#[r#async::test]

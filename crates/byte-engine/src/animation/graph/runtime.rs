@@ -34,7 +34,7 @@ impl AnimationArenaRegion {
 
 #[derive(Debug)]
 struct CachedAnimation {
-	skeleton: Reference<Skeleton>,
+	skeleton: Arc<Skeleton>,
 	region: AnimationArenaRegion,
 	last_used: std::cell::Cell<u64>,
 	lease_count: std::cell::Cell<usize>,
@@ -52,7 +52,11 @@ impl ResidentAnimationLease<'_> {
 	}
 
 	fn skeleton(&self) -> &Skeleton {
-		self.entry.skeleton.resource()
+		&self.entry.skeleton
+	}
+
+	fn shared_skeleton(&self) -> Arc<Skeleton> {
+		Arc::clone(&self.entry.skeleton)
 	}
 }
 
@@ -387,7 +391,7 @@ impl AnimationPool {
 		let replaced = self.entries.insert(
 			lease,
 			AnimationPoolEntry::Resident(CachedAnimation {
-				skeleton: packed.skeleton,
+				skeleton: Arc::new(packed.skeleton.into_resource()),
 				region,
 				last_used: std::cell::Cell::new(self.next_use()),
 				lease_count: std::cell::Cell::new(0),
@@ -503,8 +507,8 @@ mod player;
 pub mod benchmarks;
 
 pub use player::{
-	AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, RootMotionRotation, RootMotionSettings,
-	RootMotionTranslation,
+	AnimationEvaluation, AnimationGraphPlayer, AnimationGraphPlayerError, AnimationGraphPose, RootMotionRotation,
+	RootMotionSettings, RootMotionTranslation,
 };
 
 #[cfg(test)]

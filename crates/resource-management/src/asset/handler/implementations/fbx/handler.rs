@@ -8,6 +8,94 @@ pub(crate) const SKELETON_FRAGMENT: &str = "skeleton";
 
 pub(crate) const MAX_PRIMITIVE_VERTICES: usize = u16::MAX as usize + 1;
 
+const ANIMATION_SKELETON_SETTING: &str = "skeleton";
+
+/// Returns the canonical skeleton resource selected for animations in one FBX sidecar.
+fn animation_skeleton_setting(spec: Option<&asset::BEADType>) -> Result<Option<&str>, String> {
+	let Some(value) = spec.and_then(|spec| spec.get(ANIMATION_SKELETON_SETTING)) else {
+		return Ok(None);
+	};
+	value.as_str().map(Some).ok_or_else(|| {
+		"Invalid animation skeleton. The most likely cause is that `skeleton` is not a resource ID string.".to_string()
+	})
+}
+
+/// Maps imported FBX skeleton indices into a compatible canonical skeleton by unique node name.
+pub(crate) fn canonical_animation_node_map(source: &SkeletonModel, target: &SkeletonModel) -> Result<Vec<u32>, String> {
+	let mut target_by_name = std::collections::HashMap::with_capacity(target.nodes.len());
+	for (index, node) in target.nodes.iter().enumerate() {
+		let Some(name) = node.name.as_deref() else {
+			continue;
+		};
+		target_by_name
+			.entry(name)
+			.and_modify(|target| *target = None)
+			.or_insert(Some(index as u32));
+	}
+
+	source
+		.nodes
+		.iter()
+		.enumerate()
+		.map(|(source_index, node)| {
+			if let Some(name) = node.name.as_deref() {
+				return target_by_name.get(name).copied().flatten().ok_or_else(|| {
+					format!(
+						"Animation skeleton is incompatible. The most likely cause is that source node '{name}' is missing or duplicated in the canonical skeleton."
+					)
+				});
+			}
+
+			target
+				.nodes
+				.get(source_index)
+				.filter(|target| target.name.is_none())
+				.map(|_| source_index as u32)
+				.ok_or_else(|| {
+					format!(
+						"Animation skeleton is incompatible. The most likely cause is that unnamed source node {source_index} has no matching canonical node."
+					)
+				})
+		})
+		.collect()
+}
+
+/// Resolves the canonical animation skeleton and composes source FBX node indices into its node order.
+async fn resolve_animation_skeleton(
+	context: &BakeContext<'_>,
+	spec: Option<&asset::BEADType>,
+	imported: ImportedFbxSkeleton,
+	base: &str,
+) -> Result<(ReferenceModel<SkeletonModel>, Vec<u32>), LoadErrors> {
+	let Some(target_id) = animation_skeleton_setting(spec).map_err(|error| {
+		context.error(error);
+		LoadErrors::FailedToProcess
+	})?
+	else {
+		let skeleton_id = format!("{base}#{SKELETON_FRAGMENT}");
+		let skeleton = store_model::<SkeletonModel>(*context, &skeleton_id, imported.model, &[]).await?;
+		return Ok((skeleton, imported.source_to_skeleton));
+	};
+
+	let target = context.bake_dependency::<SkeletonModel>(target_id).await?;
+	let target_model = crate::from_slice::<SkeletonModel>(&target.resource).map_err(|error| {
+		context.error(format_args!(
+			"Animation skeleton could not be read. The most likely cause is that '{target_id}' contains invalid skeleton metadata: {error}."
+		));
+		LoadErrors::FailedToProcess
+	})?;
+	let source_to_target = canonical_animation_node_map(&imported.model, &target_model).map_err(|error| {
+		context.error(error);
+		LoadErrors::FailedToProcess
+	})?;
+	let source_to_skeleton = imported
+		.source_to_skeleton
+		.into_iter()
+		.map(|source| source_to_target[source as usize])
+		.collect();
+	Ok((target, source_to_skeleton))
+}
+
 pub(crate) fn select_unfragmented_fbx_resource(
 	scene: &ufbx::Scene,
 	spec: Option<&asset::BEADType>,
@@ -126,12 +214,11 @@ impl AssetHandler for FBXAssetHandler {
 					.await;
 			}
 
-			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			let (skeleton, source_to_skeleton) =
+				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
 
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[]).await?;
-
-			let animation = import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton)
-				.map_err(|error| {
+			let animation =
+				import_fbx_animation(&scene, fragment.as_ref(), skeleton, &source_to_skeleton).map_err(|error| {
 					context.error(format_args!("Failed to import FBX animation '{}': {error}", url.as_ref()));
 
 					LoadErrors::FailedToProcess
@@ -158,24 +245,18 @@ impl AssetHandler for FBXAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			let (skeleton, source_to_skeleton) =
+				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
 
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[]).await?;
+			let animation =
+				import_fbx_animation(&scene, DEFAULT_ANIMATION_FRAGMENT, skeleton, &source_to_skeleton).map_err(|error| {
+					context.error(format_args!(
+						"Failed to import default FBX animation '{}': {error}",
+						url.as_ref()
+					));
 
-			let animation = import_fbx_animation(
-				&scene,
-				DEFAULT_ANIMATION_FRAGMENT,
-				skeleton,
-				&imported_skeleton.source_to_skeleton,
-			)
-			.map_err(|error| {
-				context.error(format_args!(
-					"Failed to import default FBX animation '{}': {error}",
-					url.as_ref()
-				));
-
-				LoadErrors::FailedToProcess
-			})?;
+					LoadErrors::FailedToProcess
+				})?;
 
 			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 		}

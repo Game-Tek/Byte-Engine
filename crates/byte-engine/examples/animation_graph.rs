@@ -9,8 +9,8 @@ use std::num::NonZeroUsize;
 
 use byte_engine::{
 	animation::graph::{
-		AnimationClip, AnimationGraph, AnimationGraphPlayer, AnimationPool, AnimationPoolConfig, AnimationTransition,
-		RootMotionRotation, RootMotionSettings, RootMotionTranslation,
+		AnimationClip, AnimationEvaluation, AnimationGraph, AnimationPool, AnimationPoolConfig, AnimationStateId,
+		AnimationTransition, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	},
 	application::{
 		graphics::{
@@ -25,7 +25,6 @@ use byte_engine::{
 	MediaTime,
 };
 use math::{Orientation, Point, Quaternion, Scale, Vector};
-use resource_management::resources::mesh::Mesh;
 use utils::Extent;
 
 // These assets are intentionally explicit. Replace them before running the example.
@@ -45,22 +44,41 @@ struct LocomotionInput {
 	moving: bool,
 }
 
-/// Builds the reusable graph once during application setup.
-fn locomotion_graph() -> AnimationGraph<LocomotionInput> {
+/// The `LocomotionAnimation` struct keeps the graph beside the durable states selected by client code.
+struct LocomotionAnimation {
+	graph: AnimationGraph,
+	idle: AnimationStateId,
+	walk: AnimationStateId,
+}
+
+/// Builds the reusable graph and its client-requestable state catalog.
+fn locomotion_graph() -> LocomotionAnimation {
 	let builder = AnimationGraph::builder();
 	let idle = builder.state("idle").with(AnimationClip::looping(IDLE_ANIMATION));
 	let walk = builder.state("walk").with(AnimationClip::looping(WALK_ANIMATION));
 
-	// The player checks transitions in authoring order. Each transition keeps the
-	// current clip visible while its target clip loads in the shared pool.
+	// Routes describe how the player reconciles its playback after client code
+	// requests another persistent state.
 	idle.to(walk)
-		.when(AnimationTransition::when(|input: &LocomotionInput| input.moving).inertialize(MediaTime::from_millis(150)));
+		.when(AnimationTransition::new().inertialize(MediaTime::from_millis(150)));
 	walk.to(idle)
-		.when(AnimationTransition::when(|input: &LocomotionInput| !input.moving).inertialize(MediaTime::from_millis(150)));
+		.when(AnimationTransition::new().inertialize(MediaTime::from_millis(150)));
 
-	builder
-		.build(idle)
-		.expect("the example graph has valid state IDs and clip IDs")
+	LocomotionAnimation {
+		idle: idle.id(),
+		walk: walk.id(),
+		graph: builder
+			.build(idle)
+			.expect("the example graph has valid state IDs and clip IDs"),
+	}
+}
+
+/// Selects one authored graph state from game-owned locomotion facts.
+fn evaluate_locomotion(input: LocomotionInput, animation: &LocomotionAnimation) -> AnimationStateId {
+	match input {
+		LocomotionInput { moving: true } => animation.walk,
+		LocomotionInput { moving: false } => animation.idle,
+	}
 }
 
 fn main() {
@@ -89,33 +107,19 @@ fn main() {
 	setup_default_audio(&mut app, |task| loading_tasks.push(task));
 	setup_pbr_visibility_shading_render_pipeline(&mut app, |task| loading_tasks.push(task));
 
-	let graph = locomotion_graph();
+	let animation = locomotion_graph();
 	let (mut pool, animation_worker) = AnimationPool::new(
 		app.resource_manager_handle(),
 		AnimationPoolConfig::new(NonZeroUsize::new(ANIMATION_POOL_BYTES).expect("the pool budget is non-zero")),
 	);
 
-	// The graph needs a target skeleton before it can evaluate. Load the mesh on
-	// the same deferred runtime, then transfer only its skeleton back to the app.
-	let (mesh_sender, mesh_receiver) = kanal::bounded_async(1);
-	let mesh_receiver = mesh_receiver.to_sync();
-	let resource_manager = app.resource_manager_handle();
+	let mut player = pool.create_player(&animation.graph, ROOT_MOTION);
 	loading_tasks.push(Box::new(move |runtime| {
 		runtime.spawn(animation_worker.run()).detach();
-		runtime
-			.spawn(async move {
-				let mesh = resource_manager
-					.request::<Mesh>(MODEL_RESOURCE)
-					.await
-					.map(|reference| reference.into_resource());
-				let _ = mesh_sender.send(mesh).await;
-			})
-			.detach();
 	}));
 	byte_engine::application::graphics::defaults::launch_deferred_tasks_thread(&mut app, loading_tasks);
 
 	let animated_handle = create_scene(&mut app);
-	let mut player = None;
 	let mut root_position = Point::origin();
 	let mut root_orientation = Orientation::identity();
 
@@ -124,37 +128,18 @@ fn main() {
 			// Advance shared loading once per application tick, not once per player.
 			pool.update();
 
-			// Wait without blocking rendering until the target skeleton arrives. The
-			// owned constructor lets this player retain that skeleton safely.
-			if player.is_none() {
-				match mesh_receiver.try_recv_realtime() {
-					Ok(Some(Ok(mesh))) => {
-						let skeleton = mesh
-							.skeleton
-							.expect("the model resource must contain a skeleton")
-							.into_resource();
-						player = Some(
-							AnimationGraphPlayer::new_owned(&graph, skeleton, ROOT_MOTION)
-								.expect("the configured root node must exist in the model skeleton"),
-						);
-					}
-					Ok(Some(Err(error))) => panic!("Unable to load '{MODEL_RESOURCE}': {error}"),
-					Ok(None) => return,
-					Err(_) => panic!("The mesh loader closed before returning '{MODEL_RESOURCE}'"),
-				}
-			}
-
-			let Some(player) = player.as_mut() else {
-				return;
-			};
 			// Replace this timed input with your input, AI, or networking state. It
 			// deliberately alternates every two seconds to exercise both transitions.
 			let input = LocomotionInput {
 				moving: (time.elapsed().as_seconds_f32() as u32 / 2).is_multiple_of(2),
 			};
-			let pose = player
-				.advance(time.delta(), &input, &mut pool)
-				.expect("application frame time is never negative");
+			let requested = evaluate_locomotion(input, &animation);
+			let AnimationEvaluation::Ready(pose) = player
+				.advance(time.delta(), requested, &mut pool)
+				.expect("application frame time and root-motion settings must be valid")
+			else {
+				return;
+			};
 
 			// Compose object-space root motion into the owning transform before
 			// submitting the in-place visual pose.

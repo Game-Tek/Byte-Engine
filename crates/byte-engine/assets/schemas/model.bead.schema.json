@@ -10,6 +10,10 @@
       "enum": ["mesh", "animation"],
       "description": "The resource selected when the asset ID has no fragment."
     },
+    "skeleton": {
+      "type": "string",
+      "description": "The canonical skeleton resource used to remap imported animation tracks by node name."
+    },
     "asset": {
       "type": "object",
       "description": "FBX material-name overrides. Use default for an unassigned material slot.",

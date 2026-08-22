@@ -29,7 +29,9 @@ pub enum AnimationGraphBenchmark {
 
 /// The `AnimationGraphBenchmarkFixture` struct owns graph and clip resources outside the measured loop.
 pub struct AnimationGraphBenchmarkFixture {
-	graph: AnimationGraph<bool>,
+	graph: AnimationGraph,
+	initial: AnimationStateId,
+	destination: AnimationStateId,
 	pool: AnimationPool,
 	benchmark: AnimationGraphBenchmark,
 	node_count: usize,
@@ -49,8 +51,11 @@ impl AnimationGraphBenchmarkFixture {
 		for (resource_id, animation) in animations {
 			pool.admit_lease(AnimationLease::new(resource_id), animation);
 		}
+		let (graph, initial, destination) = benchmark_graph(benchmark);
 		Self {
-			graph: benchmark_graph(benchmark),
+			graph,
+			initial,
+			destination,
 			pool,
 			benchmark,
 			node_count,
@@ -61,59 +66,83 @@ impl AnimationGraphBenchmarkFixture {
 	pub fn prepare(&mut self) -> AnimationGraphBenchmarkState<'_> {
 		let Self {
 			graph,
+			initial,
+			destination,
 			pool,
 			benchmark,
 			node_count,
 		} = self;
 		let benchmark = *benchmark;
 		let root_motion = (benchmark == AnimationGraphBenchmark::ActiveRootMotion).then(|| RootMotionSettings::full("joint-0"));
-		let mut player = AnimationGraphPlayer::new_owned(graph, benchmark_skeleton(*node_count), root_motion)
-			.expect("benchmark skeleton must match its root-motion settings");
+		let mut player = pool.create_player(graph, root_motion);
 
 		// Resolve the initial state and, for the transition case, enter the
 		// inertialized path before Divan starts the measured loop.
-		player
-			.advance(MediaTime::ZERO, &false, pool)
-			.expect("resident benchmark clip must initialize");
-		let input = benchmark == AnimationGraphBenchmark::InertializedTransition;
-		if input {
-			player
-				.advance(benchmark_frame_delta(), &input, pool)
-				.expect("resident benchmark clips must start their transition");
+		let AnimationEvaluation::Ready(_) = player
+			.advance(MediaTime::ZERO, *initial, pool)
+			.expect("resident benchmark clip must initialize")
+		else {
+			panic!("resident benchmark clip must initialize immediately");
+		};
+		let requested = if benchmark == AnimationGraphBenchmark::InertializedTransition {
+			*destination
+		} else {
+			*initial
+		};
+		if requested != *initial {
+			let AnimationEvaluation::Ready(_) = player
+				.advance(benchmark_frame_delta(), requested, pool)
+				.expect("resident benchmark clips must start their transition")
+			else {
+				panic!("resident benchmark clips must remain ready");
+			};
 		}
 
-		AnimationGraphBenchmarkState { player, pool, input }
+		AnimationGraphBenchmarkState { player, pool, requested }
 	}
 }
 
 /// The `AnimationGraphBenchmarkState` struct retains the player state used to time animation graph evaluation.
 pub struct AnimationGraphBenchmarkState<'fixture> {
-	player: AnimationGraphPlayer<'fixture, 'static, bool>,
+	player: AnimationGraphPlayer<'fixture>,
 	pool: &'fixture mut AnimationPool,
-	input: bool,
+	requested: AnimationStateId,
 }
 
 impl AnimationGraphBenchmarkState<'_> {
 	/// Advances one prepared frame and returns the borrowed pose to the benchmark harness.
 	pub fn advance(&mut self) -> AnimationGraphPose<'_> {
-		self.player
-			.advance(benchmark_frame_delta(), &self.input, self.pool)
+		let AnimationEvaluation::Ready(pose) = self
+			.player
+			.advance(benchmark_frame_delta(), self.requested, self.pool)
 			.expect("resident benchmark clips must remain ready")
+		else {
+			panic!("resident benchmark clips must remain ready");
+		};
+		pose
 	}
 }
 
 /// Builds a graph whose selected path stays stable throughout one benchmark run.
-fn benchmark_graph(benchmark: AnimationGraphBenchmark) -> AnimationGraph<bool> {
+fn benchmark_graph(benchmark: AnimationGraphBenchmark) -> (AnimationGraph, AnimationStateId, AnimationStateId) {
 	let builder = AnimationGraph::builder();
 	let active = builder.state("active").with(AnimationClip::looping(ACTIVE_CLIP_ID));
-	if benchmark == AnimationGraphBenchmark::InertializedTransition {
+	let destination = if benchmark == AnimationGraphBenchmark::InertializedTransition {
 		let destination = builder.state("destination").with(AnimationClip::looping(DESTINATION_CLIP_ID));
-		active.to(destination).when(
-			AnimationTransition::when(|transitioning| *transitioning)
-				.inertialize(MediaTime::from_seconds(TRANSITION_DURATION_SECONDS)),
-		);
-	}
-	builder.build(active).expect("benchmark graph must be valid")
+		active
+			.to(destination)
+			.when(AnimationTransition::new().inertialize(MediaTime::from_seconds(TRANSITION_DURATION_SECONDS)));
+		destination
+	} else {
+		active
+	};
+	let initial = active.id();
+	let destination = destination.id();
+	(
+		builder.build(active).expect("benchmark graph must be valid"),
+		initial,
+		destination,
+	)
 }
 
 /// Creates a parented chain so global-pose work scales with the benchmark argument.

@@ -344,6 +344,28 @@ pub fn setup_default_audio(
 		}));
 }
 
+/// Creates an [`AnimationPool`] with the given decoded-clip byte budget and
+/// spawns its load worker on the application's async runtime.
+///
+/// Next, call [`AnimationPool::update`] once per tick before advancing graph
+/// players that share the pool, then create animation graphs through
+/// [`crate::animation::graph::AnimationGraphPlayer`].
+pub fn setup_animation_pool(
+	application: &mut GraphicsApplication,
+	byte_budget: NonZeroUsize,
+	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
+) -> AnimationPool {
+	// The pool owns pose evaluation state on the application thread while its
+	// worker resolves animation resources asynchronously.
+	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), AnimationPoolConfig::new(byte_budget));
+
+	spawn_loading_task(Box::new(move |runtime| {
+		runtime.spawn(worker.run()).detach();
+	}));
+
+	pool
+}
+
 trait LogResult {
 	fn warn(self) -> Self;
 }
@@ -384,6 +406,7 @@ use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
 use crate::{
+	animation::graph::{AnimationPool, AnimationPoolConfig},
 	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
 	audio::{
 		audio_system::{AudioSystem, DefaultAudioSystem},

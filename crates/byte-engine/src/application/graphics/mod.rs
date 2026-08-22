@@ -90,7 +90,11 @@ impl Application for GraphicsApplication {
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
 		// Opening an application store first removes resources baked by an incompatible engine revision.
-		let resource_storage = ReDBStorageBackend::new_writable_with_settings(resources_path, ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4)).unwrap(); // TODO: revise this
+		let resource_storage = ReDBStorageBackend::new_writable_with_settings(
+			resources_path,
+			ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4),
+		)
+		.unwrap(); // TODO: revise this
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
@@ -656,7 +660,10 @@ use std::{collections::VecDeque, sync::Arc, thread};
 
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{
-	resource::{ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings, resource_manager::ResourceManager},
+	resource::{
+		resource_manager::ResourceManager, ReDBStorageBackend, ResourceCompression, ResourceStorageMode,
+		ResourceStorageSettings,
+	},
 	resources::material::Material,
 };
 use smallvec::SmallVec;
@@ -727,7 +734,7 @@ pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_setup, setup_default_audio, setup_default_input, setup_default_pipeline_compilation,
+	default_setup, setup_animation_pool, setup_default_audio, setup_default_input, setup_default_pipeline_compilation,
 	setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;

@@ -206,6 +206,17 @@ pub struct AnimationGraphPlayer<'graph> {
 	runtime: Option<ReadyAnimationGraphPlayer<'graph>>,
 }
 
+/// Requests clips in states directly reachable from `state` without traversing the graph recursively.
+fn prefetch_neighbors(graph: &AnimationGraph, state: AnimationStateId, pool: &mut AnimationPool) {
+	let state = graph.state(state);
+	for transition in &state.transitions {
+		let _ = pool.request(&graph.state(transition.target).clip.lease);
+	}
+	if let Some(completion) = state.completion_target() {
+		let _ = pool.request(&graph.state(completion).clip.lease);
+	}
+}
+
 impl AnimationPool {
 	/// Creates a local player and queues the initial clip that supplies its canonical skeleton.
 	///
@@ -425,6 +436,8 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			self.active_previous.copy_from_slice(&self.active_current);
 			self.active = Some(destination);
 		}
+		drop(resident);
+		prefetch_neighbors(self.graph, pending.target, pool);
 	}
 
 	/// Cancels or retargets a loading state when its source's selected edge changes.
@@ -868,6 +881,50 @@ mod tests {
 			commands_closed: false,
 			completions_closed: false,
 		}
+	}
+
+	#[test]
+	fn player_prefetches_direct_neighbors_as_it_enters_graph_states() {
+		let idle_animation = test_animation("idle", 0.0);
+		let start_animation = test_animation("start", 1.0);
+		let byte_budget = packed_test_animation_bytes("idle", 0.0)
+			+ packed_test_animation_bytes("start", 1.0)
+			+ packed_test_animation_bytes("walk", 2.0)
+			+ packed_test_animation_bytes("backward", -1.0);
+		let mut pool = pool(byte_budget);
+		pool.admit("idle.animation".into(), idle_animation);
+
+		let builder = AnimationGraph::builder();
+		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
+		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));
+		let backward = builder.state("backward").with(AnimationClip::looping("backward.animation"));
+		let _unrelated = builder.state("unrelated").with(AnimationClip::looping("unrelated.animation"));
+		let start_walk = idle
+			.to(walk)
+			.with(AnimationClip::once("start.animation"))
+			.when(AnimationTransition::new());
+		idle.to(backward).when(AnimationTransition::new());
+		let graph = builder.build(idle).expect("graph should build");
+		let mut player = pool.create_player(&graph, None);
+
+		assert!(!pool.entries.contains_key(&AnimationLease::new("start.animation")));
+		player
+			.advance(MediaTime::ZERO, idle.id(), &mut pool)
+			.expect("enters the initial idle state");
+
+		assert!(pool.entries.contains_key(&AnimationLease::new("start.animation")));
+		assert!(pool.entries.contains_key(&AnimationLease::new("backward.animation")));
+		assert!(!pool.entries.contains_key(&AnimationLease::new("walk.animation")));
+		assert!(!pool.entries.contains_key(&AnimationLease::new("unrelated.animation")));
+
+		pool.admit("start.animation".into(), start_animation);
+		player
+			.advance(MediaTime::ZERO, walk.id(), &mut pool)
+			.expect("starts the walk transition clip");
+
+		assert_eq!(player.state(), Some(start_walk.id()));
+		assert!(pool.entries.contains_key(&AnimationLease::new("walk.animation")));
+		assert!(!pool.entries.contains_key(&AnimationLease::new("unrelated.animation")));
 	}
 
 	#[test]

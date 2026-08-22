@@ -20,7 +20,8 @@
 //!    enqueues work, so clips remain in `Loading` until this worker runs.
 //! 3. Create one [`AnimationGraphPlayer`] per animated instance with
 //!    [`AnimationPool::create_player`]. The pool loads the initial clip, whose
-//!    skeleton becomes the canonical target for every graph clip.
+//!    skeleton becomes the canonical target for every graph clip. As the player
+//!    enters each state, it also requests clips in directly reachable states.
 //! 4. Each application tick, call [`AnimationPool::update`] once, select an
 //!    authored [`AnimationStateId`], call [`AnimationGraphPlayer::advance`],
 //!    apply its root motion to the owning object, and send

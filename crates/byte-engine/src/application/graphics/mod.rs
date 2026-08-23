@@ -334,16 +334,10 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::prepare_renderer_state");
 			let _enter = span.enter();
-			let camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
-
 			let window_listener = &mut self.window_factory.1;
 
 			while let Some(message) = window_listener.read() {
 				self.renderer.create_window(message.into_data());
-			}
-
-			for message in camera_messages {
-				self.renderer.create_camera(*message.handle(), message.into_data());
 			}
 
 			while let Some(message) = self.cameras_listener.read() {
@@ -678,7 +672,7 @@ mod tests {
 }
 
 use core::time;
-use std::{collections::VecDeque, sync::Arc, thread};
+use std::{sync::Arc, thread};
 
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{

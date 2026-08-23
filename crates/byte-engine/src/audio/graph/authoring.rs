@@ -257,10 +257,6 @@ impl AudioGraphFactory {
 	pub(crate) fn listener(&self) -> DefaultListener<CreateMessage<CompiledAudioGraph>> {
 		self.compiled_graphs.listener()
 	}
-
-	pub(crate) fn drain_created_before_listener(&mut self) -> Vec<CreateMessage<CompiledAudioGraph>> {
-		self.compiled_graphs.drain_created_before_listener()
-	}
 }
 
 /// Compiles an authored graph on its creating thread before the factory sends

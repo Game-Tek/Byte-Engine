@@ -5,8 +5,7 @@
 //! rendering and physics without giving those systems ownership of gameplay
 //! objects.
 
-/// The `Factory` struct creates values with stable handles and preserves setup-time
-/// messages for the first system listener.
+/// The `Factory` struct creates values with stable handles for subscribed systems.
 ///
 /// Register each consuming system with [`Self::listener`] before calling
 /// [`Self::create`]. Use [`Self::derive`] when another representation must keep
@@ -14,8 +13,6 @@
 #[derive(Clone)]
 pub struct Factory<T: Clone + ?Sized> {
 	channel: DefaultChannel<CreateMessage<T>>,
-	created_before_listener: Rc<RefCell<Vec<CreateMessage<T>>>>,
-	record_created_before_listener: Rc<Cell<bool>>,
 }
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -83,11 +80,8 @@ impl<T: Clone> Factory<T> {
 	/// Next, call [`Self::listener`] for each system that mirrors created values,
 	/// then publish values through [`Self::create`].
 	pub fn new() -> Self {
-		let sender = DefaultChannel::new();
 		Factory {
-			channel: sender,
-			created_before_listener: Rc::new(RefCell::new(Vec::new())),
-			record_created_before_listener: Rc::new(Cell::new(true)),
+			channel: DefaultChannel::new(),
 		}
 	}
 
@@ -100,7 +94,6 @@ impl<T: Clone> Factory<T> {
 		let handle = Handle::new();
 		let message = CreateMessage::new(handle, data);
 
-		self.record_creation_before_listener(&message);
 		self.channel.send(message);
 
 		handle
@@ -125,7 +118,6 @@ impl<T: Clone> Factory<T> {
 	pub fn derive(&self, handle: Handle, data: T) {
 		let message = CreateMessage::new(handle, data);
 
-		self.record_creation_before_listener(&message);
 		self.channel.send(message);
 	}
 
@@ -134,19 +126,7 @@ impl<T: Clone> Factory<T> {
 	/// Next, call [`Self::create`] or [`Self::derive`] and drain the messages
 	/// through [`crate::core::listener::Listener::read`].
 	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
-		self.record_created_before_listener.set(false);
 		self.channel.listener()
-	}
-
-	/// Drains messages created before the first listener was registered.
-	pub fn drain_created_before_listener(&mut self) -> Vec<CreateMessage<T>> {
-		std::mem::take(&mut *self.created_before_listener.borrow_mut())
-	}
-
-	fn record_creation_before_listener(&self, message: &CreateMessage<T>) {
-		if self.record_created_before_listener.get() {
-			self.created_before_listener.borrow_mut().push(message.clone());
-		}
 	}
 }
 
@@ -277,24 +257,7 @@ mod tests {
 	}
 
 	#[test]
-	fn setup_history_stops_at_first_listener_and_drains_once() {
-		let mut factory = Factory::new();
-		let before_a = factory.create(10);
-		let before_b = factory.create(20);
-		let _listener = factory.listener();
-		factory.create(30);
-
-		let history = factory.drain_created_before_listener();
-
-		assert_eq!(history.len(), 2);
-		assert_eq!(history[0].handle(), &before_a);
-		assert_eq!(history[1].handle(), &before_b);
-		assert_eq!(history.iter().map(|message| *message.data()).collect::<Vec<_>>(), [10, 20]);
-		assert!(factory.drain_created_before_listener().is_empty());
-	}
-
-	#[test]
-	fn cloned_factories_share_creation_history_and_stream() {
+	fn cloned_factories_share_the_creation_stream() {
 		let original = Factory::new();
 		let mut clone = original.clone();
 		let mut listener = original.listener();
@@ -307,11 +270,7 @@ mod tests {
 	}
 }
 
-use std::{
-	cell::{Cell, RefCell},
-	rc::Rc,
-	sync::atomic::{AtomicU32, Ordering},
-};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::core::{
 	channel::{Channel as _, DefaultChannel},

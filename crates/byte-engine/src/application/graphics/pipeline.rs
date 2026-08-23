@@ -143,13 +143,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		light_delete_receiver: DefaultListener<DeleteMessage>,
-		pending_lights: VecDeque<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<RenderableMesh>>,
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
-		pending_meshes: VecDeque<CreateMessage<RenderableMesh>>,
 		pose_receiver: DefaultListener<UpdatePose>,
 		environment_receiver: DefaultListener<CreateMessage<Environment>>,
-		pending_environments: VecDeque<CreateMessage<Environment>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
@@ -157,10 +154,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		/// Drains light creation messages into the visibility scene.
 		fn request_pending_lights(&mut self) {
 			while let Some(message) = self.light_receiver.read() {
-				self.pending_lights.push_back(message);
-			}
-
-			while let Some(message) = self.pending_lights.pop_front() {
 				let handle = *message.handle();
 				self.visibility_pipeline_manager.create_light(handle, message.into_data());
 			}
@@ -169,10 +162,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		/// Drains renderable creation messages into the visibility resource request path.
 		fn request_pending_meshes(&mut self) {
 			while let Some(message) = self.mesh_receiver.read() {
-				self.pending_meshes.push_back(message);
-			}
-
-			while let Some(message) = self.pending_meshes.pop_front() {
 				let handle = *message.handle();
 				self.visibility_pipeline_manager.request_mesh(handle, message.into_data());
 			}
@@ -200,10 +189,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		/// Drains environment creation commands into the visibility resource request path.
 		fn request_pending_environments(&mut self) {
 			while let Some(message) = self.environment_receiver.read() {
-				self.pending_environments.push_back(message);
-			}
-
-			while let Some(message) = self.pending_environments.pop_front() {
 				self.visibility_pipeline_manager.create_environment(message.into_data());
 			}
 		}
@@ -233,30 +218,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	{
-		let pending_lights = application
-			.world_mut()
-			.light_factory_mut()
-			.drain_created_before_listener()
-			.into_iter()
-			.collect::<VecDeque<_>>();
 		let light_receiver = application.world().light_factory().listener();
 		let light_delete_receiver = application.world().delete_channel().listener();
-		let pending_meshes = application
-			.world_mut()
-			.renderable_factory_mut()
-			.drain_created_before_listener()
-			.into_iter()
-			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
 		let mesh_delete_receiver = application.world().delete_channel().listener();
 		let transforms_listener = application.world().transforms_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();
-		let pending_environments = application
-			.world_mut()
-			.environment_factory_mut()
-			.drain_created_before_listener()
-			.into_iter()
-			.collect::<VecDeque<_>>();
 		let environment_receiver = application.world().environment_factory().listener();
 
 		let renderer = &mut application.renderer;
@@ -274,13 +241,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			),
 			light_receiver,
 			light_delete_receiver,
-			pending_lights,
 			mesh_receiver,
 			mesh_delete_receiver,
-			pending_meshes,
 			pose_receiver,
 			environment_receiver,
-			pending_environments,
 		};
 
 		renderer.add_pipeline_manager(sm);

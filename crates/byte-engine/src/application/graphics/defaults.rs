@@ -265,14 +265,6 @@ pub fn setup_default_audio(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
 ) {
-	let graphs_created_before_setup = application.world.audio_graph_factory_mut().drain_created_before_listener();
-
-	if !graphs_created_before_setup.is_empty() {
-		log::warn!(
-			"Audio graphs created before audio setup were ignored. The audio worker must be installed before graphs are created."
-		);
-	}
-
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 
 	let mut deletions_listener = application.world.delete_channel().listener();

@@ -1,0 +1,1 @@
+{"name":"DaVinci Wide Gamut Color Grading","kind":{"type":"compute","shader":"byte-engine/rendering/color-grading/dwg.besl"}}

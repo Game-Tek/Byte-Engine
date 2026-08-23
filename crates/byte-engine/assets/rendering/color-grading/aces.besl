@@ -1,0 +1,114 @@
+ColorGradingParameters: struct {
+	domain_min: vec4f,
+	domain_scale: vec4f,
+	sampling: vec4f,
+}
+
+source_texture: descriptor<Texture2D, 0, read>;
+lut_texture: descriptor<Texture3D, 1, read>;
+result_texture: descriptor<StorageImage, 2, write>;
+parameters: descriptor<ColorGradingParameters, 3, read, constant>;
+
+// This D65-to-D60-adapted matrix converts the renderer's linear-sRGB output to ACEScg AP1.
+linear_srgb_to_acescg: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.6130974024 * color.x + 0.3395231462 * color.y + 0.0473794514 * color.z;
+	let y: f32 = 0.0701937225 * color.x + 0.9163538791 * color.y + 0.0134523985 * color.z;
+	let z: f32 = 0.0206155929 * color.x + 0.1095697729 * color.y + 0.8698146342 * color.z;
+	return vec3f(x, y, z);
+}
+
+acescct_channel: fn(value: f32) -> f32 {
+	if (value <= 0.0078125) {
+		return 10.5402377416545 * value + 0.0729055341958355;
+	}
+	return (log2(vec3f(value, value, value)).x + 9.72) / 17.52;
+}
+
+acescct: fn(color: vec3f) -> vec3f {
+	return vec3f(acescct_channel(color.x), acescct_channel(color.y), acescct_channel(color.z));
+}
+
+acescct_to_acescg_channel: fn(value: f32) -> f32 {
+	if (value <= 0.155251141552511) {
+		return (value - 0.0729055341958355) / 10.5402377416545;
+	}
+	return pow(2.0, value * 17.52 - 9.72);
+}
+
+acescct_to_acescg: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		acescct_to_acescg_channel(color.x),
+		acescct_to_acescg_channel(color.y),
+		acescct_to_acescg_channel(color.z)
+	);
+}
+
+// The LUT operates entirely in ACEScct. Its domain controls coordinates, not output clipping.
+apply_lut: fn(color: vec3f) -> vec3f {
+	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
+	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
+	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}
+
+rrt_saturation: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.9708891487 * color.x + 0.0269632706 * color.y + 0.0021475807 * color.z;
+	let y: f32 = 0.0108891487 * color.x + 0.9869632706 * color.y + 0.0021475807 * color.z;
+	let z: f32 = 0.0108891487 * color.x + 0.0269632706 * color.y + 0.9621475807 * color.z;
+	return vec3f(x, y, z);
+}
+
+fitted_rrt_odt_channel: fn(value: f32) -> f32 {
+	let numerator: f32 = value * (value + 0.0245786) - 0.000090537;
+	let denominator: f32 = value * (0.983729 * value + 0.4329510) + 0.238081;
+	return numerator / denominator;
+}
+
+fitted_rrt_odt: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		fitted_rrt_odt_channel(color.x),
+		fitted_rrt_odt_channel(color.y),
+		fitted_rrt_odt_channel(color.z)
+	);
+}
+
+// This AP1-aware fitted transform is stable and hue-aware, but does not claim ACES reference-transform compliance.
+aces_fitted_sdr: fn(color: vec3f) -> vec3f {
+	color = max(color, vec3f(0.0, 0.0, 0.0));
+	color = fitted_rrt_odt(rrt_saturation(color));
+	let x: f32 = 1.60475 * color.x - 0.53108 * color.y - 0.07367 * color.z;
+	let y: f32 = 0.0 - 0.10208 * color.x + 1.10813 * color.y - 0.00605 * color.z;
+	let z: f32 = 0.0 - 0.00327 * color.x - 0.07276 * color.y + 1.07602 * color.z;
+	return clamp(vec3f(x, y, z), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+}
+
+linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
+	if (channel <= 0.0031308) {
+		return 12.92 * channel;
+	}
+	return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
+}
+
+linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		linear_srgb_channel_to_srgb(color.x),
+		linear_srgb_channel_to_srgb(color.y),
+		linear_srgb_channel_to_srgb(color.z)
+	);
+}
+
+// Convert to ACEScct, apply the creative look, then render the result to the SDR sRGB display.
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let extent: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
+	let grading_color: vec3f = acescct(linear_srgb_to_acescg(source_rgb));
+	let looked_acescg: vec3f = acescct_to_acescg(apply_lut(grading_color));
+	let result_color: vec3f = linear_srgb_to_srgb(aces_fitted_sdr(looked_acescg));
+	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
+}

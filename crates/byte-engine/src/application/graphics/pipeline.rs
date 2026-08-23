@@ -375,6 +375,47 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs a fused ACEScg/ACEScct grading and SDR output pass.
+///
+/// The LUT must accept and return ACEScct values. The pass uses an AP1-aware
+/// fitted SDR transform; it does not claim ACES reference-transform compliance.
+/// Call this after scene-linear effects. Do not install another swapchain output pass after it.
+pub fn setup_aces_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
+	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::Aces);
+}
+
+/// Installs a fused DaVinci Wide Gamut/Intermediate grading and SDR output pass.
+///
+/// The LUT must accept and return DaVinci Wide Gamut/Intermediate values. The
+/// pass uses AgX for SDR display rendering and does not claim parity with
+/// DaVinci Resolve color management. Call this after scene-linear effects. Do not
+/// install another swapchain output pass after it.
+pub fn setup_dwg_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
+	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::DaVinciWideGamut);
+}
+
+/// Loads and installs one fixed color-grading workflow for every render sink.
+fn setup_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str, workflow: ColorGradingWorkflow) {
+	let resource_manager = application.resource_manager_handle();
+	let lut_id = lut_id.to_owned();
+
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			let lut = crate::rendering::resource_loading::request::<resource_management::resources::lut::Lut>(
+				&resource_manager,
+				&lut_id,
+			)
+			.unwrap_or_else(|error| {
+				panic!(
+					"Failed to load color-grading LUT asset '{lut_id}': {error}. The most likely cause is that the LUT asset is missing, unreadable, or could not be baked."
+				)
+			});
+
+			Box::new(ColorGradingPass::new(render_pass_builder, workflow, lut))
+		});
+}
+
 /// Installs a 3D LUT grading pass from a resource or development asset ID.
 ///
 /// Each sink loads an independent reference to the LUT when its pass is created.

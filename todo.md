@@ -88,6 +88,7 @@
 
 ## Engine systems
 
+- Replace the fitted ACES grading output with the official ACES 2.0 Rec.709-D65 100-nit sRGB-piecewise transform, including AP1-to-AP0 conversion, precomputed hue/gamut tables, complete CAM/JMh tone/chroma/gamut processing, Apache-2.0 attribution, and Academy golden-image validation.
 - Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
 - Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.

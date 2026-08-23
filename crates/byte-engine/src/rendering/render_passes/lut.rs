@@ -11,10 +11,10 @@ pub struct LutRenderPass {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LutShaderParameters {
-	domain_min: [f32; 4],
-	domain_scale: [f32; 4],
-	sampling: [f32; 4],
+pub(super) struct LutShaderParameters {
+	pub(super) domain_min: [f32; 4],
+	pub(super) domain_scale: [f32; 4],
+	pub(super) sampling: [f32; 4],
 }
 
 impl Entity for LutRenderPass {}
@@ -126,7 +126,7 @@ impl LutRenderPass {
 	}
 }
 
-fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
+pub(super) fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
 	debug_assert!(
 		lut.size > 0,
 		"LUT size is zero. The most likely cause is accepting an empty LUT resource."
@@ -175,7 +175,7 @@ impl RenderPass for LutRenderPass {
 }
 
 /// Reads the baked LUT payload from the resource reference into owned bytes.
-fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
+pub(super) fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 	let read_target = ReadTargetsMut::Box {
 		buffer: vec![0_u8; reference.size].into_boxed_slice(),
 		offset: 0,
@@ -198,7 +198,7 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 }
 
 /// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
-fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
+pub(super) fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."
@@ -435,16 +435,16 @@ use ghi::{
 };
 use half::f16;
 use resource_management::{
+	Reference,
 	resource::ReadTargetsMut,
 	resources::lut::{Lut, LutKind},
-	Reference,
 };
 use utils::{Box, Extent};
 
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
 	},
 };

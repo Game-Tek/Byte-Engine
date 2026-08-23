@@ -1,0 +1,153 @@
+ColorGradingParameters: struct {
+	domain_min: vec4f,
+	domain_scale: vec4f,
+	sampling: vec4f,
+}
+
+source_texture: descriptor<Texture2D, 0, read>;
+lut_texture: descriptor<Texture3D, 1, read>;
+result_texture: descriptor<StorageImage, 2, write>;
+parameters: descriptor<ColorGradingParameters, 3, read, constant>;
+
+splat3: fn(value: f32) -> vec3f {
+	return vec3f(value, value, value);
+}
+
+// Convert the renderer's linear-sRGB D65 output to linear DaVinci Wide Gamut D65.
+linear_srgb_to_dwg: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.5627674548 * color.x + 0.3235165868 * color.y + 0.1137159578 * color.z;
+	let y: f32 = 0.0777546367 * color.x + 0.7495773498 * color.y + 0.1726680202 * color.z;
+	let z: f32 = 0.0646692003 * color.x + 0.1919986903 * color.y + 0.7433321068 * color.z;
+	return vec3f(x, y, z);
+}
+
+dwg_to_linear_srgb: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.8986149054 * color.x - 0.7921761757 * color.y - 0.1064387236 * color.z;
+	let y: f32 = 0.0 - 0.1689487894 * color.x + 1.4889757472 * color.y - 0.3200269688 * color.z;
+	let z: f32 = 0.0 - 0.1215391620 * color.x - 0.3156758484 * color.y + 1.4372150162 * color.z;
+	return vec3f(x, y, z);
+}
+
+davinci_intermediate_channel: fn(value: f32) -> f32 {
+	if (value <= 0.00262409) {
+		return value * 10.44426855;
+	}
+	let logarithm: vec3f = log2(vec3f(value + 0.0075, value + 0.0075, value + 0.0075));
+	return 0.07329248 * (logarithm.x + 7.0);
+}
+
+davinci_intermediate: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		davinci_intermediate_channel(color.x),
+		davinci_intermediate_channel(color.y),
+		davinci_intermediate_channel(color.z)
+	);
+}
+
+davinci_intermediate_to_dwg_channel: fn(value: f32) -> f32 {
+	if (value <= 0.02740668) {
+		return value / 10.44426855;
+	}
+	return pow(2.0, value / 0.07329248 - 7.0) - 0.0075;
+}
+
+davinci_intermediate_to_dwg: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		davinci_intermediate_to_dwg_channel(color.x),
+		davinci_intermediate_to_dwg_channel(color.y),
+		davinci_intermediate_to_dwg_channel(color.z)
+	);
+}
+
+// The LUT operates entirely in DWG/Intermediate. Its domain controls coordinates, not output clipping.
+apply_lut: fn(color: vec3f) -> vec3f {
+	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
+	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
+	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}
+
+linear_srgb_to_linear_rec2020: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z;
+	let y: f32 = 0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z;
+	let z: f32 = 0.0164 * color.x + 0.0880 * color.y + 0.8956 * color.z;
+	return vec3f(x, y, z);
+}
+
+linear_rec2020_to_linear_srgb: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.6605 * color.x - 0.5876 * color.y - 0.0728 * color.z;
+	let y: f32 = 0.0 - 0.1246 * color.x + 1.1329 * color.y - 0.0083 * color.z;
+	let z: f32 = 0.0 - 0.0182 * color.x - 0.1006 * color.y + 1.1187 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_inset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.856627153315983 * color.x + 0.0951212405381588 * color.y + 0.0482516061458583 * color.z;
+	let y: f32 = 0.137318972929847 * color.x + 0.761241990602591 * color.y + 0.101439036467562 * color.z;
+	let z: f32 = 0.11189821299995 * color.x + 0.0767994186031903 * color.y + 0.811302368396859 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_outset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.1271005818144368 * color.x - 0.11060664309660323 * color.y - 0.016493938717834573 * color.z;
+	let y: f32 = 0.0 - 0.1413297634984383 * color.x + 1.157823702216272 * color.y - 0.016493938717834257 * color.z;
+	let z: f32 = 0.0 - 0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z;
+	return vec3f(x, y, z);
+}
+
+// AgX maps the graded scene-linear result into bounded display-linear sRGB while preserving bright-color hue relationships.
+agx_display_linear: fn(color: vec3f) -> vec3f {
+	let agx_min_ev: f32 = 0.0 - 12.47393;
+	let agx_max_ev: f32 = 4.026069;
+	let x2: vec3f = vec3f(0.0, 0.0, 0.0);
+	let x4: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	color = linear_srgb_to_linear_rec2020(color);
+	color = agx_inset(color);
+	color = max(color, splat3(0.0000000001));
+	color = clamp(log2(color), splat3(agx_min_ev), splat3(agx_max_ev));
+	color = (color - splat3(agx_min_ev)) / splat3(agx_max_ev - agx_min_ev);
+	color = clamp(color, splat3(0.0), splat3(1.0));
+
+	x2 = color * color;
+	x4 = x2 * x2;
+	color = 15.5 * x4 * x2 - 40.14 * x4 * color + 31.96 * x4 - 6.868 * x2 * color;
+	color = color + 0.4298 * x2 + 0.1191 * color - splat3(0.00232);
+
+	color = agx_outset(color);
+	color = pow(max(splat3(0.0), color), splat3(2.2));
+	color = linear_rec2020_to_linear_srgb(color);
+	return clamp(color, splat3(0.0), splat3(1.0));
+}
+
+linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
+	if (channel <= 0.0031308) {
+		return 12.92 * channel;
+	}
+	return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
+}
+
+linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
+	return vec3f(
+		linear_srgb_channel_to_srgb(color.x),
+		linear_srgb_channel_to_srgb(color.y),
+		linear_srgb_channel_to_srgb(color.z)
+	);
+}
+
+// Convert to DWG/Intermediate, apply the creative look, then use AgX for SDR display rendering.
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let extent: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let source_rgb: vec3f = vec3f(source_color.x, source_color.y, source_color.z);
+	let grading_color: vec3f = davinci_intermediate(linear_srgb_to_dwg(source_rgb));
+	let looked_dwg: vec3f = davinci_intermediate_to_dwg(apply_lut(grading_color));
+	let display_linear: vec3f = agx_display_linear(dwg_to_linear_srgb(looked_dwg));
+	let result_color: vec3f = linear_srgb_to_srgb(display_linear);
+	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
+}

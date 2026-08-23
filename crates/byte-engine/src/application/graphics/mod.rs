@@ -584,8 +584,9 @@ fn default_application_directory(
 mod pipeline;
 use pipeline::drain_render_pass_messages;
 pub use pipeline::{
-	setup_aces_tonemap_render_pass, setup_agx_tonemap_render_pass, setup_atmosphere_sky_render_pass, setup_bloom_render_pass,
-	setup_lut_render_pass, setup_pbr_visibility_shading_render_pipeline, setup_simple_render_pipeline, setup_smaa_render_pass,
+	setup_aces_color_grading_render_pass, setup_aces_tonemap_render_pass, setup_agx_tonemap_render_pass,
+	setup_atmosphere_sky_render_pass, setup_bloom_render_pass, setup_dwg_color_grading_render_pass, setup_lut_render_pass,
+	setup_pbr_visibility_shading_render_pipeline, setup_simple_render_pipeline, setup_smaa_render_pass,
 	setup_swapchain_blit_render_pass, setup_ui_render_pass,
 };
 
@@ -729,6 +730,7 @@ use crate::{
 			agx::AgxToneMapPass,
 			blit::SwapchainBlitPass,
 			bloom::{BloomPass, BloomPassSettings},
+			color_grading::{ColorGradingPass, ColorGradingWorkflow},
 			sky::AtmosphereSkyRenderPass,
 			smaa::SmaaPass,
 		},

@@ -12,6 +12,7 @@ pub mod blit;
 pub mod aces;
 pub mod agx;
 pub mod bloom;
+pub mod color_grading;
 pub mod lut;
 pub mod sky;
 pub mod smaa;

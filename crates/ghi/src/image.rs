@@ -62,6 +62,12 @@ impl<'a> Builder<'a> {
 		self
 	}
 
+	/// Adds image uses while preserving every other builder option.
+	pub fn additional_uses(mut self, uses: Uses) -> Self {
+		self.resource_uses |= uses;
+		self
+	}
+
 	pub fn extent(mut self, extent: Extent) -> Self {
 		self.extent = extent;
 		self
@@ -171,6 +177,7 @@ mod tests {
 	#[test]
 	fn builder_preserves_all_explicit_image_constraints() {
 		let builder = Builder::new(Formats::BC7, Uses::Image | Uses::TransferDestination)
+			.additional_uses(Uses::TransferSource)
 			.name("albedo")
 			.extent(Extent::rectangle(64, 32))
 			.device_accesses(DeviceAccesses::HostToDevice)
@@ -181,7 +188,10 @@ mod tests {
 
 		assert_eq!(builder.get_name(), Some("albedo"));
 		assert_eq!(builder.extent, Extent::rectangle(64, 32));
-		assert_eq!(builder.resource_uses, Uses::Image | Uses::TransferDestination);
+		assert_eq!(
+			builder.resource_uses,
+			Uses::Image | Uses::TransferDestination | Uses::TransferSource
+		);
 		assert_eq!(builder.device_accesses, DeviceAccesses::HostToDevice);
 		assert_eq!(builder.use_case, UseCases::DYNAMIC);
 		assert_eq!(builder.mip_levels, 7);

@@ -7,12 +7,12 @@
 use std::{
 	io::Write as _,
 	sync::{
-		mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
 		Mutex,
+		mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
 	},
 };
 
-use flate2::{write::ZlibEncoder, Compression};
+use flate2::{Compression, write::ZlibEncoder};
 
 const SCREENSHOT_QUEUE_CAPACITY: usize = 8;
 
@@ -36,10 +36,14 @@ impl ScreenshotBroker {
 		}
 	}
 
-	/// Submits one sink capture and returns its one-shot response receiver.
-	pub fn request(&self, sink: usize) -> Result<Receiver<ScreenshotResult>, ScreenshotSubmitError> {
+	/// Submits one capture and returns its one-shot response receiver.
+	pub fn request(
+		&self,
+		sink: usize,
+		capture: ScreenshotCapture,
+	) -> Result<Receiver<ScreenshotResult>, ScreenshotSubmitError> {
 		let (respond, response) = mpsc::sync_channel(1);
-		match self.requests.try_send(ScreenshotRequest { sink, respond }) {
+		match self.requests.try_send(ScreenshotRequest { sink, capture, respond }) {
 			Ok(()) => Ok(response),
 			Err(TrySendError::Full(_)) => Err(ScreenshotSubmitError::QueueFull),
 			Err(TrySendError::Disconnected(_)) => {
@@ -63,9 +67,17 @@ impl ScreenshotBroker {
 	}
 }
 
-/// The `ScreenshotRequest` struct carries one selected sink and its one-shot completion channel.
+/// The `ScreenshotCapture` enum identifies where a screenshot is transferred from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScreenshotCapture {
+	FinalSwapchain,
+	AfterPass { pass: String, target: String },
+}
+
+/// The `ScreenshotRequest` struct carries one selected capture and its one-shot completion channel.
 pub struct ScreenshotRequest {
 	pub(crate) sink: usize,
+	pub(crate) capture: ScreenshotCapture,
 	respond: SyncSender<ScreenshotResult>,
 }
 
@@ -87,6 +99,9 @@ pub struct Screenshot {
 pub enum ScreenshotError {
 	SinkNotFound,
 	SinkUnavailable,
+	PassNotFound,
+	PassAmbiguous,
+	TargetNotWritten,
 	Internal(String),
 }
 
@@ -104,21 +119,26 @@ impl From<crate::rendering::renderer::RendererScreenshotError> for ScreenshotErr
 		match error {
 			RendererScreenshotError::SinkNotFound => Self::SinkNotFound,
 			RendererScreenshotError::SinkUnavailable => Self::SinkUnavailable,
+			RendererScreenshotError::PassNotFound => Self::PassNotFound,
+			RendererScreenshotError::PassAmbiguous => Self::PassAmbiguous,
+			RendererScreenshotError::TargetNotWritten => Self::TargetNotWritten,
 			RendererScreenshotError::Transfer(error) => Self::Internal(error.to_string()),
 		}
 	}
 }
 
-/// Encodes an owned BGRA8 texture readback as an RGBA PNG image.
-pub(crate) fn encode_bgra_png(readback: ghi::TextureReadback) -> Result<Vec<u8>, String> {
-	if !matches!(readback.format, ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB) {
-		return Err(ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string());
-	}
+/// Encodes a supported texture readback as an RGBA8 PNG image.
+pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Vec<u8>, String> {
+	let bytes_per_pixel = match readback.format {
+		ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => 4,
+		ghi::Formats::RGBA16UNORM => 8,
+		_ => return Err(ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string()),
+	};
 	let width = readback.extent.width() as usize;
 	let height = readback.extent.height() as usize;
 	let bytes_per_row = readback.bytes_per_row;
 	let row_size = width
-		.checked_mul(4)
+		.checked_mul(bytes_per_pixel)
 		.ok_or_else(|| "Screenshot row size overflowed. The most likely cause is an invalid sink extent.".to_string())?;
 	let required = bytes_per_row
 		.checked_mul(height)
@@ -131,12 +151,23 @@ pub(crate) fn encode_bgra_png(readback: ghi::TextureReadback) -> Result<Vec<u8>,
 	}
 
 	// PNG scanlines start with a filter byte. Convert only visible pixels so GPU row padding never enters the image.
-	let scanline_size = row_size + 1;
+	let scanline_size = width * 4 + 1;
 	let mut filtered = Vec::with_capacity(scanline_size * height);
 	for row in readback.bytes.chunks_exact(bytes_per_row).take(height) {
 		filtered.push(0);
-		for pixel in row[..row_size].chunks_exact(4) {
-			filtered.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+		match readback.format {
+			ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => {
+				for pixel in row[..row_size].chunks_exact(4) {
+					filtered.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+				}
+			}
+			ghi::Formats::RGBA16UNORM => {
+				for channel in row[..row_size].chunks_exact(2) {
+					let value = u32::from(u16::from_ne_bytes([channel[0], channel[1]]));
+					filtered.push(((value * 255 + 32_767) / 65_535) as u8);
+				}
+			}
+			_ => unreachable!("screenshot format was validated before encoding"),
 		}
 	}
 
@@ -198,13 +229,21 @@ mod tests {
 	#[test]
 	fn broker_bounds_requests_and_keeps_duplicates_independent() {
 		let broker = ScreenshotBroker::with_capacity(2);
-		let first = broker.request(3).expect("queue first screenshot");
-		let second = broker.request(3).expect("queue duplicate screenshot");
-		assert!(matches!(broker.request(4), Err(ScreenshotSubmitError::QueueFull)));
+		let first = broker
+			.request(3, ScreenshotCapture::FinalSwapchain)
+			.expect("queue first screenshot");
+		let second = broker
+			.request(3, ScreenshotCapture::FinalSwapchain)
+			.expect("queue duplicate screenshot");
+		assert!(matches!(
+			broker.request(4, ScreenshotCapture::FinalSwapchain),
+			Err(ScreenshotSubmitError::QueueFull)
+		));
 
 		let mut requests = broker.drain();
 		assert_eq!(requests.len(), 2);
 		assert_eq!(requests[0].sink, 3);
+		assert_eq!(requests[0].capture, ScreenshotCapture::FinalSwapchain);
 		assert_eq!(requests[1].sink, 3);
 		requests.remove(0).complete(Ok(Screenshot { frame: 9, png: vec![1] }));
 		requests.remove(0).complete(Ok(Screenshot { frame: 9, png: vec![2] }));
@@ -216,7 +255,7 @@ mod tests {
 	#[test]
 	fn png_converts_bgra_formats_and_ignores_pitched_padding() {
 		for format in [ghi::Formats::BGRAu8, ghi::Formats::BGRAsRGB] {
-			let png = encode_bgra_png(readback(vec![10, 20, 30, 255, 99, 99, 99, 99], format, 8)).expect("encode PNG");
+			let png = encode_screenshot_png(readback(vec![10, 20, 30, 255, 99, 99, 99, 99], format, 8)).expect("encode PNG");
 			assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
 			let idat_length = u32::from_be_bytes(png[33..37].try_into().unwrap()) as usize;
@@ -228,11 +267,25 @@ mod tests {
 	}
 
 	#[test]
+	fn png_converts_rgba16_unorm_and_ignores_pitched_padding() {
+		let values = [0u16, 32_768, 65_535, 257];
+		let mut bytes = values.into_iter().flat_map(u16::to_ne_bytes).collect::<Vec<_>>();
+		bytes.extend_from_slice(&[99; 8]);
+		let png = encode_screenshot_png(readback(bytes, ghi::Formats::RGBA16UNORM, 16)).expect("encode PNG");
+
+		let idat_length = u32::from_be_bytes(png[33..37].try_into().unwrap()) as usize;
+		let mut decoder = ZlibDecoder::new(&png[41..41 + idat_length]);
+		let mut scanline = Vec::new();
+		decoder.read_to_end(&mut scanline).expect("decode IDAT");
+		assert_eq!(scanline, [0, 0, 128, 255, 1]);
+	}
+
+	#[test]
 	fn png_rejects_invalid_readbacks() {
-		let error = encode_bgra_png(readback(vec![0; 4], ghi::Formats::RGBA8UNORM, 4)).expect_err("reject RGBA readback");
+		let error = encode_screenshot_png(readback(vec![0; 4], ghi::Formats::RGBA8UNORM, 4)).expect_err("reject RGBA readback");
 		assert!(error.starts_with("Texture transfer format is unsupported."));
 
-		let error = encode_bgra_png(readback(vec![0; 3], ghi::Formats::BGRAu8, 4)).expect_err("reject incomplete row");
+		let error = encode_screenshot_png(readback(vec![0; 3], ghi::Formats::BGRAu8, 4)).expect_err("reject incomplete row");
 		assert!(error.starts_with("Screenshot buffer is incomplete."));
 	}
 

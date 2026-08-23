@@ -143,6 +143,7 @@ pub struct RenderPassBuilder<'a> {
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
+	written_image_indices: Vec<usize>,
 	pub(crate) images: &'a mut RenderTargets,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 }
@@ -160,6 +161,7 @@ impl<'a> RenderPassBuilder<'a> {
 			sink_id,
 			swapchain,
 			consumed_resources: Vec::new(),
+			written_image_indices: Vec::new(),
 			images,
 			pipeline_manager,
 		}
@@ -178,22 +180,25 @@ impl<'a> RenderPassBuilder<'a> {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 		self.images.write_to(name, self.sink_id);
 
-		let (image, format) = *self.images.get(name, self.sink_id).expect("Image not found");
+		let image_index = self.images.get_image_index(name, self.sink_id).expect("Image not found");
+		self.written_image_indices.push(image_index);
+		let (image, format) = self.images.image(image_index).expect("Image not found");
 
 		RenderToResult { image, format }
 	}
 
-	/// Creates a render-target image and returns it for writing by this render pass.
+	/// Creates a transferable render-target image and returns it for writing by this render pass.
 	pub fn create_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
-		self.consumed_resources
-			.push((builder.get_name().unwrap(), ghi::AccessPolicies::WRITE));
-
-		let name = builder.get_name().unwrap().to_string();
+		let name = builder.get_name().expect(
+			"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
+		);
 		let format = builder.get_format();
+		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 
-		let image = self.context.build_image(builder);
+		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 
-		self.images.insert(name, self.sink_id, image.into(), format);
+		let image_index = self.images.insert(name.to_string(), self.sink_id, image.into(), format);
+		self.written_image_indices.push(image_index);
 
 		RenderToResult {
 			image: image.into(),
@@ -221,6 +226,11 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {
 		self.swapchain
+	}
+
+	/// Snapshots every current name and alias that resolves to an image written by this pass.
+	pub(crate) fn writable_targets(&self) -> Vec<(String, ghi::BaseImageHandle)> {
+		self.images.names_for_images(self.sink_id, &self.written_image_indices)
 	}
 }
 

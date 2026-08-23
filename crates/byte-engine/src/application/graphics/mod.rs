@@ -355,17 +355,20 @@ impl GraphicsApplication {
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
 			let requests = self.screenshot_broker.drain();
-			let sinks = requests.iter().map(|request| request.sink).collect::<Vec<_>>();
+			let captures = requests
+				.iter()
+				.map(|request| (request.sink, &request.capture))
+				.collect::<Vec<_>>();
 			let frame_allocator = &self.application.frame_allocator;
-			let captures = self
+			let results = self
 				.renderer
-				.prepare(&mut self.renderer_transforms_listener, frame_allocator, &sinks);
-			for (request, capture) in requests.into_iter().zip(captures) {
+				.prepare(&mut self.renderer_transforms_listener, frame_allocator, &captures);
+			for (request, capture) in requests.into_iter().zip(results) {
 				let result =
 					capture
 						.map_err(crate::inspector::screenshot::ScreenshotError::from)
 						.and_then(|(frame, readback)| {
-							crate::inspector::screenshot::encode_bgra_png(readback)
+							crate::inspector::screenshot::encode_screenshot_png(readback)
 								.map(|png| crate::inspector::screenshot::Screenshot { frame, png })
 								.map_err(crate::inspector::screenshot::ScreenshotError::Internal)
 						});
@@ -679,43 +682,45 @@ use std::{collections::VecDeque, sync::Arc, thread};
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{
 	resource::{
-		resource_manager::ResourceManager, ReDBStorageBackend, ResourceCompression, ResourceStorageMode,
-		ResourceStorageSettings,
+		ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings,
+		resource_manager::ResourceManager,
 	},
 	resources::material::Material,
 };
 use smallvec::SmallVec;
-use tracing::{debug_span, instrument, span, Level};
-use utils::{sync::RwLock, Box};
+use tracing::{Level, debug_span, instrument, span};
+use utils::{Box, sync::RwLock};
 
 use super::{
-	application::{Application, BaseApplication},
 	Events, Parameter, Receiver, Sender, Time,
+	application::{Application, BaseApplication},
 };
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
 	configuration::Configuration,
 	core::{
+		Entity, EntityHandle,
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Creator, Factory},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
-		task, Entity, EntityHandle,
+		task,
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	ghi::command_buffer::CommandBufferRecording as _,
-	input::{input_trigger, Action},
-	inspector::{http::HttpInspectorServer, Inspector},
+	input::{Action, input_trigger},
+	inspector::{Inspector, http::HttpInspectorServer},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
+		Environment, RenderableMesh, UpdatePose,
 		lights::{Light, Lights},
 		pipeline_manager::PipelineManager,
 		pipelines::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
 			visibility::{
-				resource_manager::VisibilityPipelineResourceManager, VisibilityPipelineManager, VisibilityPipelineSettings,
-				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
+				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
+				VisibilityPipelineSettings, resource_manager::VisibilityPipelineResourceManager,
 			},
 		},
 		render_pass::RenderPass,
@@ -727,7 +732,7 @@ use crate::{
 			sky::AtmosphereSkyRenderPass,
 			smaa::SmaaPass,
 		},
-		renderable, renderer, Environment, RenderableMesh, UpdatePose,
+		renderable, renderer,
 	},
 	time::MediaTime,
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
@@ -746,7 +751,7 @@ impl Creator<Window> for GraphicsApplication {
 use crate::{
 	gameplay::anchor::AnchorSystem,
 	input, physics,
-	rendering::{self, renderer::Renderer, window::Window, Camera},
+	rendering::{self, Camera, renderer::Renderer, window::Window},
 };
 pub mod defaults;
 mod integrations;

@@ -4,7 +4,7 @@
 //! [`crate::rendering::RenderPass`] values with [`Renderer`]. The graphics
 //! application owns frame timing and calls the renderer in lifecycle order.
 
-type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
+type RenderPassFactory = dyn for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass>;
 type SinkId = usize;
 /// Identifies a render pass created by a render-pass factory.
 type RenderPassId = usize;
@@ -47,6 +47,7 @@ pub struct Renderer {
 
 	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
+	render_pass_writable_targets: SmallVec<[Vec<(String, ghi::BaseImageHandle)>; 64]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
@@ -224,6 +225,7 @@ impl Renderer {
 
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
+			render_pass_writable_targets: SmallVec::with_capacity(64),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
@@ -353,11 +355,17 @@ impl Renderer {
 		}
 	}
 
-	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
+	fn add_render_pass(
+		&mut self,
+		render_pass: Box<dyn RenderPass>,
+		sink_id: SinkId,
+		writable_targets: Vec<(String, ghi::BaseImageHandle)>,
+	) {
 		let render_pass_id = self.render_passes.len();
 		self.render_passes
 			.push(render_pass_harness_with_state(render_pass, &self.render_pass_states));
 		self.render_passes_by_sink.push((render_pass_id, sink_id));
+		self.render_pass_writable_targets.push(writable_targets);
 	}
 
 	/// Changes the state of every sink-local render pass with the requested stable name.
@@ -382,13 +390,13 @@ impl Renderer {
 	/// Registers a render pass factory that will be instantiated for every current and future sink.
 	pub fn add_post_scene_render_pass_for_all_sinks<F>(&mut self, render_pass_factory: F)
 	where
-		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static,
+		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass> + 'static,
 	{
 		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
 		let sink_ids: SmallVec<[usize; 16]> = self.sink_cameras.iter().map(|(sink_id, _)| *sink_id).collect();
 
 		for sink_id in sink_ids {
-			let render_pass = {
+			let (render_pass, writable_targets) = {
 				let swapchain = self.windows[sink_id].1;
 				let mut render_pass_builder = RenderPassBuilder::new(
 					&mut self.context,
@@ -397,10 +405,12 @@ impl Renderer {
 					swapchain,
 					self.pipeline_compilation_client.clone(),
 				);
-				render_pass_factory(&mut render_pass_builder)
+				let render_pass = render_pass_factory(&mut render_pass_builder);
+				let writable_targets = render_pass_builder.writable_targets();
+				(render_pass, writable_targets)
 			};
 
-			self.add_render_pass(render_pass, sink_id);
+			self.add_render_pass(render_pass, sink_id, writable_targets);
 		}
 
 		self.post_scene_render_pass_factories.push(render_pass_factory);
@@ -408,7 +418,8 @@ impl Renderer {
 
 	/// Instantiates all registered post-scene render pass factories for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let mut render_passes_for_sink: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
+		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::BaseImageHandle)>); 16]> =
+			SmallVec::new();
 
 		let swapchain = self.windows[sink_id].1;
 
@@ -421,14 +432,15 @@ impl Renderer {
 					swapchain,
 					self.pipeline_compilation_client.clone(),
 				);
-				render_pass_factory(&mut render_pass_builder)
+				let render_pass = render_pass_factory(&mut render_pass_builder);
+				(render_pass, render_pass_builder.writable_targets())
 			};
 
 			render_passes_for_sink.push(render_pass);
 		}
 
-		for render_pass in render_passes_for_sink {
-			self.add_render_pass(render_pass, sink_id);
+		for (render_pass, writable_targets) in render_passes_for_sink {
+			self.add_render_pass(render_pass, sink_id, writable_targets);
 		}
 	}
 
@@ -444,7 +456,7 @@ impl Renderer {
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
 		frame_allocator: &bumpalo::Bump,
-		screenshot_sinks: &[usize],
+		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
 	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
 		let span = debug_span!(
 			"Renderer::prepare",
@@ -455,7 +467,7 @@ impl Renderer {
 
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
-			return screenshot_sinks
+			return screenshot_requests
 				.iter()
 				.map(|_| Err(RendererScreenshotError::SinkNotFound))
 				.collect();
@@ -464,6 +476,12 @@ impl Renderer {
 			self.initialize_pending_sink_resources();
 		}
 		self.apply_configuration();
+
+		// Resolve names outside command recording so the hot path only compares pass IDs and transfers handles.
+		let screenshot_captures = screenshot_requests
+			.iter()
+			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
+			.collect::<Vec<_>>();
 
 		self.context.start_frame_capture();
 
@@ -507,7 +525,7 @@ impl Renderer {
 		let render_passes_by_sink = &self.render_passes_by_sink;
 		let frame_allocator = frame_allocator;
 		let submitted_frame = self.started_frame_count - 1;
-		let mut screenshot_transfers = SmallVec::<[Result<ghi::TextureCopyHandle, RendererScreenshotError>; 16]>::new();
+		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
 
 		{
 			let span = debug_span!("Renderer::queue_execute");
@@ -605,20 +623,15 @@ impl Renderer {
 					};
 
 					// A list of render pass commands and their corresponding pass/sink indices.
-					let render_pass_commands: SmallVec<[(RenderPassReturn, RenderPassId, SinkId); 64]> = {
+					let render_pass_commands: SmallVec<[(Option<RenderPassReturn>, RenderPassId, SinkId); 64]> = {
 						let span = debug_span!("Renderer::prepare_render_passes");
 						let _enter = span.enter();
 						render_passes_by_sink
 							.iter()
 							.filter_map(|(render_pass_id, sink_id)| {
-								if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
-									if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
-										if let Some(command) = render_pass.prepare(frame, sink, frame_allocator) {
-											return Some((command, *render_pass_id, sink.index()));
-										}
-									}
-								}
-								None
+								let render_pass = render_passes.get_mut(*render_pass_id)?;
+								let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
+								Some((render_pass.prepare(frame, sink, frame_allocator), *render_pass_id, sink.index()))
 							})
 							.collect()
 					};
@@ -657,22 +670,41 @@ impl Renderer {
 					{
 						let span = debug_span!("Renderer::record_render_pass_commands");
 						let _enter = span.enter();
-						for (command, _render_pass_id, sink) in render_pass_commands {
-							let attachment_infos = render_targets.get_attachment_infos(sink);
-							command(&mut *command_buffer_recording, &attachment_infos);
+						for (command, render_pass_id, sink) in render_pass_commands {
+							if let Some(command) = command {
+								let attachment_infos = render_targets.get_attachment_infos(sink);
+								command(&mut *command_buffer_recording, &attachment_infos);
+							}
+							for request_index in captures_after_pass(&screenshot_captures, render_pass_id) {
+								let Ok(ResolvedScreenshotCapture::AfterPass { image, .. }) = screenshot_captures[request_index]
+								else {
+									unreachable!();
+								};
+								screenshot_transfers[request_index] = Some(
+									command_buffer_recording
+										.transfer_texture(image.into())
+										.map_err(RendererScreenshotError::Transfer),
+								);
+							}
 						}
 					}
 
-					// Record each request independently so duplicate sinks retain distinct consuming transfer handles.
-					for sink in screenshot_sinks {
-						let transfer = match swapchains.get(*sink) {
-							None => Err(RendererScreenshotError::SinkNotFound),
-							Some(None) => Err(RendererScreenshotError::SinkUnavailable),
-							Some(Some((_present_key, _extent, swapchain))) => command_buffer_recording
-								.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
-								.map_err(RendererScreenshotError::Transfer),
+					// Final captures remain after every pass; duplicate requests receive independent transfer handles.
+					for (request_index, capture) in screenshot_captures.iter().enumerate() {
+						let transfer = match capture {
+							Err(error) => Some(Err(*error)),
+							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => Some(match swapchains.get(*sink) {
+								None => Err(RendererScreenshotError::SinkNotFound),
+								Some(None) => Err(RendererScreenshotError::SinkUnavailable),
+								Some(Some((_present_key, _extent, swapchain))) => command_buffer_recording
+									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
+									.map_err(RendererScreenshotError::Transfer),
+							}),
+							Ok(ResolvedScreenshotCapture::AfterPass { .. }) => None,
 						};
-						screenshot_transfers.push(transfer);
+						if transfer.is_some() {
+							screenshot_transfers[request_index] = transfer;
+						}
 					}
 				});
 
@@ -680,20 +712,51 @@ impl Renderer {
 			});
 		}
 
-		if screenshot_transfers.iter().any(Result::is_ok) {
+		if screenshot_transfers.iter().any(|transfer| matches!(transfer, Some(Ok(_)))) {
 			self.context.wait_for_synchronizer(self.render_finished_synchronizer);
 		}
 
 		screenshot_transfers
 			.into_iter()
 			.map(|transfer| {
-				let handle = transfer?;
+				let handle = transfer.unwrap_or(Err(RendererScreenshotError::SinkUnavailable))?;
 				self.context
 					.get_image_data(handle)
 					.map(|readback| (submitted_frame, readback))
 					.map_err(RendererScreenshotError::Transfer)
 			})
 			.collect()
+	}
+
+	/// Resolves a screenshot destination against immutable sink-local pass metadata.
+	fn resolve_screenshot_capture(
+		&self,
+		sink: usize,
+		capture: &crate::inspector::screenshot::ScreenshotCapture,
+	) -> Result<ResolvedScreenshotCapture, RendererScreenshotError> {
+		use crate::inspector::screenshot::ScreenshotCapture;
+		if sink >= self.windows.len() {
+			return Err(RendererScreenshotError::SinkNotFound);
+		}
+		let ScreenshotCapture::AfterPass { pass, target } = capture else {
+			return Ok(ResolvedScreenshotCapture::FinalSwapchain { sink });
+		};
+		let mut matches = self
+			.render_passes_by_sink
+			.iter()
+			.filter(|(id, pass_sink)| *pass_sink == sink && self.render_passes[*id].name() == pass);
+		let Some((pass_id, _)) = matches.next() else {
+			return Err(RendererScreenshotError::PassNotFound);
+		};
+		if matches.next().is_some() {
+			return Err(RendererScreenshotError::PassAmbiguous);
+		}
+		let image = self.render_pass_writable_targets[*pass_id]
+			.iter()
+			.rev()
+			.find_map(|(name, image)| (name == target).then_some(*image))
+			.ok_or(RendererScreenshotError::TargetNotWritten)?;
+		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, image })
 	}
 
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
@@ -781,10 +844,35 @@ impl Renderer {
 		self.cameras.push((handle, camera, Transform::default()));
 	}
 }
+/// Returns request slots transferred immediately after one prepared pass entry.
+pub(super) fn captures_after_pass(
+	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
+	pass: RenderPassId,
+) -> impl Iterator<Item = usize> + '_ {
+	captures.iter().enumerate().filter_map(move |(index, capture)| {
+		matches!(capture, Ok(ResolvedScreenshotCapture::AfterPass { pass: capture_pass, .. }) if *capture_pass == pass)
+			.then_some(index)
+	})
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ResolvedScreenshotCapture {
+	FinalSwapchain {
+		sink: SinkId,
+	},
+	AfterPass {
+		pass: RenderPassId,
+		image: ghi::BaseImageHandle,
+	},
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RendererScreenshotError {
 	SinkNotFound,
 	SinkUnavailable,
+	PassNotFound,
+	PassAmbiguous,
+	TargetNotWritten,
 	Transfer(ghi::TextureTransferError),
 }
 

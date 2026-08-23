@@ -385,29 +385,29 @@ use std::num::{NonZero, NonZeroUsize};
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 #[cfg(debug_assertions)]
 use resource_management::asset::{
-	handler::implementations::bema::BEMAAssetHandler, handler::implementations::besl::BESLShaderAssetHandler,
-	handler::implementations::exr::EXRAssetHandler, handler::implementations::fbx::FBXAssetHandler,
-	handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
-	handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
-	handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
-	FileStorageBackend,
+	FileStorageBackend, handler::implementations::bema::BEMAAssetHandler,
+	handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::exr::EXRAssetHandler,
+	handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
+	handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
+	handler::implementations::ogg::OGGAssetHandler, handler::implementations::png::PNGAssetHandler,
+	handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
 };
 #[cfg(debug_assertions)]
 use resource_management::{
 	ibl::IBLGenerator,
-	resources::mips::{gpu::MaterialMipGenerator, CPUMipGenerationBackend, MipGenerationBackend},
+	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend, gpu::MaterialMipGenerator},
 };
 use tracing::debug_span;
 use utils::Extent;
 
-use super::{setup_pbr_visibility_shading_render_pipeline, GraphicsApplication};
+use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline};
 #[cfg(debug_assertions)]
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
 use crate::{
 	animation::graph::{AnimationPool, AnimationPoolConfig},
-	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
+	application::{Events, application::Application, parameters::Parameters as _, thread::Thread},
 	audio::{
 		audio_system::{AudioSystem, DefaultAudioSystem},
 		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
@@ -424,7 +424,7 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use resource_management::{
-		asset::{manager::AssetManager, FileStorageBackend},
+		asset::{FileStorageBackend, manager::AssetManager},
 		resource::storage_backend::redb::ReDBStorageBackend,
 	};
 

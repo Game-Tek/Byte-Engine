@@ -20,7 +20,7 @@ use super::GraphicsApplication;
 use crate::input;
 #[cfg(feature = "dmx")]
 use crate::{
-	application::{parameters::Parameters as _, thread::Thread, Events, Parameter},
+	application::{Events, Parameter, parameters::Parameters as _, thread::Thread},
 	core::listener::{DefaultListener, Listener as _},
 };
 

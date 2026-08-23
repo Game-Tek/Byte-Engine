@@ -164,12 +164,47 @@ impl RenderTargets {
 		&self.images.get(index).unwrap().0
 	}
 
-	fn get_image_index(&self, name: &str, sink_id: usize) -> Option<usize> {
+	pub(crate) fn image(&self, index: usize) -> Option<(ghi::BaseImageHandle, ghi::Formats)> {
+		self.images.get(index).copied()
+	}
+
+	pub(crate) fn get_image_index(&self, name: &str, sink_id: usize) -> Option<usize> {
 		self.by_name
 			.iter()
 			.rev()
 			.find(|(sink, n, _)| *sink == sink_id && n == name)
 			.map(|(_, _, i)| *i)
+	}
+
+	/// Snapshots current names that resolve to one of the selected image indices.
+	pub(crate) fn names_for_images(&self, sink_id: usize, indices: &[usize]) -> Vec<(String, ghi::BaseImageHandle)> {
+		self.by_name
+			.iter()
+			.enumerate()
+			.filter(|(position, (sink, _, index))| {
+				*sink == sink_id && indices.contains(index) && self.is_current_name_mapping(*position)
+			})
+			.filter_map(|(_, (_, name, index))| self.images.get(*index).map(|(image, _)| (name.clone(), *image)))
+			.collect()
+	}
+
+	fn is_current_name_mapping(&self, position: usize) -> bool {
+		let (sink, name, _) = &self.by_name[position];
+		!self.by_name[position + 1..]
+			.iter()
+			.any(|(later_sink, later_name, _)| later_sink == sink && later_name == name)
+	}
+
+	#[cfg(test)]
+	fn name_indices_for_images(&self, sink_id: usize, indices: &[usize]) -> Vec<(String, usize)> {
+		self.by_name
+			.iter()
+			.enumerate()
+			.filter(|(position, (sink, _, index))| {
+				*sink == sink_id && indices.contains(index) && self.is_current_name_mapping(*position)
+			})
+			.map(|(_, (_, name, index))| (name.clone(), *index))
+			.collect()
 	}
 
 	fn get_attachment_index(&self, name: &str, sink_id: usize) -> Option<usize> {
@@ -188,5 +223,38 @@ impl RenderTargets {
 
 			self.images.get(*i).map(|(image, _)| image)
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::RenderTargets;
+
+	#[test]
+	fn writable_snapshot_excludes_read_only_images() {
+		let mut targets = RenderTargets::new();
+		targets.by_name = vec![(0, "written".into(), 3), (0, "read-only".into(), 4)];
+
+		assert_eq!(targets.name_indices_for_images(0, &[3]), [("written".into(), 3)]);
+	}
+
+	#[test]
+	fn alias_snapshot_is_unchanged_by_a_later_alias() {
+		let mut targets = RenderTargets::new();
+		targets.by_name = vec![(0, "Bloom Output".into(), 3), (0, "main".into(), 3)];
+		let bloom = targets.name_indices_for_images(0, &[3]);
+
+		targets.by_name.push((0, "main".into(), 4));
+
+		assert_eq!(bloom, [("Bloom Output".into(), 3), ("main".into(), 3)]);
+		assert_eq!(targets.get_image_index("main", 0), Some(4));
+	}
+
+	#[test]
+	fn current_snapshot_excludes_an_overwritten_alias() {
+		let mut targets = RenderTargets::new();
+		targets.by_name = vec![(0, "image-a".into(), 3), (0, "main".into(), 3), (0, "main".into(), 4)];
+
+		assert_eq!(targets.name_indices_for_images(0, &[3]), [("image-a".into(), 3)]);
 	}
 }

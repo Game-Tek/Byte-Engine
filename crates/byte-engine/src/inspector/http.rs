@@ -5,15 +5,15 @@ use std::{
 };
 
 use oxhttp::{
-	model::{Body, Method, Response, StatusCode},
 	ListeningServer, Server,
+	model::{Body, Method, Response, StatusCode},
 };
 
 use crate::{
 	core::EntityHandle,
 	inspector::{
-		screenshot::{ScreenshotError, ScreenshotSubmitError},
 		Inspector,
+		screenshot::{ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
 	},
 };
 
@@ -74,11 +74,7 @@ impl HttpInspectorServer {
 						let filter = split.next().unwrap_or("");
 						let value = split.next().unwrap_or("");
 
-						if filter.starts_with("class") {
-							Some(value)
-						} else {
-							None
-						}
+						if filter.starts_with("class") { Some(value) } else { None }
 					} else {
 						None
 					}
@@ -159,19 +155,22 @@ impl HttpInspectorServer {
 
 /// Handles one screenshot request after HTTP routing has selected the endpoint.
 fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
-	let Some(sink) = parse_sink(query) else {
-		return response(
-			StatusCode::BAD_REQUEST,
-			"Screenshot sink is missing or malformed. The most likely cause is that the request did not use `?sink=<usize>`.",
-		);
+	let (sink, capture) = match parse_screenshot_query(query) {
+		Ok(request) => request,
+		Err(()) => {
+			return response(
+				StatusCode::BAD_REQUEST,
+				"Screenshot query is malformed. The most likely cause is a missing sink, an unknown or duplicate parameter, or specifying only one of `pass` and `target`.",
+			);
+		}
 	};
-	let response_receiver = match inspector.screenshots().request(sink) {
+	let response_receiver = match inspector.screenshots().request(sink, capture) {
 		Ok(receiver) => receiver,
 		Err(ScreenshotSubmitError::QueueFull) => {
 			return response(
 				StatusCode::TOO_MANY_REQUESTS,
 				"Screenshot queue is full. The most likely cause is that capture requests arrive faster than graphics frames can complete them.",
-			)
+			);
 		}
 	};
 
@@ -191,6 +190,18 @@ fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<B
 			StatusCode::CONFLICT,
 			"Screenshot sink is unavailable. The most likely cause is that its swapchain image could not be acquired for this frame.",
 		),
+		Ok(Err(ScreenshotError::PassNotFound)) => response(
+			StatusCode::NOT_FOUND,
+			"Screenshot render pass was not found. The most likely cause is that the selected sink has no pass with the requested name.",
+		),
+		Ok(Err(ScreenshotError::PassAmbiguous)) => response(
+			StatusCode::CONFLICT,
+			"Screenshot render pass is ambiguous. The most likely cause is that the selected sink has multiple passes with the requested name.",
+		),
+		Ok(Err(ScreenshotError::TargetNotWritten)) => response(
+			StatusCode::NOT_FOUND,
+			"Screenshot target was not written by the render pass. The most likely cause is that the target name is missing, read-only, or belongs to another pass.",
+		),
 		Ok(Err(ScreenshotError::Internal(error))) => response(StatusCode::INTERNAL_SERVER_ERROR, &error),
 		Err(_) => response(
 			StatusCode::GATEWAY_TIMEOUT,
@@ -199,15 +210,64 @@ fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<B
 	}
 }
 
-fn parse_sink(query: Option<&str>) -> Option<usize> {
-	let query = query?;
-	let mut parameters = query.split('&');
-	let parameter = parameters.next()?;
-	if parameters.next().is_some() {
-		return None;
+/// Parses the complete screenshot query without accepting unknown or duplicate parameters.
+fn parse_screenshot_query(query: Option<&str>) -> Result<(usize, ScreenshotCapture), ()> {
+	let mut sink = None;
+	let mut pass = None;
+	let mut target = None;
+	for parameter in query.ok_or(())?.split('&') {
+		let (name, value) = parameter.split_once('=').ok_or(())?;
+		let value = decode_query_component(value)?;
+		if value.is_empty() {
+			return Err(());
+		}
+		let slot = match name {
+			"sink" => &mut sink,
+			"pass" => &mut pass,
+			"target" => &mut target,
+			_ => return Err(()),
+		};
+		if slot.replace(value).is_some() {
+			return Err(());
+		}
 	}
-	let (name, value) = parameter.split_once('=')?;
-	(name == "sink" && !value.is_empty()).then(|| value.parse().ok()).flatten()
+	let sink = sink.ok_or(())?.parse().map_err(|_| ())?;
+	let capture = match (pass, target) {
+		(None, None) => ScreenshotCapture::FinalSwapchain,
+		(Some(pass), Some(target)) => ScreenshotCapture::AfterPass { pass, target },
+		_ => return Err(()),
+	};
+	Ok((sink, capture))
+}
+
+/// Decodes one URL query component and rejects incomplete escapes and non-UTF-8 bytes.
+fn decode_query_component(value: &str) -> Result<String, ()> {
+	let bytes = value.as_bytes();
+	let mut decoded = Vec::with_capacity(bytes.len());
+	let mut index = 0;
+	while index < bytes.len() {
+		match bytes[index] {
+			b'+' => decoded.push(b' '),
+			b'%' => {
+				let high = bytes.get(index + 1).copied().and_then(hex_value).ok_or(())?;
+				let low = bytes.get(index + 2).copied().and_then(hex_value).ok_or(())?;
+				decoded.push(high << 4 | low);
+				index += 2;
+			}
+			byte => decoded.push(byte),
+		}
+		index += 1;
+	}
+	String::from_utf8(decoded).map_err(|_| ())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+	match byte {
+		b'0'..=b'9' => Some(byte - b'0'),
+		b'a'..=b'f' => Some(byte - b'a' + 10),
+		b'A'..=b'F' => Some(byte - b'A' + 10),
+		_ => None,
+	}
 }
 
 fn response(status: StatusCode, message: &str) -> Response<Body> {
@@ -230,7 +290,7 @@ mod tests {
 		application::Sender,
 		configuration::Configuration,
 		core::EntityHandle,
-		inspector::{screenshot::Screenshot, Inspector},
+		inspector::{Inspector, screenshot::Screenshot},
 	};
 
 	#[test]
@@ -312,6 +372,68 @@ mod tests {
 		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
 		let response = super::screenshot_response(&inspector, None);
 		assert_eq!(response.status(), oxhttp::model::StatusCode::BAD_REQUEST);
+	}
+
+	#[test]
+	fn screenshot_query_accepts_the_pair_in_any_order() {
+		use crate::inspector::screenshot::ScreenshotCapture;
+
+		for query in ["sink=2&pass=bloom&target=main", "target=main&sink=2&pass=bloom"] {
+			assert_eq!(
+				super::parse_screenshot_query(Some(query)),
+				Ok((
+					2,
+					ScreenshotCapture::AfterPass {
+						pass: "bloom".to_string(),
+						target: "main".to_string(),
+					}
+				))
+			);
+		}
+	}
+
+	#[test]
+	fn screenshot_query_decodes_form_components() {
+		use crate::inspector::screenshot::ScreenshotCapture;
+
+		for query in [
+			"sink=2&pass=atmosphere%20sky&target=lit%20main",
+			"sink=2&pass=atmosphere+sky&target=lit+main",
+		] {
+			assert_eq!(
+				super::parse_screenshot_query(Some(query)),
+				Ok((
+					2,
+					ScreenshotCapture::AfterPass {
+						pass: "atmosphere sky".to_string(),
+						target: "lit main".to_string(),
+					}
+				))
+			);
+		}
+	}
+
+	#[test]
+	fn screenshot_query_rejects_malformed_escapes_and_invalid_utf8() {
+		for query in [
+			"sink=2&pass=bad%&target=main",
+			"sink=2&pass=bad%2G&target=main",
+			"sink=2&pass=%FF&target=main",
+		] {
+			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
+		}
+	}
+
+	#[test]
+	fn screenshot_query_requires_both_pass_and_target_and_rejects_extras() {
+		for query in [
+			"sink=2&pass=bloom",
+			"sink=2&target=main",
+			"sink=2&pass=bloom&target=main&extra=x",
+			"sink=2&sink=3",
+		] {
+			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
+		}
 	}
 
 	#[test]

@@ -30,6 +30,7 @@ use crate::{
 mod tests {
 	use utils::{hash::HashMapExt as _, Box};
 
+	use super::core::{captures_after_pass, ResolvedScreenshotCapture};
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 
@@ -57,6 +58,20 @@ mod tests {
 		) -> Option<RenderPassReturn<'a>> {
 			None
 		}
+	}
+
+	#[test]
+	fn captures_keep_request_order_at_a_prepared_pass_entry() {
+		let image: ghi::BaseImageHandle = unsafe { std::mem::transmute(7_u64) };
+		let captures = [
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, image }),
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 3, image }),
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, image }),
+		];
+
+		// Scheduling depends on the retained pass entry, not on whether its prepared command is Some or None.
+		assert_eq!(captures_after_pass(&captures, 2).collect::<Vec<_>>(), [0, 2]);
+		assert!(captures_after_pass(&captures, 1).next().is_none());
 	}
 
 	#[test]

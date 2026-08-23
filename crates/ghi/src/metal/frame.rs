@@ -258,10 +258,12 @@ impl Frame<'_> {
 		}
 
 		let mut native_commands = SmallVec::<[queue::NativeCommand; 4]>::new();
+		let mut submitted_readbacks = SmallVec::<[graphics_hardware_interface::TextureCopyHandle; 8]>::new();
 		for command_buffer in command_buffers {
 			let super::FinishedCommandBuffer {
 				command_buffer_handle,
 				command_buffer,
+				texture_readbacks,
 				_marker,
 			} = command_buffer;
 			let command_queue = self.device.command_buffers[command_buffer_handle.0 as usize].queue_handle;
@@ -272,6 +274,7 @@ impl Frame<'_> {
 				"Metal 4 frame batch submission failed. The most likely cause is that a command buffer from another GHI queue was recorded into this execution.",
 			);
 			native_commands.push(command_buffer);
+			submitted_readbacks.extend(texture_readbacks);
 		}
 
 		let uses_proxy = present_keys
@@ -362,6 +365,9 @@ impl Frame<'_> {
 			}
 
 			queue::NativeCommand::submit_batch(&native_commands);
+			for handle in &submitted_readbacks {
+				self.device.texture_readbacks.mark_submitted(*handle);
+			}
 
 			for (_, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {

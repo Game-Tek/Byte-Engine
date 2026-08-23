@@ -169,6 +169,8 @@ impl<'a> CommandBufferRecording<'a> {
 			applied_compute_descriptor_binding: None,
 			applied_render_descriptor_binding: None,
 			active_render_attachment_uses: SmallVec::new(),
+			texture_readbacks: SmallVec::new(),
+			readbacks_finalized: false,
 			_autorelease_pool: autorelease_pool,
 		}
 	}
@@ -278,10 +280,12 @@ impl<'a> CommandBufferRecording<'a> {
 		self.end_render_encoder();
 		self.end_compute_encoder();
 		self.publish_resource_states();
+		self.readbacks_finalized = true;
 
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer.clone(),
+			texture_readbacks: std::mem::take(&mut self.texture_readbacks),
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -647,6 +651,10 @@ impl<'a> CommandBufferRecording<'a> {
 		self.end_render_encoder();
 		self.publish_resource_states();
 		queue::NativeCommand::submit_batch(std::slice::from_ref(&self.command_buffer));
+		for handle in &self.texture_readbacks {
+			self.commit.texture_readbacks.mark_submitted(*handle);
+		}
+		self.readbacks_finalized = true;
 
 		let synchronizer = self.commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
 		// The synchronizer owns the submitted command until its shared-event token completes.

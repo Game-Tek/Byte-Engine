@@ -212,12 +212,14 @@ impl Context {
 		let access = buffer.access;
 		let name = buffer.name.clone();
 
-		let replacement = self.create_buffer_resource(name.as_deref(), size, uses, access);
-
-		let handle = self.buffers.nth_handle(buffer_handle, 0).unwrap();
-
-		*self.buffers.resource_mut(handle) = replacement;
-
-		self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(handle));
+		// Dynamic buffers have one materialized resource per in-flight frame. Resize every existing resource so command recording cannot resolve an older allocation for a nonzero sequence.
+		for frame_index in 0..self.frames as usize {
+			let Some(handle) = self.buffers.nth_handle(buffer_handle, frame_index) else {
+				continue;
+			};
+			let replacement = self.create_buffer_resource(name.as_deref(), size, uses, access);
+			*self.buffers.resource_mut(handle) = replacement;
+			self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(handle));
+		}
 	}
 }

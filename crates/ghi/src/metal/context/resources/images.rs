@@ -92,31 +92,36 @@ impl Context {
 		graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(image_handle.0))
 	}
 
-	pub fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
-		let image = self.images.resource_mut(ImageHandle(texture_copy_handle.0));
-		let Some(staging) = image.staging.as_mut() else {
-			return &[];
-		};
-		let Some((bytes_per_row, ..)) = utils::texture_upload_layout(image.format, image.extent) else {
-			return &[];
-		};
-
-		let data_ptr = NonNull::new(staging.as_mut_ptr() as *mut std::ffi::c_void)
-			.expect("Texture readback buffer was null. The most likely cause is an empty image staging allocation.");
-		let mut region_size = utils::texture_copy_size(image.format, image.extent);
-		region_size.depth = 1;
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: region_size,
-		};
-
-		// `transfer_textures` synchronized the managed texture; now refresh its existing compact CPU staging allocation.
-		unsafe {
-			image
-				.texture
-				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
+	/// Waits for Metal work, copies one transfer result, and releases its native staging buffer.
+	pub fn get_image_data(
+		&mut self,
+		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
+	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
+		self.texture_readbacks.submitted(texture_copy_handle)?;
+		self.wait();
+		let mut readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
+		let pointer = readback.buffer.contents().as_ptr().cast::<u8>();
+		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact authoritative layout.
+		for image in 0..readback.image_count {
+			for row in 0..readback.row_count {
+				let source_offset = image * readback.native_bytes_per_image + row * readback.native_bytes_per_row;
+				let destination_offset = image * readback.bytes_per_image + row * readback.bytes_per_row;
+				unsafe {
+					std::ptr::copy_nonoverlapping(
+						pointer.add(source_offset),
+						readback.bytes.as_mut_ptr().add(destination_offset),
+						readback.bytes_per_row,
+					);
+				}
+			}
 		}
 
-		staging
+		Ok(crate::TextureReadback {
+			bytes: readback.bytes,
+			extent: readback.extent,
+			format: readback.format,
+			bytes_per_row: readback.bytes_per_row,
+			bytes_per_image: readback.bytes_per_image,
+		})
 	}
 }

@@ -48,7 +48,6 @@ pub struct Renderer {
 	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
-	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
 	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
@@ -226,7 +225,6 @@ impl Renderer {
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
-			pending_swapchain_captures: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
 			pending_configuration: VecDeque::new(),
@@ -438,33 +436,16 @@ impl Renderer {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
 	}
 
-	/// Schedules copying a sink's swapchain image into a buffer during the next prepared frame.
-	pub fn capture_swapchain_to_buffer(
-		&mut self,
-		sink_id: SinkId,
-		destination_buffer: impl Into<ghi::BaseBufferHandle>,
-		destination_offset: usize,
-		destination_bytes_per_row: usize,
-		destination_bytes_per_image: usize,
-	) {
-		self.pending_swapchain_captures.push(SwapchainCapture {
-			sink_id,
-			destination_buffer: destination_buffer.into(),
-			destination_offset,
-			destination_bytes_per_row,
-			destination_bytes_per_image,
-		});
-	}
-
 	/// Prepares a frame by invoking the configured render passes.
 	///
 	/// The renderer skips execution when no swapchain is available or when any
 	/// swapchain surface has a zero-sized dimension.
-	pub fn prepare(
+	pub(crate) fn prepare(
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
 		frame_allocator: &bumpalo::Bump,
-	) {
+		screenshot_sinks: &[usize],
+	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
 		let span = debug_span!(
 			"Renderer::prepare",
 			frame = self.started_frame_count,
@@ -474,7 +455,10 @@ impl Renderer {
 
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
-			return;
+			return screenshot_sinks
+				.iter()
+				.map(|_| Err(RendererScreenshotError::SinkNotFound))
+				.collect();
 		};
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
@@ -521,8 +505,9 @@ impl Renderer {
 		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
-		let pending_swapchain_captures = self.pending_swapchain_captures.drain(..).collect::<SmallVec<[_; 16]>>();
 		let frame_allocator = frame_allocator;
+		let submitted_frame = self.started_frame_count - 1;
+		let mut screenshot_transfers = SmallVec::<[Result<ghi::TextureCopyHandle, RendererScreenshotError>; 16]>::new();
 
 		{
 			let span = debug_span!("Renderer::queue_execute");
@@ -539,7 +524,7 @@ impl Renderer {
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
+				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchains) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
 					let _enter = span.enter();
 					let frame = execution.frame().expect(
@@ -643,28 +628,7 @@ impl Renderer {
 						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-					let swapchain_capture_copies = {
-						let span = debug_span!("Renderer::prepare_swapchain_captures", captures = pending_swapchain_captures.len());
-						let _enter = span.enter();
-						pending_swapchain_captures
-							.iter()
-							.filter_map(|capture| {
-								let Some(Some((_present_key, _extent, swapchain))) = swapchains.get(capture.sink_id) else {
-									return None;
-								};
-
-								Some(ghi::ImageBufferCopyDescriptor::swapchain(
-									*swapchain,
-									capture.destination_buffer,
-									capture.destination_offset,
-									capture.destination_bytes_per_row,
-									capture.destination_bytes_per_image,
-								))
-							})
-							.collect::<SmallVec<[ghi::ImageBufferCopyDescriptor; 16]>>()
-					};
-
-					(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies)
+					(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchains)
 				};
 
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -699,16 +663,37 @@ impl Renderer {
 						}
 					}
 
-					if !swapchain_capture_copies.is_empty() {
-						let span = debug_span!("Renderer::record_swapchain_captures", captures = swapchain_capture_copies.len());
-						let _enter = span.enter();
-						command_buffer_recording.copy_images_to_buffer(&swapchain_capture_copies);
+					// Record each request independently so duplicate sinks retain distinct consuming transfer handles.
+					for sink in screenshot_sinks {
+						let transfer = match swapchains.get(*sink) {
+							None => Err(RendererScreenshotError::SinkNotFound),
+							Some(None) => Err(RendererScreenshotError::SinkUnavailable),
+							Some(Some((_present_key, _extent, swapchain))) => command_buffer_recording
+								.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
+								.map_err(RendererScreenshotError::Transfer),
+						};
+						screenshot_transfers.push(transfer);
 					}
 				});
 
 				present_keys
 			});
 		}
+
+		if screenshot_transfers.iter().any(Result::is_ok) {
+			self.context.wait_for_synchronizer(self.render_finished_synchronizer);
+		}
+
+		screenshot_transfers
+			.into_iter()
+			.map(|transfer| {
+				let handle = transfer?;
+				self.context
+					.get_image_data(handle)
+					.map(|readback| (submitted_frame, readback))
+					.map_err(RendererScreenshotError::Transfer)
+			})
+			.collect()
 	}
 
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
@@ -750,7 +735,7 @@ impl Renderer {
 					&os_handles,
 					ghi::PresentationModes::FIFO,
 					extent,
-					ghi::Uses::RenderTarget | ghi::Uses::Storage,
+					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
 				);
 
 				let sink_id = self.windows.len();
@@ -796,14 +781,11 @@ impl Renderer {
 		self.cameras.push((handle, camera, Transform::default()));
 	}
 }
-/// The `SwapchainCapture` struct defers one swapchain-to-buffer capture until the next frame.
-#[derive(Clone, Copy)]
-struct SwapchainCapture {
-	sink_id: SinkId,
-	destination_buffer: ghi::BaseBufferHandle,
-	destination_offset: usize,
-	destination_bytes_per_row: usize,
-	destination_bytes_per_image: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RendererScreenshotError {
+	SinkNotFound,
+	SinkUnavailable,
+	Transfer(ghi::TextureTransferError),
 }
 
 /// The `Settings` struct configures a [`Renderer`] during creation.

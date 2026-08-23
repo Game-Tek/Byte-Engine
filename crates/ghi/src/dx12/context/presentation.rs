@@ -124,18 +124,32 @@ impl Device {
 		)
 	}
 
-	pub fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
-		self.texture_copies
-			.get(texture_copy_handle.0 as usize)
-			.map(|v| v.as_slice())
-			.unwrap_or(&[])
+	pub fn get_image_data(
+		&mut self,
+		texture_copy_handle: TextureCopyHandle,
+	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
+		// Keep native storage alive while submitted work is unresolved; only completed or failed mappings are consumed.
+		if self.texture_readbacks.submitted(texture_copy_handle)?.resource.is_some() {
+			return Err(crate::TextureTransferError::MappingFailed);
+		}
+		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
+		if readback.mapping_failed {
+			return Err(crate::TextureTransferError::MappingFailed);
+		}
+		Ok(crate::TextureReadback {
+			bytes: readback.data.bytes,
+			extent: readback.data.extent,
+			format: readback.data.format,
+			bytes_per_row: readback.data.bytes_per_row,
+			bytes_per_image: readback.data.bytes_per_image,
+		})
 	}
 
 	pub(crate) fn wait_for_texture_copy_readback(&mut self, texture_copy_handle: TextureCopyHandle) {
 		let Some(sequence_index) = self
 			.texture_readbacks
-			.iter()
-			.find(|readback| readback.texture_copy == texture_copy_handle && !readback.resolved)
+			.get(texture_copy_handle)
+			.filter(|readback| readback.resource.is_some())
 			.map(|readback| readback.sequence_index)
 		else {
 			return;
@@ -361,9 +375,15 @@ impl Device {
 			arena.used = 0;
 		}
 		command_buffer.is_open = true;
-		// Resetting an unsubmitted command list discards its copies, so its pending readbacks have no future completion.
-		self.texture_readbacks
-			.retain(|readback| readback.command_buffer_handle != command_buffer_handle);
+		// Resetting an unsubmitted command list discards its copies, so release pending staging and fail those handles.
+		let abandoned = self
+			.texture_readbacks
+			.entries()
+			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
+			.collect::<SmallVec<[_; 4]>>();
+		for handle in abandoned {
+			self.texture_readbacks.abandon_recorded(handle);
+		}
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.

@@ -61,6 +61,7 @@ impl Context {
 			view: window_os_handles.view.clone(),
 			images,
 			uses_proxy,
+			uses,
 			extent,
 		});
 

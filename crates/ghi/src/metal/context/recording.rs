@@ -79,6 +79,7 @@ impl Context {
 			internal_upload_synchronizer: None,
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
+			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
 			descriptor_sources: HashMap::default(),

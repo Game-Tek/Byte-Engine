@@ -32,6 +32,16 @@ impl Drop for Context {
 				self.device.destroy_buffer(heaps.resource().buffer, None);
 				self.device.destroy_buffer(heaps.sampler().buffer, None);
 			}
+			// Unconsumed readbacks own dedicated mapped memory outside the general allocation registry.
+			for readback in self.texture_readbacks.values() {
+				self.device.destroy_buffer(readback.buffer, None);
+				if readback.memory != vk::DeviceMemory::null() {
+					if !readback.pointer.is_null() {
+						self.device.unmap_memory(readback.memory);
+					}
+					self.device.free_memory(readback.memory, None);
+				}
+			}
 
 			self.images.iter().for_each(|image| {
 				if let Some(staging_buffer) = image.staging_buffer {
@@ -62,9 +72,12 @@ impl Drop for Context {
 				self.device.destroy_shader_module(shader.shader, None);
 			});
 
-			self.allocations.iter().for_each(|allocation| {
-				self.device.free_memory(allocation.memory, None);
-			});
+			self.allocations
+				.iter()
+				.filter(|allocation| allocation.memory != vk::DeviceMemory::null())
+				.for_each(|allocation| {
+					self.device.free_memory(allocation.memory, None);
+				});
 		}
 	}
 }

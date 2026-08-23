@@ -6,6 +6,8 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+#[cfg(feature = "headed")]
+use screenshot::ScreenshotBroker;
 use utils::sync::Mutex;
 
 use crate::application::{Receiver, Sender};
@@ -18,6 +20,8 @@ use crate::{
 #[cfg(feature = "headed")]
 #[doc(hidden)]
 pub mod http;
+#[cfg(feature = "headed")]
+pub(crate) mod screenshot;
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.
@@ -45,6 +49,8 @@ pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
 	events: Sender<Events>,
 	configuration: Configuration,
+	#[cfg(feature = "headed")]
+	screenshots: Arc<ScreenshotBroker>,
 }
 
 impl Inspector {
@@ -56,7 +62,15 @@ impl Inspector {
 			entities,
 			events: tx,
 			configuration,
+			#[cfg(feature = "headed")]
+			screenshots: Arc::new(ScreenshotBroker::new()),
 		}
+	}
+
+	/// Returns the bounded screenshot exchange shared with the graphics application.
+	#[cfg(feature = "headed")]
+	pub(crate) fn screenshots(&self) -> Arc<ScreenshotBroker> {
+		Arc::clone(&self.screenshots)
 	}
 
 	/// Returns the latest configuration event states for protocol adapters.

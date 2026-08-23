@@ -104,7 +104,10 @@ impl crate::context::Context for Context {
 		Context::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
-	fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+	fn get_image_data(
+		&mut self,
+		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
+	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
 		Context::get_image_data(self, texture_copy_handle)
 	}
 

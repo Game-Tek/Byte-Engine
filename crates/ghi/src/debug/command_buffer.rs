@@ -4,8 +4,8 @@ use utils::Extent;
 
 use crate::{
 	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey,
-	ImageBufferCopyDescriptor, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	BufferImageCopyDescriptor, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts,
+	MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -58,15 +58,13 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn copy_buffer_to_images(&mut self, _copies: &[BufferImageCopyDescriptor]) {}
 
-	pub fn copy_images_to_buffer(&mut self, _copies: &[ImageBufferCopyDescriptor]) {}
-
 	pub fn sync_buffer(&mut self, _buffer_handle: impl Into<BaseBufferHandle>) {}
 
-	pub fn transfer_textures(
+	pub fn transfer_texture(
 		&mut self,
-		_texture_handles: &[graphics_hardware_interface::BaseImageHandle],
-	) -> Vec<TextureCopyHandle> {
-		Vec::new()
+		_source: graphics_hardware_interface::ImageOrSwapchain,
+	) -> Result<TextureCopyHandle, TextureTransferError> {
+		Err(TextureTransferError::Unsupported)
 	}
 
 	pub fn write_image_data(&mut self, _image_handle: graphics_hardware_interface::BaseImageHandle, _data: &[RGBAu8]) {}

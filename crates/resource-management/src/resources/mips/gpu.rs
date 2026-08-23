@@ -312,7 +312,13 @@ impl GPUMipProcessor {
 				Extent::rectangle(8, 8),
 			));
 		}
-		let handles = recording.transfer_textures(&scratch.readback_images);
+		let handles = scratch
+			.readback_images
+			.iter()
+			.copied()
+			.map(|image| recording.transfer_texture(image.into()))
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|_| GPUMipError::GPUExecution)?;
 		recording.execute(scratch.synchronizer);
 		context.wait_for_synchronizer(scratch.synchronizer);
 		#[cfg(any(debug_assertions, test))]
@@ -328,14 +334,14 @@ impl GPUMipProcessor {
 		let mut offset = 0usize;
 		for (level, handle) in scratch.levels.iter().zip(handles) {
 			let size = level.width as usize * level.height as usize * 4;
-			let readback = context.get_image_data(handle);
-			if readback.len() < size {
+			let readback = context.get_image_data(handle).map_err(|_| GPUMipError::GPUExecution)?;
+			if readback.bytes.len() < size {
 				return Err(GPUMipError::ReadbackSizeMismatch {
 					expected: size,
-					got: readback.len(),
+					got: readback.bytes.len(),
 				});
 			}
-			data[offset..offset + size].copy_from_slice(&readback[..size]);
+			data[offset..offset + size].copy_from_slice(&readback.bytes[..size]);
 			offset += size;
 		}
 		OwnedMipChain::from_packed_rgba8_lower_levels(width, height, data.into_boxed_slice())
@@ -386,11 +392,14 @@ fn create_scratch(
 		let destination_width = (source_width / 2).max(1);
 		let destination_height = (source_height / 2).max(1);
 		let destination = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("Material mip level")
-				.extent(Extent::rectangle(destination_width, destination_height))
-				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
-				.use_case(ghi::UseCases::STATIC),
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA8UNORM,
+				ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferSource,
+			)
+			.name("Material mip level")
+			.extent(Extent::rectangle(destination_width, destination_height))
+			.device_accesses(ghi::DeviceAccesses::DeviceToHost)
+			.use_case(ghi::UseCases::STATIC),
 		);
 		let descriptor_set = context.create_descriptor_set(Some("Material mip level"));
 		context.write(&[

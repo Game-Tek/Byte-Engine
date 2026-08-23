@@ -115,6 +115,12 @@ pub struct SwapchainHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AllocationHandle(pub(crate) u64);
 
+/// The `TextureCopyHandle` struct identifies one texture-transfer invocation within its creating context.
+///
+/// Handle values can overlap across contexts, so pass a handle only to the [`crate::Context`] that created it.
+/// Submit the command that returned the handle, then pass it once to [`crate::Context::get_image_data`]. Successful
+/// mapping consumes the handle value and releases backend staging; later mapping attempts return
+/// [`crate::TextureTransferError::InvalidHandle`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 

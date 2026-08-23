@@ -37,6 +37,7 @@ impl<'a> Frame<'a> {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		states: utils::hash::HashMap<super::Handles, super::TransitionState>,
 		buffer_states: utils::hash::HashMap<super::Handles, Vec<super::BufferTransitionState>>,
+		texture_readbacks: smallvec::SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	) {
@@ -115,6 +116,9 @@ impl<'a> Frame<'a> {
 				.device
 				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
+		}
+		for handle in texture_readbacks {
+			self.device.texture_readbacks.mark_submitted(handle);
 		}
 
 		for presentation in present_keys {

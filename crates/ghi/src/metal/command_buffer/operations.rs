@@ -401,20 +401,46 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 	}
 
-	fn copy_images_to_buffer(&mut self, copies: &[crate::ImageBufferCopyDescriptor]) {
-		if copies.is_empty() {
-			return;
-		}
-
-		let transfer_encoder = self.prepare_transfer().clone();
-		for copy in copies {
-			let (source_use, source_texture, source_format, source_extent, source_array_layers) = match copy.source {
-				ImageOrSwapchain::Image(image) => {
-					let handle = self.get_internal_image_handle(image);
-					let source = self.device.images.resource(handle);
+	fn transfer_texture(
+		&mut self,
+		source: graphics_hardware_interface::ImageOrSwapchain,
+	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		let (source_use, source_texture, format, extent, array_layers, uses) = match source {
+			ImageOrSwapchain::Image(image) => {
+				if self.device.images.get_single(image).is_none() {
+					return Err(crate::TextureTransferError::InvalidSource);
+				}
+				let handle = self.get_internal_image_handle(image);
+				let source = self.device.images.resource(handle);
+				(
+					synchronization::MetalResourceUse::image(
+						handle,
+						Some(0),
+						None,
+						mtl::MTLStages::Blit,
+						crate::AccessPolicies::READ,
+					),
+					source.texture.clone(),
+					source.format,
+					source.extent,
+					source.array_layers,
+					source.uses,
+				)
+			}
+			ImageOrSwapchain::Swapchain(swapchain) => {
+				let swapchain_resource = self
+					.device
+					.swapchains
+					.get(swapchain.0 as usize)
+					.ok_or(crate::TextureTransferError::InvalidSource)?;
+				if !swapchain_resource.uses.contains(crate::Uses::TransferSource) {
+					return Err(crate::TextureTransferError::MissingTransferSource);
+				}
+				if let Some(proxy) = swapchain_resource.images[self.sequence_index as usize] {
+					let source = self.device.images.resource(proxy);
 					(
 						synchronization::MetalResourceUse::image(
-							handle,
+							proxy,
 							Some(0),
 							None,
 							mtl::MTLStages::Blit,
@@ -424,143 +450,91 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 						source.format,
 						source.extent,
 						source.array_layers,
+						swapchain_resource.uses,
+					)
+				} else {
+					let drawable = self
+						.drawables
+						.iter()
+						.find(|(handle, _)| *handle == swapchain)
+						.map(|(_, drawable)| drawable.texture())
+						.ok_or(crate::TextureTransferError::InvalidSource)?;
+					(
+						synchronization::MetalResourceUse::drawable(
+							drawable.as_ref(),
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::READ,
+						),
+						drawable,
+						crate::Formats::BGRAu8,
+						swapchain_resource.extent,
+						1,
+						swapchain_resource.uses,
 					)
 				}
-				ImageOrSwapchain::Swapchain(swapchain) => {
-					if let Some(proxy) = self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize] {
-						let source = self.device.images.resource(proxy);
-						(
-							synchronization::MetalResourceUse::image(
-								proxy,
-								Some(0),
-								None,
-								mtl::MTLStages::Blit,
-								crate::AccessPolicies::READ,
-							),
-							source.texture.clone(),
-							source.format,
-							source.extent,
-							source.array_layers,
-						)
-					} else {
-						let drawable = self.drawable_texture(crate::swapchain::SwapchainHandle(swapchain.0));
-						(
-							synchronization::MetalResourceUse::drawable(
-								drawable.as_ref(),
-								mtl::MTLStages::Blit,
-								crate::AccessPolicies::READ,
-							),
-							drawable,
-							crate::Formats::BGRAu8,
-							self.device.swapchains[swapchain.0 as usize].extent,
-							1,
-						)
-					}
-				}
-			};
-			let destination_handle = self.get_internal_buffer_handle(copy.destination_buffer);
-			let destination_size = copy
-				.destination_bytes_per_image
-				.checked_mul(source_array_layers as usize)
-				.expect(
-					"Metal image copy tracked range overflowed. The most likely cause is an invalid destination pitch or array layer count.",
+			}
+		};
+		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
+		let bytes_per_row = layout.bytes_per_row;
+		let row_count = layout.row_count;
+		let bytes_per_image = layout.bytes_per_image;
+		let native_bytes_per_row = bytes_per_row
+			.checked_add(255)
+			.map(|bytes| bytes & !255)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let native_bytes_per_image = native_bytes_per_row
+			.checked_mul(row_count)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let size = native_bytes_per_image;
+		let compact_size = bytes_per_image;
+		let mut bytes = Vec::new();
+		bytes
+			.try_reserve_exact(compact_size)
+			.map_err(|_| crate::TextureTransferError::AllocationFailed)?;
+		bytes.resize(compact_size, 0);
+		let staging = self
+			.device
+			.metal_device
+			.newBufferWithLength_options(size, mtl::MTLResourceOptions::StorageModeShared)
+			.ok_or(crate::TextureTransferError::AllocationFailed)?;
+
+		let transfer_encoder = self.prepare_transfer().clone();
+		self.consume_compute_resources([source_use]);
+		self.command_buffer.retain_texture(source_texture.clone());
+		self.command_buffer.retain_buffer(staging.clone());
+		let mut source_size = utils::texture_copy_size(format, extent);
+		source_size.depth = 1;
+		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+		for slice in 0..array_layers as usize {
+			unsafe {
+				transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+					source_texture.as_ref(),
+					slice,
+					0,
+					source_origin,
+					source_size,
+					staging.as_ref(),
+					(slice * native_bytes_per_image) as _,
+					native_bytes_per_row as _,
+					native_bytes_per_image as _,
 				);
-			self.consume_compute_resources([
-				source_use,
-				synchronization::MetalResourceUse::buffer(
-					destination_handle,
-					copy.destination_offset,
-					destination_size,
-					mtl::MTLStages::Blit,
-					crate::AccessPolicies::WRITE,
-				),
-			]);
-			let destination = self.device.buffers.resource(destination_handle);
-			self.command_buffer.retain_texture(source_texture.clone());
-			self.command_buffer.retain_buffer(destination.buffer.clone());
-			let Some((compact_bytes_per_row, row_count, _)) = utils::texture_upload_layout(source_format, source_extent) else {
-				panic!(
-					"Metal texture copy layout is unsupported. The most likely cause is that the source format has no buffer copy layout. format={source_format:?}, extent={source_extent:?}"
-				);
-			};
-			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
-			let expected_bytes_per_image = expected_bytes_per_row * row_count;
-
-			assert_eq!(
-				copy.destination_offset % 256,
-				0,
-				"Metal image copy destination offset alignment mismatch. The most likely cause is that the destination buffer offset is not 256-byte aligned. destination_offset={}, destination_bytes_per_row={}, destination_bytes_per_image={}, format={source_format:?}, extent={source_extent:?}",
-				copy.destination_offset,
-				copy.destination_bytes_per_row,
-				copy.destination_bytes_per_image,
-			);
-			assert_eq!(
-				copy.destination_bytes_per_row, expected_bytes_per_row,
-				"Metal image copy row pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about row padding. format={source_format:?}, extent={source_extent:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_row={}, expected={expected_bytes_per_row}",
-				copy.destination_bytes_per_row
-			);
-			assert_eq!(
-				copy.destination_bytes_per_image, expected_bytes_per_image,
-				"Metal image copy image pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about padded rows per image. format={source_format:?}, extent={source_extent:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_image={}, expected={expected_bytes_per_image}",
-				copy.destination_bytes_per_image
-			);
-			let required_destination_bytes = copy
-				.destination_bytes_per_image
-				.checked_mul(source_array_layers as usize)
-				.and_then(|copy_bytes| copy.destination_offset.checked_add(copy_bytes))
-				.expect(
-					"Metal image copy destination bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
-				);
-
-			assert!(
-				required_destination_bytes <= destination.size,
-				"Metal image copy destination buffer is too small. The most likely cause is that the readback buffer allocation is smaller than the recorded texture copy. destination_size={}, required_destination_bytes={required_destination_bytes}, destination_offset={}, array_layers={source_array_layers}, destination_bytes_per_image={}, format={source_format:?}, extent={source_extent:?}",
-				destination.size,
-				copy.destination_offset,
-				copy.destination_bytes_per_image,
-			);
-
-			let mut source_size = utils::texture_copy_size(source_format, source_extent);
-			source_size.depth = 1;
-			let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
-
-			for slice in 0..source_array_layers as usize {
-				let destination_offset = copy.destination_offset + slice * copy.destination_bytes_per_image;
-				unsafe {
-					transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
-						source_texture.as_ref(),
-						slice as _,
-						0,
-						source_origin,
-						source_size,
-						destination.buffer.as_ref(),
-						destination_offset as _,
-						copy.destination_bytes_per_row as _,
-						copy.destination_bytes_per_image as _,
-					);
-				}
 			}
 		}
-	}
 
-	fn transfer_textures(
-		&mut self,
-		texture_handles: &[graphics_hardware_interface::BaseImageHandle],
-	) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
-		let mut copies = Vec::with_capacity(texture_handles.len());
-
-		for handle in texture_handles {
-			let image_handle = self.get_internal_image_handle(*handle);
-			let image = self.device.images.resource(image_handle);
-			if !image.access.contains(crate::DeviceAccesses::CpuRead) {
-				continue;
-			}
-
-			// Match Vulkan: the copy handle identifies the internal image whose shared readback buffer receives the copy.
-			copies.push(graphics_hardware_interface::TextureCopyHandle(image_handle.0));
-		}
-
-		copies
+		let handle = self.commit.texture_readbacks.insert(context::TextureReadbackStorage {
+			buffer: staging,
+			bytes,
+			extent,
+			format,
+			bytes_per_row,
+			bytes_per_image,
+			native_bytes_per_row,
+			native_bytes_per_image,
+			row_count,
+			image_count: 1,
+		});
+		self.texture_readbacks.push(handle);
+		Ok(handle)
 	}
 
 	fn write_image_data(

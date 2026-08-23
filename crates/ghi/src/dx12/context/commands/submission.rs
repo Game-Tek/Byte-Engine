@@ -5,13 +5,13 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		synchronizer_handle: SynchronizerHandle,
-	) {
+	) -> bool {
 		let command_buffer_index = command_buffer_handle.0 as usize;
 		let Some(command_buffer) = self.command_buffers.get(command_buffer_index) else {
-			return;
+			return false;
 		};
 		let Some(command_list) = command_buffer.command_list.as_ref() else {
-			return;
+			return false;
 		};
 		let command_list = (*command_list).clone();
 		let is_open = command_buffer.is_open;
@@ -39,11 +39,16 @@ impl Device {
 		if !recorded_work {
 			self.empty_command_list_skip_count += 1;
 			self.complete_synchronizer_for_sequence_from_cpu(synchronizer_handle, sequence_index);
-			return;
+			return false;
 		}
 
+		let readback_handles = self
+			.texture_readbacks
+			.entries()
+			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
+			.collect::<SmallVec<[_; 4]>>();
 		let Some(queue) = self.queues.get(queue_handle.0 as usize) else {
-			return;
+			return false;
 		};
 		let command_list = command_list.cast::<ID3D12CommandList>().expect(
 			"Failed to cast a DX12 graphics command list for execution. The most likely cause is an incompatible command list object.",
@@ -51,6 +56,10 @@ impl Device {
 		let command_lists = [Some(command_list)];
 		unsafe {
 			queue.queue.ExecuteCommandLists(&command_lists);
+		}
+		// Native submission now owns the staging lifetime, even if later fence setup fails.
+		for &handle in &readback_handles {
+			self.texture_readbacks.mark_submitted(handle);
 		}
 		self.native_command_list_execute_count += 1;
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
@@ -64,13 +73,12 @@ impl Device {
 					.get(handle.0 as usize)
 					.map(|synchronizer| (handle, synchronizer.value))
 			});
-		for readback in self
-			.texture_readbacks
-			.iter_mut()
-			.filter(|readback| readback.command_buffer_handle == command_buffer_handle)
-		{
-			readback.completion = completion;
+		for handle in readback_handles {
+			if let Some(readback) = self.texture_readbacks.get_mut(handle) {
+				readback.completion = completion;
+			}
 		}
+		true
 	}
 
 	pub(crate) fn record_present_preparation(

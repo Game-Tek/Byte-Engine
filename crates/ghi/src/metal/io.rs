@@ -403,6 +403,7 @@ mod tests {
 	use std::sync::atomic::{AtomicU64, Ordering};
 
 	use super::*;
+	use crate::command_buffer::CommandBufferRecording as _;
 	use crate::device::Device as _;
 	use crate::io::{ResourceIoQueue as _, ResourceIoTicket as _};
 
@@ -411,12 +412,32 @@ mod tests {
 		let mut instance = crate::metal::Instance::new(features).expect(
 			"Failed to create the Metal resource-I/O test instance. The most likely cause is that no Metal device is available.",
 		);
+		let mut queue_handle = None;
 		let device = instance
-			.create_device(features, &mut [])
+			.create_device(
+				features,
+				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER), &mut queue_handle)],
+			)
 			.expect("Failed to create the Metal resource-I/O test device. The most likely cause is unavailable Metal support.");
+		assert_eq!(queue_handle, Some(crate::QueueHandle(0)));
 		device.create_context().expect(
 			"Failed to create the Metal resource-I/O test context. The most likely cause is unavailable Metal 4 support.",
 		)
+	}
+
+	/// Transfers one test image through the public per-invocation readback API.
+	fn read_image(context: &mut context::Context, image: crate::ImageHandle) -> Vec<u8> {
+		let synchronizer = context.create_synchronizer(None, false);
+		let command_buffer = context.create_command_buffer(None, crate::QueueHandle(0));
+		let mut recording = context.create_command_buffer_recording(command_buffer);
+		let copy = recording.transfer_texture(image.into()).expect(
+			"Metal test texture transfer failed. The most likely cause is that the image lacks transfer-source support.",
+		);
+		recording.execute(synchronizer);
+		context
+			.get_image_data(copy)
+			.expect("Metal test texture mapping failed. The most likely cause is that the transfer command did not complete.")
+			.bytes
 	}
 
 	fn temporary_path(name: &str) -> std::path::PathBuf {
@@ -502,7 +523,7 @@ mod tests {
 		let image = context.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
-				crate::Uses::Image | crate::Uses::TransferDestination,
+				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
 			.name("Metal I/O Compressed Image")
 			.extent(utils::Extent::rectangle(2, 2))
@@ -531,8 +552,7 @@ mod tests {
 		ticket.wait().expect("compressed Metal I/O image completion");
 		drop(ticket);
 		drop(queue);
-		let copy = crate::TextureCopyHandle(image.0 .0);
-		assert_eq!(context.get_image_data(copy), BYTES);
+		assert_eq!(read_image(&mut context, image), BYTES);
 		fs::remove_file(path).expect("remove compressed resource-I/O image test file");
 	}
 
@@ -545,7 +565,7 @@ mod tests {
 		let image = context.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
-				crate::Uses::Image | crate::Uses::TransferDestination,
+				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
 			)
 			.name("Metal I/O Image")
 			.extent(utils::Extent::rectangle(2, 2))
@@ -574,8 +594,7 @@ mod tests {
 		ticket.wait().expect("raw Metal I/O image completion");
 		drop(ticket);
 		drop(queue);
-		let copy = crate::TextureCopyHandle(image.0 .0);
-		assert_eq!(context.get_image_data(copy), BYTES);
+		assert_eq!(read_image(&mut context, image), BYTES);
 		fs::remove_file(path).expect("remove raw image resource-I/O test file");
 	}
 

@@ -37,6 +37,7 @@ impl Context {
 			command_buffers: Vec::with_capacity(32),
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
+			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 
 			settings,
 
@@ -552,34 +553,59 @@ impl Context {
 		(image, format)
 	}
 
-	/// Invalidates one completed image readback allocation before exposing its mapped bytes.
-	pub(crate) fn get_image_data<'a>(
-		&'a self,
-		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
-	) -> &'a [u8] {
-		let image = &self.images[texture_copy_handle.0 as usize];
-		let pointer = image.pointer.expect(
-			"Texture data is unavailable. The most likely cause is that the image was not created with CPU read access.",
-		);
-		let allocation_handle = image.staging_allocation.expect(
-			"Texture readback allocation is unavailable. The most likely cause is that the image staging buffer was not created.",
-		);
-		let allocation = &self.allocations[allocation_handle.0 as usize];
-		let mapped_range = vk::MappedMemoryRange::default()
-			.memory(allocation.memory)
-			.offset(0)
-			.size(vk::WHOLE_SIZE);
+	/// Releases one Vulkan readback buffer and its dedicated allocation exactly once.
+	fn release_texture_readback(&mut self, readback: &TextureReadbackStorage) {
 		unsafe {
-			self.device.invalidate_mapped_memory_ranges(&[mapped_range]).expect(
-				"Vulkan image readback invalidation failed. The most likely cause is device loss or an invalid staging allocation.",
-			);
+			self.device.destroy_buffer(readback.buffer, None);
+			if readback.memory != vk::DeviceMemory::null() {
+				if !readback.pointer.is_null() {
+					self.device.unmap_memory(readback.memory);
+				}
+				self.device.free_memory(readback.memory, None);
+			}
 		}
+	}
 
-		assert!(
-			!pointer.is_null(),
-			"Texture data pointer is null. The most likely cause is that Vulkan failed to map the readback allocation."
-		);
-		unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, image.size) }
+	/// Abandons one readback that never reached queue submission and releases its native storage.
+	pub(crate) fn cancel_texture_readback(&mut self, handle: graphics_hardware_interface::TextureCopyHandle) {
+		if let Some(readback) = self.texture_readbacks.abandon_recorded(handle) {
+			self.release_texture_readback(&readback);
+		}
+	}
+
+	/// Waits for Vulkan work, copies one mapped transfer result, and releases its dedicated staging resources.
+	pub(crate) fn get_image_data(
+		&mut self,
+		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
+	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
+		self.texture_readbacks.submitted(texture_copy_handle)?;
+		self.device.wait();
+		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
+		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.is_null() {
+			Err(crate::TextureTransferError::MappingFailed)
+		} else {
+			let mapped_range = vk::MappedMemoryRange::default()
+				.memory(readback.memory)
+				.offset(0)
+				.size(vk::WHOLE_SIZE);
+			unsafe {
+				self.device
+					.invalidate_mapped_memory_ranges(&[mapped_range])
+					.map(|()| std::slice::from_raw_parts(readback.pointer, readback.size).to_vec())
+					.map_err(|_| crate::TextureTransferError::MappingFailed)
+			}
+		};
+
+		// The transfer slot has been consumed, so retire its dedicated native resources before returning owned bytes.
+		self.release_texture_readback(&readback);
+
+		result.map(|bytes| crate::TextureReadback {
+			bytes,
+			extent: readback.extent,
+			format: readback.format,
+			bytes_per_row: readback.bytes_per_row,
+			bytes_per_image: readback.bytes_per_image,
+		})
 	}
 
 	pub(crate) fn start_frame<'a>(

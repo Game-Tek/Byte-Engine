@@ -44,6 +44,8 @@ impl CommandBufferRecording<'_> {
 			descriptor_heaps_bound: false,
 			pending_rendering: None,
 			active_rendering: false,
+			texture_readbacks: SmallVec::new(),
+			readbacks_finalized: false,
 
 			device,
 		};
@@ -60,12 +62,19 @@ impl CommandBufferRecording<'_> {
 		graphics_hardware_interface::CommandBufferHandle,
 		HashMap<Handles, TransitionState>,
 		HashMap<Handles, Vec<BufferTransitionState>>,
+		SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	) {
 		self.handle_swapchain_proxies(presentation_keys);
 		self.consume_last_resources();
 		self.end_recording();
+		self.readbacks_finalized = true;
 
-		(self.command_buffer, self.states, self.buffer_states)
+		(
+			self.command_buffer,
+			std::mem::take(&mut self.states),
+			std::mem::take(&mut self.buffer_states),
+			std::mem::take(&mut self.texture_readbacks),
+		)
 	}
 
 	fn begin(&self) {

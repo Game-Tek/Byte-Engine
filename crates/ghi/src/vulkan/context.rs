@@ -30,6 +30,18 @@ use crate::{
 	window, FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size,
 };
 
+/// The `TextureReadbackStorage` struct keeps one Vulkan transfer result alive for later CPU mapping.
+pub(crate) struct TextureReadbackStorage {
+	pub(crate) buffer: vk::Buffer,
+	pub(crate) memory: vk::DeviceMemory,
+	pub(crate) pointer: *mut u8,
+	pub(crate) extent: Extent,
+	pub(crate) format: crate::Formats,
+	pub(crate) bytes_per_row: usize,
+	pub(crate) bytes_per_image: usize,
+	pub(crate) size: usize,
+}
+
 /// The `Context` struct owns Vulkan device state while presenting the GHI context API.
 pub struct Context {
 	pub(super) device: InnerDevice,
@@ -57,6 +69,7 @@ pub struct Context {
 	pub(super) command_buffers: Vec<CommandBuffer>,
 	pub(super) synchronizers: Vec<Synchronizer>,
 	pub(super) swapchains: Vec<Swapchain>,
+	pub(super) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 
 	pub settings: crate::device::Features,
 

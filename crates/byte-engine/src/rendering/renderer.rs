@@ -2,6 +2,7 @@ mod configuration;
 mod core;
 mod targets;
 
+pub(crate) use core::RendererScreenshotError;
 pub use core::{Renderer, Settings};
 #[cfg(test)]
 use std::collections::VecDeque;

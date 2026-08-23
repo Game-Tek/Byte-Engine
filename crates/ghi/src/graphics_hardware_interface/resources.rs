@@ -117,7 +117,7 @@ pub enum ClearValue {
 	Depth(f32),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageOrSwapchain {
 	Image(BaseImageHandle),
 	Swapchain(SwapchainHandle),

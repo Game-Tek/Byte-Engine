@@ -220,6 +220,7 @@ pub(super) struct RecordingCommit<'a> {
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
+	pub(super) texture_readbacks: &'a mut crate::context::TextureReadbackRegistry<context::TextureReadbackStorage>,
 }
 
 #[derive(Clone, Copy)]
@@ -336,6 +337,8 @@ pub struct CommandBufferRecording<'a> {
 	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,
 	applied_render_descriptor_binding: Option<AppliedDescriptorBinding>,
 	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
+	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
+	readbacks_finalized: bool,
 	drawables: Vec<
 		(
 			graphics_hardware_interface::SwapchainHandle,
@@ -351,12 +354,19 @@ impl Drop for CommandBufferRecording<'_> {
 		if self.resource_tracker.rollback_recording() {
 			*self.commit.resource_tracker = std::mem::take(&mut self.resource_tracker);
 		}
+		if !self.readbacks_finalized {
+			for handle in self.texture_readbacks.drain(..) {
+				// Dropping the returned storage releases the retained native staging buffer immediately.
+				self.commit.texture_readbacks.abandon_recorded(handle);
+			}
+		}
 	}
 }
 
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: queue::NativeCommand,
+	pub(crate) texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 

@@ -477,6 +477,19 @@ pub mod queue {
 		command_buffers: SmallVec<[super::FinishedCommandBuffer<'static>; 4]>,
 	}
 
+	impl Drop for Execution<'_> {
+		fn drop(&mut self) {
+			let Some(frame) = self.frame.as_mut() else {
+				return;
+			};
+			for command_buffer in &self.command_buffers {
+				for &handle in &command_buffer.texture_readbacks {
+					frame.device().texture_readbacks.abandon_recorded(handle);
+				}
+			}
+		}
+	}
+
 	impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		type Frame = super::Frame<'a>;
 
@@ -557,10 +570,11 @@ pub mod queue {
 			};
 			let present_keys = execute(&mut execution);
 
-			let Some(mut frame) = execution.frame else {
+			let Some(mut frame) = execution.frame.take() else {
 				return;
 			};
-			frame.execute_finished_batch(execution.command_buffers, present_keys.as_ref(), synchronizer);
+			let command_buffers = std::mem::take(&mut execution.command_buffers);
+			frame.execute_finished_batch(command_buffers, present_keys.as_ref(), synchronizer);
 		}
 	}
 
@@ -608,10 +622,11 @@ pub mod queue {
 			};
 			let present_keys = execute(&mut execution);
 
-			let Some(mut frame) = execution.frame else {
+			let Some(mut frame) = execution.frame.take() else {
 				return;
 			};
-			frame.execute_finished_batch(execution.command_buffers, present_keys.as_ref(), synchronizer);
+			let command_buffers = std::mem::take(&mut execution.command_buffers);
+			frame.execute_finished_batch(command_buffers, present_keys.as_ref(), synchronizer);
 		}
 	}
 }
@@ -746,6 +761,7 @@ pub mod swapchain {
 		/// Proxy images exist only when the declared uses cannot be applied to a drawable texture.
 		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
 		pub uses_proxy: bool,
+		pub uses: crate::Uses,
 		pub extent: Extent,
 	}
 }

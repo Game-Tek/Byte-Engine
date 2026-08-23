@@ -386,7 +386,7 @@ impl GPUIBLProcessor {
 		write_source_atlas(source_width, source_height, source_rgba16f, upload, &mut self.source_mip)?;
 		self.context.sync_texture(scratch.source_atlas);
 
-		let copy_handle = self.dispatch(layout, source_level_count, scratch);
+		let copy_handle = self.dispatch(layout, source_level_count, scratch)?;
 		self.context.wait_for_synchronizer(scratch.synchronizer);
 		#[cfg(any(debug_assertions, test))]
 		if self.context.has_errors() {
@@ -394,11 +394,14 @@ impl GPUIBLProcessor {
 		}
 
 		let expected_readback_size = atlas_byte_size(output_atlas_extent)?;
-		let readback = self.context.get_image_data(copy_handle);
-		if readback.len() < expected_readback_size {
+		let readback = self
+			.context
+			.get_image_data(copy_handle)
+			.map_err(|_| GPUIBLBakeError::GPUExecution)?;
+		if readback.bytes.len() < expected_readback_size {
 			return Err(GPUIBLBakeError::OutputReadbackSizeMismatch {
 				expected: expected_readback_size,
-				got: readback.len(),
+				got: readback.bytes.len(),
 			});
 		}
 
@@ -407,7 +410,7 @@ impl GPUIBLProcessor {
 			.map_err(|_| IBLBakeError::AllocationFailed)?;
 		data.resize(layout.total_size(), 0);
 		data[..layout.root_size()].copy_from_slice(source_rgba16f);
-		copy_output_atlas(layout, readback, output_atlas_extent.width(), &mut data);
+		copy_output_atlas(layout, &readback.bytes, output_atlas_extent.width(), &mut data);
 		let (root_extent, ibl, streams) = layout.metadata();
 		Ok(OwnedBakedImageIBL {
 			root_extent,
@@ -427,7 +430,7 @@ impl GPUIBLProcessor {
 				.use_case(ghi::UseCases::STATIC),
 		);
 		let output_atlas = self.context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage)
+			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource)
 				.name("Environment cubemap output atlas")
 				.extent(key.output_atlas_extent)
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
@@ -466,7 +469,7 @@ impl GPUIBLProcessor {
 		layout: CubemapIBLLayout,
 		source_level_count: u32,
 		scratch: GPUIBLScratch,
-	) -> ghi::TextureCopyHandle {
+	) -> Result<ghi::TextureCopyHandle, GPUIBLBakeError> {
 		let (source_width, source_height) = layout.source_dimensions();
 		let source_level_y_offsets = source_level_y_offsets(source_height);
 		let source_row_angle_step = std::f32::consts::PI / source_height as f32;
@@ -520,9 +523,11 @@ impl GPUIBLProcessor {
 			));
 		}
 
-		let copy_handle = recording.transfer_textures(&[scratch.output_atlas.into()])[0];
+		let copy_handle = recording
+			.transfer_texture(scratch.output_atlas.into())
+			.map_err(|_| GPUIBLBakeError::GPUExecution)?;
 		recording.execute(scratch.synchronizer);
-		copy_handle
+		Ok(copy_handle)
 	}
 }
 

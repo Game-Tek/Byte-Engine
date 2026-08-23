@@ -23,6 +23,15 @@ pub struct CommandBufferRecording<'a> {
 	active_render_target: Option<BaseImageHandle>,
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
+	texture_readbacks: SmallVec<[TextureCopyHandle; 4]>,
+}
+
+impl Drop for CommandBufferRecording<'_> {
+	fn drop(&mut self) {
+		for handle in self.texture_readbacks.drain(..) {
+			self.device.abandon_texture_readback(handle);
+		}
+	}
 }
 
 impl<'a> CommandBufferRecording<'a> {
@@ -42,6 +51,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_render_target: None,
 			active_extent: None,
 			push_constants: Vec::new(),
+			texture_readbacks: SmallVec::new(),
 		}
 	}
 
@@ -80,6 +90,11 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub(crate) fn record_present_preparation(&mut self, present_keys: &[crate::PresentKey]) {
 		self.device.record_present_preparation(self.command_buffer, present_keys);
+	}
+
+	/// Transfers readback ownership to the queue path that will submit this command buffer.
+	pub(crate) fn finish_for_submission(&mut self) {
+		let _ = std::mem::take(&mut self.texture_readbacks);
 	}
 }
 
@@ -155,34 +170,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.copy_buffer_to_images(self.command_buffer, copies, self.sequence_index());
 	}
 
-	fn copy_images_to_buffer(&mut self, _copies: &[crate::ImageBufferCopyDescriptor]) {
-		panic!(
-			"DX12 image-to-buffer copy is not implemented. The most likely cause is that this backend has not been wired for arbitrary texture readback buffers."
-		);
-	}
-
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
 		self.device.sync_buffer_for_sequence(buffer_handle, self.sequence_index());
 	}
 
-	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle> {
-		texture_handles
-			.iter()
-			.map(|handle| {
-				self.device
-					.flush_pending_texture_syncs(self.command_buffer, Some(*handle), Some(self.sequence_index()));
-				let copy = self
-					.device
-					.copy_image_to_cpu_for_sequence(crate::ImageHandle(*handle), self.sequence_index());
-				self.device.record_image_readback_for_copy(
-					self.command_buffer,
-					crate::ImageHandle(*handle),
-					copy,
-					self.sequence_index(),
-				);
-				copy
-			})
-			.collect()
+	fn transfer_texture(&mut self, source: ImageOrSwapchain) -> Result<TextureCopyHandle, crate::TextureTransferError> {
+		let ImageOrSwapchain::Image(handle) = source else {
+			return Err(crate::TextureTransferError::Unsupported);
+		};
+		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
+
+		self.device
+			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(self.sequence_index()));
+		let copy = self.device.record_image_readback_for_copy(
+			self.command_buffer,
+			crate::ImageHandle(handle),
+			self.sequence_index(),
+		)?;
+		self.texture_readbacks.push(copy);
+		Ok(copy)
 	}
 
 	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]) {
@@ -211,8 +217,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.record_image_copy(self.command_buffer, source_image, destination_image, self.sequence_index());
 	}
 
-	fn execute(self, synchronizer: SynchronizerHandle) {
-		self.device.submit_command_buffer(self.command_buffer, synchronizer);
+	fn execute(mut self, synchronizer: SynchronizerHandle) {
+		if self.device.submit_command_buffer(self.command_buffer, synchronizer) {
+			let _ = std::mem::take(&mut self.texture_readbacks);
+		}
 	}
 }
 

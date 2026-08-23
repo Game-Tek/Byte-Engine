@@ -32,9 +32,8 @@ pub struct Device {
 	synchronizers: Vec<Synchronizer>,
 	top_level_acceleration_structures: Vec<AccelerationStructure>,
 	bottom_level_acceleration_structures: Vec<AccelerationStructure>,
-	texture_copies: Vec<Vec<u8>>,
 	allocations: Vec<Allocation>,
-	texture_readbacks: Vec<TextureReadback>,
+	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
 	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
 	present_transitions: HashMap<CommandBufferHandle, Vec<ID3D12Resource>>,
@@ -268,18 +267,28 @@ struct BufferCopyInfo {
 	size: usize,
 }
 
+/// The `TextureReadbackData` struct owns one completed DX12 texture-transfer result.
+struct TextureReadbackData {
+	bytes: Vec<u8>,
+	extent: Extent,
+	format: Formats,
+	bytes_per_row: usize,
+	bytes_per_image: usize,
+}
+
+/// The `TextureReadback` struct keeps one DX12 transfer result and optional native staging alive until consumption.
 struct TextureReadback {
-	command_buffer_handle: CommandBufferHandle,
-	texture_copy: TextureCopyHandle,
+	command_buffer_handle: Option<CommandBufferHandle>,
 	completion: Option<(crate::synchronizer::SynchronizerHandle, u64)>,
-	resource: ID3D12Resource,
+	resource: Option<ID3D12Resource>,
 	sequence_index: u8,
 	row_pitch: usize,
 	row_bytes: usize,
 	height: usize,
 	depth: usize,
 	size: usize,
-	resolved: bool,
+	mapping_failed: bool,
+	data: TextureReadbackData,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +562,19 @@ pub struct Execution<'a> {
 	pub(crate) command_buffers: smallvec::SmallVec<[CommandBufferHandle; 4]>,
 }
 
+impl Drop for Execution<'_> {
+	fn drop(&mut self) {
+		let Some(frame) = self.frame.as_mut() else {
+			return;
+		};
+		for &command_buffer in &self.command_buffers {
+			frame
+				.device_mut()
+				.abandon_texture_readbacks_for_command_buffer(command_buffer);
+		}
+	}
+}
+
 /// The `CommandBufferReference` struct exists to start DX12 command-buffer recordings from a command-buffer handle.
 pub struct CommandBufferReference<'a> {
 	device: &'a mut Device,
@@ -824,7 +846,10 @@ impl crate::context::Context for Device {
 		Device::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, _uses)
 	}
 
-	fn get_image_data<'a>(&'a mut self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
+	fn get_image_data(
+		&mut self,
+		texture_copy_handle: TextureCopyHandle,
+	) -> Result<MappedTextureReadback, TextureTransferError> {
 		self.wait_for_texture_copy_readback(texture_copy_handle);
 		self.refresh_readback_texture_copies(None);
 		Device::get_image_data(self, texture_copy_handle)
@@ -994,6 +1019,7 @@ use crate::{
 	CommandBufferHandle, DataTypes, DescriptorSetHandle, DeviceAccesses, DispatchExtent, DynamicBufferHandle, FilteringModes,
 	Formats, HandleLike as _, ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
 	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
-	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes,
-	TopLevelAccelerationStructureHandle, UseCases, Uses,
+	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	TextureReadback as MappedTextureReadback, TextureTransferError, TextureViewTypes, TopLevelAccelerationStructureHandle,
+	UseCases, Uses,
 };

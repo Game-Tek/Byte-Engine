@@ -50,6 +50,7 @@ pub struct GraphicsApplication {
 
 	application_events: (Sender<Events>, Receiver<Events>),
 	http_inspector: HttpInspectorServer,
+	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	configuration: Configuration,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
@@ -131,6 +132,7 @@ impl Application for GraphicsApplication {
 		.unwrap();
 
 		let inspector = EntityHandle::from(Inspector::new(tx.clone(), configuration.clone()));
+		let screenshot_broker = inspector.screenshots();
 		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let rx = tx.spawn_rx();
@@ -148,6 +150,7 @@ impl Application for GraphicsApplication {
 
 			application_events,
 			http_inspector,
+			screenshot_broker,
 			configuration,
 
 			window_factory: (window_factory, window_factory_listener),
@@ -351,8 +354,23 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
+			let requests = self.screenshot_broker.drain();
+			let sinks = requests.iter().map(|request| request.sink).collect::<Vec<_>>();
 			let frame_allocator = &self.application.frame_allocator;
-			self.renderer.prepare(&mut self.renderer_transforms_listener, frame_allocator);
+			let captures = self
+				.renderer
+				.prepare(&mut self.renderer_transforms_listener, frame_allocator, &sinks);
+			for (request, capture) in requests.into_iter().zip(captures) {
+				let result =
+					capture
+						.map_err(crate::inspector::screenshot::ScreenshotError::from)
+						.and_then(|(frame, readback)| {
+							crate::inspector::screenshot::encode_bgra_png(readback)
+								.map(|png| crate::inspector::screenshot::Screenshot { frame, png })
+								.map_err(crate::inspector::screenshot::ScreenshotError::Internal)
+						});
+				request.complete(result);
+			}
 		}
 
 		{

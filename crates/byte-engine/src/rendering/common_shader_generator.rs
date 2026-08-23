@@ -858,7 +858,7 @@ mod tests {
 		let extent = utils::Extent::square(16);
 
 		let target = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::RenderTarget)
+			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::RenderTarget | ghi::Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost),
 		);
@@ -867,7 +867,7 @@ mod tests {
 
 		let signal = context.create_synchronizer(None, true);
 
-		let mut copies = Vec::new();
+		let mut copy = None;
 
 		context
 			.queue(queue_handle)
@@ -898,7 +898,7 @@ mod tests {
 
 					pass.end_render_pass();
 
-					copies = recording.transfer_textures(&[target.into()]);
+					copy = Some(recording.transfer_texture(target.into()));
 				});
 
 				[]
@@ -908,10 +908,17 @@ mod tests {
 
 		assert!(!context.has_errors());
 
-		let pixels = context.get_image_data(copies[0]);
+		let copy = copy
+			.expect("Missing generated shader texture transfer. The most likely cause is that command recording skipped the test target.")
+			.expect(
+				"Generated shader texture transfer failed. The most likely cause is that the test target is not a valid transfer source.",
+			);
+		let pixels = context.get_image_data(copy).expect(
+			"Generated shader texture mapping failed. The most likely cause is that the transfer command did not complete.",
+		);
 
 		assert!(
-			pixels.chunks_exact(4).any(|pixel| pixel[1] > 0),
+			pixels.bytes.chunks_exact(4).any(|pixel| pixel[1] > 0),
 			"Generated BESL raster shaders with divergent resource interfaces rendered no green pixels"
 		);
 	}

@@ -9,7 +9,10 @@ impl Device {
 	}
 
 	pub(crate) fn readback_resource_count(&self) -> usize {
-		self.texture_readbacks.len()
+		self.texture_readbacks
+			.values()
+			.filter(|readback| readback.resource.is_some())
+			.count()
 	}
 
 	pub(crate) fn debug_region_begin_count(&self) -> usize {

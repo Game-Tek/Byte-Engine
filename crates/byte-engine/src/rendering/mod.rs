@@ -15,7 +15,7 @@
 //! to create and submit scene lights with lux, candela, lumens, or nits.
 
 use ::utils::Extent;
-use ghi::context::ContextCreate as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use math::direction_from_orientation;
 
 #[doc(hidden)]

@@ -671,6 +671,25 @@ pub(super) mod tests {
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
 	}
 
+	/// Converts one owned RGBA8 readback into test pixels without borrowing temporary storage.
+	fn rgba_pixels(readback: crate::TextureReadback) -> Vec<RGBAu8> {
+		assert_eq!(
+			readback.bytes.len() % std::mem::size_of::<RGBAu8>(),
+			0,
+			"RGBA8 readback size is invalid. The most likely cause is that the transfer layout does not contain complete pixels."
+		);
+		readback
+			.bytes
+			.chunks_exact(std::mem::size_of::<RGBAu8>())
+			.map(|pixel| RGBAu8 {
+				r: pixel[0],
+				g: pixel[1],
+				b: pixel[2],
+				a: pixel[3],
+			})
+			.collect()
+	}
+
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -790,7 +809,7 @@ pub(super) mod tests {
 		let extent = Extent::rectangle(1921, 1080);
 
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::STATIC),
@@ -832,7 +851,9 @@ pub(super) mod tests {
 
 			render_pass_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+			let texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+				"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+			)];
 
 			command_buffer_recording.execute(signal);
 			texture_copy_handles
@@ -844,15 +865,11 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		// Get image data and cast u8 slice to rgbau8
-		let pixels = unsafe {
-			std::slice::from_raw_parts(
-				device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
-				(extent.width() * extent.height()) as usize,
-			)
-		};
+		let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 
-		check_triangle(pixels, extent);
+		check_triangle(&pixels, extent);
 	}
 
 	#[cfg(target_os = "macos")]
@@ -926,7 +943,7 @@ pub(super) mod tests {
 
 		let extent = Extent::rectangle(9, 9);
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::STATIC),
@@ -962,7 +979,9 @@ pub(super) mod tests {
 			render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&behind);
 			render_pass.end_render_pass();
 
-			let texture_copy_handles = recording.transfer_textures(&[render_target.into()]);
+			let texture_copy_handles = vec![recording.transfer_texture(render_target.into()).expect(
+				"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+			)];
 			recording.execute(signal);
 			texture_copy_handles
 		};
@@ -976,7 +995,12 @@ pub(super) mod tests {
 		let copy_handle = *texture_copy_handles.first().expect(
 			"Missing Metal depth-state test readback. The most likely cause is that the color target was not created for CPU access.",
 		);
-		let image_data = device.get_image_data(copy_handle);
+		let image_data = device
+			.get_image_data(copy_handle)
+			.expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			)
+			.bytes;
 		let expected_byte_count = (extent.width() * extent.height()) as usize * std::mem::size_of::<RGBAu8>();
 
 		assert_eq!(
@@ -1243,7 +1267,7 @@ pub(super) mod tests {
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::DYNAMIC),
@@ -1293,7 +1317,7 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -1307,14 +1331,11 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
-					(extent.width() * extent.height()) as usize,
-				)
-			};
+			let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
 
-			check_triangle(pixels, extent);
+			check_triangle(&pixels, extent);
 		}
 	}
 
@@ -1355,7 +1376,7 @@ pub(super) mod tests {
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::DYNAMIC),
@@ -1409,7 +1430,7 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -1423,14 +1444,11 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
-					(extent.width() * extent.height()) as usize,
-				)
-			};
+			let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
 
-			check_triangle(pixels, extent);
+			check_triangle(&pixels, extent);
 		}
 	}
 
@@ -1470,7 +1488,7 @@ pub(super) mod tests {
 		let mut extent = Extent::rectangle(1280, 720);
 
 		let render_target = device.build_dynamic_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::DYNAMIC),
@@ -1528,7 +1546,7 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -1542,7 +1560,7 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
-			let image_data = device.get_image_data(texture_copy_handles[0]);
+			let image_data = device.get_image_data(texture_copy_handles[0]).expect("Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.").bytes;
 			let pixel_count = (extent.width() * extent.height()) as usize;
 
 			assert_eq!(
@@ -1557,7 +1575,7 @@ pub(super) mod tests {
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
-			check_triangle(pixels, extent);
+			check_triangle(&pixels, extent);
 		}
 	}
 
@@ -1599,7 +1617,7 @@ pub(super) mod tests {
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::DYNAMIC),
@@ -1674,7 +1692,7 @@ pub(super) mod tests {
 
 							c.end_render_pass();
 
-							copy_texture_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+							copy_texture_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -1688,12 +1706,9 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					device.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8,
-					(extent.width() * extent.height()) as usize,
-				)
-			};
+			let pixels = rgba_pixels(device.get_image_data(copy_texture_handles[0]).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -1770,9 +1785,12 @@ pub(super) mod tests {
 		);
 
 		let readback_image = device.build_dynamic_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
-				.extent(extent)
-				.device_accesses(DeviceAccesses::DeviceToHost),
+			crate::image::Builder::new(
+				Formats::RGBA8UNORM,
+				Uses::Image | Uses::TransferSource | Uses::TransferDestination,
+			)
+			.extent(extent)
+			.device_accesses(DeviceAccesses::DeviceToHost),
 		);
 
 		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
@@ -1817,7 +1835,7 @@ pub(super) mod tests {
 								readback_image.into(),
 								Layouts::Transfer,
 							);
-							texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image.into()]);
+							texture_copy_handles = vec![command_buffer_recording.transfer_texture(readback_image.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -1827,12 +1845,9 @@ pub(super) mod tests {
 
 			device.wait();
 
-			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
-					pixel_count,
-				)
-			};
+			let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
 
 			assert!(pixels.iter().all(|pixel| *pixel == expected_color));
 			assert!(!device.has_errors());
@@ -1923,7 +1938,7 @@ pub(super) mod tests {
 		));
 
 		let image = device.build_dynamic_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
 				.name("Image")
 				.extent(Extent::square(2))
 				.device_accesses(DeviceAccesses::DeviceToHost),
@@ -1959,7 +1974,9 @@ pub(super) mod tests {
 						.bind_descriptor_sets(&[descriptor_set])
 						.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
+						"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+					)];
 				});
 				[]
 			});
@@ -1968,7 +1985,9 @@ pub(super) mod tests {
 
 		device.wait();
 
-		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		let pixels = rgba_pixels(device.get_image_data(copy_handles[0]).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 
 		assert!(
 			pixels[0]
@@ -2002,7 +2021,9 @@ pub(super) mod tests {
 						.bind_descriptor_sets(&[descriptor_set])
 						.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
+						"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+					)];
 				});
 				[]
 			});
@@ -2011,7 +2032,9 @@ pub(super) mod tests {
 
 		device.wait();
 
-		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		let pixels = rgba_pixels(device.get_image_data(copy_handles[0]).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 
 		assert_eq!(
 			pixels[0],
@@ -2044,7 +2067,9 @@ pub(super) mod tests {
 			let mut copy_handles = Vec::new();
 			queue.execute(Some(FrameRequest::new(2, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |command_buffer_recording| {
-					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
+						"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+					)];
 				});
 				[]
 			});
@@ -2053,7 +2078,9 @@ pub(super) mod tests {
 
 		device.wait();
 
-		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		let pixels = rgba_pixels(device.get_image_data(copy_handles[0]).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 
 		assert_eq!(pixels[0], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
@@ -2064,7 +2091,9 @@ pub(super) mod tests {
 			let mut copy_handles = Vec::new();
 			queue.execute(Some(FrameRequest::new(3, signal)), &[], signal, |execution| {
 				execution.record(command_buffer, |command_buffer_recording| {
-					copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					copy_handles = vec![command_buffer_recording.transfer_texture(image.into()).expect(
+						"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+					)];
 				});
 				[]
 			});
@@ -2073,7 +2102,9 @@ pub(super) mod tests {
 
 		device.wait();
 
-		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		let pixels = rgba_pixels(device.get_image_data(copy_handles[0]).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
 
 		assert!(
 			pixels[0]
@@ -2323,7 +2354,7 @@ pub(super) mod tests {
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::STATIC),
@@ -2375,7 +2406,9 @@ pub(super) mod tests {
 
 					raster_render_pass_command.end_render_pass();
 
-					texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+					texure_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+						"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+					)];
 				});
 				[]
 			});
@@ -2387,7 +2420,12 @@ pub(super) mod tests {
 		device.wait();
 
 		// assert colored triangle was drawn to texture
-		let _pixels = device.get_image_data(texure_copy_handles[0]);
+		let _pixels = device
+			.get_image_data(texure_copy_handles[0])
+			.expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			)
+			.bytes;
 
 		// TODO: assert rendering results
 
@@ -2670,7 +2708,7 @@ void miss_main(inout Payload payload) {
 		let descriptor_set = renderer.create_descriptor_set(None);
 
 		let render_target = renderer.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
 				.use_case(UseCases::DYNAMIC),
@@ -2792,7 +2830,7 @@ void miss_main(inout Payload payload) {
 								1,
 							);
 
-							texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+							texure_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
 						});
 						[]
 					},
@@ -2804,14 +2842,11 @@ void miss_main(inout Payload payload) {
 
 			assert!(!renderer.has_errors());
 
-			let pixels = unsafe {
-				std::slice::from_raw_parts(
-					renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8,
-					(extent.width() * extent.height()) as usize,
-				)
-			};
+			let pixels = rgba_pixels(renderer.get_image_data(texure_copy_handles[0]).expect(
+				"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+			));
 
-			check_triangle(pixels, extent);
+			check_triangle(&pixels, extent);
 		}
 	}
 }

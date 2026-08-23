@@ -58,6 +58,7 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		// Present keys are recorded after user commands so swapchain proxy images written by compute passes
 		// are copied to the native backbuffer before the command list is submitted.
 		command_buffer.record_present_preparation(present_keys);
+		command_buffer.finish_for_submission();
 		self.command_buffers.push(command_buffer_handle);
 	}
 }
@@ -129,8 +130,13 @@ impl crate::queue::Queue for Queue {
 			return;
 		}
 		for command_buffer in command_buffers {
-			unsafe {
-				device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer);
+			let submitted = unsafe { device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer) };
+			if !submitted {
+				unsafe {
+					device_pointer
+						.as_mut()
+						.abandon_texture_readbacks_for_command_buffer(command_buffer);
+				}
 			}
 		}
 		for present_key in present_keys.as_ref() {
@@ -206,8 +212,13 @@ impl crate::queue::Queue for QueueReference<'_> {
 			return;
 		}
 		for command_buffer in command_buffers {
-			unsafe {
-				device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer);
+			let submitted = unsafe { device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer) };
+			if !submitted {
+				unsafe {
+					device_pointer
+						.as_mut()
+						.abandon_texture_readbacks_for_command_buffer(command_buffer);
+				}
 			}
 		}
 		for present_key in present_keys.as_ref() {

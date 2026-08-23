@@ -9,7 +9,7 @@ use super::{
 	},
 	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
 	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
-	Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	Swapchain, Synchronizer, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 use crate::{graphics_hardware_interface, FrameKey, HandleLike as _, Size};
 
@@ -46,6 +46,18 @@ pub struct CommandBufferRecording<'a> {
 	descriptor_heaps_bound: bool,
 	pending_rendering: Option<(Extent, SmallVec<[graphics_hardware_interface::AttachmentInformation; 8]>)>,
 	active_rendering: bool,
+	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
+	readbacks_finalized: bool,
+}
+
+impl Drop for CommandBufferRecording<'_> {
+	fn drop(&mut self) {
+		if !self.readbacks_finalized {
+			for handle in std::mem::take(&mut self.texture_readbacks) {
+				self.device.cancel_texture_readback(handle);
+			}
+		}
+	}
 }
 
 pub struct VulkanCommandBuffer<'a> {

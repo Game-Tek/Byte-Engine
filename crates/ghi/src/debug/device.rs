@@ -5,7 +5,7 @@ use crate::{
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
 	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	TextureCopyHandle, TextureReadback, TextureTransferError, TopLevelAccelerationStructureHandle, Uses,
 };
 
 pub struct Device {}
@@ -182,8 +182,8 @@ impl Device {
 		(ImageHandle(crate::BaseImageHandle(0)), Formats::BGRAu8)
 	}
 
-	pub fn get_image_data(&mut self, _texture_copy_handle: TextureCopyHandle) -> &[u8] {
-		&[]
+	pub fn get_image_data(&mut self, texture_copy_handle: TextureCopyHandle) -> Result<TextureReadback, TextureTransferError> {
+		Err(TextureTransferError::InvalidHandle(texture_copy_handle))
 	}
 
 	pub fn create_synchronizer(&mut self, _name: Option<&str>, _signaled: bool) -> SynchronizerHandle {

@@ -84,6 +84,70 @@ impl Context {
 		unsafe { allocation.pointer.add(offset) }
 	}
 
+	/// Creates and maps one dedicated transfer-destination buffer without leaking partial Vulkan resources.
+	pub(crate) fn create_texture_readback_buffer(
+		&mut self,
+		size: usize,
+	) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), crate::TextureTransferError> {
+		let size = u64::try_from(size).map_err(|_| crate::TextureTransferError::UnsupportedLayout)?;
+		let buffer_info = vk::BufferCreateInfo::default()
+			.size(size)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.usage(vk::BufferUsageFlags::TRANSFER_DST);
+		let buffer = unsafe {
+			self.device
+				.create_buffer(&buffer_info, None)
+				.map_err(|_| crate::TextureTransferError::AllocationFailed)?
+		};
+		let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+		let memory_type_index = self
+			.memory_properties
+			.memory_types
+			.iter()
+			.enumerate()
+			.find_map(|(index, memory_type)| {
+				let supported = requirements.memory_type_bits & (1 << index) != 0;
+				let visible = memory_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
+				(supported && visible).then_some(index as u32)
+			});
+		let Some(memory_type_index) = memory_type_index else {
+			unsafe { self.device.destroy_buffer(buffer, None) };
+			return Err(crate::TextureTransferError::AllocationFailed);
+		};
+		let allocation_info = vk::MemoryAllocateInfo::default()
+			.allocation_size(requirements.size)
+			.memory_type_index(memory_type_index);
+		let memory = match unsafe { self.device.allocate_memory(&allocation_info, None) } {
+			Ok(memory) => memory,
+			Err(_) => {
+				unsafe { self.device.destroy_buffer(buffer, None) };
+				return Err(crate::TextureTransferError::AllocationFailed);
+			}
+		};
+		if unsafe { self.device.bind_buffer_memory(buffer, memory, 0) }.is_err() {
+			unsafe {
+				self.device.free_memory(memory, None);
+				self.device.destroy_buffer(buffer, None);
+			}
+			return Err(crate::TextureTransferError::AllocationFailed);
+		}
+		let pointer = match unsafe {
+			self.device
+				.map_memory(memory, 0, requirements.size, vk::MemoryMapFlags::empty())
+		} {
+			Ok(pointer) => pointer.cast::<u8>(),
+			Err(_) => {
+				unsafe {
+					self.device.free_memory(memory, None);
+					self.device.destroy_buffer(buffer, None);
+				}
+				return Err(crate::TextureTransferError::MappingFailed);
+			}
+		};
+
+		Ok((buffer, memory, pointer))
+	}
+
 	pub(crate) fn bind_vulkan_texture_memory(
 		&self,
 		info: &MemoryBackedResourceCreationResult<vk::Image>,

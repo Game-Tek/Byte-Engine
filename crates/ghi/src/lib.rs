@@ -194,7 +194,7 @@ pub mod synchronizer;
 
 pub mod types;
 
-pub use context::{Context, ContextCreate};
+pub use context::{Context, ContextCreate, TextureReadback, TextureTransferError};
 pub use descriptors::DescriptorWrite;
 pub use device::Device;
 pub use frame::Frame;
@@ -204,8 +204,8 @@ pub use shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
 use smallvec::SmallVec;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,
-	ChannelLayout, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, ImageBufferCopyDescriptor, Layouts,
-	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, Size, Stages, UseCases, Uses, WorkloadTypes,
+	ChannelLayout, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, SamplerAddressingModes,
+	SamplingReductionModes, ShaderTypes, Size, Stages, UseCases, Uses, WorkloadTypes,
 };
 
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;

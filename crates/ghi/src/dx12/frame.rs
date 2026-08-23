@@ -14,6 +14,10 @@ impl<'a> Frame<'a> {
 	pub fn new(device: &'a mut super::Device, frame_key: FrameKey) -> Self {
 		Self { frame_key, device }
 	}
+
+	pub(crate) fn device_mut(&mut self) -> &mut super::Device {
+		self.device
+	}
 }
 
 impl Frame<'_> {

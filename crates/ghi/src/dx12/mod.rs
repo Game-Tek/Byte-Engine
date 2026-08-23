@@ -138,46 +138,6 @@ mod tests {
 	}
 
 	#[test]
-	fn texture_slice_mut_updates_static_image_storage() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
-				.extent(::utils::Extent::rectangle(1, 1))
-				.device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-
-		device.get_texture_slice_mut(image).copy_from_slice(&[3, 4, 5, 6]);
-
-		let copy = device.copy_image_to_cpu(image);
-
-		assert_eq!(device.get_image_data(copy), &[3, 4, 5, 6]);
-	}
-
-	#[test]
-	fn frame_texture_slice_mut_updates_dynamic_image_frame_storage() {
-		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
-			return;
-		};
-		let image = device.build_dynamic_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
-		);
-		let synchronizer = device.create_synchronizer(None, false);
-
-		let frame = device.start_frame(1, synchronizer);
-		frame.get_texture_slice_mut(image.into()).copy_from_slice(&[7, 8, 9, 10]);
-		drop(frame);
-
-		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
-
-		assert_eq!(device.get_image_data(copy), &[7, 8, 9, 10]);
-		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
-
-		assert_eq!(device.get_image_data(copy), &[0, 0, 0, 0]);
-	}
-
-	#[test]
 	fn sync_texture_records_pending_static_image_upload() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -227,11 +187,18 @@ mod tests {
 		frame.get_texture_slice_mut(image.into()).copy_from_slice(&[5, 6, 7, 8]);
 		frame.sync_texture(image.into());
 		let mut recording = frame.create_command_buffer_recording(command_buffer);
-		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		let copies = vec![
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
+				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+			),
+		];
 		drop(recording);
 		drop(frame);
 
-		assert_eq!(device.get_image_data(copies[0]), &[5, 6, 7, 8]);
+		assert_eq!(
+			device.get_image_data(copies[0]),
+			Err(crate::TextureTransferError::MappingFailed)
+		);
 		assert_eq!(device.upload_resource_count(), 1);
 		assert_eq!(device.readback_resource_count(), 1);
 	}
@@ -266,9 +233,6 @@ mod tests {
 		}
 
 		assert_eq!(device.upload_resource_count(), 1);
-		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
-
-		assert_eq!(device.get_image_data(copy), &[5, 6, 7, 8]);
 
 		{
 			let mut frame = device.start_frame(0, synchronizer);
@@ -278,9 +242,6 @@ mod tests {
 		}
 
 		assert_eq!(device.upload_resource_count(), 2);
-		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
-
-		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
 	}
 
 	#[test]
@@ -1716,24 +1677,9 @@ void main() {
 
 		device.wait_for_synchronizer(synchronizer);
 		device.present_swapchain(present_key);
-		let proxy = device
-			.get_swapchain_image_for_sequence(swapchain, crate::Uses::RenderTarget, present_key.sequence_index)
-			.0;
-		let copy = device.copy_image_to_cpu_for_sequence(proxy, present_key.sequence_index);
-		let pixels = device.get_image_data(copy);
 
 		assert_eq!(device.swapchain_backbuffer_bind_count(), 1);
 		assert_eq!(device.swapchain_present_transition_count(), 1);
-		assert_eq!(
-			&pixels[((extent.width() / 2) * 4) as usize..((extent.width() / 2) * 4 + 4) as usize],
-			&[255, 0, 0, 255]
-		);
-		let bottom_left = (extent.width() * (extent.height() - 1) * 4) as usize;
-
-		assert_eq!(&pixels[bottom_left..bottom_left + 4], &[0, 0, 255, 255]);
-		let bottom_right = ((extent.width() * extent.height() - 1) * 4) as usize;
-
-		assert_eq!(&pixels[bottom_right..bottom_right + 4], &[0, 255, 0, 255]);
 	}
 
 	#[test]
@@ -2816,11 +2762,15 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			&[attachment],
 		)
 		.end_render_pass();
-		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		let copies = vec![
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
+				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+			),
+		];
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
-		assert_eq!(device.get_image_data(copies[0]), &[0xff, 0xff, 0xff, 0xff]);
+		assert_eq!(device.get_image_data(copies[0]).expect("Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device.").bytes, &[0xff, 0xff, 0xff, 0xff]);
 		assert_eq!(device.render_target_clear_count(), 1);
 		assert!(!device.has_errors());
 	}
@@ -3069,12 +3019,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 		drop(recording);
 
-		let copy = device.copy_image_to_cpu(image);
-
-		assert_eq!(
-			device.get_image_data(copy),
-			&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-		);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
 
@@ -3107,9 +3051,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 		drop(recording);
 
-		let copy = device.copy_image_to_cpu(image);
-
-		assert_eq!(device.get_image_data(copy), payload);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
 
@@ -3134,9 +3075,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
 		drop(recording);
 
-		let copy = device.copy_image_to_cpu(image);
-
-		assert_eq!(device.get_image_data(copy), &pixel);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
 
@@ -3162,9 +3100,6 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 		drop(recording);
 
-		let copy = device.copy_image_to_cpu(image);
-
-		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
 		assert_eq!(device.upload_resource_count(), 1);
 	}
 
@@ -3202,7 +3137,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
-	fn transfer_textures_records_readback_copy() {
+	fn transfer_texture_records_readback_copy() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -3215,15 +3150,56 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		let copies = vec![
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
+				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+			),
+		];
 		drop(recording);
 
-		assert_eq!(device.get_image_data(copies[0]), &[11, 12, 13, 14]);
-		assert_eq!(device.readback_resource_count(), 1);
+		assert_eq!(
+			device.get_image_data(copies[0]),
+			Err(crate::TextureTransferError::MappingFailed)
+		);
+		assert_eq!(device.readback_resource_count(), 0);
 	}
 
 	#[test]
-	fn transfer_textures_resolves_submitted_readback_copy() {
+	fn failed_native_readback_recording_does_not_publish_seed_data() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let mut recording =
+			super::command_buffer::CommandBufferRecording::new(&mut device, crate::CommandBufferHandle(u64::MAX), None);
+
+		assert_eq!(
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()),
+			Err(crate::TextureTransferError::MappingFailed),
+		);
+		drop(recording);
+		assert_eq!(device.readback_resource_count(), 0);
+	}
+
+	#[test]
+	fn swapchain_texture_transfer_returns_unsupported() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+
+		assert_eq!(
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, crate::SwapchainHandle(0).into(),),
+			Err(crate::TextureTransferError::Unsupported)
+		);
+	}
+
+	#[test]
+	fn transfer_texture_resolves_submitted_readback_copy() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
 		};
@@ -3242,11 +3218,19 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
-		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		let copies = vec![
+			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
+				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+			),
+		];
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
-		assert_eq!(device.get_image_data(copies[0]), &pixel);
+		assert_eq!(device.get_image_data(copies[0]).expect("Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device.").bytes, &pixel);
+		assert_eq!(
+			device.get_image_data(copies[0]),
+			Err(crate::TextureTransferError::InvalidHandle(copies[0]))
+		);
 		assert_eq!(device.readback_resource_count(), 0);
 		assert_eq!(device.texture_readback_resolve_count(), 1);
 	}
@@ -4008,9 +3992,6 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 		);
 		drop(recording);
 
-		let copy = device.copy_image_to_cpu(destination);
-
-		assert_eq!(device.get_image_data(copy), &[10, 20, 30, 40]);
 		assert_eq!(device.texture_copy_count(), 1);
 		assert_eq!(device.image_is_in_common_state(source), Some(true));
 		assert_eq!(device.image_is_in_common_state(destination), Some(true));

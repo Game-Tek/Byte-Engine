@@ -1,74 +1,75 @@
 use super::*;
 
 impl Device {
-	pub(crate) fn copy_image_to_cpu(&mut self, image_handle: ImageHandle) -> TextureCopyHandle {
-		self.copy_image_to_cpu_for_sequence(image_handle, 0)
+	/// Validates metadata that must be true before DX12 can record a regular-image readback.
+	pub(crate) fn validate_texture_transfer_source(
+		&self,
+		image_handle: ImageHandle,
+	) -> Result<(), crate::TextureTransferError> {
+		let image = self
+			.images
+			.get(image_handle.0 .0 as usize)
+			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
+		Self::dxgi_format(image.format)
+			.map(|_| ())
+			.ok_or(crate::TextureTransferError::UnsupportedFormat(image.format))
 	}
 
-	pub(crate) fn copy_image_to_cpu_for_sequence(
-		&mut self,
-		image_handle: ImageHandle,
-		sequence_index: u8,
-	) -> TextureCopyHandle {
-		// Copies stored image data into a new staging buffer for CPU reads.
-		let image = &self.images[image_handle.0 .0 as usize];
-		let data = image
-			.frame_data
-			.as_ref()
-			.and_then(|frames| frames.get(sequence_index as usize).or_else(|| frames.first()))
-			.cloned()
-			.or_else(|| image.data.clone())
-			.unwrap_or_default();
-		self.texture_copies.push(data);
-		TextureCopyHandle((self.texture_copies.len() - 1) as u64)
+	pub(crate) fn abandon_texture_readback(&mut self, handle: TextureCopyHandle) {
+		self.texture_readbacks.abandon_recorded(handle);
 	}
 
 	pub(crate) fn record_image_readback(&mut self, command_buffer_handle: CommandBufferHandle, image_handle: ImageHandle) {
-		self.record_image_readback_internal(command_buffer_handle, image_handle, None, 0);
+		let _ = self.record_image_readback_internal(command_buffer_handle, image_handle, false, 0);
 	}
 
 	pub(crate) fn record_image_readback_for_copy(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
-		texture_copy: TextureCopyHandle,
 		sequence_index: u8,
-	) {
-		self.record_image_readback_internal(command_buffer_handle, image_handle, Some(texture_copy), sequence_index);
+	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
+		let readback = self
+			.record_image_readback_internal(command_buffer_handle, image_handle, true, sequence_index)?
+			.ok_or(crate::TextureTransferError::MappingFailed)?;
+		Ok(self.texture_readbacks.insert(readback))
 	}
 
-	pub(crate) fn record_image_readback_internal(
+	/// Records one base-mip copy and returns native staging only when the result will be mapped later.
+	fn record_image_readback_internal(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
-		texture_copy: Option<TextureCopyHandle>,
+		return_readback: bool,
 		sequence_index: u8,
-	) {
-		let Some(command_list) = self
+	) -> Result<Option<TextureReadback>, crate::TextureTransferError> {
+		let command_list = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
 			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
-		let source = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
-			return;
-		};
-		let (Some(source), Some(format), Some((row_bytes, row_count, _))) = (
-			source,
-			Self::dxgi_format(image.format),
-			utils::texture_copy_layout(image.format, image.extent),
-		) else {
-			return;
-		};
-
+			.ok_or(crate::TextureTransferError::MappingFailed)?;
+		let image = self
+			.images
+			.get(image_handle.0 .0 as usize)
+			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		let layout = crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		let extent = image.extent;
-		let depth = extent.depth().max(1) as usize;
-		let readback_row_pitch = Self::align_up(row_bytes, 256);
-		let readback_size = readback_row_pitch * row_count * depth;
+		let image_format = image.format;
+		let format = Self::dxgi_format(image_format).ok_or(crate::TextureTransferError::UnsupportedFormat(image_format))?;
+		let source = self
+			.ensure_image_resource_for_sequence(image_handle.0, sequence_index)
+			.ok_or(crate::TextureTransferError::MappingFailed)?;
+		let readback_row_pitch = layout
+			.bytes_per_row
+			.checked_add(255)
+			.map(|bytes| bytes & !255)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let readback_size = readback_row_pitch
+			.checked_mul(layout.row_count)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost) else {
-			return;
+			return Err(crate::TextureTransferError::AllocationFailed);
 		};
 
 		let source_location = D3D12_TEXTURE_COPY_LOCATION {
@@ -86,8 +87,9 @@ impl Device {
 						Format: format,
 						Width: extent.width(),
 						Height: extent.height(),
-						Depth: depth as u32,
-						RowPitch: readback_row_pitch as u32,
+						Depth: 1,
+						RowPitch: u32::try_from(readback_row_pitch)
+							.map_err(|_| crate::TextureTransferError::UnsupportedLayout)?,
 					},
 				},
 			},
@@ -109,35 +111,50 @@ impl Device {
 			);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		if texture_copy.is_none() {
+		if !return_readback {
 			self.retain_command_buffer_resource(command_buffer_handle, readback);
-			return;
+			return Ok(None);
 		}
-		let texture_copy = texture_copy.expect(
-			"Missing DX12 texture-copy handle. The most likely cause is that a retained readback was created without CPU copy storage.",
-		);
-		self.texture_readbacks.push(TextureReadback {
-			command_buffer_handle,
-			texture_copy,
+
+		Ok(Some(TextureReadback {
+			command_buffer_handle: Some(command_buffer_handle),
 			completion: None,
-			resource: readback,
+			resource: Some(readback),
 			sequence_index,
 			row_pitch: readback_row_pitch,
-			row_bytes,
-			height: row_count,
-			depth,
+			row_bytes: layout.bytes_per_row,
+			height: layout.row_count,
+			depth: 1,
 			size: readback_size,
-			resolved: false,
-		});
+			mapping_failed: false,
+			data: TextureReadbackData {
+				bytes: Vec::new(),
+				extent,
+				format: image_format,
+				bytes_per_row: layout.bytes_per_row,
+				bytes_per_image: layout.bytes_per_image,
+			},
+		}))
+	}
+
+	/// Releases every unsubmitted readback associated with one discarded command-list recording.
+	pub(crate) fn abandon_texture_readbacks_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
+		let handles = self
+			.texture_readbacks
+			.entries()
+			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
+			.collect::<SmallVec<[_; 4]>>();
+		for handle in handles {
+			self.texture_readbacks.abandon_recorded(handle);
+		}
 	}
 
 	pub(crate) fn refresh_readback_texture_copies(&mut self, sequence_index: Option<u8>) {
-		// Maps completed readback buffers and repacks DX12 row padding into compact texture copies.
-		for readback in &mut self.texture_readbacks {
-			if readback.resolved {
-				continue;
-			}
-			if sequence_index.is_some_and(|sequence_index| readback.sequence_index != sequence_index) {
+		// Maps completed readback buffers and repacks DX12 row padding into compact owned bytes.
+		for readback in self.texture_readbacks.values_mut() {
+			if readback.resource.is_none()
+				|| sequence_index.is_some_and(|sequence_index| readback.sequence_index != sequence_index)
+			{
 				continue;
 			}
 			let Some((synchronizer_handle, completion_value)) = readback.completion else {
@@ -149,48 +166,47 @@ impl Device {
 			if unsafe { synchronizer.fence.GetCompletedValue() } < completion_value {
 				continue;
 			}
-			if readback.size == 0 {
+			let Some(resource) = readback.resource.as_ref() else {
 				continue;
-			}
+			};
 
 			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
 			let read_range = D3D12_RANGE {
 				Begin: 0,
 				End: readback.size,
 			};
-			let result = unsafe { readback.resource.Map(0, Some(&read_range), Some(&mut mapped)) };
-			if result.is_err() || mapped.is_null() {
+			if unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) }.is_err() || mapped.is_null() {
+				readback.mapping_failed = true;
+				readback.resource = None;
 				continue;
 			}
 
-			let compact_size = readback.row_bytes * readback.height * readback.depth;
-			let mut compact = vec![0; compact_size];
-			for layer in 0..readback.depth {
-				for row in 0..readback.height {
-					let source_offset = (layer * readback.height + row) * readback.row_pitch;
-					let destination_offset = (layer * readback.height + row) * readback.row_bytes;
-					unsafe {
-						std::ptr::copy_nonoverlapping(
-							(mapped as *const u8).add(source_offset),
-							compact.as_mut_ptr().add(destination_offset),
-							readback.row_bytes,
-						);
-					}
+			let compact_size = readback.data.bytes_per_image;
+			let mut compact = Vec::new();
+			if compact.try_reserve_exact(compact_size).is_err() {
+				unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
+				readback.mapping_failed = true;
+				readback.resource = None;
+				continue;
+			}
+			compact.resize(compact_size, 0);
+			for row in 0..readback.height {
+				let source_offset = row * readback.row_pitch;
+				let destination_offset = row * readback.row_bytes;
+				unsafe {
+					std::ptr::copy_nonoverlapping(
+						(mapped as *const u8).add(source_offset),
+						compact.as_mut_ptr().add(destination_offset),
+						readback.row_bytes,
+					);
 				}
 			}
-			let written_range = D3D12_RANGE { Begin: 0, End: 0 };
-			unsafe {
-				readback.resource.Unmap(0, Some(&written_range));
-			}
+			unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
 
-			if let Some(texture_copy) = self.texture_copies.get_mut(readback.texture_copy.0 as usize) {
-				*texture_copy = compact;
-				self.texture_readback_resolve_count += 1;
-				readback.resolved = true;
-			}
+			readback.data.bytes = compact;
+			readback.resource = None;
+			self.texture_readback_resolve_count += 1;
 		}
-		// The compact CPU copy owns the result after resolution, so the native readback resource can retire now.
-		self.texture_readbacks.retain(|readback| !readback.resolved);
 	}
 
 	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {

@@ -51,12 +51,13 @@ impl MipGenerationBackend for MaterialMipGenerator {
 	fn generate_lower_levels(
 		&self,
 		format: Formats,
+		gamma: Gamma,
 		width: u32,
 		height: u32,
 		base_level: &[u8],
 	) -> Result<OwnedMipChain, MipGenerationError> {
 		if format == Formats::RGBA8 {
-			match self.client.generate(width, height, base_level) {
+			match self.client.generate(width, height, gamma, base_level) {
 				Ok(levels) => return Ok(levels),
 				Err(error) => log::warn!(
 					"GPU material mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
@@ -65,7 +66,7 @@ impl MipGenerationBackend for MaterialMipGenerator {
 		}
 
 		// The GPU storage path is RGBA8. Preserve support for uncommon 16-bit imported textures through the existing filter.
-		generate_owned_lower_mip_chain(format, width, height, base_level)
+		generate_owned_lower_mip_chain(format, gamma, width, height, base_level)
 	}
 }
 
@@ -99,7 +100,7 @@ impl GPUMipClient {
 							// The caller waits synchronously, so its immutable base-level borrow remains valid.
 							let source = unsafe { std::slice::from_raw_parts(request.data, request.len) };
 							if response_sender
-								.send(processor.generate(request.width, request.height, source))
+								.send(processor.generate(request.width, request.height, request.srgb, source))
 								.is_err()
 							{
 								return;
@@ -127,12 +128,13 @@ impl GPUMipClient {
 		}
 	}
 
-	fn generate(&self, width: u32, height: u32, data: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
+	fn generate(&self, width: u32, height: u32, gamma: Gamma, data: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
 		let responses = self.responses.lock().map_err(|_| GPUMipError::WorkerUnavailable)?;
 		self.sender
 			.send(WorkerMessage::Generate(GPUMipRequest {
 				width,
 				height,
+				srgb: u32::from(gamma == Gamma::SRGB),
 				data: data.as_ptr(),
 				len: data.len(),
 			}))
@@ -153,6 +155,7 @@ impl Drop for GPUMipClient {
 struct GPUMipRequest {
 	width: u32,
 	height: u32,
+	srgb: u32,
 	data: *const u8,
 	len: usize,
 }
@@ -262,7 +265,7 @@ impl GPUMipProcessor {
 		})
 	}
 
-	fn generate(&mut self, width: u32, height: u32, base: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
+	fn generate(&mut self, width: u32, height: u32, srgb: u32, base: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
 		let expected = width as usize * height as usize * 4;
 		if base.len() != expected {
 			return Err(GPUMipError::UploadSizeMismatch {
@@ -305,6 +308,7 @@ impl GPUMipProcessor {
 					source_height: level.source_height,
 					destination_width: level.width,
 					destination_height: level.height,
+					srgb,
 				},
 			);
 			command.dispatch(ghi::DispatchExtent::new(
@@ -439,6 +443,7 @@ struct PushConstants {
 	source_height: u32,
 	destination_width: u32,
 	destination_height: u32,
+	srgb: u32,
 }
 
 const GPU_MIP_GLSL: &str = r#"#version 460
@@ -446,12 +451,25 @@ const GPU_MIP_GLSL: &str = r#"#version 460
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
 layout(set=0,binding=0) uniform sampler2D source_image;
 layout(rgba8,set=0,binding=1) uniform writeonly image2D destination_image;
-layout(push_constant) uniform PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; } pc;
+layout(push_constant) uniform PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; } pc;
+vec3 srgb_to_linear(vec3 color) {
+	vec3 low = color / 12.92;
+	vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
+	return mix(high, low, lessThanEqual(color, vec3(0.04045)));
+}
+vec3 linear_to_srgb(vec3 color) {
+	vec3 low = color * 12.92;
+	vec3 high = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+	return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
+}
 void generate_mip() {
 	uvec2 p=gl_GlobalInvocationID.xy; if(any(greaterThanEqual(p,uvec2(pc.destination_width,pc.destination_height)))) return;
-	// The normalized center between four source texels lets the fixed-function bilinear sampler perform the box filter.
-	vec2 uv=vec2(p*2u+1u)/vec2(pc.source_width,pc.source_height);
-	imageStore(destination_image,ivec2(p),textureLod(source_image,uv,0.0));
+	uvec2 maximum=uvec2(pc.source_width-1u,pc.source_height-1u); uvec2 origin=p*2u;
+	vec4 a=texelFetch(source_image,ivec2(min(origin,maximum)),0); vec4 b=texelFetch(source_image,ivec2(min(origin+uvec2(1u,0u),maximum)),0);
+	vec4 c=texelFetch(source_image,ivec2(min(origin+uvec2(0u,1u),maximum)),0); vec4 d=texelFetch(source_image,ivec2(min(origin+uvec2(1u,1u),maximum)),0);
+	vec4 result=(a+b+c+d)*0.25;
+	if(pc.srgb!=0u) result.rgb=linear_to_srgb((srgb_to_linear(a.rgb)+srgb_to_linear(b.rgb)+srgb_to_linear(c.rgb)+srgb_to_linear(d.rgb))*0.25);
+	imageStore(destination_image,ivec2(p),result);
 }"#;
 
 const GPU_MIP_MSL: &str = r#"#include <metal_stdlib>
@@ -459,12 +477,17 @@ using namespace metal;
 // #pragma shader_stage(compute)
 // besl-threadgroup-size:8,8,1
 struct Resources { texture2d<float,access::sample> source_image [[id(0)]]; sampler source_sampler [[id(1)]]; texture2d<float,access::write> destination_image [[id(2)]]; };
-struct PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; };
+struct PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; };
+float3 srgb_to_linear(float3 color) { return select(pow((color+0.055f)/1.055f,float3(2.4f)),color/12.92f,color<=0.04045f); }
+float3 linear_to_srgb(float3 color) { return select(1.055f*pow(color,float3(1.0f/2.4f))-0.055f,color*12.92f,color<=0.0031308f); }
 kernel void generate_mip(uint3 invocation_id [[thread_position_in_grid]], constant PushConstants& pc [[buffer(15)]], constant Resources& resources [[buffer(16)]]) {
 	uint2 p=invocation_id.xy; if(p.x>=pc.destination_width||p.y>=pc.destination_height) return;
-	// The normalized center between four source texels lets the fixed-function bilinear sampler perform the box filter.
-	float2 uv=float2(p*2u+1u)/float2(pc.source_width,pc.source_height);
-	resources.destination_image.write(resources.source_image.sample(resources.source_sampler,uv,level(0.0f)),p);
+	uint2 maximum=uint2(pc.source_width-1u,pc.source_height-1u); uint2 origin=p*2u;
+	float4 a=resources.source_image.read(min(origin,maximum)); float4 b=resources.source_image.read(min(origin+uint2(1u,0u),maximum));
+	float4 c=resources.source_image.read(min(origin+uint2(0u,1u),maximum)); float4 d=resources.source_image.read(min(origin+uint2(1u,1u),maximum));
+	float4 result=(a+b+c+d)*0.25f;
+	if(pc.srgb!=0u) result.rgb=linear_to_srgb((srgb_to_linear(a.rgb)+srgb_to_linear(b.rgb)+srgb_to_linear(c.rgb)+srgb_to_linear(d.rgb))*0.25f);
+	resources.destination_image.write(result,p);
 }"#;
 
 #[cfg(test)]
@@ -477,7 +500,7 @@ mod tests {
 			.expect("A compatible GPU is required for the offline GPU mip integration test");
 		let base = [64_u8, 128, 192, 255].repeat(8 * 4);
 		let levels = generator
-			.generate_lower_levels(Formats::RGBA8, 8, 4, &base)
+			.generate_lower_levels(Formats::RGBA8, Gamma::Linear, 8, 4, &base)
 			.expect("GPU mip generation should succeed");
 
 		assert_eq!(
@@ -489,7 +512,7 @@ mod tests {
 		}
 
 		let reused = generator
-			.generate_lower_levels(Formats::RGBA8, 8, 4, &base)
+			.generate_lower_levels(Formats::RGBA8, Gamma::Linear, 8, 4, &base)
 			.expect("the cached GPU pyramid should support another bake");
 
 		assert_eq!(reused.levels().count(), 3);
@@ -503,7 +526,7 @@ mod tests {
 			.flat_map(|value| [value * 4, value * 4, value * 4, 255])
 			.collect::<Vec<_>>();
 		let levels = generator
-			.generate_lower_levels(Formats::RGBA8, 4, 4, &base)
+			.generate_lower_levels(Formats::RGBA8, Gamma::Linear, 4, 4, &base)
 			.expect("GPU sampler mip generation should succeed");
 		let mut levels = levels.levels();
 
@@ -515,18 +538,38 @@ mod tests {
 		);
 		assert_eq!(levels.next().expect("the 1x1 level should exist").data, [30, 30, 30, 255]);
 	}
+
+	#[test]
+	fn gpu_worker_filters_srgb_in_linear_light() {
+		let generator = MaterialMipGenerator::try_with_default_gpu()
+			.expect("A compatible GPU is required for the offline GPU mip integration test");
+		let base = [0, 0, 0, 0, 255, 255, 255, 64, 0, 0, 0, 128, 255, 255, 255, 255];
+		let levels = generator
+			.generate_lower_levels(Formats::RGBA8, Gamma::SRGB, 2, 2, &base)
+			.expect("GPU sRGB mip generation should succeed");
+
+		assert_eq!(
+			levels.levels().next().expect("the 1x1 level should exist").data,
+			[188, 188, 188, 112]
+		);
+	}
 }
 
 const GPU_MIP_HLSL: &str = r#"Texture2D<float4> source_image : register(t0,space0);
 SamplerState source_sampler : register(s0,space0);
 RWTexture2D<float4> destination_image : register(u1,space0);
-struct PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; };
+struct PushConstants { uint source_width; uint source_height; uint destination_width; uint destination_height; uint srgb; };
 ConstantBuffer<PushConstants> pc : register(b0,space0);
+float3 srgb_to_linear(float3 color) { float3 low=color/12.92; float3 high=pow((color+0.055)/1.055,2.4); return lerp(high,low,step(color,0.04045)); }
+float3 linear_to_srgb(float3 color) { float3 low=color*12.92; float3 high=1.055*pow(color,1.0/2.4)-0.055; return lerp(high,low,step(color,0.0031308)); }
 [numthreads(8,8,1)] void generate_mip(uint3 invocation_id : SV_DispatchThreadID) {
 	uint2 p=invocation_id.xy; if(p.x>=pc.destination_width||p.y>=pc.destination_height) return;
-	// The normalized center between four source texels lets the fixed-function bilinear sampler perform the box filter.
-	float2 uv=float2(p*2u+1u)/float2(pc.source_width,pc.source_height);
-	destination_image[p]=source_image.SampleLevel(source_sampler,uv,0.0);
+	uint2 maximum=uint2(pc.source_width-1u,pc.source_height-1u); uint2 origin=p*2u;
+	float4 a=source_image.Load(int3(min(origin,maximum),0)); float4 b=source_image.Load(int3(min(origin+uint2(1u,0u),maximum),0));
+	float4 c=source_image.Load(int3(min(origin+uint2(0u,1u),maximum),0)); float4 d=source_image.Load(int3(min(origin+uint2(1u,1u),maximum),0));
+	float4 result=(a+b+c+d)*0.25;
+	if(pc.srgb!=0u) result.rgb=linear_to_srgb((srgb_to_linear(a.rgb)+srgb_to_linear(b.rgb)+srgb_to_linear(c.rgb)+srgb_to_linear(d.rgb))*0.25);
+	destination_image[p]=result;
 }"#;
 
 use std::{
@@ -552,4 +595,4 @@ use ghi::{
 use utils::Extent;
 
 use super::{generate_owned_lower_mip_chain, MipGenerationBackend, MipGenerationError, OwnedMipChain};
-use crate::types::Formats;
+use crate::types::{Formats, Gamma};

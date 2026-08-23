@@ -1,1 +1,1 @@
-{"name":"UI Text","kind":{"type":"raster","shaders":["byte-engine/rendering/ui/text-vertex.besl","byte-engine/rendering/ui/text-fragment.besl"],"vertex_elements":[{"name":"POSITION","format":"float2","binding":0}],"attachments":[{"format":"rgba16_unorm","blend":"alpha"}]}}
+{"name":"UI Text","kind":{"type":"raster","shaders":["byte-engine/rendering/ui/text-vertex.besl","byte-engine/rendering/ui/text-fragment.besl"],"vertex_elements":[{"name":"POSITION","format":"float2","binding":0}],"attachments":[{"format":"rgba16_float","blend":"alpha"}]}}

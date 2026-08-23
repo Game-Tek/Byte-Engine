@@ -343,7 +343,7 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let lit_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
+				crate::rendering::SCENE_COLOR_FORMAT,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Lit"),

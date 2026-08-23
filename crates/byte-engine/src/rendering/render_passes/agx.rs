@@ -1,10 +1,3 @@
-use super::tone_map;
-use crate::core::Entity;
-use crate::rendering::{
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-	Sink,
-};
-
 const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
 	pipeline_id: "byte-engine/rendering/agx/tone-mapping.pipeline",
 	descriptor_set_name: "AGX Tonemap Pass Descriptor Set",
@@ -125,3 +118,10 @@ mod tests {
 		);
 	}
 }
+
+use super::tone_map;
+use crate::core::Entity;
+use crate::rendering::{
+	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+	Sink,
+};

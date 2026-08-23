@@ -153,7 +153,7 @@ fn validated_pixel_count(source: ImageSource<'_>) -> Option<usize> {
 
 fn target_stride(target_format: Formats) -> Option<usize> {
 	Some(match target_format {
-		Formats::RGBA8 => 4,
+		Formats::RGBA8 | Formats::RGBA8SRGB => 4,
 		Formats::RGBA16 => 8,
 		Formats::R16F => 2,
 		Formats::RGBA16F => 8,
@@ -171,7 +171,7 @@ fn append_canonical_image_unchecked<A: Allocator>(
 		return Some(());
 	}
 	match target_format {
-		Formats::RGBA8 => append_rgba8(source, output)?,
+		Formats::RGBA8 | Formats::RGBA8SRGB => append_rgba8(source, output)?,
 		Formats::RGBA16 => append_rgba16(source, output)?,
 		_ => return None,
 	}
@@ -181,7 +181,7 @@ fn append_canonical_image_unchecked<A: Allocator>(
 fn source_can_be_borrowed(source: ImageSource<'_>, target_format: Formats) -> bool {
 	matches!(
 		(source.channels, source.encoding, target_format),
-		(SourceChannels::RGBA, SourceEncoding::U8, Formats::RGBA8)
+		(SourceChannels::RGBA, SourceEncoding::U8, Formats::RGBA8 | Formats::RGBA8SRGB)
 			| (SourceChannels::RGBA, SourceEncoding::U16LittleEndian, Formats::RGBA16)
 			| (SourceChannels::Luminance, SourceEncoding::F16LittleEndian, Formats::R16F)
 			| (SourceChannels::RGBA, SourceEncoding::F16LittleEndian, Formats::RGBA16F)

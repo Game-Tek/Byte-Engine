@@ -93,6 +93,9 @@ pub use window::{Features, Window};
 
 use crate::space::{Orientable, Positionable};
 
+/// Scene rendering stays linear and HDR until the final tone-mapping pass.
+pub(crate) const SCENE_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
 	b: &resource_management::shader::generator::CompiledShaderBinding,

@@ -5,7 +5,7 @@ use std::{
 	simd::Simd,
 };
 
-use crate::types::Formats;
+use crate::types::{Formats, Gamma};
 
 #[cfg(feature = "gpu-mips")]
 pub mod gpu;
@@ -116,6 +116,7 @@ pub trait MipGenerationBackend: Send + Sync {
 	fn generate_lower_levels(
 		&self,
 		format: Formats,
+		gamma: Gamma,
 		width: u32,
 		height: u32,
 		base_level: &[u8],
@@ -129,11 +130,12 @@ impl MipGenerationBackend for CPUMipGenerationBackend {
 	fn generate_lower_levels(
 		&self,
 		format: Formats,
+		gamma: Gamma,
 		width: u32,
 		height: u32,
 		base_level: &[u8],
 	) -> Result<OwnedMipChain, MipGenerationError> {
-		generate_owned_lower_mip_chain(format, width, height, base_level)
+		generate_owned_lower_mip_chain(format, gamma, width, height, base_level)
 	}
 }
 
@@ -260,6 +262,7 @@ pub fn generate_mip_chain<'a>(
 /// Generates packed lower mip levels using one output allocation.
 fn generate_owned_lower_mip_chain(
 	format: Formats,
+	gamma: Gamma,
 	width: u32,
 	height: u32,
 	base_level: &[u8],
@@ -308,6 +311,7 @@ fn generate_owned_lower_mip_chain(
 			.unwrap_or(base_level);
 		downsample_level(
 			format,
+			gamma,
 			source_width,
 			source_height,
 			source,
@@ -381,6 +385,7 @@ pub fn generate_mip_chain_in<'a, A: Allocator + Clone>(
 		next_data.resize(next_size, 0_u8);
 		downsample_level(
 			format,
+			Gamma::Linear,
 			current_width,
 			current_height,
 			current_level.data.as_slice(),
@@ -402,7 +407,7 @@ fn bytes_per_pixel(format: Formats) -> Option<usize> {
 	match format {
 		Formats::RG8 => Some(2),
 		Formats::RGB8 => Some(3),
-		Formats::RGBA8 => Some(4),
+		Formats::RGBA8 | Formats::RGBA8SRGB => Some(4),
 		Formats::RGB16 => Some(6),
 		Formats::RGBA16 => Some(8),
 		Formats::R16F | Formats::RGBA16F | Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => None,
@@ -416,6 +421,7 @@ fn expected_size(width: u32, height: u32, bytes_per_pixel: usize) -> Option<usiz
 /// Downsamples one level according to format and channel depth.
 fn downsample_level(
 	format: Formats,
+	gamma: Gamma,
 	source_width: u32,
 	source_height: u32,
 	source: &[u8],
@@ -424,7 +430,10 @@ fn downsample_level(
 	match format {
 		Formats::RG8 => downsample_u8::<2>(source_width, source_height, source, destination),
 		Formats::RGB8 => downsample_u8::<3>(source_width, source_height, source, destination),
-		Formats::RGBA8 => downsample_u8::<4>(source_width, source_height, source, destination),
+		Formats::RGBA8 | Formats::RGBA8SRGB if gamma == Gamma::SRGB => {
+			downsample_rgba8_srgb(source_width, source_height, source, destination)
+		}
+		Formats::RGBA8 | Formats::RGBA8SRGB => downsample_u8::<4>(source_width, source_height, source, destination),
 		Formats::RGB16 => downsample_u16::<3>(source_width, source_height, source, destination),
 		Formats::RGBA16 => downsample_u16::<4>(source_width, source_height, source, destination),
 		Formats::R16F | Formats::RGBA16F | Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => {
@@ -433,6 +442,60 @@ fn downsample_level(
 	}
 
 	Ok(())
+}
+
+/// Downsamples sRGB RGB channels in linear light while keeping alpha linear.
+fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], destination: &mut [u8]) {
+	let source_width = source_width as usize;
+	let source_height = source_height as usize;
+	let destination_width = (source_width / 2).max(1);
+	let destination_height = (source_height / 2).max(1);
+
+	for y in 0..destination_height {
+		let y0 = (y * 2).min(source_height - 1);
+		let y1 = (y0 + 1).min(source_height - 1);
+		for x in 0..destination_width {
+			let x0 = (x * 2).min(source_width - 1);
+			let x1 = (x0 + 1).min(source_width - 1);
+			let sources = [
+				(y0 * source_width + x0) * 4,
+				(y0 * source_width + x1) * 4,
+				(y1 * source_width + x0) * 4,
+				(y1 * source_width + x1) * 4,
+			];
+			let destination_pixel = (y * destination_width + x) * 4;
+			for channel in 0..3 {
+				let linear_average = sources
+					.iter()
+					.map(|source_pixel| srgb_u8_to_linear(source[*source_pixel + channel]))
+					.sum::<f32>() * 0.25;
+				destination[destination_pixel + channel] = linear_to_srgb_u8(linear_average);
+			}
+			let alpha_sum = sources
+				.iter()
+				.map(|source_pixel| u16::from(source[*source_pixel + 3]))
+				.sum::<u16>();
+			destination[destination_pixel + 3] = ((alpha_sum + 2) / 4) as u8;
+		}
+	}
+}
+
+fn srgb_u8_to_linear(value: u8) -> f32 {
+	let encoded = f32::from(value) / 255.0;
+	if encoded <= 0.04045 {
+		encoded / 12.92
+	} else {
+		((encoded + 0.055) / 1.055).powf(2.4)
+	}
+}
+
+fn linear_to_srgb_u8(value: f32) -> u8 {
+	let encoded = if value <= 0.0031308 {
+		12.92 * value
+	} else {
+		1.055 * value.powf(1.0 / 2.4) - 0.055
+	};
+	(encoded.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Downsamples an 8-bit format level with SIMD lane arithmetic for channel averaging.
@@ -535,8 +598,8 @@ fn load_u16_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u
 
 #[cfg(test)]
 mod tests {
-	use super::{generate_mip_chain, mip_level_count, MipChain, MipGenerationError};
-	use crate::types::Formats;
+	use super::{generate_mip_chain, generate_owned_lower_mip_chain, mip_level_count, MipChain, MipGenerationError};
+	use crate::types::{Formats, Gamma};
 
 	#[derive(Debug, Clone, PartialEq, Eq)]
 	struct ExpectedMipLevel {
@@ -567,6 +630,24 @@ mod tests {
 		let expected = scalar_mip_chain_u8::<4>(width, height, &data);
 
 		assert_chain_matches(&generated, &expected);
+	}
+
+	#[test]
+	fn srgb_mips_average_rgb_in_linear_light_and_alpha_linearly() {
+		let source = [0, 0, 0, 0, 255, 255, 255, 64, 0, 0, 0, 128, 255, 255, 255, 255];
+		let srgb = generate_owned_lower_mip_chain(Formats::RGBA8, Gamma::SRGB, 2, 2, &source)
+			.expect("sRGB mip generation should succeed");
+		let linear = generate_owned_lower_mip_chain(Formats::RGBA8, Gamma::Linear, 2, 2, &source)
+			.expect("linear mip generation should succeed");
+
+		assert_eq!(
+			srgb.levels().next().expect("1x1 sRGB mip should exist").data,
+			[188, 188, 188, 112]
+		);
+		assert_eq!(
+			linear.levels().next().expect("1x1 linear mip should exist").data,
+			[128, 128, 128, 112]
+		);
 	}
 
 	#[test]

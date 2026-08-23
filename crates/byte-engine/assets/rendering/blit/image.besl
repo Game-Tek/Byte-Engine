@@ -1,4 +1,4 @@
-source: descriptor<StorageImage<rgba16>, 0, read>;
+source: descriptor<StorageImage<rgba16f>, 0, read>;
 result: descriptor<StorageImage, 1, write>;
 
 main: fn() -> void {

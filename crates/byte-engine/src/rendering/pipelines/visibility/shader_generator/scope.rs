@@ -320,7 +320,7 @@ impl VisibilityShaderScope {
 			"cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }",
 			"cone_attenuation",
 		);
-		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, true, true);
+		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16f"), 1041, true, true);
 		let set2_binding4 = Node::constant_buffer_binding(
 			"lighting_data",
 			Node::buffer(

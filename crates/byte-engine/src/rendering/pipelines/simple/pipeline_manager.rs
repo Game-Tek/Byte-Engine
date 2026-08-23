@@ -58,7 +58,7 @@ impl PipelineManager {
 					ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
 				],
 				&[
-					ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::RGBA16UNORM),
+					ghi::pipelines::raster::AttachmentDescriptor::new(crate::rendering::SCENE_COLOR_FORMAT),
 					ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
 				],
 			)
@@ -229,7 +229,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		let main = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
+				crate::rendering::SCENE_COLOR_FORMAT,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
 			)
 			.name("main"),

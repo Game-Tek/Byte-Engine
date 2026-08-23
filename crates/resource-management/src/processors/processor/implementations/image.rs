@@ -120,11 +120,10 @@ fn has_suffix_token_sequence(name: &str, sequence: &[&str]) -> bool {
 
 pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
 	match semantic {
-		Semantic::Albedo | Semantic::Other => Gamma::SRGB,
+		Semantic::Albedo | Semantic::Emissive | Semantic::Other => Gamma::SRGB,
 		Semantic::Normal
 		| Semantic::Metallic
 		| Semantic::Roughness
-		| Semantic::Emissive
 		| Semantic::Height
 		| Semantic::Opacity
 		| Semantic::Displacement
@@ -147,6 +146,8 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 				} else {
 					Formats::BC7
 				}
+			} else if gamma == Gamma::SRGB {
+				Formats::RGBA8SRGB
 			} else {
 				Formats::RGBA8
 			}
@@ -160,6 +161,8 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 				} else {
 					Formats::BC7
 				}
+			} else if gamma == Gamma::SRGB {
+				Formats::RGBA8SRGB
 			} else {
 				Formats::RGBA8
 			}
@@ -241,7 +244,7 @@ fn produce_image_in<A: Allocator + Clone>(
 
 	// The format of the `intermediate` buffer — used for mip generation.
 	let intermediate_format = match output_format {
-		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => Formats::RGBA8,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB | Formats::RGBA8SRGB => Formats::RGBA8,
 		_ => output_format,
 	};
 	let intermediate =
@@ -263,10 +266,11 @@ fn produce_image_in<A: Allocator + Clone>(
 		// Both backends return one packed lower-level allocation. The common encoder keeps the borrowed base level separate.
 		let lower_levels = match mip_backend {
 			Some(mip_backend) => {
-				mip_backend.generate_lower_levels(intermediate_format, extent.width(), extent.height(), intermediate)
+				mip_backend.generate_lower_levels(intermediate_format, *gamma, extent.width(), extent.height(), intermediate)
 			}
 			None => CPUMipGenerationBackend.generate_lower_levels(
 				intermediate_format,
+				*gamma,
 				extent.width(),
 				extent.height(),
 				intermediate,
@@ -371,7 +375,7 @@ fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<usize> {
 		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => (extent.width().div_ceil(4) as usize)
 			.checked_mul(extent.height().div_ceil(4) as usize)?
 			.checked_mul(16),
-		Formats::RGBA8 => (extent.width() as usize)
+		Formats::RGBA8 | Formats::RGBA8SRGB => (extent.width() as usize)
 			.checked_mul(extent.height() as usize)?
 			.checked_mul(4),
 		Formats::R16F => (extent.width() as usize)
@@ -470,7 +474,13 @@ fn append_encoded_level<A: Allocator + Clone>(
 
 			output.extend_from_slice(&compressed);
 		}
-		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 | Formats::R16F | Formats::RGBA16F => {
+		Formats::RGB8
+		| Formats::RGBA8
+		| Formats::RGBA8SRGB
+		| Formats::RGB16
+		| Formats::RGBA16
+		| Formats::R16F
+		| Formats::RGBA16F => {
 			output.extend_from_slice(data);
 		}
 		_ => {
@@ -484,9 +494,9 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		bc7_compression_settings, compress_bc_level, determine_image_format, guess_semantic_from_name, process_image,
-		rga_to_rg_surface, rgba8_bc_compression_surface_in, should_compress_for_semantic, CanonicalImageData, ImageDescription,
-		ImageSource, Semantic,
+		bc7_compression_settings, compress_bc_level, determine_image_format, gamma_from_semantic, guess_semantic_from_name,
+		process_image, rga_to_rg_surface, rgba8_bc_compression_surface_in, should_compress_for_semantic, CanonicalImageData,
+		ImageDescription, ImageSource, Semantic,
 	};
 	use crate::{
 		asset::ResourceId,
@@ -577,7 +587,12 @@ mod tests {
 		assert_eq!(should_compress_for_semantic(Semantic::Other), false);
 		assert_eq!(
 			determine_image_format(Formats::RGB8, false, Semantic::Other, Gamma::SRGB),
-			Formats::RGBA8
+			Formats::RGBA8SRGB
+		);
+		assert_eq!(gamma_from_semantic(Semantic::Emissive), Gamma::SRGB);
+		assert_eq!(
+			determine_image_format(Formats::RGBA8, false, Semantic::Emissive, Gamma::SRGB),
+			Formats::RGBA8SRGB
 		);
 		assert_eq!(
 			determine_image_format(Formats::RGBA8, true, Semantic::Normal, Gamma::Linear),
@@ -614,7 +629,7 @@ mod tests {
 
 		assert_eq!(asset.id, "textures/test.png");
 		assert_eq!(asset.class, "Image");
-		assert_eq!(image.format, Formats::RGBA8);
+		assert_eq!(image.format, Formats::RGBA8SRGB);
 		assert_eq!(image.gamma, Gamma::SRGB);
 		assert_eq!(image.extent, [2, 1, 1]);
 		assert_eq!(&*data, &[1, 2, 3, 0xFF, 4, 5, 6, 0xFF]);
@@ -866,7 +881,7 @@ mod tests {
 	}
 
 	#[test]
-	fn process_image_with_mipmaps_produces_full_chain_for_rgba8() {
+	fn process_image_with_mipmaps_produces_full_chain_for_srgb_rgba8() {
 		// 4×4 → 4 levels: 4×4, 2×2, 1×1 … wait, 4→2→1 = 3 levels.
 		let width = 4_u32;
 
@@ -894,7 +909,7 @@ mod tests {
 		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();
 
 		assert_eq!(image.mip_count, expected_levels);
-		assert_eq!(image.format, Formats::RGBA8);
+		assert_eq!(image.format, Formats::RGBA8SRGB);
 
 		// Each level is RGBA8: 4×4×4 + 2×2×4 + 1×1×4 = 64 + 16 + 4 = 84 bytes
 		let expected_bytes = (4 * 4 * 4) + (2 * 2 * 4) + (1 * 1 * 4);

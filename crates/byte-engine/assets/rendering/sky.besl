@@ -8,7 +8,7 @@ SkyParameters: struct {
 }
 
 depth_texture: descriptor<Texture2D, 0, read>;
-main_texture: descriptor<StorageImage<rgba16>, 1, read_write>;
+main_texture: descriptor<StorageImage<rgba16f>, 1, read_write>;
 sky_view_lut: descriptor<Texture2D, 2, read>;
 transmittance_lut: descriptor<Texture2D, 3, read>;
 parameters: descriptor<SkyParameters, 4, read, constant>;
@@ -80,8 +80,8 @@ main: fn () -> void {
 			* vec3f(sampled_transmittance.x, sampled_transmittance.y, sampled_transmittance.z)
 			* vec3f(20.0, 18.0, 16.0);
 	}
-	let hdr_sky: vec3f = sky_scattering + sun_radiance;
-	let sky: vec3f = hdr_sky / (vec3f(1.0, 1.0, 1.0) + hdr_sky);
+	// Keep atmosphere and sun radiance scene-linear for the final tonemap pass.
+	let sky: vec3f = sky_scattering + sun_radiance;
 	let foreground: vec4f = image_load(main_texture, pixel);
 	let source: vec4f = vec4f(foreground.x, foreground.y, foreground.z, clamp(foreground.w, 0.0, 1.0));
 	let destination: vec4f = vec4f(sky.x, sky.y, sky.z, 1.0);

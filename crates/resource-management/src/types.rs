@@ -218,6 +218,8 @@ pub enum Formats {
 	RGBA16,
 	BC7SRGB,
 	RGBA16F,
+	/// Eight-bit RGBA color encoded with the sRGB transfer function.
+	RGBA8SRGB,
 }
 
 #[cfg(test)]

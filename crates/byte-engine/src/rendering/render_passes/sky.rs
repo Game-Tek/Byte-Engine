@@ -8,7 +8,11 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
-	core::{factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}, Entity},
+	core::{
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener},
+		Entity,
+	},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		render_pass::{allocate_render_command, simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
@@ -466,9 +470,9 @@ mod tests {
 		assert_rgba_close([0.0, 0.0, 0.0, scattering[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
 	}
 
-	/// Verifies foreground preservation and a finite default atmosphere result through the VM.
+	/// Verifies foreground preservation and scene-linear HDR sky composition through the VM.
 	#[test]
-	fn sky_besl_vm_preserves_foreground_and_renders_a_bounded_default_background() {
+	fn sky_besl_vm_preserves_foreground_and_hdr_background() {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
 		let sentinel = [0.2, 0.3, 0.4, 0.5];
 		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
@@ -482,7 +486,7 @@ mod tests {
 
 		let parameter_slot = ResourceSlot::new(4);
 		let mut parameters = default_parameters(&program, parameter_slot);
-		let sky_scattering = [0.2, 0.3, 0.4, 1.0];
+		let sky_scattering = [2.0, 3.0, 4.0, 1.0];
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 
@@ -500,14 +504,8 @@ mod tests {
 		let background = rgba(&background_target, [0, 0]);
 
 		assert!(
-			background[..3]
-				.iter()
-				.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
-			"Invalid sky VM output. The most likely cause is unstable atmosphere integration: {background:?}"
-		);
-		assert!(
-			background[..3].iter().any(|channel| *channel > 0.0),
-			"Empty sky VM output. The most likely cause is an invalid view ray or atmosphere intersection: {background:?}"
+			background[..3].iter().all(|channel| channel.is_finite() && *channel > 1.0),
+			"Clamped sky VM output. The most likely cause is tone mapping before the final scene tonemap: {background:?}"
 		);
 		assert_rgba_close([0.0, 0.0, 0.0, background[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
 

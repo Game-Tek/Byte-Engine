@@ -140,10 +140,24 @@ pub(crate) fn resource_image_format_to_ghi(format: resource_management::types::F
 		resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
 		resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
 		resource_management::types::Formats::RGBA16F => ghi::Formats::RGBA16F,
+		resource_management::types::Formats::RGBA8SRGB => ghi::Formats::RGBA8sRGB,
 		resource_management::types::Formats::BC5 => ghi::Formats::BC5,
 		resource_management::types::Formats::BC5SNORM => ghi::Formats::BC5SNORM,
 		resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 		resource_management::types::Formats::BC7SRGB => ghi::Formats::BC7SRGB,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::resource_image_format_to_ghi;
+
+	#[test]
+	fn srgb_rgba_resources_use_an_srgb_gpu_view() {
+		assert_eq!(
+			resource_image_format_to_ghi(resource_management::types::Formats::RGBA8SRGB),
+			ghi::Formats::RGBA8sRGB
+		);
 	}
 }
 

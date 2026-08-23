@@ -8,7 +8,7 @@ SkyParameters: struct {
 }
 
 transmittance_lut: descriptor<Texture2D, 0, read>;
-sky_view_lut: descriptor<StorageImage<rgba16>, 1, write>;
+sky_view_lut: descriptor<StorageImage<rgba16f>, 1, write>;
 parameters: descriptor<SkyParameters, 2, read, constant>;
 
 get_camera_position: fn () -> vec3f {

@@ -30,11 +30,15 @@ sudo xcodebuild -license accept
 
 ## Install the Metal toolchain
 
-Install the optional Metal compiler component when `xcrun metal` reports that
-the Metal Toolchain is missing:
+Install the Metal compiler component:
 
 ```bash
 xcodebuild -downloadComponent MetalToolchain
+```
+
+Verify that the Metal compiler is available:
+
+```bash
 xcrun -sdk macosx metal --version
 ```
 

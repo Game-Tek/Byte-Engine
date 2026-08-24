@@ -62,6 +62,7 @@ impl Context {
 			compiler,
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues,
+			next_resource_io_queue_id: 1,
 			buffers: ResourceCollection::with_capacity(1024),
 			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),

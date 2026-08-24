@@ -1,10 +1,8 @@
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {}
 
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::hash::HashMap;

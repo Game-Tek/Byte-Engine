@@ -41,6 +41,8 @@ pub struct Context {
 	pub(crate) compiler: Retained<ProtocolObject<dyn mtl::MTL4Compiler>>,
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::StoredQueue>,
+	// Context-issued IDs validate queue-local handles without global coordination.
+	pub(crate) next_resource_io_queue_id: u64,
 	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<sampler::Sampler>,

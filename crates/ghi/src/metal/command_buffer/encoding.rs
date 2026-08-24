@@ -199,18 +199,16 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	fn applied_descriptor_uses(
+	fn descriptor_binding_is_current(
 		&self,
 		applied: Option<&AppliedDescriptorBinding>,
 		pipeline: graphics_hardware_interface::PipelineHandle,
-	) -> Option<Rc<SmallVec<[synchronization::MetalResourceUse; 16]>>> {
-		applied
-			.filter(|applied| {
-				applied.pipeline == pipeline
-					&& applied.descriptor_sets.as_slice() == self.bound_descriptor_set_handles.as_slice()
-					&& applied.materialization.versions.as_slice() == self.bound_descriptor_set_versions.as_slice()
-			})
-			.map(|applied| applied.materialization.resource_uses.clone())
+	) -> bool {
+		applied.is_some_and(|applied| {
+			applied.pipeline == pipeline
+				&& applied.descriptor_sets.as_slice() == self.bound_descriptor_set_handles.as_slice()
+				&& applied.materialization.versions.as_slice() == self.bound_descriptor_set_versions.as_slice()
+		})
 	}
 
 	/// Resolves the resource accesses represented by one immutable descriptor materialization.
@@ -255,47 +253,33 @@ impl CommandBufferRecording<'_> {
 		uses
 	}
 
-	/// Returns immutable native argument-buffer snapshots, reusing them while every retained set version is unchanged.
+	/// Builds the native argument-buffer snapshot owned by this command recording.
 	pub(super) fn materialize_argument_buffers(
 		&self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> Materialization {
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
-		let key = MaterializationKey {
-			descriptor_sets: self.bound_descriptor_set_handles.clone(),
-			sequence_index: self.sequence_index,
-		};
 		let versions = self.bound_descriptor_set_versions.clone();
-
-		if let Some(materialization) = pipeline.materializations.borrow().get(&key) {
-			if materialization.versions == versions {
-				return materialization.clone();
-			}
-		}
 
 		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
 		self.validate_bound_descriptor_sets(layout);
 		let mut texture_views = SmallVec::new();
-		let argument_buffers = Rc::new(
-			layout
-				.stage_argument_layouts
-				.iter()
-				.map(|stage_layout| {
-					(
-						stage_layout.stage,
-						self.encode_stage_argument_buffer(stage_layout, &mut texture_views),
-					)
-				})
-				.collect::<SmallVec<[_; 5]>>(),
-		);
-		let materialization = Materialization {
+		let argument_buffers = layout
+			.stage_argument_layouts
+			.iter()
+			.map(|stage_layout| {
+				(
+					stage_layout.stage,
+					self.encode_stage_argument_buffer(stage_layout, &mut texture_views),
+				)
+			})
+			.collect::<SmallVec<[_; 5]>>();
+		Materialization {
 			versions,
 			argument_buffers,
-			resource_uses: Rc::new(self.descriptor_resource_uses(layout)),
-			_texture_views: Rc::new(texture_views),
-		};
-		pipeline.materializations.borrow_mut().insert(key, materialization.clone());
-		materialization
+			resource_uses: self.descriptor_resource_uses(layout),
+			_texture_views: texture_views,
+		}
 	}
 
 	/// Applies the logical compute pipeline to the current native encoder when required.
@@ -353,15 +337,13 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Materializes and binds compute descriptors once per pipeline, set version, and native encoder.
-	pub(super) fn apply_bound_compute_descriptors(&mut self) -> Rc<SmallVec<[synchronization::MetalResourceUse; 16]>> {
+	pub(super) fn apply_bound_compute_descriptors(&mut self) {
 		self.refresh_bound_descriptor_set_versions();
 		let pipeline_handle = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that a compute dispatch was recorded before bind_compute_pipeline.",
 		);
-		if let Some(resource_uses) =
-			self.applied_descriptor_uses(self.applied_compute_descriptor_binding.as_ref(), pipeline_handle)
-		{
-			return resource_uses;
+		if self.descriptor_binding_is_current(self.applied_compute_descriptor_binding.as_ref(), pipeline_handle) {
+			return;
 		}
 
 		let pipeline_layout_handle = self.device.pipelines[pipeline_handle.0 as usize].layout;
@@ -378,21 +360,17 @@ impl CommandBufferRecording<'_> {
 		}
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 		self.retain_descriptor_resources(pipeline_layout, &materialization);
-		let resource_uses = materialization.resource_uses.clone();
 		self.applied_compute_descriptor_binding = Some(self.applied_descriptor_binding(pipeline_handle, materialization));
-		resource_uses
 	}
 
 	/// Materializes and binds render descriptors once per pipeline, set version, and native encoder.
-	pub(super) fn apply_bound_render_descriptors(&mut self) -> Rc<SmallVec<[synchronization::MetalResourceUse; 16]>> {
+	pub(super) fn apply_bound_render_descriptors(&mut self) {
 		self.refresh_bound_descriptor_set_versions();
 		let pipeline_handle = self
 			.bound_pipeline
 			.expect("No pipeline bound. The most likely cause is that a draw was recorded before bind_raster_pipeline.");
-		if let Some(resource_uses) =
-			self.applied_descriptor_uses(self.applied_render_descriptor_binding.as_ref(), pipeline_handle)
-		{
-			return resource_uses;
+		if self.descriptor_binding_is_current(self.applied_render_descriptor_binding.as_ref(), pipeline_handle) {
+			return;
 		}
 
 		let pipeline_layout_handle = self.device.pipelines[pipeline_handle.0 as usize].layout;
@@ -413,9 +391,7 @@ impl CommandBufferRecording<'_> {
 		}
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 		self.retain_descriptor_resources(pipeline_layout, &materialization);
-		let resource_uses = materialization.resource_uses.clone();
 		self.applied_render_descriptor_binding = Some(self.applied_descriptor_binding(pipeline_handle, materialization));
-		resource_uses
 	}
 
 	/// Restores encoder-local compute state and synchronizes only resources consumed by the next dispatch.
@@ -425,15 +401,23 @@ impl CommandBufferRecording<'_> {
 	) {
 		self.ensure_compute_encoder();
 		self.apply_bound_compute_pipeline();
-		let resource_uses = self.apply_bound_compute_descriptors();
-		self.consume_compute_resources_with_descriptors(resource_uses.as_slice(), additional_uses);
+		self.apply_bound_compute_descriptors();
+		let binding = self.applied_compute_descriptor_binding.take().expect(
+			"Metal compute descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
+		);
+		self.consume_compute_resources_with_descriptors(&binding.materialization.resource_uses, additional_uses);
+		self.applied_compute_descriptor_binding = Some(binding);
 	}
 
 	/// Restores encoder-local render state and synchronizes only resources consumed by the next draw.
 	pub(super) fn prepare_render_draw(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
 		self.apply_bound_render_pipeline();
-		let resource_uses = self.apply_bound_render_descriptors();
-		self.consume_render_resources_with_descriptors(resource_uses.as_slice(), additional_uses);
+		self.apply_bound_render_descriptors();
+		let binding = self.applied_render_descriptor_binding.take().expect(
+			"Metal render descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
+		);
+		self.consume_render_resources_with_descriptors(&binding.materialization.resource_uses, additional_uses);
+		self.applied_render_descriptor_binding = Some(binding);
 	}
 
 	/// Encodes one render-pass clear for a compatible group of color and depth images.

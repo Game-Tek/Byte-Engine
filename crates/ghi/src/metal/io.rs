@@ -5,8 +5,6 @@ struct OpenFile {
 	handle: Retained<ProtocolObject<dyn MTLIOFileHandle>>,
 }
 
-static NEXT_QUEUE_ID: AtomicU64 = AtomicU64::new(1);
-
 /// The `ResourceIoQueue` struct owns a Metal I/O command queue and its opened source files.
 pub struct ResourceIoQueue {
 	id: u64,
@@ -27,7 +25,11 @@ pub struct ResourceIoTicket {
 
 impl ResourceIoQueue {
 	/// Creates the native queue and completion timeline used by later file batches.
-	fn new(context: &mut context::Context, descriptor: ResourceIoQueueDescriptor<'_>) -> Result<Self, ResourceIoError> {
+	fn new(
+		context: &mut context::Context,
+		id: u64,
+		descriptor: ResourceIoQueueDescriptor<'_>,
+	) -> Result<Self, ResourceIoError> {
 		let native_descriptor = MTLIOCommandQueueDescriptor::new();
 		native_descriptor.setPriority(match descriptor.priority {
 			ResourceIoPriority::High => MTLIOPriority::High,
@@ -59,7 +61,7 @@ impl ResourceIoQueue {
 			.ok_or_else(|| ResourceIoError::QueueCreation("Metal could not allocate a shared completion event".to_string()))?;
 
 		Ok(Self {
-			id: NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed),
+			id,
 			context: NonNull::from(context),
 			device,
 			queue,
@@ -294,7 +296,14 @@ impl ResourceIoContext for context::Context {
 		&mut self,
 		descriptor: ResourceIoQueueDescriptor<'_>,
 	) -> Result<Self::ResourceIoQueue, ResourceIoError> {
-		ResourceIoQueue::new(self, descriptor)
+		let id = self.next_resource_io_queue_id;
+		self.next_resource_io_queue_id = id.checked_add(1).ok_or_else(|| {
+			ResourceIoError::QueueCreation(
+				"Metal resource I/O queue identity space is exhausted. The most likely cause is that this context created more queues than a 64-bit identity can represent."
+					.to_string(),
+			)
+		})?;
+		ResourceIoQueue::new(self, id, descriptor)
 	}
 }
 
@@ -479,6 +488,36 @@ mod tests {
 		drop(queue);
 		assert_eq!(context.get_buffer_slice(destination), BYTES);
 		fs::remove_file(path).expect("remove raw resource-I/O test file");
+	}
+
+	#[test]
+	fn submission_rejects_a_file_opened_by_another_queue() {
+		const BYTES: &[u8; 4] = &[1, 2, 3, 4];
+		let path = temporary_path("wrong-queue");
+		fs::write(&path, BYTES).expect("wrong-queue resource-I/O test file");
+		let mut context = test_context();
+		let destination = context.build_buffer::<[u8; BYTES.len()]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+		let mut source_queue = context
+			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
+			.expect("source Metal I/O queue");
+		let file = source_queue
+			.open_file(ResourceIoFileDescriptor::new(&path))
+			.expect("source Metal I/O file");
+		let mut other_queue = context
+			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
+			.expect("other Metal I/O queue");
+		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
+
+		assert!(matches!(
+			other_queue.submit(Some("Wrong Queue Load"), &[request]),
+			Err(ResourceIoError::InvalidFileHandle)
+		));
+
+		drop(other_queue);
+		drop(source_queue);
+		fs::remove_file(path).expect("remove wrong-queue resource-I/O test file");
 	}
 
 	#[test]

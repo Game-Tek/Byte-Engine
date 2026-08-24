@@ -513,21 +513,13 @@ pub(crate) struct PipelineLayout {
 	pub(crate) push_constant_size: usize,
 }
 
-/// The `MaterializationKey` struct identifies one pipeline's frame-resolved union of retained descriptor sets.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MaterializationKey {
-	pub(crate) descriptor_sets: SmallVec<[crate::descriptors::DescriptorSetHandle; 4]>,
-	pub(crate) sequence_index: u8,
-}
-
-/// The `Materialization` struct retains immutable native argument buffers until their logical set versions change.
-#[derive(Clone)]
+/// The `Materialization` struct owns one command recording's argument-buffer snapshot and hazard metadata.
 pub(crate) struct Materialization {
 	pub(crate) versions: SmallVec<[u64; 4]>,
-	pub(crate) argument_buffers: Rc<SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>>,
-	pub(crate) resource_uses: Rc<SmallVec<[synchronization::MetalResourceUse; 16]>>,
+	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>,
+	pub(crate) resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
 	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
-	pub(crate) _texture_views: Rc<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>>,
+	pub(crate) _texture_views: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,
 }
 
 #[derive(Clone)]
@@ -569,7 +561,6 @@ pub(crate) struct Pipeline {
 	pub(crate) layout: graphics_hardware_interface::PipelineLayoutHandle,
 	pub(crate) vertex_layout: Option<VertexLayoutHandle>,
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) materializations: RefCell<HashMap<MaterializationKey, Materialization>>,
 	pub(crate) compute_threadgroup_size: Option<Extent>,
 	pub(crate) object_threadgroup_size: Option<Extent>,
 	pub(crate) mesh_threadgroup_size: Option<Extent>,

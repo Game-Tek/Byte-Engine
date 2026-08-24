@@ -1,4 +1,5 @@
 {
 	"title": "Environment Setup",
-	"pages": ["index", "macos", "linux", "windows"]
+	"icon": "Settings",
+	"pages": ["macos", "linux", "windows"]
 }

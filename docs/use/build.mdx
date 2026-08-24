@@ -65,55 +65,58 @@ Use a reverse-DNS identifier that you own before distributing the application.
 The `resources` entry makes cargo-bundle copy the complete baked directory into
 the application bundle.
 
-### 4. Find bundled resources at runtime
+### 4. Select the bundled resource directory
 
-`GraphicsApplication` reads the `resources.path` parameter and otherwise looks
-for `resources/` beside the executable. This default doesn't depend on the
-directory from which you launch the application. A relative `--resources.path`
-override remains relative to the current working directory.
+Let `GraphicsApplication` select the default resource directory during normal
+development and release runs:
 
-For a macOS application bundle, the executable lives in `Contents/MacOS` while
-cargo-bundle places the resource directory in `Contents/Resources/resources`.
-Select that bundle-specific directory during application startup:
+- In a debug build, it uses `resources/` under `CARGO_MANIFEST_DIR` when Cargo
+  provides that directory. Otherwise, it falls back to `resources/` beside the
+  executable.
+- In a release build, it uses `resources/` beside the executable.
+- An explicit `resources.path` value replaces the default. A relative value is
+  relative to the process's current working directory.
+
+The `assets-path` default follows the same manifest-first policy in debug
+builds. Release builds don't install asset processors, so package the baked
+`resources/` directory instead of the source `assets/` directory.
+
+A macOS application bundle is the exception. Its executable lives in
+`Contents/MacOS`, but cargo-bundle copies the resource directory to
+`Contents/Resources/resources`. Add the override only when the executable is
+inside a macOS application bundle:
 
 ```rust
 use std::path::PathBuf;
 
-use byte_engine::application::Parameter;
+use byte_engine::application::{Application, Parameter};
 
-fn default_resources_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|executable| {
-            let bundled = executable
-                .parent()?
-                .parent()?
-                .join("Resources")
-                .join("resources");
-            bundled.is_dir().then_some(bundled)
-        })
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|executable| executable.parent().map(|directory| directory.join("resources")))
-                .unwrap_or_else(|| PathBuf::from("resources"))
-        })
+fn bundled_resources_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let contents = executable.parent()?.parent()?;
+
+    (contents.file_name()?.to_str()? == "Contents")
+        .then(|| contents.join("Resources").join("resources"))
 }
 
-let resources_path = default_resources_path();
-let app = GraphicsApplication::new(
-    "My Application",
-    &[Parameter::new(
-        "resources.path",
-        resources_path.to_str().expect("resource path must be valid UTF-8"),
-    )],
-);
+let parameters = bundled_resources_path()
+    .map(|path| {
+        Parameter::new_string(
+            "resources.path".to_owned(),
+            path.to_string_lossy().into_owned(),
+        )
+    })
+    .into_iter()
+    .collect::<Vec<_>>();
+
+let app = GraphicsApplication::new("My Application", &parameters);
 ```
 
-The fallback selects `resources/` beside a normal release executable. Use an
-absolute command-line path to select a fixed location, or a relative
-`--resources.path=custom/resources` path to select a directory from the current
-working directory.
+Outside an application bundle, `parameters` is empty and `GraphicsApplication`
+applies the current debug or release directory policy. You can still pass an
+absolute `--resources.path` value to select a fixed directory, or a relative
+`--resources.path=custom/resources` value to select one from the current working
+directory.
 
 ### 5. Build the application bundle
 

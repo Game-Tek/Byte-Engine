@@ -180,13 +180,26 @@ impl Context {
 		unsafe { &*(buffer.pointer as *const T) }
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
 		unsafe { &mut *(buffer.pointer as *mut T) }
+	}
+
+	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
+	pub unsafe fn transfer_buffer_mapping<T: Copy>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> crate::buffer::Mapping {
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
+		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.pointer, std::mem::size_of::<T>()) }
 	}
 
 	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {

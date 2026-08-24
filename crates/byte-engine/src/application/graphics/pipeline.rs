@@ -130,9 +130,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			// backends from inserting a second full-buffer staging copy.
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
-	let (upload_staging, upload_staging_worker) = rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(
-		context.get_mut_buffer_slice(upload_buffer).as_mut_slice(),
-	);
+	// The arena becomes the only CPU owner of this fixed mapping. Application
+	// shutdown joins its worker before the renderer drops the backing GHI context.
+	#[allow(unsafe_code)]
+	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
+	let (upload_staging, upload_staging_worker) =
+		rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(upload_mapping);
 
 	let (resource_manager_client, resource_manager) = VisibilityPipelineResourceManager::spawn(
 		renderer.context_mut(),

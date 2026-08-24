@@ -205,15 +205,22 @@ impl crate::context::Context for Context {
 		self.get_buffer_slice(buffer_handle)
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
 		self.get_mut_buffer_slice(buffer_handle)
+	}
+
+	unsafe fn transfer_buffer_mapping<T: Copy>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> crate::buffer::Mapping {
+		unsafe { Context::transfer_buffer_mapping(self, buffer_handle) }
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
 		self.sync_buffer(buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
 		self.get_texture_slice_mut(texture_handle)
 	}
 

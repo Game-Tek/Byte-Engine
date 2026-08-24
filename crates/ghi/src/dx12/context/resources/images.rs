@@ -6,27 +6,33 @@ impl Device {
 		crate::DynamicImageHandle(handle.0)
 	}
 
-	pub fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8] {
+	pub fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8] {
 		self.texture_slice_mut_static(texture_handle.0)
 	}
 
-	pub(crate) fn texture_slice_mut_static(&self, texture_handle: crate::BaseImageHandle) -> &'static mut [u8] {
+	pub(crate) fn texture_slice_mut_static(&mut self, texture_handle: crate::BaseImageHandle) -> &mut [u8] {
 		self.texture_slice_mut_for_sequence(texture_handle, 0)
 	}
 
 	pub(crate) fn texture_slice_mut_for_sequence(
-		&self,
+		&mut self,
 		texture_handle: crate::BaseImageHandle,
 		sequence_index: u8,
-	) -> &'static mut [u8] {
-		let image = &self.images[texture_handle.0 as usize];
-		let data = if let Some(frame_data) = image.frame_data.as_ref() {
-			frame_data.get(sequence_index as usize).or_else(|| frame_data.first())
+	) -> &mut [u8] {
+		let image = &mut self.images[texture_handle.0 as usize];
+		let data = if let Some(frame_data) = image.frame_data.as_mut() {
+			let requested_index = usize::from(sequence_index);
+			let index = if requested_index < frame_data.len() {
+				requested_index
+			} else {
+				0
+			};
+			frame_data.get_mut(index)
 		} else {
-			image.data.as_ref()
+			image.data.as_mut()
 		};
 		let Some(data) = data else { return &mut [] };
-		unsafe { std::slice::from_raw_parts_mut(data.as_ptr() as *mut u8, data.len()) }
+		data.as_mut_slice()
 	}
 
 	pub fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {

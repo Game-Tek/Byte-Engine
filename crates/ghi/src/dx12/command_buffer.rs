@@ -55,8 +55,8 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T {
-		unsafe { std::mem::transmute::<&mut T, &'static mut T>(self.device.get_mut_buffer_slice(buffer_handle)) }
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
 	fn sequence_index(&self) -> u8 {

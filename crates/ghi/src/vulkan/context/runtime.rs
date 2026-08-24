@@ -215,17 +215,27 @@ impl Context {
 	pub(crate) fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-		unsafe { std::mem::transmute(buffer.pointer) }
+		unsafe { &*(buffer.pointer as *const T) }
 	}
 
 	pub(crate) fn get_mut_buffer_slice<T: Copy>(
-		&self,
+		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &'static mut T {
+	) -> &mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
 
-		unsafe { std::mem::transmute(buffer.pointer) }
+		unsafe { &mut *(buffer.pointer as *mut T) }
+	}
+
+	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
+	pub(crate) unsafe fn transfer_buffer_mapping<T: Copy>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> crate::buffer::Mapping {
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
+		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.pointer, std::mem::size_of::<T>()) }
 	}
 
 	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
@@ -237,8 +247,8 @@ impl Context {
 		}
 	}
 
-	pub(crate) fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let texture = &self.images[texture_handle.0 .0 as usize];
+	pub(crate) fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
+		let texture = &mut self.images[texture_handle.0 .0 as usize];
 		let size = texture.size;
 
 		assert!(

@@ -82,6 +82,14 @@ pub struct GraphicsApplication {
 	kill_after: Option<u64>,
 }
 
+impl Drop for GraphicsApplication {
+	fn drop(&mut self) {
+		// Workers may own transferred views into renderer allocations. Join them
+		// before field destruction reaches the renderer and its GHI context.
+		self.stop_worker_threads();
+	}
+}
+
 impl Application for GraphicsApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> Self {
 		let start_time = std::time::Instant::now();

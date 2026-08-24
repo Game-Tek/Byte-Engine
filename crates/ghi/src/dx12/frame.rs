@@ -112,8 +112,8 @@ impl Frame<'_> {
 			.collect()
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T {
-		unsafe { std::mem::transmute::<&mut T, &'static mut T>(self.device.get_mut_buffer_slice(buffer_handle)) }
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
@@ -121,7 +121,7 @@ impl Frame<'_> {
 			.sync_buffer_for_sequence(buffer_handle, self.frame_key.sequence_index);
 	}
 
-	pub fn get_texture_slice_mut(&self, texture_handle: BaseImageHandle) -> &'static mut [u8] {
+	pub fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8] {
 		self.device
 			.texture_slice_mut_for_sequence(texture_handle, self.frame_key.sequence_index)
 	}
@@ -192,7 +192,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T {
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		Frame::get_mut_buffer_slice(self, buffer_handle)
 	}
 
@@ -200,7 +200,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::sync_buffer(self, buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: BaseImageHandle) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8] {
 		Frame::get_texture_slice_mut(self, texture_handle)
 	}
 

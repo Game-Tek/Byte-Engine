@@ -71,7 +71,7 @@ mod tests {
 		let executor = resource_management::r#async::Executor::new().expect("mesh metadata test executor");
 		let mesh = executor
 			.block_on(async {
-				let (staging, worker) = super::super::upload_staging::UploadStagingArena::new(bytes);
+				let (staging, worker) = super::super::upload_staging::UploadStagingArena::new_for_test(bytes);
 				resource_management::r#async::spawn(worker.run()).detach();
 				PreparedGpuMesh::prepare_generated_mesh(&crate::rendering::mesh::generator::BoxMeshGenerator::new(), staging)
 					.await

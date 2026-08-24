@@ -117,7 +117,7 @@ impl Frame<'_> {
 		self.device.intern_sampler(sampler)
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -132,7 +132,7 @@ impl Frame<'_> {
 		unsafe { &mut *(self.frame_buffer_pointer(buffer_handle.into()) as *mut T) }
 	}
 
-	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
 		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
 		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
@@ -403,7 +403,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -411,7 +411,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
 		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
 		unsafe { std::slice::from_raw_parts_mut(pointer, length) }

@@ -341,13 +341,24 @@ pub trait Context: ContextCreate {
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
 	/// Returns a mutable view into CPU-visible buffer contents.
-	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+
+	/// Transfers exclusive CPU access to a persistently mapped buffer.
+	///
+	/// Use this only when a higher-level owner must lease disjoint mapped regions
+	/// across threads. Ordinary writes should use [`Self::get_mut_buffer_slice`].
+	///
+	/// # Safety
+	///
+	/// The context must outlive the returned mapping and every region derived from
+	/// it. The caller must not map the buffer again while the transferred mapping exists.
+	unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping;
 
 	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
 	/// Returns mutable CPU access to an image's backing bytes.
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8];
+	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8];
 
 	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: ImageHandle);

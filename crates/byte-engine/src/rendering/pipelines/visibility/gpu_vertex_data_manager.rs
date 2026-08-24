@@ -75,7 +75,8 @@ mod tests {
 		let executor = resource_management::r#async::Executor::new().expect("mesh preparation test executor");
 		let prepared = executor
 			.block_on(async {
-				let (staging, worker) = crate::rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(bytes);
+				let (staging, worker) =
+					crate::rendering::pipelines::visibility::upload_staging::UploadStagingArena::new_for_test(bytes);
 				resource_management::r#async::spawn(worker.run()).detach();
 				PreparedGpuMesh::prepare_generated_mesh(&BoxMeshGenerator::new(), staging).await
 			})

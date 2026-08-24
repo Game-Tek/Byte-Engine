@@ -41,11 +41,19 @@ impl Device {
 		unsafe { &*(buffer.data as *const T) }
 	}
 
-	pub fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: BufferHandle<T>) -> &'a mut T {
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		let buffer = self
 			.buffer(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
 		unsafe { &mut *(buffer.data as *mut T) }
+	}
+
+	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
+	pub unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+		let buffer = self
+			.buffer(buffer_handle.into())
+			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.data, std::mem::size_of::<T>()) }
 	}
 
 	pub(crate) fn buffer_resource_state(

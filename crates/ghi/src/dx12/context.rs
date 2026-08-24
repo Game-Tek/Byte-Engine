@@ -772,15 +772,19 @@ impl crate::context::Context for Device {
 		Device::get_buffer_slice(self, buffer_handle)
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T {
-		unsafe { std::mem::transmute::<&mut T, &'static mut T>(Device::get_mut_buffer_slice(self, buffer_handle)) }
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+		Device::get_mut_buffer_slice(self, buffer_handle)
+	}
+
+	unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+		unsafe { Device::transfer_buffer_mapping(self, buffer_handle) }
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
 		Device::sync_buffer(self, buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &mut [u8] {
 		self.texture_slice_mut_static(texture_handle.0)
 	}
 

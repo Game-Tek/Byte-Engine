@@ -19,7 +19,8 @@ pub(crate) struct UploadStagingWorker {
 
 struct StagingRegion {
 	offset: usize,
-	bytes: &'static mut [u8],
+	address: usize,
+	byte_count: usize,
 }
 
 struct StagingAllocationRequest {
@@ -34,9 +35,18 @@ enum StagingCommand {
 }
 
 impl UploadStagingArena {
-	/// Creates an arena over one traditional persistently mapped GHI buffer.
-	pub(crate) fn new(bytes: &'static mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
-		let byte_count = bytes.len();
+	/// Creates an arena that exclusively owns a transferred GHI buffer mapping.
+	pub(crate) fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
+		let (address, byte_count) = mapping.into_raw_parts();
+		Self::from_region(StagingRegion {
+			offset: 0,
+			address,
+			byte_count,
+		})
+	}
+
+	fn from_region(region: StagingRegion) -> (Arc<Self>, UploadStagingWorker) {
+		let byte_count = region.byte_count;
 		let (commands, command_receiver) = kanal::unbounded_async();
 		(
 			Arc::new(Self {
@@ -45,11 +55,20 @@ impl UploadStagingArena {
 				commands,
 			}),
 			UploadStagingWorker {
-				available_regions: VecDeque::from([StagingRegion { offset: 0, bytes }]),
+				available_regions: VecDeque::from([region]),
 				pending_allocations: VecDeque::new(),
 				commands: command_receiver,
 			},
 		)
+	}
+
+	#[cfg(test)]
+	pub(crate) fn new_for_test(bytes: &'static mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
+		Self::from_region(StagingRegion {
+			offset: 0,
+			address: bytes.as_mut_ptr() as usize,
+			byte_count: bytes.len(),
+		})
 	}
 
 	/// Waits until one aligned region is available or rejects a request larger than the complete arena.
@@ -113,7 +132,7 @@ impl UploadStagingWorker {
 			let aligned_offset = region.offset.next_multiple_of(alignment);
 			aligned_offset
 				.checked_add(byte_count)
-				.is_some_and(|end| end <= region.offset + region.bytes.len())
+				.is_some_and(|end| end <= region.offset + region.byte_count)
 		})?;
 		let region = self
 			.available_regions
@@ -121,25 +140,31 @@ impl UploadStagingWorker {
 			.expect("The staging region index was selected from this queue.");
 		let aligned_offset = region.offset.next_multiple_of(alignment);
 		let prefix_len = aligned_offset - region.offset;
-		let (prefix, aligned) = region.bytes.split_at_mut(prefix_len);
-		let (bytes, suffix) = aligned.split_at_mut(byte_count);
+		let suffix_len = region.byte_count - prefix_len - byte_count;
+		let aligned_address = region
+			.address
+			.checked_add(prefix_len)
+			.expect("Upload staging address overflowed. The most likely cause is a corrupted mapped region.");
 
-		if !prefix.is_empty() {
+		if prefix_len != 0 {
 			self.available_regions.push_back(StagingRegion {
 				offset: region.offset,
-				bytes: prefix,
+				address: region.address,
+				byte_count: prefix_len,
 			});
 		}
-		if !suffix.is_empty() {
+		if suffix_len != 0 {
 			self.available_regions.push_back(StagingRegion {
 				offset: aligned_offset + byte_count,
-				bytes: suffix,
+				address: aligned_address + byte_count,
+				byte_count: suffix_len,
 			});
 		}
 
 		Some(StagingRegion {
 			offset: aligned_offset,
-			bytes,
+			address: aligned_address,
+			byte_count,
 		})
 	}
 
@@ -154,7 +179,7 @@ impl UploadStagingWorker {
 				coalesced.push_back(region);
 				continue;
 			};
-			if previous.offset + previous.bytes.len() == region.offset {
+			if previous.offset + previous.byte_count == region.offset {
 				coalesced.push_back(join_adjacent_regions(previous, region));
 			} else {
 				coalesced.push_back(previous);
@@ -165,25 +190,19 @@ impl UploadStagingWorker {
 	}
 }
 
-/// Reconstructs the original mapped slice after both adjacent exclusive slices return to the arena.
-#[allow(unsafe_code)]
+/// Reconstructs one ownership token after both adjacent exclusive regions return to the arena.
 fn join_adjacent_regions(left: StagingRegion, right: StagingRegion) -> StagingRegion {
-	let left_len = left.bytes.len();
-	let total_len = left_len + right.bytes.len();
-	let left_pointer = left.bytes.as_mut_ptr();
-	let right_pointer = right.bytes.as_mut_ptr();
+	let total_len = left.byte_count + right.byte_count;
 
 	assert_eq!(
-		left_pointer.wrapping_add(left_len),
-		right_pointer,
+		left.address + left.byte_count,
+		right.address,
 		"Adjacent upload staging offsets must also refer to adjacent mapped memory."
 	);
-	// Both exclusive slices came from one earlier split, are adjacent, and are no
-	// longer held by a lease. Rebuilding that original slice preserves exclusivity.
-	let bytes = unsafe { std::slice::from_raw_parts_mut(left_pointer, total_len) };
 	StagingRegion {
 		offset: left.offset,
-		bytes,
+		address: left.address,
+		byte_count: total_len,
 	}
 }
 
@@ -203,11 +222,12 @@ impl StagingLease {
 	}
 
 	/// Returns exclusive CPU access to the persistently mapped region.
+	#[allow(unsafe_code)]
 	pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
-		self.region
-			.as_mut()
-			.expect("Live staging leases retain their mapped region.")
-			.bytes
+		let region = self.region.as_mut().expect("Live staging leases retain their mapped region.");
+		// The allocation worker only creates disjoint region tokens, and a lease
+		// provides mutable access through one exclusive `&mut self` at a time.
+		unsafe { std::slice::from_raw_parts_mut(region.address as *mut u8, region.byte_count) }
 	}
 }
 
@@ -230,7 +250,7 @@ mod tests {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new(bytes);
+			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
 			let mut blocked = std::pin::pin!(arena.allocate(16, 16));
@@ -252,7 +272,7 @@ mod tests {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new(bytes);
+			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let mut first = arena.allocate(24, 16).await.expect("first lease");
 			let mut second = arena.allocate(24, 16).await.expect("second lease");
@@ -272,7 +292,7 @@ mod tests {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new(bytes);
+			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let first = arena.allocate(24, 16).await.expect("first lease");
 			let second = arena.allocate(24, 16).await.expect("second lease");
@@ -291,7 +311,7 @@ mod tests {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new(bytes);
+			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
 			let mut cancelled = Box::pin(arena.allocate(64, 16));

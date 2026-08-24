@@ -47,14 +47,15 @@ impl Context {
 		graphics_hardware_interface::DynamicImageHandle(master)
 	}
 
-	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let image = self.images.get_single(texture_handle.0).unwrap();
+	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
+		let handle = self.images.nth_handle(texture_handle.0, 0).unwrap();
+		let image = self.images.resource_mut(handle);
 
-		let Some(staging) = image.staging.as_ref() else {
+		let Some(staging) = image.staging.as_mut() else {
 			return &mut [];
 		};
 
-		unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
+		staging.as_mut_slice()
 	}
 
 	pub fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {

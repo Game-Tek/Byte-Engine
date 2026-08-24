@@ -105,11 +105,11 @@ impl Device {
 		todo!("Handle true allocations");
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&self, _buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
 		todo!("Handle true allocations");
 	}
 
-	pub fn get_texture_slice_mut(&mut self, _texture_handle: ImageHandle) -> &'static mut [u8] {
+	pub fn get_texture_slice_mut(&mut self, _texture_handle: ImageHandle) -> &mut [u8] {
 		&mut []
 	}
 

@@ -50,7 +50,7 @@ Platform requirements:
 | Platform | Required setup |
 | --- | --- |
 | Linux | Vulkan development packages, Wayland/X11 packages, ALSA, CMake |
-| macOS | Xcode command line tools or full Xcode, plus CMake and `pkg-config` |
+| macOS | Full Xcode with the Metal Toolchain component, plus CMake and `pkg-config` |
 | Windows | Visual Studio Build Tools with the MSVC C++ toolchain and Windows SDK |
 
 On Linux, run `bash install_dependencies.sh` from the repository root. This
@@ -61,9 +61,7 @@ Use a GPU that supports the active backend, AVX2 on x64 platforms, and at least
 
 - [Requirements](https://byte-engine.0x44491229.dev/docs/requirements)
 - [Environment setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment)
-- [macOS setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/macos)
-- [Linux setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/linux)
-- [Windows setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/windows)
+- [Build and bundle an application](https://byte-engine.0x44491229.dev/docs/use/build)
 
 ## 🚀 Start from source
 

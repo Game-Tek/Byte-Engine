@@ -11,26 +11,30 @@ macOS.
 	Byte Engine requires macOS 26 or later.
 </Callout>
 
-## Install the Xcode SDK
+## Install Xcode
 
-Install Apple's command line tools before building on macOS. Byte's macOS backends use the platform SDK frameworks directly, including Metal, AppKit, QuartzCore, Foundation, and Core Audio.
+Install the full [Xcode app](https://developer.apple.com/xcode/) before building
+Byte Engine on macOS. Xcode includes the macOS SDK and command-line compiler
+tools used by the engine.
 
-```bash
-xcode-select --install
-xcrun --show-sdk-path
-```
+<Callout type="info" title="Why full Xcode is required">
+	Byte Engine's shader build invokes the `metal` and `metallib` tools. Apple
+	offers these tools only through the Metal Toolchain component for the full
+	Xcode installation, so the standalone Command Line Tools can't build Byte
+	Engine's Metal shader resources. Other build steps use Xcode's SDK and
+	command-line tools to compile and link the engine and its applications. The
+	Xcode user interface isn't part of the build; use it only for tasks such as
+	GPU capture and debugging.
+</Callout>
 
-If you installed the full Xcode app, select it so `xcrun`, `clang`, and the Metal
-SDK use the same developer directory.
+Select the installed Xcode app and accept its license:
 
 ```bash
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 sudo xcodebuild -license accept
 ```
 
-## Install the Metal toolchain
-
-Install the Metal compiler component:
+Download the Metal compiler component for the selected Xcode installation:
 
 ```bash
 xcodebuild -downloadComponent MetalToolchain
@@ -41,9 +45,6 @@ Verify that the Metal compiler is available:
 ```bash
 xcrun -sdk macosx metal --version
 ```
-
-Keep the selected Xcode developer directory and the downloaded Metal component
-from the same Xcode installation.
 
 ## Install Homebrew packages
 

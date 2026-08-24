@@ -1,0 +1,57 @@
+---
+title: Create your project
+description: Create and verify a Rust application for Byte Engine.
+icon: FolderPlus
+---
+
+Create an empty Rust binary application before adding Byte-Engine.
+
+## Choose a project folder
+
+Open a terminal in the parent directory where you keep development projects.
+Create a folder for your application, then enter it:
+
+```sh
+mkdir my-game
+cd my-game
+```
+
+Replace `my-game` with your project's name. If the folder already exists, enter
+it without running `mkdir`.
+
+## Initialize the application
+
+Initialize a binary Cargo package in the current folder:
+
+```sh
+cargo init --bin
+```
+
+Cargo creates this project structure:
+
+```text
+my-game/
+├── Cargo.toml
+└── src/
+    └── main.rs
+```
+
+## Pin the Rust toolchain
+
+Byte-Engine uses unstable Rust features. Create `rust-toolchain.toml` in the
+project folder and pin the supported nightly toolchain:
+
+```toml
+[toolchain]
+channel = "nightly-2026-05-31"
+```
+
+## Verify the project
+
+Check the empty application before adding engine dependencies:
+
+```sh
+cargo check
+```
+
+Next, [install Byte-Engine](/docs/use/setup/installation) in this project.

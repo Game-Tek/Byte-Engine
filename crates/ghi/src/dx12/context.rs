@@ -734,8 +734,7 @@ impl crate::context::ContextCreate for Device {
 }
 
 impl crate::context::Context for Device {
-	type Queue = super::queue::Queue;
-	type QueueReference<'a> = super::queue::QueueReference<'a>;
+	type Queue<'a> = super::queue::Queue<'a>;
 	type CommandBuffer<'a> = CommandBufferReference<'a>;
 
 	#[cfg(any(debug_assertions, test))]
@@ -747,15 +746,8 @@ impl crate::context::Context for Device {
 		true
 	}
 
-	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue {
+	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a> {
 		super::queue::Queue {
-			device: std::ptr::NonNull::from(self),
-			queue_handle,
-		}
-	}
-
-	fn queue_reference<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::QueueReference<'a> {
-		super::queue::QueueReference {
 			device: self,
 			queue_handle,
 		}

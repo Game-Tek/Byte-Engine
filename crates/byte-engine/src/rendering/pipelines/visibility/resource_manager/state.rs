@@ -2,7 +2,6 @@ use super::*;
 
 /// The `TransferUploadPrepareResult` struct tracks transfer work and resources handled by a recording.
 pub(crate) struct TransferUploadPrepareResult {
-	pub(crate) recorded_work: bool,
 	pub(crate) completions: CompletionList,
 	pub(super) leases: SmallVec<[super::upload_staging::StagingLease; 16]>,
 }

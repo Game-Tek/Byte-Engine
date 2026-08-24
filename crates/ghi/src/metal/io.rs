@@ -18,10 +18,6 @@ pub struct ResourceIoQueue {
 	next_completion_value: u64,
 }
 
-// Context::create_resource_io_queue transfers one logical queue to one runtime owner. As with the
-// existing graphics Queue, callers must not use the originating Context concurrently with this queue.
-unsafe impl Send for ResourceIoQueue {}
-
 /// The `ResourceIoTicket` struct retains one submitted Metal I/O batch until callers finish observing it.
 pub struct ResourceIoTicket {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLIOCommandBuffer>>,

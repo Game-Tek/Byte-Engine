@@ -38,15 +38,16 @@ impl VisibilityPipelineResourceManager {
 		context: &mut ghi::implementation::Context,
 		resource_manager: EntityHandle<ResourceManager>,
 		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
+		staging_data_buffer: ghi::BaseBufferHandle,
 	) -> (
 		VisibilityPipelineResourceManagerClient,
 		VisibilityPipelineResourceManagerWorker,
 	) {
-		let mesh_data_manager = GPUVertexDataManager::new(context);
-		let gpu_vertex_data_manager = mesh_data_manager.clone();
+		let gpu_vertex_data_manager = GPUVertexDataManager::new(context);
 		let (commands, command_receiver) = kanal::unbounded_async();
 		let commands = commands.to_sync();
 		let (work_completions, work_completion_receiver) = mpsc::channel();
+		let (prepared_upload_sender, prepared_uploads) = mpsc::channel();
 		let resource_manager = Self::new(resource_manager, commands.clone(), work_completions.clone(), upload_staging);
 
 		(
@@ -54,14 +55,16 @@ impl VisibilityPipelineResourceManager {
 				gpu_vertex_data_manager,
 				commands: commands.clone(),
 				completions: work_completion_receiver,
+				upload_completions: CompletionList::new(),
+				prepared_uploads,
+				pending_uploads: VecDeque::new(),
+				submitted_uploads: VecDeque::new(),
+				staging_data_buffer,
 			},
 			VisibilityPipelineResourceManagerWorker {
 				resource_manager,
-				gpu_vertex_data_manager: mesh_data_manager,
 				commands: command_receiver,
-				completions: work_completions,
-				pending_uploads: VecDeque::new(),
-				submitted_uploads: VecDeque::new(),
+				prepared_uploads: prepared_upload_sender,
 			},
 		)
 	}

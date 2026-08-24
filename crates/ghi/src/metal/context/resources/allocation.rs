@@ -149,20 +149,9 @@ impl Context {
 		graphics_hardware_interface::DynamicBufferHandle::<T>(master, std::marker::PhantomData)
 	}
 
-	/// Creates an owned queue wrapper for queue-local submission work.
-	pub fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> queue::Queue {
+	/// Creates a borrowed queue wrapper for queue-local submission.
+	pub fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> queue::Queue<'a> {
 		queue::Queue {
-			device: std::ptr::NonNull::from(self),
-			queue_handle,
-		}
-	}
-
-	/// Creates the borrowed queue wrapper used by the previous queue API.
-	pub fn queue_reference<'a>(
-		&'a mut self,
-		queue_handle: graphics_hardware_interface::QueueHandle,
-	) -> queue::QueueReference<'a> {
-		queue::QueueReference {
 			device: self,
 			queue_handle,
 		}

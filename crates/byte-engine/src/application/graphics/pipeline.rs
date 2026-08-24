@@ -19,6 +19,18 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
+			self.pipeline_manager.begin_frame(completed_frame)
+		}
+
+		fn record_frame_uploads(
+			&mut self,
+			frame: ghi::FrameKey,
+			recording: &mut ghi::implementation::CommandBufferRecording<'_>,
+		) {
+			self.pipeline_manager.record_frame_uploads(frame, recording);
+		}
+
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -107,11 +119,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
-	let transfer_queue_handle = renderer.transfer_queue_handle;
 	let context = renderer.context_mut();
-	let mut transfer_queue = context.queue(transfer_queue_handle);
-	let transfer_finished_synchronizer = context.create_synchronizer(Some("Async Resource Transfer Synchronizer"), true);
-	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Async Resource Transfer Command Buffer"));
 
 	let upload_buffer: ghi::BufferHandle<
 		[u8; rendering::pipelines::visibility::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT],
@@ -122,22 +130,20 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			// backends from inserting a second full-buffer staging copy.
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
-	let upload_staging = rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(
+	let (upload_staging, upload_staging_worker) = rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(
 		context.get_mut_buffer_slice(upload_buffer).as_mut_slice(),
 	);
 
-	let (resource_manager_client, resource_manager) =
-		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager, upload_staging);
+	let (resource_manager_client, resource_manager) = VisibilityPipelineResourceManager::spawn(
+		renderer.context_mut(),
+		application_resource_manager,
+		upload_staging,
+		upload_buffer.into(),
+	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
-		runtime
-			.spawn(resource_manager.run(
-				transfer_queue,
-				transfer_finished_synchronizer,
-				transfer_command_buffer,
-				upload_buffer,
-			))
-			.detach();
+		runtime.spawn(upload_staging_worker.run()).detach();
+		runtime.spawn(resource_manager.run()).detach();
 	}));
 
 	struct CustomPipelineManager {
@@ -195,6 +201,18 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
+			self.visibility_pipeline_manager.begin_frame(completed_frame)
+		}
+
+		fn record_frame_uploads(
+			&mut self,
+			frame: ghi::FrameKey,
+			recording: &mut ghi::implementation::CommandBufferRecording<'_>,
+		) {
+			self.visibility_pipeline_manager.record_frame_uploads(frame, recording);
+		}
+
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,

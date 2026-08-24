@@ -1,25 +1,11 @@
-use std::sync::{Arc, Mutex};
-
-use ash::vk;
 use utils::hash::HashMap;
 
 use super::{context::Context, BufferTransitionState, Handles, TransitionState};
 use crate::frame::Frame as _;
 use crate::vulkan::Frame;
 
-/// The `Queue` struct provides owned Vulkan submission through the GHI queue API.
-pub struct Queue {
-	pub(crate) device: std::ptr::NonNull<Context>, // TODO: remove this
-	pub(crate) queue_handle: crate::QueueHandle,
-	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
-	pub(crate) queue_family_index: u32,
-	pub(crate) _queue_index: u32,
-}
-
-unsafe impl Send for Queue {}
-
-/// The `QueueReference` struct provides borrowed Vulkan submission while its context remains borrowed.
-pub struct QueueReference<'a> {
+/// The `Queue` struct provides borrowed Vulkan submission while its context remains borrowed.
+pub struct Queue<'a> {
 	pub(crate) device: &'a mut Context,
 	pub(crate) queue_handle: crate::QueueHandle,
 }
@@ -87,73 +73,7 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 	}
 }
 
-impl crate::queue::Queue for Queue {
-	type Frame<'a> = Frame<'a>;
-	type Execution<'a> = Execution<'a>;
-
-	fn create_command_buffer(&mut self, name: Option<&str>) -> crate::CommandBufferHandle {
-		let queue_handle = self.queue_handle;
-		unsafe { self.device.as_mut() }.create_command_buffer(name, queue_handle)
-	}
-
-	fn start_frame<'a>(
-		&'a mut self,
-		index: u64,
-		synchronizer_handle: crate::SynchronizerHandle,
-	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
-		unsafe { self.device.as_mut() }.start_frame(index, synchronizer_handle)
-	}
-
-	fn execute<'a, P>(
-		&'a mut self,
-		frame: Option<crate::queue::FrameRequest<'a>>,
-		wait_for: &[crate::SynchronizerHandle],
-		synchronizer: crate::SynchronizerHandle,
-		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
-	) where
-		P: AsRef<[crate::PresentKey]>,
-	{
-		let device = unsafe { self.device.as_mut() };
-		for &wait_synchronizer in wait_for {
-			device.wait_for_synchronizer(wait_synchronizer);
-		}
-
-		let frame = frame.map(|frame| device.start_frame(frame.index, frame.synchronizer));
-		let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
-		let frame = frame.map(|frame| frame.frame);
-		let mut execution = Execution {
-			frame,
-			completed_frame,
-			command_buffers: Vec::new(),
-		};
-		let present_keys = execute(&mut execution);
-		let present_keys = present_keys.as_ref();
-
-		let Some(mut frame) = execution.frame.take() else {
-			return;
-		};
-		let command_buffers = std::mem::take(&mut execution.command_buffers);
-		let last_index = command_buffers.len().saturating_sub(1);
-		if command_buffers.is_empty() {
-			frame.complete_without_submissions(synchronizer);
-			return;
-		}
-		for (index, (command_buffer, states, buffer_states, texture_readbacks)) in command_buffers.into_iter().enumerate() {
-			let present_keys = if index == last_index { present_keys } else { &[] };
-			let completion_synchronizer = (index == last_index).then_some(synchronizer);
-			frame.execute_submission(
-				command_buffer,
-				states,
-				buffer_states,
-				texture_readbacks,
-				present_keys,
-				completion_synchronizer,
-			);
-		}
-	}
-}
-
-impl crate::queue::Queue for QueueReference<'_> {
+impl crate::queue::Queue for Queue<'_> {
 	type Frame<'a> = Frame<'a>;
 	type Execution<'a> = Execution<'a>;
 

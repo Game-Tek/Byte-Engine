@@ -1,24 +1,10 @@
 use super::context::{Device, Execution};
 use crate::{CommandBufferHandle, PresentKey, QueueHandle, SynchronizerHandle};
 
-/// The `Queue` struct exists to expose DX12 queue submission through the shared GHI queue API.
-pub struct Queue {
-	pub(crate) device: std::ptr::NonNull<Device>,
-	pub(crate) queue_handle: QueueHandle,
-}
-
-unsafe impl Send for Queue {}
-
-/// The `QueueReference` struct exists to expose borrowed DX12 queue submission through the shared GHI queue API.
-pub struct QueueReference<'a> {
+/// The `Queue` struct provides borrowed DX12 queue submission through the shared GHI queue API.
+pub struct Queue<'a> {
 	pub(crate) device: &'a mut Device,
 	pub(crate) queue_handle: QueueHandle,
-}
-
-impl Queue {
-	fn device_mut(&mut self) -> &mut Device {
-		unsafe { self.device.as_mut() }
-	}
 }
 
 impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
@@ -63,91 +49,7 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 	}
 }
 
-impl crate::queue::Queue for Queue {
-	type Frame<'a> = super::Frame<'a>;
-	type Execution<'a> = Execution<'a>;
-
-	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle {
-		let queue_handle = self.queue_handle;
-		self.device_mut().create_command_buffer(name, queue_handle)
-	}
-
-	fn start_frame<'a>(
-		&'a mut self,
-		index: u64,
-		synchronizer_handle: SynchronizerHandle,
-	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
-		let frames = self.device_mut().frames;
-		crate::queue::StartedFrame::new(
-			self.device_mut().start_frame(index, synchronizer_handle),
-			crate::queue::completed_frame_key(index, frames),
-		)
-	}
-
-	fn execute<'a, P>(
-		&'a mut self,
-		frame: Option<crate::queue::FrameRequest<'a>>,
-		_wait_for: &[SynchronizerHandle],
-		_synchronizer: SynchronizerHandle,
-		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
-	) where
-		P: AsRef<[PresentKey]>,
-	{
-		let mut device_pointer = self.device;
-		let device = self.device_mut();
-		for &wait_synchronizer in _wait_for {
-			device.wait_for_synchronizer(wait_synchronizer);
-		}
-		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % u64::from(device.frames)) as u8);
-		let frame = frame.map(|frame| {
-			let frames = device.frames;
-			crate::queue::StartedFrame::new(
-				device.start_frame(frame.index, frame.synchronizer),
-				crate::queue::completed_frame_key(frame.index, frames),
-			)
-		});
-		let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
-		let frame = frame.map(|frame| frame.frame);
-		let mut execution = Execution {
-			frame,
-			completed_frame,
-			command_buffers: smallvec::SmallVec::new(),
-		};
-		let present_keys = execute(&mut execution);
-		let should_complete_empty_frame = execution.frame.is_some() && execution.command_buffers.is_empty();
-		let command_buffers = std::mem::take(&mut execution.command_buffers);
-		drop(execution);
-		if command_buffers.is_empty() {
-			if should_complete_empty_frame {
-				if let Some(sequence_index) = frame_sequence_index {
-					unsafe {
-						device_pointer
-							.as_mut()
-							.complete_synchronizer_for_sequence_from_cpu(_synchronizer, sequence_index);
-					}
-				}
-			}
-			return;
-		}
-		for command_buffer in command_buffers {
-			let submitted = unsafe { device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer) };
-			if !submitted {
-				unsafe {
-					device_pointer
-						.as_mut()
-						.abandon_texture_readbacks_for_command_buffer(command_buffer);
-				}
-			}
-		}
-		for present_key in present_keys.as_ref() {
-			unsafe {
-				device_pointer.as_mut().present_swapchain(*present_key);
-			}
-		}
-	}
-}
-
-impl crate::queue::Queue for QueueReference<'_> {
+impl crate::queue::Queue for Queue<'_> {
 	type Frame<'a> = super::Frame<'a>;
 	type Execution<'a> = Execution<'a>;
 

@@ -26,6 +26,7 @@ use crate::PrivateHandles;
 
 mod io;
 mod pipeline;
+pub mod queue;
 mod resources;
 mod state;
 mod synchronization;
@@ -357,7 +358,7 @@ pub(crate) mod utils {
 
 pub(crate) use pipeline::*;
 pub(crate) use resources::*;
-pub use state::{buffer, descriptor_set, image, queue, sampler, swapchain, synchronizer};
+pub use state::{buffer, descriptor_set, image, sampler, swapchain, synchronizer};
 pub(crate) use types::*;
 
 #[cfg(test)]

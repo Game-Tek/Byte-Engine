@@ -17,6 +17,12 @@ use crate::rendering::{
 /// per-sink resources. Post-processing that only consumes rendered images should
 /// implement [`crate::rendering::RenderPass`] instead.
 pub trait PipelineManager {
+	/// Releases completed GPU work, adopts prepared uploads, and returns whether this frame must record them.
+	fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool;
+
+	/// Records GPU uploads before this frame's render commands.
+	fn record_frame_uploads(&mut self, frame: ghi::FrameKey, recording: &mut ghi::implementation::CommandBufferRecording<'_>);
+
 	/// Called when a frame is being prepared for rendering.
 	fn prepare<'a>(
 		&'a mut self,

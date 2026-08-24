@@ -5,16 +5,18 @@ pub(crate) struct VisibilityPipelineResourceManagerClient {
 	pub(crate) gpu_vertex_data_manager: GPUVertexDataManager,
 	pub(super) commands: kanal::Sender<VisibilityTransferCommand>,
 	pub(super) completions: Receiver<VisibilityResourceCompletion>,
-}
-
-/// The `VisibilityPipelineResourceManagerWorker` struct owns visibility resource loading and GPU transfer.
-pub(crate) struct VisibilityPipelineResourceManagerWorker {
-	pub(super) resource_manager: VisibilityPipelineResourceManager,
-	pub(super) gpu_vertex_data_manager: GPUVertexDataManager,
-	pub(super) commands: kanal::AsyncReceiver<VisibilityTransferCommand>,
-	pub(super) completions: Sender<VisibilityResourceCompletion>,
+	pub(super) upload_completions: CompletionList,
+	pub(super) prepared_uploads: Receiver<PreparedUpload>,
 	pub(super) pending_uploads: VecDeque<PreparedUpload>,
 	pub(super) submitted_uploads: VecDeque<SubmittedUploadBatch>,
+	pub(super) staging_data_buffer: ghi::BaseBufferHandle,
+}
+
+/// The `VisibilityPipelineResourceManagerWorker` struct owns asynchronous visibility resource loading and preparation.
+pub(crate) struct VisibilityPipelineResourceManagerWorker {
+	pub(super) resource_manager: VisibilityPipelineResourceManager,
+	pub(super) commands: kanal::AsyncReceiver<VisibilityTransferCommand>,
+	pub(super) prepared_uploads: Sender<PreparedUpload>,
 }
 
 impl VisibilityPipelineResourceManagerClient {
@@ -55,12 +57,13 @@ impl VisibilityPipelineResourceManagerClient {
 		while let Ok(completion) = self.completions.try_recv() {
 			completions.push(completion);
 		}
+		completions.extend(self.upload_completions.drain(..));
 		completions
 	}
 
 	/// Enqueues a texture upload and reports the descriptor data once the transfer frame completes.
 	pub(crate) fn enqueue_texture_upload(
-		&self,
+		&mut self,
 		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::BaseImageHandle,
@@ -68,23 +71,24 @@ impl VisibilityPipelineResourceManagerClient {
 		upload: TextureUpload,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	) {
-		self.send(VisibilityTransferCommand::UploadPrepared(PreparedUpload::Texture {
+		let upload = PreparedUpload::Texture {
 			key,
 			index,
 			image,
 			sampler,
 			upload,
 			photometry,
-		}));
+		};
+		self.pending_uploads.push_back(upload);
 	}
 
 	/// Enqueues every image in one environment as one transfer-frame completion.
-	pub(crate) fn enqueue_environment_upload(&self, upload: PendingEnvironmentUpload) {
-		self.send(VisibilityTransferCommand::UploadPrepared(PreparedUpload::Environment(upload)));
+	pub(crate) fn enqueue_environment_upload(&mut self, upload: PendingEnvironmentUpload) {
+		self.pending_uploads.push_back(PreparedUpload::Environment(upload));
 	}
 }
 
-impl VisibilityPipelineResourceManagerWorker {
+impl VisibilityPipelineResourceManagerClient {
 	/// Records one fully prepared mesh without resource I/O or dependency waits.
 	fn record_resource_mesh(
 		&mut self,
@@ -220,165 +224,34 @@ impl VisibilityPipelineResourceManagerWorker {
 			acceleration_structure: mesh.acceleration_structure,
 		}
 	}
+}
 
-	/// Handles resource requests and transfer completion until the command channel closes.
-	pub(crate) async fn run(
-		mut self,
-		mut transfer_queue: ghi::implementation::queue::Queue,
-		transfer_finished_synchronizer: ghi::SynchronizerHandle,
-		transfer_command_buffer: ghi::CommandBufferHandle,
-		upload_buffer: ghi::BufferHandle<[u8; ASYNC_UPLOAD_BUFFER_BYTE_COUNT]>,
-	) {
-		let mut started_frame_count = 0;
-
-		// Observe every ready preparation before opening the next transfer frame so
-		// unrelated resources share the earliest batch that has room for them.
-		while let Some(drained_command_count) = self.drain_ready_commands(256) {
-			if self.has_active_transfer_work()
-				&& self
-					.advance_transfer_queue(
-						&mut transfer_queue,
-						transfer_finished_synchronizer,
-						transfer_command_buffer,
-						upload_buffer,
-						&mut started_frame_count,
-					)
-					.is_none()
-			{
+impl VisibilityPipelineResourceManagerWorker {
+	/// Handles resource requests and CPU preparation until the command channel closes.
+	pub(crate) async fn run(mut self) {
+		while let Ok(command) = self.commands.recv().await {
+			if !self.handle_command(command) {
 				break;
 			}
-
-			if drained_command_count > 0 {
-				crate::core::async_runtime::yield_now().await;
-			} else if self.has_active_transfer_work() {
-				// Submitted GPU work needs periodic queue progress even when no new
-				// resource has finished CPU preparation.
-				compio::time::sleep(ACTIVE_TRANSFER_POLL_INTERVAL).await;
-			} else {
-				let Ok(command) = self.commands.recv().await else {
-					break;
-				};
-				if !self.handle_command(command) {
-					break;
-				}
-			}
+			self.drain_ready_commands(255);
 		}
-	}
-
-	/// Advances one transfer frame and records all upload work already prepared by resource commands.
-	fn advance_transfer_queue(
-		&mut self,
-		transfer_queue: &mut ghi::implementation::queue::Queue,
-		transfer_finished_synchronizer: ghi::SynchronizerHandle,
-		transfer_command_buffer: ghi::CommandBufferHandle,
-		upload_buffer: ghi::BufferHandle<[u8; ASYNC_UPLOAD_BUFFER_BYTE_COUNT]>,
-		started_frame_count: &mut u64,
-	) -> Option<()> {
-		let started_frame = transfer_queue.start_frame(*started_frame_count, transfer_finished_synchronizer);
-		if let Some(completed_frame) = started_frame.completed_frame {
-			self.signal_completed_frame(completed_frame);
-		}
-
-		// Frame acquisition can wait for an in-flight sequence. Adopt resources that
-		// became ready during that wait before deciding what belongs in this batch.
-		self.drain_ready_commands(256)?;
-
-		if !self.has_pending_upload_work() {
-			*started_frame_count += 1;
-			return Some(());
-		}
-
-		let mut frame = started_frame.frame;
-		let frame_key = frame.key();
-		let mut transfer_recording = frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
-		let prepared_uploads = self.prepare_uploads(&mut transfer_recording, upload_buffer.into());
-
-		if prepared_uploads.recorded_work {
-			transfer_recording.execute(transfer_finished_synchronizer);
-		} else {
-			drop(transfer_recording);
-		}
-
-		self.track_submitted_uploads(frame_key, prepared_uploads.completions, prepared_uploads.leases);
-		*started_frame_count += 1;
-		Some(())
 	}
 
 	/// Adopts a bounded set of ready commands without waiting for more preparation work.
-	fn drain_ready_commands(&mut self, max_commands: usize) -> Option<usize> {
+	fn drain_ready_commands(&mut self, max_commands: usize) {
 		let mut count = 0usize;
 		while count < max_commands {
 			match self.commands.try_recv() {
 				Ok(Some(command)) => {
 					count += 1;
 					if !self.handle_command(command) {
-						return None;
+						return;
 					}
 				}
 				Ok(None) => break,
-				Err(_) => return None,
+				Err(_) => return,
 			}
 		}
-
-		Some(count)
-	}
-
-	/// Publishes upload completions for transfer frames reported as complete by the queue.
-	pub(crate) fn signal_completed_frame(&mut self, completed_frame: ghi::FrameKey) {
-		while self
-			.submitted_uploads
-			.front()
-			.is_some_and(|batch| batch.frame_key == completed_frame)
-		{
-			let Some(batch) = self.submitted_uploads.pop_front() else {
-				break;
-			};
-
-			for completion in batch.completions {
-				if self.completions.send(completion).is_err() {
-					log::error!(
-						"Visibility upload completion failed. The most likely cause is that the render thread stopped receiving worker results."
-					);
-				}
-			}
-		}
-	}
-
-	/// Tracks resources handled by a submitted transfer frame.
-	pub(crate) fn track_submitted_uploads(
-		&mut self,
-		frame_key: ghi::FrameKey,
-		completions: CompletionList,
-		leases: SmallVec<[super::upload_staging::StagingLease; 16]>,
-	) {
-		if completions.is_empty() {
-			return;
-		}
-
-		self.submitted_uploads.push_back(SubmittedUploadBatch {
-			frame_key,
-			completions,
-			_leases: leases,
-		});
-	}
-
-	/// Records every currently fitting upload into the transfer command buffer.
-	fn prepare_uploads(
-		&mut self,
-		transfer: &mut ghi::implementation::CommandBufferRecording<'_>,
-		staging_data_buffer: ghi::BaseBufferHandle,
-	) -> TransferUploadPrepareResult {
-		self.record_uploads(transfer, staging_data_buffer)
-	}
-
-	/// Reports whether upload queues contain work that needs GPU transfer recording.
-	fn has_pending_upload_work(&self) -> bool {
-		!self.pending_uploads.is_empty()
-	}
-
-	/// Reports whether the queue must keep advancing submitted or pending transfers.
-	fn has_active_transfer_work(&self) -> bool {
-		self.has_pending_upload_work() || !self.submitted_uploads.is_empty()
 	}
 
 	/// Moves one request or preparation completion into worker-owned state without waiting.
@@ -394,7 +267,9 @@ impl VisibilityPipelineResourceManagerWorker {
 				self.resource_manager.prepare_loaded_generated_mesh(key, generator);
 			}
 			VisibilityTransferCommand::UploadPrepared(upload) => {
-				self.pending_uploads.push_back(upload);
+				if self.prepared_uploads.send(upload).is_err() {
+					return false;
+				}
 			}
 			VisibilityTransferCommand::MaterialPrepared {
 				id,
@@ -435,6 +310,46 @@ impl VisibilityPipelineResourceManagerWorker {
 
 		true
 	}
+}
+
+impl VisibilityPipelineResourceManagerClient {
+	/// Releases completed upload leases and adopts preparation results without blocking the render thread.
+	pub(crate) fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
+		if let Some(completed_frame) = completed_frame {
+			while self
+				.submitted_uploads
+				.front()
+				.is_some_and(|batch| batch.frame_key == completed_frame)
+			{
+				let batch = self
+					.submitted_uploads
+					.pop_front()
+					.expect("The completed visibility upload batch was checked before removal.");
+				self.upload_completions.extend(batch.completions);
+				// Dropping the batch after GPU completion returns every staging lease.
+			}
+		}
+		while let Ok(upload) = self.prepared_uploads.try_recv() {
+			self.pending_uploads.push_back(upload);
+		}
+		!self.pending_uploads.is_empty()
+	}
+
+	/// Records every ready upload and retains its staging lease until this graphics frame completes.
+	pub(crate) fn record_frame_uploads(
+		&mut self,
+		frame_key: ghi::FrameKey,
+		transfer: &mut ghi::implementation::CommandBufferRecording<'_>,
+	) {
+		let result = self.record_uploads(transfer, self.staging_data_buffer);
+		if !result.completions.is_empty() {
+			self.submitted_uploads.push_back(SubmittedUploadBatch {
+				frame_key,
+				completions: result.completions,
+				_leases: result.leases,
+			});
+		}
+	}
 
 	/// Records every ready lease and retains it until the submitted transfer frame completes.
 	fn record_uploads(
@@ -442,7 +357,6 @@ impl VisibilityPipelineResourceManagerWorker {
 		transfer: &mut ghi::implementation::CommandBufferRecording<'_>,
 		staging_data_buffer: ghi::BaseBufferHandle,
 	) -> TransferUploadPrepareResult {
-		let mut recorded_work = false;
 		let mut completions = CompletionList::new();
 		let mut leases = SmallVec::new();
 		while let Some(upload) = self.pending_uploads.pop_front() {
@@ -479,11 +393,12 @@ impl VisibilityPipelineResourceManagerWorker {
 							);
 							completions.push(VisibilityResourceCompletion::MeshReady { key, mesh });
 							leases.push(prepared_mesh.into_staging());
-							recorded_work = true;
 						}
-						Err(()) => self.resource_manager.send_completion(VisibilityResourceCompletion::Failed {
-							key: VisibilityResourceKey::Mesh(key),
-						}),
+						Err(()) => {
+							self.upload_completions.push(VisibilityResourceCompletion::Failed {
+								key: VisibilityResourceKey::Mesh(key),
+							});
+						}
 					}
 				}
 				PreparedUpload::GeneratedMesh {
@@ -499,11 +414,12 @@ impl VisibilityPipelineResourceManagerWorker {
 						Some(mesh) => {
 							completions.push(VisibilityResourceCompletion::MeshReady { key, mesh });
 							leases.push(prepared_mesh.into_staging());
-							recorded_work = true;
 						}
-						None => self.resource_manager.send_completion(VisibilityResourceCompletion::Failed {
-							key: VisibilityResourceKey::Mesh(key),
-						}),
+						None => {
+							self.upload_completions.push(VisibilityResourceCompletion::Failed {
+								key: VisibilityResourceKey::Mesh(key),
+							});
+						}
 					}
 				}
 				PreparedUpload::Texture {
@@ -531,7 +447,6 @@ impl VisibilityPipelineResourceManagerWorker {
 						photometry,
 					});
 					leases.push(upload.staging);
-					recorded_work = true;
 				}
 				PreparedUpload::Environment(upload) => {
 					let mut copies = SmallVec::<[ghi::BufferImageCopyDescriptor; 9]>::new();
@@ -559,15 +474,10 @@ impl VisibilityPipelineResourceManagerWorker {
 						sampler: upload.sampler,
 					});
 					leases.push(upload.staging);
-					recorded_work = true;
 				}
 			}
 		}
 
-		TransferUploadPrepareResult {
-			recorded_work,
-			completions,
-			leases,
-		}
+		TransferUploadPrepareResult { completions, leases }
 	}
 }

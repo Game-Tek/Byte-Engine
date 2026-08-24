@@ -1,8 +1,7 @@
 use super::*;
 
 impl crate::context::Context for Context {
-	type Queue = crate::metal::queue::Queue;
-	type QueueReference<'a> = crate::metal::queue::QueueReference<'a>;
+	type Queue<'a> = crate::metal::queue::Queue<'a>;
 	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
 	#[cfg(any(debug_assertions, test))]
@@ -15,12 +14,8 @@ impl crate::context::Context for Context {
 		true
 	}
 
-	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
+	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
 		Context::queue(self, queue_handle)
-	}
-
-	fn queue_reference<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::QueueReference<'a> {
-		Context::queue_reference(self, queue_handle)
 	}
 
 	fn command_buffer<'a>(

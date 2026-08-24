@@ -15,9 +15,8 @@ impl std::ops::DerefMut for Context {
 }
 
 impl crate::context::Context for Context {
-	type Queue = crate::vulkan::queue::Queue;
-	type QueueReference<'a>
-		= crate::vulkan::queue::QueueReference<'a>
+	type Queue<'a>
+		= crate::vulkan::queue::Queue<'a>
 	where
 		Self: 'a;
 	type CommandBuffer<'a>
@@ -34,22 +33,8 @@ impl crate::context::Context for Context {
 		true
 	}
 
-	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
-		let queue = &self.queues[queue_handle.0 as usize];
-		let vk_queue = queue.vk_queue.clone();
-		let queue_family_index = queue.queue_family_index;
-		let queue_index = queue._queue_index;
+	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
 		crate::vulkan::queue::Queue {
-			device: std::ptr::NonNull::from(self),
-			queue_handle,
-			vk_queue,
-			queue_family_index,
-			_queue_index: queue_index,
-		}
-	}
-
-	fn queue_reference<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::QueueReference<'a> {
-		crate::vulkan::queue::QueueReference {
 			device: self,
 			queue_handle,
 		}

@@ -6,13 +6,15 @@ use std::{collections::VecDeque, sync::Arc};
 /// the lease alive until the GPU transfer frame completes.
 pub(crate) struct UploadStagingArena {
 	byte_count: usize,
-	state: std::sync::Mutex<UploadStagingState>,
-	returner: kanal::Sender<StagingRegion>,
-	returned: kanal::AsyncReceiver<StagingRegion>,
+	commands: kanal::AsyncSender<StagingCommand>,
+	returner: kanal::Sender<StagingCommand>,
 }
 
-struct UploadStagingState {
+/// The `UploadStagingWorker` struct exclusively owns upload-region allocation state.
+pub(crate) struct UploadStagingWorker {
 	available_regions: VecDeque<StagingRegion>,
+	pending_allocations: VecDeque<StagingAllocationRequest>,
+	commands: kanal::AsyncReceiver<StagingCommand>,
 }
 
 struct StagingRegion {
@@ -20,19 +22,34 @@ struct StagingRegion {
 	bytes: &'static mut [u8],
 }
 
+struct StagingAllocationRequest {
+	byte_count: usize,
+	alignment: usize,
+	response: kanal::Sender<StagingRegion>,
+}
+
+enum StagingCommand {
+	Allocate(StagingAllocationRequest),
+	Return(StagingRegion),
+}
+
 impl UploadStagingArena {
 	/// Creates an arena over one traditional persistently mapped GHI buffer.
-	pub(crate) fn new(bytes: &'static mut [u8]) -> Arc<Self> {
+	pub(crate) fn new(bytes: &'static mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
 		let byte_count = bytes.len();
-		let (returner, returned) = kanal::unbounded_async();
-		Arc::new(Self {
-			byte_count,
-			state: std::sync::Mutex::new(UploadStagingState {
-				available_regions: VecDeque::from([StagingRegion { offset: 0, bytes }]),
+		let (commands, command_receiver) = kanal::unbounded_async();
+		(
+			Arc::new(Self {
+				byte_count,
+				returner: commands.clone().to_sync(),
+				commands,
 			}),
-			returner: returner.to_sync(),
-			returned,
-		})
+			UploadStagingWorker {
+				available_regions: VecDeque::from([StagingRegion { offset: 0, bytes }]),
+				pending_allocations: VecDeque::new(),
+				commands: command_receiver,
+			},
+		)
 	}
 
 	/// Waits until one aligned region is available or rejects a request larger than the complete arena.
@@ -45,36 +62,60 @@ impl UploadStagingArena {
 			return None;
 		}
 
-		loop {
-			self.drain_returned_regions();
-			if let Some(region) = self.try_take_region(byte_count, alignment) {
-				return Some(StagingLease {
-					region: Some(region),
-					returner: self.returner.clone(),
-				});
+		let (response, region) = kanal::bounded_async(1);
+		self.commands
+			.send(StagingCommand::Allocate(StagingAllocationRequest {
+				byte_count,
+				alignment,
+				response: response.to_sync(),
+			}))
+			.await
+			.ok()?;
+		Some(StagingLease {
+			region: Some(region.recv().await.ok()?),
+			returner: self.returner.clone(),
+		})
+	}
+}
+
+impl UploadStagingWorker {
+	/// Serves allocation and return messages until every staging client is dropped.
+	pub(crate) async fn run(mut self) {
+		while let Ok(command) = self.commands.recv().await {
+			match command {
+				StagingCommand::Allocate(request) => self.pending_allocations.push_back(request),
+				StagingCommand::Return(region) => self.return_region(region),
 			}
-			let region = self.returned.recv().await.ok()?;
-			self.return_region(region);
+			self.satisfy_pending_allocations();
 		}
 	}
 
-	/// Moves every completed lease back into the free-region queue before allocation.
-	fn drain_returned_regions(&self) {
-		while let Ok(Some(region)) = self.returned.try_recv() {
-			self.return_region(region);
+	/// Grants pending requests in FIFO order while the head request fits.
+	fn satisfy_pending_allocations(&mut self) {
+		loop {
+			let Some(request) = self.pending_allocations.pop_front() else {
+				return;
+			};
+			let Some(region) = self.try_take_region(request.byte_count, request.alignment) else {
+				self.pending_allocations.push_front(request);
+				return;
+			};
+			let mut region = Some(region);
+			if !matches!(request.response.try_send_option(&mut region), Ok(true)) {
+				self.return_region(region.expect("An undelivered staging response must retain its region."));
+			}
 		}
 	}
 
-	/// Splits one available mapped slice while holding only the arena-state lock.
-	fn try_take_region(&self, byte_count: usize, alignment: usize) -> Option<StagingRegion> {
-		let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-		let index = state.available_regions.iter().position(|region| {
+	/// Splits one available mapped slice for an exclusive lease.
+	fn try_take_region(&mut self, byte_count: usize, alignment: usize) -> Option<StagingRegion> {
+		let index = self.available_regions.iter().position(|region| {
 			let aligned_offset = region.offset.next_multiple_of(alignment);
 			aligned_offset
 				.checked_add(byte_count)
 				.is_some_and(|end| end <= region.offset + region.bytes.len())
 		})?;
-		let region = state
+		let region = self
 			.available_regions
 			.remove(index)
 			.expect("The staging region index was selected from this queue.");
@@ -84,13 +125,13 @@ impl UploadStagingArena {
 		let (bytes, suffix) = aligned.split_at_mut(byte_count);
 
 		if !prefix.is_empty() {
-			state.available_regions.push_back(StagingRegion {
+			self.available_regions.push_back(StagingRegion {
 				offset: region.offset,
 				bytes: prefix,
 			});
 		}
 		if !suffix.is_empty() {
-			state.available_regions.push_back(StagingRegion {
+			self.available_regions.push_back(StagingRegion {
 				offset: aligned_offset + byte_count,
 				bytes: suffix,
 			});
@@ -102,15 +143,13 @@ impl UploadStagingArena {
 		})
 	}
 
-	fn return_region(&self, region: StagingRegion) {
-		let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-		state.available_regions.push_back(region);
-		state
-			.available_regions
+	fn return_region(&mut self, region: StagingRegion) {
+		self.available_regions.push_back(region);
+		self.available_regions
 			.make_contiguous()
 			.sort_unstable_by_key(|region| region.offset);
-		let mut coalesced = VecDeque::with_capacity(state.available_regions.len());
-		while let Some(region) = state.available_regions.pop_front() {
+		let mut coalesced = VecDeque::with_capacity(self.available_regions.len());
+		while let Some(region) = self.available_regions.pop_front() {
 			let Some(previous) = coalesced.pop_back() else {
 				coalesced.push_back(region);
 				continue;
@@ -122,7 +161,7 @@ impl UploadStagingArena {
 				coalesced.push_back(region);
 			}
 		}
-		state.available_regions = coalesced;
+		self.available_regions = coalesced;
 	}
 }
 
@@ -151,7 +190,7 @@ fn join_adjacent_regions(left: StagingRegion, right: StagingRegion) -> StagingRe
 /// The `StagingLease` struct grants exclusive CPU access to one GPU upload-buffer region until its transfer completes.
 pub(crate) struct StagingLease {
 	region: Option<StagingRegion>,
-	returner: kanal::Sender<StagingRegion>,
+	returner: kanal::Sender<StagingCommand>,
 }
 
 impl StagingLease {
@@ -175,7 +214,7 @@ impl StagingLease {
 impl Drop for StagingLease {
 	fn drop(&mut self) {
 		if let Some(region) = self.region.take() {
-			let _ = self.returner.send(region);
+			let _ = self.returner.send(StagingCommand::Return(region));
 		}
 	}
 }
@@ -189,28 +228,32 @@ mod tests {
 		use std::{future::Future as _, task::Poll};
 
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let arena = UploadStagingArena::new(bytes);
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
-		let complete = executor.block_on(arena.allocate(64, 16)).expect("complete arena lease");
-		let mut blocked = std::pin::pin!(arena.allocate(16, 16));
-		let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+		executor.block_on(async {
+			let (arena, worker) = UploadStagingArena::new(bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
+			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
+			let mut blocked = std::pin::pin!(arena.allocate(16, 16));
+			let mut context = std::task::Context::from_waker(std::task::Waker::noop());
 
-		assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
+			assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
 
-		drop(complete);
-		let Poll::Ready(Some(reused)) = blocked.as_mut().poll(&mut context) else {
-			panic!("A returned staging lease must wake and satisfy one blocked allocation request.");
-		};
+			drop(complete);
+			let reused = blocked
+				.await
+				.expect("A returned staging lease must satisfy the blocked request.");
 
-		assert_eq!(reused.offset(), 0);
+			assert_eq!(reused.offset(), 0);
+		});
 	}
 
 	#[test]
 	fn simultaneous_leases_own_disjoint_mapped_slices() {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let arena = UploadStagingArena::new(bytes);
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
+			let (arena, worker) = UploadStagingArena::new(bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
 			let mut first = arena.allocate(24, 16).await.expect("first lease");
 			let mut second = arena.allocate(24, 16).await.expect("second lease");
 
@@ -227,9 +270,10 @@ mod tests {
 	#[test]
 	fn adjacent_returned_leases_coalesce_for_a_larger_waiting_request() {
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let arena = UploadStagingArena::new(bytes);
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
+			let (arena, worker) = UploadStagingArena::new(bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
 			let first = arena.allocate(24, 16).await.expect("first lease");
 			let second = arena.allocate(24, 16).await.expect("second lease");
 			drop(first);
@@ -237,6 +281,31 @@ mod tests {
 			let complete = arena.allocate(64, 16).await.expect("coalesced lease");
 
 			assert_eq!(complete.offset(), 0);
+		});
+	}
+
+	#[test]
+	fn cancelled_allocation_returns_its_granted_region_to_the_owner() {
+		use std::future::Future as _;
+
+		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
+		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
+		executor.block_on(async {
+			let (arena, worker) = UploadStagingArena::new(bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
+			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
+			let mut cancelled = Box::pin(arena.allocate(64, 16));
+			let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+
+			assert!(cancelled.as_mut().poll(&mut context).is_pending());
+			drop(cancelled);
+			drop(complete);
+
+			let reused = arena
+				.allocate(64, 16)
+				.await
+				.expect("A cancelled staging request must not leak its granted region.");
+			assert_eq!(reused.offset(), 0);
 		});
 	}
 }

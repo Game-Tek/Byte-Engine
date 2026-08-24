@@ -153,6 +153,14 @@ pub struct VisibilityPipelineManager {
 }
 
 impl PipelineManager for VisibilityPipelineManager {
+	fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
+		self.resource_manager.begin_frame(completed_frame)
+	}
+
+	fn record_frame_uploads(&mut self, frame: ghi::FrameKey, recording: &mut ghi::implementation::CommandBufferRecording<'_>) {
+		self.resource_manager.record_frame_uploads(frame, recording);
+	}
+
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,

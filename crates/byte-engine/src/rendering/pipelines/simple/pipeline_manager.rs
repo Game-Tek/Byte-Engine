@@ -197,6 +197,17 @@ impl PipelineManager {
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
+	fn begin_frame(&mut self, _completed_frame: Option<ghi::FrameKey>) -> bool {
+		false
+	}
+
+	fn record_frame_uploads(
+		&mut self,
+		_frame: ghi::FrameKey,
+		_recording: &mut ghi::implementation::CommandBufferRecording<'_>,
+	) {
+	}
+
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,

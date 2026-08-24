@@ -421,9 +421,7 @@ fn create_scratch(
 		source = destination;
 		(source_width, source_height) = (destination_width, destination_height);
 	}
-	let command_buffer = context
-		.queue_reference(queue)
-		.create_command_buffer(Some("Generate material mips"));
+	let command_buffer = context.queue(queue).create_command_buffer(Some("Generate material mips"));
 	let synchronizer = context.create_synchronizer(Some("Material mips generated"), true);
 	GPUMipScratch {
 		width,

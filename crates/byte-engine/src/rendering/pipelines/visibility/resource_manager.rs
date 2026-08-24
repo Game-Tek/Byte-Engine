@@ -1,12 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
 
 use ghi::context::{Context as _, ContextCreate as _};
-use ghi::frame::Frame as _;
 use ghi::Device as _;
-use ghi::Queue as _;
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -37,7 +34,6 @@ pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
 	resource_management::resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize;
 pub(crate) const ASYNC_UPLOAD_BUFFER_BYTE_COUNT: usize = 1024 * 1024 * 32;
 type CompletionList = SmallVec<[VisibilityResourceCompletion; 16]>;
-const ACTIVE_TRANSFER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 mod layouts;
 mod preparation;
@@ -72,18 +68,19 @@ mod tests {
 	#[test]
 	fn resource_mesh_metadata_is_rejected_before_transfer_recording() {
 		let bytes = Box::leak(vec![0u8; 1024 * 1024].into_boxed_slice());
-		let staging = super::super::upload_staging::UploadStagingArena::new(bytes);
 		let executor = resource_management::r#async::Executor::new().expect("mesh metadata test executor");
 		let mesh = executor
-			.block_on(PreparedGpuMesh::prepare_generated_mesh(
-				&crate::rendering::mesh::generator::BoxMeshGenerator::new(),
-				staging,
-			))
+			.block_on(async {
+				let (staging, worker) = super::super::upload_staging::UploadStagingArena::new(bytes);
+				resource_management::r#async::spawn(worker.run()).detach();
+				PreparedGpuMesh::prepare_generated_mesh(&crate::rendering::mesh::generator::BoxMeshGenerator::new(), staging)
+					.await
+			})
 			.expect("generated mesh preparation");
 		let mut material_indices = Vec::new();
 		let mut primitive_skins = Vec::new();
 
-		assert!(!VisibilityPipelineResourceManagerWorker::resource_mesh_metadata_is_valid(
+		assert!(!VisibilityPipelineResourceManagerClient::resource_mesh_metadata_is_valid(
 			&mesh,
 			&material_indices,
 			&primitive_skins,
@@ -93,7 +90,7 @@ mod tests {
 		material_indices.push(0);
 		primitive_skins.push(None);
 
-		assert!(VisibilityPipelineResourceManagerWorker::resource_mesh_metadata_is_valid(
+		assert!(VisibilityPipelineResourceManagerClient::resource_mesh_metadata_is_valid(
 			&mesh,
 			&material_indices,
 			&primitive_skins,

@@ -62,10 +62,9 @@ pub struct Renderer {
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
-	/// The GHI queue where transfer commands are submitted. Async transfer operations occur on this queue.
-	pub transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
+	resource_upload_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
 	defer_first_frame_sink_setup: bool,
 }
@@ -170,21 +169,14 @@ impl Renderer {
 		};
 
 		let mut graphics_queue_handle = None;
-		let mut transfer_queue_handle = None;
 
 		let device = instance
 			.create_device(
 				features,
-				&mut [
-					(
-						ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
-						&mut graphics_queue_handle,
-					),
-					(
-						ghi::QueueSelection::new(ghi::types::WorkloadTypes::TRANSFER),
-						&mut transfer_queue_handle,
-					),
-				],
+				&mut [(
+					ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
+					&mut graphics_queue_handle,
+				)],
 			)
 			.unwrap();
 		let mut context = device.create_context().unwrap();
@@ -198,11 +190,11 @@ impl Renderer {
 			crate::rendering::pipeline_compilation::PipelineManager::new(&mut context, pipeline_compilation_server_count);
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
-		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = context
-			.queue_reference(graphics_queue_handle)
-			.create_command_buffer(Some("Render"));
+		let render_command_buffer = context.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
+		let resource_upload_command_buffer = context
+			.queue(graphics_queue_handle)
+			.create_command_buffer(Some("Resource Upload"));
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
@@ -239,9 +231,9 @@ impl Renderer {
 			pipeline_compilation_servers,
 
 			graphics_queue_handle,
-			transfer_queue_handle,
 
 			render_command_buffer,
+			resource_upload_command_buffer,
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
 		}
@@ -509,6 +501,7 @@ impl Renderer {
 		self.started_frame_count += 1;
 
 		let command_buffer = self.render_command_buffer;
+		let resource_upload_command_buffer = self.resource_upload_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
 		let wait_for = &[];
 		let windows = &self.windows;
@@ -532,6 +525,23 @@ impl Renderer {
 			let _enter = span.enter();
 			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 				let completed_graphics_frame = execution.completed_frame();
+				let frame_key = execution
+					.frame()
+					.expect(
+						"Frame is required to record renderer uploads. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
+					)
+					.key();
+				let mut has_frame_uploads = false;
+				for pipeline_manager in pipeline_managers.iter_mut() {
+					has_frame_uploads |= pipeline_manager.begin_frame(completed_graphics_frame);
+				}
+				if has_frame_uploads {
+					execution.record(resource_upload_command_buffer, |recording| {
+						for pipeline_manager in pipeline_managers.iter_mut() {
+							pipeline_manager.record_frame_uploads(frame_key, &mut *recording);
+						}
+					});
+				}
 				#[cfg(debug_assertions)]
 				if let Some(resource_updates) = resource_updates {
 					while let Some(update) = resource_updates.read() {

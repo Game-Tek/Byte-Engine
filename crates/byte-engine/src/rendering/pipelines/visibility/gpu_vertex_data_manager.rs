@@ -72,10 +72,13 @@ mod tests {
 	#[test]
 	fn generated_mesh_preparation_owns_complete_transfer_data() {
 		let bytes = Box::leak(vec![0u8; 1024 * 1024].into_boxed_slice());
-		let staging = crate::rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(bytes);
 		let executor = resource_management::r#async::Executor::new().expect("mesh preparation test executor");
 		let prepared = executor
-			.block_on(PreparedGpuMesh::prepare_generated_mesh(&BoxMeshGenerator::new(), staging))
+			.block_on(async {
+				let (staging, worker) = crate::rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(bytes);
+				resource_management::r#async::spawn(worker.run()).detach();
+				PreparedGpuMesh::prepare_generated_mesh(&BoxMeshGenerator::new(), staging).await
+			})
 			.expect("The built-in box should produce valid visibility geometry.");
 
 		assert_eq!(prepared.vertex_count, 24);

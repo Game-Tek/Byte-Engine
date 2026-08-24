@@ -449,7 +449,7 @@ impl GPUIBLProcessor {
 		]);
 		let command_buffer = self
 			.context
-			.queue_reference(self.queue)
+			.queue(self.queue)
 			.create_command_buffer(Some("Generate environment maps"));
 		let synchronizer = self.context.create_synchronizer(Some("Environment maps generated"), true);
 

@@ -305,10 +305,9 @@ impl<T> TextureReadbackRegistry<T> {
 ///
 /// Create resources through [`ContextCreate`], obtain a command
 /// buffer with [`Self::command_buffer`], then submit recorded work through a
-/// queue returned by [`Self::queue`] or [`Self::queue_reference`].
+/// queue returned by [`Self::queue`].
 pub trait Context: ContextCreate {
-	type Queue: crate::queue::Queue;
-	type QueueReference<'a>: crate::queue::Queue
+	type Queue<'a>: crate::queue::Queue
 	where
 		Self: 'a;
 	type CommandBuffer<'a>: crate::command_buffer::CommandBuffer
@@ -324,11 +323,8 @@ pub trait Context: ContextCreate {
 	/// Check this value before you create BC-compressed images or samplers.
 	fn supports_bc_texture_compression(&self) -> bool;
 
-	/// Returns an owned queue wrapper that exposes queue-local command submission.
-	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue;
-
 	/// Returns a borrowed queue wrapper that exposes queue-local command submission.
-	fn queue_reference<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::QueueReference<'a>;
+	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
 
 	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
 	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;

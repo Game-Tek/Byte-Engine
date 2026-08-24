@@ -2,6 +2,7 @@ import { notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import type * as PageTree from 'fumadocs-core/page-tree';
 import type { TOCItemType } from 'fumadocs-core/toc';
+import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
@@ -126,7 +127,22 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 	);
 
 	return (
-		<DocsLayout {...baseOptions()} tree={tree}>
+		<DocsLayout
+			{...baseOptions()}
+			sidebar={{
+				footer: (
+					<GithubInfo
+						className="be-github-info"
+						fetchOptions={{
+							headers: { 'User-Agent': 'Byte-Engine-Docs' },
+						}}
+						owner="Game-Tek"
+						repo="Byte-Engine"
+					/>
+				),
+			}}
+			tree={tree}
+		>
 			<Content />
 		</DocsLayout>
 	);

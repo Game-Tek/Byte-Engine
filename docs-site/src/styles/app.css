@@ -11,13 +11,90 @@
 	--color-fd-primary: var(--be-green);
 }
 
-/* Keep a subtle brand glow in the lower-right corner of the Fumadocs sidebar. */
+/* Add a subtle brand wash along the bottom edge of the Fumadocs sidebar. */
 #nd-sidebar {
-	background-image: radial-gradient(
-		ellipse 78% 36% at 100% 100%,
-		color-mix(in srgb, var(--be-green) 8%, transparent),
-		transparent 76%
+	background-image: linear-gradient(
+		to top,
+		color-mix(in srgb, var(--be-green) 4%, transparent),
+		transparent 18%
 	);
+}
+
+/* Pair the repository card with a compact vertical theme switch. */
+#nd-sidebar div:has(> .be-github-info) {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: stretch;
+	gap: 0.5rem;
+}
+
+#nd-sidebar .be-github-info {
+	grid-column: 1;
+	grid-row: 1;
+	min-width: 0;
+}
+
+#nd-sidebar div:has(> .be-github-info) > div:has(> [data-theme-toggle]) {
+	grid-column: 2;
+	grid-row: 1;
+	padding: 0;
+	border-color: transparent;
+	background: transparent;
+}
+
+#nd-sidebar [data-theme-toggle] {
+	position: relative;
+	flex-direction: column;
+	align-self: stretch;
+	justify-content: center;
+	padding: 0.25rem;
+	border-width: 1px;
+	border-color: var(--color-fd-border);
+	border-radius: 0.75rem;
+	background: color-mix(in srgb, var(--color-fd-secondary) 50%, transparent);
+}
+
+#nd-sidebar [data-theme-toggle]::before {
+	position: absolute;
+	top: 0.25rem;
+	inset-inline: 0.25rem;
+	height: 1.625rem;
+	border-radius: 9999px;
+	background: var(--color-fd-accent);
+	content: '';
+	transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark #nd-sidebar [data-theme-toggle]::before {
+	transform: translateY(1.625rem);
+}
+
+#nd-sidebar [data-theme-toggle] > svg {
+	position: relative;
+	z-index: 1;
+	background: transparent;
+	transition:
+		color 180ms ease,
+		opacity 180ms ease,
+		transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#nd-sidebar [data-theme-toggle] > svg:last-child,
+.dark #nd-sidebar [data-theme-toggle] > svg:first-child {
+	opacity: 0.55;
+	transform: rotate(-25deg) scale(0.86);
+}
+
+.dark #nd-sidebar [data-theme-toggle] > svg:last-child {
+	opacity: 1;
+	transform: rotate(0) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#nd-sidebar [data-theme-toggle]::before,
+	#nd-sidebar [data-theme-toggle] > svg {
+		transition: none;
+	}
 }
 
 /* Fade a very faint brand tint down through the documentation content area. */

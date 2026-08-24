@@ -2,7 +2,63 @@
 @import 'fumadocs-ui/css/black.css';
 @import 'fumadocs-ui/css/preset.css';
 
+:root {
+	--be-green: hsl(135, 66%, 55%);
+}
+
 .dark {
-	--color-fd-ring: hsl(135, 66%, 55%);
-	--color-fd-primary: hsl(135, 66%, 55%);
+	--color-fd-ring: var(--be-green);
+	--color-fd-primary: var(--be-green);
+}
+
+/* Keep a subtle brand glow in the lower-right corner of the Fumadocs sidebar. */
+#nd-sidebar {
+	background-image: radial-gradient(
+		ellipse 78% 36% at 100% 100%,
+		color-mix(in srgb, var(--be-green) 8%, transparent),
+		transparent 76%
+	);
+}
+
+/* Fade a very faint brand tint down through the documentation content area. */
+#nd-docs-layout {
+	background-image: linear-gradient(
+		to bottom,
+		color-mix(in srgb, var(--be-green) 3%, transparent) 0,
+		transparent 36rem
+	);
+	background-repeat: no-repeat;
+}
+
+/* Add an interactive brand glow to Fumadocs' previous/next navigation. */
+.be-page-navigation > a[href] {
+	position: relative;
+	overflow: hidden;
+	transition:
+		background-color 180ms ease,
+		border-color 180ms ease,
+		box-shadow 180ms ease;
+}
+
+.be-page-navigation > a[href]:is(:hover, :focus-visible) {
+	background-color: color-mix(
+		in srgb,
+		var(--be-green) 7%,
+		var(--color-fd-card)
+	);
+	background-image:
+		radial-gradient(
+			circle at 8% 0%,
+			color-mix(in srgb, var(--be-green) 24%, transparent),
+			transparent 58%
+		),
+		radial-gradient(
+			circle at 96% 120%,
+			color-mix(in srgb, var(--be-green) 14%, transparent),
+			transparent 56%
+		);
+	border-color: color-mix(in srgb, var(--be-green) 36%, transparent);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, var(--be-green) 18%, transparent),
+		0 14px 36px -28px color-mix(in srgb, var(--be-green) 72%, transparent);
 }

@@ -48,7 +48,10 @@ const clientLoader = browserCollections.docs.createClientLoader({
 		const visibleToc = useVisibleTableOfContents(toc, contentRef);
 
 		return (
-			<DocsPage toc={visibleToc}>
+			<DocsPage
+				toc={visibleToc}
+				footer={{ className: 'be-page-navigation' }}
+			>
 				<DocsTitle>{frontmatter.title}</DocsTitle>
 				<DocsDescription>{frontmatter.description}</DocsDescription>
 				<DocsBody ref={contentRef}>

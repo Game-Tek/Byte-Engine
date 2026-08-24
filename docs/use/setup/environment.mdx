@@ -1,0 +1,149 @@
+---
+title: Environment setup
+description: Install the platform tools required to build Byte Engine applications.
+icon: Settings
+---
+
+# Environment setup
+
+Install Rust, then select your operating system to see the native tools and
+configuration required to build Byte Engine. Your operating system choice is
+remembered anywhere these tabs appear in the documentation.
+
+## Install Rust with rustup
+
+Install Rust with `rustup`. The repository pins its nightly toolchain in
+`rust-toolchain.toml`, so Cargo downloads and uses the correct version when you
+build inside the checkout.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+## Set up your operating system
+
+<Tabs
+	items={["macOS", "Linux", "Windows"]}
+	groupId="byte-engine-operating-system"
+	persist
+>
+	<Tab>
+
+## macOS
+
+Set up Apple's SDK and native build tools before you build Byte Engine on
+macOS.
+
+<Callout type="warning" title="Minimum macOS version">
+	Byte Engine requires macOS 26 or later.
+</Callout>
+
+### Install Xcode
+
+Install the full [Xcode app](https://developer.apple.com/xcode/) before building
+Byte Engine on macOS. Xcode includes the macOS SDK and command-line compiler
+tools used by the engine.
+
+<Callout type="info" title="Why full Xcode is required">
+	Byte Engine's shader build invokes the `metal` and `metallib` tools. Apple
+	offers these tools only through the Metal Toolchain component for the full
+	Xcode installation, so the standalone Command Line Tools can't build Byte
+	Engine's Metal shader resources. Other build steps use Xcode's SDK and
+	command-line tools to compile and link the engine and its applications. The
+	Xcode user interface isn't part of the build; use it only for tasks such as
+	GPU capture and debugging.
+</Callout>
+
+Select the installed Xcode app and accept its license:
+
+```bash
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+```
+
+Download the Metal compiler component for the selected Xcode installation:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+```
+
+Verify that the Metal compiler is available:
+
+```bash
+xcrun -sdk macosx metal --version
+```
+
+### Install Homebrew packages
+
+Install the native build tools used by Byte Engine's Rust dependencies.
+
+```bash
+brew install cmake pkg-config
+```
+
+	</Tab>
+	<Tab>
+
+## Linux
+
+Install the native packages and configure AVX2 before you build Byte Engine on
+Linux.
+
+### Install system packages
+
+Install the native build, windowing, audio, and Vulkan packages used by Byte
+Engine's Linux backend.
+
+```bash
+sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libxkbcommon-dev libvulkan-dev vulkan-tools vulkan-validationlayers
+```
+
+### Enable AVX2 on x64
+
+On x64 Linux, enable AVX2 explicitly instead of using `target-cpu=native`. Add
+this configuration to your application's `.cargo/config.toml`:
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx2"]
+```
+
+### Optional: Install Mold
+
+[Mold](https://github.com/rui314/mold) is an optional linker that can reduce
+build times on Linux. Follow the installation steps in the Mold repository.
+
+### Optional: Install RenderDoc
+
+Install RenderDoc when you need to capture and inspect rendered frames.
+
+```bash
+sudo apt install renderdoc
+```
+
+	</Tab>
+	<Tab>
+
+## Windows
+
+Install the Windows development tools and configure AVX2 before you build Byte
+Engine on Windows.
+
+### Install Visual Studio Build Tools
+
+Install the Visual Studio Build Tools with the MSVC C++ toolchain and Windows
+SDK before building on Windows. Byte Engine's Windows backends use Win32,
+Direct3D 12, DXGI, and DXC APIs from the Windows SDK.
+
+### Enable AVX2 on x64
+
+On x64 Windows, enable AVX2 explicitly instead of using `target-cpu=native`.
+Add this configuration to your application's `.cargo/config.toml`:
+
+```toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2"]
+```
+
+	</Tab>
+</Tabs>

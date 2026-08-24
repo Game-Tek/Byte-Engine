@@ -4,20 +4,10 @@ description: Add a published release, Git dependency, or local engine checkout t
 icon: Package
 ---
 
-Install Byte-Engine as a Cargo dependency in your application workspace.
+Install Byte-Engine as a Cargo dependency in the project you created.
 
-## Prepare your workspace
-
-Byte-Engine uses unstable Rust features. Pin the supported nightly toolchain in your application workspace's `rust-toolchain.toml`:
-
-```toml
-[toolchain]
-channel = "nightly-2026-05-31"
-```
-
-Complete the [environment setup guide](/docs/use/setup/environment) for your
-platform's graphics, audio, and native build dependencies before building your
-application.
+Complete the [environment setup](/docs/use/setup/environment) and
+[create your project](/docs/use/setup/project) before following this guide.
 
 ## Choose an installation method
 
@@ -40,7 +30,7 @@ The installation method determines where Cargo gets the Byte-Engine source:
 
 ## Install the published release
 
-Add the latest published Byte-Engine release to your application crate:
+From your project folder, add the latest published Byte-Engine release:
 
 ```sh
 cargo add byte-engine
@@ -53,7 +43,7 @@ Cargo adds the published package version to your crate's `Cargo.toml`.
 
 ## Install a Git dependency
 
-Add Byte-Engine directly from its Git repository:
+From your project folder, add Byte-Engine directly from its Git repository:
 
 ```sh
 cargo add byte-engine --git https://github.com/Game-Tek/Byte-Engine
@@ -81,10 +71,8 @@ development/
 └── my-game/
     ├── Cargo.toml
     ├── rust-toolchain.toml
-    └── game/
-        ├── Cargo.toml
-        └── src/
-            └── main.rs
+    └── src/
+        └── main.rs
 ```
 
 From the shared parent directory, clone Byte-Engine:
@@ -95,53 +83,42 @@ git clone https://github.com/Game-Tek/Byte-Engine.git
 
 If your directories use different names or locations, adjust the dependency paths in the following steps.
 
-### Configure the application workspace
-
-List your application crate in `my-game/Cargo.toml`:
-
-```toml
-[workspace]
-members = ["game"]
-resolver = "2"
-```
-
-Add the same supported nightly toolchain shown above to `my-game/rust-toolchain.toml`.
-
 ### Add the engine crate
 
-From `my-game/game/`, add the local checkout with Cargo:
+From `my-game/`, add the local checkout with Cargo:
 
 ```sh
-cargo add byte-engine --path ../../Byte-Engine/crates/byte-engine
+cargo add byte-engine --path ../Byte-Engine/crates/byte-engine
 ```
 
-This command adds the following dependency to `my-game/game/Cargo.toml`:
+This command adds the following dependency to `my-game/Cargo.toml`:
 
 ```toml
 [dependencies]
-byte-engine = { path = "../../Byte-Engine/crates/byte-engine" }
+byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
 ```
 
-Cargo resolves a path dependency from the `Cargo.toml` that declares it. In this layout, `../../Byte-Engine` moves from `my-game/game/` to the shared `development/` directory and then enters the engine checkout.
+Cargo resolves the path from `my-game/Cargo.toml`. In this layout,
+`../Byte-Engine` selects the sibling engine checkout.
 
 If your application also uses a lower-level engine crate directly, add its package name and local path. For example:
 
 ```toml
 [dependencies]
-byte-engine = { path = "../../Byte-Engine/crates/byte-engine" }
-ghi = { package = "byte-engine-ghi", path = "../../Byte-Engine/crates/ghi" }
-resource-management = { package = "byte-engine-resource-management", path = "../../Byte-Engine/crates/resource-management" }
-utils = { package = "byte-engine-utils", path = "../../Byte-Engine/crates/utils" }
+byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
+ghi = { package = "byte-engine-ghi", path = "../Byte-Engine/crates/ghi" }
+resource-management = { package = "byte-engine-resource-management", path = "../Byte-Engine/crates/resource-management" }
+utils = { package = "byte-engine-utils", path = "../Byte-Engine/crates/utils" }
 ```
 
 Most applications only need the `byte-engine` dependency.
 
 ### Verify the local setup
 
-After completing the environment setup, run this command from `my-game/`:
+Run this command from `my-game/`:
 
 ```sh
-cargo check -p game
+cargo check
 ```
 
 Cargo builds the application against the local Byte-Engine checkout. Pull changes in `Byte-Engine/` whenever you want to update the engine, then run the check again.

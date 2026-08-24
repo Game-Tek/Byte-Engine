@@ -152,6 +152,18 @@ pub struct VisibilityPipelineManager {
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for VisibilityPipelineManager {
+	fn drop(&mut self) {
+		// Renderer drops pipeline managers before its GHI context, so every native I/O destination remains alive here.
+		for pending in self.pending_texture_io.drain(..) {
+			if let Err(error) = pending.ticket.wait() {
+				log::error!("Visibility texture I/O shutdown failed: {error}");
+			}
+		}
+	}
+}
+
 impl PipelineManager for VisibilityPipelineManager {
 	fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
 		self.resource_manager.begin_frame(completed_frame)

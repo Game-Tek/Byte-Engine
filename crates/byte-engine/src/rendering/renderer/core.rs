@@ -21,8 +21,6 @@ type PipelineManagerId = usize;
 /// See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
 /// before composing a custom render system, domain, or model.
 pub struct Renderer {
-	/// The GHI context where all rendering resources and operations are performed.
-	context: ghi::implementation::Context,
 	/// The GHI device that is used for rendering.
 	device: Arc<ghi::implementation::Device>,
 	/// The GHI instance that manages devices.
@@ -67,6 +65,10 @@ pub struct Renderer {
 	resource_upload_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
 	defer_first_frame_sink_setup: bool,
+
+	/// The GHI context where all rendering resources and operations are performed.
+	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
+	context: ghi::implementation::Context,
 }
 
 impl Renderer {

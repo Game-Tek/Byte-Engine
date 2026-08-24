@@ -8,10 +8,10 @@ struct OpenFile {
 /// The `ResourceIoQueue` struct owns a Metal I/O command queue and its opened source files.
 pub struct ResourceIoQueue {
 	id: u64,
-	context: NonNull<context::Context>,
 	device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn mtl::MTLIOCommandQueue>>,
 	files: Vec<OpenFile>,
+	debug_labels: bool,
 }
 
 /// The `ResourceIoTicket` struct retains one submitted Metal I/O batch until callers finish observing it.
@@ -55,17 +55,11 @@ impl ResourceIoQueue {
 
 		Ok(Self {
 			id,
-			context: NonNull::from(context),
 			device,
 			queue,
 			files: Vec::new(),
+			debug_labels: context.settings.debug_labels,
 		})
-	}
-
-	fn context(&self) -> &context::Context {
-		// The queue is created from a live Context and follows the same ownership contract as the
-		// existing owned graphics queue. Submission never mutates context resource collections.
-		unsafe { self.context.as_ref() }
 	}
 
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&OpenFile, ResourceIoError> {
@@ -79,14 +73,14 @@ impl ResourceIoQueue {
 	/// Validates and encodes one file-to-buffer request without committing the command buffer.
 	fn encode_buffer_load(
 		&self,
+		context: &context::Context,
 		command_buffer: &ProtocolObject<dyn mtl::MTLIOCommandBuffer>,
 		request_index: usize,
 		load: ResourceIoBufferLoad,
 	) -> Result<(), ResourceIoError> {
 		validate_source_range(request_index, load.source)?;
 		let source = self.file(load.source)?;
-		let destination = self
-			.context()
+		let destination = context
 			.buffers
 			.get_single(load.destination)
 			.ok_or(ResourceIoError::InvalidBufferHandle)?;
@@ -113,14 +107,14 @@ impl ResourceIoQueue {
 	/// Validates and encodes one file-to-image request without committing the command buffer.
 	fn encode_image_load(
 		&self,
+		context: &context::Context,
 		command_buffer: &ProtocolObject<dyn mtl::MTLIOCommandBuffer>,
 		request_index: usize,
 		load: ResourceIoImageLoad,
 	) -> Result<(), ResourceIoError> {
 		validate_source_range(request_index, load.source)?;
 		let source = self.file(load.source)?;
-		let destination = self
-			.context()
+		let destination = context
 			.images
 			.get_single(load.destination)
 			.ok_or(ResourceIoError::InvalidImageHandle)?;
@@ -176,6 +170,7 @@ impl ResourceIoQueue {
 
 impl crate::io::ResourceIoQueue for ResourceIoQueue {
 	type Ticket = ResourceIoTicket;
+	type Context = context::Context;
 
 	fn capabilities(&self) -> ResourceIoCapabilities {
 		metal_resource_io_capabilities()
@@ -194,7 +189,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			None => self.device.newIOFileHandleWithURL_error(&url),
 		}
 		.map_err(|error| ResourceIoError::FileOpen(native_error_message(&error)))?;
-		if self.context().settings.debug_labels {
+		if self.debug_labels {
 			handle.setLabel(descriptor.name.map(NSString::from_str).as_deref());
 		}
 
@@ -207,19 +202,31 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 	}
 
 	/// Submits one independently completing Metal I/O command buffer.
-	fn submit(&mut self, name: Option<&str>, requests: &[ResourceIoRequest]) -> Result<Self::Ticket, ResourceIoError> {
+	fn submit(
+		&mut self,
+		context: &Self::Context,
+		name: Option<&str>,
+		requests: &[ResourceIoRequest],
+	) -> Result<Self::Ticket, ResourceIoError> {
 		if requests.is_empty() {
 			return Err(ResourceIoError::EmptyBatch);
 		}
+		if !std::ptr::eq(&*self.device, &*context.device) {
+			return Err(ResourceIoError::InvalidContext);
+		}
 		let command_buffer = self.queue.commandBuffer();
-		if self.context().settings.debug_labels {
+		if self.debug_labels {
 			command_buffer.setLabel(name.map(NSString::from_str).as_deref());
 		}
 
 		for (request_index, request) in requests.iter().copied().enumerate() {
 			match request {
-				ResourceIoRequest::Buffer(load) => self.encode_buffer_load(command_buffer.as_ref(), request_index, load)?,
-				ResourceIoRequest::Image(load) => self.encode_image_load(command_buffer.as_ref(), request_index, load)?,
+				ResourceIoRequest::Buffer(load) => {
+					self.encode_buffer_load(context, command_buffer.as_ref(), request_index, load)?
+				}
+				ResourceIoRequest::Image(load) => {
+					self.encode_image_load(context, command_buffer.as_ref(), request_index, load)?
+				}
 			}
 		}
 
@@ -454,7 +461,7 @@ mod tests {
 			.expect("raw Metal I/O source");
 		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
 		let ticket = queue
-			.submit(Some("Raw Buffer Load"), &[request])
+			.submit(&context, Some("Raw Buffer Load"), &[request])
 			.expect("raw Metal I/O batch");
 
 		ticket.wait().expect("raw Metal I/O completion");
@@ -485,7 +492,7 @@ mod tests {
 		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
 
 		assert!(matches!(
-			other_queue.submit(Some("Wrong Queue Load"), &[request]),
+			other_queue.submit(&context, Some("Wrong Queue Load"), &[request]),
 			Err(ResourceIoError::InvalidFileHandle)
 		));
 
@@ -513,7 +520,7 @@ mod tests {
 			.expect("compressed Metal I/O source");
 		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
 		let ticket = queue
-			.submit(Some("LZ4 Buffer Load"), &[request])
+			.submit(&context, Some("LZ4 Buffer Load"), &[request])
 			.expect("compressed Metal I/O batch");
 
 		ticket.wait().expect("compressed Metal I/O completion");
@@ -555,7 +562,7 @@ mod tests {
 		)
 		.into();
 		let ticket = queue
-			.submit(Some("LZ4 Image Load"), &[request])
+			.submit(&context, Some("LZ4 Image Load"), &[request])
 			.expect("compressed Metal I/O image batch");
 
 		ticket.wait().expect("compressed Metal I/O image completion");
@@ -597,7 +604,7 @@ mod tests {
 		)
 		.into();
 		let ticket = queue
-			.submit(Some("Raw Image Load"), &[request])
+			.submit(&context, Some("Raw Image Load"), &[request])
 			.expect("raw Metal I/O image batch");
 
 		ticket.wait().expect("raw Metal I/O image completion");
@@ -622,7 +629,7 @@ mod tests {
 		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 3, 2).into();
 
 		assert!(matches!(
-			queue.submit(Some("Invalid Buffer Load"), &[request]),
+			queue.submit(&context, Some("Invalid Buffer Load"), &[request]),
 			Err(ResourceIoError::InvalidDestinationRange { request: 0 })
 		));
 		drop(queue);

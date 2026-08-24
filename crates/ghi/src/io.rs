@@ -359,6 +359,7 @@ pub enum ResourceIoError {
 	UnsupportedCompression(ResourceIoCompression),
 	InvalidPath,
 	InvalidFileHandle,
+	InvalidContext,
 	InvalidBufferHandle,
 	InvalidImageHandle,
 	InvalidSourceRange { request: usize },
@@ -384,6 +385,9 @@ impl std::fmt::Display for ResourceIoError {
 			),
 			Self::InvalidFileHandle => formatter.write_str(
 				"Resource I/O file handle is invalid. The most likely cause is that the handle belongs to another queue or has not been opened.",
+			),
+			Self::InvalidContext => formatter.write_str(
+				"Resource I/O context is invalid. The most likely cause is that the destination context belongs to another graphics device.",
 			),
 			Self::InvalidBufferHandle => formatter.write_str(
 				"Resource I/O buffer handle is invalid. The most likely cause is that the buffer belongs to another graphics context.",
@@ -435,19 +439,25 @@ pub trait ResourceIoTicket {
 /// The `ResourceIoQueue` trait provides file registration and batched native loading.
 pub trait ResourceIoQueue {
 	type Ticket: ResourceIoTicket;
+	type Context: ?Sized;
 
 	fn capabilities(&self) -> ResourceIoCapabilities;
 
 	/// Opens a file using the same native device that owns this queue's destinations.
 	fn open_file(&mut self, descriptor: ResourceIoFileDescriptor<'_>) -> Result<ResourceIoFileHandle, ResourceIoError>;
 
-	/// Encodes and commits one independently completing request batch.
-	fn submit(&mut self, name: Option<&str>, requests: &[ResourceIoRequest]) -> Result<Self::Ticket, ResourceIoError>;
+	/// Encodes and commits one independently completing request batch against resources borrowed from `context`.
+	fn submit(
+		&mut self,
+		context: &Self::Context,
+		name: Option<&str>,
+		requests: &[ResourceIoRequest],
+	) -> Result<Self::Ticket, ResourceIoError>;
 }
 
 /// The `ResourceIoContext` trait creates dedicated storage queues for context-owned GPU resources.
 pub trait ResourceIoContext {
-	type ResourceIoQueue: ResourceIoQueue;
+	type ResourceIoQueue: ResourceIoQueue<Context = Self>;
 
 	/// Creates a persistent queue that can populate resources owned by this context.
 	fn create_resource_io_queue(

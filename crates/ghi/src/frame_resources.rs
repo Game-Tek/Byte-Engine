@@ -167,6 +167,11 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		self.resources.iter().map(|r| &r.resource)
 	}
 
+	/// Iterates mutably over all stored private resources in insertion order.
+	pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+		self.resources.iter_mut().map(|r| &mut r.resource)
+	}
+
 	/// Starts building a chained resource sequence that will share one master handle.
 	pub(crate) fn creator<'a>(&'a mut self) -> Creator<'a, T, MH, PH> {
 		let mh = MH::new(self.resources.len() as _);

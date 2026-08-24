@@ -5,7 +5,7 @@ impl PushUploadArena<'_> {
 	fn upload(
 		&mut self,
 		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		command: &queue::NativeCommand,
+		command: &mut queue::NativeCommand,
 		bytes: &[u8],
 	) -> mtl::MTLGPUAddress {
 		assert!(
@@ -110,7 +110,7 @@ impl<'a> CommandBufferRecording<'a> {
 		device: RecordingDevice<'a>,
 		commit: RecordingCommit<'a>,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-		command_buffer: queue::NativeCommand,
+		mut command_buffer: queue::NativeCommand,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 		drawables: Vec<
 			(
@@ -123,7 +123,7 @@ impl<'a> CommandBufferRecording<'a> {
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
-		let mut resource_tracker = std::mem::take(commit.resource_tracker);
+		let mut resource_tracker = std::mem::take(&mut commit.queue.resource_tracker);
 		resource_tracker.begin_recording();
 		for (_, drawable) in &drawables {
 			command_buffer.retain_drawable(drawable.clone());
@@ -135,7 +135,7 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle,
 			frame_key,
 			sequence_index,
-			command_buffer,
+			command_buffer: NativeCommandSlot(Some(command_buffer)),
 			#[cfg(debug_assertions)]
 			debug_regions: Vec::new_in(allocator),
 			#[cfg(debug_assertions)]
@@ -284,7 +284,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
-			command_buffer: self.command_buffer.clone(),
+			command_buffer: self.command_buffer.take(),
 			texture_readbacks: std::mem::take(&mut self.texture_readbacks),
 			_marker: std::marker::PhantomData,
 		}
@@ -376,7 +376,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Publishes this finalized recording's resource history to its queue.
 	fn publish_resource_states(&mut self) {
 		self.resource_tracker.finish_recording();
-		*self.commit.resource_tracker = std::mem::take(&mut self.resource_tracker);
+		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
 	/// Creates one initialized Metal 4 argument table when a shader stage first needs bindings.
@@ -412,12 +412,16 @@ impl<'a> CommandBufferRecording<'a> {
 			ArgumentTableStage::Compute => self
 				.active_compute_encoder
 				.as_ref()
-				.expect("No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.")
+				.expect(
+					"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
+				)
 				.setArgumentTable(Some(table.as_ref())),
 			stage => self
 				.active_render_encoder
 				.as_ref()
-				.expect("No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.")
+				.expect(
+					"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
+				)
 				.setArgumentTable_atStages(table.as_ref(), stage.render_stage()),
 		}
 	}
@@ -425,7 +429,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Uploads the current logical push state into an immutable command-local range.
 	fn upload_push_constants(&mut self) -> mtl::MTLGPUAddress {
 		self.push_upload_arena
-			.upload(self.device.metal_device, &self.command_buffer, &self.push_constant_data)
+			.upload(self.device.metal_device, &mut self.command_buffer, &self.push_constant_data)
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
@@ -650,17 +654,15 @@ impl<'a> CommandBufferRecording<'a> {
 		self.end_compute_encoder();
 		self.end_render_encoder();
 		self.publish_resource_states();
-		queue::NativeCommand::submit_batch(std::slice::from_ref(&self.command_buffer));
 		for handle in &self.texture_readbacks {
 			self.commit.texture_readbacks.mark_submitted(*handle);
 		}
 		self.readbacks_finalized = true;
 
 		let synchronizer = self.commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
-		// The synchronizer owns the submitted command until its shared-event token completes.
-		self.commit
-			.synchronizers
-			.resource(synchronizer)
-			.signal_workload(self.command_buffer.clone());
+		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
+		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
+		// The synchronizer owns the submitted batch until its completion message arrives.
+		self.commit.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }

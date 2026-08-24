@@ -83,9 +83,7 @@ pub struct Context {
 impl Drop for Context {
 	fn drop(&mut self) {
 		// Metal 4 command buffers do not retain resources, so all queue work must finish before context-owned resources drop.
-		for synchronizer in self.synchronizers.iter() {
-			synchronizer.wait();
-		}
+		self.wait();
 	}
 }
 

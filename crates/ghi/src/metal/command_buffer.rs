@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ::utils::{hash::HashMap, Extent};
+use ::utils::{Extent, hash::HashMap};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
@@ -12,12 +12,12 @@ use smallvec::SmallVec;
 use super::*;
 use crate::metal::swapchain::Swapchain;
 use crate::{
+	ImageOrSwapchain, ResourceCollection,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	ImageOrSwapchain, ResourceCollection,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -214,13 +214,43 @@ pub(super) struct RecordingDevice<'a> {
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
 pub(super) struct RecordingCommit<'a> {
-	pub(super) resource_tracker: &'a mut synchronization::MetalResourceTracker,
+	pub(super) queue_handle: graphics_hardware_interface::QueueHandle,
+	pub(super) queue: &'a mut queue::StoredQueue,
 	pub(super) synchronizers: &'a mut ResourceCollection<
 		synchronizer::Synchronizer,
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
 	pub(super) texture_readbacks: &'a mut crate::context::TextureReadbackRegistry<context::TextureReadbackStorage>,
+}
+
+/// The `NativeCommandSlot` struct permits a recording guard to move its uniquely owned command into the next lifecycle stage.
+struct NativeCommandSlot(Option<queue::NativeCommand>);
+
+impl NativeCommandSlot {
+	fn take(&mut self) -> queue::NativeCommand {
+		self.0.take().expect(
+			"Metal native command is missing. The most likely cause is that one recording was finalized more than once.",
+		)
+	}
+}
+
+impl std::ops::Deref for NativeCommandSlot {
+	type Target = queue::NativeCommand;
+
+	fn deref(&self) -> &Self::Target {
+		self.0
+			.as_ref()
+			.expect("Metal native command is missing. The most likely cause is that recording continued after finalization.")
+	}
+}
+
+impl std::ops::DerefMut for NativeCommandSlot {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		self.0
+			.as_mut()
+			.expect("Metal native command is missing. The most likely cause is that recording continued after finalization.")
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -304,7 +334,7 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
-	command_buffer: queue::NativeCommand,
+	command_buffer: NativeCommandSlot,
 	#[cfg(debug_assertions)]
 	debug_regions: Vec<Retained<NSString>, &'a dyn std::alloc::Allocator>,
 	#[cfg(debug_assertions)]
@@ -352,7 +382,7 @@ pub struct CommandBufferRecording<'a> {
 impl Drop for CommandBufferRecording<'_> {
 	fn drop(&mut self) {
 		if self.resource_tracker.rollback_recording() {
-			*self.commit.resource_tracker = std::mem::take(&mut self.resource_tracker);
+			self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 		}
 		if !self.readbacks_finalized {
 			for handle in self.texture_readbacks.drain(..) {

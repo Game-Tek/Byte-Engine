@@ -2,53 +2,61 @@ use super::*;
 
 impl CommandBufferRecording<'_> {
 	/// Retains every materialized argument buffer and descriptor allocation through native command completion.
-	pub(super) fn retain_descriptor_resources(&self, layout: &PipelineLayout, materialization: &Materialization) {
+	pub(super) fn retain_descriptor_resources(&mut self, layout: &PipelineLayout, materialization: &Materialization) {
+		let device = &self.device;
+		let command_buffer = &mut self.command_buffer;
 		for (_, argument_buffer) in materialization.argument_buffers.iter() {
-			self.command_buffer.retain_buffer(argument_buffer.clone());
+			command_buffer.retain_buffer(argument_buffer.clone());
 		}
 		for texture_view in materialization._texture_views.iter() {
-			self.command_buffer.retain_texture(texture_view.clone());
+			command_buffer.retain_texture(texture_view.clone());
 		}
 
 		for resource in &layout.resources {
-			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
+			let Some(descriptors) = self.bound_descriptor_set_handles.iter().find_map(|set_handle| {
+				device.descriptor_sets[set_handle.0 as usize]
+					.descriptors
+					.get(&resource.descriptor.slot())
+			}) else {
 				continue;
 			};
 			for descriptor in descriptors.values().copied() {
 				match descriptor {
 					Descriptor::Image { image, .. } => {
-						self.command_buffer
-							.retain_texture(self.device.images.resource(image).texture.clone());
+						command_buffer.retain_texture(device.images.resource(image).texture.clone());
 					}
 					Descriptor::CombinedImageSampler { image, sampler, .. } => {
-						self.command_buffer
-							.retain_texture(self.device.images.resource(image).texture.clone());
-						self.command_buffer
-							.retain_sampler(self.device.samplers[sampler.0 as usize].sampler.clone());
+						command_buffer.retain_texture(device.images.resource(image).texture.clone());
+						command_buffer.retain_sampler(device.samplers[sampler.0 as usize].sampler.clone());
 					}
 					Descriptor::Buffer { buffer, .. } => {
-						self.command_buffer
-							.retain_buffer(self.device.buffers.resource(buffer).buffer.clone());
+						command_buffer.retain_buffer(device.buffers.resource(buffer).buffer.clone());
 					}
 					Descriptor::Swapchain { handle } => {
-						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
-							self.command_buffer
-								.retain_texture(self.device.images.resource(proxy).texture.clone());
+						if let Some(proxy) = device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
+							command_buffer.retain_texture(device.images.resource(proxy).texture.clone());
 						} else {
-							self.command_buffer.retain_texture(self.drawable_texture(handle));
+							let texture = self
+								.drawables
+								.iter()
+								.find(|(swapchain, _)| swapchain.0 == handle.0)
+								.map(|(_, drawable)| drawable.texture())
+								.expect(
+									"Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.",
+								);
+							command_buffer.retain_texture(texture);
 						}
 					}
 					Descriptor::AccelerationStructure { handle } => {
-						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+						if let Some(structure) = device.acceleration_structures[handle.0 as usize].structure.as_ref() {
 							let allocation = unsafe {
 								Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone())
 							};
-							self.command_buffer.retain_allocations(std::iter::once(allocation));
+							command_buffer.retain_allocations(std::iter::once(allocation));
 						}
 					}
 					Descriptor::Sampler { sampler } => {
-						self.command_buffer
-							.retain_sampler(self.device.samplers[sampler.0 as usize].sampler.clone());
+						command_buffer.retain_sampler(device.samplers[sampler.0 as usize].sampler.clone());
 					}
 				}
 			}

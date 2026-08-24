@@ -54,7 +54,8 @@ impl Context {
 			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::super::command_buffer::RecordingCommit {
-			resource_tracker: &mut self.queues[queue_handle.0 as usize].resource_tracker,
+			queue_handle,
+			queue: &mut self.queues[queue_handle.0 as usize],
 			synchronizers: &mut self.synchronizers,
 			texture_readbacks: &mut self.texture_readbacks,
 		};

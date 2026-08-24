@@ -122,7 +122,7 @@ impl crate::context::Context for Context {
 		Context::wait_for_synchronizer(self, synchronizer);
 	}
 
-	fn wait(&self) {
+	fn wait(&mut self) {
 		Context::wait(self);
 	}
 

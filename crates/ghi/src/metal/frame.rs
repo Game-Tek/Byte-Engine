@@ -3,8 +3,8 @@ use objc2_foundation::NSString;
 use objc2_metal::{MTL4CommandEncoder, MTL4CommandQueue, MTL4ComputeCommandEncoder, MTLDrawable};
 
 use super::*;
-use crate::image::ImageHandle;
 use crate::SwapchainHandle;
+use crate::image::ImageHandle;
 
 /// The `Frame` struct scopes Metal rendering state to one frame.
 ///
@@ -269,8 +269,7 @@ impl Frame<'_> {
 			let command_queue = self.device.command_buffers[command_buffer_handle.0 as usize].queue_handle;
 
 			assert_eq!(
-				command_queue,
-				self.queue_handle,
+				command_queue, self.queue_handle,
 				"Metal 4 frame batch submission failed. The most likely cause is that a command buffer from another GHI queue was recorded into this execution.",
 			);
 			native_commands.push(command_buffer);
@@ -282,7 +281,7 @@ impl Frame<'_> {
 			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy);
 		if uses_proxy {
 			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
-			let resolve_command = self.device.queues[self.queue_handle.0 as usize]
+			let mut resolve_command = self.device.queues[self.queue_handle.0 as usize]
 				.acquire_native_command(Some("Present Resolve"), self.device.settings.debug_labels);
 			let copy_encoder = resolve_command.compute_command_encoder().expect(
 				"Metal 4 present resolve encoder creation failed. The most likely cause is that the resolve command was not recording.",
@@ -347,7 +346,7 @@ impl Frame<'_> {
 					.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels),
 			);
 		}
-		for command in &native_commands {
+		for command in &mut native_commands {
 			for (_, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {
 					command.retain_drawable(drawable.clone());
@@ -355,16 +354,16 @@ impl Frame<'_> {
 			}
 		}
 
-		{
-			let queue = &self.device.queues[self.queue_handle.0 as usize].queue;
+		let submitted = {
+			let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
 			for (_, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {
 					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-					queue.waitForDrawable(drawable);
+					stored_queue.queue.waitForDrawable(drawable);
 				}
 			}
 
-			queue::NativeCommand::submit_batch(&native_commands);
+			let submitted = stored_queue.submit_batch(self.queue_handle, native_commands);
 			for handle in &submitted_readbacks {
 				self.device.texture_readbacks.mark_submitted(*handle);
 			}
@@ -372,11 +371,12 @@ impl Frame<'_> {
 			for (_, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {
 					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-					queue.signalDrawable(drawable);
+					stored_queue.queue.signalDrawable(drawable);
 					drawable.present();
 				}
 			}
-		}
+			submitted
+		};
 
 		let resource_tracker = &mut self.device.queues[self.queue_handle.0 as usize].resource_tracker;
 		for (_, drawable) in &present_drawables {
@@ -389,10 +389,7 @@ impl Frame<'_> {
 		let synchronizer = self
 			.device
 			.synchronizer_for_sequence(synchronizer, self.frame_key.sequence_index);
-		self.device
-			.synchronizers
-			.resource(synchronizer)
-			.signal_workloads(native_commands);
+		self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }
 

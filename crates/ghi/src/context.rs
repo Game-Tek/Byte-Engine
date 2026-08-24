@@ -416,7 +416,7 @@ pub trait Context: ContextCreate {
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle);
 
 	/// Waits for all pending operations to complete.
-	fn wait(&self);
+	fn wait(&mut self);
 }
 
 /// The `ContextCreate` trait provides creation operations for resources owned by a GHI context.

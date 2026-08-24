@@ -16,7 +16,7 @@ impl Context {
 		}
 
 		let queue_index = queue_handle.0 as usize;
-		let command_buffer = self.create_metal_command_buffer(queue_handle, Some("Pending Uploads"));
+		let mut command_buffer = self.create_metal_command_buffer(queue_handle, Some("Pending Uploads"));
 		let transfer_encoder = command_buffer.compute_command_encoder().expect(
 			"Metal 4 transfer encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
@@ -101,11 +101,9 @@ impl Context {
 		resource_tracker.finish_recording();
 		self.queues[queue_index].resource_tracker = resource_tracker;
 		let synchronizer = self.internal_upload_synchronizer(sequence_index);
-		// The synchronizer owns the upload command and its retained resources through completion.
-		self.synchronizers
-			.resource(synchronizer)
-			.signal_workload(command_buffer.clone());
-		queue::NativeCommand::submit_batch(std::slice::from_ref(&command_buffer));
+		let submitted = self.queues[queue_index].submit_batch(queue_handle, SmallVec::from_iter([command_buffer]));
+		// The synchronizer owns the upload submission and its retained resources through completion.
+		self.synchronizers.resource_mut(synchronizer).signal(submitted);
 		self.internal_upload_queues[sequence_index as usize] = Some(queue_handle);
 	}
 }

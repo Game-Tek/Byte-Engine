@@ -863,7 +863,7 @@ impl crate::context::Context for Device {
 		Device::wait_for_synchronizer(self, synchronizer);
 	}
 
-	fn wait(&self) {
+	fn wait(&mut self) {
 		Device::wait(self);
 	}
 }

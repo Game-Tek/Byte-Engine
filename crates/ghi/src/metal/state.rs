@@ -60,61 +60,67 @@ pub mod descriptor_set {
 }
 
 pub mod synchronizer {
-	use std::cell::{Cell, RefCell};
-
 	use super::*;
 	use crate::synchronizer::SynchronizerHandle;
 
 	/// The `Synchronizer` struct owns the Metal workloads associated with one GHI synchronization point.
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
-		signaled: Cell<bool>,
-		workloads: RefCell<SmallVec<[crate::metal::queue::NativeCommand; 4]>>,
+		signaled: bool,
+		workloads: SmallVec<[crate::metal::queue::SubmittedBatch; 4]>,
 	}
 
 	impl Synchronizer {
 		pub(crate) fn new(signaled: bool) -> Self {
 			Self {
 				next: None,
-				signaled: Cell::new(signaled),
-				workloads: RefCell::new(SmallVec::new()),
+				signaled,
+				workloads: SmallVec::new(),
 			}
 		}
 
-		pub(crate) fn reset(&self) {
-			// Reset only after prior tokens complete so native allocators and residency sets are safe to reuse.
-			self.wait();
-			self.signaled.set(false);
+		pub(crate) fn reset(&mut self) {
+			assert!(
+				self.signaled,
+				"Metal synchronizer reset failed. The most likely cause is that its previous workloads were not completed first.",
+			);
+			self.signaled = false;
 		}
 
-		pub(crate) fn signal_workload(&self, command: crate::metal::queue::NativeCommand) {
-			self.signaled.set(false);
-			self.workloads.borrow_mut().push(command);
+		pub(crate) fn signal(&mut self, workload: crate::metal::queue::SubmittedBatch) {
+			self.signaled = false;
+			self.workloads.push(workload);
 		}
 
-		/// Retains every command in one submitted batch until the shared-event completion token is reached.
-		pub(crate) fn signal_workloads(&self, commands: impl IntoIterator<Item = crate::metal::queue::NativeCommand>) {
-			self.signaled.set(false);
-			self.workloads.borrow_mut().extend(commands);
-		}
-
-		pub(crate) fn wait(&self) {
-			if self.signaled.get() {
-				return;
+		/// Waits for every submitted batch and returns commands to their owning context for recycling.
+		pub(crate) fn wait(
+			&mut self,
+		) -> (
+			SmallVec<
+				[(
+					graphics_hardware_interface::QueueHandle,
+					SmallVec<[crate::metal::queue::NativeCommand; 4]>,
+				); 4],
+			>,
+			Option<String>,
+		) {
+			if self.signaled {
+				return (SmallVec::new(), None);
 			}
 
-			let workloads = self.workloads.take();
+			let workloads = std::mem::take(&mut self.workloads);
+			let mut completed = SmallVec::new();
 			let mut first_error = None;
-			for command in &workloads {
-				if let Some(error) = command.wait_and_recycle() {
+			for workload in workloads {
+				let (queue, commands, error) = workload.wait();
+				completed.push((queue, commands));
+				if let Some(error) = error {
 					first_error.get_or_insert(error);
 				}
 			}
 
-			self.signaled.set(true);
-			if let Some(error) = first_error {
-				panic!("{error}");
-			}
+			self.signaled = true;
+			(completed, first_error)
 		}
 	}
 }

@@ -3,11 +3,11 @@ use super::*;
 impl Context {
 	// Acquires one reusable native command from the selected queue's context-local pool.
 	pub(super) fn create_metal_command_buffer(
-		&self,
+		&mut self,
 		queue_handle: graphics_hardware_interface::QueueHandle,
 		label: Option<&str>,
 	) -> queue::NativeCommand {
-		let queue = self.queues.get(queue_handle.0 as usize).expect(
+		let queue = self.queues.get_mut(queue_handle.0 as usize).expect(
 			"Metal command queue is missing. The most likely cause is that the queue handle came from another context.",
 		);
 		queue.acquire_native_command(label, self.settings.debug_labels)
@@ -39,7 +39,7 @@ impl Context {
 			return;
 		}
 		let synchronizer = self.internal_upload_synchronizer(sequence_index);
-		self.synchronizers.resource(synchronizer).wait();
+		self.wait_for_private_synchronizer(synchronizer);
 	}
 
 	/// Waits only for outstanding internal uploads submitted to another Metal queue.

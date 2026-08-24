@@ -1,10 +1,13 @@
 ---
 title: Use BELD
-description: The command-line tool for baking, inspecting, and querying resources.
+description: Bake, inspect, and query resources with BELD.
 icon: TerminalSquare
 ---
 
 Use BELD to bake, inspect, query, and delete Byte Engine resources.
+
+[Install BELD](/docs/develop/design/resource-management/install-beld) before you
+run the commands on this page.
 
 It reads source assets from an assets directory and writes processed resources to a resources directory.
 By default those paths are `assets` and `resources`, but both are configurable.
@@ -104,3 +107,5 @@ Use BELD when you need deterministic resource output:
 
 During development, applications can also lazily bake assets at request time.
 BELD is still useful because it gives you a direct, scriptable view of the same resource storage.
+
+Next, use BELD to [bake your application's resources](/docs/develop/design/resource-management/baking-app-resources).

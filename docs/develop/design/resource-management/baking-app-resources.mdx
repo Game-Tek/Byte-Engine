@@ -4,6 +4,9 @@ description: Turn an application's source assets into deterministic runtime reso
 icon: PackageOpen
 ---
 
+Use BELD to turn your source assets into the complete resource store that a
+release application loads.
+
 Keep source assets separate from baked runtime resources:
 
 ```text
@@ -97,3 +100,6 @@ Run `beld bake` again after changing a source asset or an engine asset processor
 ## Use resources in development and release
 
 Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications have no asset-processing fallback: they read the complete `resources/` directory prepared by BELD and fail when a requested shader is absent. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.
+
+Next, [build and bundle your application](/docs/use/build) with the baked
+`resources/` directory.

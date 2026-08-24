@@ -4,8 +4,8 @@ description: Create directional, point, and cone lights with physical color and 
 icon: Sun
 ---
 
-Use physical light units when you want lighting that responds predictably to distance, material
-properties, and future camera exposure controls.
+Use physical light units when you want lighting that responds predictably to
+distance and material properties.
 
 Byte Engine provides three analytic light shapes. Point and cone lights can also use a baked IES profile when you need a measured angular intensity distribution:
 
@@ -185,11 +185,12 @@ let spotlight = ConeLight::new(
 )?;
 ```
 
-Cone angles are half angles measured from the light direction. The renderer automatically uses a
-0.1 m near plane and a neutral exposure scale of 1. It extends the far plane until peak
-exposure-weighted illumination falls below 0.125 lux. These values control only the cone shadow view; they do not limit
-lighting attenuation. Future camera exposure will replace the neutral scale. Override either
-endpoint with `with_shadow_near` or `with_shadow_far`, or override both with `with_shadow_range`.
+Cone angles are half angles measured from the light direction. The renderer
+automatically uses a 0.1 m near plane and a neutral exposure scale of 1. It
+extends the far plane until peak exposure-weighted illumination falls below
+0.125 lux. These values control only the cone shadow view; they don't limit
+lighting attenuation. Override either endpoint with `with_shadow_near` or
+`with_shadow_far`, or override both with `with_shadow_range`.
 A cone with an outer half angle of 90° or more remains a valid light but cannot use one perspective
 shadow map.
 
@@ -265,22 +266,20 @@ the cone factor when applicable. For a directional light, the incident RGB quant
 value directly. Shadows and material BRDF terms then reduce or redistribute that incident light;
 they do not change the authored unit conversion.
 
-The current camera does not apply photographic exposure. Bright real-world values can therefore
-look clipped or overly bright through AGX or ACES tone mapping. Keep physical values in your scene
-instead of compensating with arbitrary light scaling. A future camera exposure stage will add
-manual EV100 and exposure compensation before bloom and tone mapping. The planned camera model
-will derive EV100 from aperture `N`, shutter time `t`, and ISO:
+<Callout type="info" title="Camera exposure not available">
+	The current camera doesn't apply photographic exposure. Don't treat its
+	`aperture` field as a lighting exposure control.
+</Callout>
 
-```text
-EV100 = log2((N² / t) × (100 / ISO))
-```
+Bright real-world values can look clipped or overly bright through AGX or ACES
+tone mapping. Keep physical values in your scene instead of compensating with
+arbitrary light scaling.
 
-This exposure control is not available yet. Do not treat the existing camera `aperture` field as a
-lighting exposure control.
-
-Environment maps and emissive materials do not yet have a unified physical calibration with
-analytic lights. Radiometric units such as watts and watts per square meter are also not supported;
-they require a future spectral-light model.
+<Callout type="info" title="Physical calibration limits">
+	Environment maps and emissive materials don't have a unified physical
+	calibration with analytic lights. Radiometric units such as watts and watts
+	per square meter aren't supported.
+</Callout>
 
 ## Rust API
 

@@ -4,8 +4,6 @@ description: Build a release and package its baked resources for your operating 
 icon: Boxes
 ---
 
-# Build and bundle your application
-
 Build a release binary, then package it with the resources your application
 needs at runtime. Select your operating system for its packaging steps. Your
 choice matches the operating system selected in the environment setup guide.
@@ -31,7 +29,8 @@ cargo install cargo-bundle
 
 ### 2. Bake your application resources
 
-From the application directory:
+[Install BELD](/docs/develop/design/resource-management/install-beld), then run
+it from the application directory:
 
 ```bash
 beld --source "$PWD/assets" --destination "$PWD/resources" \

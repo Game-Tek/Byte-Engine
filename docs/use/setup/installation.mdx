@@ -1,23 +1,23 @@
 ---
-title: Install Byte-Engine
+title: Install Byte Engine
 description: Add a published release, Git dependency, or local engine checkout to your Rust application.
 icon: Package
 ---
 
-Install Byte-Engine as a Cargo dependency in the project you created.
+Install Byte Engine as a Cargo dependency in the project you created.
 
 Complete the [environment setup](/docs/use/setup/environment) and
 [create your project](/docs/use/setup/project) before following this guide.
 
 ## Choose an installation method
 
-The installation method determines where Cargo gets the Byte-Engine source:
+The installation method determines where Cargo gets the Byte Engine source:
 
 - **Published release:** Choose this for most applications. Cargo selects a
   released version from crates.io using normal package version resolution.
 - **Git dependency:** Choose this when you need unreleased engine changes but
   don't need to edit the engine locally. Cargo fetches the source from the
-  Byte-Engine Git repository.
+  Byte Engine Git repository.
 - **Local checkout:** Choose this when you want to inspect or modify the engine
   alongside your application. Cargo uses a path to a checkout that you update.
 
@@ -30,7 +30,7 @@ The installation method determines where Cargo gets the Byte-Engine source:
 
 ## Install the published release
 
-From your project folder, add the latest published Byte-Engine release:
+From your project folder, add the latest published Byte Engine release:
 
 ```sh
 cargo add byte-engine
@@ -43,7 +43,7 @@ Cargo adds the published package version to your crate's `Cargo.toml`.
 
 ## Install a Git dependency
 
-From your project folder, add Byte-Engine directly from its Git repository:
+From your project folder, add Byte Engine directly from its Git repository:
 
 ```sh
 cargo add byte-engine --git https://github.com/Game-Tek/Byte-Engine
@@ -57,11 +57,12 @@ the engine source when it resolves dependencies.
 
 ## Use a local engine checkout
 
-Clone Byte-Engine and add it to your application as a local path dependency.
+Clone Byte Engine and add it to your application as a local path dependency.
 
 ### Arrange the local workspaces
 
-Use a shared parent directory for the engine repository and your application workspace. This layout matches the Byte-Engine sandbox workspace:
+Use a shared parent directory for the engine repository and your application
+workspace. This layout matches the Byte Engine sandbox workspace:
 
 ```text
 development/
@@ -75,13 +76,14 @@ development/
         └── main.rs
 ```
 
-From the shared parent directory, clone Byte-Engine:
+From the shared parent directory, clone Byte Engine:
 
 ```sh
 git clone https://github.com/Game-Tek/Byte-Engine.git
 ```
 
-If your directories use different names or locations, adjust the dependency paths in the following steps.
+If your directories use different names or locations, adjust the dependency
+paths in the following steps.
 
 ### Add the engine crate
 
@@ -101,7 +103,8 @@ byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
 Cargo resolves the path from `my-game/Cargo.toml`. In this layout,
 `../Byte-Engine` selects the sibling engine checkout.
 
-If your application also uses a lower-level engine crate directly, add its package name and local path. For example:
+If your application also uses a lower-level engine crate directly, add its
+package name and local path. For example:
 
 ```toml
 [dependencies]
@@ -121,7 +124,9 @@ Run this command from `my-game/`:
 cargo check
 ```
 
-Cargo builds the application against the local Byte-Engine checkout. Pull changes in `Byte-Engine/` whenever you want to update the engine, then run the check again.
+Cargo builds the application against the local Byte Engine checkout. Pull
+changes in `Byte-Engine/` whenever you want to update the engine, then run the
+check again.
 
 </Tab>
 </Tabs>

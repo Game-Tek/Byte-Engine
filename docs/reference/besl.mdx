@@ -4,8 +4,6 @@ description: Write portable Byte Engine shaders with BESL.
 icon: FileCode
 ---
 
-# Byte Engine Shader Language
-
 Use the Byte Engine Shader Language (BESL) to write shader source that works with
 the material pipeline, resource reflection, render-model generation, and platform
 shader generation.
@@ -14,8 +12,10 @@ BESL uses Rust-inspired syntax, but it is a separate language. Byte Engine parse
 the source, resolves it into a semantic graph, applies render-model
 transformations, and emits code for the active graphics backend.
 
-Backend coverage is still evolving. Byte Engine can generate GLSL, MSL, and HLSL,
-but some stages and features are not available on every backend.
+<Callout type="info" title="Backend support differs">
+	Byte Engine can generate GLSL, MSL, and HLSL, but some stages and features
+	aren't available on every backend.
+</Callout>
 
 ## Create a BESL file
 

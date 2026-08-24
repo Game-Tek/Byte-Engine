@@ -4,23 +4,9 @@ description: Install the platform tools required to build Byte Engine applicatio
 icon: Settings
 ---
 
-# Environment setup
-
-Install Rust, then select your operating system to see the native tools and
-configuration required to build Byte Engine. Your operating system choice is
-remembered anywhere these tabs appear in the documentation.
-
-## Install Rust with rustup
-
-Install Rust with `rustup`. The repository pins its nightly toolchain in
-`rust-toolchain.toml`, so Cargo downloads and uses the correct version when you
-build inside the checkout.
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-## Set up your operating system
+Select your operating system to see every tool and configuration step required
+to build Byte Engine. Your choice is remembered anywhere these operating system
+tabs appear in the documentation.
 
 <Tabs
 	items={["macOS", "Linux", "Windows"]}
@@ -37,6 +23,17 @@ macOS.
 <Callout type="warning" title="Minimum macOS version">
 	Byte Engine requires macOS 26 or later.
 </Callout>
+
+### Install Rust
+
+Install Rust with `rustup`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The repository pins its nightly toolchain in `rust-toolchain.toml`, so Cargo
+downloads and uses the correct version when you build inside the checkout.
 
 ### Install Xcode
 
@@ -89,6 +86,17 @@ brew install cmake pkg-config
 Install the native packages and configure AVX2 before you build Byte Engine on
 Linux.
 
+### Install Rust
+
+Install Rust with `rustup`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The repository pins its nightly toolchain in `rust-toolchain.toml`, so Cargo
+downloads and uses the correct version when you build inside the checkout.
+
 ### Install system packages
 
 Install the native build, windowing, audio, and Vulkan packages used by Byte
@@ -129,6 +137,13 @@ sudo apt install renderdoc
 Install the Windows development tools and configure AVX2 before you build Byte
 Engine on Windows.
 
+### Install Rust
+
+Download and run the Windows installer from [rustup.rs](https://rustup.rs/),
+then accept the default installation options. The repository pins its nightly
+toolchain in `rust-toolchain.toml`, so Cargo downloads and uses the correct
+version when you build inside the checkout.
+
 ### Install Visual Studio Build Tools
 
 Install the Visual Studio Build Tools with the MSVC C++ toolchain and Windows
@@ -147,3 +162,5 @@ rustflags = ["-C", "target-feature=+avx2"]
 
 	</Tab>
 </Tabs>
+
+Next, [create your application project](/docs/use/setup/project).

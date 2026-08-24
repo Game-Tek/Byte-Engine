@@ -1,6 +1,6 @@
 ---
 title: Resources
-description: Runtime-ready data produced from assets.
+description: Load and inspect runtime-ready data produced from assets.
 icon: PackageCheck
 ---
 
@@ -22,9 +22,9 @@ The reference contains the typed resource metadata and a reader for the payload.
 
 This split lets you:
 
-- metadata can be inspected without loading the whole binary payload
-- dependencies can be resolved recursively before bytes are uploaded
-- callers can choose how payload bytes are read
+- Inspect metadata without loading the complete binary payload.
+- Resolve dependencies recursively before uploading bytes.
+- Choose how to read payload bytes.
 
 For example, a material reference resolves shader references and parameter resources.
 A mesh reference resolves primitive materials and exposes stream descriptions for packed vertex and index data.
@@ -40,7 +40,7 @@ One mode applies to the whole resource store. The backend records that mode when
 
 Packed replacements append a new payload range, and deletion makes the old range unreachable. The pack does not shrink automatically. Clear and rebake the store when you need to reclaim that space.
 
-Resource URLs are converted into stable resource IDs for storage lookup.
+The backend converts resource URLs into stable resource IDs for storage lookup.
 The backend also maintains class and property indexes so BELD and editor tools can query resources without scanning and deserializing everything.
 
 Every model exposes at least a `name` queryable property by default.

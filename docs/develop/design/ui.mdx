@@ -1,6 +1,6 @@
 ---
 title: UI module
-description: A short orientation to the early retained UI module.
+description: Build retained, asynchronous interfaces in the Byte Engine render loop.
 icon: PanelTop
 ---
 
@@ -36,9 +36,13 @@ the focused element.
 
 ## Work within the current limits
 
-The module is not yet a full widget toolkit. Treat it as a retained primitive
-layer with an asynchronous interaction model. Build higher-level widgets through
-small composed components before you add runtime machinery.
+<Callout type="info" title="Primitive UI layer">
+	The module isn't a complete widget toolkit yet. Treat it as a retained
+	primitive layer with an asynchronous interaction model.
+</Callout>
+
+Build higher-level widgets through small composed components before you add
+runtime machinery.
 
 When you add a UI feature, follow the existing route:
 

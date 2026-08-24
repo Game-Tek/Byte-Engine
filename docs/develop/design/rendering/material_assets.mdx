@@ -1,13 +1,13 @@
 ---
 title: Material assets
-description: How to load and use materials and shaders in Byte Engine.
+description: Turn material and shader declarations into runtime resources.
 icon: Palette
 ---
 
 Use material assets to turn authored material and shader declarations into
 runtime resources for a render model.
 
-## Assets
+## Declare a material
 
 Declare a material in JSON with its material type, shader references, and
 variables:
@@ -30,7 +30,9 @@ variables:
 }
 ```
 
-A material can inherit from a parent material and replace values for variables
+## Declare a material variant
+
+A material variant can inherit from a parent material and replace values for variables
 that the parent declares:
 
 ```json variant.json
@@ -51,9 +53,7 @@ per-instance values.
 Do not depend on this optimization. Byte Engine can create additional shader or
 pipeline variants when static replacement produces better runtime code.
 
-## Pipeline
-
-### Loading
+## Load and process materials
 
 When you request a material, Byte Engine loads the material or variant and its
 shader dependencies before processing begins.
@@ -123,7 +123,10 @@ Each generated material identifies its render model:
 
 Byte Engine also extracts variable definitions from shader code.
 
-### Generation
+<Callout type="info" title="Shader generation details not available">
+	The documentation doesn't yet explain how Byte Engine converts declarations
+	into render-model-specific shader code and metadata.
+</Callout>
 
-Generation details are not documented yet. This section will explain how Byte
-Engine converts declarations into render-model-specific shader code and metadata.
+For the supported declaration format, continue to the
+[`.bema` file guide](/docs/develop/design/resource-management/bema).

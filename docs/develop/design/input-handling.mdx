@@ -1,6 +1,6 @@
 ---
 title: Input handling
-description: How input devices, seats, triggers, and actions fit together.
+description: Connect input devices and triggers to application actions.
 icon: Gamepad2
 ---
 
@@ -97,7 +97,8 @@ When multiple movement keys are active, the input resolver combines the active m
 This is why diagonal keyboard movement can be represented as one stable movement vector instead of separate key checks.
 
 For lookaround, `Function::Sphere` can map a 2D input into a 3D direction.
-The app receives a direction-like action value and does not need to care whether it came from mouse position or a stick.
+Your application receives a direction-like action value without needing to know
+whether it came from mouse position or a stick.
 
 ## Tick policy
 

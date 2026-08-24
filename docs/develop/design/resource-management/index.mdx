@@ -1,16 +1,15 @@
 ---
 title: Asset and resource management
-description: How Byte Engine handles asset processing and resource loading.
+description: Understand Byte Engine asset processing and resource loading.
 icon: Database
 ---
 
 Use this section to move authored files through Byte Engine's asset pipeline and
 load the resulting runtime data.
 
-Byte Engine separates source files from runtime-ready data.
-The source file is an asset.
-The processed result is a resource.
-The resource manager is the boundary that decides whether a resource can be read directly from cache or whether an asset should be processed first.
+Byte Engine separates source assets from runtime-ready resources. The resource
+manager decides whether it can read a resource from storage or must process its
+source asset first.
 
 Start with these terms:
 
@@ -37,10 +36,11 @@ Choose a task or concept:
 When you request a resource, Byte Engine follows this pipeline:
 
 1. An application requests a resource by ID.
-2. The resource storage backend checks whether a processed resource already exists.
-3. If the resource is missing and an `AssetManager` is installed, an asset handler bakes the source asset.
+2. The storage backend checks whether a processed resource already exists.
+3. If the resource is missing and an `AssetManager` is installed, an asset
+   handler bakes the source asset.
 4. The processed resource metadata is serialized into storage.
-5. The processed binary payload is stored beside the metadata.
+5. The storage backend writes the processed binary payload beside the metadata.
 6. The request returns a typed `Reference<T>` that can load bytes and resolve dependencies.
 
 Your systems can request typed images, meshes, materials, variants, or shaders

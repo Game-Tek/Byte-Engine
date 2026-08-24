@@ -1,14 +1,14 @@
 ---
 title: Actor pattern
-description: How Byte Engine uses message passing to keep systems decoupled.
+description: Use message passing to keep Byte Engine systems independent.
 icon: MessagesSquare
 ---
 
 Use actor-style boundaries to keep Byte Engine systems independent while they
 share events and state changes.
 
-Each system owns its state, receives messages that describe changes, and publishes
-messages for other systems. An object does not need its own scheduler to take
+Each system owns its state, receives messages that describe changes, and
+publishes messages for other systems. An object doesn't need its own scheduler to take
 part in this pattern. When another system needs to know about a change, send a
 small message instead of sharing direct mutable access.
 
@@ -43,7 +43,7 @@ handle. Send changes through a typed update message such as
 `TransformationUpdate`. Send deletion intent through a deletion channel so each
 system can remove its mirrored state.
 
-Your application only publishes the event. It does not need to know which
+Your application only publishes the event. It doesn't need to know which
 rendering, physics, inspection, or gameplay systems receive it.
 
 ## Why this shape helps
@@ -63,7 +63,7 @@ Message boundaries make thread ownership explicit.
 A worker can own its internal state and consume messages from the main application instead of sharing mutable structures with it.
 The audio setup follows this shape: application code creates generators, the audio worker observes those creations, and rendering audio stays inside the audio system.
 
-This does not make every message free to send across every thread automatically.
+This doesn't make every message free to send across every thread automatically.
 The useful property is architectural: when a system is ready to move to a worker thread, its communication boundary is already shaped like a queue of explicit inputs.
 
 ### Keep systems independent
@@ -76,7 +76,7 @@ Sending a transform update can inform physics, rendering, gameplay helpers, and 
 This keeps feature code narrow.
 A camera controller can publish transform updates without knowing how rendering consumes them.
 A gameplay rule can publish deletion intent without knowing how physics or rendering release their mirrored state.
-Application code does not need to become an integration layer for every engine subsystem.
+Application code doesn't need to become an integration layer for every engine subsystem.
 
 ### Store data for each system
 
@@ -122,3 +122,6 @@ If a system owns a cache, buffer, physics body, or render resource, let it updat
 
 Keep the payload compact.
 Stable handles, typed values, and small structs are easier to debug, cheaper to clone for listeners, and friendlier to future worker-thread boundaries.
+
+Next, see how [input handling](/docs/develop/design/input-handling) applies these
+message boundaries to devices and application actions.

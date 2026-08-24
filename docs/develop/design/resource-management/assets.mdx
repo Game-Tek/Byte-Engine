@@ -1,5 +1,6 @@
 ---
 title: Assets
+description: Prepare source files for Byte Engine's asset pipeline.
 icon: Boxes
 ---
 
@@ -79,10 +80,12 @@ Material and standalone shader processing compile BESL to platform-native shader
 glTF, GLB, and FBX use one import-neutral skeletal representation.
 A `Skeleton` stores transform nodes in parent-before-child order and preserves each node's rest-local translation, rotation, and scale.
 An `Animation` stores sparse translation, rotation, and scale curves against those dense node indices and references the skeleton it was authored for.
-Missing curves deliberately fall back to the skeleton's rest pose, which gives a future CPU animation graph a stable pose to sample and blend.
+Missing curves deliberately fall back to the skeleton's rest pose, which gives
+CPU animation sampling and blending a stable pose.
 
 A mesh with skins or node animation references the same skeleton, and each primitive retains its dense transform-node index.
-This lets a future graph apply rigid node motion without reconstructing source-file node ownership.
+This lets an animation graph apply rigid node motion without reconstructing
+source-file node ownership.
 Skinned meshes additionally store one skin binding per imported mesh instance.
 Each binding maps the palette-local indices in the `Vertex.Joints` stream to skeleton nodes and pairs them with adjusted inverse-bind matrices.
 The adjusted matrices account for the bind-pose transform already flattened into imported vertices, so a CPU-generated global pose can write a GPU palette as `global_joint * adjusted_inverse_bind` without reopening the source file.
@@ -112,9 +115,11 @@ glTF morph-weight channels are not part of the skeletal clip representation and 
 Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
 The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
 
-A general-purpose CPU animation graph does not exist yet. The visibility renderer
-accepts complete global poses and uploads their derived skin palettes. Applications
-must currently provide clip sampling.
+<Callout type="info" title="CPU animation graph not available">
+	Byte Engine doesn't include a general-purpose CPU animation graph yet. The
+	visibility renderer accepts complete global poses and uploads their derived
+	skin palettes, so your application must provide clip sampling.
+</Callout>
 
 ## FBX resources
 

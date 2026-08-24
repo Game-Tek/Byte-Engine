@@ -12,19 +12,15 @@ pub struct ResourceIoQueue {
 	device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn mtl::MTLIOCommandQueue>>,
 	files: Vec<OpenFile>,
-	completion_event: Retained<ProtocolObject<dyn MTLSharedEvent>>,
-	next_completion_value: u64,
 }
 
 /// The `ResourceIoTicket` struct retains one submitted Metal I/O batch until callers finish observing it.
 pub struct ResourceIoTicket {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLIOCommandBuffer>>,
-	pub(crate) completion_event: Retained<ProtocolObject<dyn MTLSharedEvent>>,
-	completion_point: ResourceIoTimelinePoint,
 }
 
 impl ResourceIoQueue {
-	/// Creates the native queue and completion timeline used by later file batches.
+	/// Creates the native queue used by later file batches.
 	fn new(
 		context: &mut context::Context,
 		id: u64,
@@ -56,9 +52,6 @@ impl ResourceIoQueue {
 		if context.settings.debug_labels {
 			queue.setLabel(descriptor.name.map(NSString::from_str).as_deref());
 		}
-		let completion_event = device
-			.newSharedEvent()
-			.ok_or_else(|| ResourceIoError::QueueCreation("Metal could not allocate a shared completion event".to_string()))?;
 
 		Ok(Self {
 			id,
@@ -66,8 +59,6 @@ impl ResourceIoQueue {
 			device,
 			queue,
 			files: Vec::new(),
-			completion_event,
-			next_completion_value: 1,
 		})
 	}
 
@@ -215,7 +206,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 		})
 	}
 
-	/// Submits one Metal I/O command buffer and signals its queue-local shared-event value.
+	/// Submits one independently completing Metal I/O command buffer.
 	fn submit(&mut self, name: Option<&str>, requests: &[ResourceIoRequest]) -> Result<Self::Ticket, ResourceIoError> {
 		if requests.is_empty() {
 			return Err(ResourceIoError::EmptyBatch);
@@ -232,21 +223,9 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			}
 		}
 
-		let completion_value = self.next_completion_value;
-		self.next_completion_value = completion_value.checked_add(1).ok_or_else(|| {
-			ResourceIoError::Execution("Metal I/O completion timeline exhausted its 64-bit value range".to_string())
-		})?;
-		command_buffer.signalEvent_value(self.completion_event.as_ref(), completion_value);
 		command_buffer.commit();
 
-		Ok(ResourceIoTicket {
-			command_buffer,
-			completion_event: self.completion_event.clone(),
-			completion_point: ResourceIoTimelinePoint {
-				queue: self.id,
-				value: completion_value,
-			},
-		})
+		Ok(ResourceIoTicket { command_buffer })
 	}
 }
 
@@ -282,10 +261,6 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 	fn cancel(&self) -> Result<(), ResourceIoError> {
 		self.command_buffer.tryCancel();
 		Ok(())
-	}
-
-	fn completion_point(&self) -> ResourceIoTimelinePoint {
-		self.completion_point
 	}
 }
 
@@ -343,7 +318,7 @@ fn metal_resource_io_capabilities() -> ResourceIoCapabilities {
 			| ResourceIoCompressionMethods::LZ4
 			| ResourceIoCompressionMethods::LZMA
 			| ResourceIoCompressionMethods::LZ_BITMAP,
-		features: ResourceIoFeatures::CANCELLATION | ResourceIoFeatures::TIMELINE_SYNCHRONIZATION,
+		features: ResourceIoFeatures::CANCELLATION,
 	}
 }
 
@@ -482,7 +457,6 @@ mod tests {
 			.submit(Some("Raw Buffer Load"), &[request])
 			.expect("raw Metal I/O batch");
 
-		assert_eq!(ticket.completion_point().value, 1);
 		ticket.wait().expect("raw Metal I/O completion");
 		drop(ticket);
 		drop(queue);
@@ -664,7 +638,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSError, NSString, NSURL};
 use objc2_metal::{
 	MTLDevice as _, MTLIOCommandBuffer as _, MTLIOCommandQueue as _, MTLIOCommandQueueDescriptor, MTLIOCommandQueueType,
-	MTLIOCompressionMethod, MTLIOFileHandle, MTLIOPriority, MTLIOStatus, MTLSharedEvent,
+	MTLIOCompressionMethod, MTLIOFileHandle, MTLIOPriority, MTLIOStatus,
 };
 
 use super::{context, mtl};
@@ -672,5 +646,5 @@ use crate::io::{
 	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
 	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
 	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoPriority, ResourceIoQueueDescriptor, ResourceIoQueueType,
-	ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, ResourceIoTimelinePoint,
+	ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus,
 };

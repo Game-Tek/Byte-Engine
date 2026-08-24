@@ -44,7 +44,6 @@ bitflags::bitflags! {
 	#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 	pub struct ResourceIoFeatures: u8 {
 		const CANCELLATION = 1 << 0;
-		const TIMELINE_SYNCHRONIZATION = 1 << 1;
 	}
 }
 
@@ -221,13 +220,6 @@ impl<'a> ResourceIoFileDescriptor<'a> {
 pub struct ResourceIoFileHandle {
 	pub(crate) queue: u64,
 	pub(crate) index: u64,
-}
-
-/// The `ResourceIoTimelinePoint` struct identifies when one queue batch has completed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ResourceIoTimelinePoint {
-	pub(crate) queue: u64,
-	pub(crate) value: u64,
 }
 
 /// The `ResourceIoFileRegion` struct selects bytes from an opened source file.
@@ -438,9 +430,6 @@ pub trait ResourceIoTicket {
 
 	/// Requests best-effort cancellation without waiting for the native queue.
 	fn cancel(&self) -> Result<(), ResourceIoError>;
-
-	/// Returns the queue-local timeline point signaled after every request completes.
-	fn completion_point(&self) -> ResourceIoTimelinePoint;
 }
 
 /// The `ResourceIoQueue` trait provides file registration and batched native loading.

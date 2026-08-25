@@ -4,11 +4,11 @@ use resource_management::{
 	asset::ResourceId,
 	resource::{ReDBStorageBackend, ReadStorageBackend, ResourceId as ResourceUid},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-	commands::shared::{insert_trace_json, open_read_only_storage, print_human_value, read_resource_trace},
 	InspectFormat,
+	commands::shared::{insert_trace_json, open_read_only_storage, print_human_value, read_resource_trace},
 };
 
 pub async fn inspect(destination_path: String, id: String, format: InspectFormat) -> Result<(), i32> {

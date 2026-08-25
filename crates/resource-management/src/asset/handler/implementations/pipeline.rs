@@ -43,11 +43,11 @@ impl AssetHandler for PipelineAssetHandler {
 }
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
+	ProcessedAsset,
 	resources::material::Shader,
 	resources::pipeline::{Pipeline, PipelineKind},
-	ProcessedAsset,
 };

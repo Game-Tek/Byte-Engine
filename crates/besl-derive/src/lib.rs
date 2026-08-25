@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-	parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprLit, Fields, GenericArgument, Lit, LitStr, PathArguments, Type,
+	Attribute, Data, DeriveInput, Expr, ExprLit, Fields, GenericArgument, Lit, LitStr, PathArguments, Type, parse_macro_input,
 };
 
 #[proc_macro_derive(BeslStruct, attributes(besl, besl_name, besl_type))]

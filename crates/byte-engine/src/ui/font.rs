@@ -500,7 +500,7 @@ fn font_search_roots() -> Vec<PathBuf> {
 mod tests {
 	use utils::RGBA;
 
-	use super::{blend_glyph, TextClipRect, TextSystem};
+	use super::{TextClipRect, TextSystem, blend_glyph};
 
 	#[test]
 	fn measure_reuses_cached_text_size_for_same_font_size() {

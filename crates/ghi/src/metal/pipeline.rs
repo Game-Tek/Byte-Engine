@@ -662,9 +662,9 @@ pub(crate) fn fixed_argument_slot_ranges(
 	let secondary = primary
 		.checked_add(count)
 		.expect("Metal argument index overflowed. The most likely cause is an invalid flat resource slot or resource count.");
-	secondary
-		.checked_add(count)
-		.expect("Metal argument reservation overflowed. The most likely cause is a flat resource range too large for the fixed Metal ABI.");
+	secondary.checked_add(count).expect(
+		"Metal argument reservation overflowed. The most likely cause is a flat resource range too large for the fixed Metal ABI.",
+	);
 	(
 		ArgumentSlotRange { base: primary, count },
 		ArgumentSlotRange { base: secondary, count },

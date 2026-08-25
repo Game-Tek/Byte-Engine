@@ -20,17 +20,17 @@ use {bake::discover_asset_ids, shared::resource_trace_json};
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use resource_management::{
-		asset::{FileStorageBackend, ResourceId},
-		resource::storage_backend::{QueryCursor, QueryError},
-		QueryableProperty, QueryableValue,
-	};
 	#[cfg(debug_assertions)]
 	use resource_management::{
+		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
 		resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
-		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
+	};
+	use resource_management::{
+		QueryableProperty, QueryableValue,
+		asset::{FileStorageBackend, ResourceId},
+		resource::storage_backend::{QueryCursor, QueryError},
 	};
 	use serde_json::json;
 
@@ -265,9 +265,11 @@ mod tests {
 
 		assert_eq!(failed_trace.len(), 1);
 		assert_eq!(failed_trace[0].level(), ResourceTraceLevel::Error);
-		assert!(executor
-			.block_on(resource_storage.read(ResourceId::new("broken.png")))
-			.is_none());
+		assert!(
+			executor
+				.block_on(resource_storage.read(ResourceId::new("broken.png")))
+				.is_none()
+		);
 
 		let successful_id = ResourceId::new("successful.audio");
 		executor

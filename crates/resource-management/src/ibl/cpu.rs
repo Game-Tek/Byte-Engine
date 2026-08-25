@@ -201,9 +201,8 @@ pub enum IBLBakeError {
 impl fmt::Display for IBLBakeError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::ZeroDimensions => formatter.write_str(
-				"Invalid environment dimensions. The most likely cause is an EXR layer with zero width or height.",
-			),
+			Self::ZeroDimensions => formatter
+				.write_str("Invalid environment dimensions. The most likely cause is an EXR layer with zero width or height."),
 			Self::BufferSizeMismatch { expected, got } => write!(
 				formatter,
 				"Invalid environment buffer size: expected {expected}, got {got}. The most likely cause is mismatched EXR dimensions and RGBA16F pixels."
@@ -463,11 +462,7 @@ pub(super) fn decode_source_pixel(pixel: &[u8]) -> Radiance {
 
 fn decode_finite_half(bytes: &[u8]) -> f32 {
 	let value = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
-	if value.is_finite() {
-		value
-	} else {
-		0.0
-	}
+	if value.is_finite() { value } else { 0.0 }
 }
 
 fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
@@ -1103,14 +1098,14 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		bake_image_ibl_in, build_source_mips, dot, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
-		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, scale, sub,
-		tangent_to_world, IBLBakeError, Radiance, BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE,
-		DIFFUSE_HEIGHT, DIFFUSE_WIDTH,
+		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_HEIGHT, DIFFUSE_WIDTH, IBLBakeError,
+		Radiance, bake_image_ibl_in, build_source_mips, dot, ggx_light_pdf, hammersley, image_byte_size,
+		lat_long_row_solid_angle, normalize, orthonormal_basis, sample_direction, sample_filtered_direction,
+		sample_lat_long_uv, scale, sub, tangent_to_world,
 	};
 	use crate::resources::image::{
-		ibl_prefiltered_specular_stream_name, IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT,
-		IMAGE_BASE_MIP_STREAM_NAME,
+		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME,
+		ibl_prefiltered_specular_stream_name,
 	};
 }
 
@@ -1125,10 +1120,10 @@ use exr::prelude::f16;
 use utils::Extent;
 
 use crate::{
+	StreamDescription,
 	resources::image::{
-		ibl_prefiltered_specular_stream_name, ImageIBL, ImageSubresource, IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
-		IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME,
+		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
+		ImageSubresource, ibl_prefiltered_specular_stream_name,
 	},
 	types::{Formats, Gamma},
-	StreamDescription,
 };

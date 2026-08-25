@@ -69,7 +69,9 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 pub(crate) fn buffer(program: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
 	let layout = program
 		.buffer_layout(slot)
-		.expect("Missing VM buffer layout. The most likely cause is that the production shader did not retain the expected binding.")
+		.expect(
+			"Missing VM buffer layout. The most likely cause is that the production shader did not retain the expected binding.",
+		)
 		.clone();
 	Buffer::new(layout)
 }

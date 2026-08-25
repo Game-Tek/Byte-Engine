@@ -7,8 +7,8 @@ use ghi::{
 };
 
 use crate::rendering::{
-	render_pass::{simple_compute, RenderPassBuilder, RenderPassReturn},
 	RenderPass, Sink,
+	render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
 };
 
 const AREA_TEXTURE_WIDTH: u32 = 160;

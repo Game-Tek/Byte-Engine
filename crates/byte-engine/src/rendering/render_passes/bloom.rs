@@ -8,8 +8,8 @@ use utils::{Box, Extent};
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
 	},
 };
 
@@ -135,10 +135,7 @@ impl BloomPass {
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor(
-				"Bloom Downsample",
-				"byte-engine/rendering/bloom/downsample.pipeline",
-			),
+			bloom_pipeline_descriptor("Bloom Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
@@ -152,10 +149,7 @@ impl BloomPass {
 		);
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor(
-				"Bloom Composite",
-				"byte-engine/rendering/bloom/composite.pipeline",
-			),
+			bloom_pipeline_descriptor("Bloom Composite", "byte-engine/rendering/bloom/composite.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
@@ -196,16 +190,15 @@ impl BloomPass {
 			})
 			.collect::<Vec<_>>();
 
-		let upsample_passes =
-			(0..level_count.saturating_sub(1))
-				.rev()
-				.map(|level| {
-					let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
-						downsample_images[level + 1].into()
-					} else {
-						upsample_images[level + 1].into()
-					};
-					upsample_pipeline
+		let upsample_passes = (0..level_count.saturating_sub(1))
+			.rev()
+			.map(|level| {
+				let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
+					downsample_images[level + 1].into()
+				} else {
+					upsample_images[level + 1].into()
+				};
+				upsample_pipeline
 					.bind(
 						render_pass_builder,
 						"Bloom Upsample Descriptor Set",
@@ -227,9 +220,11 @@ impl BloomPass {
 							simple_compute::Resource::planned_buffer("bloom_parameters", parameters),
 						],
 					)
-					.expect("Failed to bind bloom upsample resources. The most likely cause is a changed BESL binding contract.")
-				})
-				.collect::<Vec<_>>();
+					.expect(
+						"Failed to bind bloom upsample resources. The most likely cause is a changed BESL binding contract.",
+					)
+			})
+			.collect::<Vec<_>>();
 
 		let bloom_source: ghi::BaseImageHandle = if level_count == 1 {
 			downsample_images[0].into()

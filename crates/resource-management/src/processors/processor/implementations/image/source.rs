@@ -256,7 +256,7 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{canonicalize_image_in, CanonicalImageData, ImageSource, SourceChannels, SourceEncoding};
+	use super::{CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in};
 	use crate::types::Formats;
 
 	#[test]

@@ -1,4 +1,4 @@
-use math::{collision::DynamicIntersection, collision::Intersection, Point, UnitVector};
+use math::{Point, UnitVector, collision::DynamicIntersection, collision::Intersection};
 
 /// The `Contact` struct stores the world-space data required to resolve one collision.
 #[derive(Debug)]

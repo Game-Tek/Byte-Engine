@@ -3,13 +3,13 @@ use std::{alloc::Allocator, fmt};
 use exr::prelude::f16;
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
+	ProcessedAsset,
 	resources::image::{Image, ImagePhotometry},
 	types::{Formats, Gamma},
-	ProcessedAsset,
 };
 
 /// Horizontal texel count for baked IES C-plane intensity maps.
@@ -198,11 +198,7 @@ impl HorizontalSymmetry {
 			Self::Quadrantal => {
 				let angle = horizontal_angle_degrees.rem_euclid(180.0);
 
-				if angle > 90.0 {
-					180.0 - angle
-				} else {
-					angle
-				}
+				if angle > 90.0 { 180.0 - angle } else { angle }
 			}
 			Self::Bilateral => {
 				if horizontal_angle_degrees > 180.0 {
@@ -679,16 +675,16 @@ mod tests {
 
 	use exr::prelude::f16;
 
-	use super::{parse_ies, IESAssetHandler, IES_INTENSITY_MAP_HEIGHT, IES_INTENSITY_MAP_WIDTH};
+	use super::{IES_INTENSITY_MAP_HEIGHT, IES_INTENSITY_MAP_WIDTH, IESAssetHandler, parse_ies};
 	use crate::{
-		asset::{manager::AssetManager, storage_backend::tests::TestStorageBackend, ResourceId},
+		ResourceManager,
+		asset::{ResourceId, manager::AssetManager, storage_backend::tests::TestStorageBackend},
 		r#async,
 		resource::{
-			storage_backend::tests::TestStorageBackend as TestResourceStorage, ReadStorageBackend as _, ReadTargetsMut,
+			ReadStorageBackend as _, ReadTargetsMut, storage_backend::tests::TestStorageBackend as TestResourceStorage,
 		},
 		resources::image::Image,
 		types::{Formats, Gamma},
-		ResourceManager,
 	};
 
 	const QUADRANT_PROFILE: &[u8] = br#"IESNA:LM-63-2002

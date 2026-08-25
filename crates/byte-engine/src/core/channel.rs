@@ -5,9 +5,9 @@
 //! [`crate::core::factory::Factory`] instead when messages represent entity
 //! creation and require stable handles.
 
-use trotcast::error::BlockingSendError;
 use trotcast::Channel as Sender;
 use trotcast::Receiver;
+use trotcast::error::BlockingSendError;
 
 use crate::core::listener::DefaultListener;
 use crate::core::listener::Listener;

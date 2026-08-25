@@ -103,7 +103,9 @@ impl crate::device::Device for Factory {
 	}
 
 	fn create_context(&self) -> Result<Self::Context, &'static str> {
-		Err("Detached DX12 device cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
+		Err(
+			"Detached DX12 device cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.",
+		)
 	}
 
 	fn create_shader(
@@ -204,8 +206,7 @@ impl crate::device::Device for Factory {
 use utils::Extent;
 
 use crate::{
-	image, pipelines, sampler,
-	shader::{ShaderResourceDescriptor, Sources},
 	DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, SamplingReductionModes, ShaderHandle, ShaderTypes,
-	UseCases, Uses,
+	UseCases, Uses, image, pipelines, sampler,
+	shader::{ShaderResourceDescriptor, Sources},
 };

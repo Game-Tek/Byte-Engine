@@ -3,8 +3,8 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
 use super::declarations::Precedence;
-use super::declarations::{make_member, make_scope};
 use super::declarations::{Atoms, ExpressionParser, ExpressionParserResult, FeatureParserResult};
+use super::declarations::{make_member, make_scope};
 use super::iterator::ParserIterator;
 use super::*;
 

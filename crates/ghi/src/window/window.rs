@@ -1,9 +1,9 @@
 use utils::Extent;
 
 use crate::window::{
+	Events, Features,
 	input::{Keys, MouseKeys},
 	os::{self, WindowLike as _},
-	Events, Features,
 };
 
 pub struct Window {

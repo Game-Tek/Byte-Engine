@@ -393,14 +393,14 @@ impl std::error::Error for AnimationComparisonError {}
 #[cfg(test)]
 mod tests {
 	use resource_management::{
+		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
-		Reference,
 	};
 
-	use super::{compare_animation_bone_positions, sample_rotation, sample_vector3, AnimationComparisonError};
+	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_rotation, sample_vector3};
 
 	fn comparison_skeleton(child_name: &str) -> Skeleton {
 		Skeleton {

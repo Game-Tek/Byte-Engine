@@ -3,20 +3,20 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
-use math::{inverse, Point, ShaderMatrix, UnitVector};
+use math::{Point, ShaderMatrix, UnitVector, inverse};
 use maths_rs::Vec4f;
 use utils::Extent;
 
 use crate::{
 	core::{
+		Entity,
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
-		Entity,
 	},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
-		render_pass::{allocate_render_command, simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Lights, Sink,
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_compute},
 	},
 };
 
@@ -331,7 +331,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
-	use math::{inverse, Point, ShaderMatrix, UnitVector};
+	use math::{Point, ShaderMatrix, UnitVector, inverse};
 
 	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};

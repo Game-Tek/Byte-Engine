@@ -17,14 +17,14 @@ use utils::{Box, Extent, RGBA};
 
 use super::{
 	element::ElementHandle as _,
-	layout::{engine, FeatherMask, Geometry},
+	layout::{FeatherMask, Geometry, engine},
 	style::{Color, EdgeFeather, LayerKind},
 };
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 	},
 	ui::{
 		components::curve::{CurvePoint, CurveSegment},
@@ -826,7 +826,7 @@ mod tests {
 	use std::mem::{align_of, offset_of, size_of};
 
 	use besl::vm::{
-		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, Texture, Value,
+		Buffer, DescriptorBindings, ExecutableProgram, Texture, Value, builtin_position_slot, input_slot, output_slot,
 	};
 	use resource_management::shader::{
 		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
@@ -835,20 +835,21 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
+		DrawClip, DrawFeatherMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
+		UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT,
+		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDispatchRegion, UiBlurDrawElement, UiBlurFilterPush,
+		UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement,
 		blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
 		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_blur_geometry,
 		build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment, should_draw_image,
-		should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiBlurDispatchRegion, UiBlurDrawElement,
-		UiBlurFilterPush, UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement,
-		UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT,
-		UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN,
-		UI_VERTICES_PER_ELEMENT,
+		should_rasterize_text, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
 		shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d},
 	};
 	use crate::ui::{
+		Container, Text,
 		components::{
 			curve::{CurvePoint, CurveSegment},
 			image::Image,
@@ -859,7 +860,6 @@ mod tests {
 			engine::Engine,
 		},
 		style::{ConcreteLayer, ConcreteStyle, LayerKind},
-		Container, Text,
 	};
 
 	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
@@ -921,7 +921,9 @@ mod tests {
 			("pair_offsets_8_10", Value::Vec4F(push.pair_offsets_8_10_pad)),
 		] {
 			push_constant.write(name, value).unwrap_or_else(|error| {
-				panic!("Failed to initialize blur filter field `{name}`: {error}. The most likely cause is a changed push constant type.")
+				panic!(
+					"Failed to initialize blur filter field `{name}`: {error}. The most likely cause is a changed push constant type."
+				)
 			});
 		}
 		push_constant
@@ -1670,10 +1672,12 @@ mod tests {
 					} else if radius == 0.0 {
 						assert_eq!(output, input);
 					} else {
-						assert!(output
-							.iter()
-							.zip(input)
-							.any(|(actual, source)| (actual[0] - source[0]).abs() > 1e-5));
+						assert!(
+							output
+								.iter()
+								.zip(input)
+								.any(|(actual, source)| (actual[0] - source[0]).abs() > 1e-5)
+						);
 					}
 				}
 			}

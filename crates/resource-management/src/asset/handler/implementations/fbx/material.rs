@@ -154,7 +154,7 @@ pub(crate) async fn generate_fbx_material(
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or_else(|| {
 		context.error(
-			"FBX material generation is unavailable. The most likely cause is that the FBX asset handler has no shader generator."
+			"FBX material generation is unavailable. The most likely cause is that the FBX asset handler has no shader generator.",
 		);
 
 		LoadErrors::FailedToProcess

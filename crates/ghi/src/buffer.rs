@@ -1,4 +1,4 @@
-use crate::{graphics_hardware_interface, DeviceAccesses, PrivateHandle, PrivateHandles, Uses};
+use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses, graphics_hardware_interface};
 
 /// The `Mapping` struct transfers exclusive CPU access to one persistently mapped buffer.
 ///

@@ -164,7 +164,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-engine"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.13.0",
  "bumpalo",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-besl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "byte-engine-besl-derive",
  "half",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-besl-derive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "quote",
  "syn",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-betp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "byte-engine-utils",
  "tinyvec",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-math"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "maths-rs",
 ]
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-resource-management"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "announcement",
  "base64",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "byte-engine-utils"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures",
  "gxhash",

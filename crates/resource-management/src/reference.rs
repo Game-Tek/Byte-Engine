@@ -1,11 +1,12 @@
 use std::hash::Hasher;
 
-use serde::{ser::SerializeStruct, Serialize};
+use serde::{Serialize, ser::SerializeStruct};
 
 use crate::{
+	DataStorage, LoadResults, Model, Resource, StreamDescription,
 	asset::ResourceId,
-	resource::{resource_handler::MultiResourceReader, ReadTargets, ReadTargetsMut},
-	to_vec, DataStorage, LoadResults, Model, Resource, StreamDescription,
+	resource::{ReadTargets, ReadTargetsMut, resource_handler::MultiResourceReader},
+	to_vec,
 };
 
 #[derive(Debug)]
@@ -230,11 +231,11 @@ mod tests {
 
 	use super::{Reference, ReferenceModel};
 	use crate::{
-		resource::{
-			reader::{redb::FileResourceReader, ResourceReaderBacking},
-			ReadTargets, ReadTargetsMut,
-		},
 		Model, Resource,
+		resource::{
+			ReadTargets, ReadTargetsMut,
+			reader::{ResourceReaderBacking, redb::FileResourceReader},
+		},
 	};
 
 	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

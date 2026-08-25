@@ -18,7 +18,7 @@ pub mod thread;
 #[doc(hidden)]
 pub mod tracy;
 pub use application::{Application, BaseApplication};
-pub use tracy::{setup_tracy, TracySetupError};
+pub use tracy::{TracySetupError, setup_tracy};
 pub use trotcast::Channel as Sender;
 pub use trotcast::Receiver;
 

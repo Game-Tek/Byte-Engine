@@ -4,15 +4,15 @@ use std::{mem::size_of, num::NonZeroUsize, ptr::NonNull, sync::Arc};
 
 use crossbeam_queue::ArrayQueue;
 use resource_management::{
-	resource::{resource_manager::ResourceManager, ReadTargetsMut},
+	Reference,
+	resource::{ReadTargetsMut, resource_manager::ResourceManager},
 	resources::audio::Audio,
 	types::BitDepths,
-	Reference,
 };
 
 use crate::{
 	core::async_runtime,
-	core::{factory::Handle, EntityHandle},
+	core::{EntityHandle, factory::Handle},
 };
 
 /// Keep both sides bounded so the application loader and audio worker exert

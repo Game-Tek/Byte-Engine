@@ -1,7 +1,7 @@
 //! Run with `cargo bench -p byte-engine --bench audio_graph`.
 
 use byte_engine::audio::audio_system::benchmarks::{AudioGraphBenchmark, AudioGraphBenchmarkState, PERIOD_SIZE};
-use divan::{counter::ItemsCount, Bencher};
+use divan::{Bencher, counter::ItemsCount};
 
 fn main() {
 	divan::main();

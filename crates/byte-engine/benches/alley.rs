@@ -3,7 +3,7 @@
 use std::panic::resume_unwind;
 
 use byte_engine::core::alley::{Alley, Lane};
-use divan::{counter::ItemsCount, Bencher};
+use divan::{Bencher, counter::ItemsCount};
 
 /// Sixteen rounds expose collective costs without exceeding one dispatch's capacity.
 const COLLECTIVE_ROUNDS: usize = 16;

@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
 use ahi::{
-	self,
+	self, Device,
 	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
-	Device,
 };
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
 	graph::{AudioGraphTime, PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
-	sample_loader::{AudioSampleLease, AudioSampleLeaseId, AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY},
+	sample_loader::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId},
 };
-use crate::core::{factory::Handle, Entity};
+use crate::core::{Entity, factory::Handle};
 
 /// The [`AudioSystem`] trait defines the playback boundary used by application
 /// audio workers.
@@ -645,7 +644,7 @@ pub mod benchmarks {
 mod tests {
 	use std::sync::{Arc, Mutex};
 
-	use super::{advance_source_timelines, f32_to_i16, i16_to_f32, render_sources, AudioGraphPlayer, SampleNode, Source};
+	use super::{AudioGraphPlayer, SampleNode, Source, advance_source_timelines, f32_to_i16, i16_to_f32, render_sources};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},

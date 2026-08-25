@@ -91,7 +91,7 @@ mod tests {
 	}
 }
 
-use math::{direction_from_orientation, orientation_from_direction, Degrees, Orientation, Point, UnitVector, Vector};
+use math::{Degrees, Orientation, Point, UnitVector, Vector, direction_from_orientation, orientation_from_direction};
 
 use crate::core::{Entity, EntityHandle};
 use crate::inspector::Inspectable;

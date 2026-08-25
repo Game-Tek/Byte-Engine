@@ -122,6 +122,6 @@ mod tests {
 use super::tone_map;
 use crate::core::Entity;
 use crate::rendering::{
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 	Sink,
+	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 };

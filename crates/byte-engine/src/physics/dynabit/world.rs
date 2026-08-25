@@ -2,8 +2,8 @@ use std::alloc::Allocator;
 
 use math::{Scale, Vector};
 use utils::{
-	hash::{HashMap, HashMapExt},
 	StableVec, StableVecHandle,
+	hash::{HashMap, HashMapExt},
 };
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
 	physics::{
 		body::{Body, BodyTypes},
 		dynabit::{
-			body::{intersect, PhysicsBody},
+			body::{PhysicsBody, intersect},
 			contact::{Contact, Pair},
 		},
 		intersection::broadphase,

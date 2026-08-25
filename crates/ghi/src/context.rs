@@ -1,14 +1,15 @@
 use utils::Extent;
 
 use crate::{
-	buffer, descriptors, image,
+	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
+	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
+	MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, Size as _,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer, descriptors,
+	image,
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
-	window, AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle,
-	BufferHandle, CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats,
-	ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
-	Size as _, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	window,
 };
 
 /// The `TextureReadback` struct owns the bytes and layout from one completed texture-transfer invocation.
@@ -55,15 +56,33 @@ pub enum TextureTransferError {
 impl std::fmt::Display for TextureTransferError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let message = match self {
-			Self::Unsupported => "Texture transfer is unsupported. The most likely cause is that the backend cannot read this source.",
-			Self::InvalidSource => "Texture transfer source is invalid. The most likely cause is that its handle is stale or belongs to another context.",
-			Self::UnsupportedFormat(_) => "Texture transfer format is unsupported. The most likely cause is that it has no color buffer-copy layout.",
-			Self::UnsupportedSubresource => "Texture transfer subresource is unsupported. The most likely cause is that it is not one base-mip 2D layer.",
-			Self::MissingTransferSource => "Texture transfer source usage is missing. The most likely cause is that the image lacks TransferSource use.",
-			Self::UnsupportedLayout => "Texture transfer layout is unsupported. The most likely cause is that its byte layout overflows.",
-			Self::InvalidHandle(_) => "Texture transfer handle is invalid. The most likely cause is that it is stale, consumed, or belongs to another context.",
-			Self::AllocationFailed => "Texture transfer allocation failed. The most likely cause is that CPU-readable staging memory is unavailable.",
-			Self::MappingFailed => "Texture transfer mapping failed. The most likely cause is that recording was not submitted or GPU synchronization failed.",
+			Self::Unsupported => {
+				"Texture transfer is unsupported. The most likely cause is that the backend cannot read this source."
+			}
+			Self::InvalidSource => {
+				"Texture transfer source is invalid. The most likely cause is that its handle is stale or belongs to another context."
+			}
+			Self::UnsupportedFormat(_) => {
+				"Texture transfer format is unsupported. The most likely cause is that it has no color buffer-copy layout."
+			}
+			Self::UnsupportedSubresource => {
+				"Texture transfer subresource is unsupported. The most likely cause is that it is not one base-mip 2D layer."
+			}
+			Self::MissingTransferSource => {
+				"Texture transfer source usage is missing. The most likely cause is that the image lacks TransferSource use."
+			}
+			Self::UnsupportedLayout => {
+				"Texture transfer layout is unsupported. The most likely cause is that its byte layout overflows."
+			}
+			Self::InvalidHandle(_) => {
+				"Texture transfer handle is invalid. The most likely cause is that it is stale, consumed, or belongs to another context."
+			}
+			Self::AllocationFailed => {
+				"Texture transfer allocation failed. The most likely cause is that CPU-readable staging memory is unavailable."
+			}
+			Self::MappingFailed => {
+				"Texture transfer mapping failed. The most likely cause is that recording was not submitted or GPU synchronization failed."
+			}
 		};
 		formatter.write_str(message)
 	}

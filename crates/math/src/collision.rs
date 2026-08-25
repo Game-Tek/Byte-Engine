@@ -1,4 +1,4 @@
-use crate::{Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace, AABB};
+use crate::{AABB, Plane, Point, Ray, Sphere, UnitVector, Vector, WorldSpace};
 
 /// The `Intersection` struct records a static contact using a normal that points from shape A toward shape B.
 pub struct Intersection<Space = WorldSpace> {
@@ -410,11 +410,7 @@ fn collision_at_time<Space>(
 }
 
 fn signed_axis(value: f32) -> f32 {
-	if value < 0.0 {
-		-1.0
-	} else {
-		1.0
-	}
+	if value < 0.0 { -1.0 } else { 1.0 }
 }
 
 fn axis_normal<Space>(axis: usize, sign: f32) -> UnitVector<Space> {
@@ -432,7 +428,7 @@ fn axis_normal<Space>(axis: usize, sign: f32) -> UnitVector<Space> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{assert_float_eq_with_epsilon, Point, UnitVector, WorldSpace};
+	use crate::{Point, UnitVector, WorldSpace, assert_float_eq_with_epsilon};
 
 	#[test]
 	fn ray_aabb_intersection_handles_axis_aligned_diagonal_and_parallel_rays() {

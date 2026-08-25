@@ -853,8 +853,8 @@ mod tests {
 	use std::{
 		panic::resume_unwind,
 		sync::{
-			atomic::{AtomicUsize, Ordering},
 			Barrier,
+			atomic::{AtomicUsize, Ordering},
 		},
 		thread::sleep,
 		time::Duration,
@@ -1213,9 +1213,9 @@ use std::{
 	any::TypeId,
 	cell::UnsafeCell,
 	hint::spin_loop,
-	mem::{align_of, size_of, MaybeUninit},
+	mem::{MaybeUninit, align_of, size_of},
 	ops::{Deref, DerefMut},
-	panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
+	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 	sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 	thread::yield_now,
 };

@@ -20,10 +20,10 @@ super::impl_direct_resource!(Audio, "Audio");
 mod tests {
 	use super::Audio;
 	use crate::{
-		asset::ResourceId,
-		resource::{storage_backend::tests::TestStorageBackend, WriteStorageBackend},
-		types::BitDepths,
 		ProcessedAsset, ReferenceModel, Resource, Solver,
+		asset::ResourceId,
+		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
+		types::BitDepths,
 	};
 
 	#[crate::r#async::test]

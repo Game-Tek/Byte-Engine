@@ -213,8 +213,7 @@ impl AssetManager {
 		let mut watcher = match notify_debouncer_full::new_debouncer(
 			std::time::Duration::from_millis(250),
 			None,
-			move |result: notify_debouncer_full::DebounceEventResult| {
-				match result {
+			move |result: notify_debouncer_full::DebounceEventResult| match result {
 				Ok(events) => {
 					let Some(state) = weak.upgrade() else { return };
 					let paths = events
@@ -227,12 +226,13 @@ impl AssetManager {
 				Err(errors) => log::warn!(
 					"Asset watching reported an error. The most likely cause is that the development asset directory became inaccessible: {errors:?}"
 				),
-			}
 			},
 		) {
 			Ok(watcher) => watcher,
 			Err(error) => {
-				log::warn!("Asset watching could not start. The most likely cause is that the platform watcher is unavailable: {error}");
+				log::warn!(
+					"Asset watching could not start. The most likely cause is that the platform watcher is unavailable: {error}"
+				);
 
 				return;
 			}
@@ -806,8 +806,8 @@ pub mod tests {
 	use std::{
 		future::Future,
 		sync::{
-			atomic::{AtomicUsize, Ordering},
 			Arc,
+			atomic::{AtomicUsize, Ordering},
 		},
 		time::Duration,
 	};
@@ -816,10 +816,10 @@ pub mod tests {
 	#[cfg(debug_assertions)]
 	use crate::asset::ResourceTraceLevel;
 	use crate::{
+		Model, ProcessedAsset,
 		asset::{handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::{self, BoxedFuture},
-		resource::{storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend, ReadStorageBackend},
-		Model, ProcessedAsset,
+		resource::{ReadStorageBackend, storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend},
 	};
 
 	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -1587,9 +1587,11 @@ pub mod tests {
 				error: LoadErrors::FailedToProcess,
 			})
 		);
-		assert!(resource_storage_backend
-			.get_resource(ResourceId::new("failed.test"))
-			.is_none());
+		assert!(
+			resource_storage_backend
+				.get_resource(ResourceId::new("failed.test"))
+				.is_none()
+		);
 
 		let items = asset_manager.resource_trace().items("failed.test");
 
@@ -1668,18 +1670,17 @@ use utils::{hash::HashMap, sync::Mutex};
 #[cfg(debug_assertions)]
 use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
+	StorageBackend,
 	bake_memory::{BakeAllocator, BakeMemoryBudget, BakeMemoryScope},
 	handler::{AssetHandler, BakeContext, TrackingStorageBackend},
-	StorageBackend,
 };
 use crate::{
-	asset::{
-		self,
-		handler::{DynAssetHandler, LoadErrors},
-		DynStorageBackend, ResourceId,
-	},
-	online_docs_url,
-	r#async::BoxedFuture,
-	resource::{self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend},
 	Model, ProcessedAsset, ReferenceModel,
+	asset::{
+		self, DynStorageBackend, ResourceId,
+		handler::{DynAssetHandler, LoadErrors},
+	},
+	r#async::BoxedFuture,
+	online_docs_url,
+	resource::{self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend},
 };

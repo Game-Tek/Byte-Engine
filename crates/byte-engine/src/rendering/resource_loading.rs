@@ -7,7 +7,7 @@
 use std::future::Future;
 
 use resource_management::{
-	r#async::Executor, Reference, ReferenceModel, Resource, ResourceManager, SerializableResource, Solver,
+	Reference, ReferenceModel, Resource, ResourceManager, SerializableResource, Solver, r#async::Executor,
 };
 
 /// The `LoadedShader` struct contains a persisted shader handle and its interface metadata.

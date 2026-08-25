@@ -1,11 +1,10 @@
 //! Run with `cargo bench -p byte-engine-besl --bench vm`.
 
 use besl::{
-	compile_to_besl,
+	BindingTypes, Node, compile_to_besl,
 	vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot},
-	BindingTypes, Node,
 };
-use divan::{counter::ItemsCount, Bencher};
+use divan::{Bencher, counter::ItemsCount};
 
 const ARITHMETIC_SHADER: &str = r#"
 main: fn () -> void {

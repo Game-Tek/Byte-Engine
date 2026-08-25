@@ -1,10 +1,10 @@
 //! Focused regressions for the VM's private instruction and numeric semantics.
 
 use super::{
-	f16, input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs,
-	ResourceSlot, Sampler, SamplerReductionMode, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState,
+	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler, SamplerReductionMode,
+	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot, output_slot, reflect_vector,
 };
-use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
+use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_to_besl};
 
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
@@ -1817,66 +1817,68 @@ fn executable_program_evaluates_reflect_intrinsics() {
 			"main",
 			Vec::new(),
 			void_type,
-			vec![Node::expression(Expressions::Operator {
-				operator: Operators::Assignment,
-				left: Node::expression(Expressions::Accessor {
-					left: Node::expression(Expressions::Member {
-						name: "buff".to_string(),
-						source: root.get_child("buff").expect("Expected buff binding"),
+			vec![
+				Node::expression(Expressions::Operator {
+					operator: Operators::Assignment,
+					left: Node::expression(Expressions::Accessor {
+						left: Node::expression(Expressions::Member {
+							name: "buff".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
+						right: Node::expression(Expressions::Member {
+							name: "value".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
 					})
 					.into(),
-					right: Node::expression(Expressions::Member {
-						name: "value".to_string(),
-						source: root.get_child("buff").expect("Expected buff binding"),
+					right: Node::expression(Expressions::IntrinsicCall {
+						intrinsic: reflect,
+						arguments: vec![
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "-1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+						],
+						elements: vec![],
 					})
 					.into(),
 				})
 				.into(),
-				right: Node::expression(Expressions::IntrinsicCall {
-					intrinsic: reflect,
-					arguments: vec![
-						Node::expression(Expressions::FunctionCall {
-							function: vec3f_type.clone(),
-							parameters: vec![
-								Node::expression(Expressions::Literal {
-									value: "1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "-1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-							],
-						})
-						.into(),
-						Node::expression(Expressions::FunctionCall {
-							function: vec3f_type.clone(),
-							parameters: vec![
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "1.0".to_string(),
-								})
-								.into(),
-								Node::expression(Expressions::Literal {
-									value: "0.0".to_string(),
-								})
-								.into(),
-							],
-						})
-						.into(),
-					],
-					elements: vec![],
-				})
-				.into(),
-			})
-			.into()],
+			],
 		)
 		.into(),
 	);
@@ -2968,9 +2970,11 @@ fn descriptor_binding_errors_report_resource_kinds_consistently() {
 			found: "texture",
 		}
 	);
-	assert!(VmError::UnboundDescriptor { slot }
-		.to_string()
-		.contains("no resource was bound"));
+	assert!(
+		VmError::UnboundDescriptor { slot }
+			.to_string()
+			.contains("no resource was bound")
+	);
 }
 
 #[test]

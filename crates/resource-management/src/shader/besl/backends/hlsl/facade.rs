@@ -2,8 +2,8 @@ use std::{cell::RefCell, fmt::Write as _};
 
 use super::*;
 use crate::shader::generator::{
-	emit_comma_separated_nodes, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings,
-	ShaderGenerator, Stages,
+	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+	emit_comma_separated_nodes, ordered_shader_nodes,
 };
 
 /// The `Generator` struct exists to produce HLSL source for DirectX-backed shader pipelines.

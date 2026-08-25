@@ -3,8 +3,8 @@ use math::{Point, Vector};
 use crate::{
 	core::Entity,
 	physics::{
-		collider::{Collider, Shapes},
 		LocalSpace,
+		collider::{Collider, Shapes},
 	},
 	space::Positionable,
 };

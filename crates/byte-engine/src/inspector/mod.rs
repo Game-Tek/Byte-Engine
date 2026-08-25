@@ -14,7 +14,7 @@ use crate::application::{Receiver, Sender};
 use crate::{
 	application::Events,
 	configuration::{Configuration, ConfigurationEvent},
-	core::{listener::Listener, Entity, EntityHandle},
+	core::{Entity, EntityHandle, listener::Listener},
 };
 
 #[cfg(feature = "headed")]

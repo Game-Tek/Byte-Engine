@@ -8,21 +8,21 @@
 use std::num::NonZeroUsize;
 
 use byte_engine::{
+	MediaTime,
 	animation::graph::{
 		AnimationClip, AnimationEvaluation, AnimationGraph, AnimationPool, AnimationPoolConfig, AnimationStateId,
 		AnimationTransition, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	},
 	application::{
-		graphics::{
-			setup_default_audio, setup_default_input, setup_default_resource_and_asset_management,
-			setup_pbr_visibility_shading_render_pipeline, GraphicsApplication,
-		},
 		Application, Parameter,
+		graphics::{
+			GraphicsApplication, setup_default_audio, setup_default_input, setup_default_resource_and_asset_management,
+			setup_pbr_visibility_shading_render_pipeline,
+		},
 	},
-	core::{channel::Channel as _, Creator as _},
+	core::{Creator as _, channel::Channel as _},
 	gameplay::{Transform, TransformationUpdate},
-	rendering::{window::Window, Camera, RenderableMesh, UpdatePose},
-	MediaTime,
+	rendering::{Camera, RenderableMesh, UpdatePose, window::Window},
 };
 use math::{Orientation, Point, Quaternion, Scale, Vector};
 use utils::Extent;

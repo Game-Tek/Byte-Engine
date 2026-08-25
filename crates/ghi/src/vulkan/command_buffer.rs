@@ -1,17 +1,17 @@
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
-use utils::{hash::HashMap, Extent};
+use utils::{Extent, hash::HashMap};
 
 use super::{
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
+	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
+	Swapchain, Synchronizer, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
 		extent_into_vk_extent, texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
 		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
-	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
-	Swapchain, Synchronizer, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
-use crate::{graphics_hardware_interface, FrameKey, HandleLike as _, Size};
+use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
 
 /// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
 pub struct CommandBufferReference<'a> {
@@ -77,11 +77,11 @@ mod operations;
 mod recording;
 mod transitions;
 
-use transitions::{
-	buffer_image_height, buffer_row_length, PlannedBufferBarrier, PlannedImageBarrier, PlannedMemoryBarrier,
-	PlannedTransitions, TransitionStateUpdates,
-};
 pub(crate) use transitions::{BufferCopy, ImageCopy};
+use transitions::{
+	PlannedBufferBarrier, PlannedImageBarrier, PlannedMemoryBarrier, PlannedTransitions, TransitionStateUpdates,
+	buffer_image_height, buffer_row_length,
+};
 
 mod tests {
 	use super::*;

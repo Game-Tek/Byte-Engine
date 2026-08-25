@@ -16,19 +16,19 @@ pub(crate) mod upload_staging;
 
 pub(crate) use layout::*;
 pub use pipeline_manager::{
-	VisibilityPipelineManager, VisibilityPipelineSettings, CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
-	POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
+	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
+	VisibilityPipelineSettings,
 };
 
 #[cfg(test)]
 mod tests {
 	use besl::vm::{
-		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler,
-		SamplerReductionMode, TaskOutputs, Texture, Value, WorkgroupState,
+		DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler, SamplerReductionMode,
+		TaskOutputs, Texture, Value, WorkgroupState, input_slot, output_slot,
 	};
 	#[cfg(target_os = "macos")]
 	use resource_management::shader::besl::backends::msl::Generator as MslGenerator;
-	use resource_management::shader::{besl::backends::hlsl::Generator as HlslGenerator, ShaderGenerationSettings};
+	use resource_management::shader::{ShaderGenerationSettings, besl::backends::hlsl::Generator as HlslGenerator};
 
 	use crate::rendering::pipelines::visibility::mesh_dispatch::MeshDispatchWorkItem;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
@@ -928,9 +928,9 @@ mod tests {
 			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
 			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			descriptors.bind_workgroup_state(&mut workgroup);
-			program
-				.run_workgroup(&mut descriptors, &configs)
-				.expect("Failed to execute the floor-normal GTAO fixture. The most likely cause is invalid shared-cache synchronization.");
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the floor-normal GTAO fixture. The most likely cause is invalid shared-cache synchronization.",
+			);
 		}
 		rgba(&output, coordinate)
 	}
@@ -1780,9 +1780,9 @@ mod tests {
 			descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 			descriptors.bind_texture(ResourceSlot::new(1036), &mut linear_depth);
 			descriptors.bind_workgroup_state(&mut workgroup);
-			program
-				.run_workgroup(&mut descriptors, &configs)
-				.expect("Failed to execute the production GTAO upscale workgroup. The most likely cause is an invalid reconstruction binding.");
+			program.run_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute the production GTAO upscale workgroup. The most likely cause is an invalid reconstruction binding.",
+			);
 		}
 		rgba(&output, coordinate)
 	}

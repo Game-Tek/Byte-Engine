@@ -273,7 +273,7 @@ fn load_besl_shader(
 }
 
 use std::{
-	collections::{hash_map::Entry, VecDeque},
+	collections::{VecDeque, hash_map::Entry},
 	sync::Arc,
 };
 
@@ -289,31 +289,31 @@ use math::{AffineShaderMatrix, ShaderMatrix};
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 use smallvec::SmallVec;
 use utils::{
+	Box, Extent,
 	hash::{HashMap, HashMapExt},
 	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
 	sync::RwLock,
-	Box, Extent,
 };
 
 use crate::{
 	core::{
+		Entity,
 		channel::DefaultChannel,
 		entity::{self},
 		factory::{CreateMessage, Handle},
 		listener::{DefaultListener, Listener},
-		Entity,
 	},
 	gameplay::transform::Transform,
 	rendering::Camera,
 	rendering::{
+		RenderableMesh, Sink,
 		lights::{Light, Lights},
 		make_perspective_view_from_camera,
-		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
+		pipelines::simple::{CameraShaderData, RenderPass, render_pass},
 		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 		view::View,
-		RenderableMesh, Sink,
 	},
 };
 
@@ -321,7 +321,7 @@ use crate::{
 
 mod tests {
 
-	use besl::vm::{builtin_position_slot, input_slot, output_slot, DescriptorBindings, ResourceSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value, builtin_position_slot, input_slot, output_slot};
 	use resource_management::shader::{
 		besl::backends::{hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
 		generator::ShaderGenerationSettings,

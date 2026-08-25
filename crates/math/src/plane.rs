@@ -59,7 +59,7 @@ impl<Space> Plane<Space> {
 #[cfg(test)]
 mod tests {
 	use super::Plane;
-	use crate::{assert_float_eq, assert_float_eq_with_epsilon, assert_geometry_near, Point, UnitVector, Vector, WorldSpace};
+	use crate::{Point, UnitVector, Vector, WorldSpace, assert_float_eq, assert_float_eq_with_epsilon, assert_geometry_near};
 
 	#[test]
 	fn checked_normals_keep_signed_distances_in_coordinate_space_units() {

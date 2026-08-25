@@ -55,11 +55,7 @@ pub(super) fn effective_opacity(id: Id, tree: &RetainedTree, effective_opacities
 }
 
 pub(super) fn sanitize_opacity(opacity: f32) -> f32 {
-	if opacity.is_finite() {
-		opacity.clamp(0.0, 1.0)
-	} else {
-		1.0
-	}
+	if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 }
 }
 
 pub struct Runtime {

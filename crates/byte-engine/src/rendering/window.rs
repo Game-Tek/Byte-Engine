@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::core::{factory::Handle, Entity};
+use crate::core::{Entity, factory::Handle};
 
 #[derive(Clone)]
 /// The `Window` struct configures a named render surface and its attached camera.

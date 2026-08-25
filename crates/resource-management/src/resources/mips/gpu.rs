@@ -575,8 +575,8 @@ use std::{
 	error::Error,
 	fmt,
 	sync::{
-		mpsc::{self, SyncSender},
 		Mutex,
+		mpsc::{self, SyncSender},
 	},
 	thread::JoinHandle,
 };
@@ -592,5 +592,5 @@ use ghi::{
 };
 use utils::Extent;
 
-use super::{generate_owned_lower_mip_chain, MipGenerationBackend, MipGenerationError, OwnedMipChain};
+use super::{MipGenerationBackend, MipGenerationError, OwnedMipChain, generate_owned_lower_mip_chain};
 use crate::types::{Formats, Gamma};

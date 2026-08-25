@@ -347,7 +347,7 @@ pub(super) fn checked_align_up(value: usize, alignment: usize) -> Result<usize, 
 	})
 }
 
-use super::opacity::{evaluate_opacity, OpacityEvaluation};
+use super::opacity::{OpacityEvaluation, evaluate_opacity};
 
 /// The `ProgramEvaluation` struct holds information derived from evaluating a BESL program.
 #[derive(Clone, Debug)]

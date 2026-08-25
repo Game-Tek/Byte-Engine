@@ -1,7 +1,7 @@
-use std::sync::{atomic::AtomicU64, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicU64};
 
-use ::utils::hash::HashMap;
 use ::utils::Extent;
+use ::utils::hash::HashMap;
 use ash::vk;
 
 use crate::buffer::BufferHandle;

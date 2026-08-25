@@ -1044,11 +1044,7 @@ pub(crate) fn normalize_vec3(mut direction: [f32; 3]) -> Result<[f32; 3], FbxImp
 pub(crate) fn tangent_handedness(normal: [f32; 3], tangent: [f32; 3], bitangent: [f32; 3]) -> f32 {
 	let alignment = dot_vec3(cross_vec3(normal, tangent), bitangent);
 
-	if alignment < 0.0 {
-		-1.0
-	} else {
-		1.0
-	}
+	if alignment < 0.0 { -1.0 } else { 1.0 }
 }
 
 /// Computes the dot product used by tangent-frame orthonormalization.

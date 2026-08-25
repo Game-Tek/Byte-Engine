@@ -279,9 +279,9 @@ use crate::packets::{
 #[cfg(test)]
 mod tests {
 	use super::{
-		read_packet, read_packet_header, sequence_greater_than, write_connection_status, write_packet, write_packet_header,
-		PacketReadError, CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, CONNECTION_STATUS_SIZE, DATA_PACKET_SIZE,
-		PACKET_HEADER_SIZE,
+		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, CONNECTION_STATUS_SIZE, DATA_PACKET_SIZE, PACKET_HEADER_SIZE,
+		PacketReadError, read_packet, read_packet_header, sequence_greater_than, write_connection_status, write_packet,
+		write_packet_header,
 	};
 	use crate::packets::{
 		ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,

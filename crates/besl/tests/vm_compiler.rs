@@ -1,5 +1,5 @@
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value, VmError};
-use besl::{compile_to_besl, BindingTypes, Expressions, Node, Nodes, Operators};
+use besl::{BindingTypes, Expressions, Node, Nodes, Operators, compile_to_besl};
 
 #[test]
 fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use utils::{hash::HashMap, Box};
+use utils::{Box, hash::HashMap};
 
 use crate::{
 	configuration::{ConfigurationEventId, ConfigurationPort, ConfigurationUpdate, ConfigurationValue},

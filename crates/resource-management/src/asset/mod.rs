@@ -101,7 +101,7 @@ pub(crate) fn sanitize_material_name(name: &str) -> String {
 
 mod container_default_resource_tests {
 
-	use super::{container_default_resource, ContainerDefaultResource};
+	use super::{ContainerDefaultResource, container_default_resource};
 
 	#[test]
 	fn bead_default_resource_accepts_mesh_and_animation_but_never_skeleton() {

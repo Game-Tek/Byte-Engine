@@ -954,7 +954,9 @@ StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 
 		assert_eq!(
 			error,
-			Some("DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.")
+			Some(
+				"DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported."
+			)
 		);
 		assert_eq!(Device::native_16_bit_support_error("uint16_t4 joints;", true), None);
 		assert_eq!(Device::native_16_bit_support_error("uint4 joints;", false), None);
@@ -2770,7 +2772,15 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
-		assert_eq!(device.get_image_data(copies[0]).expect("Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device.").bytes, &[0xff, 0xff, 0xff, 0xff]);
+		assert_eq!(
+			device
+				.get_image_data(copies[0])
+				.expect(
+					"Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device."
+				)
+				.bytes,
+			&[0xff, 0xff, 0xff, 0xff]
+		);
 		assert_eq!(device.render_target_clear_count(), 1);
 		assert!(!device.has_errors());
 	}
@@ -3226,7 +3236,15 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
-		assert_eq!(device.get_image_data(copies[0]).expect("Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device.").bytes, &pixel);
+		assert_eq!(
+			device
+				.get_image_data(copies[0])
+				.expect(
+					"Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device."
+				)
+				.bytes,
+			&pixel
+		);
 		assert_eq!(
 			device.get_image_data(copies[0]),
 			Err(crate::TextureTransferError::InvalidHandle(copies[0]))

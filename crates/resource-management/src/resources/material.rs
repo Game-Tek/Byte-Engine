@@ -1,11 +1,10 @@
 use serde::Serialize;
 
 use crate::{
-	resource,
+	Reference, ReferenceModel, Solver, resource,
 	resources::image::Image,
 	solver::SolveErrors,
 	types::{AlphaMode, ShaderTypes},
-	Reference, ReferenceModel, Solver,
 };
 
 #[derive(Debug, Serialize)]

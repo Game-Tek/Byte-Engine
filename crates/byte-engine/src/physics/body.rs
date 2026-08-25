@@ -1,6 +1,6 @@
 use math::{Point, Vector};
 
-use crate::physics::{collider::Shapes, LocalSpace};
+use crate::physics::{LocalSpace, collider::Shapes};
 
 /// The `Body` struct describes the non-spatial properties used to create a physics body.
 ///

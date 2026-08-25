@@ -248,7 +248,7 @@ impl Context {
 	}
 
 	pub(crate) fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
-		let texture = &mut self.images[texture_handle.0 .0 as usize];
+		let texture = &mut self.images[texture_handle.0.0 as usize];
 		let size = texture.size;
 
 		assert!(
@@ -268,7 +268,7 @@ impl Context {
 	}
 
 	pub(crate) fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle(image_handle.0 .0);
+		let image_handle = ImageHandle(image_handle.0.0);
 		let image = &self.images[image_handle.0 as usize];
 
 		assert!(
@@ -280,7 +280,7 @@ impl Context {
 	}
 
 	pub(crate) fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handles = ImageHandle(image_handle.0 .0).get_all(&self.images);
+		let handles = ImageHandle(image_handle.0.0).get_all(&self.images);
 
 		let handle = handles[0];
 
@@ -704,7 +704,7 @@ impl Context {
 	pub(crate) fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
 		self.swapchains
 			.iter()
-			.any(|swapchain| swapchain.images[0].0 == handle.0 .0 || swapchain.native_images[0].0 == handle.0 .0)
+			.any(|swapchain| swapchain.images[0].0 == handle.0.0 || swapchain.native_images[0].0 == handle.0.0)
 	}
 
 	pub(crate) fn get_swapchain_image_for_sequence(
@@ -715,9 +715,9 @@ impl Context {
 		self.swapchains.iter().find_map(|swapchain| {
 			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
-			if swapchain.images[0].0 == handle.0 .0 {
+			if swapchain.images[0].0 == handle.0.0 {
 				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].0 == handle.0 .0 {
+			} else if swapchain.native_images[0].0 == handle.0.0 {
 				Some(swapchain.native_images[acquired_image_index])
 			} else {
 				None
@@ -737,7 +737,7 @@ impl Context {
 			return handle;
 		}
 
-		self.image_handle_for_sequence(ImageHandle(handle.0 .0), frame_index)
+		self.image_handle_for_sequence(ImageHandle(handle.0.0), frame_index)
 	}
 
 	/// Resolves a frame sequence and offset into a valid per-frame resource index.

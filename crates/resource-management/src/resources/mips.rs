@@ -598,7 +598,7 @@ fn load_u16_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u
 
 #[cfg(test)]
 mod tests {
-	use super::{generate_mip_chain, generate_owned_lower_mip_chain, mip_level_count, MipChain, MipGenerationError};
+	use super::{MipChain, MipGenerationError, generate_mip_chain, generate_owned_lower_mip_chain, mip_level_count};
 	use crate::types::{Formats, Gamma};
 
 	#[derive(Debug, Clone, PartialEq, Eq)]

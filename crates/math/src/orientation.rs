@@ -2,7 +2,7 @@ use std::fmt;
 
 use maths_rs::Quatf;
 
-use crate::{orientation_from_direction, Matrix, Radians, UnitVector, Vector};
+use crate::{Matrix, Radians, UnitVector, Vector, orientation_from_direction};
 
 /// The `Orientation` struct provides a normalized, finite rotation for engine transforms.
 ///

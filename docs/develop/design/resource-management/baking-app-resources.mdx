@@ -86,6 +86,8 @@ beld --source "$PWD/assets" --destination "$PWD/resources" \
 
 The default `files` mode writes one hash-named payload file per resource. BELD records the selected mode in `resources.db`, and the application discovers it when opening the store. Clear the destination before changing its mode.
 
+In packed mode, rebuilding or deleting a resource returns its old range to a coalescing free-space allocator after active mapped readers release it. BELD reuses the smallest suitable range and grows `resources.pack` only when none fits. If BELD warns that the pack is fragmented, delete the destination resource directory and run the bake again to produce a compact pack.
+
 Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
 ## Check the baked output

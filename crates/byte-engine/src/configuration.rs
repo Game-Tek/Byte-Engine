@@ -8,8 +8,8 @@
 use std::{
 	collections::VecDeque,
 	sync::{
-		mpsc::{sync_channel, Receiver, SyncSender, TrySendError},
 		Arc,
+		mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
 	},
 };
 

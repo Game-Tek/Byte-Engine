@@ -757,8 +757,8 @@ impl BufferDescriptor {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::graphics_hardware_interface::MasterHandle;
 	use crate::BaseImageHandle;
+	use crate::graphics_hardware_interface::MasterHandle;
 
 	#[test]
 	fn buffer_image_copy_preserves_the_destination_mip_level() {

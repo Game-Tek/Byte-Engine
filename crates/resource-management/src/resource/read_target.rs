@@ -1,7 +1,7 @@
 //! Select where a resource reader stores binary data and how clients access the result.
 
 use super::Resource;
-use crate::{resource::reader::ResourceReaderBacking, stream::StreamMut, Reference, Stream};
+use crate::{Reference, Stream, resource::reader::ResourceReaderBacking, stream::StreamMut};
 
 #[derive(Debug)]
 /// The `ReadTargets` enum provides read-only access to resource data after a read completes.
@@ -158,7 +158,7 @@ impl<'a, T: Resource + 'a> From<&mut Reference<T>> for ReadTargetsMut<'a> {
 #[cfg(test)]
 mod tests {
 	use super::{ReadTargets, ReadTargetsMut};
-	use crate::{resource::reader::ResourceReaderBacking, Stream};
+	use crate::{Stream, resource::reader::ResourceReaderBacking};
 
 	#[test]
 	fn contiguous_targets_expose_bytes_and_stream_targets_do_not() {

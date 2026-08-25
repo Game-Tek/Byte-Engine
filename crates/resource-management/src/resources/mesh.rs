@@ -1,10 +1,9 @@
 use crate::{
-	resource,
+	Reference, ReferenceModel, Solver, resource,
 	resources::material::{Variant, VariantModel},
 	resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint},
 	solver::SolveErrors,
 	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
-	Reference, ReferenceModel, Solver,
 };
 
 /// The `Primitive` struct supplies one renderable geometry range and its skeletal bindings to runtime rendering.
@@ -342,19 +341,19 @@ fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-	use super::{validate_skin_metadata, Mesh, PrimitiveModel};
+	use super::{Mesh, PrimitiveModel, validate_skin_metadata};
 	use crate::{
+		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
-		resource::{storage_backend::tests::TestStorageBackend, WriteStorageBackend},
+		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
 		resources::{
 			material::VariantModel,
 			skeleton::{
-				identity_affine_matrix4x3_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding,
-				SkinJoint, SkinPaletteEntry,
+				LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
+				identity_affine_matrix4x3_columns,
 			},
 		},
 		types::{AlphaMode, IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
-		ProcessedAsset, Reference, ReferenceModel, Solver,
 	};
 
 	fn stream(stream_type: Streams, offset: usize, size: usize, stride: usize) -> Stream {
@@ -460,20 +459,24 @@ mod tests {
 		let storage = TestStorageBackend::new();
 		let skeleton = test_skeleton(&storage).await;
 
-		assert!(validate_skin_metadata(
-			Some(&skeleton),
-			std::slice::from_ref(&skin),
-			&skin_vertex_layout(),
-			&[test_primitive(Some(1), true, true)]
-		)
-		.is_err());
-		assert!(validate_skin_metadata(
-			Some(&skeleton),
-			&[skin],
-			&skin_vertex_layout(),
-			&[test_primitive(Some(0), true, false)]
-		)
-		.is_err());
+		assert!(
+			validate_skin_metadata(
+				Some(&skeleton),
+				std::slice::from_ref(&skin),
+				&skin_vertex_layout(),
+				&[test_primitive(Some(1), true, true)]
+			)
+			.is_err()
+		);
+		assert!(
+			validate_skin_metadata(
+				Some(&skeleton),
+				&[skin],
+				&skin_vertex_layout(),
+				&[test_primitive(Some(0), true, false)]
+			)
+			.is_err()
+		);
 	}
 
 	#[crate::r#async::test]

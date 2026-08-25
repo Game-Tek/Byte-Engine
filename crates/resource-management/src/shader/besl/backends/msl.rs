@@ -11,8 +11,8 @@ pub use Generator as MSLShaderGenerator;
 pub const MSL_ENTRY_POINT: &str = "besl_main";
 
 use crate::shader::generator::{
-	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in, MatrixLayouts, NodeEmitter, ShaderFormatting,
-	ShaderGenerationSettings, ShaderGenerator, Stages,
+	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in,
 };
 
 mod bindings;

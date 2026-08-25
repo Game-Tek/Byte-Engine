@@ -1,11 +1,11 @@
 use resource_management::{
-	asset::ResourceId,
-	resource::{storage_backend::QueryCursor, ReDBStorageBackend, ReadStorageBackend},
 	QueryableValue,
+	asset::ResourceId,
+	resource::{ReDBStorageBackend, ReadStorageBackend, storage_backend::QueryCursor},
 };
 #[cfg(debug_assertions)]
 use resource_management::{ResourceTraceItem, ResourceTraceLevel};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Reads persisted development messages for one resource ID.
 #[cfg(debug_assertions)]

@@ -12,10 +12,10 @@ pub(super) use sources::*;
 mod tests {
 
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
-	use resource_management::asset::{handler::implementations::bema::ProgramGenerator, JsonObject};
+	use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 	use resource_management::pbr::{
-		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture,
-		BrdfValue,
+		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
+		generate_textured_brdf_program,
 	};
 	use resource_management::shader::besl::backends::{
 		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,

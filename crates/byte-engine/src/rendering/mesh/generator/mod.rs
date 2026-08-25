@@ -3,8 +3,8 @@ pub mod sphere;
 
 use std::borrow::Cow;
 
-use maths_rs::{Vec3f, Vec4f};
 pub use r#box::BoxMeshGenerator;
+use maths_rs::{Vec3f, Vec4f};
 pub use sphere::SphereMeshGenerator;
 
 /// The `MeshGenerator` trait defines a mesh generator capable of serving as a source of mesh data.

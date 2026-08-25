@@ -70,7 +70,7 @@ pub mod implementation {
 	#[cfg(test)]
 	mod tests {
 		use super::*;
-		use crate::{graphics_hardware_interface, QueueHandle};
+		use crate::{QueueHandle, graphics_hardware_interface};
 
 		fn create_default_device_setup() -> (Instance, Context, QueueHandle) {
 			let features = crate::device::Features::new().validation(true);

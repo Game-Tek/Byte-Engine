@@ -261,9 +261,9 @@ use crate::{
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},
-	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate, Transform},
+	gameplay::{Transform, anchor::AnchorSystem, transform::TransformationUpdate},
 	physics::{self, dynabit},
-	rendering::{lights::Lights, Camera, ConeLight, DirectionalLight, Environment, PointLight, RenderableMesh, UpdatePose},
+	rendering::{Camera, ConeLight, DirectionalLight, Environment, PointLight, RenderableMesh, UpdatePose, lights::Lights},
 };
 
 #[cfg(test)]

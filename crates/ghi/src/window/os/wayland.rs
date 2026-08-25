@@ -2,6 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, ffi::c_void, marker::PhantomData
 
 use utils::Extent;
 use wayland_client::{
+	Proxy,
 	protocol::{
 		wl_callback,
 		wl_compositor::{self, WlCompositor},
@@ -11,7 +12,6 @@ use wayland_client::{
 		wl_seat::{self, WlSeat},
 		wl_surface,
 	},
-	Proxy,
 };
 use wayland_protocols::{
 	wp::{
@@ -31,8 +31,8 @@ use xkbcommon::xkb::{self, keysyms};
 use crate::{
 	window::os::{Features, WindowLike},
 	window::{
-		input::{Keys, MouseKeys},
 		Events, Seat,
+		input::{Keys, MouseKeys},
 	},
 };
 
@@ -171,7 +171,7 @@ mod input;
 mod key_translation;
 mod lifecycle;
 
-use key_translation::{keysym_to_key, KeyboardState};
+use key_translation::{KeyboardState, keysym_to_key};
 
 #[cfg(test)]
 mod tests {

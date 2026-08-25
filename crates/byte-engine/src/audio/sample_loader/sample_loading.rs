@@ -3,15 +3,15 @@
 use std::sync::Arc;
 
 use resource_management::{
-	resource::{resource_manager::ResourceManager, ReadTargetsMut},
-	resources::audio::Audio,
 	Reference,
+	resource::{ReadTargetsMut, resource_manager::ResourceManager},
+	resources::audio::Audio,
 };
 
 use super::*;
 use crate::{
 	audio::graph::{AudioGraphRenderPlan, CompiledAudioGraph, PreparedAudioGraphRenderPlan},
-	core::{async_runtime, factory::Handle, EntityHandle},
+	core::{EntityHandle, async_runtime, factory::Handle},
 };
 
 #[derive(Debug)]

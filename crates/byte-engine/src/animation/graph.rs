@@ -657,12 +657,12 @@ use std::{
 
 use math::Matrix;
 use resource_management::{
+	Reference,
 	resource::resource_manager::ResourceManager,
 	resources::{
 		animation::Animation,
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
-	Reference,
 };
 #[doc(hidden)]
 pub use runtime::benchmarks;
@@ -680,8 +680,8 @@ use super::{
 	skeletal::write_global_pose,
 };
 use crate::{
-	core::{async_runtime, EntityHandle},
 	MediaTime,
+	core::{EntityHandle, async_runtime},
 };
 
 #[cfg(test)]

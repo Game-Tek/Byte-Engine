@@ -2,12 +2,12 @@
 use resource_management::resources::mips::gpu::MaterialMipGenerator;
 use resource_management::{
 	asset::{
-		handler::implementations::bema::BEMAAssetHandler, handler::implementations::besl::BESLShaderAssetHandler,
-		handler::implementations::exr::EXRAssetHandler, handler::implementations::fbx::FBXAssetHandler,
-		handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
-		handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
-		handler::implementations::pipeline::PipelineAssetHandler, handler::implementations::png::PNGAssetHandler,
-		handler::implementations::wav::WAVAssetHandler, manager::AssetManager, StorageBackend,
+		StorageBackend, handler::implementations::bema::BEMAAssetHandler,
+		handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::exr::EXRAssetHandler,
+		handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
+		handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
+		handler::implementations::ogg::OGGAssetHandler, handler::implementations::pipeline::PipelineAssetHandler,
+		handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
 	},
 	ibl::IBLGenerator,
 	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
@@ -107,11 +107,11 @@ mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use resource_management::{
-		asset::{storage_backend::FileStorageBackend, ResourceId, StorageBackend},
-		r#async::Executor,
-		resource::storage_backend::{redb::ReDBStorageBackend, ReadStorageBackend},
-		resources::mesh::MeshModel,
 		ReferenceModel,
+		asset::{ResourceId, StorageBackend, storage_backend::FileStorageBackend},
+		r#async::Executor,
+		resource::storage_backend::{ReadStorageBackend, redb::ReDBStorageBackend},
+		resources::mesh::MeshModel,
 	};
 
 	use super::get_asset_manager;

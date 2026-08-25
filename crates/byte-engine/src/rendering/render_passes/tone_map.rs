@@ -1,6 +1,6 @@
 use crate::rendering::render_pass::{
-	simple_compute::{Descriptor, Pass, Pipeline, Resource},
 	RenderPassBuilder,
+	simple_compute::{Descriptor, Pass, Pipeline, Resource},
 };
 use crate::rendering::render_passes::blit::SwapchainBlitPass;
 

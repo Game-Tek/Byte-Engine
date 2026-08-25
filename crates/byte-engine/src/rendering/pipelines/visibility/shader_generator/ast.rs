@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
-use besl::{parser::Node, NodeReference};
+use besl::{NodeReference, parser::Node};
 
 use super::sources::*;
 use crate::rendering::pipelines::visibility::{
-	MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 };
 
 pub(super) fn light_array_type() -> &'static str {

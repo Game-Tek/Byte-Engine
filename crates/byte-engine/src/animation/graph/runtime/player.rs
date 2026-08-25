@@ -808,11 +808,11 @@ mod tests {
 	};
 
 	use resource_management::{
+		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
-		Reference,
 	};
 
 	use super::*;

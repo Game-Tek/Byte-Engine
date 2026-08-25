@@ -7,10 +7,10 @@
 use std::time::Instant;
 
 use betp::{
+	PacketReadError, Remote,
 	client::{Errors as ClientSessionError, Session as ClientSession},
 	packets::{ChallengePacket, Packets},
 	server::{PacketHandlingResults as ServerSessionError, Session as ServerSession},
-	PacketReadError, Remote,
 };
 
 /// The largest canonical BETP wire packet, including its header.

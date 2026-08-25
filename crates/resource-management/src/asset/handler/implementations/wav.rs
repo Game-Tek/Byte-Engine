@@ -174,7 +174,7 @@ impl AssetHandler for WAVAssetHandler {
 mod tests {
 	use super::wav_bit_depth;
 	use crate::{
-		asset::{self, handler::implementations::wav::WAVAssetHandler, manager::AssetManager, ResourceId},
+		asset::{self, ResourceId, handler::implementations::wav::WAVAssetHandler, manager::AssetManager},
 		r#async, resource,
 		resources::audio::Audio,
 		types::BitDepths,
@@ -346,11 +346,11 @@ mod tests {
 }
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::audio::{process_audio, AudioDescription},
+	processors::processor::implementations::audio::{AudioDescription, process_audio},
 	types::BitDepths,
 };
 

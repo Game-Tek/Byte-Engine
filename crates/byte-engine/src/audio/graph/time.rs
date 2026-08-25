@@ -83,11 +83,7 @@ impl AudioGraphTime {
 			"Periodic waveform phase step is outside 0.0..TAU. The most likely cause is bypassing AudioGraphTime::periodic_phase_step."
 		);
 		let phase = phase + phase_step;
-		if phase >= TAU {
-			phase - TAU
-		} else {
-			phase
-		}
+		if phase >= TAU { phase - TAU } else { phase }
 	}
 }
 

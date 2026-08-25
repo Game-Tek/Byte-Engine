@@ -1,7 +1,7 @@
 use std::{num::NonZeroUsize, path::Path, time::Instant};
 
 use resource_management::{
-	asset::{manager::AssetManager, FileStorageBackend},
+	asset::{FileStorageBackend, manager::AssetManager},
 	resource::{ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings},
 };
 use utils::{r#async::StreamExt, sync::Arc};
@@ -111,11 +111,7 @@ pub fn bake(
 		failed_count
 	);
 
-	if failed_count == 0 {
-		Ok(())
-	} else {
-		Err(1)
-	}
+	if failed_count == 0 { Ok(()) } else { Err(1) }
 }
 
 /// Finds supported source assets in the configured directory and its descendants.

@@ -168,11 +168,9 @@ impl TaskOutputs {
 			payload
 		} else {
 			self.payloads.insert(name.to_string(), vec![None; count]);
-			self.payloads
-				.get_mut(name)
-				.expect(
-					"Missing inserted task payload. The most likely cause is that the payload map changed between insertion and lookup.",
-				)
+			self.payloads.get_mut(name).expect(
+				"Missing inserted task payload. The most likely cause is that the payload map changed between insertion and lookup.",
+			)
 		};
 		if payload.len() != count {
 			// A capture is scoped to one declared task interface; clear stale values if a caller reuses it with another layout.

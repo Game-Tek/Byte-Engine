@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{buffer::BufferHandle, Uses};
+use crate::{Uses, buffer::BufferHandle};
 
 /// When `true`, dynamic buffers use a persistent CPU-writable source buffer
 /// plus per-frame staging buffers. The source buffer is copied (CPU memcpy)

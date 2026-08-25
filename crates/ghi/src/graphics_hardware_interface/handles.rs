@@ -191,7 +191,7 @@ impl<T: Copy> MasterHandle for BufferHandle<T> {
 	}
 
 	fn index(&self) -> u64 {
-		self.0 .0
+		self.0.0
 	}
 }
 

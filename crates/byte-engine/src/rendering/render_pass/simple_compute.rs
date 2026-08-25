@@ -12,8 +12,8 @@ use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, T
 use smallvec::SmallVec;
 use utils::Extent;
 
-use super::{allocate_render_command, RenderPassBuilder, RenderPassReturn};
-use crate::rendering::{common_shader_generator::CommonShaderScope, Sink};
+use super::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
+use crate::rendering::{Sink, common_shader_generator::CommonShaderScope};
 
 /// The `Descriptor` struct identifies one single-set compute pipeline and its command label.
 pub struct Descriptor<'a> {
@@ -314,13 +314,19 @@ fn texture_view(view: TextureView) -> ghi::TextureViewTypes {
 fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str> {
 	for (index, binding) in bindings.iter().enumerate() {
 		if binding.count != 1 {
-			return Err("Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.");
+			return Err(
+				"Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.",
+			);
 		}
 		if !binding.read && !binding.write {
-			return Err("Inaccessible binding in simple compute pass. The most likely cause is that a BESL binding declares neither read nor write access.");
+			return Err(
+				"Inaccessible binding in simple compute pass. The most likely cause is that a BESL binding declares neither read nor write access.",
+			);
 		}
 		if matches!(binding.kind, BindingKind::CombinedImageSampler { .. }) && (!binding.read || binding.write) {
-			return Err("Sampled texture access is invalid in a simple compute pass. The most likely cause is that a combined image sampler was declared writable.");
+			return Err(
+				"Sampled texture access is invalid in a simple compute pass. The most likely cause is that a combined image sampler was declared writable.",
+			);
 		}
 		if bindings[..index].iter().any(|previous| previous.name == binding.name) {
 			return Err("Duplicate BESL binding name. The most likely cause is that two descriptor slots use the same symbol.");
@@ -334,7 +340,9 @@ fn validate_shared_schema(schema: &[BindingUsage], bindings: &[BindingUsage]) ->
 	if bindings.iter().all(|binding| schema.contains(binding)) {
 		Ok(())
 	} else {
-		Err("Compute pipeline variant has an incompatible binding schema. The most likely cause is that a sibling BESL shader changed a shared descriptor declaration.")
+		Err(
+			"Compute pipeline variant has an incompatible binding schema. The most likely cause is that a sibling BESL shader changed a shared descriptor declaration.",
+		)
 	}
 }
 
@@ -376,7 +384,7 @@ fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Resu
 mod tests {
 	use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
 
-	use super::{texture_view, validate_binding_schema, validate_resources, validate_shared_schema, Resource};
+	use super::{Resource, texture_view, validate_binding_schema, validate_resources, validate_shared_schema};
 
 	fn binding(name: &str, kind: BindingKind, slot: u32, read: bool, write: bool) -> BindingUsage {
 		BindingUsage {
@@ -440,24 +448,32 @@ mod tests {
 			texture_view(TextureView::Texture3D),
 			ghi::TextureViewTypes::Texture3D
 		));
-		assert!(validate_resources(&bindings, &resources[..2])
-			.expect_err("Expected a missing resource")
-			.starts_with("Missing compute resource `source`."));
+		assert!(
+			validate_resources(&bindings, &resources[..2])
+				.expect_err("Expected a missing resource")
+				.starts_with("Missing compute resource `source`.")
+		);
 		let duplicate = [resources[0], resources[1], resources[2], resources[2]];
 
-		assert!(validate_resources(&bindings, &duplicate)
-			.expect_err("Expected a duplicate resource")
-			.starts_with("Duplicate compute resource `source`."));
+		assert!(
+			validate_resources(&bindings, &duplicate)
+				.expect_err("Expected a duplicate resource")
+				.starts_with("Duplicate compute resource `source`.")
+		);
 		let wrong = [resources[0], resources[2], Resource::image("parameters", image)];
 
-		assert!(validate_resources(&bindings, &wrong)
-			.expect_err("Expected a resource type mismatch")
-			.starts_with("Compute resource `parameters` has the wrong type."));
+		assert!(
+			validate_resources(&bindings, &wrong)
+				.expect_err("Expected a resource type mismatch")
+				.starts_with("Compute resource `parameters` has the wrong type.")
+		);
 		let unknown = [resources[0], resources[1], resources[2], Resource::image("typo", image)];
 
-		assert!(validate_resources(&bindings, &unknown)
-			.expect_err("Expected an unknown resource")
-			.starts_with("Unknown compute resource `typo`."));
+		assert!(
+			validate_resources(&bindings, &unknown)
+				.expect_err("Expected an unknown resource")
+				.starts_with("Unknown compute resource `typo`.")
+		);
 		let planned = [
 			resources[0],
 			resources[1],

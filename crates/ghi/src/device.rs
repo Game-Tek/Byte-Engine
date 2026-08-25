@@ -1,9 +1,8 @@
 use std::alloc::Allocator;
 
 use crate::{
-	image, pipelines, sampler,
+	ShaderHandle, ShaderTypes, image, pipelines, sampler,
 	shader::{self, Sources},
-	ShaderHandle, ShaderTypes,
 };
 
 /// The `Device` trait centralizes ownership of backend device state for the graphics hardware interface.

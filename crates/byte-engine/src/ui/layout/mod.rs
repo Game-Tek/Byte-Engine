@@ -10,10 +10,10 @@ mod visual_transform;
 use utils::{Box, RGBA};
 
 use super::{
+	Primitive,
 	element::{self, Element, ElementHandle, Id},
 	flow::{self, FlowInput, FlowOutput, Location, Location3, Offset, Size},
 	primitive::BasePrimitive,
-	Primitive,
 };
 use crate::ui::{
 	components::curve::CurveSegment,
@@ -578,13 +578,13 @@ impl From<f32> for Sizing {
 mod tests {
 
 	use super::super::{
+		Element,
 		components::container::Container,
 		element::{ElementHandle, Id},
 		flow::{self, Location, Location3, Size},
 		layout::{ConcreteElement, Depth, Position, Sizing},
-		Element,
 	};
-	use super::{layout_elements, LayoutElement};
+	use super::{LayoutElement, layout_elements};
 	use crate::ui::{
 		font::TextSystem,
 		layout::IdedElement,

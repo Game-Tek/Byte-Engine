@@ -1,9 +1,9 @@
 //! Run with `cargo bench -p byte-engine --bench pathfinding`.
 
 use byte_engine::gameplay::pathfinding::{
-	a_star, string_pull, string_pull_into, BitMatrixGraph, NavigationMesh, NavigationPortal, NodeHandle, TrivialGraph,
+	BitMatrixGraph, NavigationMesh, NavigationPortal, NodeHandle, TrivialGraph, a_star, string_pull, string_pull_into,
 };
-use divan::{counter::ItemsCount, Bencher};
+use divan::{Bencher, counter::ItemsCount};
 use math::Point;
 
 fn main() {

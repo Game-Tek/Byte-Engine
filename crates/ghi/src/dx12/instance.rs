@@ -1,9 +1,9 @@
-use windows::core::Interface as _;
 use windows::Win32::Graphics::Direct3D12::{
-	D3D12GetDebugInterface, ID3D12Debug, ID3D12Debug3, D3D12_GPU_BASED_VALIDATION_FLAGS_NONE,
+	D3D12_GPU_BASED_VALIDATION_FLAGS_NONE, D3D12GetDebugInterface, ID3D12Debug, ID3D12Debug3,
 };
+use windows::core::Interface as _;
 
-use crate::{device::Features, QueueHandle, QueueSelection};
+use crate::{QueueHandle, QueueSelection, device::Features};
 
 pub struct Instance {
 	debug: Option<ID3D12Debug>,

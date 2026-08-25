@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use ash::vk;
 use utils::Extent;
 
-use crate::{image::ImageHandle, DeviceAccesses, Formats, HandleLike, Next, Uses};
+use crate::{DeviceAccesses, Formats, HandleLike, Next, Uses, image::ImageHandle};
 
 /// The `Image` struct provides Vulkan resources and views for GHI images.
 ///

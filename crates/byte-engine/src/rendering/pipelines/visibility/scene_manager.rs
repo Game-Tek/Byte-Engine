@@ -297,17 +297,17 @@ fn update_renderable_instances<T>(
 #[cfg(test)]
 mod tests {
 	use math::{Matrix, Orientation, Point, UnitVector, WorldSpace};
-	use maths_rs::{mat::MatNew4 as _, Vec3f};
+	use maths_rs::{Vec3f, mat::MatNew4 as _};
 	use smallvec::SmallVec;
-	use utils::{hash::HashMap, StableVec};
+	use utils::{StableVec, hash::HashMap};
 
 	use super::{
-		affine_matrix4x3_from_matrix4, assert_affine_matrix, update_renderable_instances, LightShadow, VisibilitySceneManager,
+		LightShadow, VisibilitySceneManager, affine_matrix4x3_from_matrix4, assert_affine_matrix, update_renderable_instances,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, Lights, PhotometricIntensity, PointLight};
 	use crate::rendering::pipelines::visibility::pipeline_manager::{
-		IesProfileTexture, LightData, LightingData, ShaderVec3, NO_IES_PROFILE_TEXTURE,
+		IesProfileTexture, LightData, LightingData, NO_IES_PROFILE_TEXTURE, ShaderVec3,
 	};
 
 	#[test]
@@ -470,19 +470,12 @@ use log::warn;
 use math::Matrix;
 use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use smallvec::SmallVec;
-use utils::{hash::HashMap, StableVec, StableVecHandle};
+use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
+use crate::rendering::View;
 use crate::rendering::lights::{IesProfile, Lights};
-use crate::rendering::pipelines::visibility::pipeline_manager::RenderEntity;
-use crate::rendering::pipelines::visibility::pipeline_manager::RenderInfo;
-use crate::rendering::pipelines::visibility::pipeline_manager::ShaderViewData;
-use crate::rendering::pipelines::visibility::pipeline_manager::SinkState;
-use crate::rendering::pipelines::visibility::pipeline_manager::{
-	IesProfileTexture, LightData, LightingData, NO_IES_PROFILE_TEXTURE,
-};
-use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, ShaderVec3};
 use crate::rendering::pipelines::visibility::CONE_SHADOW_VIEW_OFFSET;
 use crate::rendering::pipelines::visibility::MAX_CONE_SHADOW_POOL_CAPACITY;
 use crate::rendering::pipelines::visibility::MAX_LIGHTS;
@@ -491,5 +484,12 @@ use crate::rendering::pipelines::visibility::POINT_SHADOW_FACE_COUNT;
 use crate::rendering::pipelines::visibility::POINT_SHADOW_VIEW_OFFSET;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
 use crate::rendering::pipelines::visibility::SHADOW_VIEW_COUNT;
-use crate::rendering::View;
+use crate::rendering::pipelines::visibility::pipeline_manager::RenderEntity;
+use crate::rendering::pipelines::visibility::pipeline_manager::RenderInfo;
+use crate::rendering::pipelines::visibility::pipeline_manager::ShaderViewData;
+use crate::rendering::pipelines::visibility::pipeline_manager::SinkState;
+use crate::rendering::pipelines::visibility::pipeline_manager::{
+	IesProfileTexture, LightData, LightingData, NO_IES_PROFILE_TEXTURE,
+};
+use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, ShaderVec3};
 use crate::space::{Orientable as _, Positionable as _};

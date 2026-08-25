@@ -40,10 +40,9 @@ pub mod sphere;
 pub use aabb::AABB;
 pub use angle::{Degrees, Radians};
 pub use geometry::{
-	barycentric_xz, distance_xz, is_finite, point_on_segment_xz, segments_intersect_xz, signed_area_xz, NormalizationError,
-	Point, UnitVector, Unnormalized, Vector, WorldSpace,
+	NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace, barycentric_xz, distance_xz, is_finite,
+	point_on_segment_xz, segments_intersect_xz, signed_area_xz,
 };
-use maths_rs::mat::{MatNew4, MatTranspose as _};
 /// Raw 4-by-4 matrix storage for transforms and projection boundaries.
 ///
 /// Use [`Orientation::into_matrix`] to convert a checked rotation, [`from_rotation`] to build a
@@ -60,6 +59,7 @@ pub use maths_rs::Mat4f as Matrix;
 /// orientation back with [`Orientation::into_maths`]. If you only have a facing [`UnitVector`], use
 /// [`orientation_from_direction`] instead of constructing quaternion components directly.
 pub use maths_rs::Quatf as Quaternion;
+use maths_rs::mat::{MatNew4, MatTranspose as _};
 pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;

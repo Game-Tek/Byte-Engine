@@ -10,10 +10,10 @@ use super::{
 	primitive::{BasePrimitive, Primitive},
 };
 use crate::ui::{
+	Container,
 	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
-	Container,
 };
 
 /// The [`Element`] trait exposes the primitive represented by a UI element.

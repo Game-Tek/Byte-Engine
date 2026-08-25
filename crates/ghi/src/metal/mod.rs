@@ -1,12 +1,12 @@
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {}
+unsafe extern "C" {}
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU64;
 
-use ::utils::hash::HashMap;
 use ::utils::Extent;
+use ::utils::hash::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
@@ -17,10 +17,10 @@ use objc2_metal::MTLDevice as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
+use crate::PrivateHandles;
 use crate::buffer::BufferHandle;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
-use crate::PrivateHandles;
 
 mod io;
 mod pipeline;

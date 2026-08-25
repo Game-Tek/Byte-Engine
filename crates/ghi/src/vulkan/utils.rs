@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{graphics_hardware_interface, Size};
+use crate::{Size, graphics_hardware_interface};
 
 pub(super) fn uses_to_vk_usage_flags(usage: crate::Uses) -> vk::BufferUsageFlags {
 	let mut flags = vk::BufferUsageFlags::empty();

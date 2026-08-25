@@ -4,7 +4,7 @@ use std::{
 	sync::Arc,
 };
 
-use maths_rs::{cross, normalize, Vec3f, Vec4f};
+use maths_rs::{Vec3f, Vec4f, cross, normalize};
 
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
@@ -173,7 +173,7 @@ impl From<SphereMeshGenerator> for MeshSource {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{cross, dot, length, Vec3f};
+	use maths_rs::{Vec3f, cross, dot, length};
 
 	use super::SphereMeshGenerator;
 	use crate::rendering::mesh::generator::MeshGenerator;
@@ -244,10 +244,12 @@ mod tests {
 
 		assert_eq!(meshlet_indices.len(), indices.len());
 		assert!(indices.iter().all(|index| *index <= u8::MAX as u32));
-		assert!(indices
-			.iter()
-			.zip(meshlet_indices.iter())
-			.all(|(index, meshlet_index)| *index == u32::from(*meshlet_index)));
+		assert!(
+			indices
+				.iter()
+				.zip(meshlet_indices.iter())
+				.all(|(index, meshlet_index)| *index == u32::from(*meshlet_index))
+		);
 	}
 
 	#[test]

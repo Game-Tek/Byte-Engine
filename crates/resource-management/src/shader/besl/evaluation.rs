@@ -5,13 +5,13 @@ mod reflection;
 use std::collections::HashSet;
 
 pub use opacity::OpacityEvaluation;
+pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
+pub(crate) use reflection::{BindingRecord, collect_bindings};
 #[cfg(test)]
 use reflection::{
-	checked_align_up, primitive_storage_layout, reflected_storage_buffer_stride_for_target, reflected_storage_type_layout,
-	StorageLayout, StorageLayoutTarget,
+	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_storage_buffer_stride_for_target,
+	reflected_storage_type_layout,
 };
-pub(crate) use reflection::{collect_bindings, BindingRecord};
-pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
 
 #[cfg(test)]
 mod tests {
@@ -489,17 +489,19 @@ mod tests {
 			"main",
 			Vec::new(),
 			void,
-			vec![besl::Node::binding_array(
-				"volumes",
-				besl::BindingTypes::CombinedImageSampler {
-					format: "Texture3D".to_string(),
-				},
-				0,
-				true,
-				false,
-				3,
-			)
-			.into()],
+			vec![
+				besl::Node::binding_array(
+					"volumes",
+					besl::BindingTypes::CombinedImageSampler {
+						format: "Texture3D".to_string(),
+					},
+					0,
+					true,
+					false,
+					3,
+				)
+				.into(),
+			],
 		)
 		.into();
 

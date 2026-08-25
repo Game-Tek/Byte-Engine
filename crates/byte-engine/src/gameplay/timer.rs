@@ -1,5 +1,5 @@
 use crate::{
-	core::{listener::Listener, Entity, EntityHandle},
+	core::{Entity, EntityHandle, listener::Listener},
 	time::MediaTime,
 };
 

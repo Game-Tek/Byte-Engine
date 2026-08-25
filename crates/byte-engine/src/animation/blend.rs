@@ -460,7 +460,7 @@ fn distance_squared2(left: [f32; 2], right: [f32; 2]) -> f32 {
 mod tests {
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{blend_local_pose, blend_local_poses, BlendSpace1D, BlendSpace2D, BlendSpaceError, BlendTriangle};
+	use super::{BlendSpace1D, BlendSpace2D, BlendSpaceError, BlendTriangle, blend_local_pose, blend_local_poses};
 
 	fn transform(translation: f32, rotation: [f32; 4]) -> LocalTransform {
 		LocalTransform {

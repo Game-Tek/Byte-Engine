@@ -6,7 +6,7 @@ mod sample_pool;
 use sample_loading::*;
 pub(crate) use sample_loading::{AudioSampleLoader, AudioSampleLoaderClient};
 use sample_pool::*;
-pub(crate) use sample_pool::{AudioSampleLease, AudioSampleLeaseId, AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY};
+pub(crate) use sample_pool::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId};
 pub use sample_pool::{AudioSamplePoolConfig, DEFAULT_AUDIO_SAMPLE_POOL_BYTE_BUDGET};
 
 #[cfg(test)]
@@ -16,14 +16,14 @@ mod tests {
 	use resource_management::{resources::audio::Audio, types::BitDepths};
 
 	use super::{
-		decode_into, AudioLoadCompletion, AudioSampleCacheKey, AudioSampleLayout, AudioSampleLease, AudioSampleLeaseId,
-		AudioSampleLoaderClient, AudioSamplePool, AudioSamplePoolConfig, AudioSampleReleaseQueue, AUDIO_GRAPH_CAPACITY,
-		AUDIO_SAMPLE_RELEASE_CAPACITY,
+		AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioLoadCompletion, AudioSampleCacheKey, AudioSampleLayout,
+		AudioSampleLease, AudioSampleLeaseId, AudioSampleLoaderClient, AudioSamplePool, AudioSamplePoolConfig,
+		AudioSampleReleaseQueue, decode_into,
 	};
 	use crate::{
 		audio::graph::{
-			fns::{gain, r#loop, sample},
 			AudioGraphRenderPlan, AudioProcessor, PlaybackRate, PreparedAudioGraphRenderPlan, SamplePlaybackMode,
+			fns::{gain, r#loop, sample},
 		},
 		core::{factory::Factory, listener::Listener},
 	};

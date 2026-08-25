@@ -1,9 +1,9 @@
 use std::sync::{
-	atomic::{AtomicU64, Ordering},
 	Arc,
+	atomic::{AtomicU64, Ordering},
 };
 
-use crate::ui::{layout::Sizing, style::ConcreteStyle, Transform, Visual};
+use crate::ui::{Transform, Visual, layout::Sizing, style::ConcreteStyle};
 
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 

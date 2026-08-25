@@ -2,7 +2,7 @@ use std::{cell::Cell, sync::Mutex};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSEventMask,
 	NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
@@ -12,7 +12,7 @@ use objc2_foundation::{
 };
 
 use crate::window::input::{Keys, MouseKeys};
-use crate::window::{os::WindowLike, Events, Features, Seat};
+use crate::window::{Events, Features, Seat, os::WindowLike};
 
 pub struct Window {
 	window: Retained<NSWindow>,

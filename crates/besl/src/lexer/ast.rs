@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::lowering::lex_parsed_node;
-use super::resolution::{find_descendant, DescendantSearch};
+use super::resolution::{DescendantSearch, find_descendant};
 use crate::parser;
 
 pub type ParentNodeReference = Weak<RefCell<Node>>;

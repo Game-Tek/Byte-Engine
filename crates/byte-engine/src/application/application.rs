@@ -148,4 +148,4 @@ mod tests {
 use log::{info, trace};
 
 use super::Parameter;
-use crate::application::parameters::{parse_argument, Parameters};
+use crate::application::parameters::{Parameters, parse_argument};

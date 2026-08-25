@@ -37,7 +37,7 @@ impl Device {
 
 	pub fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8])) {
 		// Writes into CPU-side staging storage when available.
-		let Some(image) = self.images.get_mut(texture_handle.0 .0 as usize) else {
+		let Some(image) = self.images.get_mut(texture_handle.0.0 as usize) else {
 			return;
 		};
 
@@ -117,12 +117,12 @@ impl Device {
 
 	pub(crate) fn image_resource_state(&self, image: ImageHandle) -> Option<(Extent, bool)> {
 		self.images
-			.get(image.0 .0 as usize)
+			.get(image.0.0 as usize)
 			.map(|image| (image.extent, image.resource.is_some()))
 	}
 
 	pub(crate) fn image_frame_resource_state(&self, image: ImageHandle, sequence_index: u8) -> Option<bool> {
-		self.images.get(image.0 .0 as usize).map(|image| {
+		self.images.get(image.0.0 as usize).map(|image| {
 			image
 				.frame_resources
 				.as_ref()
@@ -141,7 +141,7 @@ impl Device {
 		image: ImageHandle,
 		sequence_index: u8,
 	) -> Option<D3D12_RESOURCE_STATES> {
-		let image = self.images.get(image.0 .0 as usize)?;
+		let image = self.images.get(image.0.0 as usize)?;
 		let resource = if let Some(resources) = image.frame_resources.as_ref() {
 			resources.get(sequence_index as usize)?.as_ref()?
 		} else {
@@ -273,7 +273,7 @@ impl Device {
 
 	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {
 		self.images
-			.get(image.0 .0 as usize)
+			.get(image.0.0 as usize)
 			.and_then(|image_data| image_data.resource.as_ref())
 			.map(|resource| {
 				self.image_states

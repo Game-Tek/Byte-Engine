@@ -4,7 +4,7 @@ use betp::{self, Client as _};
 
 use crate::{
 	core::Entity,
-	network::{client::udp, replicable::Importance, Replicable},
+	network::{Replicable, client::udp, replicable::Importance},
 };
 
 /// The `Client` struct provides the application-facing connection for a

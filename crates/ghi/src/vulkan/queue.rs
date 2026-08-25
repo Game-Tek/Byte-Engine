@@ -1,6 +1,6 @@
 use utils::hash::HashMap;
 
-use super::{context::Context, BufferTransitionState, Handles, TransitionState};
+use super::{BufferTransitionState, Handles, TransitionState, context::Context};
 use crate::frame::Frame as _;
 use crate::vulkan::Frame;
 

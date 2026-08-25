@@ -228,13 +228,17 @@ impl PipelineManagerServer {
 		})?;
 		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
 			resources.request(id).await.map_err(|_| {
-				format!("Pipeline resource '{id}' could not be loaded. The most likely cause is that the pipeline asset was not baked.")
+				format!(
+					"Pipeline resource '{id}' could not be loaded. The most likely cause is that the pipeline asset was not baked."
+				)
 			})?;
 		match &pipeline.resource().kind {
 			PipelineKind::Compute { shader, push_constants } => {
 				let prepared = prepare_shader(resources, shader).await?;
 				let workgroup = prepared.workgroup.ok_or_else(|| {
-					format!("Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata.")
+					format!(
+						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
+					)
 				})?;
 				let bindings = prepared.bindings.clone();
 				let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;

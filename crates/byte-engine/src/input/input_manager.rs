@@ -577,9 +577,9 @@ mod tests {
 	use super::*;
 	use crate::input::ActionBindingDescription;
 	use crate::input::{
+		ValueMapping,
 		input_trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
-		ValueMapping,
 	};
 
 	fn declare_vr_headset_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
@@ -1385,27 +1385,27 @@ use std::{collections::HashMap, default};
 
 use log::warn;
 use serde::de;
-use utils::{insert_return_length, RGBA};
+use utils::{RGBA, insert_return_length};
 
 pub use super::action_evaluator::InputEventState;
 use super::{
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
+	Value,
 	action::{InputValue, TriggerMapping},
-	action_evaluator::{resolve_action_value, InputAction},
+	action_evaluator::{InputAction, resolve_action_value},
 	device::Device,
 	device_class::{DeviceClass, DeviceClassHandle},
 	input_trigger::{Trigger, TriggerDescription},
-	records::{compact_latest_by_source, compare_source_then_time, Record},
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
-	Value,
+	records::{Record, compact_latest_by_source, compare_source_then_time},
 };
 use super::{Axis2, Axis3};
 use crate::{
 	core::{
+		Entity, EntityHandle,
 		channel::{Channel as _, DefaultChannel},
 		factory::{CreateMessage, Factory},
 		listener::{DefaultListener, Listener},
 		message::Message,
-		Entity, EntityHandle,
 	},
 	input::ActionEvent,
 };

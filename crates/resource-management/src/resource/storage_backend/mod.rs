@@ -12,7 +12,7 @@ pub trait DynStorageBackend: DynReadStorageBackend + DynWriteStorageBackend {}
 pub trait ReadStorageBackend: Sync + Send {
 	fn list(&self) -> impl Future<Output = Result<Vec<String>, String>>;
 	fn read<'a>(&'a self, id: ResourceId<'a>)
-		-> impl Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a;
+	-> impl Future<Output = Option<(SerializableResource, MultiResourceReader)>> + 'a;
 
 	fn query(
 		&self,
@@ -345,7 +345,7 @@ pub mod tests {
 				.lock()
 				.iter()
 				.map(|x| {
-					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
@@ -363,11 +363,11 @@ pub mod tests {
 				.lock()
 				.iter()
 				.find(|x| {
-					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
 					resource.id == name.as_ref()
 				})
 				.map(|x| {
-					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
@@ -385,11 +385,11 @@ pub mod tests {
 					.lock()
 					.iter()
 					.find(|x| {
-						let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
+						let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
 						resource.id == name.as_ref()
 					})?
 					.1
-					 .1
+					.1
 					.clone(),
 			)
 		}
@@ -477,7 +477,7 @@ pub mod tests {
 		fn commit_resource(
 			&self,
 			_resource_id: crate::resource::ResourceId,
-			_backend_offset: Option<u64>,
+			_backend_reservation: Option<super::transaction::ResourceReservation>,
 			resource: ProcessedAsset,
 			output: ResourceWriteOutput,
 			allocator: &dyn std::alloc::Allocator,
@@ -504,6 +504,6 @@ use std::future::Future;
 
 use super::resource_handler::MultiResourceReader;
 use crate::{
-	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
+	ArchivedSerializableResource, ProcessedAsset, SerializableResource, asset::ResourceId, model::ArchivedQueryableValue,
 };
-use crate::{r#async::BoxedFuture, QueryableValue};
+use crate::{QueryableValue, r#async::BoxedFuture};

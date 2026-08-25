@@ -5,9 +5,9 @@ use std::net::ToSocketAddrs;
 use betp::{
 	packets::Packets,
 	server::{
+		Events,
 		interface::{ConnectionResults, Settings},
 		session::Session,
-		Events,
 	},
 };
 

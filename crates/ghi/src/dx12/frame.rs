@@ -100,14 +100,15 @@ impl Frame<'_> {
 				let source = match &shader.source {
 					crate::dx12::factory::ShaderSource::Spirv(bytes) => crate::shader::Sources::SPIRV(bytes),
 					crate::dx12::factory::ShaderSource::Dxil(bytes) => crate::shader::Sources::DXIL(bytes),
-					crate::dx12::factory::ShaderSource::Hlsl { source, entry_point } => crate::shader::Sources::HLSL {
-						source,
-						entry_point,
-					},
+					crate::dx12::factory::ShaderSource::Hlsl { source, entry_point } => {
+						crate::shader::Sources::HLSL { source, entry_point }
+					}
 				};
 				self.device
 					.create_shader(shader.name.as_deref(), source, shader.stage, shader.resources.iter().copied())
-					.expect("Failed to intern DX12 factory shader. The most likely cause is that the factory stored an unsupported shader source.")
+					.expect(
+						"Failed to intern DX12 factory shader. The most likely cause is that the factory stored an unsupported shader source.",
+					)
 			})
 			.collect()
 	}

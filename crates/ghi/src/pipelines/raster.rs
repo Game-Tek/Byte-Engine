@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use crate::{
-	pipelines::{ShaderParameter, VertexElement},
 	Formats,
+	pipelines::{ShaderParameter, VertexElement},
 };
 
 /// The `Builder` struct collects portable raster state before a backend creates its native pipeline.

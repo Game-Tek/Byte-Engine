@@ -2,7 +2,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 
 use super::pipeline_manager::Instance;
-use super::{MAX_INSTANCES, MAX_MESHLETS, MESHLET_CULLING_TASK_GROUP_SIZE, MESH_DISPATCH_WORK_BINDING};
+use super::{MAX_INSTANCES, MAX_MESHLETS, MESH_DISPATCH_WORK_BINDING, MESHLET_CULLING_TASK_GROUP_SIZE};
 
 const MAX_WORK_ITEMS_PER_INSTANCE: usize = MAX_MESHLETS.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE as usize);
 const MAX_MESH_DISPATCH_WORK_ITEMS: usize = MAX_INSTANCES * MAX_WORK_ITEMS_PER_INSTANCE;
@@ -163,7 +163,7 @@ fn build_work_items(destination: &mut [MeshDispatchWorkItem], instances: &[Insta
 
 #[cfg(test)]
 mod tests {
-	use super::{build_work_items, MeshDispatchWorkItem};
+	use super::{MeshDispatchWorkItem, build_work_items};
 	use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 
 	#[test]

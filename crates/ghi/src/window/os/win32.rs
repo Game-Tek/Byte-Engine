@@ -1,32 +1,32 @@
 use windows::{
-	core::PCSTR,
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
 		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
 		Graphics::Gdi::HBRUSH,
 		System::LibraryLoader::GetModuleHandleA,
 		UI::{
-			HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2},
+			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 			Input::{
-				GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT,
-				RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+				GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE,
+				RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 			},
 			WindowsAndMessaging::{
-				CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetCursorPos,
-				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, TranslateMessage,
-				UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, MSG, PM_REMOVE, RI_KEY_BREAK,
-				WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
-				WNDCLASSA, WNDCLASS_STYLES, WS_POPUP, WS_VISIBLE,
+				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GWLP_WNDPROC,
+				GetClientRect, GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, PM_REMOVE, PeekMessageA, PostQuitMessage,
+				RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE,
+				WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+				WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
+				WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
+	core::PCSTR,
 };
 
 use crate::window::{
+	Events, Features, Seat,
 	input::{Keys, MouseKeys},
 	os::WindowLike,
-	Events, Features, Seat,
 };
 
 pub struct Window {
@@ -50,12 +50,12 @@ impl WindowLike for Window {
 		};
 
 		// Create Cstrings becasue Win32 API uses null terminated strings
-		let id_name = std::ffi::CString::new(id_name).map_err(|_| {
-			"Failed to build the window class name. The most likely cause is that the id string contains an interior null byte."
-		})?;
-		let name = std::ffi::CString::new(name).map_err(|_| {
-			"Failed to build the window title. The most likely cause is that the window name contains an interior null byte."
-		})?;
+		let id_name = std::ffi::CString::new(id_name).map_err(
+			|_| "Failed to build the window class name. The most likely cause is that the id string contains an interior null byte.",
+		)?;
+		let name = std::ffi::CString::new(name).map_err(
+			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
+		)?;
 
 		let window_style = WS_POPUP | WS_VISIBLE;
 
@@ -98,9 +98,9 @@ impl WindowLike for Window {
 				Some(hinstance.into()),
 				None,
 			)
-			.map_err(|_| {
-				"Failed to create the window. The most likely cause is that the window class registration or parameters are invalid."
-			})?;
+			.map_err(
+				|_| "Failed to create the window. The most likely cause is that the window class registration or parameters are invalid.",
+			)?;
 			(class, hwnd)
 		};
 

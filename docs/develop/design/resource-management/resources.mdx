@@ -34,11 +34,15 @@ A mesh reference resolves primitive materials and exposes stream descriptions fo
 The Redb storage backend stores metadata in `resources.db`. It supports two payload storage modes:
 
 - `files` stores each resource payload in a separate hash-named file. This mode is the default.
-- `packed` appends every payload to `resources.pack` and stores each resource offset in `resources.db`.
+- `packed` stores every payload in a reusable range of `resources.pack` and records each resource offset in `resources.db`.
 
 One mode applies to the whole resource store. The backend records that mode when it creates the store and discovers it when the store is reopened. It rejects a conflicting mode instead of mixing payload layouts.
 
-Packed replacements append a new payload range, and deletion makes the old range unreachable. The pack does not shrink automatically. Clear and rebake the store when you need to reclaim that space.
+Packed replacements use copy-on-write publication so an interrupted bake cannot replace valid metadata with partial bytes. After publication, the backend reuses the old range when no mapped reader still owns it. Deletion also returns its range. The allocator merges adjacent free ranges, chooses the smallest range that fits, and grows `resources.pack` only when no free range is large enough. When you reopen the store, it reconstructs free ranges from the live offsets in `resources.db`, which also recovers space left by an interrupted bake.
+
+Use one backend instance for a resource directory while it can be updated. Drop read-only backends and their mapped resource backings before reopening the directory for writing.
+
+Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/develop/design/resource-management/baking-app-resources) when you see this warning.
 
 The backend converts resource URLs into stable resource IDs for storage lookup.
 The backend also maintains class and property indexes so BELD and editor tools can query resources without scanning and deserializing everything.

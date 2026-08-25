@@ -2,7 +2,7 @@
 
 use core::slice::SlicePattern;
 use std::{
-	collections::{hash_map::Entry, VecDeque},
+	collections::{VecDeque, hash_map::Entry},
 	sync::Arc,
 };
 
@@ -19,20 +19,21 @@ use resource_management::{
 	asset::handler::implementations::bema::ProgramGenerator, shader::generator::ShaderGenerationSettings,
 };
 use utils::{
+	Box, Extent,
 	hash::{HashMap, HashMapExt},
 	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
 	sync::RwLock,
-	Box, Extent,
 };
 
 use crate::{
 	core::{
+		Entity, EntityHandle,
 		entity::{self},
 		listener::Listener,
-		Entity, EntityHandle,
 	},
 	rendering::Camera,
 	rendering::{
+		RenderableMesh, Sink,
 		common_shader_generator::CommonShaderScope,
 		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
 		pipelines::simple::{CameraShaderData, PipelineManager},
@@ -40,7 +41,6 @@ use crate::{
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 		view::View,
-		RenderableMesh, Sink,
 	},
 	space::Transformable,
 };

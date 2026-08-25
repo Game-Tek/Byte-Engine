@@ -1,11 +1,11 @@
 pub mod redb;
 
-use std::{fmt::Debug, ops::Range};
+use std::{fmt::Debug, ops::Range, sync::Arc};
 
 use memmap2::{Mmap, MmapOptions};
 
 use super::{ReadTargets, ReadTargetsMut};
-use crate::{r#async::BoxedFuture, StreamDescription};
+use crate::{StreamDescription, r#async::BoxedFuture};
 
 #[derive(Debug)]
 /// The `ResourceReaderBacking` enum provides reusable, reader-owned storage for resource bytes.
@@ -74,6 +74,9 @@ impl ResourceGpuBacking {
 pub struct MappedFileBacking {
 	map: Mmap,
 	range: Range<usize>,
+	// Packed backends attach a lease so a replaced slot cannot be reused while
+	// this mapping still exposes its previous bytes.
+	_lease: Option<Arc<()>>,
 }
 
 impl MappedFileBacking {
@@ -81,11 +84,22 @@ impl MappedFileBacking {
 	pub fn new(file: impl memmap2::MmapAsRawDesc) -> Result<Self, ()> {
 		let map = unsafe { MmapOptions::new().map(file) }.map_err(|_| ())?;
 		let range = 0..map.len();
-		Ok(Self { map, range })
+		Ok(Self {
+			map,
+			range,
+			_lease: None,
+		})
 	}
 
-	/// Creates a mapped-file backing that exposes one logical range from a shared payload file.
-	pub fn new_range(file: impl memmap2::MmapAsRawDesc, offset: u64, size: u64) -> Result<Self, ()> {
+	/// Creates a mapped-file backing for one optionally leased range of a shared payload file.
+	pub(crate) fn new_range(
+		file: impl memmap2::MmapAsRawDesc,
+		offset: u64,
+		size: u64,
+		lease: Option<Arc<()>>,
+	) -> Result<Self, ()> {
+		// Map once and keep the logical range separate so consumers can borrow
+		// exactly one payload without copying it out of the shared file.
 		let map = unsafe { MmapOptions::new().map(file) }.map_err(|_| ())?;
 		let start = usize::try_from(offset).map_err(|_| ())?;
 		let size = usize::try_from(size).map_err(|_| ())?;
@@ -93,7 +107,11 @@ impl MappedFileBacking {
 		if end > map.len() {
 			return Err(());
 		}
-		Ok(Self { map, range: start..end })
+		Ok(Self {
+			map,
+			range: start..end,
+			_lease: lease,
+		})
 	}
 
 	/// Returns the logical resource bytes from the mapped file.

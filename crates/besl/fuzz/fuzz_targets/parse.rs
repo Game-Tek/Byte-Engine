@@ -10,7 +10,6 @@ fuzz_target!(|data: &[u8]| {
 
 	// Syntax errors are expected; successful parses must retain the public root invariant.
 	if let Ok(root) = besl::parse(source) {
-
 		assert_eq!(root.name(), Some("root"));
 		assert!(matches!(root.node(), besl::parser::Nodes::Scope { .. }));
 	}

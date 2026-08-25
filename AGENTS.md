@@ -27,6 +27,8 @@ When an error or warning has a documented recovery workflow, include a direct li
 - Prefer composition over inheritance. Use traits to define shared behavior and structs to encapsulate data.
 - Prefer pure functions. Just inputs and outputs.
 - Keep mutability at higher call sites.
+- Keep dependency injection in mind.
+- Separate concerns by layers. E.G: If some feature requires keeping track of occupied and free spaces in a file, write one piece of code that keeps track of that without concerning itself with how to read or modify the file, and the another piece of code that takes the former function's result and applied that to the file. Don't coalesce concerns. 
 
 # Working
 

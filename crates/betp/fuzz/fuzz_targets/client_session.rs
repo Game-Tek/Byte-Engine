@@ -7,7 +7,7 @@ use betp::{
 	packets::{ChallengePacket, DisconnectPacket, Packets},
 };
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
-use support::{make_batch, make_data_packet, observe_session_output, other_connection_id, Operation, RETRY_QUIESCENCE_UPDATES};
+use support::{Operation, RETRY_QUIESCENCE_UPDATES, make_batch, make_data_packet, observe_session_output, other_connection_id};
 
 const MAX_OPERATIONS: usize = 64;
 const MAX_BATCH_SIZE: usize = 8;
@@ -133,7 +133,6 @@ fuzz_target!(|input: Input| {
 				let was_connected = session.is_connected();
 				session.disconnect();
 				if was_connected {
-
 					assert!(!session.is_connected());
 				}
 			}
@@ -147,7 +146,6 @@ fuzz_target!(|input: Input| {
 				let packet = make_data_packet(connection_id.unwrap_or_default(), *sequence, *ack, *ack_bitfield, *fill);
 				let result = update_session(&mut session, &[packet], &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
-
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}
@@ -192,7 +190,6 @@ fuzz_target!(|input: Input| {
 				];
 				let result = update_session(&mut session, &packets, &mut connection_id, &mut updates_left);
 				if was_connected && result.is_some() {
-
 					assert!(result.is_some_and(|result| result.is_ok()));
 					assert!(session.is_connected());
 				}

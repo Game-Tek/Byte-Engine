@@ -4,30 +4,30 @@ use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
 use utils::hash::{HashSet, HashSetExt};
 use utils::{
-	hash::{HashMap, HashMapExt},
 	Extent,
+	hash::{HashMap, HashMapExt},
 };
 
 use super::{
+	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
+	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MAX_FRAMES_IN_FLIGHT,
+	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
+	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState,
 	utils::{
 		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
 		uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
-	DescriptorHeaps, DescriptorMaterialization, DescriptorMaterializationHandle, DescriptorSet, Image, MaterializationKey,
-	MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, PipelineResourceDescriptor,
-	ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState,
-	MAX_FRAMES_IN_FLIGHT,
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	graphics_hardware_interface, image, sampler,
+	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, Task, Tasks,
-		MAX_SWAPCHAIN_IMAGES,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
+		Tasks,
 	},
-	window, FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size,
+	window,
 };
 
 /// The `TextureReadbackStorage` struct keeps one Vulkan transfer result alive for later CPU mapping.

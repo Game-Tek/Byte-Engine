@@ -5,16 +5,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use objc2_audio_toolbox::{
-	kAudioOutputUnitProperty_EnableIO, kAudioUnitManufacturer_Apple, kAudioUnitProperty_MaximumFramesPerSlice,
-	kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, kAudioUnitScope_Output,
-	kAudioUnitSubType_DefaultOutput, kAudioUnitSubType_HALOutput, kAudioUnitType_Output, AURenderCallbackStruct,
-	AudioComponent, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose,
+	AURenderCallbackStruct, AudioComponent, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose,
 	AudioComponentInstanceNew, AudioOutputUnitStart, AudioOutputUnitStop, AudioUnit, AudioUnitGetProperty, AudioUnitInitialize,
-	AudioUnitRenderActionFlags, AudioUnitSetProperty, AudioUnitUninitialize,
+	AudioUnitRenderActionFlags, AudioUnitSetProperty, AudioUnitUninitialize, kAudioOutputUnitProperty_EnableIO,
+	kAudioUnitManufacturer_Apple, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_SetRenderCallback,
+	kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, kAudioUnitScope_Output, kAudioUnitSubType_DefaultOutput,
+	kAudioUnitSubType_HALOutput, kAudioUnitType_Output,
 };
 use objc2_core_audio_types::{
-	kAudioFormatLinearPCM, kLinearPCMFormatFlagIsFloat, kLinearPCMFormatFlagIsPacked, kLinearPCMFormatFlagIsSignedInteger,
-	AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp,
+	AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatLinearPCM, kLinearPCMFormatFlagIsFloat,
+	kLinearPCMFormatFlagIsPacked, kLinearPCMFormatFlagIsSignedInteger,
 };
 
 use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};
@@ -574,7 +574,7 @@ mod tests {
 	use std::sync::mpsc;
 	use std::time::Duration;
 
-	use super::{kAudioUnitSubType_DefaultOutput, output_component_subtypes, SpscByteRing, IO_DISABLED};
+	use super::{IO_DISABLED, SpscByteRing, kAudioUnitSubType_DefaultOutput, output_component_subtypes};
 
 	#[test]
 	fn default_output_is_the_first_macos_component_candidate() {

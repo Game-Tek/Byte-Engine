@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use besl::vm::{
-	builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture,
-	Value, VmError,
+	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, VmError, builtin_position_slot, input_slot,
+	output_slot,
 };
-use besl::{compile_to_besl, BindingTypes, Node};
+use besl::{BindingTypes, Node, compile_to_besl};
 
 fn compile_program(source: &str, root: Node) -> Result<ExecutableProgram, VmError> {
 	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");

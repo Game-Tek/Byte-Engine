@@ -327,16 +327,20 @@ mod tests {
 		buffer.acknowledge_packets(2, 0b1_0101);
 
 		for sequence in [2, 0, u16::MAX - 1] {
-			assert!(buffer
-				.buffer
-				.iter()
-				.all(|entry| { entry.is_none_or(|entry| entry.packet.connection_status.sequence != sequence) }));
+			assert!(
+				buffer
+					.buffer
+					.iter()
+					.all(|entry| { entry.is_none_or(|entry| entry.packet.connection_status.sequence != sequence) })
+			);
 		}
 		for sequence in [u16::MAX, 1, 3, 4, 5] {
-			assert!(buffer
-				.buffer
-				.iter()
-				.any(|entry| { entry.is_some_and(|entry| entry.packet.connection_status.sequence == sequence) }));
+			assert!(
+				buffer
+					.buffer
+					.iter()
+					.any(|entry| { entry.is_some_and(|entry| entry.packet.connection_status.sequence == sequence) })
+			);
 		}
 	}
 }

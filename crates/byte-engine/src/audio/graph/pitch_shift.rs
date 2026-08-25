@@ -249,7 +249,7 @@ fn nyquist_taper(target_bin: f32, ratio: f32) -> f32 {
 mod tests {
 	use std::f32::consts::{PI, TAU};
 
-	use super::{advance_output_phase, wrap_phase, PitchShiftProcessor, HOP_SIZE, WINDOW_SIZE};
+	use super::{HOP_SIZE, PitchShiftProcessor, WINDOW_SIZE, advance_output_phase, wrap_phase};
 
 	const SAMPLE_RATE: f32 = 48_000.0;
 	const SAMPLE_COUNT: usize = 16_384;

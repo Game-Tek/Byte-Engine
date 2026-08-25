@@ -4,7 +4,7 @@ pub mod gltf;
 pub mod shader;
 
 pub use gltf::brdf_material_from_gltf;
-pub use shader::{generate_solid_brdf_program, generate_textured_brdf_program, BrdfShaderGenerationError};
+pub use shader::{BrdfShaderGenerationError, generate_solid_brdf_program, generate_textured_brdf_program};
 
 pub(crate) fn material_texture_variable_name(image_index: u32) -> String {
 	format!("material_texture_{image_index}")

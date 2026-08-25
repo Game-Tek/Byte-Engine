@@ -52,8 +52,8 @@ impl IBLGenerator {
 
 	pub fn with_gpu_context<Owner: 'static>(
 		initialize: impl FnOnce() -> Result<(ghi::implementation::Context, ghi::QueueHandle, Owner), gpu::GPUIBLBakeError>
-			+ Send
-			+ 'static,
+		+ Send
+		+ 'static,
 	) -> Result<Self, gpu::GPUIBLBakeError> {
 		Self::with_gpu_processor_factory(move || {
 			let (context, queue, owner) = initialize()?;
@@ -145,9 +145,9 @@ async fn store_baked_image(
 use utils::Extent;
 
 use crate::{
-	asset::{handler::LoadErrors, ResourceId},
+	BakeContext, ProcessedAsset, StreamDescription,
+	asset::{ResourceId, handler::LoadErrors},
 	ibl::cpu::bake_image_ibl_in,
 	resources::image::{Image, ImageIBL},
 	types::{Formats, Gamma},
-	BakeContext, ProcessedAsset, StreamDescription,
 };

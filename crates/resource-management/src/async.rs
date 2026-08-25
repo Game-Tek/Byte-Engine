@@ -1,13 +1,13 @@
 use std::future::Future;
 use std::pin::Pin;
 
+pub use compio::fs::File;
 pub use compio::fs::read;
 pub use compio::fs::write;
-pub use compio::fs::File;
 pub use compio::process::Command;
+pub use compio::runtime::Runtime as Executor;
 pub use compio::runtime::spawn;
 pub use compio::runtime::spawn_blocking;
-pub use compio::runtime::Runtime as Executor;
 pub use compio::test;
 pub use spawn_blocking as offload;
 pub use spawn_blocking as spawn_cpu_task;

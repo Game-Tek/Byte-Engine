@@ -19,11 +19,7 @@ pub(crate) fn get_fragment(url: &str) -> Option<&str> {
 	let mut split = url.split('#');
 	let _ = split.next().filter(|&x| !x.is_empty())?;
 	let fragment = split.next().filter(|&x| !x.is_empty())?;
-	if split.count() == 0 {
-		Some(fragment)
-	} else {
-		None
-	}
+	if split.count() == 0 { Some(fragment) } else { None }
 }
 
 /// The `ResourceId` struct provides borrowed access to a full resource ID and its components.
@@ -98,7 +94,7 @@ impl_resource_id_view!(ResourceIdFragment, fragment);
 
 #[cfg(test)]
 pub mod tests {
-	use super::{get_base, get_fragment, ResourceId};
+	use super::{ResourceId, get_base, get_fragment};
 
 	fn assert_text_view(view: &(impl AsRef<str> + std::fmt::Debug + ToString), expected: &str) {
 		assert_eq!(view.as_ref(), expected);

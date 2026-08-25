@@ -8,11 +8,11 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 	entry_point: &str,
 	stage: ShaderTypes,
 ) -> Result<Box<[u8]>, String> {
-	use windows::core::PCWSTR;
 	use windows::Win32::Graphics::Direct3D::Dxc::{
-		CLSID_DxcCompiler, DxcBuffer, DxcCreateInstance, IDxcBlob, IDxcCompiler3, IDxcIncludeHandler, IDxcResult, DXC_CP_UTF8,
-		DXC_OUT_OBJECT,
+		CLSID_DxcCompiler, DXC_CP_UTF8, DXC_OUT_OBJECT, DxcBuffer, DxcCreateInstance, IDxcBlob, IDxcCompiler3,
+		IDxcIncludeHandler, IDxcResult,
 	};
+	use windows::core::PCWSTR;
 
 	let target = dxil_target_profile(stage, source)?;
 	let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
@@ -139,7 +139,7 @@ fn wide_argument(argument: &str) -> Vec<u16> {
 
 #[cfg(target_os = "windows")]
 fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult) -> String {
-	use windows::Win32::Graphics::Direct3D::Dxc::{IDxcBlob, DXC_OUT_ERRORS};
+	use windows::Win32::Graphics::Direct3D::Dxc::{DXC_OUT_ERRORS, IDxcBlob};
 
 	let mut errors = None;
 	if unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_ERRORS, std::ptr::null_mut(), &mut errors) }.is_err() {

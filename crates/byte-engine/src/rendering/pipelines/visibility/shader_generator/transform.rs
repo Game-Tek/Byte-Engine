@@ -1,5 +1,5 @@
 use besl::parser::Node;
-use resource_management::asset::{handler::implementations::bema::ProgramGenerator, JsonObject};
+use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use super::ast::*;

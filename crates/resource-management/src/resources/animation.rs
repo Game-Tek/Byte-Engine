@@ -1,8 +1,7 @@
 use crate::{
-	resource,
+	Reference, ReferenceModel, Solver, resource,
 	resources::skeleton::{Skeleton, SkeletonModel},
 	solver::SolveErrors,
-	Reference, ReferenceModel, Solver,
 };
 
 /// The `Vector3Curve` enum provides translation or scale keyframes for CPU pose evaluation.
@@ -356,10 +355,10 @@ fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveErrors> 
 mod tests {
 	use super::{Animation, AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve};
 	use crate::{
-		asset::ResourceId,
-		resource::{storage_backend::tests::TestStorageBackend, WriteStorageBackend},
-		resources::skeleton::{LocalTransform, SkeletonModel, SkeletonNode},
 		ProcessedAsset, ReferenceModel, Solver,
+		asset::ResourceId,
+		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
+		resources::skeleton::{LocalTransform, SkeletonModel, SkeletonNode},
 	};
 
 	async fn skeleton_reference(storage: &TestStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {

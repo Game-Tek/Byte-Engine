@@ -981,8 +981,8 @@ mod tests {
 	use std::{
 		alloc::Global,
 		sync::{
-			atomic::{AtomicBool, Ordering},
 			Arc,
+			atomic::{AtomicBool, Ordering},
 		},
 	};
 
@@ -990,10 +990,10 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		atlas_byte_size, output_atlas_extent, source_atlas_layout, write_source_atlas, write_source_level, GPUIBLBakeError,
-		GPUIBLClient, GPUIBLPushConstants, BYTES_PER_RGBA16F_PIXEL,
+		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, GPUIBLPushConstants, atlas_byte_size, output_atlas_extent,
+		source_atlas_layout, write_source_atlas, write_source_level,
 	};
-	use crate::ibl::cpu::{bake_image_ibl_in, build_source_mips, decode_source_radiance, CubemapIBLLayout};
+	use crate::ibl::cpu::{CubemapIBLLayout, bake_image_ibl_in, build_source_mips, decode_source_radiance};
 }
 
 use std::{
@@ -1001,8 +1001,8 @@ use std::{
 	error::Error,
 	fmt,
 	sync::{
-		mpsc::{self, SyncSender},
 		Mutex,
+		mpsc::{self, SyncSender},
 	},
 	thread::JoinHandle,
 };
@@ -1020,8 +1020,8 @@ use utils::Extent;
 
 use super::{
 	cpu::{
-		decode_source_pixel, lat_long_row_solid_angle, write_rgba16f, CubemapIBLLayout, IBLBakeError, Radiance,
-		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE,
+		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError, Radiance,
+		decode_source_pixel, lat_long_row_solid_angle, write_rgba16f,
 	},
 	gpu_shaders::{GPU_IBL_GLSL, GPU_IBL_HLSL, GPU_IBL_MSL},
 };

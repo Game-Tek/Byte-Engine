@@ -62,9 +62,5 @@ pub fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
 		}
 	}
 
-	if ok {
-		Ok(())
-	} else {
-		Err(1)
-	}
+	if ok { Ok(()) } else { Err(1) }
 }

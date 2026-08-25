@@ -1,11 +1,11 @@
 use std::{borrow::Cow, num::NonZeroU32};
 
 use ash::vk::{self, TaggedStructure as _};
-use utils::{hash::HashMap, Extent};
+use utils::{Extent, hash::HashMap};
 
 use super::{
-	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
 	DebugCallbackData, MemoryBackedResourceCreationResult, StoredQueue,
+	utils::{extent_into_vk_extent, image_type_from_extent, into_vk_image_usage_flags, to_format},
 };
 use crate::{
 	graphics_hardware_interface,

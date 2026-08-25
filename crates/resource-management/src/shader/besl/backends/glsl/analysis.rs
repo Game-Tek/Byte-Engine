@@ -122,5 +122,5 @@ impl Generator {
 use std::cell::RefCell;
 
 use crate::shader::generator::{
-	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, ordered_shader_nodes,
 };

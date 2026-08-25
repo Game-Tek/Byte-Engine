@@ -81,11 +81,11 @@ impl Default for OGGAssetHandler {
 #[cfg(test)]
 mod tests {
 	use crate::{
-		asset::{self, handler::implementations::ogg::OGGAssetHandler, manager::AssetManager, ResourceId},
+		AssetHandler,
+		asset::{self, ResourceId, handler::implementations::ogg::OGGAssetHandler, manager::AssetManager},
 		r#async, resource,
 		resources::audio::Audio,
 		types::BitDepths,
-		AssetHandler,
 	};
 
 	#[r#async::test]
@@ -152,7 +152,7 @@ mod tests {
 
 	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.
 	fn make_test_ogg() -> Vec<u8> {
-		use std::num::{NonZeroU32, NonZeroU8};
+		use std::num::{NonZeroU8, NonZeroU32};
 
 		let sample_rate = NonZeroU32::new(48_000).unwrap();
 
@@ -177,11 +177,11 @@ mod tests {
 use std::borrow::Cow;
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::audio::{process_audio, AudioDescription},
-	types::BitDepths,
 	ProcessedAsset,
+	processors::processor::implementations::audio::{AudioDescription, process_audio},
+	types::BitDepths,
 };

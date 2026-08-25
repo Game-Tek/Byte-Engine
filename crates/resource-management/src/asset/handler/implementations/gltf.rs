@@ -19,19 +19,21 @@ mod tests {
 	use utils::json;
 
 	use super::{
+		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
 		collect_gltf_texture_dependencies, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
 		gltf_normal_transform, gltf_primitive_transform_node, gltf_transform_orientation, gltf_vertex_component,
 		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
 		load_gltf_buffers, material_override, normalize_vertex_layouts, sanitize_material_name,
 		select_unfragmented_gltf_resource, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
 		validate_affine_matrix, validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
-		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
+		ReferenceModel,
 		asset::{
-			handler::implementations::bema::tests::MinimalTestShaderGenerator, handler::AssetHandler, manager::AssetManager,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
+			ContainerDefaultResource, ResourceId, handler::AssetHandler,
+			handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 		processors::{
@@ -46,7 +48,6 @@ mod tests {
 			skeleton::{SkeletonModel, SkinJoint},
 		},
 		types::{VertexComponent, VertexSemantics},
-		ReferenceModel,
 	};
 
 	#[test]
@@ -1204,30 +1205,31 @@ use maths_rs::{
 	mat::{MatDeterminant, MatInverse, MatNew4, MatScale, MatTranspose},
 	vec::Vec3,
 };
-use utils::{json, json::JsonValueTrait, Extent};
+use utils::{Extent, json, json::JsonValueTrait};
 
 use super::{
-	container_default_resource,
+	ContainerDefaultResource, ResourceId, container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, store_model_owned, ContainerDefaultResource, ResourceId,
+	sanitize_material_name, store_model, store_model_owned,
 };
-use crate::asset::handler::implementations::bema::{compile_shader_program, ProgramGenerator};
+use crate::asset::handler::implementations::bema::{ProgramGenerator, compile_shader_program};
 pub use crate::processors::processor::implementations::mesh::TriangleFrontFaceWinding;
 use crate::{
+	ProcessedAsset, ReferenceModel,
 	asset::{self},
+	r#async::spawn_cpu_task,
 	pbr::{
-		brdf_material_from_gltf, generate_textured_brdf_program, material_texture_variable_name, BrdfMaterialDescription,
-		BrdfMaterialValidationError, BrdfNode, BrdfNodeId, BrdfValue,
+		BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, BrdfValue, brdf_material_from_gltf,
+		generate_textured_brdf_program, material_texture_variable_name,
 	},
 	processors::{
 		processor::implementations::image::{
-			gamma_from_semantic, guess_semantic_from_name, process_image_with_mip_backend_in, ImageDescription, ImageSource,
-			Semantic, SourceChannels, SourceEncoding,
+			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
+			guess_semantic_from_name, process_image_with_mip_backend_in,
 		},
 		processor::implementations::mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, VertexSkin},
 	},
-	r#async::spawn_cpu_task,
 	resource,
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
@@ -1239,5 +1241,4 @@ use crate::{
 		},
 	},
 	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
-	ProcessedAsset, ReferenceModel,
 };

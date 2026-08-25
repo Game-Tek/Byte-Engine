@@ -349,7 +349,7 @@ unsafe fn erase_lane_job_lifetime<'job>(job: Job<'job>) -> LaneJob {
 }
 
 use std::{
-	panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
+	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 	thread::{JoinHandle, Result as ThreadResult},
 };
 
@@ -358,10 +358,10 @@ use kanal::Sender;
 #[cfg(test)]
 mod tests {
 	use std::{
-		panic::{catch_unwind, AssertUnwindSafe},
+		panic::{AssertUnwindSafe, catch_unwind},
 		sync::{
-			atomic::{AtomicUsize, Ordering},
 			Barrier, Mutex,
+			atomic::{AtomicUsize, Ordering},
 		},
 		thread::{self, scope},
 		time::Duration,

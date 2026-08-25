@@ -150,27 +150,15 @@ impl ShaderFormatting {
 	}
 
 	pub(crate) fn break_str(&self) -> &'static str {
-		if self.minified {
-			""
-		} else {
-			"\n"
-		}
+		if self.minified { "" } else { "\n" }
 	}
 
 	pub(crate) fn space_str(&self) -> &'static str {
-		if self.minified {
-			""
-		} else {
-			" "
-		}
+		if self.minified { "" } else { " " }
 	}
 
 	pub(crate) fn comma_str(&self) -> &'static str {
-		if self.minified {
-			","
-		} else {
-			", "
-		}
+		if self.minified { "," } else { ", " }
 	}
 
 	pub(crate) fn push_indentation(&self, string: &mut String, indent: usize) {
@@ -829,21 +817,25 @@ pub mod tests {
 		let main = program.get_main().expect("workgroup fixture should contain main");
 		let order = super::ordered_shader_nodes(&main, "stage validation");
 
-		assert!(super::validate_workgroup_storage_stage(
-			&super::Stages::Compute {
-				local_size: Extent::square(8)
-			},
-			&order
-		)
-		.is_ok());
-		assert!(super::validate_workgroup_storage_stage(
-			&super::Stages::Task {
-				local_size: Extent::line(32),
-				maximum_mesh_threadgroups: 32,
-			},
-			&order,
-		)
-		.is_ok());
+		assert!(
+			super::validate_workgroup_storage_stage(
+				&super::Stages::Compute {
+					local_size: Extent::square(8)
+				},
+				&order
+			)
+			.is_ok()
+		);
+		assert!(
+			super::validate_workgroup_storage_stage(
+				&super::Stages::Task {
+					local_size: Extent::line(32),
+					maximum_mesh_threadgroups: 32,
+				},
+				&order,
+			)
+			.is_ok()
+		);
 		assert!(super::validate_workgroup_storage_stage(&super::Stages::Fragment, &order).is_err());
 	}
 

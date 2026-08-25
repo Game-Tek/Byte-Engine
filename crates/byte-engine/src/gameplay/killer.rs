@@ -1,4 +1,4 @@
-use crate::core::{factory::Handle, message::Message, Entity, EntityHandle};
+use crate::core::{Entity, EntityHandle, factory::Handle, message::Message};
 
 pub struct KillMessage {
 	handle: Handle,

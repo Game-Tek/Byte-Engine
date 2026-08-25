@@ -2,9 +2,9 @@ use std::{
 	collections::{HashMap, HashSet},
 	ffi::CString,
 	sync::{
+		Arc,
 		atomic::{AtomicBool, Ordering},
 		mpsc::{self, Receiver},
-		Arc,
 	},
 	thread::{self, JoinHandle},
 	time::{Duration, Instant},
@@ -14,7 +14,7 @@ use hidapi::{HidApi, HidDevice};
 use log::{debug, warn};
 
 use super::Axis2;
-use super::{input_manager::TriggerReference, DeviceHandle, Value};
+use super::{DeviceHandle, Value, input_manager::TriggerReference};
 
 const STICK_EPSILON: f32 = 0.001;
 const TRIGGER_EPSILON: f32 = 0.001;

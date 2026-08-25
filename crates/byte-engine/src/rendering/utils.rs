@@ -1,8 +1,8 @@
 use std::{alloc::Allocator, hash::Hash, marker::PhantomData, usize};
 
 use utils::{
-	hash::{HashMap, HashMapExt as _},
 	StableVec, StableVecHandle,
+	hash::{HashMap, HashMapExt as _},
 };
 
 use crate::core::factory::Handle;

@@ -5,8 +5,8 @@ mod validation;
 #[cfg(test)]
 use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{
-	orient_triangle_indices_for_front_face, MeshPrimitiveProcessingError, MeshProcessor, MeshProcessorSession, ProcessedMesh,
-	TriangleFrontFaceWinding,
+	MeshPrimitiveProcessingError, MeshProcessor, MeshProcessorSession, ProcessedMesh, TriangleFrontFaceWinding,
+	orient_triangle_indices_for_front_face,
 };
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
@@ -20,15 +20,15 @@ mod tests {
 		TriangleFrontFaceWinding, VertexSkin,
 	};
 	use crate::{
+		ReferenceModel,
 		resources::{
 			material::VariantModel,
 			skeleton::{
-				identity_affine_matrix4x3_columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
-				SkinPaletteEntry,
+				LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
+				identity_affine_matrix4x3_columns,
 			},
 		},
 		types::{AlphaMode, Streams, VertexComponent, VertexSemantics},
-		ReferenceModel,
 	};
 
 	#[test]
@@ -124,10 +124,12 @@ mod tests {
 		assert_eq!(processed.mesh.skins.len(), 1);
 		assert_eq!(processed.mesh.primitives[0].transform_node, Some(0));
 		assert_eq!(processed.mesh.primitives[0].skin, Some(0));
-		assert!(processed.mesh.primitives[0]
-			.streams
-			.iter()
-			.any(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Joints)));
+		assert!(
+			processed.mesh.primitives[0]
+				.streams
+				.iter()
+				.any(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Joints))
+		);
 	}
 
 	#[test]

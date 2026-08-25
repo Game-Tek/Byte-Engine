@@ -126,7 +126,7 @@ impl VisibilityPipelineRenderPass {
 		directional_shadow_enabled: bool,
 		cone_shadow_count: usize,
 		point_shadow_count: usize,
-	) -> Option<impl RenderPassFunction + 'a> {
+	) -> Option<impl RenderPassFunction + use<'a>> {
 		let skinning_pipeline = match skinning_pass {
 			Some(pass) => Some(self.pipeline_manager.pipeline(pass.pipeline())?),
 			None => None,
@@ -215,15 +215,15 @@ impl VisibilityPipelineRenderPass {
 		Some(
 			move |c: &mut ghi::implementation::CommandBufferRecording, t: &[ghi::AttachmentInformation]| {
 				log::debug!(
-				"Visibility render model executing: primitives={}, opaque_primitives={}, transparent_primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
-				instance_count,
-				opaque_instances.len(),
-				transparent_instances.len(),
-				meshlet_count,
-				opaque_count,
-				transparent_count,
-				directional_shadow_enabled || cone_shadow_count > 0 || point_shadow_count > 0,
-			);
+					"Visibility render model executing: primitives={}, opaque_primitives={}, transparent_primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
+					instance_count,
+					opaque_instances.len(),
+					transparent_instances.len(),
+					meshlet_count,
+					opaque_count,
+					transparent_count,
+					directional_shadow_enabled || cone_shadow_count > 0 || point_shadow_count > 0,
+				);
 				c.start_region(|label| label.write_str("Visibility Render Model"));
 
 				if let (Some(skinning_pass), Some(skinning_pipeline)) = (skinning_pass, skinning_pipeline) {

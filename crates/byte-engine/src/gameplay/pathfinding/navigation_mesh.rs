@@ -63,12 +63,10 @@ pub enum NavigationPathError {
 impl fmt::Display for NavigationPathError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::NonFiniteStart => formatter.write_str(
-				"Invalid navigation path start. The most likely cause is a coordinate containing NaN or infinity.",
-			),
-			Self::NonFiniteTarget => formatter.write_str(
-				"Invalid navigation path target. The most likely cause is a coordinate containing NaN or infinity.",
-			),
+			Self::NonFiniteStart => formatter
+				.write_str("Invalid navigation path start. The most likely cause is a coordinate containing NaN or infinity."),
+			Self::NonFiniteTarget => formatter
+				.write_str("Invalid navigation path target. The most likely cause is a coordinate containing NaN or infinity."),
 			Self::StartOutsideMesh => formatter.write_str(
 				"Navigation path start is outside the mesh. The most likely cause is a point not covered by any polygon on XZ.",
 			),
@@ -1054,10 +1052,10 @@ mod tests {
 }
 
 use std::{
-	collections::{hash_map::Entry, HashMap},
+	collections::{HashMap, hash_map::Entry},
 	fmt,
 };
 
-use math::{barycentric_xz, distance_xz, is_finite, segments_intersect_xz, signed_area_xz, Point, WorldSpace};
+use math::{Point, WorldSpace, barycentric_xz, distance_xz, is_finite, segments_intersect_xz, signed_area_xz};
 
-use super::{a_star, Graph, NodeHandle};
+use super::{Graph, NodeHandle, a_star};

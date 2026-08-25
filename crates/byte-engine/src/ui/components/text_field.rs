@@ -1,4 +1,4 @@
-use crate::ui::{style::ConcreteStyle, Transform, Visual};
+use crate::ui::{Transform, Visual, style::ConcreteStyle};
 
 /// The `TextField` struct provides a single-line text field whose content remains
 /// owned by the application.

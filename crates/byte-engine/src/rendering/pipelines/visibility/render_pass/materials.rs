@@ -26,7 +26,7 @@ impl MaterialCountPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction + use<'_> {
+	pub(super) fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction + use<> {
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let material_count_buffer = self.material_count_buffer;
@@ -89,7 +89,7 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction {
+	pub(super) fn prepare(&self, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction + use<> {
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
 
@@ -136,7 +136,7 @@ impl PixelMappingPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction {
+	pub(super) fn prepare(&self, sink: &Sink, pipeline: ghi::PipelineHandle) -> impl RenderPassFunction + use<> {
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
 
@@ -203,13 +203,13 @@ impl MaterialEvaluationPass {
 
 	/// Prepares one material phase with explicit overwrite or source-over behavior.
 	pub(super) fn prepare<'a>(
-		&'a self,
+		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		materials: &'a [(String, u32, ghi::PipelineHandle)],
 		active_materials: &'a ActiveMaterialMask,
 		phase: VisibilityPhase,
-	) -> impl RenderPassFunction + 'a {
+	) -> impl RenderPassFunction + use<'a> {
 		let lit = self.lit;
 		let ao_map = self.ao_map;
 		let base_descriptor_set = self.base_descriptor_set;

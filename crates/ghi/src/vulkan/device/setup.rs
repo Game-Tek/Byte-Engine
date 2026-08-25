@@ -58,11 +58,7 @@ impl InnerDevice {
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required {
-				feature != 0
-			} else {
-				true
-			}
+			if required { feature != 0 } else { true }
 		};
 
 		let mut barycentric_required_features =

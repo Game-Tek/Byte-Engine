@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	command_buffer::CommandBufferRecording, descriptors, BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle,
-	DynamicBufferHandle, PresentKey, SwapchainHandle,
+	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, PresentKey, SwapchainHandle,
+	command_buffer::CommandBufferRecording, descriptors,
 };
 
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.

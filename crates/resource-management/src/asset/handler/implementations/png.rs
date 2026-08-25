@@ -112,7 +112,7 @@ mod tests {
 
 	use crate::{
 		asset::{
-			self, handler::implementations::png::PNGAssetHandler, handler::AssetHandler, manager::AssetManager, ResourceId,
+			self, ResourceId, handler::AssetHandler, handler::implementations::png::PNGAssetHandler, manager::AssetManager,
 		},
 		r#async, resource,
 		resources::image::Image,
@@ -208,13 +208,13 @@ mod tests {
 use utils::Extent;
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
 	processors::processor::implementations::image::{
-		gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, ImageSource, SourceChannels,
-		SourceEncoding,
+		ImageDescription, ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name,
+		process_image_in,
 	},
 	types::Gamma,
 };

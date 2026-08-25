@@ -378,7 +378,7 @@ impl GtaoPass {
 		depth_pyramid_pipeline: ghi::PipelineHandle,
 		blur_pipeline_x: ghi::PipelineHandle,
 		upscale_pipeline: ghi::PipelineHandle,
-	) -> impl RenderPassFunction {
+	) -> impl RenderPassFunction + use<> {
 		let gtao_descriptor_set = self.gtao_descriptor_set;
 		let depth_pyramid_descriptor_set = self.depth_pyramid_descriptor_set;
 		let blur_descriptor_set_x = self.blur_descriptor_set_x;

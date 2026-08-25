@@ -137,7 +137,7 @@ impl Device {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
+		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some((source_row_pitch, ..))) = (
@@ -210,7 +210,7 @@ impl Device {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
-		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
+		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some((source_row_pitch, ..))) = (

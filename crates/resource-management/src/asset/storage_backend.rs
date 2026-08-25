@@ -283,10 +283,10 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{parse_json, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
+	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend, parse_json};
 	use crate::{
 		asset::ResourceId,
-		r#async::{read, BoxedFuture},
+		r#async::{BoxedFuture, read},
 		tests::ASSETS_PATH,
 	};
 
@@ -536,8 +536,8 @@ use std::{
 
 use gxhash::GxHasher;
 
-use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
+use super::{BEADType, ResourceId, parse_json, read_asset_from_source};
 use crate::{
-	r#async::{future, BoxedFuture, File as AsyncFile},
+	r#async::{BoxedFuture, File as AsyncFile, future},
 	resource::reader::MappedFileBacking,
 };

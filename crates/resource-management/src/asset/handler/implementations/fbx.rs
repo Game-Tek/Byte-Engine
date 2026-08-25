@@ -21,20 +21,27 @@ mod tests {
 	};
 
 	use super::{
+		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path,
-		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts,
-		FbxImportError, FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
+		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights,
+	};
+	#[cfg(debug_assertions)]
+	use crate::{
+		ProcessedAsset,
+		asset::{ResourceTraceLevel, handler::BakeContext, handler::LoadErrors},
 	};
 	use crate::{
+		ReferenceModel,
 		asset::{
-			handler::implementations::bema::tests::MinimalTestShaderGenerator, handler::AssetHandler, manager::AssetManager,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
+			ContainerDefaultResource, ResourceId, handler::AssetHandler,
+			handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
+		r#async,
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
 		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh, TriangleFrontFaceWinding},
-		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
@@ -44,12 +51,6 @@ mod tests {
 			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinJoint},
 		},
 		types::{AlphaMode, IndexStreamTypes, VertexSemantics},
-		ReferenceModel,
-	};
-	#[cfg(debug_assertions)]
-	use crate::{
-		asset::{handler::BakeContext, handler::LoadErrors, ResourceTraceLevel},
-		ProcessedAsset,
 	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../test_data/triangle_move_ascii.fbx");
@@ -173,21 +174,27 @@ mod tests {
 		assert!(processed.mesh.skins.is_empty());
 		assert_eq!(processed.mesh.primitives.len(), 1);
 		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
-		assert!(processed
-			.mesh
-			.vertex_components
-			.iter()
-			.any(|component| component.semantic == VertexSemantics::Position));
-		assert!(processed
-			.mesh
-			.vertex_components
-			.iter()
-			.any(|component| component.semantic == VertexSemantics::Normal));
-		assert!(processed
-			.mesh
-			.vertex_components
-			.iter()
-			.any(|component| component.semantic == VertexSemantics::UV));
+		assert!(
+			processed
+				.mesh
+				.vertex_components
+				.iter()
+				.any(|component| component.semantic == VertexSemantics::Position)
+		);
+		assert!(
+			processed
+				.mesh
+				.vertex_components
+				.iter()
+				.any(|component| component.semantic == VertexSemantics::Normal)
+		);
+		assert!(
+			processed
+				.mesh
+				.vertex_components
+				.iter()
+				.any(|component| component.semantic == VertexSemantics::UV)
+		);
 
 		let bounds = processed.mesh.primitives[0].bounding_box;
 
@@ -602,9 +609,11 @@ mod tests {
 
 		let mesh = scene.meshes.first().expect("fixture should contain a mesh");
 
-		assert!(select_fbx_skin(mesh)
-			.expect("pure dual-quaternion skin should be supported")
-			.is_some());
+		assert!(
+			select_fbx_skin(mesh)
+				.expect("pure dual-quaternion skin should be supported")
+				.is_some()
+		);
 
 		let blended = fixture.replace("SkinningType: \"Linear\"", "SkinningType: \"Blend\"");
 
@@ -908,9 +917,11 @@ mod tests {
 			items[0].message(),
 			"Culled degenerate FBX geometry: 0 triangle(s), 1 quad(s), and 0 other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data."
 		);
-		assert!(resource_storage
-			.get_resource(ResourceId::new("degenerate_quad.fbx"))
-			.is_some());
+		assert!(
+			resource_storage
+				.get_resource(ResourceId::new("degenerate_quad.fbx"))
+				.is_some()
+		);
 	}
 
 	#[cfg(debug_assertions)]
@@ -1250,33 +1261,33 @@ use std::{
 	sync::Arc,
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use utils::Extent;
 
 use super::{
-	container_default_resource,
+	ContainerDefaultResource, ResourceId, container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, store_model_owned, ContainerDefaultResource, ResourceId,
+	sanitize_material_name, store_model, store_model_owned,
 };
-use crate::asset::handler::implementations::bema::{compile_shader_program, ProgramGenerator};
+use crate::asset::handler::implementations::bema::{ProgramGenerator, compile_shader_program};
 use crate::{
-	asset,
+	ProcessedAsset, ReferenceModel, asset,
+	r#async::spawn_cpu_task,
 	pbr::{
-		generate_textured_brdf_program, material_texture_variable_name, BrdfAlphaMode, BrdfMaterialBuilder,
-		BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
+		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
+		generate_textured_brdf_program, material_texture_variable_name,
 	},
 	processors::{
 		processor::implementations::image::{
-			gamma_from_semantic, process_image_with_mip_backend_in, ImageDescription, ImageSource, Semantic, SourceChannels,
-			SourceEncoding,
+			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
+			process_image_with_mip_backend_in,
 		},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
 			ProcessedMesh, TriangleFrontFaceWinding, VertexSkin,
 		},
 	},
-	r#async::spawn_cpu_task,
 	resource,
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
@@ -1288,5 +1299,4 @@ use crate::{
 		},
 	},
 	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
-	ProcessedAsset, ReferenceModel,
 };

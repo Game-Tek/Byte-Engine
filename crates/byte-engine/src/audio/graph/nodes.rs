@@ -111,11 +111,7 @@ impl RandomNode {
 				// Draw from N - 1 slots, then skip the previous input. This
 				// preserves a uniform choice without retrying or allocating.
 				let slot = (random % (input_count - 1) as u64) as usize;
-				if slot >= previous {
-					slot + 1
-				} else {
-					slot
-				}
+				if slot >= previous { slot + 1 } else { slot }
 			}
 			None => (random % input_count as u64) as usize,
 		};

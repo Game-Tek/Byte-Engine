@@ -84,11 +84,11 @@ super::impl_direct_resource!(Image, "Image");
 mod tests {
 	use super::{Image, ImageIBL, ImageSubresource};
 	use crate::{
+		ProcessedAsset, ReferenceModel, Resource, Solver,
 		asset::ResourceId,
-		resource::{storage_backend::tests::TestStorageBackend, WriteStorageBackend},
+		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
 		solver::SolveErrors,
 		types::{Formats, Gamma},
-		ProcessedAsset, ReferenceModel, Resource, Solver,
 	};
 
 	#[crate::r#async::test]

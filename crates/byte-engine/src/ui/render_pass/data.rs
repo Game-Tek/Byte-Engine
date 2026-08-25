@@ -547,11 +547,7 @@ pub(super) fn stroke_width(kind: LayerKind) -> f32 {
 }
 
 pub(super) fn backdrop_blur_radius(radius: f32) -> f32 {
-	if radius.is_finite() {
-		radius.clamp(0.0, 64.0)
-	} else {
-		0.0
-	}
+	if radius.is_finite() { radius.clamp(0.0, 64.0) } else { 0.0 }
 }
 
 // Preserves the legacy repeated-blur strength by mapping its variance-domain

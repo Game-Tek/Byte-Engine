@@ -12,7 +12,7 @@ impl Context {
 			array_layer: 0,
 		};
 
-		let texture = self.images.get(texture.0 .0 as usize).expect("No texture with that handle.");
+		let texture = self.images.get(texture.0.0 as usize).expect("No texture with that handle.");
 
 		if true
 		/* TILING_OPTIMAL */

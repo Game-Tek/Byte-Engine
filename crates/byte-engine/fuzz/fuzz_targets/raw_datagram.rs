@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use betp::packets::{ConnectionStatus, DataPacket, Packets};
 use byte_engine::network::datagram::{
-	ClientDatagramPipeline, DatagramOutcome, EncodedDatagram, ServerDatagramPipeline, MAX_BETP_DATAGRAM_SIZE,
+	ClientDatagramPipeline, DatagramOutcome, EncodedDatagram, MAX_BETP_DATAGRAM_SIZE, ServerDatagramPipeline,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -71,7 +71,6 @@ fn candidate_datagram(data: &[u8]) -> Option<EncodedDatagram> {
 /// Confirms every emitted packet uses its exact canonical wire representation.
 fn assert_canonical(datagrams: &[EncodedDatagram]) {
 	for datagram in datagrams {
-
 		assert!(!datagram.is_empty());
 		assert!(datagram.len() <= MAX_BETP_DATAGRAM_SIZE);
 		let packet = betp::read_packet(datagram.as_bytes()).expect("pipeline output must be canonical BETP");
@@ -107,14 +106,12 @@ fn assert_duplicate_is_suppressed(
 	outbound: &mut Vec<EncodedDatagram>,
 ) {
 	if matches!(client_outcome, DatagramOutcome::Accepted(_)) {
-
 		assert!(!matches!(
 			client.process_datagram(candidate, now, outbound),
 			Ok(DatagramOutcome::Accepted(_))
 		));
 	}
 	if matches!(server_outcome, DatagramOutcome::Accepted(_)) {
-
 		assert!(!matches!(
 			server.process_datagram(candidate, now, outbound),
 			Ok(DatagramOutcome::Accepted(_))
@@ -182,7 +179,6 @@ fuzz_target!(|data: &[u8]| {
 	.expect("typed recovery data must encode");
 
 	if client.is_connected() {
-
 		assert_eq!(
 			client.process_datagram(recovery.as_bytes(), now, &mut outbound),
 			Ok(DatagramOutcome::Accepted([0xA5; 1024]))
@@ -190,7 +186,6 @@ fuzz_target!(|data: &[u8]| {
 		assert_canonical(&outbound);
 	}
 	if server.is_connected() {
-
 		assert_eq!(
 			server.process_datagram(recovery.as_bytes(), now, &mut outbound),
 			Ok(DatagramOutcome::Accepted([0xA5; 1024]))

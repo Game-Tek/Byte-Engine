@@ -18,8 +18,8 @@ pub trait Entity {}
 use std::ops::CoerceUnsized;
 use std::{marker::Unsize, ops::Deref};
 
-use super::listener::Listener;
 use super::Task;
+use super::listener::Listener;
 
 #[cfg(test)]
 #[allow(dead_code)]

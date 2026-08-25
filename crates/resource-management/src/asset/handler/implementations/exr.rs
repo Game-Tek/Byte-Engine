@@ -152,9 +152,9 @@ mod tests {
 
 	use super::EXRAssetHandler;
 	use crate::{
-		asset::{manager::AssetManager, storage_backend::tests::TestStorageBackend, ResourceId},
+		asset::{ResourceId, manager::AssetManager, storage_backend::tests::TestStorageBackend},
 		r#async,
-		resource::{storage_backend::tests::TestStorageBackend as TestResourceStorage, ReadStorageBackend as _},
+		resource::{ReadStorageBackend as _, storage_backend::tests::TestStorageBackend as TestResourceStorage},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -310,11 +310,11 @@ mod tests {
 
 use std::{alloc::Allocator, io::Cursor};
 
-use exr::prelude::{f16, ReadChannels as _, ReadImage as _, ReadLayers as _};
+use exr::prelude::{ReadChannels as _, ReadImage as _, ReadLayers as _, f16};
 use utils::Extent;
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::ibl::IBLGenerator;

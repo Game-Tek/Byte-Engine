@@ -1,5 +1,5 @@
-use math::{Point, Vector, AABB};
-use maths_rs::{mat::MatNew3 as _, Mat3f};
+use math::{AABB, Point, Vector};
+use maths_rs::{Mat3f, mat::MatNew3 as _};
 
 use crate::{physics::LocalSpace, space::Positionable};
 
@@ -544,8 +544,10 @@ mod tests {
 		assert_eq!(vertices.len(), 8);
 		assert_eq!(triangles.len(), 12);
 		assert!(!vertices.contains(&Point::origin()));
-		assert!(triangles
-			.iter()
-			.all(|&(a, b, c)| a < vertices.len() && b < vertices.len() && c < vertices.len()));
+		assert!(
+			triangles
+				.iter()
+				.all(|&(a, b, c)| a < vertices.len() && b < vertices.len() && c < vertices.len())
+		);
 	}
 }

@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 
 #[cfg(test)]
 use configuration::{
-	apply_render_pass_configuration, render_pass_harness_with_state, set_render_pass_state_by_name,
-	RENDER_PASS_PARAMETER_PREFIX,
+	RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration, render_pass_harness_with_state,
+	set_render_pass_state_by_name,
 };
 pub use targets::RenderTargets;
 #[cfg(test)]
@@ -20,17 +20,17 @@ use utils::hash::HashMap;
 use crate::{
 	configuration::{Configuration, ConfigurationValue},
 	rendering::{
-		render_pass::{RenderPass, RenderPassHarness, RenderPassReturn, RenderPassState},
 		Sink,
+		render_pass::{RenderPass, RenderPassHarness, RenderPassReturn, RenderPassState},
 	},
 };
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
-	use utils::{hash::HashMapExt as _, Box};
+	use utils::{Box, hash::HashMapExt as _};
 
-	use super::core::{captures_after_pass, ResolvedScreenshotCapture};
+	use super::core::{ResolvedScreenshotCapture, captures_after_pass};
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 

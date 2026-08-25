@@ -1,9 +1,10 @@
 use std::{error::Error, fmt};
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
+	QueryableValue, SerializableResource,
 	resources::{
 		animation::AnimationModel,
 		audio::Audio,
@@ -13,7 +14,6 @@ use crate::{
 		mesh::{MeshModel, PrimitiveModel},
 		skeleton::SkeletonModel,
 	},
-	QueryableValue, SerializableResource,
 };
 
 /// The `ResourceInspection` struct provides a JSON view for command-line and editor resource inspection.

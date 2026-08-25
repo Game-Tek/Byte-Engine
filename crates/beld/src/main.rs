@@ -1,8 +1,8 @@
 use std::num::NonZeroUsize;
 
 use clap::{
-	builder::styling::{AnsiColor, Effects, Styles},
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+	builder::styling::{AnsiColor, Effects, Styles},
 };
 
 mod commands;
@@ -242,7 +242,7 @@ fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoi
 mod tests {
 	use clap::Parser as _;
 
-	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat, StorageMode, TextureCompression};
+	use super::{Cli, Commands, InspectFormat, QueryFormat, StorageMode, TextureCompression, parse_color_choice};
 
 	fn args(values: &[&str]) -> Vec<String> {
 		values.iter().map(|value| (*value).to_string()).collect()
@@ -351,13 +351,15 @@ mod tests {
 	#[test]
 	fn cli_bake_rejects_zero_and_overflowing_memory_budgets() {
 		assert!(Cli::try_parse_from(["beld", "bake", "--memory-budget-mib", "0"]).is_err());
-		assert!(Cli::try_parse_from([
-			"beld".to_string(),
-			"bake".to_string(),
-			"--memory-budget-mib".to_string(),
-			usize::MAX.to_string(),
-		])
-		.is_err());
+		assert!(
+			Cli::try_parse_from([
+				"beld".to_string(),
+				"bake".to_string(),
+				"--memory-budget-mib".to_string(),
+				usize::MAX.to_string(),
+			])
+			.is_err()
+		);
 	}
 
 	#[test]

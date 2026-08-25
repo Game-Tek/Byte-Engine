@@ -1,17 +1,17 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
+	Container, Text,
 	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
 	element::Id,
 	layout::{
+		Geometry,
 		engine::{
 			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, RenderFuture, TextEditFuture,
 		},
-		Geometry,
 	},
 	primitive::{Events, Key},
-	timer::{seconds as wait_seconds, wait, WaitFuture},
-	Container, Text,
+	timer::{WaitFuture, seconds as wait_seconds, wait},
 };
 
 pub type UiFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;

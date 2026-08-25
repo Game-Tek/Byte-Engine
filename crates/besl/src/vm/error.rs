@@ -283,11 +283,7 @@ impl std::fmt::Display for VmError {
 				f,
 				"Mesh {kind} output index {index} exceeds {count} declared outputs. The most likely cause is that the shader wrote beyond the counts supplied to `set_mesh_output_counts`."
 			),
-			VmError::MeshOutputCountLimitExceeded {
-				kind,
-				requested,
-				limit,
-			} => write!(
+			VmError::MeshOutputCountLimitExceeded { kind, requested, limit } => write!(
 				f,
 				"Mesh {kind} output count {requested} exceeds the configured limit of {limit}. The most likely cause is that the shader requested more mesh output storage than the host allows."
 			),

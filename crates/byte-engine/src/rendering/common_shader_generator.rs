@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use resource_management::asset::{handler::implementations::bema::ProgramGenerator, JsonObject};
+use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.
@@ -909,7 +909,9 @@ mod tests {
 		assert!(!context.has_errors());
 
 		let copy = copy
-			.expect("Missing generated shader texture transfer. The most likely cause is that command recording skipped the test target.")
+			.expect(
+				"Missing generated shader texture transfer. The most likely cause is that command recording skipped the test target.",
+			)
 			.expect(
 				"Generated shader texture transfer failed. The most likely cause is that the test target is not a valid transfer source.",
 			);

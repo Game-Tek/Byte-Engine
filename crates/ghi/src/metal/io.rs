@@ -335,7 +335,7 @@ pub(crate) fn write_compressed_file(
 	compression: ResourceIoCompression,
 	decoded: &[u8],
 ) -> Result<(), ResourceIoError> {
-	use std::ffi::{c_void, CString};
+	use std::ffi::{CString, c_void};
 
 	use objc2_metal::{
 		MTLIOCompressionContextAppendData, MTLIOCompressionContextDefaultChunkSize, MTLIOCompressionStatus,

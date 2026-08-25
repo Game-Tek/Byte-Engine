@@ -3,7 +3,7 @@ use compio::{
 	io::{AsyncWrite, AsyncWriteAtExt},
 };
 
-use crate::{resource::ResourceId, ProcessedAsset, SerializableResource};
+use crate::{ProcessedAsset, SerializableResource, resource::ResourceId};
 
 const FILE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -15,23 +15,42 @@ const FILE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 pub struct ResourceTransaction<'a> {
 	// Backend dispatch happens once during commit. Payload writes only touch the
 	// concrete writer below, so the processor's hot path never uses a dyn writer.
-	backend: &'a dyn ResourceTransactionCommit,
+	guard: ResourceReservationGuard<'a>,
 	resource_id: ResourceId,
-	backend_offset: Option<u64>,
 	writer: ResourceWriter,
+}
+
+#[derive(Clone, Copy)]
+/// The `ResourceReservation` struct identifies backend storage that must be returned after a canceled write.
+pub(super) struct ResourceReservation {
+	pub(super) offset: u64,
+	pub(super) size: u64,
+}
+
+/// The `ResourceReservationGuard` struct returns unpublished storage when a transaction is canceled or fails.
+struct ResourceReservationGuard<'a> {
+	backend: &'a dyn ResourceTransactionCommit,
+	reservation: Option<ResourceReservation>,
+}
+
+impl Drop for ResourceReservationGuard<'_> {
+	fn drop(&mut self) {
+		if let Some(reservation) = self.reservation.take() {
+			self.backend.abort_resource(reservation);
+		}
+	}
 }
 
 impl<'a> ResourceTransaction<'a> {
 	pub(super) fn new(
 		backend: &'a dyn ResourceTransactionCommit,
 		resource_id: ResourceId,
-		backend_offset: Option<u64>,
+		reservation: Option<ResourceReservation>,
 		writer: ResourceWriter,
 	) -> Self {
 		Self {
-			backend,
+			guard: ResourceReservationGuard { backend, reservation },
 			resource_id,
-			backend_offset,
 			writer,
 		}
 	}
@@ -79,18 +98,20 @@ impl<'a> ResourceTransaction<'a> {
 		allocator: &dyn std::alloc::Allocator,
 	) -> Result<SerializableResource, ()> {
 		let Self {
-			backend,
+			mut guard,
 			resource_id,
-			backend_offset,
 			writer,
 		} = self;
-
 		if ResourceId::from(resource.id()) != resource_id {
 			return Err(());
 		}
 
 		let output = writer.finish().await.map_err(|_| ())?;
-		backend.commit_resource(resource_id, backend_offset, resource, output, allocator)
+		let stored = guard
+			.backend
+			.commit_resource(resource_id, guard.reservation, resource, output, allocator)?;
+		guard.reservation = None;
+		Ok(stored)
 	}
 }
 
@@ -112,10 +133,12 @@ impl AsyncWrite for ResourceTransaction<'_> {
 
 /// The `ResourceTransactionCommit` trait keeps backend publication outside the payload write hot path.
 pub(super) trait ResourceTransactionCommit: Sync {
+	fn abort_resource(&self, _reservation: ResourceReservation) {}
+
 	fn commit_resource(
 		&self,
 		resource_id: ResourceId,
-		backend_offset: Option<u64>,
+		backend_reservation: Option<ResourceReservation>,
 		resource: ProcessedAsset,
 		output: ResourceWriteOutput,
 		allocator: &dyn std::alloc::Allocator,
@@ -361,8 +384,8 @@ impl AsyncResourceFile {
 
 		self.buffer.try_reserve_exact(self.desired_buffer_capacity).map_err(|_| {
 			std::io::Error::other(
-					"Resource write buffer allocation failed. The process likely does not have enough memory for the staging buffer.",
-				)
+				"Resource write buffer allocation failed. The process likely does not have enough memory for the staging buffer.",
+			)
 		})
 	}
 

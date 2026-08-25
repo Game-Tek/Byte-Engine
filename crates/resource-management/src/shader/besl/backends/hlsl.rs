@@ -1,8 +1,8 @@
 use std::{cell::RefCell, fmt::Write as _};
 
 use crate::shader::generator::{
-	emit_comma_separated_nodes, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings,
-	ShaderGenerator, Stages,
+	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+	emit_comma_separated_nodes, ordered_shader_nodes,
 };
 
 mod analysis;
@@ -861,13 +861,13 @@ mod tests {
 		]);
 
 		let image_size = root.add_child(besl::Node::intrinsic("image_size", Vec::new(), vec2u_type.clone()).into());
-		image_size
-			.borrow_mut()
-			.add_children(vec![besl::Node::new(besl::Nodes::Parameter {
+		image_size.borrow_mut().add_children(vec![
+			besl::Node::new(besl::Nodes::Parameter {
 				name: "image".to_string(),
 				r#type: texture_2d_type.clone(),
 			})
-			.into()]);
+			.into(),
+		]);
 		let write = root.add_child(besl::Node::intrinsic("write", Vec::new(), void_type.clone()).into());
 		write.borrow_mut().add_children(vec![
 			besl::Node::new(besl::Nodes::Parameter {

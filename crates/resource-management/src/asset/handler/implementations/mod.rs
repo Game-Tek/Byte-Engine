@@ -16,8 +16,8 @@ pub(crate) mod manager {
 }
 
 pub(crate) use crate::asset::{
-	container_default_resource, sanitize_material_name, store_model, store_model_owned, BEADType, ContainerDefaultResource,
-	ResourceId,
+	BEADType, ContainerDefaultResource, ResourceId, container_default_resource, sanitize_material_name, store_model,
+	store_model_owned,
 };
 
 pub mod bema;

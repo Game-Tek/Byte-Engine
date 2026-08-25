@@ -1,7 +1,7 @@
 //! Cascaded shadow-map calculation and rendering support.
 
 use math::{Matrix, Point, UnitVector, Vector};
-use maths_rs::{mat::MatTranslate as _, Vec4f};
+use maths_rs::{Vec4f, mat::MatTranslate as _};
 use smallvec::SmallVec;
 
 use super::view::View;
@@ -201,7 +201,7 @@ mod tests {
 
 	#[test]
 	fn shadow_view_matrices_are_orthonormal_for_cardinal_and_diagonal_directions() {
-		use maths_rs::{dot, length, Vec3f};
+		use maths_rs::{Vec3f, dot, length};
 
 		let camera_view = View::new_perspective(
 			math::Degrees::new(90.0),

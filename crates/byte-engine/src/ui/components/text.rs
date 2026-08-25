@@ -1,4 +1,4 @@
-use crate::ui::{style::ConcreteStyle, Transform, Visual};
+use crate::ui::{Transform, Visual, style::ConcreteStyle};
 
 /// The `Text` struct carries styled UI copy that participates in layout and rendering.
 pub struct Text {

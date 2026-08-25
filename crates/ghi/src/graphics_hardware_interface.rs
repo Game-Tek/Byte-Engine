@@ -13,28 +13,28 @@ pub use resources::*;
 use utils::{Extent, RGBA};
 
 #[cfg(test)]
-use crate::{descriptors, DataTypes, Encodings, Formats, Layouts};
+use crate::{DataTypes, Encodings, Formats, Layouts, descriptors};
 
 #[cfg(test)]
 pub(super) mod tests {
 
 	use super::*;
 	use crate::{
+		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
+		ShaderTypes, UseCases, Uses, Window,
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
 		frame::Frame as _,
-		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
+		pipelines::{self, PushConstantRange, ShaderParameter, VertexElement, raster::AttachmentDescriptor},
 		queue::{FrameRequest, Queue as _, QueueExecution as _},
 		rt::{
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
 		},
 		shader::{CompiledShaderSource, ShaderSource},
-		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
-		ShaderTypes, UseCases, Uses, Window,
 	};
 	use crate::{ChannelBitSize, ChannelLayout, Size as _};
 
@@ -1317,7 +1317,10 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							texture_copy_handles =
+								vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+									"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+								)];
 						});
 						[]
 					},
@@ -1430,7 +1433,10 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							texture_copy_handles =
+								vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+									"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+								)];
 						});
 						[]
 					},
@@ -1546,7 +1552,10 @@ pub(super) mod tests {
 
 							raster_pipeline_command.end_render_pass();
 
-							texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							texture_copy_handles =
+								vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+									"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+								)];
 						});
 						[]
 					},
@@ -1560,7 +1569,12 @@ pub(super) mod tests {
 
 			assert!(!device.has_errors());
 
-			let image_data = device.get_image_data(texture_copy_handles[0]).expect("Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.").bytes;
+			let image_data = device
+				.get_image_data(texture_copy_handles[0])
+				.expect(
+					"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+				)
+				.bytes;
 			let pixel_count = (extent.width() * extent.height()) as usize;
 
 			assert_eq!(
@@ -1692,7 +1706,10 @@ pub(super) mod tests {
 
 							c.end_render_pass();
 
-							copy_texture_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							copy_texture_handles =
+								vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+									"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+								)];
 						});
 						[]
 					},
@@ -1835,7 +1852,10 @@ pub(super) mod tests {
 								readback_image.into(),
 								Layouts::Transfer,
 							);
-							texture_copy_handles = vec![command_buffer_recording.transfer_texture(readback_image.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							texture_copy_handles =
+								vec![command_buffer_recording.transfer_texture(readback_image.into()).expect(
+									"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+								)];
 						});
 						[]
 					},
@@ -2830,7 +2850,9 @@ void miss_main(inout Payload payload) {
 								1,
 							);
 
-							texure_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.")];
+							texure_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
+								"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+							)];
 						});
 						[]
 					},

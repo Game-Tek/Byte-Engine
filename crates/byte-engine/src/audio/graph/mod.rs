@@ -7,18 +7,18 @@
 
 use std::{
 	fmt,
-	sync::atomic::{AtomicU64, Ordering},
 	sync::Arc,
+	sync::atomic::{AtomicU64, Ordering},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use smallbox::{smallbox, space::S4, SmallBox};
+use smallbox::{SmallBox, smallbox, space::S4};
 use smallvec::SmallVec;
 
 use crate::core::{
+	Entity,
 	factory::{CreateMessage, Factory, Handle},
 	listener::DefaultListener,
-	Entity,
 };
 
 mod authoring;
@@ -55,10 +55,10 @@ pub use time::AudioGraphTime;
 #[cfg(test)]
 mod tests {
 	use super::{
-		fns::{custom, gain, pitch_shift, r#loop, random, round_robin, sample, varispeed},
-		pitch_shift::PITCH_SHIFT_LATENCY,
 		AudioGraph, AudioGraphFactory, AudioGraphTime, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph,
-		PlaybackRate, RandomNode, RoundRobinNode, SamplePlaybackMode, SelectorInputs, MAX_AUDIO_GRAPH_NODES,
+		MAX_AUDIO_GRAPH_NODES, PlaybackRate, RandomNode, RoundRobinNode, SamplePlaybackMode, SelectorInputs,
+		fns::{custom, gain, r#loop, pitch_shift, random, round_robin, sample, varispeed},
+		pitch_shift::PITCH_SHIFT_LATENCY,
 	};
 	use crate::core::listener::Listener;
 
@@ -473,42 +473,52 @@ mod tests {
 		let optimized_random = random([maximum_node_chain()]);
 
 		assert_eq!(optimized_random.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(!optimized_random
-			.nodes
-			.iter()
-			.any(|node| matches!(&**node, AudioNode::Random(_))));
+		assert!(
+			!optimized_random
+				.nodes
+				.iter()
+				.any(|node| matches!(&**node, AudioNode::Random(_)))
+		);
 
 		let optimized_round_robin = round_robin([maximum_node_chain()]);
 
 		assert_eq!(optimized_round_robin.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(!optimized_round_robin
-			.nodes
-			.iter()
-			.any(|node| matches!(&**node, AudioNode::RoundRobin(_))));
+		assert!(
+			!optimized_round_robin
+				.nodes
+				.iter()
+				.any(|node| matches!(&**node, AudioNode::RoundRobin(_)))
+		);
 
 		let optimized_varispeed = varispeed(maximum_node_chain(), 1.0);
 
 		assert_eq!(optimized_varispeed.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(!optimized_varispeed
-			.nodes
-			.iter()
-			.any(|node| matches!(&**node, AudioNode::Varispeed { .. })));
+		assert!(
+			!optimized_varispeed
+				.nodes
+				.iter()
+				.any(|node| matches!(&**node, AudioNode::Varispeed { .. }))
+		);
 
 		let optimized_pitch_shift = pitch_shift(maximum_node_chain(), 1.0);
 
 		assert_eq!(optimized_pitch_shift.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(!optimized_pitch_shift
-			.nodes
-			.iter()
-			.any(|node| matches!(&**node, AudioNode::PitchShift { .. })));
+		assert!(
+			!optimized_pitch_shift
+				.nodes
+				.iter()
+				.any(|node| matches!(&**node, AudioNode::PitchShift { .. }))
+		);
 
 		let optimized_gain = gain(maximum_node_chain(), 1.0);
 
 		assert_eq!(optimized_gain.nodes.len(), MAX_AUDIO_GRAPH_NODES);
-		assert!(!optimized_gain
-			.nodes
-			.iter()
-			.any(|node| matches!(&**node, AudioNode::Gain { gain: 1.0, .. })));
+		assert!(
+			!optimized_gain
+				.nodes
+				.iter()
+				.any(|node| matches!(&**node, AudioNode::Gain { gain: 1.0, .. }))
+		);
 
 		let optimized_loop = r#loop(maximum_looping_chain());
 

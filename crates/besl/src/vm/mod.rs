@@ -18,9 +18,9 @@ pub use error::VmError;
 pub use half::f16;
 use instruction::*;
 pub use layout::{
-	builtin_position_slot, input_slot, output_slot, BufferLayout, BufferMemberLayout, DescriptorLayout, ResourceSlot, ValueType,
+	BufferLayout, BufferMemberLayout, DescriptorLayout, ResourceSlot, ValueType, builtin_position_slot, input_slot, output_slot,
 };
-use layout::{dynamic_resource_slot, PUSH_CONSTANT_SLOT};
+use layout::{PUSH_CONSTANT_SLOT, dynamic_resource_slot};
 use program::{ExecutableFunction, ExecutionFrame, ExecutionState};
 pub use program::{ExecutableProgram, ExecutionConfig, SpecializationValues};
 pub use resources::{DescriptorBindings, MeshOutputs, TaskOutputs, WorkgroupState};

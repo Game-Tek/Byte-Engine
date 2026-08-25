@@ -509,14 +509,14 @@ pub mod tests {
 	use super::ProgramGenerator;
 	use crate::asset::JsonObject;
 	use crate::{
+		ReferenceModel,
 		asset::{
-			handler::implementations::bema::BEMAAssetHandler, handler::AssetHandler, manager::AssetManager,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId,
+			ResourceId, handler::AssetHandler, handler::implementations::bema::BEMAAssetHandler, manager::AssetManager,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::VariantModel,
-		ReferenceModel,
 	};
 
 	struct TestShaderCompiler;
@@ -845,9 +845,9 @@ use serde_json::Value;
 use utils::Extent;
 
 use super::{
+	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	ResourceId,
 };
 use crate::shader::{
 	artifact::finalize_platform_shader_artifact,
@@ -857,15 +857,14 @@ use crate::shader::{
 	},
 };
 use crate::{
+	ProcessedAsset, ReferenceModel,
 	asset::{self, JsonObject},
-	online_docs_url,
 	r#async::spawn_cpu_task,
-	resource,
+	online_docs_url, resource,
 	resources::material::{
 		Binding, MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel,
 		VariantModel, VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
 	types::{AlphaMode, ShaderTypes},
-	ProcessedAsset, ReferenceModel,
 };

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use byte_engine::{
 	core::factory::Factory,
-	network::{channel::ChannelServer as Server, Replicable},
+	network::{Replicable, channel::ChannelServer as Server},
 	space::Positionable,
 };
 use math::Point;

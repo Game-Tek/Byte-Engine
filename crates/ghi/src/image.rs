@@ -154,7 +154,7 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{mip_extent, Builder, ImageHandle};
+	use super::{Builder, ImageHandle, mip_extent};
 	use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
 	#[test]

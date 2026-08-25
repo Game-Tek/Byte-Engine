@@ -212,11 +212,7 @@ pub(crate) fn to_metal_stages(stages: crate::Stages) -> mtl::MTLStages {
 	]
 	.into_iter()
 	.fold(mtl::MTLStages::empty(), |metal, (source, target)| {
-		if stages.intersects(source) {
-			metal | target
-		} else {
-			metal
-		}
+		if stages.intersects(source) { metal | target } else { metal }
 	})
 }
 

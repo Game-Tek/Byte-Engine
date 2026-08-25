@@ -357,30 +357,102 @@ pub(crate) enum GltfSkeletalImportError {
 impl std::fmt::Display for GltfSkeletalImportError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::MultipleNodeParents => write!(formatter, "glTF node hierarchy is invalid. The most likely cause is a node referenced by multiple parents."),
-			Self::CyclicNodeHierarchy => write!(formatter, "glTF node hierarchy is cyclic. The most likely cause is malformed child-node references."),
-			Self::AnimationNotFound(selector) => write!(formatter, "glTF animation was not found. The most likely cause is an incorrect animation selector '{selector}'."),
-			Self::MissingAnimationInput => write!(formatter, "glTF animation input is missing. The most likely cause is a malformed sampler input accessor."),
-			Self::MissingAnimationOutput => write!(formatter, "glTF animation output is missing. The most likely cause is a malformed sampler output accessor."),
-			Self::InvalidAnimationTimes => write!(formatter, "glTF animation times are invalid. The most likely cause is non-finite or non-increasing key times."),
-			Self::InvalidAnimationOutput => write!(formatter, "glTF animation output is invalid. The most likely cause is a sampler output type or key count that does not match its target."),
-			Self::InvalidRestRotation => write!(formatter, "glTF rest rotation is invalid. The most likely cause is a zero-length or non-finite node quaternion."),
-			Self::DuplicateAnimationTrack => write!(formatter, "glTF animation track is duplicated. The most likely cause is multiple channels targeting the same node property."),
-			Self::MorphTargetAnimationUnsupported => write!(formatter, "glTF morph-target animation is unsupported. The most likely cause is a selected clip mixing skeletal and morph-weight channels."),
-			Self::MissingSkin => write!(formatter, "glTF skin binding is missing. The most likely cause is a skinned mesh node without a valid skin."),
-			Self::MissingSkinJoint => write!(formatter, "glTF skin joint is missing. The most likely cause is a skin referencing a node outside the imported hierarchy."),
-			Self::MismatchedInverseBindMatrices => write!(formatter, "glTF inverse bind matrices are invalid. The most likely cause is an accessor count that does not match the skin joint count."),
-			Self::TooManySkinJoints => write!(formatter, "glTF skin has too many joints. The most likely cause is a palette larger than the u16 vertex-joint stream."),
-			Self::SingularMeshTransform => write!(formatter, "glTF animated mesh transform is singular. The most likely cause is a zero bind scale that cannot be recovered after flattening geometry."),
-			Self::UnpairedSkinAttributes(set) => write!(formatter, "glTF skin attribute set {set} is incomplete. The most likely cause is JOINTS_{set} without matching WEIGHTS_{set}, or vice versa."),
-			Self::UnsupportedSkinAttributeSet(set) => write!(formatter, "glTF skin attribute set {set} is unsupported. The most likely cause is a primitive containing more than eight joint influences per vertex."),
-			Self::MissingSkinAttributes => write!(formatter, "glTF skinned primitive has no joint weights. The most likely cause is a skin node referencing geometry without JOINTS_0 and WEIGHTS_0."),
-			Self::MismatchedSkinAttributeCount => write!(formatter, "glTF skin attribute count is invalid. The most likely cause is joint or weight streams that do not contain one value per vertex."),
-			Self::InvalidSkinWeight => write!(formatter, "glTF skin weight is invalid. The most likely cause is non-finite, negative, or zero-sum vertex influences."),
-			Self::SkinJointOutOfRange => write!(formatter, "glTF vertex joint is out of range. The most likely cause is a JOINTS value outside the selected skin palette."),
-			Self::InvalidVertexDirection => write!(formatter, "glTF vertex direction is invalid. The most likely cause is a zero-length direction or a singular node transform."),
-			Self::NonFinite(context) => write!(formatter, "glTF numeric data is invalid. The most likely cause is a non-finite {context}."),
-			Self::NonAffine(context) => write!(formatter, "glTF skin transform is projective. The most likely cause is a skin inverse-bind {context} that cannot use the compact affine matrix format."),
+			Self::MultipleNodeParents => write!(
+				formatter,
+				"glTF node hierarchy is invalid. The most likely cause is a node referenced by multiple parents."
+			),
+			Self::CyclicNodeHierarchy => write!(
+				formatter,
+				"glTF node hierarchy is cyclic. The most likely cause is malformed child-node references."
+			),
+			Self::AnimationNotFound(selector) => write!(
+				formatter,
+				"glTF animation was not found. The most likely cause is an incorrect animation selector '{selector}'."
+			),
+			Self::MissingAnimationInput => write!(
+				formatter,
+				"glTF animation input is missing. The most likely cause is a malformed sampler input accessor."
+			),
+			Self::MissingAnimationOutput => write!(
+				formatter,
+				"glTF animation output is missing. The most likely cause is a malformed sampler output accessor."
+			),
+			Self::InvalidAnimationTimes => write!(
+				formatter,
+				"glTF animation times are invalid. The most likely cause is non-finite or non-increasing key times."
+			),
+			Self::InvalidAnimationOutput => write!(
+				formatter,
+				"glTF animation output is invalid. The most likely cause is a sampler output type or key count that does not match its target."
+			),
+			Self::InvalidRestRotation => write!(
+				formatter,
+				"glTF rest rotation is invalid. The most likely cause is a zero-length or non-finite node quaternion."
+			),
+			Self::DuplicateAnimationTrack => write!(
+				formatter,
+				"glTF animation track is duplicated. The most likely cause is multiple channels targeting the same node property."
+			),
+			Self::MorphTargetAnimationUnsupported => write!(
+				formatter,
+				"glTF morph-target animation is unsupported. The most likely cause is a selected clip mixing skeletal and morph-weight channels."
+			),
+			Self::MissingSkin => write!(
+				formatter,
+				"glTF skin binding is missing. The most likely cause is a skinned mesh node without a valid skin."
+			),
+			Self::MissingSkinJoint => write!(
+				formatter,
+				"glTF skin joint is missing. The most likely cause is a skin referencing a node outside the imported hierarchy."
+			),
+			Self::MismatchedInverseBindMatrices => write!(
+				formatter,
+				"glTF inverse bind matrices are invalid. The most likely cause is an accessor count that does not match the skin joint count."
+			),
+			Self::TooManySkinJoints => write!(
+				formatter,
+				"glTF skin has too many joints. The most likely cause is a palette larger than the u16 vertex-joint stream."
+			),
+			Self::SingularMeshTransform => write!(
+				formatter,
+				"glTF animated mesh transform is singular. The most likely cause is a zero bind scale that cannot be recovered after flattening geometry."
+			),
+			Self::UnpairedSkinAttributes(set) => write!(
+				formatter,
+				"glTF skin attribute set {set} is incomplete. The most likely cause is JOINTS_{set} without matching WEIGHTS_{set}, or vice versa."
+			),
+			Self::UnsupportedSkinAttributeSet(set) => write!(
+				formatter,
+				"glTF skin attribute set {set} is unsupported. The most likely cause is a primitive containing more than eight joint influences per vertex."
+			),
+			Self::MissingSkinAttributes => write!(
+				formatter,
+				"glTF skinned primitive has no joint weights. The most likely cause is a skin node referencing geometry without JOINTS_0 and WEIGHTS_0."
+			),
+			Self::MismatchedSkinAttributeCount => write!(
+				formatter,
+				"glTF skin attribute count is invalid. The most likely cause is joint or weight streams that do not contain one value per vertex."
+			),
+			Self::InvalidSkinWeight => write!(
+				formatter,
+				"glTF skin weight is invalid. The most likely cause is non-finite, negative, or zero-sum vertex influences."
+			),
+			Self::SkinJointOutOfRange => write!(
+				formatter,
+				"glTF vertex joint is out of range. The most likely cause is a JOINTS value outside the selected skin palette."
+			),
+			Self::InvalidVertexDirection => write!(
+				formatter,
+				"glTF vertex direction is invalid. The most likely cause is a zero-length direction or a singular node transform."
+			),
+			Self::NonFinite(context) => write!(
+				formatter,
+				"glTF numeric data is invalid. The most likely cause is a non-finite {context}."
+			),
+			Self::NonAffine(context) => write!(
+				formatter,
+				"glTF skin transform is projective. The most likely cause is a skin inverse-bind {context} that cannot use the compact affine matrix format."
+			),
 		}
 	}
 }

@@ -553,11 +553,10 @@ fn cloned_node(node: &NodeReference) -> Nodes {
 
 #[cfg(test)]
 mod tests {
-	use super::{optimize, OptimizationReport};
+	use super::{OptimizationReport, optimize};
 	use crate::{
-		compile_to_besl,
+		BindingTypes, Expressions, Node, Nodes, compile_to_besl,
 		vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value},
-		BindingTypes, Expressions, Node, Nodes,
 	};
 
 	fn main(source: &str) -> crate::NodeReference {

@@ -10,7 +10,7 @@ pub mod simple_compute;
 use ghi::context::ContextCreate as _;
 use utils::Box;
 
-use crate::rendering::{renderer::RenderTargets, Sink};
+use crate::rendering::{Sink, renderer::RenderTargets};
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
 
@@ -284,7 +284,7 @@ impl FramePrepare {
 
 #[cfg(test)]
 mod tests {
-	use super::{execution_path, RenderPassExecutionPath, RenderPassState};
+	use super::{RenderPassExecutionPath, RenderPassState, execution_path};
 
 	#[test]
 	fn render_pass_state_selects_the_expected_execution_path() {

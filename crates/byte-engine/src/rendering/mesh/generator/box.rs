@@ -140,7 +140,7 @@ impl From<BoxMeshGenerator> for MeshSource {
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{cross, dot, length, Vec3f};
+	use maths_rs::{Vec3f, cross, dot, length};
 
 	use super::BoxMeshGenerator;
 	use crate::rendering::mesh::generator::MeshGenerator;
@@ -163,9 +163,11 @@ mod tests {
 
 		assert_eq!(indices.len(), 36);
 		assert!(indices.iter().all(|index| (*index as usize) < positions.len()));
-		assert!(positions
-			.iter()
-			.all(|&(x, y, z)| x.abs() == 2.0 && y.abs() == 3.0 && z.abs() == 4.0));
+		assert!(
+			positions
+				.iter()
+				.all(|&(x, y, z)| x.abs() == 2.0 && y.abs() == 3.0 && z.abs() == 4.0)
+		);
 	}
 
 	#[test]

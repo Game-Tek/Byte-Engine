@@ -163,21 +163,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				instances_buffer,
 				instance_count,
 			} => (
-				vec![vk::AccelerationStructureGeometryKHR::default()
-					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-							.array_of_pointers(false)
-							.data(vk::DeviceOrHostAddressConstKHR {
-								device_address: self.device.get_buffer_address(instances_buffer),
-							}),
-					})
-					.flags(vk::GeometryFlagsKHR::OPAQUE)],
-				vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-					.primitive_count(instance_count)
-					.primitive_offset(0)
-					.first_vertex(0)
-					.transform_offset(0)],
+				vec![
+					vk::AccelerationStructureGeometryKHR::default()
+						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+						.geometry(vk::AccelerationStructureGeometryDataKHR {
+							instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+								.array_of_pointers(false)
+								.data(vk::DeviceOrHostAddressConstKHR {
+									device_address: self.device.get_buffer_address(instances_buffer),
+								}),
+						})
+						.flags(vk::GeometryFlagsKHR::OPAQUE),
+				],
+				vec![
+					vk::AccelerationStructureBuildRangeInfoKHR::default()
+						.primitive_count(instance_count)
+						.primitive_offset(0)
+						.first_vertex(0)
+						.transform_offset(0),
+				],
 			),
 		};
 
@@ -298,17 +302,21 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
 
-						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-							.primitive_count(*triangle_count)
-							.primitive_offset(0)
-							.first_vertex(0)
-							.transform_offset(0)];
+						let build_range_info = vec![
+							vk::AccelerationStructureBuildRangeInfoKHR::default()
+								.primitive_count(*triangle_count)
+								.primitive_offset(0)
+								.first_vertex(0)
+								.transform_offset(0),
+						];
 
 						(
-							vec![vk::AccelerationStructureGeometryKHR::default()
-								.flags(vk::GeometryFlagsKHR::OPAQUE)
-								.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-								.geometry(vk::AccelerationStructureGeometryDataKHR { triangles })],
+							vec![
+								vk::AccelerationStructureGeometryKHR::default()
+									.flags(vk::GeometryFlagsKHR::OPAQUE)
+									.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+									.geometry(vk::AccelerationStructureGeometryDataKHR { triangles }),
+							],
 							build_range_info,
 						)
 					}

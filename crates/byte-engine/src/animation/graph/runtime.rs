@@ -519,11 +519,11 @@ mod tests {
 	};
 
 	use resource_management::{
+		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
-		Reference,
 	};
 
 	use super::*;
@@ -610,9 +610,11 @@ mod tests {
 			Some(AnimationPoolEntry::Resident(_))
 		));
 		assert!(!first_pool.entries.contains_key(&AnimationLease::new("idle.animation")));
-		assert!(first_pool
-			.drain_events()
-			.any(|event| matches!(event, AnimationPoolEvent::Evicted { resource_id } if resource_id == "idle.animation")));
+		assert!(
+			first_pool
+				.drain_events()
+				.any(|event| matches!(event, AnimationPoolEvent::Evicted { resource_id } if resource_id == "idle.animation"))
+		);
 		let evicted_idle = AnimationLease::new("idle.animation");
 
 		assert_eq!(first_pool.request(&evicted_idle), AnimationPoolRequest::Loading);

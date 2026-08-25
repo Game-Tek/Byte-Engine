@@ -152,7 +152,7 @@ mod tests {
 
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{extract_root_motion, forward_loop_root_motion, RootMotionDelta};
+	use super::{RootMotionDelta, extract_root_motion, forward_loop_root_motion};
 	use crate::animation::math::quaternion_exp;
 
 	fn root(translation: [f32; 3], yaw: f32) -> LocalTransform {

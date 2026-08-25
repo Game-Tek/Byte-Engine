@@ -152,4 +152,4 @@ pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> Device
 }
 
 use super::Axis2;
-use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, InputManager};
+use super::{InputManager, device_class::DeviceClassHandle, input_trigger::TriggerDescription};

@@ -2,16 +2,16 @@ use windows::Win32::{
 	Foundation::S_OK,
 	Media::{
 		Audio::{
-			eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
 			AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-			WAVEFORMATEX, WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t,
+			IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
+			WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, eConsole, eRender,
 		},
 		KernelStreaming::{
 			KSDATAFORMAT_SUBTYPE_PCM, SPEAKER_ALL, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE,
 		},
 		Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
 	},
-	System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED},
+	System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree},
 };
 
 use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};

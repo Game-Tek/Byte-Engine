@@ -633,15 +633,15 @@ pub(super) const MESHLET_STREAM_STRIDE: usize = 52;
 use super::{
 	source::{MeshPrimitiveSource, VertexSkin},
 	validation::{
-		skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout, validate_vertex_skin,
-		MeshProcessingError,
+		MeshProcessingError, skeleton_node_count, validate_primitive_metadata, validate_skin_binding, validate_vertex_layout,
+		validate_vertex_skin,
 	},
 };
 use crate::{
+	ReferenceModel, StreamDescription,
 	resources::{
 		mesh::{MeshModel, PrimitiveModel},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
 	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
-	ReferenceModel, StreamDescription,
 };

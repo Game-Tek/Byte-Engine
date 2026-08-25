@@ -1,9 +1,9 @@
 use resource_management::{
+	Reference,
 	resources::{
 		animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
-	Reference,
 };
 
 use super::math::{nlerp_quaternion, normalize_quaternion};
@@ -449,11 +449,11 @@ fn hermite<const N: usize>(
 #[cfg(test)]
 mod tests {
 	use resource_management::{
+		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode, SkeletonPoseMap},
 		},
-		Reference,
 	};
 
 	use super::{PackedAnimation, PackedAnimationData};

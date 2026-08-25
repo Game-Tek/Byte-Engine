@@ -142,7 +142,7 @@ impl Device {
 		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {
 			return;
 		};
-		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
+		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
 			return;
 		};
 		let image_format = image.format;

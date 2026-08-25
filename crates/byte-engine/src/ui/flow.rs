@@ -257,7 +257,7 @@ impl Location3 {
 
 impl From<(Location, u32)> for Location3 {
 	fn from(value: (Location, u32)) -> Self {
-		Location3(value.0 .0, value.0 .1, value.1)
+		Location3(value.0.0, value.0.1, value.1)
 	}
 }
 

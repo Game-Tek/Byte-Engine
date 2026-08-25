@@ -1,8 +1,8 @@
 use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};
 use crate::{
+	StreamDescription,
 	r#async::{self, BoxedFuture},
 	resource::{ReadTargets, ReadTargetsMut},
-	StreamDescription,
 };
 
 /// The `FileResourceReader` struct provides mapped payload bytes for deferred resource loads.
@@ -14,11 +14,18 @@ pub struct FileResourceReader {
 impl FileResourceReader {
 	/// Maps a complete payload file for direct reads into caller-provided memory.
 	pub fn new(file: impl memmap2::MmapAsRawDesc, size: u64) -> Result<Self, ()> {
-		Self::new_range(file, size, 0, size)
+		Self::new_range(file, size, 0, size, None)
 	}
 
-	/// Maps one resource range from a shared payload file.
-	pub fn new_range(file: impl memmap2::MmapAsRawDesc, file_size: u64, offset: u64, size: u64) -> Result<Self, ()> {
+	/// Maps one optionally leased range from a shared payload file.
+	pub(crate) fn new_range(
+		file: impl memmap2::MmapAsRawDesc,
+		file_size: u64,
+		offset: u64,
+		size: u64,
+		lease: Option<std::sync::Arc<()>>,
+	) -> Result<Self, ()> {
+		// Empty resources do not map file pages and therefore need no allocator lease.
 		let end = offset.checked_add(size).ok_or(())?;
 		if end > file_size {
 			return Err(());
@@ -26,7 +33,7 @@ impl FileResourceReader {
 		let backing = if size == 0 {
 			ResourceReaderBacking::Buffer(Box::new([]))
 		} else {
-			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, size)?)
+			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, size, lease)?)
 		};
 		Ok(Self { backing })
 	}
@@ -183,7 +190,7 @@ mod tests {
 		fs::write(&path, b"firstsecondthird").unwrap();
 
 		let reader: Box<dyn ResourceReader> =
-			Box::new(FileResourceReader::new_range(&fs::File::open(&path).unwrap(), 16, 5, 6).unwrap());
+			Box::new(FileResourceReader::new_range(&fs::File::open(&path).unwrap(), 16, 5, 6, None).unwrap());
 		let backing = reader.into_backing_storage().await.unwrap();
 
 		assert_eq!(backing.as_slice(), b"second");

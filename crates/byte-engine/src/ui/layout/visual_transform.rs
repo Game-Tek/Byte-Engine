@@ -90,27 +90,15 @@ impl Affine2 {
 }
 
 fn sanitize_offset(value: f32) -> f32 {
-	if value.is_finite() {
-		value
-	} else {
-		0.0
-	}
+	if value.is_finite() { value } else { 0.0 }
 }
 
 fn sanitize_scale(value: f32) -> f32 {
-	if value.is_finite() {
-		value.max(0.0)
-	} else {
-		1.0
-	}
+	if value.is_finite() { value.max(0.0) } else { 1.0 }
 }
 
 fn clamp_coordinate(value: f32) -> f32 {
-	if !value.is_finite() || value <= 0.0 {
-		0.0
-	} else {
-		value
-	}
+	if !value.is_finite() || value <= 0.0 { 0.0 } else { value }
 }
 
 #[cfg(test)]

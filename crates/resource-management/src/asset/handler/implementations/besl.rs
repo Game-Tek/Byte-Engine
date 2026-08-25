@@ -608,17 +608,17 @@ mod tests {
 	use std::sync::Arc;
 
 	use super::{
-		hash_shader_source, parse_shader_settings, parse_workgroup_size, prepare_shader, shader_compilation_docs_path,
-		shader_compilation_error_message, BESLShaderAssetHandler, BESLShaderSettings, ShaderCompiler, BESL_DOCS_PATH,
-		MACOS_SETUP_DOCS_PATH, WINDOWS_SETUP_DOCS_PATH,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, BESLShaderSettings, MACOS_SETUP_DOCS_PATH, ShaderCompiler,
+		WINDOWS_SETUP_DOCS_PATH, hash_shader_source, parse_shader_settings, parse_workgroup_size, prepare_shader,
+		shader_compilation_docs_path, shader_compilation_error_message,
 	};
 	use crate::{
 		asset::{
-			handler::implementations::bema::ProgramGenerator,
+			ResourceId,
 			handler::LoadErrors,
+			handler::implementations::bema::ProgramGenerator,
 			manager::{AssetManager, LoadMessages},
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
-			ResourceId,
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
@@ -714,7 +714,6 @@ mod tests {
 			"Failed to compile MSL shader. The Metal compiler reported an error.\nstderr:\nshader.metal:7:3: error: unknown identifier",
 			"Failed to compile HLSL shader. DXC reported an invalid generated expression.",
 		] {
-
 			assert_eq!(shader_compilation_docs_path(error), None);
 			assert!(!shader_compilation_error_message("passes/resolve.besl", error).contains(" See "));
 		}
@@ -1107,21 +1106,22 @@ use std::{
 	sync::{Arc, OnceLock},
 };
 
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize as _;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use utils::{
-	json::{JsonContainerTrait as _, JsonValueTrait as _},
 	Extent,
+	json::{JsonContainerTrait as _, JsonValueTrait as _},
 };
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	BEADType, ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::asset::handler::implementations::bema::ProgramGenerator;
 use crate::{
-	online_docs_url,
+	ProcessedAsset,
 	r#async::spawn_cpu_task,
+	online_docs_url,
 	resources::material::{Binding, Shader, ShaderInterface},
 	shader::{
 		artifact::finalize_platform_shader_artifact,
@@ -1132,5 +1132,4 @@ use crate::{
 		generator::ShaderGenerationSettings,
 	},
 	types::ShaderTypes,
-	ProcessedAsset,
 };

@@ -1,6 +1,6 @@
 mod source;
 
-use source::{append_canonical_image_in, canonicalize_image_in, CanonicalImageData};
+use source::{CanonicalImageData, append_canonical_image_in, canonicalize_image_in};
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -431,11 +431,11 @@ fn append_encoded_level<A: Allocator + Clone>(
 			let expected_payload_bytes = width as usize / 4 * (height as usize / 4) * 16;
 
 			assert_eq!(
-					compressed.len(),
-					expected_payload_bytes,
-					"BC5 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
-					compressed.len()
-				);
+				compressed.len(),
+				expected_payload_bytes,
+				"BC5 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
+				compressed.len()
+			);
 
 			output.extend_from_slice(&compressed);
 		}
@@ -494,9 +494,9 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		bc7_compression_settings, compress_bc_level, determine_image_format, gamma_from_semantic, guess_semantic_from_name,
-		process_image, rga_to_rg_surface, rgba8_bc_compression_surface_in, should_compress_for_semantic, CanonicalImageData,
-		ImageDescription, ImageSource, Semantic,
+		CanonicalImageData, ImageDescription, ImageSource, Semantic, bc7_compression_settings, compress_bc_level,
+		determine_image_format, gamma_from_semantic, guess_semantic_from_name, process_image, rga_to_rg_surface,
+		rgba8_bc_compression_surface_in, should_compress_for_semantic,
 	};
 	use crate::{
 		asset::ResourceId,
@@ -1136,11 +1136,11 @@ use std::alloc::{Allocator, Global};
 use utils::Extent;
 
 use crate::{
-	asset::{handler::LoadErrors, resource_id::ResourceIdBase, ResourceId},
+	Description, ProcessedAsset, StreamDescription,
+	asset::{ResourceId, handler::LoadErrors, resource_id::ResourceIdBase},
 	resources::{
 		image::Image,
 		mips::{CPUMipGenerationBackend, MipGenerationBackend},
 	},
 	types::{Formats, Gamma},
-	Description, ProcessedAsset, StreamDescription,
 };

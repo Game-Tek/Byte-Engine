@@ -2,9 +2,9 @@ use std::collections::hash_map::Entry;
 
 use ghi::{command_buffer::CommandBufferRecording as _, context::ContextCreate as _};
 use resource_management::{
+	Reference,
 	resources::mesh::{Mesh, Primitive as ResourcePrimitive},
 	types::{Stream as ResourceStream, Streams, VertexSemantics},
-	Reference,
 };
 use utils::as_byte_slice;
 
@@ -12,8 +12,8 @@ pub(super) use super::upload_staging;
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
 	pipelines::visibility::{
-		RuntimeUnitVector, RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
-		MAX_TRIANGLES, MAX_VERTICES, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
+		MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, RuntimeUnitVector, RuntimeVertexNormal,
+		RuntimeVertexUv, ShaderMeshletData, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 	},
 	pipelines::visibility::{TRIANGLE_COUNT, VERTEX_COUNT},
 };
@@ -25,7 +25,7 @@ mod residency;
 pub use data::*;
 pub(crate) use preparation::*;
 #[cfg(test)]
-pub(super) use preparation::{pack_f32_uvs, prepared_mesh_counts_match, validated_generated_indices, PreparedGpuMeshCounts};
+pub(super) use preparation::{PreparedGpuMeshCounts, pack_f32_uvs, prepared_mesh_counts_match, validated_generated_indices};
 #[cfg(test)]
 pub(super) use residency::checked_visibility_capacity;
 
@@ -64,8 +64,8 @@ pub(crate) struct GPUVertexDataManager {
 #[cfg(test)]
 mod tests {
 	use super::{
-		checked_visibility_capacity, pack_f32_uvs, prepared_mesh_counts_match, validated_generated_indices, PreparedGpuMesh,
-		PreparedGpuMeshCounts,
+		PreparedGpuMesh, PreparedGpuMeshCounts, checked_visibility_capacity, pack_f32_uvs, prepared_mesh_counts_match,
+		validated_generated_indices,
 	};
 	use crate::rendering::mesh::generator::BoxMeshGenerator;
 

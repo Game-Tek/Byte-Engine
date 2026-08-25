@@ -3,9 +3,9 @@ use std::marker::PhantomData;
 use utils::Extent;
 
 use crate::{
-	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts,
-	MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError,
+	AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle, BufferImageCopyDescriptor,
+	ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle,
+	PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError, graphics_hardware_interface,
 };
 
 pub struct CommandBufferRecording<'a> {

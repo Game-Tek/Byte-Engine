@@ -1,5 +1,5 @@
-use math::{inverse, orthographic_matrix, projection_matrix, Degrees, Matrix, Plane, Point, UnitVector, Vector, WorldSpace};
-use maths_rs::{mat::MatTranslate as _, Vec3f, Vec4f};
+use math::{Degrees, Matrix, Plane, Point, UnitVector, Vector, WorldSpace, inverse, orthographic_matrix, projection_matrix};
+use maths_rs::{Vec3f, Vec4f, mat::MatTranslate as _};
 
 use crate::gameplay::transform::Transform;
 

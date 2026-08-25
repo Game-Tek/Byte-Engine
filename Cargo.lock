@@ -331,7 +331,6 @@ dependencies = [
  "colored",
  "compio",
  "exr",
- "futures-util",
  "gltf",
  "gxhash",
  "image",

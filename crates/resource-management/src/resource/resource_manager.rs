@@ -303,12 +303,12 @@ mod tests {
 
 	use super::ResourceManager;
 	use crate::{
+		ProcessedAsset,
 		asset::ResourceId,
 		r#async,
-		resource::{storage_backend::tests::TestStorageBackend, ReadTargetsMut, WriteStorageBackend},
+		resource::{ReadTargetsMut, WriteStorageBackend, storage_backend::tests::TestStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
-		ProcessedAsset,
 	};
 
 	#[r#async::test]
@@ -353,8 +353,8 @@ mod debug_tests {
 	use std::{
 		fs,
 		sync::{
-			atomic::{AtomicUsize, Ordering},
 			Arc,
+			atomic::{AtomicUsize, Ordering},
 		},
 		time::{SystemTime, UNIX_EPOCH},
 	};
@@ -363,17 +363,17 @@ mod debug_tests {
 
 	use super::ResourceManager;
 	use crate::{
+		ProcessedAsset,
 		asset::{
+			ResourceId, ResourceTraceLevel,
 			handler::{AssetHandler, BakeContext, LoadErrors},
 			manager::AssetManager,
-			storage_backend::{tests::TestStorageBackend as AssetTestStorageBackend, FileStorageBackend},
-			ResourceId, ResourceTraceLevel,
+			storage_backend::{FileStorageBackend, tests::TestStorageBackend as AssetTestStorageBackend},
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::{Shader, ShaderArtifact, ShaderInterface},
 		types::ShaderTypes,
-		ProcessedAsset,
 	};
 
 	struct ResolvingAssetHandler;
@@ -504,9 +504,11 @@ mod debug_tests {
 
 		assert!(renderer_reference.upgrade().is_some());
 		assert!(resource_manager.resource_trace().is_some());
-		assert!(resource_manager
-			.try_set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), storage))
-			.is_err());
+		assert!(
+			resource_manager
+				.try_set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), storage))
+				.is_err()
+		);
 	}
 
 	#[r#async::test]
@@ -670,13 +672,13 @@ mod release_tests {
 use std::sync::Arc;
 
 use super::{
-	storage_backend::{Query, QueryError, QueryPage},
 	DynStorageBackend, StorageBackend,
+	storage_backend::{Query, QueryError, QueryPage},
 };
 #[cfg(debug_assertions)]
 use crate::asset::{
+	ResourceTrace,
 	handler::LoadErrors,
 	manager::{AssetManager, LoadMessages},
-	ResourceTrace,
 };
-use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
+use crate::{Model, Reference, ReferenceModel, Resource, SerializableResource, Solver, asset::ResourceId, online_docs_url};

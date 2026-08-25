@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use super::{super::is_two, analysis::Generator, header};
-use crate::shader::generator::{ordered_shader_nodes, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages};
+use crate::shader::generator::{NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, ordered_shader_nodes};
 impl Generator {
 	/// Generates a GLSL shader from a BESL AST.
 	///

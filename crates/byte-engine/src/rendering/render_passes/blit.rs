@@ -1,8 +1,8 @@
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{simple_compute, RenderPassBuilder, RenderPassReturn},
 		RenderPass, Sink,
+		render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
 	},
 };
 

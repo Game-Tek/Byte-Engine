@@ -9,7 +9,7 @@ pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledSh
 use crate::shader::{
 	besl::{
 		backends::msl::MSLShaderGenerator,
-		evaluation::{collect_bindings, BindingKind, BindingRecord},
+		evaluation::{BindingKind, BindingRecord, collect_bindings},
 	},
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
 };
@@ -324,10 +324,10 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		format_tool_failure, metal_debug_info_arguments, metal_toolchain_missing, reflected_workgroup_extent,
-		CompiledShaderBinding,
+		CompiledShaderBinding, format_tool_failure, metal_debug_info_arguments, metal_toolchain_missing,
+		reflected_workgroup_extent,
 	};
-	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
+	use crate::shader::besl::evaluation::{BindingRecord, BindingUsage, collect_bindings};
 	use crate::shader::generator::ShaderGenerationSettings;
 
 	#[test]

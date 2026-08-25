@@ -1,7 +1,7 @@
 use smallvec::SmallVec;
 use utils::Box;
 
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
+use crate::rendering::{RenderPass, Sink, render_pass::RenderPassReturn};
 
 pub struct SerialRenderPass {
 	render_passes: Vec<Box<dyn RenderPass>>,

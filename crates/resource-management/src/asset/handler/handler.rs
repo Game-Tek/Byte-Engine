@@ -468,9 +468,9 @@ use utils::sync::Mutex;
 #[cfg(debug_assertions)]
 use crate::asset::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use crate::asset::{
+	AssetStorageBytes, BEADType, ResourceId,
 	bake_memory::BakeAllocator,
 	manager::AssetManagerState,
 	storage_backend::{AssetDependency, AssetVersion},
-	AssetStorageBytes, BEADType, ResourceId,
 };
-use crate::{asset, r#async::BoxedFuture, resource, Model, ProcessedAsset, ReferenceModel, SerializableResource};
+use crate::{Model, ProcessedAsset, ReferenceModel, SerializableResource, asset, r#async::BoxedFuture, resource};

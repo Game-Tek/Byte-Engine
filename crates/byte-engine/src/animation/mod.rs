@@ -16,6 +16,6 @@ pub mod root_motion;
 pub mod skeletal;
 
 pub use skeletal::{
-	compare_animation_bone_positions, sample_local_pose, sample_pose, write_global_pose, AnimationBonePositionComparison,
-	AnimationComparisonError, BonePositionDifference, PoseError,
+	AnimationBonePositionComparison, AnimationComparisonError, BonePositionDifference, PoseError,
+	compare_animation_bone_positions, sample_local_pose, sample_pose, write_global_pose,
 };

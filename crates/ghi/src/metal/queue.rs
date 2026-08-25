@@ -386,8 +386,6 @@ use std::ptr::NonNull;
 use block2::StackBlock;
 use objc2::runtime::AnyObject;
 use objc2_foundation::NSString;
-use objc2_metal::{
-	MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice, MTLResidencySet,
-};
+use objc2_metal::{MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice, MTLResidencySet};
 
 use super::*;

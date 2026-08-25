@@ -15,7 +15,7 @@ impl Device {
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent) {
 		// Resizes CPU-side image storage without emitting GPU commands.
-		let Some(current) = self.images.get(image_handle.0 .0 as usize) else {
+		let Some(current) = self.images.get(image_handle.0.0 as usize) else {
 			return;
 		};
 		if current.extent == extent {
@@ -41,7 +41,7 @@ impl Device {
 			self.image_states.remove(&key);
 		}
 
-		let image = &mut self.images[image_handle.0 .0 as usize];
+		let image = &mut self.images[image_handle.0.0 as usize];
 		image.extent = extent;
 		image.resource = resource.clone();
 		image.data = utils::texture_copy_size(image.format, extent).map(|size| vec![0u8; size]);

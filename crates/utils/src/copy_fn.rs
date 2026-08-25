@@ -1,7 +1,7 @@
 use std::{
 	fmt,
 	marker::PhantomData,
-	mem::{align_of, size_of, MaybeUninit},
+	mem::{MaybeUninit, align_of, size_of},
 	ptr,
 };
 

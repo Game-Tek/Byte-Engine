@@ -76,19 +76,11 @@ impl Default for EdgeFeather {
 }
 
 fn sanitize_feather_width(width: f32) -> f32 {
-	if width.is_finite() {
-		width.max(0.0)
-	} else {
-		0.0
-	}
+	if width.is_finite() { width.max(0.0) } else { 0.0 }
 }
 
 fn sanitize_backdrop_blur_radius(radius: f32) -> f32 {
-	if radius.is_finite() {
-		radius.clamp(0.0, 64.0)
-	} else {
-		0.0
-	}
+	if radius.is_finite() { radius.clamp(0.0, 64.0) } else { 0.0 }
 }
 
 pub trait Layer {

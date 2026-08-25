@@ -6,8 +6,8 @@
 mod navigation_mesh;
 
 pub use navigation_mesh::{
-	string_pull, string_pull_into, NavigationMesh, NavigationMeshBuildError, NavigationPathError, NavigationPortal,
-	NavigationVertexHandle, StringPullError,
+	NavigationMesh, NavigationMeshBuildError, NavigationPathError, NavigationPortal, NavigationVertexHandle, StringPullError,
+	string_pull, string_pull_into,
 };
 
 /// Finds the lowest-cost path from `start` to `target`.

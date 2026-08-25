@@ -148,11 +148,7 @@ pub(crate) fn generated_image_fragment_index(fragment: &str) -> Option<u32> {
 		.take_while(|character| character.is_ascii_digit())
 		.collect::<String>();
 
-	if digits.is_empty() {
-		None
-	} else {
-		digits.parse().ok()
-	}
+	if digits.is_empty() { None } else { digits.parse().ok() }
 }
 
 /// Loads a glTF image from embedded buffer data, data URIs, or file-local URI references.

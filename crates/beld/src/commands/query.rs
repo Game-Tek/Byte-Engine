@@ -1,14 +1,14 @@
 use resource_management::resource::{
-	storage_backend::{Query, QueryCursor, QueryError},
 	ReDBStorageBackend, ReadStorageBackend,
+	storage_backend::{Query, QueryCursor, QueryError},
 };
 
 use crate::{
+	QueryFormat,
 	commands::shared::{
 		decode_query_cursor, encode_query_cursor, insert_trace_json, open_read_only_storage, print_human_trace,
 		print_queryable_value, queryable_properties_json, read_resource_trace,
 	},
-	QueryFormat,
 };
 
 /// Finds resources by class and indexed property values.

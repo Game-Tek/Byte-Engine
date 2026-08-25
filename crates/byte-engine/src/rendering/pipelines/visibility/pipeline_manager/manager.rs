@@ -154,7 +154,9 @@ impl VisibilityPipelineManager {
 		#[cfg(target_os = "macos")]
 		let resource_io_queue = context
 			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Visibility Texture I/O"))
-			.expect("Visibility texture I/O queue could not be created. The most likely cause is unavailable native storage support.");
+			.expect(
+				"Visibility texture I/O queue could not be created. The most likely cause is unavailable native storage support.",
+			);
 		Self {
 			pipeline_manager,
 			materials_data,
@@ -327,8 +329,7 @@ impl VisibilityPipelineManager {
 				} => {
 					let image = ghi::BaseImageHandle::from(frame.intern_image(image));
 					let sampler = frame.intern_sampler(sampler);
-					if let Err(error) =
-						self.submit_texture_io(frame, key.clone(), index, image, sampler, resource, photometry)
+					if let Err(error) = self.submit_texture_io(frame, key.clone(), index, image, sampler, resource, photometry)
 					{
 						log::error!(
 							"Visibility texture I/O submission failed for {}. The most likely cause is incompatible compressed texture data. Error: {}",

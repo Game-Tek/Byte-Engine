@@ -23,9 +23,9 @@ pub fn process_audio<'source>(
 mod tests {
 	use std::borrow::Cow;
 
-	use super::{process_audio, AudioDescription};
+	use super::{AudioDescription, process_audio};
 	use crate::{
-		asset::{handler::LoadErrors, ResourceId},
+		asset::{ResourceId, handler::LoadErrors},
 		resources::audio::Audio,
 		types::BitDepths,
 	};
@@ -161,6 +161,6 @@ mod tests {
 use std::borrow::Cow;
 
 use crate::{
-	asset::{handler::LoadErrors, ResourceId},
 	ProcessedAsset,
+	asset::{ResourceId, handler::LoadErrors},
 };

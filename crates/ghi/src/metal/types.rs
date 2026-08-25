@@ -1,4 +1,4 @@
-use crate::{buffer::BufferHandle, graphics_hardware_interface, image::ImageHandle, sampler::SamplerHandle, PrivateHandles};
+use crate::{PrivateHandles, buffer::BufferHandle, graphics_hardware_interface, image::ImageHandle, sampler::SamplerHandle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Descriptor {

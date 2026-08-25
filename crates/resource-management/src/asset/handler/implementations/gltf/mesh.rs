@@ -76,9 +76,18 @@ pub(crate) enum GltfMeshSourceError {
 impl std::fmt::Display for GltfMeshSourceError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::MissingIndices => write!(formatter, "glTF triangle indices are missing. The most likely cause is an unindexed source primitive."),
-			Self::MissingPositions => write!(formatter, "glTF positions are missing. The most likely cause is a missing or malformed POSITION accessor."),
-			Self::MissingAttribute(semantic) => write!(formatter, "glTF vertex data is incomplete. The most likely cause is a missing {semantic:?} accessor required by the shared mesh layout."),
+			Self::MissingIndices => write!(
+				formatter,
+				"glTF triangle indices are missing. The most likely cause is an unindexed source primitive."
+			),
+			Self::MissingPositions => write!(
+				formatter,
+				"glTF positions are missing. The most likely cause is a missing or malformed POSITION accessor."
+			),
+			Self::MissingAttribute(semantic) => write!(
+				formatter,
+				"glTF vertex data is incomplete. The most likely cause is a missing {semantic:?} accessor required by the shared mesh layout."
+			),
 			Self::Skeletal(error) => error.fmt(formatter),
 		}
 	}

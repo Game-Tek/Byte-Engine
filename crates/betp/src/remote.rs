@@ -286,4 +286,4 @@ mod tests {
 
 use utils::bit_array::BitArray;
 
-use super::{sequence_greater_than, PacketInfo};
+use super::{PacketInfo, sequence_greater_than};

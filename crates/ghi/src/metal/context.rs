@@ -3,14 +3,15 @@ use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
-use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
+use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSString};
 use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLDevice, MTLResource};
 use smallvec::SmallVec;
 
 use super::*;
 use crate::{
+	DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
@@ -18,7 +19,7 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
+	window,
 };
 
 /// The `TextureReadbackStorage` struct keeps one Metal transfer result alive for later CPU mapping.

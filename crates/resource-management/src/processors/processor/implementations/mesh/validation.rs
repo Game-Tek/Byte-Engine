@@ -85,31 +85,125 @@ pub enum MeshProcessingError {
 impl std::fmt::Display for MeshProcessingError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::MissingAttribute(semantic, channel) => write!(f, "Mesh is missing a required vertex attribute. The most likely cause is that {semantic:?} on channel {channel} is present in the vertex layout but not in the primitive data."),
-			Self::DuplicateVertexSemantic(semantic) => write!(f, "Mesh uses the same vertex semantic more than once. The most likely cause is that the current stream metadata cannot represent multiple channels for {semantic:?}."),
-			Self::AttributeLengthMismatch(semantic, channel) => write!(f, "Mesh attribute length does not match the position stream. The most likely cause is that {semantic:?} on channel {channel} does not contain one value per vertex."),
-			Self::InvalidTriangleIndexCount => write!(f, "Triangle index count is invalid. The most likely cause is that the index stream length is not divisible by three."),
-			Self::InvalidPositionData => write!(f, "Mesh position data is invalid. The most likely cause is an empty position stream or a non-finite component."),
-			Self::FailedToBuildMeshlets => write!(f, "Meshlet generation failed. The most likely cause is that the packed position stream could not be adapted for meshopt."),
-			Self::InvalidSkeletonModel => write!(f, "Skeleton metadata is invalid. The most likely cause is that the mesh source contains an incompatible serialized skeleton model."),
-			Self::SkinWithoutSkeleton => write!(f, "Mesh skin bindings have no skeleton. The most likely cause is that the importer omitted the skeleton reference while retaining skin palettes."),
-			Self::TooManySkinBindings { skins } => write!(f, "Mesh has too many skin bindings. The most likely cause is that {skins} palettes cannot be addressed by the resource's u32 skin indices."),
-			Self::TransformNodeWithoutSkeleton { primitive, node } => write!(f, "Primitive transform node has no skeleton. The most likely cause is that primitive {primitive} targets node {node} without retaining its hierarchy."),
-			Self::TransformNodeOutOfRange { primitive, node, nodes } => write!(f, "Primitive transform node is outside the skeleton. The most likely cause is that primitive {primitive} targets node {node} in a {nodes}-node hierarchy."),
-			Self::SkinPaletteTooLarge { skin, joints } => write!(f, "Skin palette is too large. The most likely cause is that skin {skin} contains {joints} entries, which cannot be addressed by u16 vertex joints."),
-			Self::SkinJointOutOfRange { skin, joint, node, nodes } => write!(f, "Skin joint is outside the skeleton. The most likely cause is that skin {skin} palette entry {joint} targets node {node} in a {nodes}-node skeleton."),
-			Self::NonFiniteInverseBind { skin } => write!(f, "Skin inverse bind is not finite. The most likely cause is malformed transform data in skin {skin}."),
-			Self::SkinIndexOutOfRange { primitive, skin, skins } => write!(f, "Primitive skin index is invalid. The most likely cause is that primitive {primitive} targets skin {skin} in a mesh with {skins} skins."),
-			Self::IncompleteSkinAttributes { primitive } => write!(f, "Skinned primitive attributes are incomplete. The most likely cause is that primitive {primitive} does not provide joint and weight values."),
-			Self::UnboundSkinAttributes { primitive } => write!(f, "Primitive skin attributes have no binding. The most likely cause is that primitive {primitive} provides joint or weight values without selecting a skin."),
-			Self::MissingSkinVertexComponent(semantic) => write!(f, "Skin vertex layout is incomplete. The most likely cause is that {semantic:?} channel 0 was omitted from the declared mesh layout."),
-			Self::InvalidSkinVertexComponentFormat { semantic, expected, actual } => write!(f, "Skin vertex layout has an invalid format. The most likely cause is that {semantic:?} was declared as '{actual}' instead of '{expected}'."),
-			Self::SkinVertexCountMismatch { primitive, values, positions } => write!(f, "Vertex skin count does not match the position stream. The most likely cause is that primitive {primitive} contains {values} skin values for {positions} positions."),
-			Self::VertexJointOutOfRange { primitive, vertex, lane, joint, palette_len } => write!(f, "Vertex joint index is outside the skin palette. The most likely cause is that primitive {primitive} vertex {vertex} lane {lane} targets joint {joint} in a {palette_len}-entry palette."),
-			Self::NonFiniteSkinWeight { primitive, vertex, lane } => write!(f, "Vertex skin weight is not finite. The most likely cause is malformed weight data in primitive {primitive} vertex {vertex} lane {lane}."),
-			Self::NegativeSkinWeight { primitive, vertex, lane } => write!(f, "Vertex skin weight is negative. The most likely cause is malformed weight data in primitive {primitive} vertex {vertex} lane {lane}."),
-			Self::NonPositiveSkinWeightTotal { primitive, vertex } => write!(f, "Vertex skin weight total is not positive. The most likely cause is that primitive {primitive} vertex {vertex} has no usable joint influence."),
-			Self::NonNormalizedSkinWeights { primitive, vertex } => write!(f, "Vertex skin weights are not normalized. The most likely cause is that primitive {primitive} vertex {vertex} was not normalized after influence reduction."),
+			Self::MissingAttribute(semantic, channel) => write!(
+				f,
+				"Mesh is missing a required vertex attribute. The most likely cause is that {semantic:?} on channel {channel} is present in the vertex layout but not in the primitive data."
+			),
+			Self::DuplicateVertexSemantic(semantic) => write!(
+				f,
+				"Mesh uses the same vertex semantic more than once. The most likely cause is that the current stream metadata cannot represent multiple channels for {semantic:?}."
+			),
+			Self::AttributeLengthMismatch(semantic, channel) => write!(
+				f,
+				"Mesh attribute length does not match the position stream. The most likely cause is that {semantic:?} on channel {channel} does not contain one value per vertex."
+			),
+			Self::InvalidTriangleIndexCount => write!(
+				f,
+				"Triangle index count is invalid. The most likely cause is that the index stream length is not divisible by three."
+			),
+			Self::InvalidPositionData => write!(
+				f,
+				"Mesh position data is invalid. The most likely cause is an empty position stream or a non-finite component."
+			),
+			Self::FailedToBuildMeshlets => write!(
+				f,
+				"Meshlet generation failed. The most likely cause is that the packed position stream could not be adapted for meshopt."
+			),
+			Self::InvalidSkeletonModel => write!(
+				f,
+				"Skeleton metadata is invalid. The most likely cause is that the mesh source contains an incompatible serialized skeleton model."
+			),
+			Self::SkinWithoutSkeleton => write!(
+				f,
+				"Mesh skin bindings have no skeleton. The most likely cause is that the importer omitted the skeleton reference while retaining skin palettes."
+			),
+			Self::TooManySkinBindings { skins } => write!(
+				f,
+				"Mesh has too many skin bindings. The most likely cause is that {skins} palettes cannot be addressed by the resource's u32 skin indices."
+			),
+			Self::TransformNodeWithoutSkeleton { primitive, node } => write!(
+				f,
+				"Primitive transform node has no skeleton. The most likely cause is that primitive {primitive} targets node {node} without retaining its hierarchy."
+			),
+			Self::TransformNodeOutOfRange { primitive, node, nodes } => write!(
+				f,
+				"Primitive transform node is outside the skeleton. The most likely cause is that primitive {primitive} targets node {node} in a {nodes}-node hierarchy."
+			),
+			Self::SkinPaletteTooLarge { skin, joints } => write!(
+				f,
+				"Skin palette is too large. The most likely cause is that skin {skin} contains {joints} entries, which cannot be addressed by u16 vertex joints."
+			),
+			Self::SkinJointOutOfRange {
+				skin,
+				joint,
+				node,
+				nodes,
+			} => write!(
+				f,
+				"Skin joint is outside the skeleton. The most likely cause is that skin {skin} palette entry {joint} targets node {node} in a {nodes}-node skeleton."
+			),
+			Self::NonFiniteInverseBind { skin } => write!(
+				f,
+				"Skin inverse bind is not finite. The most likely cause is malformed transform data in skin {skin}."
+			),
+			Self::SkinIndexOutOfRange { primitive, skin, skins } => write!(
+				f,
+				"Primitive skin index is invalid. The most likely cause is that primitive {primitive} targets skin {skin} in a mesh with {skins} skins."
+			),
+			Self::IncompleteSkinAttributes { primitive } => write!(
+				f,
+				"Skinned primitive attributes are incomplete. The most likely cause is that primitive {primitive} does not provide joint and weight values."
+			),
+			Self::UnboundSkinAttributes { primitive } => write!(
+				f,
+				"Primitive skin attributes have no binding. The most likely cause is that primitive {primitive} provides joint or weight values without selecting a skin."
+			),
+			Self::MissingSkinVertexComponent(semantic) => write!(
+				f,
+				"Skin vertex layout is incomplete. The most likely cause is that {semantic:?} channel 0 was omitted from the declared mesh layout."
+			),
+			Self::InvalidSkinVertexComponentFormat {
+				semantic,
+				expected,
+				actual,
+			} => write!(
+				f,
+				"Skin vertex layout has an invalid format. The most likely cause is that {semantic:?} was declared as '{actual}' instead of '{expected}'."
+			),
+			Self::SkinVertexCountMismatch {
+				primitive,
+				values,
+				positions,
+			} => write!(
+				f,
+				"Vertex skin count does not match the position stream. The most likely cause is that primitive {primitive} contains {values} skin values for {positions} positions."
+			),
+			Self::VertexJointOutOfRange {
+				primitive,
+				vertex,
+				lane,
+				joint,
+				palette_len,
+			} => write!(
+				f,
+				"Vertex joint index is outside the skin palette. The most likely cause is that primitive {primitive} vertex {vertex} lane {lane} targets joint {joint} in a {palette_len}-entry palette."
+			),
+			Self::NonFiniteSkinWeight { primitive, vertex, lane } => write!(
+				f,
+				"Vertex skin weight is not finite. The most likely cause is malformed weight data in primitive {primitive} vertex {vertex} lane {lane}."
+			),
+			Self::NegativeSkinWeight { primitive, vertex, lane } => write!(
+				f,
+				"Vertex skin weight is negative. The most likely cause is malformed weight data in primitive {primitive} vertex {vertex} lane {lane}."
+			),
+			Self::NonPositiveSkinWeightTotal { primitive, vertex } => write!(
+				f,
+				"Vertex skin weight total is not positive. The most likely cause is that primitive {primitive} vertex {vertex} has no usable joint influence."
+			),
+			Self::NonNormalizedSkinWeights { primitive, vertex } => write!(
+				f,
+				"Vertex skin weights are not normalized. The most likely cause is that primitive {primitive} vertex {vertex} was not normalized after influence reduction."
+			),
 		}
 	}
 }
@@ -289,7 +383,7 @@ const fn semantic_index(semantic: VertexSemantics) -> usize {
 
 use super::source::VertexSkin;
 use crate::{
+	ReferenceModel,
 	resources::skeleton::{SkeletonModel, SkinBinding, SkinJoint},
 	types::{VertexComponent, VertexSemantics},
-	ReferenceModel,
 };

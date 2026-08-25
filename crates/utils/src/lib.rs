@@ -279,7 +279,7 @@ pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
 mod tests {
 	use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 
-	use super::{as_byte_slice, as_byte_slice_mut, BufferAllocator, Extent, RGBA};
+	use super::{BufferAllocator, Extent, RGBA, as_byte_slice, as_byte_slice_mut};
 
 	#[test]
 	fn test_partition() {

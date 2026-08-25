@@ -1,13 +1,13 @@
 use smallvec::SmallVec;
 use utils::{
+	Box, Extent,
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
-	Box, Extent,
 };
 
 use crate::rendering::{
-	render_pass::{RenderPassBuilder, RenderPassReturn},
 	Sink,
+	render_pass::{RenderPassBuilder, RenderPassReturn},
 };
 
 /// The [`PipelineManager`] trait bridges scene state with render work for active

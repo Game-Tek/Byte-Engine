@@ -6,8 +6,8 @@ use super::{
 	visual::Visual,
 };
 use crate::ui::{
-	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
 	Container,
+	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
 };
 
 #[derive(Clone)]

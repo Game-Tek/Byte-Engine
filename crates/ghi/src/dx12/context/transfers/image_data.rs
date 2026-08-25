@@ -8,7 +8,7 @@ impl Device {
 	) -> Result<(), crate::TextureTransferError> {
 		let image = self
 			.images
-			.get(image_handle.0 .0 as usize)
+			.get(image_handle.0.0 as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		Self::dxgi_format(image.format)
@@ -51,7 +51,7 @@ impl Device {
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
 		let image = self
 			.images
-			.get(image_handle.0 .0 as usize)
+			.get(image_handle.0.0 as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		let layout = crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		let extent = image.extent;
@@ -215,7 +215,7 @@ impl Device {
 
 	pub(crate) fn write_image_data_for_sequence(&mut self, image_handle: ImageHandle, data: &[RGBAu8], sequence_index: u8) {
 		// Writes CPU-side image data for formats with staging storage.
-		let image = &mut self.images[image_handle.0 .0 as usize];
+		let image = &mut self.images[image_handle.0.0 as usize];
 		let staging = if let Some(frame_data) = image.frame_data.as_mut() {
 			let index = (sequence_index as usize).min(frame_data.len().saturating_sub(1));
 			frame_data.get_mut(index)

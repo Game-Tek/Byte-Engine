@@ -557,24 +557,23 @@ pub struct UiTextEditEvent {
 #[cfg(test)]
 mod tests {
 	use std::sync::{
-		atomic::{AtomicUsize, Ordering},
 		Arc, Mutex as StdMutex,
+		atomic::{AtomicUsize, Ordering},
 	};
 	use std::time::Duration;
 
 	use super::*;
 	use crate::ui::{
-		animate,
+		Depth, animate,
 		components::{container::Container, curve::CurvePath, shape::Shape, text_field::TextField},
 		flow::{self, Location3},
 		layout::{
-			context::{ContainerContext, Context, ElementContext},
 			Geometry, Sizing,
+			context::{ContainerContext, Context, ElementContext},
 		},
 		primitive::TextEdit,
 		spring,
 		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind},
-		Depth,
 	};
 
 	/// The `DropCounter` struct verifies that engine-owned UI context is released with the engine.
@@ -2671,9 +2670,11 @@ use std::{
 	task::{Context as TaskContext, Poll, Wake, Waker},
 };
 
-use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
+use utils::{RGBA, r#async::FusedFuture, sync::Mutex};
 
 use super::{
+	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,
+	RenderImageElement, RenderTextElement,
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
 	flow::{Location3, Size},
@@ -2681,14 +2682,12 @@ use super::{
 	retained_tree::RetainedTree,
 	snapshot::Snapshot,
 	visual_transform::Affine2,
-	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,
-	RenderImageElement, RenderTextElement,
 };
 use crate::ui::{
+	Container, Depth, Text, Transform, UiPoint, UiVector,
 	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, EdgeFeather, Layer as _, LayerKind},
-	Container, Depth, Text, Transform, UiPoint, UiVector,
 };

@@ -15,13 +15,13 @@ use crate::rendering::pipelines::visibility::{
 	ActiveMaterialMask, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
 	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_POINT_SHADOW_POOL_CAPACITY,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
 	POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
+use crate::rendering::{RenderPass, Sink, render_pass::RenderPassReturn};
 
 mod gtao;
 mod materials;
@@ -41,20 +41,20 @@ pub use visibility::*;
 
 #[cfg(test)]
 mod tests {
-	use math::{inverse, Point, UnitVector};
-	use maths_rs::{cross, dot, length, Vec3f, Vec4f};
+	use math::{Point, UnitVector, inverse};
+	use maths_rs::{Vec3f, Vec4f, cross, dot, length};
 	use utils::Extent;
 
 	use super::{
-		cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data, gtao_half_resolution_extent,
-		point_shadow_view_indices, transparent_visibility_layer, GtaoSettings, Instance, MeshDispatch,
+		GtaoSettings, Instance, MeshDispatch, cone_shadow_view_indices, directional_shadow_view_indices, fast_gtao_view_data,
+		gtao_half_resolution_extent, point_shadow_view_indices, transparent_visibility_layer,
 	};
 	use crate::configuration::ConfigurationValue;
 	use crate::rendering::pipelines::visibility::{
 		CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY, POINT_SHADOW_FACE_COUNT,
 		POINT_SHADOW_VIEW_OFFSET,
 	};
-	use crate::rendering::{view::View, Sink};
+	use crate::rendering::{Sink, view::View};
 
 	#[test]
 	fn shadow_dispatches_preserve_directional_cascades_cone_layers_and_point_cube_faces() {
@@ -120,9 +120,11 @@ mod tests {
 		assert_eq!(radius, ConfigurationValue::Float(2.5));
 		assert_eq!(samples, ConfigurationValue::Integer(12));
 		assert_eq!(rays, ConfigurationValue::Integer(16));
-		assert!(settings
-			.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
-			.is_err());
+		assert!(
+			settings
+				.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
+				.is_err()
+		);
 		assert_eq!(settings.radial_rays, 16);
 	}
 
@@ -143,11 +145,13 @@ mod tests {
 
 		assert_eq!(layer, instances);
 		assert!(transparent_visibility_layer(&[]).is_none());
-		assert!(transparent_visibility_layer(&[Instance {
-			shader_mesh_index: 13,
-			meshlet_count: 0,
-		}])
-		.is_none());
+		assert!(
+			transparent_visibility_layer(&[Instance {
+				shader_mesh_index: 13,
+				meshlet_count: 0,
+			}])
+			.is_none()
+		);
 	}
 
 	#[test]
@@ -356,7 +360,7 @@ mod tests {
 			if hit_z < near || hit_z > far {
 				return None;
 			} // outside clip range
-	 // Project hit point to get depth
+			// Project hit point to get depth
 			let hit_x = p.x * t;
 			let clip = proj * Vec4f::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
@@ -365,11 +369,7 @@ mod tests {
 		let min_diff = |p: Vec3f, a: Vec3f, b: Vec3f| -> Vec3f {
 			let ap = Vec3f::new(a.x - p.x, a.y - p.y, a.z - p.z);
 			let bp = Vec3f::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if dot(ap, ap) < dot(bp, bp) {
-				ap
-			} else {
-				bp
-			}
+			if dot(ap, ap) < dot(bp, bp) { ap } else { bp }
 		};
 
 		eprintln!("\n--- Floor plane normal reconstruction ---");

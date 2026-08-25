@@ -1,4 +1,4 @@
-use crate::{resource, solver::SolveErrors, Reference, ReferenceModel, Solver};
+use crate::{Reference, ReferenceModel, Solver, resource, solver::SolveErrors};
 
 /// Stores an affine four-by-three matrix as four column vectors.
 ///
@@ -398,10 +398,10 @@ fn validate_node(
 #[cfg(test)]
 mod tests {
 	use super::{
-		identity_affine_matrix4x3_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkeletonPoseMap, SkinBinding,
-		SkinJoint, SkinPaletteEntry, SkinPaletteError,
+		LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkeletonPoseMap, SkinBinding, SkinJoint, SkinPaletteEntry,
+		SkinPaletteError, identity_affine_matrix4x3_columns,
 	};
-	use crate::{resource::storage_backend::tests::TestStorageBackend, Solver};
+	use crate::{Solver, resource::storage_backend::tests::TestStorageBackend};
 
 	#[test]
 	fn identity_transform_preserves_the_neutral_pose() {
@@ -672,9 +672,11 @@ mod tests {
 		let sentinel = [[[-1.0; 3]; 4]; 2];
 		let mut output = sentinel;
 
-		assert!(binding
-			.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output)
-			.is_err());
+		assert!(
+			binding
+				.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output)
+				.is_err()
+		);
 		assert_eq!(output, sentinel);
 	}
 }

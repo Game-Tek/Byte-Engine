@@ -1,7 +1,7 @@
 //! Run with `cargo bench -p byte-engine --bench animation_graph`.
 
 use byte_engine::animation::graph::benchmarks::{AnimationGraphBenchmark, AnimationGraphBenchmarkFixture};
-use divan::{counter::ItemsCount, Bencher};
+use divan::{Bencher, counter::ItemsCount};
 
 fn main() {
 	divan::main();

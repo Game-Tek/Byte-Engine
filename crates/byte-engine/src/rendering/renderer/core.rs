@@ -485,10 +485,10 @@ impl Renderer {
 			while let Some(message) = transforms_listener.read() {
 				let handle = *message.handle();
 
-				if let Some((camera, transform)) =
-					self.cameras
-						.iter_mut()
-						.find_map(|(h, camera, transform)| if handle == *h { Some((camera, transform)) } else { None })
+				if let Some((camera, transform)) = self
+					.cameras
+					.iter_mut()
+					.find_map(|(h, camera, transform)| if handle == *h { Some((camera, transform)) } else { None })
 				{
 					transform.set_position(message.transform().get_position());
 					transform.set_orientation(message.transform().get_orientation());
@@ -972,15 +972,15 @@ use smallvec::SmallVec;
 use tracing::debug_span;
 use utils::Box;
 use utils::{
+	Extent, RGBA,
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
-	Extent, RGBA,
 };
 
 use super::{
 	configuration::{
-		apply_render_pass_configuration, render_pass_harness_with_state, set_render_pass_state_by_name,
-		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX,
+		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration,
+		render_pass_harness_with_state, set_render_pass_state_by_name,
 	},
 	targets::RenderTargets,
 };
@@ -988,18 +988,17 @@ use crate::{
 	application::parameters::Parameters,
 	configuration::{Configuration, ConfigurationPort},
 	core::{
+		Entity, EntityHandle,
 		channel::{Channel, DefaultChannel},
 		factory::Handle,
 		listener::Listener,
-		Entity, EntityHandle,
 	},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
-		make_perspective_view_from_camera,
+		Camera, Sink, View, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
 		render_pass::{FramePrepare, RenderPassReturn},
 		window::{self, Window},
-		Camera, Sink, View,
 	},
 	space::Orientable as _,
 };

@@ -1,25 +1,25 @@
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
-use ghi::context::{Context as _, ContextCreate as _};
 use ghi::Device as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use ghi::{
+	Size as _,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	Size as _,
 };
-use resource_management::resource::resource_manager::ResourceManager;
+use resource_management::Reference;
 use resource_management::resource::ReadTargets;
+use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::material::{Value, Variant as ResourceVariant};
 use resource_management::resources::mesh::Mesh as ResourceMesh;
 use resource_management::types::AlphaMode;
-use resource_management::Reference;
 use smallvec::SmallVec;
-use utils::hash::{HashMap, HashMapExt};
 use utils::Extent;
+use utils::hash::{HashMap, HashMapExt};
 
 pub(super) use super::upload_staging;
 use crate::core::EntityHandle;

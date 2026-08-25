@@ -1,12 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
 use super::{
+	LayoutElement,
 	element::Id,
 	engine::EngineState,
 	flow::{Location, Size},
-	LayoutElement,
 };
-use crate::ui::{intersection::MouseClickAcceleration, UiPoint, UiVector};
+use crate::ui::{UiPoint, UiVector, intersection::MouseClickAcceleration};
 
 /// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
 pub struct Snapshot<'a> {

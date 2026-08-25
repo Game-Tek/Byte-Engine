@@ -272,8 +272,8 @@ mod tests {
 	use resource_management::resources::skeleton::LocalTransform;
 
 	use super::PoseInertializer;
-	use crate::animation::math::quaternion_exp;
 	use crate::MediaTime;
+	use crate::animation::math::quaternion_exp;
 
 	fn transform(position: f32, angle: f32) -> LocalTransform {
 		LocalTransform {

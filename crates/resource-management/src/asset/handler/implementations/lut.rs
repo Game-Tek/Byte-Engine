@@ -236,7 +236,7 @@ mod tests {
 
 	use crate::{
 		asset::{
-			self, handler::implementations::lut::LUTAssetHandler, handler::AssetHandler, manager::AssetManager, ResourceId,
+			self, ResourceId, handler::AssetHandler, handler::implementations::lut::LUTAssetHandler, manager::AssetManager,
 		},
 		r#async, resource,
 		resources::lut::{Lut, LutKind},
@@ -336,10 +336,10 @@ mod tests {
 }
 
 use super::{
-	handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
+	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::lut::{process_lut, LutDescription},
+	processors::processor::implementations::lut::{LutDescription, process_lut},
 	resources::lut::LutKind,
 };

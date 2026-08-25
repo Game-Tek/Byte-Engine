@@ -5,12 +5,12 @@ pub type MultiResourceReader = Box<dyn ResourceReader>;
 #[cfg(test)]
 pub mod tests {
 	use crate::{
+		StreamDescription,
 		r#async::{self, BoxedFuture},
 		resource::{
-			reader::{ResourceReader, ResourceReaderBacking},
 			ReadTargets, ReadTargetsMut,
+			reader::{ResourceReader, ResourceReaderBacking},
 		},
-		StreamDescription,
 	};
 
 	#[derive(Debug)]

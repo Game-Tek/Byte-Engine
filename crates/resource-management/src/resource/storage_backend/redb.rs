@@ -386,6 +386,182 @@ impl ReDBStorageBackend {
 		r#async::future(self.read_resource(id))
 	}
 
+	/// Removes one resource from the live store and returns its standalone payload path when one exists.
+	fn remove_resource_record(&self, id: asset::ResourceId<'_>) -> Result<Option<std::path::PathBuf>, String> {
+		// Packed metadata changes and allocator transitions share this lock so a
+		// reader cannot lease a slot between its removal and retirement.
+		let packed_allocator = self.packed_allocator.as_ref();
+		let mut allocator_state = packed_allocator.map(|allocator| allocator.lock_state());
+		let write = match &self.db {
+			RedbDatabase::Writable(db) => db
+				.begin_write()
+				.map_err(|_| "Failed to begin delete transaction".to_string())?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err("Cannot delete from a read-only resources database".to_string());
+			}
+		};
+		let id = ResourceId::from(id.as_ref());
+		let mut deleted_hash = None;
+		let mut deleted_range = None;
+		let deleted_compression;
+
+		{
+			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
+			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
+			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
+			let mut compression_table = write.open_table(RESOURCE_COMPRESSION_TABLE).unwrap();
+			#[cfg(debug_assertions)]
+			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
+
+			if let Some(existing) = resources_table.get(&id).unwrap() {
+				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
+				deleted_hash = Some(resource.hash());
+				if self.storage_mode == ResourceStorageMode::Packed {
+					let offset = packed_offsets
+						.get(&id)
+						.unwrap()
+						.expect("stored packed resource should have an offset")
+						.value();
+					deleted_range = Some(PackedRange::new(
+						offset,
+						u64::try_from(resource.size()).expect("stored resource size should fit in u64"),
+					));
+				}
+				remove_indexes(&mut class_table, &mut property_table, &resource, id.0);
+			}
+			deleted_compression = compression_table
+				.get(&id)
+				.unwrap()
+				.map(|value| ResourceCompression::from_bytes(value.value()).unwrap_or_default())
+				.unwrap_or_default();
+
+			let _ = resources_table.remove(&id);
+			let _ = packed_offsets.remove(&id);
+			let _ = compression_table.remove(&id);
+			#[cfg(debug_assertions)]
+			let _ = traces_table.remove(&id);
+		}
+
+		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
+		if let (Some(state), Some(deleted_range)) = (allocator_state.as_mut(), deleted_range) {
+			state.retire(deleted_range);
+		}
+		drop(allocator_state);
+		if let Some(allocator) = packed_allocator {
+			allocator.warn_if_fragmented();
+		}
+
+		Ok(if self.storage_mode == ResourceStorageMode::Files {
+			deleted_hash.map(|hash| resource_payload_path(&self.base_path, id.0, hash, deleted_compression))
+		} else {
+			None
+		})
+	}
+
+	/// Clears backend tables in one transaction and retires every live packed range.
+	fn clear_metadata(&self) -> Result<(), String> {
+		let packed_allocator = self.packed_allocator.as_ref();
+		let mut allocator_state = packed_allocator.map(|allocator| allocator.lock_state());
+		let write = match &self.db {
+			RedbDatabase::Writable(db) => db
+				.begin_write()
+				.map_err(|error| resource_clear_error("begin the resource clear transaction", error))?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err(
+					"Cannot clear a read-only resources database. The most likely cause is that the backend was opened with `ReDBStorageBackend::open_read_only`."
+						.to_string(),
+				);
+			}
+		};
+		let mut retired_ranges = Vec::new();
+
+		{
+			let mut resources_table = write
+				.open_table(RESOURCES_TABLE)
+				.map_err(|error| resource_clear_error("open the resources table", error))?;
+			let mut class_table = write
+				.open_table(RESOURCE_CLASS_INDEX_TABLE)
+				.map_err(|error| resource_clear_error("open the resource class index", error))?;
+			let mut property_table = write
+				.open_table(RESOURCE_PROPERTY_INDEX_TABLE)
+				.map_err(|error| resource_clear_error("open the resource property index", error))?;
+			let mut packed_offsets = write
+				.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
+				.map_err(|error| resource_clear_error("open the packed resource offsets", error))?;
+			let mut compression_table = write
+				.open_table(RESOURCE_COMPRESSION_TABLE)
+				.map_err(|error| resource_clear_error("open the resource compression table", error))?;
+			#[cfg(debug_assertions)]
+			let mut traces_table = write
+				.open_table(RESOURCE_TRACES_TABLE)
+				.map_err(|error| resource_clear_error("open the resource traces table", error))?;
+
+			if self.storage_mode == ResourceStorageMode::Packed {
+				for entry in resources_table
+					.iter()
+					.map_err(|error| resource_clear_error("iterate the resources table", error))?
+				{
+					let (key, value) = entry.map_err(|error| resource_clear_error("read resource metadata", error))?;
+					let id = ResourceId(key.value());
+					let resource: SerializableResource = crate::from_slice(value.value()).map_err(|_| {
+						"Failed to clear resource metadata. The most likely cause is a corrupt resources database.".to_string()
+					})?;
+					let offset = packed_offsets
+						.get(&id)
+						.map_err(|error| resource_clear_error("read a packed resource offset", error))?
+						.ok_or_else(|| {
+							"Failed to clear packed resources. The most likely cause is incomplete packed resource metadata."
+								.to_string()
+						})?
+						.value();
+					retired_ranges.push(PackedRange::new(
+						offset,
+						u64::try_from(resource.size()).map_err(|_| {
+							"Failed to clear packed resources. The most likely cause is an unsupported resource size."
+								.to_string()
+						})?,
+					));
+				}
+			}
+
+			resources_table
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the resources table", error))?;
+			class_table
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the resource class index", error))?;
+			property_table
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the resource property index", error))?;
+			packed_offsets
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the packed resource offsets", error))?;
+			compression_table
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the resource compression table", error))?;
+			#[cfg(debug_assertions)]
+			traces_table
+				.retain(|_, _| false)
+				.map_err(|error| resource_clear_error("clear the resource traces table", error))?;
+		}
+
+		write
+			.commit()
+			.map_err(|error| resource_clear_error("commit the resource clear transaction", error))?;
+		if let Some(state) = allocator_state.as_mut() {
+			for range in retired_ranges {
+				state.retire(range);
+			}
+		}
+		drop(allocator_state);
+		if let Some(allocator) = packed_allocator {
+			allocator.warn_if_fragmented();
+		}
+
+		Ok(())
+	}
+
 	/// Finds matching resource IDs through the narrowest available index.
 	fn query_index(&self, query: &Query) -> Result<QueryPage<[u8; 16]>, QueryError> {
 		let cursor = query.cursor.as_ref().map(|cursor| cursor.token.as_slice());
@@ -531,75 +707,34 @@ impl ReadStorageBackend for ReDBStorageBackend {
 }
 
 impl WriteStorageBackend for ReDBStorageBackend {
-	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
-		// Packed metadata changes and allocator transitions share this lock so a
-		// reader cannot lease a slot between its removal and retirement.
-		let packed_allocator = self.packed_allocator.as_ref();
-		let mut allocator_state = packed_allocator.map(|allocator| allocator.lock_state());
-		let write = match &self.db {
-			RedbDatabase::Writable(db) => db
-				.begin_write()
-				.map_err(|_| "Failed to begin delete transaction".to_string())?,
-			RedbDatabase::ReadOnly(_) => {
-				return Err("Cannot delete from a read-only resources database".to_string());
-			}
+	async fn clear(&self) -> Result<(), String> {
+		let payload_paths = if self.storage_mode == ResourceStorageMode::Files {
+			discover_resource_payload_paths(self.base_path.clone()).await?
+		} else {
+			Vec::new()
 		};
-		let id = ResourceId::from(id.as_ref());
-		let mut deleted_hash = None;
-		let mut deleted_range = None;
-		let deleted_compression;
 
-		{
-			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
-			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
-			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
-			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
-			let mut compression_table = write.open_table(RESOURCE_COMPRESSION_TABLE).unwrap();
-			#[cfg(debug_assertions)]
-			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
+		self.clear_metadata()?;
 
-			if let Some(existing) = resources_table.get(&id).unwrap() {
-				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
-				deleted_hash = Some(resource.hash());
-				if self.storage_mode == ResourceStorageMode::Packed {
-					let offset = packed_offsets
-						.get(&id)
-						.unwrap()
-						.expect("stored packed resource should have an offset")
-						.value();
-					deleted_range = Some(PackedRange::new(
-						offset,
-						u64::try_from(resource.size()).expect("stored resource size should fit in u64"),
+		for payload_path in payload_paths {
+			match compio::fs::remove_file(&payload_path).await {
+				Ok(()) => {}
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+				Err(error) => {
+					return Err(format!(
+						"Failed to clear resource payload '{}'. The most likely cause is that the resource directory is not writable. Error: {error}",
+						payload_path.display()
 					));
 				}
-				remove_indexes(&mut class_table, &mut property_table, &resource, id.0);
 			}
-			deleted_compression = compression_table
-				.get(&id)
-				.unwrap()
-				.map(|value| ResourceCompression::from_bytes(value.value()).unwrap_or_default())
-				.unwrap_or_default();
-
-			let _ = resources_table.remove(&id);
-			let _ = packed_offsets.remove(&id);
-			let _ = compression_table.remove(&id);
-			#[cfg(debug_assertions)]
-			let _ = traces_table.remove(&id);
 		}
 
-		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
-		if let (Some(state), Some(deleted_range)) = (allocator_state.as_mut(), deleted_range) {
-			state.retire(deleted_range);
-		}
-		drop(allocator_state);
-		if let Some(allocator) = packed_allocator {
-			allocator.warn_if_fragmented();
-		}
+		Ok(())
+	}
 
-		if self.storage_mode == ResourceStorageMode::Files {
-			if let Some(hash) = deleted_hash {
-				let _ = remove_file(resource_payload_path(&self.base_path, id.0, hash, deleted_compression));
-			}
+	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+		if let Some(payload_path) = self.remove_resource_record(id)? {
+			let _ = remove_file(payload_path);
 		}
 
 		Ok(())
@@ -977,12 +1112,79 @@ fn resource_key_hex(key: [u8; 16]) -> String {
 	ResourceId(key).into()
 }
 
+/// Creates a consistent storage error for one REDB clear step.
+fn resource_clear_error(action: &str, error: impl std::fmt::Display) -> String {
+	format!(
+		"Failed to {action}. The most likely cause is that the resources database is corrupt or cannot be updated. Error: {error}"
+	)
+}
+
 fn resource_payload_path(base_path: &Path, key: [u8; 16], hash: u64, compression: ResourceCompression) -> std::path::PathBuf {
 	let suffix = match compression {
 		ResourceCompression::None => "",
 		ResourceCompression::MetalIoLz4 => ".mtlio-lz4",
 	};
 	base_path.join(format!("{}-{hash:016x}{suffix}", resource_key_hex(key)))
+}
+
+/// Enumerates backend-owned payload files on a blocking worker because Compio does not provide directory iteration.
+async fn discover_resource_payload_paths(base_path: std::path::PathBuf) -> Result<Vec<std::path::PathBuf>, String> {
+	match r#async::offload(move || resource_payload_paths_in(&base_path)).await {
+		Ok(result) => result,
+		Err(error) => {
+			error.resume_unwind();
+			Err(
+				"Resource payload discovery stopped. The most likely cause is that its blocking worker was cancelled."
+					.to_string(),
+			)
+		}
+	}
+}
+
+/// Finds files that match the backend's content-addressed payload naming scheme.
+fn resource_payload_paths_in(base_path: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+	let entries = std::fs::read_dir(base_path).map_err(|error| {
+		format!(
+			"Failed to scan resource payloads in '{}'. The most likely cause is that the resource directory cannot be read. Error: {error}",
+			base_path.display()
+		)
+	})?;
+	let mut payload_paths = Vec::new();
+
+	for entry in entries {
+		let entry = entry.map_err(|error| {
+			format!(
+				"Failed to read a resource directory entry. The most likely cause is that '{}' changed while it was being cleared. Error: {error}",
+				base_path.display()
+			)
+		})?;
+		let file_type = entry.file_type().map_err(|error| {
+			format!(
+				"Failed to inspect resource directory entry '{}'. The most likely cause is that it changed while the store was being cleared. Error: {error}",
+				entry.path().display()
+			)
+		})?;
+		let file_name = entry.file_name();
+		let Some(name) = file_name.to_str() else {
+			continue;
+		};
+
+		if file_type.is_file() && is_resource_payload_name(name) {
+			payload_paths.push(entry.path());
+		}
+	}
+
+	Ok(payload_paths)
+}
+
+/// Returns whether a file name is one of this backend's content-addressed payload extents.
+fn is_resource_payload_name(name: &str) -> bool {
+	let name = name.strip_suffix(".mtlio-lz4").unwrap_or(name);
+	let Some((resource_id, hash)) = name.split_once('-') else {
+		return false;
+	};
+
+	ResourceId::from_uid_hex(resource_id).is_some() && hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Reads one resource's physical encoding while treating absent entries as raw data.
@@ -1169,6 +1371,95 @@ mod tests {
 
 	fn backend() -> ReDBStorageBackend {
 		backend_with_mode(ResourceStorageMode::Files)
+	}
+
+	#[crate::r#async::test]
+	async fn clear_removes_all_resources_and_keeps_each_storage_mode_reusable() {
+		for storage_mode in [ResourceStorageMode::Files, ResourceStorageMode::Packed] {
+			let backend = backend_with_mode(storage_mode);
+			let first_id = crate::asset::ResourceId::new("materials/first");
+			let first = backend
+				.store(
+					ProcessedAsset::new(
+						first_id,
+						MockMaterialModel {
+							group: "opaque".into(),
+							tag: "first".into(),
+						},
+					),
+					b"first-payload",
+				)
+				.await
+				.unwrap();
+			let first_payload_path = resource_payload_path(
+				&backend.base_path,
+				super::ResourceId::from(first_id.as_ref()).0,
+				first.hash(),
+				crate::resource::ResourceCompression::None,
+			);
+			let stale_payload_path = resource_payload_path(
+				&backend.base_path,
+				super::ResourceId::from("stale.test").0,
+				0x1234,
+				crate::resource::ResourceCompression::None,
+			);
+			if storage_mode == ResourceStorageMode::Files {
+				std::fs::write(&stale_payload_path, b"stale").unwrap();
+				std::fs::write(backend.base_path.join("keep-me"), b"unrelated").unwrap();
+			}
+			store_mock(
+				&backend,
+				"materials/second",
+				MockMaterialModel {
+					group: "transparent".into(),
+					tag: "second".into(),
+				},
+			)
+			.await;
+			#[cfg(debug_assertions)]
+			backend
+				.replace_trace(
+					crate::asset::ResourceId::new("failed.test"),
+					&[ResourceTraceItem::new(
+						ResourceTraceLevel::Error,
+						"Expected failure.".to_string(),
+					)],
+				)
+				.unwrap();
+
+			assert_eq!(backend.list().await.unwrap().len(), 2);
+			backend.clear().await.unwrap();
+
+			assert!(backend.list().await.unwrap().is_empty());
+			assert!(backend.read(first_id).await.is_none());
+			assert!(backend.query(Query::new("MockMaterial")).await.unwrap().items.is_empty());
+			if storage_mode == ResourceStorageMode::Files {
+				assert!(!first_payload_path.exists());
+				assert!(!stale_payload_path.exists());
+				assert_eq!(std::fs::read(backend.base_path.join("keep-me")).unwrap(), b"unrelated");
+			}
+			#[cfg(debug_assertions)]
+			assert!(
+				backend
+					.read_trace(crate::asset::ResourceId::new("failed.test"))
+					.await
+					.unwrap()
+					.is_empty()
+			);
+
+			store_mock(
+				&backend,
+				"materials/rebuilt",
+				MockMaterialModel {
+					group: "opaque".into(),
+					tag: "rebuilt".into(),
+				},
+			)
+			.await;
+			assert_eq!(backend.list().await.unwrap(), ["materials/rebuilt"]);
+
+			std::fs::remove_dir_all(&backend.base_path).unwrap();
+		}
 	}
 
 	#[test]

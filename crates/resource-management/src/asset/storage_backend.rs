@@ -1,5 +1,46 @@
+/// The `AssetSource` struct identifies one enumerable source asset and whether its BEAD sidecar exists.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AssetSource {
+	id: String,
+	has_sidecar: bool,
+}
+
+impl AssetSource {
+	/// Creates an enumerable source description for an asset storage backend.
+	pub fn new(id: String, has_sidecar: bool) -> Self {
+		Self { id, has_sidecar }
+	}
+
+	/// Returns the source resource ID.
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+
+	/// Returns whether the source has a BEAD sidecar.
+	pub fn has_sidecar(&self) -> bool {
+		self.has_sidecar
+	}
+
+	/// Returns the owned source resource ID.
+	pub fn into_id(self) -> String {
+		self.id
+	}
+}
+
 /// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
 pub trait StorageBackend: Send + Sync {
+	/// Enumerates source assets when the backend exposes a discoverable namespace.
+	///
+	/// Pass the result to [`crate::asset::manager::AssetManager::should_discover`] before baking it.
+	fn discover(&self) -> impl Future<Output = Result<Vec<AssetSource>, String>> {
+		async {
+			Err(
+				"Asset discovery is unavailable. The most likely cause is that the storage backend does not expose an enumerable source namespace."
+					.to_string(),
+			)
+		}
+	}
+
 	/// Returns the local directory that can be watched for development asset changes.
 	#[cfg(debug_assertions)]
 	fn watch_root(&self) -> Option<PathBuf> {
@@ -36,6 +77,7 @@ pub trait StorageBackend: Send + Sync {
 }
 
 pub trait DynStorageBackend: Send + Sync {
+	fn discover(&self) -> BoxedFuture<'_, Result<Vec<AssetSource>, String>>;
 	#[cfg(debug_assertions)]
 	fn watch_root(&self) -> Option<PathBuf>;
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
@@ -45,6 +87,10 @@ pub trait DynStorageBackend: Send + Sync {
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
+	fn discover(&self) -> BoxedFuture<'_, Result<Vec<AssetSource>, String>> {
+		Box::pin(self.discover())
+	}
+
 	#[cfg(debug_assertions)]
 	fn watch_root(&self) -> Option<PathBuf> {
 		self.watch_root()
@@ -233,6 +279,21 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
+	fn discover(&self) -> impl Future<Output = Result<Vec<AssetSource>, String>> {
+		let root = self.base_path.clone();
+
+		async move {
+			// Compio does not provide directory iteration or canonicalization, so keep the complete blocking walk on one worker.
+			match crate::r#async::offload(move || discover_file_sources(&root)).await {
+				Ok(result) => result,
+				Err(error) => {
+					error.resume_unwind();
+					Err("Asset discovery stopped. The most likely cause is that its blocking worker was cancelled.".to_string())
+				}
+			}
+		}
+	}
+
 	#[cfg(debug_assertions)]
 	fn watch_root(&self) -> Option<PathBuf> {
 		Some(self.base_path.clone())
@@ -273,6 +334,127 @@ impl StorageBackend for FileStorageBackend {
 	}
 }
 
+/// Finds local source files without revisiting an active symlink ancestor.
+fn discover_file_sources(root: &Path) -> Result<Vec<AssetSource>, String> {
+	let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+		format!(
+			"Failed to resolve assets directory '{}'. The most likely cause is that the directory does not exist or cannot be accessed. Error: {error}",
+			root.display()
+		)
+	})?;
+	let mut active_directories = std::collections::HashSet::from([canonical_root]);
+	let mut sources = Vec::new();
+
+	discover_file_sources_in(root, root, &mut active_directories, &mut sources)?;
+
+	Ok(sources)
+}
+
+/// Adds files from one directory while preserving the logical path used to enter symlinked directories.
+fn discover_file_sources_in(
+	root: &Path,
+	directory: &Path,
+	active_directories: &mut std::collections::HashSet<PathBuf>,
+	sources: &mut Vec<AssetSource>,
+) -> Result<(), String> {
+	let entries = std::fs::read_dir(directory).map_err(|error| {
+		format!(
+			"Failed to scan assets directory '{}'. The most likely cause is that the directory cannot be read. Error: {error}",
+			directory.display()
+		)
+	})?;
+
+	for entry in entries {
+		let entry = entry.map_err(|error| {
+			format!(
+				"Failed to read an entry in assets directory '{}'. The most likely cause is that the directory changed during discovery. Error: {error}",
+				directory.display()
+			)
+		})?;
+		let path = directory.join(entry.file_name());
+		let file_type = entry.file_type().map_err(|error| {
+			format!(
+				"Failed to inspect asset path '{}'. The most likely cause is that the path changed during discovery. Error: {error}",
+				path.display()
+			)
+		})?;
+		let (is_directory, is_file) = if file_type.is_symlink() {
+			let metadata = std::fs::metadata(&path).map_err(|error| {
+				format!(
+					"Failed to follow asset symlink '{}'. The most likely cause is a broken link or inaccessible target. Error: {error}",
+					path.display()
+				)
+			})?;
+
+			(metadata.is_dir(), metadata.is_file())
+		} else {
+			(file_type.is_dir(), file_type.is_file())
+		};
+
+		if is_directory {
+			let canonical_directory = std::fs::canonicalize(&path).map_err(|error| {
+				format!(
+					"Failed to resolve asset directory '{}'. The most likely cause is a broken symlink or inaccessible directory. Error: {error}",
+					path.display()
+				)
+			})?;
+
+			if !active_directories.insert(canonical_directory.clone()) {
+				log::warn!("Skipping cyclic asset directory link '{}'.", path.display());
+				continue;
+			}
+
+			let result = discover_file_sources_in(root, &path, active_directories, sources);
+			active_directories.remove(&canonical_directory);
+			result?;
+
+			continue;
+		}
+
+		if !is_file
+			|| path
+				.extension()
+				.and_then(|extension| extension.to_str())
+				.is_some_and(|extension| extension.eq_ignore_ascii_case("bead"))
+		{
+			continue;
+		}
+
+		let Some(relative_path) = path.strip_prefix(root).ok() else {
+			continue;
+		};
+		let Some(id) = resource_id_path(relative_path) else {
+			log::warn!(
+				"Skipping asset path '{}'. The most likely cause is a non-UTF-8 path that cannot be represented as a resource ID.",
+				path.display()
+			);
+			continue;
+		};
+		let has_sidecar = path.with_added_extension("bead").is_file();
+
+		sources.push(AssetSource::new(id, has_sidecar));
+	}
+
+	Ok(())
+}
+
+/// Converts a relative local path to a resource ID that uses `/` separators.
+fn resource_id_path(path: &Path) -> Option<String> {
+	let mut id = String::new();
+
+	for component in path.components() {
+		let component = component.as_os_str().to_str()?;
+
+		if !id.is_empty() {
+			id.push('/');
+		}
+
+		id.push_str(component);
+	}
+
+	Some(id)
+}
+
 #[cfg(test)]
 fn move_bytes_in<'a>(bytes: impl AsRef<[u8]>, allocator: &'a dyn Allocator) -> AssetStorageBytes<'a> {
 	let bytes = bytes.as_ref();
@@ -292,7 +474,7 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend, parse_json};
+	use super::{AssetSource, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend, parse_json};
 	use crate::{
 		asset::ResourceId,
 		r#async::{BoxedFuture, read},
@@ -318,6 +500,20 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
+		fn discover(&self) -> impl std::future::Future<Output = Result<Vec<super::AssetSource>, String>> {
+			let files = self.0.lock().unwrap();
+			let sources = files
+				.keys()
+				.filter(|id| !id.ends_with(".bead"))
+				.map(|id| {
+					let sidecar = std::path::Path::new(id).with_added_extension("bead");
+					super::AssetSource::new(id.clone(), files.contains_key(sidecar.to_str().unwrap()))
+				})
+				.collect();
+
+			async move { Ok(sources) }
+		}
+
 		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = ResolveResult<'a>> + 'a {
 			Box::pin(async move {
 				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
@@ -449,6 +645,29 @@ pub mod tests {
 			std::process::id(),
 			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 		))
+	}
+
+	#[crate::r#async::test]
+	async fn file_storage_backend_discovers_nested_sources_and_sidecar_presence() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(directory.join("nested")).unwrap();
+		fs::write(directory.join("root.test"), []).unwrap();
+		fs::write(directory.join("nested/source.bin"), []).unwrap();
+		fs::write(directory.join("nested/source.bin.bead"), b"{}").unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let mut sources = storage_backend.discover().await.unwrap();
+		sources.sort_by(|left, right| left.id().cmp(right.id()));
+
+		assert_eq!(
+			sources,
+			[
+				AssetSource::new("nested/source.bin".to_string(), true),
+				AssetSource::new("root.test".to_string(), false),
+			]
+		);
+
+		fs::remove_dir_all(directory).unwrap();
 	}
 
 	#[crate::r#async::test]

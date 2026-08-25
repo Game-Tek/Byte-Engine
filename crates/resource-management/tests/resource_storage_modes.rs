@@ -204,3 +204,47 @@ async fn packed_mode_recovers_reusable_ranges_after_reopen() {
 
 	std::fs::remove_dir_all(path).unwrap();
 }
+
+#[resource_management::r#async::test]
+async fn clear_persists_an_empty_reusable_store_without_changing_its_payload_mode() {
+	for storage_mode in [ResourceStorageMode::Files, ResourceStorageMode::Packed] {
+		let path = temporary_store();
+		let removed_id = ResourceId::new("removed.fixture");
+		{
+			let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), storage_mode).unwrap();
+			storage
+				.store(ProcessedAsset::new(removed_id, StoredFixture), b"removed")
+				.await
+				.unwrap();
+			storage.clear().await.unwrap();
+
+			assert!(storage.list().await.unwrap().is_empty());
+			assert!(storage.read(removed_id).await.is_none());
+		}
+
+		{
+			let storage = ReDBStorageBackend::open_read_only(path.clone()).unwrap();
+			assert!(storage.list().await.unwrap().is_empty());
+		}
+
+		let incompatible_mode = match storage_mode {
+			ResourceStorageMode::Files => ResourceStorageMode::Packed,
+			ResourceStorageMode::Packed => ResourceStorageMode::Files,
+		};
+		assert!(ReDBStorageBackend::new_writable_with_mode(path.clone(), incompatible_mode).is_err());
+
+		let rebuilt_id = ResourceId::new("rebuilt.fixture");
+		{
+			let storage = ReDBStorageBackend::new_writable(path.clone());
+			storage
+				.store(ProcessedAsset::new(rebuilt_id, StoredFixture), b"rebuilt")
+				.await
+				.unwrap();
+			let (_, reader) = storage.read(rebuilt_id).await.unwrap();
+			let backing = reader.into_backing_storage().await.unwrap();
+			assert_eq!(backing.as_slice(), b"rebuilt");
+		}
+
+		std::fs::remove_dir_all(path).unwrap();
+	}
+}

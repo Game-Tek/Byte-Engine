@@ -55,6 +55,11 @@ pub trait DynReadStorageBackend: Send + Sync {
 }
 
 pub trait WriteStorageBackend: Sync + Send {
+	/// Removes every stored resource while preserving the backend configuration.
+	///
+	/// Call [`ReadStorageBackend::list`] next to verify that the store is empty.
+	fn clear(&self) -> impl Future<Output = Result<(), String>>;
+
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
 
 	/// Reserves exact payload storage before a processor starts writing.
@@ -125,6 +130,7 @@ pub trait WriteStorageBackend: Sync + Send {
 }
 
 pub trait DynWriteStorageBackend: Send + Sync {
+	fn clear(&self) -> BoxedFuture<'_, Result<(), String>>;
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
 	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>>;
 	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
@@ -280,6 +286,10 @@ impl<T: ReadStorageBackend> DynReadStorageBackend for T {
 }
 
 impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
+	fn clear(&self) -> BoxedFuture<'_, Result<(), String>> {
+		Box::pin(self.clear())
+	}
+
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
 		self.delete(id)
 	}
@@ -438,6 +448,13 @@ pub mod tests {
 	}
 
 	impl WriteStorageBackend for TestStorageBackend {
+		async fn clear(&self) -> Result<(), String> {
+			self.resources.lock().clear();
+			#[cfg(debug_assertions)]
+			self.traces.lock().clear();
+			Ok(())
+		}
+
 		fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
 			self.resources.lock().remove(id.as_ref());
 			#[cfg(debug_assertions)]

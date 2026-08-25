@@ -164,6 +164,25 @@ impl AssetManager {
 			.any(|handler| handler.can_handle(id.get_extension()) && handler.should_discover(id, has_sidecar))
 	}
 
+	/// Returns the discoverable source IDs supported by the registered asset handlers.
+	///
+	/// Next, pass each ID to [`AssetManager::bake`] to produce its resource output.
+	pub async fn discover(&self) -> Result<Vec<String>, String> {
+		let mut ids = self
+			.state
+			.storage_backend
+			.discover()
+			.await?
+			.into_iter()
+			.filter(|source| self.should_discover(source.id(), source.has_sidecar()))
+			.map(crate::asset::AssetSource::into_id)
+			.collect::<Vec<_>>();
+
+		ids.sort_unstable();
+
+		Ok(ids)
+	}
+
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
 	/// Next, await [`crate::ResourceManager::request`] for the stored output or
@@ -1093,6 +1112,23 @@ pub mod tests {
 		assert!(asset_manager.should_discover("nested/example.test", false));
 		assert!(asset_manager.should_discover("nested/example.test", true));
 		assert!(!asset_manager.should_discover("nested/example.unknown", true));
+	}
+
+	#[r#async::test]
+	async fn discovery_filters_backend_sources_through_registered_handlers_and_sorts_ids() {
+		let storage_backend = TestStorageBackend::new();
+		storage_backend.add_file("z-last.test", b"");
+		storage_backend.add_file("nested/a-first.test", b"");
+		storage_backend.add_file("nested/a-first.test.bead", b"{}");
+		storage_backend.add_file("ignored.unknown", b"");
+
+		let mut asset_manager = AssetManager::new(storage_backend, ResourceTestStorageBackend::new());
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		assert_eq!(
+			asset_manager.discover().await.unwrap(),
+			["nested/a-first.test", "z-last.test"]
+		);
 	}
 
 	#[cfg(debug_assertions)]

@@ -7,8 +7,6 @@ mod query;
 mod shared;
 
 pub use bake::bake;
-#[cfg(test)]
-use bake::discover_asset_ids;
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
 pub use query::query;
@@ -44,8 +42,8 @@ mod tests {
 	#[cfg(debug_assertions)]
 	use super::{bake, inspect, query, resource_trace_json};
 	use super::{
-		decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
-		query_error_message, queryable_properties_json, wipe,
+		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, query_error_message,
+		queryable_properties_json,
 	};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
@@ -168,7 +166,7 @@ mod tests {
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
-		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
+		let ids = executor.block_on(asset_manager.discover()).unwrap();
 
 		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
 		std::fs::remove_dir_all(root).unwrap();
@@ -195,7 +193,7 @@ mod tests {
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
-		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
+		let ids = executor.block_on(asset_manager.discover()).unwrap();
 
 		assert_eq!(ids, ["rendering/configured.besl"]);
 		std::fs::remove_dir_all(root).unwrap();
@@ -226,7 +224,7 @@ mod tests {
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
 		let executor = resource_management::r#async::Executor::new().unwrap();
-		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
+		let ids = executor.block_on(asset_manager.discover()).unwrap();
 
 		assert_eq!(
 			ids,
@@ -333,23 +331,5 @@ mod tests {
 			Ok(())
 		);
 		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[test]
-	fn wipe_removes_old_contents_and_recreates_empty_destination() {
-		let path = std::env::temp_dir().join(format!(
-			"beld-wipe-test-{}-{}",
-			std::process::id(),
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-		));
-		std::fs::create_dir_all(path.join("nested")).unwrap();
-		std::fs::write(path.join("nested/old.resource"), b"old").unwrap();
-
-		let executor = resource_management::r#async::Executor::new().unwrap();
-		executor.block_on(wipe(path.to_string_lossy().into_owned())).unwrap();
-
-		assert!(path.is_dir());
-		assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
-		std::fs::remove_dir(path).unwrap();
 	}
 }

@@ -5,32 +5,21 @@ use resource_management::{
 
 use crate::commands::shared::{offload_file_operation, open_read_only_storage};
 
-/// Removes a resource store and recreates its destination directory.
+/// Removes every baked resource through the configured resource storage backend.
 ///
 /// Call [`crate::bake`] next to populate the empty store.
 pub async fn wipe(destination_path: String) -> Result<(), i32> {
-	let path = std::path::PathBuf::from(destination_path);
-	let removal_path = path.clone();
-	offload_file_operation(move || std::fs::remove_dir_all(removal_path))
-		.await
-		.map_err(|error| {
-			log::error!(
-				"Failed to wipe resources. The most likely cause is that the destination does not exist or cannot be removed. Error: {error}"
-			);
-			1
-		})?;
+	let storage_backend = offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path.into())).await;
 
-	resource_management::r#async::create_dir(path).await.map_err(|error| {
+	storage_backend.clear().await.map_err(|error| {
 		log::error!(
-			"Failed to create resources directory. The most likely cause is that its parent directory is missing or not writable. Error: {error}"
+			"Failed to wipe resources. The most likely cause is that the resource store cannot be updated. Error: {error}"
 		);
 		1
-	})?;
-
-	Ok(())
+	})
 }
 
-/// Removes a resource store and recreates its destination directory.
+/// Removes every baked resource through the configured resource storage backend.
 ///
 /// This function is the library equivalent of BELD's `clear` alias. Call
 /// [`crate::bake`] next to populate the empty store.

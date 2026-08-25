@@ -3,24 +3,27 @@ use resource_management::resource::{
 	storage_backend::{Query, QueryCursor, QueryError},
 };
 
+#[cfg(debug_assertions)]
+use crate::commands::shared::{insert_trace_json, print_human_trace, read_resource_trace};
 use crate::{
-	QueryFormat,
+	OutputFormat,
 	commands::shared::{
-		decode_query_cursor, encode_query_cursor, insert_trace_json, open_read_only_storage, print_human_trace,
-		print_queryable_value, queryable_properties_json, read_resource_trace,
+		decode_query_cursor, encode_query_cursor, open_read_only_storage, print_queryable_value, queryable_properties_json,
 	},
 };
 
 /// Finds resources by class and indexed property values.
+///
+/// Pass a returned ID to [`crate::inspect`] when you need the full resource metadata.
 pub async fn query(
 	destination_path: String,
 	class: String,
 	properties: Vec<String>,
 	limit: Option<usize>,
 	cursor: Option<String>,
-	format: QueryFormat,
+	format: OutputFormat,
 ) -> Result<(), i32> {
-	let storage_backend = open_read_only_storage(destination_path, "query")?;
+	let storage_backend = open_read_only_storage(destination_path, "query").await?;
 	let mut query = Query::new(&class);
 
 	if let Some(limit) = limit {
@@ -42,8 +45,8 @@ pub async fn query(
 	})?;
 
 	match format {
-		QueryFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
-		QueryFormat::Json => print_json_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
+		OutputFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
+		OutputFormat::JSON => print_json_query_page(&storage_backend, &page.items, page.cursor.as_ref()).await?,
 	}
 
 	Ok(())

@@ -220,9 +220,26 @@ fn print_indent(indent: usize) {
 	}
 }
 
+/// Runs filesystem work that Compio does not support without blocking its runtime thread.
+pub(super) async fn offload_file_operation<T, F>(operation: F) -> T
+where
+	T: Send + 'static,
+	F: FnOnce() -> T + Send + 'static,
+{
+	match resource_management::r#async::offload(operation).await {
+		Ok(output) => output,
+		Err(error) => {
+			error.resume_unwind();
+			panic!("Asynchronous file operation was cancelled before it completed.");
+		}
+	}
+}
+
 /// Opens a BELD read command without allowing signature synchronization to replace persisted resources.
-pub(super) fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
-	ReDBStorageBackend::open_read_only(destination_path.into()).map_err(|error| {
+pub(super) async fn open_read_only_storage(destination_path: String, operation: &str) -> Result<ReDBStorageBackend, i32> {
+	let storage = offload_file_operation(move || ReDBStorageBackend::open_read_only(destination_path.into())).await;
+
+	storage.map_err(|error| {
 		log::error!(
 			"Failed to {} resources. The most likely cause is that they were baked by a different engine revision or the bake is incomplete. BELD did not modify the resources directory. Use a matching BELD build, or run `beld bake` when you are ready to replace the resources. Error: {}",
 			operation,

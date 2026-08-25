@@ -221,6 +221,15 @@ impl FileStorageBackend {
 
 		Self { base_path }
 	}
+
+	/// Creates the source directory asynchronously before returning its local backend.
+	///
+	/// Use [`StorageBackend::resolve`] next to read an asset relative to this directory.
+	pub async fn open(base_path: PathBuf) -> std::io::Result<Self> {
+		compio::fs::create_dir_all(&base_path).await?;
+
+		Ok(Self { base_path })
+	}
 }
 
 impl StorageBackend for FileStorageBackend {

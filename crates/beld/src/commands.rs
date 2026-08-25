@@ -7,15 +7,17 @@ mod query;
 mod shared;
 
 pub use bake::bake;
+#[cfg(test)]
+use bake::discover_asset_ids;
 pub use inspect::inspect;
-pub use maintenance::{delete, list, wipe};
+pub use maintenance::{clear, delete, list, wipe};
 pub use query::query;
 #[cfg(test)]
 use query::{parse_query_property, query_error_message};
+#[cfg(all(test, debug_assertions))]
+use shared::resource_trace_json;
 #[cfg(test)]
 use shared::{decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, queryable_properties_json};
-#[cfg(all(test, debug_assertions))]
-use {bake::discover_asset_ids, shared::resource_trace_json};
 #[cfg(test)]
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,14 +25,17 @@ mod tests {
 	#[cfg(debug_assertions)]
 	use resource_management::{
 		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
-		resource::{ReDBStorageBackend, ReadStorageBackend, WriteStorageBackend},
+		resource::{ReadStorageBackend, WriteStorageBackend},
 		resources::audio::Audio,
 		types::BitDepths,
 	};
 	use resource_management::{
 		QueryableProperty, QueryableValue,
 		asset::{FileStorageBackend, ResourceId},
-		resource::storage_backend::{QueryCursor, QueryError},
+		resource::{
+			ReDBStorageBackend,
+			storage_backend::{QueryCursor, QueryError},
+		},
 	};
 	use serde_json::json;
 
@@ -42,9 +47,9 @@ mod tests {
 		decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
 		query_error_message, queryable_properties_json, wipe,
 	};
-	use crate::utils::get_asset_manager;
 	#[cfg(debug_assertions)]
-	use crate::{InspectFormat, QueryFormat};
+	use crate::OutputFormat;
+	use crate::utils::get_asset_manager;
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
@@ -162,7 +167,8 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
-		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+		let executor = resource_management::r#async::Executor::new().unwrap();
+		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
 
 		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
 		std::fs::remove_dir_all(root).unwrap();
@@ -188,7 +194,8 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
-		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+		let executor = resource_management::r#async::Executor::new().unwrap();
+		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
 
 		assert_eq!(ids, ["rendering/configured.besl"]);
 		std::fs::remove_dir_all(root).unwrap();
@@ -218,7 +225,8 @@ mod tests {
 			FileStorageBackend::new(root.clone()),
 			ReDBStorageBackend::new(root.join("test-resources")),
 		);
-		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+		let executor = resource_management::r#async::Executor::new().unwrap();
+		let ids = executor.block_on(discover_asset_ids(&root, &asset_manager)).unwrap();
 
 		assert_eq!(
 			ids,
@@ -244,20 +252,20 @@ mod tests {
 		let resources_path = root.join("resources");
 		std::fs::create_dir_all(&assets_path).unwrap();
 		std::fs::write(assets_path.join("broken.png"), b"not a PNG").unwrap();
+		let executor = resource_management::r#async::Executor::new().unwrap();
 
 		assert_eq!(
-			bake(
+			executor.block_on(bake(
 				assets_path.to_string_lossy().into_owned(),
 				resources_path.to_string_lossy().into_owned(),
 				Vec::new(),
 				None,
 				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
-			),
+			)),
 			Err(1)
 		);
 
-		let executor = resource_management::r#async::Executor::new().unwrap();
 		let resource_storage = ReDBStorageBackend::new(resources_path.clone());
 		let failed_trace = executor
 			.block_on(resource_storage.read_trace(ResourceId::new("broken.png")))
@@ -301,7 +309,7 @@ mod tests {
 			executor.block_on(inspect(
 				resources_path.to_string_lossy().into_owned(),
 				"broken.png".to_string(),
-				InspectFormat::Json,
+				OutputFormat::JSON,
 			)),
 			Ok(())
 		);
@@ -309,7 +317,7 @@ mod tests {
 			executor.block_on(inspect(
 				resources_path.to_string_lossy().into_owned(),
 				"successful.audio".to_string(),
-				InspectFormat::Json,
+				OutputFormat::JSON,
 			)),
 			Ok(())
 		);
@@ -320,7 +328,7 @@ mod tests {
 				Vec::new(),
 				None,
 				None,
-				QueryFormat::Json,
+				OutputFormat::JSON,
 			)),
 			Ok(())
 		);
@@ -337,7 +345,8 @@ mod tests {
 		std::fs::create_dir_all(path.join("nested")).unwrap();
 		std::fs::write(path.join("nested/old.resource"), b"old").unwrap();
 
-		wipe(path.to_string_lossy().into_owned()).unwrap();
+		let executor = resource_management::r#async::Executor::new().unwrap();
+		executor.block_on(wipe(path.to_string_lossy().into_owned())).unwrap();
 
 		assert!(path.is_dir());
 		assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);

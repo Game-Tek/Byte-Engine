@@ -29,20 +29,22 @@ The logical symlink path is retained in resource IDs, so `assets/byte-engine/ren
 The engine crate package includes its `assets/` directory. For a registry dependency, vendor the resolved crate source and point the same application symlink at that vendored `assets/` directory; this keeps the link target stable instead of depending on Cargo's registry cache layout:
 
 ```bash
-cargo vendor --locked --versioned-dirs vendor
-ln -s ../vendor/byte-engine-0.1.0/assets assets/byte-engine
+cargo vendor --locked vendor
+ln -s ../vendor/byte-engine/assets assets/byte-engine
 ```
 
-Use the version Cargo actually placed in `vendor/`. Commit both the vendor
-directory and symlink, or recreate them in the same bootstrap step in every
-developer and CI checkout. Install the matching BELD release so its handlers
-and resource formats stay aligned with the engine:
+Commit both the vendor directory and symlink, or recreate them in the same
+bootstrap step in every developer and CI checkout. Install the matching BELD
+release so its handlers and resource formats stay aligned with the engine:
 
 ```bash
-cargo install beld --version 0.1.0 --locked
+cargo install beld --version 0.2.0 --locked
 ```
 
-On Windows, the checkout must preserve directory symlinks. Enable Developer Mode or otherwise grant link creation permission and make sure Git does not materialize the link as a plain text file. The current automated symlink coverage runs on Unix hosts.
+On Windows, the checkout must preserve directory symlinks. [Enable Developer Mode](https://learn.microsoft.com/en-us/windows/advanced-settings/developer-mode)
+or otherwise grant link creation permission, and make sure Git doesn't
+materialize the link as a plain text file. The current automated symlink
+coverage runs on Unix hosts.
 
 Run BELD from your application directory. Pass absolute source and destination
 directories; asset IDs remain relative to `assets/`.

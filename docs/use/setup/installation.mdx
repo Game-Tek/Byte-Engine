@@ -38,6 +38,48 @@ cargo add byte-engine
 
 Cargo adds the published package version to your crate's `Cargo.toml`.
 
+### Expose the engine assets
+
+Byte Engine's built-in rendering uses shaders from the engine's `assets/`
+directory. Vendor the resolved crate so the link target doesn't depend on
+Cargo's registry cache:
+
+<Tabs
+	items={["🍎 macOS", "🐧 Linux", "🪟 Windows"]}
+	groupId="byte-engine-operating-system"
+	persist
+>
+	<Tab>
+
+```sh
+cargo vendor --locked vendor
+mkdir -p assets
+ln -s ../vendor/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```sh
+cargo vendor --locked vendor
+mkdir -p assets
+ln -s ../vendor/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```powershell
+cargo vendor --locked vendor
+New-Item -ItemType Directory -Force assets
+New-Item -ItemType SymbolicLink `
+  -Path assets/byte-engine `
+  -Target (Resolve-Path vendor/byte-engine/assets)
+```
+
+	</Tab>
+</Tabs>
+
 </Tab>
 <Tab>
 
@@ -51,6 +93,47 @@ cargo add byte-engine --git https://github.com/Game-Tek/Byte-Engine
 
 Cargo records the Git repository in your application's `Cargo.toml` and fetches
 the engine source when it resolves dependencies.
+
+### Expose the engine assets
+
+Vendor the resolved Git dependency, then link its engine assets into the
+application's asset namespace:
+
+<Tabs
+	items={["🍎 macOS", "🐧 Linux", "🪟 Windows"]}
+	groupId="byte-engine-operating-system"
+	persist
+>
+	<Tab>
+
+```sh
+cargo vendor --locked vendor
+mkdir -p assets
+ln -s ../vendor/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```sh
+cargo vendor --locked vendor
+mkdir -p assets
+ln -s ../vendor/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```powershell
+cargo vendor --locked vendor
+New-Item -ItemType Directory -Force assets
+New-Item -ItemType SymbolicLink `
+  -Path assets/byte-engine `
+  -Target (Resolve-Path vendor/byte-engine/assets)
+```
+
+	</Tab>
+</Tabs>
 
 </Tab>
 <Tab>
@@ -116,6 +199,49 @@ utils = { package = "byte-engine-utils", path = "../Byte-Engine/crates/utils" }
 
 Most applications only need the `byte-engine` dependency.
 
+### Expose the engine assets
+
+Create the application asset directory and link the engine checkout's assets
+into it:
+
+<Tabs
+	items={["🍎 macOS", "🐧 Linux", "🪟 Windows"]}
+	groupId="byte-engine-operating-system"
+	persist
+>
+	<Tab>
+
+```sh
+mkdir -p assets
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```sh
+mkdir -p assets
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+```
+
+	</Tab>
+	<Tab>
+
+```powershell
+New-Item -ItemType Directory -Force assets
+New-Item -ItemType SymbolicLink `
+  -Path assets/byte-engine `
+  -Target (Resolve-Path ../Byte-Engine/crates/byte-engine/assets)
+```
+
+	</Tab>
+</Tabs>
+
+The macOS and Linux target is relative to the `assets/byte-engine` link. The
+Windows command resolves the same target to an absolute path. Adjust the target
+if your application and engine checkout don't use the sibling layout shown
+above.
+
 ### Verify the local setup
 
 Run this command from `my-game/`:
@@ -130,5 +256,11 @@ check again.
 
 </Tab>
 </Tabs>
+
+The `assets/byte-engine` link gives engine shaders stable resource IDs such as
+`byte-engine/rendering/sky.besl`. Keep the link in every developer and CI
+checkout. On Windows, [enable Developer Mode](https://learn.microsoft.com/en-us/windows/advanced-settings/developer-mode)
+before setting up the directory link. See [Bake application resources](/docs/develop/design/resource-management/baking-app-resources)
+for platform details and the complete baking workflow.
 
 Next, [create your first Byte](/docs/use/sample-project).

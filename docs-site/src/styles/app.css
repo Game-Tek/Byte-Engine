@@ -3,7 +3,8 @@
 @import 'fumadocs-ui/css/preset.css';
 
 :root {
-	--be-green: hsl(135, 66%, 55%);
+	--be-green-hsl: 135 66% 55%;
+	--be-green: hsl(var(--be-green-hsl));
 }
 
 .dark {
@@ -18,6 +19,11 @@
 		color-mix(in srgb, var(--be-green) 4%, transparent),
 		transparent 18%
 	);
+}
+
+/* Keep nested page-tree sections compact without crowding top-level groups. */
+#nd-sidebar [data-radix-collapsible-content] p.mt-6 {
+	margin-top: 0.75rem;
 }
 
 /* Pair the repository card with a compact vertical theme switch. */
@@ -97,12 +103,14 @@
 	}
 }
 
-/* Fade a very faint brand tint down through the documentation content area. */
+/* Let the green section label cast a faint light across the page header. */
 #nd-docs-layout {
-	background-image: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--be-green) 3%, transparent) 0,
-		transparent 36rem
+	background-image: radial-gradient(
+		ellipse 90rem 48rem at 40rem 0,
+		color-mix(in srgb, var(--be-green) 16%, transparent) 0,
+		color-mix(in srgb, var(--be-green) 4%, transparent) 38%,
+		color-mix(in srgb, var(--be-green) 2%, transparent) 72%,
+		transparent 100%
 	);
 	background-repeat: no-repeat;
 }
@@ -118,24 +126,12 @@
 }
 
 .be-page-navigation > a[href]:is(:hover, :focus-visible) {
-	background-color: color-mix(
-		in srgb,
-		var(--be-green) 7%,
-		var(--color-fd-card)
-	);
-	background-image:
-		radial-gradient(
-			circle at 8% 0%,
-			color-mix(in srgb, var(--be-green) 24%, transparent),
-			transparent 58%
-		),
-		radial-gradient(
-			circle at 96% 120%,
-			color-mix(in srgb, var(--be-green) 14%, transparent),
-			transparent 56%
-		);
-	border-color: color-mix(in srgb, var(--be-green) 36%, transparent);
+	background-color: var(--color-fd-card);
+	border-color: var(--be-green);
 	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, var(--be-green) 18%, transparent),
-		0 14px 36px -28px color-mix(in srgb, var(--be-green) 72%, transparent);
+		0 0 3px hsl(var(--be-green-hsl) / 70%),
+		0 0 12px hsl(var(--be-green-hsl) / 32%),
+		0 0 28px hsl(var(--be-green-hsl) / 16%),
+		0 0 52px hsl(var(--be-green-hsl) / 8%),
+		inset 0 0 18px hsl(var(--be-green-hsl) / 8%);
 }

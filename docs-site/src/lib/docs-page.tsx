@@ -3,6 +3,7 @@ import { createServerFn } from '@tanstack/react-start';
 import type * as PageTree from 'fumadocs-core/page-tree';
 import type { TOCItemType } from 'fumadocs-core/toc';
 import { GithubInfo } from 'fumadocs-ui/components/github-info';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
@@ -59,6 +60,8 @@ const clientLoader = browserCollections.docs.createClientLoader({
 					<MDX
 						components={{
 							...defaultMdxComponents,
+							Step,
+							Steps,
 							Tab,
 							Tabs,
 						}}

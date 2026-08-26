@@ -46,6 +46,7 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 	where
 		T: Copy,
 	{
+		// SAFETY: `validate` rejects values larger or more aligned than this storage before `write` is called.
 		unsafe {
 			ptr::write(self.bytes.as_mut_ptr().cast::<T>(), value);
 		}
@@ -55,6 +56,7 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 	where
 		T: Copy,
 	{
+		// SAFETY: Each call shim requests the same `T` that `store` initialized in this storage.
 		unsafe { ptr::read(self.bytes.as_ptr().cast::<T>()) }
 	}
 }
@@ -131,6 +133,7 @@ macro_rules! impl_inline_copy_fn {
 			}
 
 			pub fn call(&self) -> Output {
+				// SAFETY: `try_new` stores the matching zero-argument call shim in `self.call`.
 				let call = unsafe {
 					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>) -> Output>(self.call)
 				};
@@ -166,6 +169,7 @@ macro_rules! impl_inline_copy_fn {
 			}
 
 			pub fn call(&self, $($value: $arg),+) -> Output {
+				// SAFETY: `try_new` stores the call shim with this exact generated signature in `self.call`.
 				let call = unsafe {
 					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>, $($arg),+) -> Output>(self.call)
 				};
@@ -236,6 +240,7 @@ macro_rules! impl_inline_copy_fn_ref {
 			type Output = Output;
 
 			fn call(&self, $($value: &$arg),+) -> Output {
+				// SAFETY: `try_new_ref` stores the call shim with this exact generated reference signature in `self.call`.
 				let call = unsafe {
 					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>, $(&$arg),+) -> Output>(self.call)
 				};

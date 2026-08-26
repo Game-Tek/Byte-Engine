@@ -82,3 +82,19 @@ jobs:
     - name: Run documentation tests
       if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
       run: cargo test --doc --workspace --no-default-features --features headed
+    - name: Check documentation
+      if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
+      run: cargo doc --workspace --no-deps --no-default-features --features headed
+    - name: Check formatting
+      if: matrix.platform == 'linux' && matrix.profile == 'dev' && matrix.feature == 'headed'
+      run: cargo fmt --all -- --check
+    - name: Run Clippy
+      if: matrix.profile == 'dev'
+      run: cargo clippy --workspace --all-targets --no-default-features --features ${{ matrix.feature }}
+
+  dependencies:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check dependency policy
+      uses: EmbarkStudios/cargo-deny-action@v2

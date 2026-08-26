@@ -17,7 +17,7 @@ type PipelineManagerId = usize;
 /// a custom headed runtime.
 /// For custom composition, create the renderer, call [`Self::set_resource_manager`],
 /// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
-/// windows and cameras before calling [`Self::prepare`] each frame.
+/// windows and cameras before handing frame preparation to the graphics application.
 /// See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
 /// before composing a custom render system, domain, or model.
 pub struct Renderer {

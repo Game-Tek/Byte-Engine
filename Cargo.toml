@@ -23,6 +23,9 @@ too_many_lines = "warn"
 undocumented_unsafe_blocks = "warn"
 unimplemented = "warn"
 
+[workspace.lints.rustdoc]
+all = "deny"
+
 [profile.dev]
 incremental = true
 lto = "off"

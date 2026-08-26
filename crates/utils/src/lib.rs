@@ -1,3 +1,5 @@
+//! Shared allocation, callable, collection, and data-conversion utilities for Byte-Engine crates.
+
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
@@ -268,10 +270,12 @@ pub fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
 }
 
 pub fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
+	// SAFETY: The byte slice covers the same live allocation and cannot outlive the typed source slice.
 	unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 
 pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
+	// SAFETY: The byte slice covers the same exclusively borrowed allocation and preserves its lifetime.
 	unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 

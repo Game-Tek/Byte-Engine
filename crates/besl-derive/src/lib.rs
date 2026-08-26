@@ -1,3 +1,5 @@
+//! Derive macros for declaring Rust structs as portable BESL shader structures.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -65,18 +67,45 @@ fn derive_besl_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 }
 
 fn parse_name_override(attributes: &[Attribute]) -> syn::Result<Option<String>> {
+	parse_override(
+		attributes,
+		"besl_name",
+		"name",
+		"besl_type",
+		"Duplicate BESL name override. The most likely cause is multiple `#[besl_name = ...]` attributes.",
+		"Duplicate BESL name override. The most likely cause is multiple `name = ...` attributes.",
+	)
+}
+
+fn parse_type_override(attributes: &[Attribute]) -> syn::Result<Option<String>> {
+	parse_override(
+		attributes,
+		"besl_type",
+		"besl_type",
+		"name",
+		"Duplicate BESL type override. The most likely cause is multiple `#[besl_type = ...]` attributes.",
+		"Duplicate BESL type override. The most likely cause is multiple `besl_type = ...` attributes.",
+	)
+}
+
+// Parses one override form while accepting the other supported nested key.
+fn parse_override(
+	attributes: &[Attribute],
+	direct_key: &str,
+	nested_key: &str,
+	ignored_nested_key: &str,
+	duplicate_direct_error: &'static str,
+	duplicate_nested_error: &'static str,
+) -> syn::Result<Option<String>> {
 	let mut result = None;
 
 	for attribute in attributes {
-		if attribute.path().is_ident("besl_name") {
+		if attribute.path().is_ident(direct_key) {
 			if result.is_some() {
-				return Err(syn::Error::new_spanned(
-					attribute,
-					"Duplicate BESL name override. The most likely cause is multiple `#[besl_name = ...]` attributes.",
-				));
+				return Err(syn::Error::new_spanned(attribute, duplicate_direct_error));
 			}
 
-			result = Some(parse_name_value_attribute(attribute, "besl_name")?);
+			result = Some(parse_name_value_attribute(attribute, direct_key)?);
 			continue;
 		}
 
@@ -85,79 +114,40 @@ fn parse_name_override(attributes: &[Attribute]) -> syn::Result<Option<String>> 
 		}
 
 		attribute.parse_nested_meta(|meta| {
-			if meta.path.is_ident("name") {
-				if result.is_some() {
-					return Err(
-						meta.error("Duplicate BESL name override. The most likely cause is multiple `name = ...` attributes.")
-					);
-				}
-
-				let value = if meta.input.peek(syn::token::Paren) {
-					let content;
-					syn::parenthesized!(content in meta.input);
-					content.parse::<LitStr>()?
-				} else {
-					meta.value()?.parse::<LitStr>()?
-				};
-				result = Some(value.value());
-				Ok(())
-			} else if meta.path.is_ident("besl_type") {
-				Ok(())
-			} else {
-				Err(meta.error("Unknown BESL attribute. The most likely cause is an unsupported `#[besl(...)]` key."))
-			}
+			parse_nested_override(meta, nested_key, ignored_nested_key, duplicate_nested_error, &mut result)
 		})?;
 	}
 
 	Ok(result)
 }
 
-fn parse_type_override(attributes: &[Attribute]) -> syn::Result<Option<String>> {
-	let mut result = None;
-
-	for attribute in attributes {
-		if attribute.path().is_ident("besl_type") {
-			if result.is_some() {
-				return Err(syn::Error::new_spanned(
-					attribute,
-					"Duplicate BESL type override. The most likely cause is multiple `#[besl_type = ...]` attributes.",
-				));
-			}
-
-			result = Some(parse_name_value_attribute(attribute, "besl_type")?);
-			continue;
-		}
-
-		if !attribute.path().is_ident("besl") {
-			continue;
-		}
-
-		attribute.parse_nested_meta(|meta| {
-			if meta.path.is_ident("besl_type") {
-				if result.is_some() {
-					return Err(meta.error(
-						"Duplicate BESL type override. The most likely cause is multiple `besl_type = ...` attributes.",
-					));
-				}
-
-				let value = if meta.input.peek(syn::token::Paren) {
-					let content;
-					syn::parenthesized!(content in meta.input);
-					content.parse::<LitStr>()?
-				} else {
-					meta.value()?.parse::<LitStr>()?
-				};
-				result = Some(value.value());
-				Ok(())
-			} else if meta.path.is_ident("name") {
-				Ok(())
-			} else {
-				Err(meta.error("Unknown BESL attribute. The most likely cause is an unsupported `#[besl(...)]` key."))
-			}
-		})?;
+// Parses the selected nested key and rejects unknown BESL attribute keys.
+fn parse_nested_override(
+	meta: syn::meta::ParseNestedMeta<'_>,
+	nested_key: &str,
+	ignored_nested_key: &str,
+	duplicate_error: &'static str,
+	result: &mut Option<String>,
+) -> syn::Result<()> {
+	if meta.path.is_ident(ignored_nested_key) {
+		return Ok(());
+	}
+	if !meta.path.is_ident(nested_key) {
+		return Err(meta.error("Unknown BESL attribute. The most likely cause is an unsupported `#[besl(...)]` key."));
+	}
+	if result.is_some() {
+		return Err(meta.error(duplicate_error));
 	}
 
-	Ok(result)
+	let value = if meta.input.peek(syn::token::Paren) {
+		let content;
+		syn::parenthesized!(content in meta.input);
+		content.parse::<LitStr>()?
+	} else {
+		meta.value()?.parse::<LitStr>()?
+	};
+	*result = Some(value.value());
+	Ok(())
 }
 
 fn parse_name_value_attribute(attribute: &Attribute, attribute_name: &str) -> syn::Result<String> {

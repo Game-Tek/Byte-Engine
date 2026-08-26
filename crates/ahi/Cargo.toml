@@ -28,3 +28,6 @@ alsa = "0.11.0"
 
 objc2-audio-toolbox = "0.3.2"
 objc2-core-audio-types = "0.3.2"
+
+[lints]
+workspace = true

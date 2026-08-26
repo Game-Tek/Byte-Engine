@@ -46,3 +46,6 @@ objc2-foundation = "0.3.2"
 objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation"] }
 objc2-quartz-core = "0.3.2"
 objc2-metal = { version = "0.3.2", features = ["MTL4CommandAllocator", "MTL4CommandBuffer", "MTL4CommandEncoder", "MTL4CommandQueue", "MTL4CommitFeedback", "MTL4Compiler", "MTL4ComputeCommandEncoder", "MTL4ComputePipeline", "MTL4FunctionDescriptor", "MTL4LibraryFunctionDescriptor", "MTL4MeshRenderPipeline", "MTL4PipelineState", "MTL4RenderCommandEncoder", "MTL4RenderPass", "MTL4RenderPipeline", "MTL4SpecializedFunctionDescriptor", "MTLAllocation", "MTLComputePipeline", "MTLDataType", "MTLDrawable", "MTLEvent", "MTLFunctionConstantValues", "MTLIOCommandBuffer", "MTLIOCommandQueue", "MTLIOCompressor", "MTLLibrary", "MTLResidencySet", "dispatch2"] }
+
+[lints]
+workspace = true

@@ -10,6 +10,9 @@ edition = "2024"
 license = "MIT"
 rust-version = "1.95.0"
 
+[workspace.lints.clippy]
+cognitive_complexity = "warn"
+
 [profile.dev]
 incremental = true
 lto = "off"

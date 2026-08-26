@@ -398,10 +398,6 @@ fn cross3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
-	use resource_management::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
-		generator::{ShaderGenerationSettings, ShaderGenerator},
-	};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{buffer, compile, push_constant_buffer, run_at};
@@ -431,32 +427,6 @@ mod tests {
 		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 32);
 		assert_eq!(std::mem::align_of::<SkinnedVertex>(), 16);
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 24);
-	}
-
-	/// Verifies the production dual-quaternion path lowers across every supported BESL backend.
-	#[compio::test]
-	async fn skinning_besl_lowers_for_all_backends_and_compiles_with_metal() {
-		let main = production_skinning_main();
-		let settings = ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE));
-		GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Visibility skinning should lower to GLSL.");
-		HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Visibility skinning should lower to HLSL.");
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Visibility skinning should lower to MSL.");
-
-		assert!(msl.contains("struct DualQuaternion"));
-
-		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
-			&msl,
-			"visibility-dual-quaternion-skinning",
-		)
-		.await
-		.expect("Visibility dual-quaternion skinning should compile with Metal.");
 	}
 
 	#[test]

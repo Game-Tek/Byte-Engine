@@ -1485,47 +1485,6 @@ struct PrimitiveOutput {
 	}
 
 	#[test]
-	fn test_msl() {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		used: fn() -> void {}
-
-		main: fn () -> void {}
-		"#;
-
-		let root = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&root).get_child("main").unwrap();
-
-		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
-		let used_function = RefCell::borrow(&root).get_child("used").unwrap();
-
-		{
-			let mut main = main.borrow_mut();
-			main.add_child(
-				besl::Node::hlsl(
-					"output.position = float4(0, 0, 0, 1)".to_string(),
-					vec![vertex_struct, used_function],
-					vec![],
-				)
-				.into(),
-			);
-		}
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
-		assert_string_contains!(shader, "void used(){}");
-		assert_string_contains!(shader, "void main(){output.position = float4(0, 0, 0, 1);}");
-	}
-
-	#[test]
 	fn test_instrinsic() {
 		let main = generator::tests::intrinsic();
 

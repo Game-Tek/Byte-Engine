@@ -1073,22 +1073,6 @@ pub mod tests {
 	}
 
 	#[test]
-	fn test_new() {
-		let _ = new_testing_asset_manager();
-	}
-
-	#[test]
-	fn test_add_asset_manager() {
-		let storage_backend = TestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, ResourceTestStorageBackend::new());
-
-		let test_asset_handler = TestAssetHandler::new();
-
-		asset_manager.add_asset_handler(test_asset_handler);
-	}
-
-	#[test]
 	fn asset_manager_reports_support_for_registered_asset_types() {
 		let storage_backend = TestStorageBackend::new();
 

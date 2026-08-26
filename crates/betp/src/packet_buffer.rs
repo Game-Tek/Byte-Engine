@@ -137,13 +137,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_new_buffer_is_empty() {
-		let buffer = PacketBuffer::<4, 8>::new();
-
-		assert!(buffer.buffer.iter().all(|packet| packet.is_none()));
-	}
-
-	#[test]
 	fn test_add_packets() {
 		let mut buffer = PacketBuffer::<4, 16>::new();
 

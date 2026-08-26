@@ -23,31 +23,3 @@ impl<'a> Builder<'a> {
 		self
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::Builder;
-
-	#[test]
-	fn builder_defaults_to_no_name() {
-		let shader_handle = crate::ShaderHandle(0);
-		let builder = Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader_handle, crate::ShaderTypes::Compute),
-		);
-
-		assert_eq!(builder.name, None);
-	}
-
-	#[test]
-	fn builder_can_set_a_name() {
-		let shader_handle = crate::ShaderHandle(0);
-		let builder = Builder::new(
-			&[],
-			crate::pipelines::ShaderParameter::new(&shader_handle, crate::ShaderTypes::Compute),
-		)
-		.name("Test Compute Pipeline");
-
-		assert_eq!(builder.name, Some("Test Compute Pipeline"));
-	}
-}

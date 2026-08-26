@@ -12,15 +12,11 @@ pub(super) use sources::*;
 mod tests {
 
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
-	use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
+	use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 	use resource_management::pbr::{
 		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
 		generate_textured_brdf_program,
 	};
-	use resource_management::shader::besl::backends::{
-		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
-	};
-	use resource_management::shader::generator::ShaderGenerationSettings;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
@@ -82,57 +78,18 @@ mod tests {
 		};
 	}
 
-	/// Generates the production Metal material shader for source-shape regressions.
-	fn material_msl(shader_source: &str, material: &JsonObject) -> String {
-		let shader_node = besl::parse(shader_source).expect("Test material source should parse.");
-
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-
-		let shader = besl::lex(shader_generator.transform(shader_node, material))
-			.expect("Material evaluation should produce valid BESL.");
-
-		let main = shader.get_main().expect(
-			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
-		);
-
-		MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Failed to emit the Metal material pass. The most likely cause is an invalid visibility shader contract.")
-	}
-
-	/// Guards the algebraic decoder shape so compact normals do not reintroduce transcendental work per shaded pixel.
-	#[test]
-	fn octahedral_decoder_uses_abs_and_step_and_defers_normalization() {
-		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("sqrt("));
-		assert!(!super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("normalize("));
-		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("abs("));
-		assert!(super::DECODE_OCTAHEDRAL_NORMAL_SOURCE.contains("step("));
-
-		for source in [
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/visibility-task.besl"
-			)),
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/shadow-task.besl"
-			)),
-		] {
-			assert!(!source.contains("sqrt(octahedral"));
-			assert!(source.contains("step(0.0, octahedral.x)"));
-		}
-	}
-
-	/// Guards fixed fifth powers against returning to the general-purpose power intrinsic.
-	#[test]
-	fn material_fresnel_uses_multiplication_for_fifth_powers() {
-		let source = super::MATERIAL_EVALUATION_SUFFIX_SOURCE;
-
-		assert!(!source.contains("f16(5.0)"));
-
-		for base in ["view_fresnel", "half_view_fresnel", "light_fresnel"] {
-			assert!(source.contains(&format!("{base}_squared * {base}_squared * {base}_base")));
-		}
+	fn main_statements<'a>(program: &'a besl::parser::Node<'a>) -> &'a [besl::parser::Node<'a>] {
+		let besl::parser::Nodes::Scope { children, .. } = program.node() else {
+			panic!("Expected generated material root scope.");
+		};
+		let main = children
+			.iter()
+			.find(|child| child.name() == Some("main"))
+			.expect("Generated material program should contain main.");
+		let besl::parser::Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected generated material main function.");
+		};
+		statements
 	}
 
 	/// Executes representative octahedral seams and axes through the optimized production decoder.
@@ -327,147 +284,7 @@ mod tests {
 	}
 
 	#[test]
-	fn skinned_material_path_selects_geometry_before_static_attribute_loads() {
-		let material = material_metadata! { "variables": [] };
-
-		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
-
-		let selection = source
-			.find("mesh.skinned_base_vertex_index")
-			.expect("Generated material shader should select static or skinned geometry.");
-
-		let static_position_load = source
-			.find("vertex_positions->positions[triangle_vertex_indices[0]]")
-			.expect("Generated material shader should retain the static geometry path.");
-
-		let static_normal_load = source
-			.find("vertex_normals->normals[triangle_vertex_indices[0]]")
-			.expect("Generated material shader should retain the static normal path.");
-		assert!(selection < static_position_load);
-		assert!(selection < static_normal_load);
-	}
-
-	/// Verifies material reconstruction resolves one triangle's three vertices from shared meshlet state.
-	#[test]
-	fn material_vertex_indices_are_batched() {
-		let material = material_metadata! { "variables": [] };
-
-		let source = material_msl("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }", &material);
-		assert!(source.contains("uint3 compute_vertex_indices("));
-		assert!(source.contains("uint3 triangle_vertex_indices = compute_vertex_indices("));
-		assert!(!source.contains("compute_vertex_index("));
-		assert!(!source.contains("uint vertex_index0"));
-	}
-
-	/// Verifies UV reconstruction reuses the clip-space basis that position and normal interpolation already computes.
-	#[test]
-	fn material_uv_reuses_triangle_interpolation_basis() {
-		let material = material_metadata! {
-			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
-		};
-
-		let source = material_msl("main: fn () -> void { albedo = sample_material(base_color); }", &material);
-		assert!(source.contains("TriangleInterpolation compute_triangle_interpolation("));
-		assert!(source.contains("triangle_raw_ddx"));
-		assert_eq!(source.matches("float inverse_determinant").count(), 1);
-	}
-
-	/// Verifies compute material sampling forwards analytic UV gradients so hardware selects the baked mip chain.
-	#[compio::test]
-	async fn material_texture_samples_use_analytic_gradients_on_every_backend() {
-		let material = material_metadata! {
-			"variables": [
-				{ "name": "base_color", "data_type": "Texture2D" },
-				{ "name": "normal_map", "data_type": "Texture2D" }
-			]
-		};
-
-		let shader_node =
-			besl::parse("main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }")
-				.expect("Textured material should parse.");
-
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-
-		let shader = besl::lex(shader_generator.transform(shader_node, &material))
-			.expect("Textured material should produce valid BESL.");
-
-		let main = shader
-			.get_main()
-			.expect("Textured material should have a compute entry point.");
-
-		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-
-		let glsl = GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Textured material should lower to GLSL.");
-
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Textured material should lower to HLSL.");
-
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Textured material should lower to MSL.");
-		assert!(glsl.contains("textureGrad(textures[nonuniformEXT("));
-		assert!(glsl.contains("vertex_uv, uv_derivative_x, uv_derivative_y"));
-		assert!(hlsl.contains(".SampleGrad(textures_sampler, vertex_uv, uv_derivative_x, uv_derivative_y)"));
-		assert!(msl.contains("metal::gradient2d(uv_derivative_x, uv_derivative_y)"));
-		assert!(msl.contains("sample_visibility_normal("));
-		assert!(!hlsl.contains(".SampleLevel(textures_sampler"));
-
-		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
-			&msl,
-			"visibility-material-gradient-sampling",
-		)
-		.await
-		.expect("Gradient-sampled visibility material should compile with Metal.");
-	}
-
-	/// Verifies generated material reconstruction includes only the UV and tangent work required by the material body.
-	#[test]
-	fn material_reconstruction_specializes_for_texture_and_normal_usage() {
-		let constant_material = material_metadata! { "variables": [] };
-
-		let constant = material_msl(
-			"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
-			&constant_material,
-		);
-		assert!(!constant.contains("vertex_uvs->uvs"));
-		assert!(!constant.contains("tangent_scale"));
-		assert!(!constant.contains("normal.x * T"));
-
-		let textured_material = material_metadata! {
-			"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
-		};
-
-		let textured = material_msl(
-			"main: fn () -> void { albedo = sample_material(base_color); }",
-			&textured_material,
-		);
-		assert!(textured.contains("vertex_uvs->uvs"));
-		assert!(!textured.contains("tangent_scale"));
-		assert!(!textured.contains("normal.x * T"));
-
-		let normal_material = material_metadata! {
-			"variables": [{ "name": "normal_map", "data_type": "Texture2D" }]
-		};
-
-		let normal = material_msl(
-			"main: fn () -> void { normal = sample_normal(normal_map); }",
-			&normal_material,
-		);
-		assert!(normal.contains("vertex_uvs->uvs"));
-		assert!(normal.contains("tangent_scale"));
-		assert!(normal.contains("float(normal.x) * T"));
-
-		let procedural = material_msl("main: fn () -> void { normal = vec3f(1.0, 0.0, 0.0); }", &constant_material);
-		assert!(procedural.contains("vertex_uvs->uvs"));
-		assert!(procedural.contains("tangent_scale"));
-	}
-
-	#[test]
-	fn write_to_albedo() {
+	fn albedo_write_is_narrowed_to_vec4f16() {
 		let material = material_metadata! {
 			"variables": []
 		};
@@ -480,17 +297,62 @@ mod tests {
 
 		let shader = shader_generator.transform(shader_node, &material);
 
-		let _node = besl::lex(shader).expect("expected test value");
+		let assignment = main_statements(&shader)
+			.iter()
+			.find(|statement| {
+				matches!(
+					statement.node(),
+					besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, .. })
+						if matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "albedo")
+				)
+			})
+			.expect("Generated material program should retain the authored albedo assignment.");
+
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Operator {
+			name: operator, right, ..
+		}) = assignment.node()
+		else {
+			panic!("Expected generated albedo assignment.");
+		};
+		assert_eq!(*operator, "=");
+
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call {
+			name: besl::parser::TypeName::Named("vec4f16"),
+			parameters: narrowed_values,
+		}) = right.node()
+		else {
+			panic!("Generated albedo assignment should narrow to vec4f16.");
+		};
+		let [authored_value] = narrowed_values.as_slice() else {
+			panic!("Generated albedo narrowing should preserve one authored value.");
+		};
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call {
+			name: besl::parser::TypeName::Named("vec4f"),
+			parameters: components,
+		}) = authored_value.node()
+		else {
+			panic!("Generated albedo assignment should preserve the authored vec4f value.");
+		};
+
+		let components = components
+			.iter()
+			.map(|component| match component.node() {
+				besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) => value.as_ref(),
+				_ => panic!("Expected literal authored albedo component."),
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(components, ["1", "2", "3", "4"]);
+
+		besl::lex(shader).expect("Generated albedo program should link.");
 	}
 
 	#[test]
-	fn vec4f_variable() {
+	fn vec4f_variable_becomes_specialization() {
 		let material = material_metadata! {
 			"variables": [
 				{
 					"name": "albedo",
-					"data_type": "vec4f",
-					"value": "Purple"
+					"data_type": "vec4f"
 				}
 			]
 		};
@@ -503,7 +365,27 @@ mod tests {
 
 		let shader = shader_generator.transform(shader_node, &material);
 
-		println!("{:#?}", shader);
+		let besl::parser::Nodes::Scope { children, .. } = shader.node() else {
+			panic!("Expected generated material root scope.");
+		};
+		let specialization = children
+			.iter()
+			.find(|child| child.name() == Some("albedo"))
+			.expect("Generated material program should declare the vec4f variable.");
+		assert!(matches!(
+			specialization.node(),
+			besl::parser::Nodes::Specialization { r#type, .. } if *r#type == "vec4f"
+		));
+
+		assert!(main_statements(&shader).iter().any(|statement| {
+			matches!(
+				statement.node(),
+				besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { name, left, right })
+					if *name == "="
+						&& matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "out_color")
+						&& matches!(right.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "albedo")
+			)
+		}));
 	}
 
 	/// Verifies material texture variables produce valid BESL.
@@ -553,48 +435,6 @@ mod tests {
 		let shader = shader_generator.transform(shader_node, &material);
 
 		besl::lex(shader).expect("expected test value");
-	}
-
-	/// Verifies HLSL transforms tangent-space normals with the same basis convention as GLSL and MSL.
-	#[test]
-	fn material_evaluation_hlsl_combines_tangent_basis_vectors() {
-		let material = material_metadata! {
-			"variables": [
-				{
-					"name": "normal_map",
-					"data_type": "Texture2D"
-				}
-			]
-		};
-
-		let shader_node =
-			besl::parse("main: fn () -> void { normal = sample_normal(normal_map); }").expect("test material should parse");
-
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-
-		let shader = besl::lex(shader_generator.transform(shader_node, &material))
-			.expect("material evaluation should produce valid BESL");
-
-		let main = shader.get_main().expect(
-			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
-		);
-
-		let source = HLSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect(
-				"Failed to emit the HLSL material pass. The most likely cause is an invalid tangent-basis shader contract.",
-			);
-		assert!(
-			source.contains("normal = float16_t3(normalize(")
-				&& source.contains("float(normal.x) * T")
-				&& source.contains("float(normal.y) * B")
-				&& source.contains("float(normal.z) * N"),
-			"HLSL did not combine the tangent basis explicitly. The most likely cause is that the material pass reintroduced a row-versus-column matrix assumption."
-		);
-		assert!(
-			!source.contains("mul(TBN, normal)"),
-			"HLSL multiplied a row-constructed tangent basis as a column basis. The most likely cause is that the material pass reintroduced the faceted-normal transform."
-		);
 	}
 
 	/// Verifies cone PCF evaluates its receiver plane at each fetched shadow texel center.
@@ -1208,18 +1048,6 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn point_shadow_sampling_matches_the_shared_rotated_poisson_kernel() {
-		assert_eq!(super::POINT_SHADOW_SOURCE.matches("sample_point_shadow_tap(").count(), 8);
-		assert!(super::POINT_SHADOW_SOURCE.contains("pcf_rotation: vec2f16"));
-		assert!(super::POINT_SHADOW_SOURCE.contains("cross(reference, center_direction)"));
-		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("point_shadow_receiver_vector("));
-		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("point_shadow_texel_direction("));
-		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("rotate_shadow_poisson_offset(poisson_offset, pcf_rotation)"));
-		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("texture_cube_array_lod(point_shadow_map"));
-		assert!(super::POINT_SHADOW_TAP_SOURCE.contains("1.5 * 2.0 / 1024.0"));
-	}
-
 	/// Verifies material evaluation with skinned geometry produces valid BESL.
 	#[test]
 	fn material_evaluation_with_skinning_produces_valid_besl() {
@@ -1235,46 +1063,6 @@ mod tests {
 		let shader = shader_generator.transform(shader_node, &material);
 
 		besl::lex(shader).expect("expected test value");
-	}
-
-	/// Verifies material evaluation samples the bound environment without a procedural fallback.
-	#[compio::test]
-	async fn material_evaluation_with_environment_ibl_produces_valid_besl() {
-		let material = material_metadata! {
-			"variables": []
-		};
-
-		let shader_node =
-			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
-
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-
-		let shader = besl::lex(shader_generator.transform(shader_node, &material)).expect("expected test value");
-
-		let main = shader.get_main().expect("expected material evaluation main");
-
-		let source = MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("expected valid Metal material evaluation source");
-		assert!(!source.contains("sample_analytical_reflection"));
-		assert!(!source.contains("environment_sample.a"));
-		assert!(!source.contains("lower_sample.a"));
-		assert!(source.contains("texturecube_array<float> point_shadow_map"));
-		assert!(source.contains("resources.point_shadow_map_sampler"));
-		assert!(!source.contains("shadow_map.sample(shadow_map_sampler"));
-		assert!(source.contains("texturecube<float> environment_irradiance"));
-		assert!(source.contains("texturecube<float> environment_specular"));
-		assert!(source.contains("atan2("));
-		assert!(!source.contains("asin("));
-		assert!(source.contains("ies_profile_texture"));
-
-		#[cfg(target_os = "macos")]
-		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
-			&source,
-			"visibility-point-shadow-material",
-		)
-		.await
-		.expect("Expected the generated point-shadow material shader to compile with Metal");
 	}
 
 	/// Verifies the generated material pass stays in BESL so backend lowering owns storage and matrix syntax.

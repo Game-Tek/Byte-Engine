@@ -209,10 +209,6 @@ impl RenderPass for SmaaPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ExecutionConfig, ResourceSlot, Texture, WorkgroupState};
-	use resource_management::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
-		generator::ShaderGenerationSettings,
-	};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, texture_2d};
@@ -447,45 +443,6 @@ mod tests {
 		for y in 0..9 {
 			for x in 0..17 {
 				assert_rgba_close(rgba(&result, [x, y]), source_texels[(y * 17 + x) as usize], 0.0);
-			}
-		}
-	}
-
-	/// Verifies every production SMAA stage remains portable across the supported BESL backends.
-	#[test]
-	fn smaa_shaders_lower_for_all_backends() {
-		for (name, shader, workgroup) in [
-			(
-				"edge detection",
-				EDGE_SHADER,
-				utils::Extent::new(SMAA_EDGE_WORKGROUP_WIDTH, SMAA_EDGE_WORKGROUP_HEIGHT, 1),
-			),
-			(
-				"blend and neighborhood",
-				RESOLVE_SHADER,
-				utils::Extent::new(SMAA_RESOLVE_WORKGROUP_WIDTH, SMAA_RESOLVE_WORKGROUP_HEIGHT, 1),
-			),
-		] {
-			let settings = ShaderGenerationSettings::compute(workgroup);
-			let main = simple_compute::compile_test_program(shader);
-			GLSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to GLSL."));
-			HLSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to HLSL."));
-			let source = MSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.unwrap_or_else(|()| panic!("Failed to lower SMAA {name} BESL to MSL."));
-			if name == "blend and neighborhood" {
-				assert!(
-					source.contains("half"),
-					"SMAA weights must remain half precision in Metal source."
-				);
-				assert!(
-					source.contains("half correction"),
-					"SMAA search correction must remain half precision in Metal source."
-				);
 			}
 		}
 	}

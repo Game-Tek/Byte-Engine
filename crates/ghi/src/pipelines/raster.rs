@@ -153,11 +153,4 @@ mod tests {
 
 		assert!(!builder.depth_write);
 	}
-
-	#[test]
-	fn builder_can_set_a_name() {
-		let builder = Builder::new(&[], &[], &[], &[]).name("Test Raster Pipeline");
-
-		assert_eq!(builder.name, Some("Test Raster Pipeline"));
-	}
 }

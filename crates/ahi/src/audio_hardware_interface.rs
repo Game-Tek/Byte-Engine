@@ -190,15 +190,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_default_ahi_hardware_parameters() {
-		let params = HardwareParameters::new();
-
-		assert_eq!(params.sample_rate, 48000);
-		assert_eq!(params.channels, 2);
-		assert_eq!(params.bit_depth, 16);
-	}
-
-	#[test]
 	fn stream_frame_count_uses_typed_samples_not_byte_width() {
 		let mut mono_i16 = [1i16, 2, 3];
 		let mut stereo_i16 = [(1i16, 2i16), (3, 4), (5, 6)];

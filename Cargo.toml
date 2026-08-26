@@ -12,6 +12,9 @@ rust-version = "1.95.0"
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
+excessive_nesting = "warn"
+too_many_arguments = "warn"
+too_many_lines = "warn"
 
 [profile.dev]
 incremental = true

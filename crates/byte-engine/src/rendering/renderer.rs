@@ -164,15 +164,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_render_targets_new() {
-		let rt = RenderTargets::new();
-
-		assert!(rt.images.is_empty());
-		assert!(rt.by_name.is_empty());
-		assert!(rt.by_sink_index.is_empty());
-	}
-
-	#[test]
 	fn test_insert_and_get() {
 		let mut rt = RenderTargets::new();
 		let image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };

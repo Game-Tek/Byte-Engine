@@ -789,21 +789,6 @@ mod tests {
 	}
 
 	#[test]
-	fn prepared_processors_keep_small_nodes_inline_and_large_state_node_local() {
-		let compiled = gain(pitch_shift(gain(sample("audio/music.ogg"), 0.5), 2.0), 0.25)
-			.compile()
-			.expect("valid graph");
-		let (_, render_plan) = compiled.into_parts();
-		let prepared = render_plan.prepare();
-
-		assert!(!prepared.processors[0].is_heap());
-		assert!(prepared.processors[1].is_heap());
-		assert!(!prepared.processors.spilled());
-		assert_eq!(prepared.drain_latency, PITCH_SHIFT_LATENCY);
-		assert_eq!(prepared.output_gain, 0.25);
-	}
-
-	#[test]
 	#[should_panic(expected = "Invalid audio graph pitch ratio")]
 	fn pitch_shift_rejects_out_of_range_ratios_when_authored() {
 		let _ = pitch_shift(sample("audio/music.ogg"), 2.1);

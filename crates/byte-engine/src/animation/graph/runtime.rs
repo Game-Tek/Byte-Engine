@@ -513,10 +513,7 @@ pub use player::{
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		collections::{HashMap, VecDeque},
-		num::NonZeroUsize,
-	};
+	use std::collections::{HashMap, VecDeque};
 
 	use resource_management::{
 		Reference,
@@ -581,18 +578,6 @@ mod tests {
 			commands_closed: false,
 			completions_closed: false,
 		}
-	}
-
-	#[test]
-	fn pool_configuration_exposes_its_strict_byte_budget() {
-		let config = AnimationPoolConfig::new(NonZeroUsize::new(128).expect("non-zero budget"));
-
-		assert_eq!(config.byte_budget(), 128);
-		assert_eq!(super::ANIMATION_LOAD_QUEUE_CAPACITY, 64);
-		let _ = std::mem::size_of::<AnimationPool>();
-		let _ = AnimationPoolEvent::Evicted {
-			resource_id: "idle.animation".into(),
-		};
 	}
 
 	#[test]

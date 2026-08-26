@@ -11,7 +11,7 @@ pub use sample_pool::{AudioSamplePoolConfig, DEFAULT_AUDIO_SAMPLE_POOL_BYTE_BUDG
 
 #[cfg(test)]
 mod tests {
-	use std::{mem::size_of, num::NonZeroUsize, sync::Arc};
+	use std::{num::NonZeroUsize, sync::Arc};
 
 	use resource_management::{resources::audio::Audio, types::BitDepths};
 
@@ -214,25 +214,6 @@ mod tests {
 		assert_eq!(pool.resident_bytes, 4);
 		assert!(pool.lease(&cache_key("active.wav", 1, 2)).is_none());
 		assert!(pool.resident_bytes <= pool.byte_budget);
-	}
-
-	#[test]
-	fn samples_occupy_disjoint_ranges_of_one_preallocated_arena() {
-		let mut pool = pool(16);
-		let first = insert_normalized(&mut pool, "first.wav", 1, &[1.0, 2.0]);
-		let second = insert_normalized(&mut pool, "second.wav", 2, &[3.0]);
-		let arena_start = pool.storage.as_ptr() as usize;
-		let arena_end = arena_start + pool.storage.len() * size_of::<f32>();
-		let first_pointer = first.samples.as_ptr() as usize;
-		let second_pointer = second.samples.as_ptr() as usize;
-
-		assert_eq!(pool.storage.len(), 4);
-		assert!(first_pointer >= arena_start && first_pointer < arena_end);
-		assert!(second_pointer >= arena_start && second_pointer < arena_end);
-		assert_ne!(first_pointer, second_pointer);
-		assert!(first.owned_samples.is_none());
-		assert!(second.owned_samples.is_none());
-		assert_eq!(&*pool.storage, &[1.0, 2.0, 3.0, 0.0]);
 	}
 
 	#[test]

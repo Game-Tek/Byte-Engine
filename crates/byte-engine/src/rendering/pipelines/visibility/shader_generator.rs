@@ -19,55 +19,8 @@ mod tests {
 	};
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
-	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
-
-	fn parser_expression_contains_raw_code(expression: &besl::parser::Expressions<'_>) -> bool {
-		match expression {
-			besl::parser::Expressions::RawCode { .. } => true,
-			besl::parser::Expressions::Expression(elements)
-			| besl::parser::Expressions::Call {
-				parameters: elements, ..
-			} => elements.iter().any(parser_node_contains_raw_code),
-			besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {
-				parser_node_contains_raw_code(left) || parser_node_contains_raw_code(right)
-			}
-			besl::parser::Expressions::Macro { body, .. } => parser_node_contains_raw_code(body),
-			besl::parser::Expressions::Return { value } => value.as_deref().is_some_and(parser_node_contains_raw_code),
-			besl::parser::Expressions::Member { .. }
-			| besl::parser::Expressions::Literal { .. }
-			| besl::parser::Expressions::VariableDeclaration { .. }
-			| besl::parser::Expressions::Continue
-			| besl::parser::Expressions::Discard => false,
-		}
-	}
-
-	/// Walks generated parser nodes so raw code cannot hide in shared lighting helpers.
-	fn parser_node_contains_raw_code(node: &besl::parser::Node<'_>) -> bool {
-		match node.node() {
-			besl::parser::Nodes::RawCode { .. } => true,
-			besl::parser::Nodes::Scope { children, .. } => children.iter().any(parser_node_contains_raw_code),
-			besl::parser::Nodes::Function { statements, .. } => statements.iter().any(parser_node_contains_raw_code),
-			besl::parser::Nodes::Conditional { condition, statements } => {
-				parser_node_contains_raw_code(condition) || statements.iter().any(parser_node_contains_raw_code)
-			}
-			besl::parser::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				parser_node_contains_raw_code(initializer)
-					|| parser_node_contains_raw_code(condition)
-					|| parser_node_contains_raw_code(update)
-					|| statements.iter().any(parser_node_contains_raw_code)
-			}
-			besl::parser::Nodes::Intrinsic { elements, .. } => elements.iter().any(parser_node_contains_raw_code),
-			besl::parser::Nodes::Expression(expression) => parser_expression_contains_raw_code(expression),
-			_ => false,
-		}
-	}
-
 	use crate::besl;
+	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	macro_rules! material_metadata {
 		($($json:tt)*) => {
@@ -1063,24 +1016,5 @@ mod tests {
 		let shader = shader_generator.transform(shader_node, &material);
 
 		besl::lex(shader).expect("expected test value");
-	}
-
-	/// Verifies the generated material pass stays in BESL so backend lowering owns storage and matrix syntax.
-	#[test]
-	fn material_evaluation_contains_no_backend_raw_code() {
-		let material = material_metadata! {
-			"variables": []
-		};
-
-		let shader_node =
-			besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("expected test value");
-
-		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
-
-		let shader = shader_generator.transform(shader_node, &material);
-		assert!(
-			!parser_node_contains_raw_code(&shader),
-			"Material evaluation and its shared lighting helpers must remain portable BESL instead of embedding backend source."
-		);
 	}
 }

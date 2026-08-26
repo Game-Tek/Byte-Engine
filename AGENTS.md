@@ -41,6 +41,7 @@ When an error or warning has a documented recovery workflow, include a direct li
 - Use `cargo nextest run --workspace` as the default test command. Run documentation tests separately with `cargo test --doc --workspace`.
 - Tests must exercise contiguous seams. (E.G: don't test material evaluation shaders correctly lower to MSL. MSL lowering is responsability of the BESL MSL shader generator. Material evaluation must only ensure their BESL shader correctly lexes, which is asserted with a BESL lexer test).
 - Do not add tombstone tests whose only purpose is to assert that removed code, routes, fields, or features remain absent. Negative tests are appropriate when the failure or absence is itself a current API, security, or persistence contract.
+- Test observable behavior and specifications. Write black-box tests that verify the expected behavior of the system. Never write white-box tests that verify internal implementation details. To assert internal implementation details add assertions to the implementation code itself.
 
 # Best Practices
 

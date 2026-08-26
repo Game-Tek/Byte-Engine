@@ -633,7 +633,7 @@ mod texture_transfer_tests {
 	}
 
 	#[test]
-	fn repeated_transfers_reuse_one_slot() {
+	fn repeated_transfers_complete_with_distinct_handles() {
 		let mut registry = TextureReadbackRegistry::new();
 		let mut previous = None;
 
@@ -644,8 +644,5 @@ mod texture_transfer_tests {
 			assert_eq!(registry.take_submitted(handle), Ok(value));
 			previous = Some(handle);
 		}
-
-		assert_eq!(registry.slots.len(), 1);
-		assert_eq!(registry.free.len(), 1);
 	}
 }

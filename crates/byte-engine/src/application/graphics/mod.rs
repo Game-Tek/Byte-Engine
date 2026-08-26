@@ -659,24 +659,6 @@ mod tests {
 		assert!(port.read().is_none());
 		assert_eq!(configuration.events().len(), 1);
 	}
-
-	#[test]
-	#[ignore] // Renderer broken.
-	fn create_graphics_application() {
-		let mut app = GraphicsApplication::new("Test", &[]);
-
-		assert_eq!(app.get_name(), "Test");
-
-		let start_time = std::time::Instant::now();
-
-		while !app.close {
-			app.tick();
-
-			if start_time.elapsed().as_secs() > 1 {
-				app.close();
-			}
-		}
-	}
 }
 
 use core::time;

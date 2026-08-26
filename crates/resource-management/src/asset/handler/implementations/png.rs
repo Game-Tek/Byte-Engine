@@ -107,43 +107,71 @@ fn png_source_layout(
 }
 
 #[cfg(test)]
-
 mod tests {
-
 	use crate::{
 		asset::{
 			self, ResourceId, handler::AssetHandler, handler::implementations::png::PNGAssetHandler, manager::AssetManager,
 		},
 		r#async, resource,
 		resources::image::Image,
-		types::Formats,
+		types::{Formats, Gamma},
 	};
 
-	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
+	/// Encodes a small RGBA8 albedo image so the PNG decoder sees real 8-bit color data.
+	fn generated_rgba8_albedo_png() -> Vec<u8> {
+		let mut png = Vec::new();
 
-	async fn load_image() {
+		{
+			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+
+			encoder.set_color(png::ColorType::Rgba);
+
+			encoder.set_depth(png::BitDepth::Eight);
+
+			let mut writer = encoder.write_header().expect("generated PNG header should encode");
+
+			let pixels = [0x20, 0x80, 0xe0, 0xff].repeat(16);
+
+			writer.write_image_data(&pixels).expect("generated PNG pixels should encode");
+		}
+
+		png
+	}
+
+	#[r#async::test]
+	async fn asset_manager_bakes_generated_rgba8_albedo_png() {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+
+		asset_storage_backend.add_file("generated_albedo.png", &generated_rgba8_albedo_png());
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
 		asset_manager
-			.bake("patterned_brick_floor_02_diff_2k.png")
+			.bake("generated_albedo.png")
 			.await
-			.expect("Image asset handler did not handle asset");
+			.expect("generated 8-bit PNG should bake");
 
-		let generated_resources = resource_storage_backend.get_resources();
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("generated_albedo.png"))
+			.expect("baked PNG resource should be stored");
 
-		assert_eq!(generated_resources.len(), 1);
+		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
 
-		let resource = &generated_resources[0];
-
-		assert_eq!(resource.id, "patterned_brick_floor_02_diff_2k.png");
 		assert_eq!(resource.class, "Image");
+		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.gamma, Gamma::SRGB);
+		assert_eq!(image.format, Formats::BC7SRGB);
+		assert_eq!(
+			resource_storage_backend
+				.get_resource_data_by_name(ResourceId::new("generated_albedo.png"))
+				.expect("baked PNG data should be stored")
+				.len(),
+			16
+		);
 	}
 
 	/// Encodes a small RGB16 normal map so the PNG decoder sees real 16-bit file data.

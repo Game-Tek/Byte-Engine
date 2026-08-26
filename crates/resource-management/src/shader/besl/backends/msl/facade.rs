@@ -5,7 +5,7 @@ use std::{
 	vec::Vec,
 };
 
-pub use Generator as MSLShaderGenerator;
+pub use Generator as MSLTranspiler;
 
 use super::*;
 use crate::shader::generator::{
@@ -131,14 +131,14 @@ pub(crate) struct ClassifiedNodes<'a, A: Allocator + Clone> {
 impl<A: Allocator + Clone> ShaderGenerator for Generator<A> {}
 
 impl Generator<Global> {
-	/// Creates an MSL generator with the default formatting mode.
+	/// Creates an MSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
 		Self::new_in(Global)
 	}
 }
 
 impl<A: Allocator + Clone> Generator<A> {
-	/// Creates an MSL generator that uses `allocator` for temporary output buffers.
+	/// Creates an MSL transpiler that uses `allocator` for temporary output buffers.
 	pub fn new_in(allocator: A) -> Self {
 		Generator {
 			allocator,

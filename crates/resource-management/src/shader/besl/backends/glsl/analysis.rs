@@ -13,7 +13,7 @@ pub struct Generator {
 impl ShaderGenerator for Generator {}
 
 impl Generator {
-	/// Creates a GLSL generator with the default formatting mode.
+	/// Creates a GLSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode

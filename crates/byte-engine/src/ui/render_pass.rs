@@ -829,7 +829,7 @@ mod tests {
 		Buffer, DescriptorBindings, ExecutableProgram, Texture, Value, builtin_position_slot, input_slot, output_slot,
 	};
 	use resource_management::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		besl::backends::{glsl::GLSLTranspiler, hlsl::HLSLTranspiler, msl::MSLTranspiler},
 		generator::{Generator as _, ShaderGenerationSettings},
 	};
 	use utils::{Extent, RGBA};

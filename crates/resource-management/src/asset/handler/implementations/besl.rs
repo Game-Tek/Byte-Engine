@@ -13,7 +13,7 @@ impl Default for BESLShaderAssetHandler {
 impl BESLShaderAssetHandler {
 	pub fn new() -> Self {
 		Self {
-			compiler: Arc::new(PlatformShaderCompiler),
+			compiler: Arc::new(PlatformShaderCompilerAdapter),
 			generator: None,
 		}
 	}
@@ -91,10 +91,10 @@ trait ShaderCompiler: Send + Sync {
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
 
-/// The `PlatformShaderCompiler` struct keeps standalone asset baking on the platform compiler selected by resource management.
-struct PlatformShaderCompiler;
+/// The `PlatformShaderCompilerAdapter` struct keeps standalone asset baking on the platform compiler selected by resource management.
+struct PlatformShaderCompilerAdapter;
 
-impl ShaderCompiler for PlatformShaderCompiler {
+impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
 		id: &'a str,
@@ -425,9 +425,9 @@ async fn compile_shader(
 ) -> Result<(Shader, Box<[u8]>), String> {
 	let (program, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
 
-	let mut generator = PlatformShaderGenerator::new();
+	let mut compiler = PlatformShaderCompiler::new();
 
-	let compiled = generator.generate(&settings.generation_settings(id), &program).await?;
+	let compiled = compiler.generate(&settings.generation_settings(id), &program).await?;
 
 	// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
 	let semantic_bindings = interface
@@ -1126,7 +1126,7 @@ use crate::{
 	shader::{
 		artifact::finalize_platform_shader_artifact,
 		besl::{
-			backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+			backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage},
 			evaluation::ProgramEvaluation,
 		},
 		generator::ShaderGenerationSettings,

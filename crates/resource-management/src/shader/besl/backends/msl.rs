@@ -5,7 +5,7 @@ use std::{
 	vec::Vec,
 };
 
-pub use Generator as MSLShaderGenerator;
+pub use Generator as MSLTranspiler;
 
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
 pub const MSL_ENTRY_POINT: &str = "besl_main";
@@ -1616,7 +1616,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		// MSL generator should use the explicit MSL code
+		// The MSL transpiler should use the explicit MSL code.
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
 		assert_string_contains!(shader, "void main(){out.position = float4(0, 0, 0, 1);}");
 		// Should NOT contain GLSL code

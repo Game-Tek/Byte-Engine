@@ -2,7 +2,7 @@ mod analysis;
 mod generator;
 mod header;
 
-pub use Generator as GLSLShaderGenerator;
+pub use Generator as GLSLTranspiler;
 pub use analysis::Generator;
 
 #[cfg(test)]
@@ -417,7 +417,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		// GLSL generator should use the GLSL code
+		// The GLSL transpiler should use the GLSL code.
 		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
 		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
 		// Should NOT contain HLSL code

@@ -8,7 +8,7 @@ use std::{
 pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
 	besl::{
-		backends::msl::MSLShaderGenerator,
+		backends::msl::MSLTranspiler,
 		evaluation::{BindingKind, BindingRecord, collect_bindings},
 	},
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
@@ -17,7 +17,7 @@ use crate::shader::{
 /// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
 pub struct Compiler<A: Allocator + Clone = Global> {
 	allocator: A,
-	msl_shader_generator: MSLShaderGenerator<A>,
+	msl_transpiler: MSLTranspiler<A>,
 }
 
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
@@ -56,7 +56,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 	pub fn new_in(allocator: A) -> Self {
 		Self {
 			allocator: allocator.clone(),
-			msl_shader_generator: MSLShaderGenerator::new_in(allocator),
+			msl_transpiler: MSLTranspiler::new_in(allocator),
 		}
 	}
 
@@ -77,14 +77,9 @@ impl<A: Allocator + Clone> Compiler<A> {
 		allocator: A,
 	) -> Result<GeneratedShader, String> {
 		let msl_shader = self
-			.msl_shader_generator
+			.msl_transpiler
 			.generate_program_in(shader_compilation_settings, program, allocator)
-			.map_err(|_| {
-				error(
-					"Failed to generate MSL shader source",
-					"The MSL shader generator returned an error",
-				)
-			})?;
+			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))?;
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 

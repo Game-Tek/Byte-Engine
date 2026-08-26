@@ -48,7 +48,7 @@ pub(crate) struct HlslBufferBindingSource {
 impl ShaderGenerator for Generator {}
 
 impl Generator {
-	/// Creates an HLSL generator with the default formatting mode.
+	/// Creates an HLSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode

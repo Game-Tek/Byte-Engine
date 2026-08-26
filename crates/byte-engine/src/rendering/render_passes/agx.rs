@@ -68,7 +68,7 @@ impl RenderPass for AgxToneMapPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
-	use resource_management::shader::{besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings};
+	use resource_management::shader::{besl::backends::msl::MSLTranspiler, generator::ShaderGenerationSettings};
 
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};

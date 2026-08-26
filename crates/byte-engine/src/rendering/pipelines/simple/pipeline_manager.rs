@@ -333,7 +333,7 @@ mod tests {
 
 	use besl::vm::{DescriptorBindings, ResourceSlot, Value, builtin_position_slot, input_slot, output_slot};
 	use resource_management::shader::{
-		besl::backends::{hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		besl::backends::{hlsl::HLSLTranspiler, msl::MSLTranspiler},
 		generator::ShaderGenerationSettings,
 	};
 

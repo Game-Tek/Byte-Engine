@@ -5,16 +5,16 @@ mod compilation {
 	use std::cell::RefCell;
 
 	use crate::shader::{
-		besl::{backends::glsl::GLSLShaderGenerator, evaluation::ProgramEvaluation},
+		besl::{backends::glsl::GLSLTranspiler, evaluation::ProgramEvaluation},
 		generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 		glsl_compile,
 	};
 
-	/// The `Generator` struct provides SPIR-V generation from Byte Engine Shader Language programs.
+	/// The `Generator` struct exists to compile Byte Engine Shader Language programs into SPIR-V.
 	/// > [!IMPORTANT]
-	/// > Creating a generator is expensive. Reuse each instance when possible.
+	/// > Creating a compiler is expensive. Reuse each instance when possible.
 	pub struct Generator {
-		glsl_shader_generator: GLSLShaderGenerator,
+		glsl_transpiler: GLSLTranspiler,
 	}
 
 	impl ShaderGenerator for Generator {}
@@ -28,7 +28,7 @@ mod compilation {
 	impl Generator {
 		pub fn new() -> Self {
 			Self {
-				glsl_shader_generator: GLSLShaderGenerator::new(),
+				glsl_transpiler: GLSLTranspiler::new(),
 			}
 		}
 
@@ -38,7 +38,7 @@ mod compilation {
 			main_function_node: &besl::NodeReference,
 		) -> Result<CompiledShader, String> {
 			let glsl_shader = self
-				.glsl_shader_generator
+				.glsl_transpiler
 				.generate(shader_compilation_settings, main_function_node)
 				.map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
 
@@ -146,4 +146,4 @@ mod compilation {
 }
 
 #[cfg(target_os = "linux")]
-pub use compilation::Generator as SPIRVShaderGenerator;
+pub use compilation::Generator as SPIRVCompiler;

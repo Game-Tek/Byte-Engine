@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
-use crate::shader::besl::backends::hlsl::HLSLShaderGenerator;
+use crate::shader::besl::backends::hlsl::HLSLTranspiler;
 #[cfg(target_os = "linux")]
-use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
+use crate::shader::besl::backends::spirv::SPIRVCompiler;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::shader::besl::evaluation::ProgramEvaluation;
 use crate::shader::generator::{CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator};
@@ -83,9 +83,9 @@ impl GeneratedCompiledPlatformShader {
 pub struct Generator {
 	#[cfg(not(target_vendor = "apple"))]
 	#[cfg(target_os = "linux")]
-	spirv_shader_generator: SPIRVShaderGenerator,
+	spirv_compiler: SPIRVCompiler,
 	#[cfg(target_os = "windows")]
-	hlsl_shader_generator: HLSLShaderGenerator,
+	hlsl_transpiler: HLSLTranspiler,
 	#[cfg(target_vendor = "apple")]
 	msl_shader_compiler: MSLShaderCompiler,
 }
@@ -102,9 +102,9 @@ impl Generator {
 	pub fn new() -> Self {
 		Self {
 			#[cfg(target_os = "linux")]
-			spirv_shader_generator: SPIRVShaderGenerator::new(),
+			spirv_compiler: SPIRVCompiler::new(),
 			#[cfg(target_os = "windows")]
-			hlsl_shader_generator: HLSLShaderGenerator::new(),
+			hlsl_transpiler: HLSLTranspiler::new(),
 			#[cfg(target_vendor = "apple")]
 			msl_shader_compiler: MSLShaderCompiler::new(),
 		}
@@ -136,7 +136,7 @@ impl Generator {
 			PlatformShaderLanguage::Glsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
 				let (binary, _, extent) = self
-					.spirv_shader_generator
+					.spirv_compiler
 					.generate(shader_generation_settings, &main)?
 					.into_parts();
 				let bindings = ProgramEvaluation::from_program(program)?
@@ -177,7 +177,7 @@ impl Generator {
 			#[cfg(target_os = "windows")]
 			PlatformShaderLanguage::Hlsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
-				let source = self.hlsl_shader_generator.generate(shader_generation_settings, &main).map_err(|_| {
+				let source = self.hlsl_transpiler.generate(shader_generation_settings, &main).map_err(|_| {
 					"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
 						.to_string()
 				})?;
@@ -276,4 +276,4 @@ mod tests {
 	}
 }
 
-pub use Generator as PlatformShaderGenerator;
+pub use Generator as PlatformShaderCompiler;

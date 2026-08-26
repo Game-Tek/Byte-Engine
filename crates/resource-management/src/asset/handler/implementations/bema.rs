@@ -25,10 +25,10 @@ trait ShaderCompiler: Send + Sync {
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), ()>>;
 }
 
-/// The `PlatformShaderCompiler` struct routes production BEMA shaders through the active platform compiler.
-struct PlatformShaderCompiler;
+/// The `PlatformShaderCompilerAdapter` struct routes production BEMA shaders through the active platform compiler.
+struct PlatformShaderCompilerAdapter;
 
-impl ShaderCompiler for PlatformShaderCompiler {
+impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
 		generator: &'a dyn ProgramGenerator,
@@ -68,7 +68,7 @@ impl BEMAAssetHandler {
 	pub fn new() -> BEMAAssetHandler {
 		BEMAAssetHandler {
 			generator: None,
-			compiler: Arc::new(PlatformShaderCompiler),
+			compiler: Arc::new(PlatformShaderCompilerAdapter),
 		}
 	}
 
@@ -346,7 +346,7 @@ pub(crate) async fn compile_shader_program(
 		);
 	})?;
 
-	let shader_program = PlatformShaderGenerator::new()
+	let shader_program = PlatformShaderCompiler::new()
 		.generate(&settings, &root_node)
 		.await
 		.map_err(|error| {
@@ -852,7 +852,7 @@ use super::{
 use crate::shader::{
 	artifact::finalize_platform_shader_artifact,
 	besl::{
-		backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+		backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage},
 		evaluation::ProgramEvaluation,
 	},
 };

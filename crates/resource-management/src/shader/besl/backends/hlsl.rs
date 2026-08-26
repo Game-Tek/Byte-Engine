@@ -1497,7 +1497,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		// HLSL generator should use the HLSL code
+		// The HLSL transpiler should use the HLSL code.
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
 		assert_string_contains!(shader, "void besl_main(){output.position = float4(0, 0, 0, 1);}");
 		// Should NOT contain GLSL code
@@ -1700,4 +1700,4 @@ mod tests {
 	}
 }
 
-pub use Generator as HLSLShaderGenerator;
+pub use Generator as HLSLTranspiler;

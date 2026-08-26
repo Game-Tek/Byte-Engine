@@ -93,12 +93,13 @@ pub struct PresentKey {
 	pub(crate) swapchain: SwapchainHandle,
 }
 
+/// The `RGBAu8` struct represents one four-channel pixel for image readback and comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RGBAu8 {
-	pub(crate) r: u8,
-	pub(crate) g: u8,
-	pub(crate) b: u8,
-	pub(crate) a: u8,
+	pub r: u8,
+	pub g: u8,
+	pub b: u8,
+	pub a: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

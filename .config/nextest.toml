@@ -3,3 +3,5 @@
 fail-fast = false
 status-level = "fail"
 final-status-level = "fail"
+# Native rendering tests require an explicitly selected GPU-backed run.
+default-filter = "not (package(=byte-engine-ghi) & kind(=test) & binary(=rendering))"

@@ -23,12 +23,19 @@ in API documentation, run it separately:
 cargo test --doc --workspace
 ```
 
-Some rendering tests need a local GPU. For a quick logic-only pass, skip tests
-whose names contain `render` or `graphics`:
+The default Nextest profile skips the GHI rendering integration tests because
+they need a local GPU. Run them explicitly when you change GHI rendering,
+resource lifetime, or backend command behavior:
 
 ```bash
-cargo nextest run --workspace -E 'not test(/render|graphics/)'
+cargo nextest run --ignore-default-filter \
+  -p byte-engine-ghi \
+  --test rendering
 ```
+
+This command runs the rendering tests for your operating system's active GHI
+backend. Presentation and ray-tracing tests that are marked as ignored remain
+skipped.
 
 ## Run benchmarks
 

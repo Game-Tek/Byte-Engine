@@ -26,11 +26,44 @@ pub trait DynAssetHandler: Send + Sync {
 pub enum LoadErrors {
 	AssetDoesNotExist,
 	FailedToProcess,
+	AssetCouldNotBeRead,
 	AssetCouldNotBeLoaded,
 	UnsupportedType,
 	FailedToStore,
 	PrimaryResourceIdMismatch,
 	PrimaryResourceNotStored,
+}
+
+impl LoadErrors {
+	/// Returns the developer-facing cause for this asset loading failure.
+	pub(crate) const fn message(&self) -> &'static str {
+		match self {
+			Self::AssetDoesNotExist => "The source asset does not exist.",
+			Self::FailedToProcess => "The source asset could not be processed.",
+			Self::AssetCouldNotBeRead => "The source asset could not be read.",
+			Self::AssetCouldNotBeLoaded => "The source asset could not be loaded.",
+			Self::UnsupportedType => "The source asset type is unsupported.",
+			Self::FailedToStore => "The baked resource could not be stored.",
+			Self::PrimaryResourceIdMismatch => "The asset handler stored the primary resource under a different ID.",
+			Self::PrimaryResourceNotStored => "The asset handler did not store the primary resource.",
+		}
+	}
+
+	/// Returns the recovery step most likely to resolve this asset loading failure.
+	pub(crate) const fn fix(&self) -> &'static str {
+		match self {
+			Self::AssetDoesNotExist | Self::AssetCouldNotBeRead => {
+				"Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'."
+			}
+			Self::FailedToProcess | Self::AssetCouldNotBeLoaded => {
+				"Check the source asset and its dependencies for invalid or unsupported data."
+			}
+			Self::UnsupportedType => "Use a supported asset type or register an asset handler for it.",
+			Self::FailedToStore => "Check that the resource destination is writable, then retry.",
+			Self::PrimaryResourceIdMismatch => "Store the primary resource under the requested asset ID.",
+			Self::PrimaryResourceNotStored => "Make the asset handler store its primary resource before returning.",
+		}
+	}
 }
 
 /// The `TrackingStorageBackend` struct records every source resolved during one asset bake.
@@ -219,7 +252,7 @@ impl<'a> BakeContext<'a> {
 		self.asset_storage_backend
 			.resolve_in(id, self.allocator)
 			.await
-			.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)
+			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
 	/// Bakes a referenced source asset when necessary and returns its stored model.

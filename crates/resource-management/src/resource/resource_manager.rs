@@ -55,31 +55,73 @@ impl ResourceUpdateBroadcaster {
 	}
 }
 
-#[cfg(debug_assertions)]
-
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
-/// Adds engine asset setup guidance only when an engine asset failed to load and its source root is inaccessible.
+/// Formats one asset-loading failure with its cause and recovery workflow.
 #[cfg(debug_assertions)]
-
-fn asset_lookup_error(message: &str, id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
+fn asset_request_error(id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
 	let byte_engine_root_inaccessible = matches!(
 		error,
 		LoadMessages::FailedToBake {
-			error: LoadErrors::AssetCouldNotBeLoaded,
+			error: LoadErrors::AssetCouldNotBeRead,
 			..
 		}
 	) && (id == "byte-engine" || id.starts_with("byte-engine/"))
 		&& asset_manager.source_directory_accessible(std::path::Path::new("byte-engine")) == Some(false);
 
-	if byte_engine_root_inaccessible {
-		format!(
-			"{message} The 'byte-engine' path in the assets directory is inaccessible, so its symlink was probably not configured. See {}.",
-			online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-		)
-	} else {
-		message.to_string()
-	}
+	let (summary, asset, cause, fix) = match error {
+		LoadMessages::NoAsset => (
+			"Could not load asset.",
+			id,
+			"The asset manager did not produce a resource.",
+			"Verify the source asset and its dependencies, then bake the application resources with BELD.",
+		),
+		LoadMessages::IO => (
+			"Could not load asset.",
+			id,
+			"The asset source could not be read.",
+			"Verify that the asset source is accessible, then bake the application resources with BELD.",
+		),
+		LoadMessages::NoURL => (
+			"Could not load asset.",
+			id,
+			"The asset description has no source URL.",
+			"Add the source URL, then bake the application resources with BELD.",
+		),
+		LoadMessages::NoAssetHandler => (
+			"Could not bake asset.",
+			id,
+			"No asset handler supports this asset type.",
+			"Use a supported asset type or register its handler, then bake the application resources with BELD.",
+		),
+		LoadMessages::FailedToBake { asset, error } => (
+			"Could not bake asset.",
+			asset.as_str(),
+			error.message(),
+			if byte_engine_root_inaccessible {
+				"Configure or repair the 'assets/byte-engine' directory link, then retry."
+			} else {
+				error.fix()
+			},
+		),
+		LoadMessages::FailedToStore { asset, error } => (
+			"Could not store baked asset.",
+			asset.as_str(),
+			error.as_str(),
+			"Verify that the resource destination is writable, then bake the application resources with BELD.",
+		),
+		LoadMessages::ExecutionUnavailable => (
+			"Could not bake asset.",
+			id,
+			"No asset worker was available.",
+			"Verify the asset-processing runtime, then bake the application resources with BELD.",
+		),
+	};
+
+	format!(
+		"{summary}\n\n  Asset: {asset}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {}",
+		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+	)
 }
 
 /// The `ResourceManager` struct provides typed resource loading and caching across storage backends.
@@ -199,13 +241,10 @@ impl ResourceManager {
 			#[cfg(debug_assertions)]
 			{
 				if let Some(asset_manager) = self.asset_manager.get() {
-					let resource = asset_manager.bake_if_not_exists_serialized(id).await.map_err(|error| {
-						let message = format!(
-							"Failed to load asset. The asset manager could not bake the resource. Asset manager error: {error:?}."
-						);
-
-						asset_lookup_error(&message, id, &error, asset_manager)
-					})?;
+					let resource = asset_manager
+						.bake_if_not_exists_serialized(id)
+						.await
+						.map_err(|error| asset_request_error(id, &error, asset_manager))?;
 
 					asset_manager.track_resource(&resource);
 
@@ -213,7 +252,10 @@ impl ResourceManager {
 				} else if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
 					resource.into()
 				} else {
-					return Err("Resource does not exist and an asset manager is not available.".to_string());
+					return Err(format!(
+						"Could not load resource.\n\n  Resource: {id}\n  Cause: The resource does not exist and no asset manager is available.\n  Fix: Install an asset manager or bake the application resources with BELD.\n  Guide: {}",
+						online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+					));
 				}
 			}
 
@@ -222,7 +264,10 @@ impl ResourceManager {
 				if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
 					resource.into()
 				} else {
-					return Err("Resource does not exist in the baked release resource store.".to_string());
+					return Err(format!(
+						"Could not load resource.\n\n  Resource: {id}\n  Cause: The resource is missing from the baked release store.\n  Fix: Bake the application resources with BELD and include the resource store in the application bundle.\n  Guide: {}",
+						online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+					));
 				}
 			}
 		};
@@ -380,7 +425,7 @@ mod debug_tests {
 
 	impl AssetHandler for ResolvingAssetHandler {
 		fn can_handle(&self, extension: &str) -> bool {
-			extension == "test"
+			matches!(extension, "besl" | "test")
 		}
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
@@ -522,14 +567,19 @@ mod debug_tests {
 			.await
 			.unwrap_err();
 
-		assert!(error.contains("The 'byte-engine' path in the assets directory is inaccessible"));
-		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
+		assert_eq!(
+			error,
+			format!(
+				"Could not bake asset.\n\n  Asset: byte-engine/missing.test\n  Cause: The source asset could not be read.\n  Fix: Configure or repair the 'assets/byte-engine' directory link, then retry.\n  Guide: {}",
+				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
+			)
+		);
 
 		fs::remove_dir_all(assets).unwrap();
 	}
 
 	#[r#async::test]
-	async fn individual_asset_failure_omits_engine_symlink_hint_when_root_is_accessible() {
+	async fn missing_engine_asset_namespace_suggests_checking_the_asset_id() {
 		let assets = temporary_asset_directory("accessible-root");
 
 		fs::create_dir_all(assets.join("byte-engine")).unwrap();
@@ -537,20 +587,23 @@ mod debug_tests {
 		let resource_manager = resource_manager_with_file_assets(assets.clone());
 
 		let error = resource_manager
-			.request::<Shader>("byte-engine/missing.test")
+			.request::<Shader>("rendering/simple/vertex.besl")
 			.await
 			.unwrap_err();
 
 		assert_eq!(
 			error,
-			"Failed to load asset. The asset manager could not bake the resource. Asset manager error: FailedToBake { asset: \"byte-engine/missing.test\", error: AssetCouldNotBeLoaded }."
+			format!(
+				"Could not bake asset.\n\n  Asset: rendering/simple/vertex.besl\n  Cause: The source asset could not be read.\n  Fix: Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'.\n  Guide: {}",
+				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
+			)
 		);
 
 		let trace = resource_manager
 			.resource_trace()
 			.expect("installed asset management should expose its trace");
 
-		let items = trace.items("byte-engine/missing.test");
+		let items = trace.items("rendering/simple/vertex.besl");
 
 		assert_eq!(items.len(), 1);
 		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
@@ -663,9 +716,14 @@ mod release_tests {
 
 		let result = resource_manager.request::<Shader>("missing/render-pass.besl").await;
 
-		assert!(
-			matches!(result, Err(error) if error.starts_with("Resource does not exist in the baked release resource store."))
-		);
+		assert!(matches!(
+			result,
+			Err(error)
+				if error == format!(
+					"Could not load resource.\n\n  Resource: missing/render-pass.besl\n  Cause: The resource is missing from the baked release store.\n  Fix: Bake the application resources with BELD and include the resource store in the application bundle.\n  Guide: {}",
+					super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
+				)
+		));
 	}
 }
 

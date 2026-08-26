@@ -45,9 +45,19 @@ impl PipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let vertex_shader = load_besl_shader(context, resources, "rendering/simple/vertex.besl", "Vertex Shader");
+		let vertex_shader = load_besl_shader(
+			context,
+			resources,
+			"byte-engine/rendering/simple/vertex.besl",
+			"Vertex Shader",
+		);
 
-		let fragment_shader = load_besl_shader(context, resources, "rendering/simple/fragment.besl", "Fragment Shader");
+		let fragment_shader = load_besl_shader(
+			context,
+			resources,
+			"byte-engine/rendering/simple/fragment.besl",
+			"Fragment Shader",
+		);
 
 		let pipeline = context.create_raster_pipeline(
 			ghi::pipelines::raster::Builder::new(
@@ -268,7 +278,7 @@ fn load_besl_shader(
 	name: &str,
 ) -> ghi::ShaderHandle {
 	crate::rendering::resource_loading::load_shader(context, resources, id, name)
-		.unwrap_or_else(|error| panic!("Failed to load simple pipeline shader '{id}': {error}"))
+		.unwrap_or_else(|error| panic!("{error}"))
 		.handle
 }
 

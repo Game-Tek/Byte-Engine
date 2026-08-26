@@ -50,11 +50,7 @@ pub(crate) fn load_shader(
 	use ghi::context::ContextCreate as _;
 	use resource_management::resource::ReadStorageBackend as _;
 
-	let mut shader: Reference<resource_management::resources::material::Shader> = request(resource_manager, id).map_err(|error| {
-		format!(
-			"Failed to load baked shader resource '{id}': {error}. The most likely cause is that BELD did not bake the shader or its source asset is unavailable."
-		)
-	})?;
+	let mut shader: Reference<resource_management::resources::material::Shader> = request(resource_manager, id)?;
 	let stage = shader.resource.stage;
 	let interface = shader.resource.interface.clone();
 	let artifact = shader.resource.artifact.clone();

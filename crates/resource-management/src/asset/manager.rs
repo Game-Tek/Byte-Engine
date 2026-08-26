@@ -702,18 +702,14 @@ impl AssetManagerState {
 						id,
 						ResourceTraceLevel::Error,
 						format!(
-							"Failed to bake resource '{}': {error:?}. The most likely cause is invalid or unsupported source data. See {}.",
+							"Could not bake asset '{}'. Cause: {} Fix: {} See {}.",
 							id.as_ref(),
+							error.message(),
+							error.fix(),
 							online_docs_url(ASSETS_DOCS_PATH)
 						),
 					);
 				}
-
-				log::error!(
-					"Failed to bake asset: {:#?}. The most likely cause is invalid or unsupported source data. See {}.",
-					error,
-					online_docs_url(ASSETS_DOCS_PATH)
-				);
 
 				Err(LoadMessages::FailedToBake {
 					asset: id.to_string(),

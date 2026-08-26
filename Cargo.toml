@@ -12,9 +12,16 @@ rust-version = "1.95.0"
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
+dbg_macro = "warn"
 excessive_nesting = "warn"
+large_futures = "warn"
+multiple_unsafe_ops_per_block = "warn"
+redundant_clone = "warn"
+todo = "warn"
 too_many_arguments = "warn"
 too_many_lines = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
 
 [profile.dev]
 incremental = true

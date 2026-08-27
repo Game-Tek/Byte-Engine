@@ -45,8 +45,9 @@ pub struct Renderer {
 
 	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
-	render_pass_writable_targets: SmallVec<[Vec<(String, ghi::BaseImageHandle)>; 64]>,
+	render_pass_writable_targets: SmallVec<[Vec<(String, ghi::ImageOrSwapchain)>; 64]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
+	scene_presentation_copies: SmallVec<[(SinkId, crate::rendering::render_passes::blit::ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
 	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
@@ -221,6 +222,7 @@ impl Renderer {
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			render_pass_writable_targets: SmallVec::with_capacity(64),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
+			scene_presentation_copies: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
 			pending_configuration: VecDeque::new(),
@@ -353,7 +355,7 @@ impl Renderer {
 		&mut self,
 		render_pass: Box<dyn RenderPass>,
 		sink_id: SinkId,
-		writable_targets: Vec<(String, ghi::BaseImageHandle)>,
+		writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	) {
 		let render_pass_id = self.render_passes.len();
 		self.render_passes
@@ -381,56 +383,74 @@ impl Renderer {
 		);
 	}
 
-	/// Registers a render pass factory that will be instantiated for every current and future sink.
+	/// Registers a render pass factory that will be instantiated for every future sink.
+	///
+	/// Register every pass before creating a window. Closing the graph at that
+	/// boundary lets the renderer give the terminal pass the swapchain directly.
 	pub fn add_post_scene_render_pass_for_all_sinks<F>(&mut self, render_pass_factory: F)
 	where
 		F: for<'builder, 'resources> Fn(&'builder mut RenderPassBuilder<'resources>) -> Box<dyn RenderPass> + 'static,
 	{
-		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
-		let sink_ids: SmallVec<[usize; 16]> = self.sink_cameras.iter().map(|(sink_id, _)| *sink_id).collect();
-
-		for sink_id in sink_ids {
-			let (render_pass, writable_targets) = {
-				let swapchain = self.windows[sink_id].1;
-				let mut render_pass_builder = RenderPassBuilder::new(
-					&mut self.context,
-					&mut self.render_targets,
-					sink_id,
-					swapchain,
-					self.pipeline_compilation_client.clone(),
-				);
-				let render_pass = render_pass_factory(&mut render_pass_builder);
-				let writable_targets = render_pass_builder.writable_targets();
-				(render_pass, writable_targets)
-			};
-
-			self.add_render_pass(render_pass, sink_id, writable_targets);
-		}
-
-		self.post_scene_render_pass_factories.push(render_pass_factory);
+		assert!(
+			self.windows.is_empty(),
+			"Render graph is already closed. The most likely cause is that a post-scene render pass was registered after creating a window. Register every pass before creating the first window."
+		);
+		self.post_scene_render_pass_factories.push(Box::new(render_pass_factory));
 	}
 
 	/// Instantiates all registered post-scene render pass factories for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::BaseImageHandle)>); 16]> =
+		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::ImageOrSwapchain)>); 16]> =
 			SmallVec::new();
 
 		let swapchain = self.windows[sink_id].1;
 
-		for render_pass_factory in &self.post_scene_render_pass_factories {
+		let final_factory_index = self.post_scene_render_pass_factories.len().checked_sub(1);
+		let mut final_output_written = false;
+		for (factory_index, render_pass_factory) in self.post_scene_render_pass_factories.iter().enumerate() {
 			let render_pass = {
-				let mut render_pass_builder = RenderPassBuilder::new(
-					&mut self.context,
-					&mut self.render_targets,
-					sink_id,
-					swapchain,
-					self.pipeline_compilation_client.clone(),
-				);
+				let mut render_pass_builder = if Some(factory_index) == final_factory_index {
+					RenderPassBuilder::new_for_final_pass(
+						&mut self.context,
+						&mut self.render_targets,
+						sink_id,
+						swapchain,
+						self.pipeline_compilation_client.clone(),
+					)
+				} else {
+					RenderPassBuilder::new(
+						&mut self.context,
+						&mut self.render_targets,
+						sink_id,
+						swapchain,
+						self.pipeline_compilation_client.clone(),
+					)
+				};
 				let render_pass = render_pass_factory(&mut render_pass_builder);
+				final_output_written = render_pass_builder.writes_final_output();
 				(render_pass, render_pass_builder.writable_targets())
 			};
 
 			render_passes_for_sink.push(render_pass);
+		}
+
+		if final_factory_index.is_some() {
+			assert!(
+				final_output_written,
+				"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
+			);
+		} else {
+			// A scene-only graph has no terminal pass that can receive the swapchain directly.
+			let mut builder = RenderPassBuilder::new(
+				&mut self.context,
+				&mut self.render_targets,
+				sink_id,
+				swapchain,
+				self.pipeline_compilation_client.clone(),
+			);
+			let source = builder.read_from("main");
+			let copy = crate::rendering::render_passes::blit::ImageBypassPass::new(&mut builder, source, swapchain);
+			self.scene_presentation_copies.push((sink_id, copy));
 		}
 
 		for (render_pass, writable_targets) in render_passes_for_sink {
@@ -518,6 +538,7 @@ impl Renderer {
 		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
+		let scene_presentation_copies = &mut self.scene_presentation_copies;
 		let frame_allocator = frame_allocator;
 		let submitted_frame = self.started_frame_count - 1;
 		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
@@ -554,7 +575,7 @@ impl Renderer {
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchains) = {
+				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
 					let _enter = span.enter();
 					let frame = execution.frame().expect(
@@ -648,12 +669,20 @@ impl Renderer {
 							.collect()
 					};
 
+					let scene_presentation_commands: SmallVec<[(Option<RenderPassReturn>, SinkId); 16]> = scene_presentation_copies
+						.iter_mut()
+						.filter_map(|(sink_id, copy)| {
+							let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
+							Some((copy.prepare(frame, sink, frame_allocator), *sink_id))
+						})
+						.collect();
+
 					let present_keys = swapchains
 						.iter()
 						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-					(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchains)
+					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains)
 				};
 
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -688,16 +717,23 @@ impl Renderer {
 								command(&mut *command_buffer_recording, &attachment_infos);
 							}
 							for request_index in captures_after_pass(&screenshot_captures, render_pass_id) {
-								let Ok(ResolvedScreenshotCapture::AfterPass { image, .. }) = screenshot_captures[request_index]
+								let Ok(ResolvedScreenshotCapture::AfterPass { target, .. }) = screenshot_captures[request_index]
 								else {
 									unreachable!();
 								};
 								screenshot_transfers[request_index] = Some(
 									command_buffer_recording
-										.transfer_texture(image.into())
+										.transfer_texture(target)
 										.map_err(RendererScreenshotError::Transfer),
 								);
 							}
+						}
+					}
+
+					for (command, sink_id) in scene_presentation_commands {
+						if let Some(command) = command {
+							let attachment_infos = render_targets.get_attachment_infos_for_resources(sink_id, &[]);
+							command(&mut *command_buffer_recording, &attachment_infos);
 						}
 					}
 
@@ -763,12 +799,12 @@ impl Renderer {
 		if matches.next().is_some() {
 			return Err(RendererScreenshotError::PassAmbiguous);
 		}
-		let image = self.render_pass_writable_targets[*pass_id]
+		let target = self.render_pass_writable_targets[*pass_id]
 			.iter()
 			.rev()
 			.find_map(|(name, image)| (name == target).then_some(*image))
 			.ok_or(RendererScreenshotError::TargetNotWritten)?;
-		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, image })
+		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, target })
 	}
 
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
@@ -874,7 +910,7 @@ pub(super) enum ResolvedScreenshotCapture {
 	},
 	AfterPass {
 		pass: RenderPassId,
-		image: ghi::BaseImageHandle,
+		target: ghi::ImageOrSwapchain,
 	},
 }
 

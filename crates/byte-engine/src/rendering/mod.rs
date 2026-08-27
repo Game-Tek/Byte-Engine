@@ -82,8 +82,8 @@ pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
 pub use pose::UpdatePose;
 pub use render_pass::{
-	FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassReturn, RenderPassState,
-	RenderToResult,
+	FramePrepare, MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassReturn,
+	RenderPassState, RenderToResult,
 };
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer, Settings};

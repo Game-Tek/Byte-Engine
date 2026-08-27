@@ -63,10 +63,11 @@ mod tests {
 	#[test]
 	fn captures_keep_request_order_at_a_prepared_pass_entry() {
 		let image: ghi::BaseImageHandle = unsafe { std::mem::transmute(7_u64) };
+		let target = ghi::ImageOrSwapchain::Image(image);
 		let captures = [
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, image }),
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 3, image }),
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, image }),
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 3, target }),
+			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
 		];
 
 		// Scheduling depends on the retained pass entry, not on whether its prepared command is Some or None.

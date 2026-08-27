@@ -111,9 +111,8 @@ impl Pipeline {
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
 	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
-	Image(&'static str, ghi::BaseImageHandle),
+	Image(&'static str, ghi::ImageOrSwapchain),
 	CombinedImageSampler(&'static str, ghi::BaseImageHandle, ghi::SamplerHandle, ghi::Layouts),
-	Swapchain(&'static str, ghi::SwapchainHandle),
 }
 
 impl Resource {
@@ -126,7 +125,8 @@ impl Resource {
 		Self::PlannedBuffer(name, buffer.into())
 	}
 
-	pub fn image(name: &'static str, image: impl Into<ghi::BaseImageHandle>) -> Self {
+	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
+	pub fn image(name: &'static str, image: impl Into<ghi::ImageOrSwapchain>) -> Self {
 		Self::Image(name, image.into())
 	}
 
@@ -139,17 +139,12 @@ impl Resource {
 		Self::CombinedImageSampler(name, image.into(), sampler, layout)
 	}
 
-	pub fn swapchain(name: &'static str, swapchain: ghi::SwapchainHandle) -> Self {
-		Self::Swapchain(name, swapchain)
-	}
-
 	fn name(&self) -> &str {
 		match self {
 			Self::Buffer(name, ..)
 			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
-			| Self::CombinedImageSampler(name, ..)
-			| Self::Swapchain(name, ..) => name,
+			| Self::CombinedImageSampler(name, ..) => name,
 		}
 	}
 
@@ -157,7 +152,7 @@ impl Resource {
 		matches!(
 			(binding, self),
 			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-				| (BindingKind::StorageImage, Self::Image(..) | Self::Swapchain(..))
+				| (BindingKind::StorageImage, Self::Image(..))
 				| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..))
 		)
 	}
@@ -165,11 +160,15 @@ impl Resource {
 	fn descriptor_write(&self, set: ghi::DescriptorSetHandle, slot: ghi::ResourceSlot) -> ghi::DescriptorWrite {
 		match *self {
 			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => ghi::DescriptorWrite::buffer(set, slot, buffer),
-			Self::Image(_, image) => ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General),
+			Self::Image(_, ghi::ImageOrSwapchain::Image(image)) => {
+				ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General)
+			}
+			Self::Image(_, ghi::ImageOrSwapchain::Swapchain(swapchain)) => {
+				ghi::DescriptorWrite::swapchain(set, slot, swapchain)
+			}
 			Self::CombinedImageSampler(_, image, sampler, layout) => {
 				ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, layout)
 			}
-			Self::Swapchain(_, swapchain) => ghi::DescriptorWrite::swapchain(set, slot, swapchain),
 		}
 	}
 

@@ -15,7 +15,7 @@ use crate::{
 	rendering::{
 		Sink,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
-		render_passes::blit::SwapchainBlitPass,
+		render_passes::blit::ImageBypassPass,
 	},
 };
 
@@ -42,12 +42,19 @@ impl ColorGradingWorkflow {
 			Self::DaVinciWideGamut => "dwg-color-grading",
 		}
 	}
+
+	fn output_name(self) -> &'static str {
+		match self {
+			Self::Aces => "ACES Color Grading Output",
+			Self::DaVinciWideGamut => "DWG Color Grading Output",
+		}
+	}
 }
 
 /// The `ColorGradingPass` struct provides a contained scene-linear-to-SDR grading workflow for one rendered view.
 pub struct ColorGradingPass {
 	pass: simple_compute::Pass,
-	bypass_pass: SwapchainBlitPass,
+	bypass_pass: ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
 	lut_reference: Option<Reference<Lut>>,
@@ -71,7 +78,10 @@ impl ColorGradingPass {
 		);
 
 		let source = render_pass_builder.read_from("main");
-		let destination = render_pass_builder.render_to_swapchain();
+		let main_format = render_pass_builder.format_of("main");
+		let destination = render_pass_builder.create_main_render_target(
+			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name(workflow.output_name()),
+		);
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Color Grading", workflow.pipeline_id()),
@@ -104,12 +114,12 @@ impl ColorGradingPass {
 				&[
 					simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::swapchain("result_texture", destination),
+					simple_compute::Resource::image("result_texture", destination),
 					simple_compute::Resource::buffer("parameters", parameters),
 				],
 			)
 			.expect("Failed to bind color-grading resources. The most likely cause is that the BESL interface changed.");
-		let bypass_pass = SwapchainBlitPass::from_source(render_pass_builder, source);
+		let bypass_pass = ImageBypassPass::new(render_pass_builder, source, destination);
 
 		Self {
 			pass,

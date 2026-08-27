@@ -343,14 +343,6 @@ pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AcesToneMapPass::new(render_pass_builder)));
 }
 
-/// Installs the final swapchain blit pass that presents rendered sinks.
-pub fn setup_swapchain_blit_render_pass(application: &mut GraphicsApplication) {
-	let renderer = &mut application.renderer;
-
-	renderer
-		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SwapchainBlitPass::new(render_pass_builder)));
-}
-
 /// Registers a reusable bloom pass that should run before tonemapping.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
 	let renderer = &mut application.renderer;
@@ -364,7 +356,7 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 ///
 /// The LUT must accept and return ACEScct values. The pass uses an AP1-aware
 /// fitted SDR transform; it does not claim ACES reference-transform compliance.
-/// Call this after scene-linear effects. Do not install another swapchain output pass after it.
+/// Call this after scene-linear effects. Later passes consume its remapped `main` output.
 pub fn setup_aces_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
 	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::Aces);
 }
@@ -373,8 +365,8 @@ pub fn setup_aces_color_grading_render_pass(application: &mut GraphicsApplicatio
 ///
 /// The LUT must accept and return DaVinci Wide Gamut/Intermediate values. The
 /// pass uses AgX for SDR display rendering and does not claim parity with
-/// DaVinci Resolve color management. Call this after scene-linear effects. Do not
-/// install another swapchain output pass after it.
+/// DaVinci Resolve color management. Call this after scene-linear effects. Later
+/// passes consume its remapped `main` output.
 pub fn setup_dwg_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
 	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::DaVinciWideGamut);
 }

@@ -79,6 +79,8 @@ pub struct UiRenderPass {
 	blur_half_scratch: ghi::BaseImageHandle,
 	blur_half_output: ghi::BaseImageHandle,
 	main_attachment: ghi::BaseImageHandle,
+	output_pass: crate::rendering::render_passes::blit::ImageBypassPass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
@@ -89,11 +91,18 @@ impl Entity for UiRenderPass {}
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
+		let source = render_pass_builder.read_from("main");
+		// Backdrop blur samples partially rendered UI, so keep a sampleable working image even when the graph output is the swapchain.
 		let main_attachment = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget | ghi::Uses::Image).name("UI"),
+			ghi::image::Builder::new(
+				MAIN_ATTACHMENT_FORMAT,
+				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
+			)
+			.name("UI Working"),
 		);
-
-		render_pass_builder.alias("UI", "main");
+		let output = render_pass_builder.create_main_render_target(
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("UI"),
+		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
 		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/rectangle.pipeline");
@@ -291,6 +300,21 @@ impl UiRenderPass {
 				ghi::Layouts::Read,
 			),
 		]);
+		let text_overlay_descriptor_set = context.create_descriptor_set(Some("UI Text"));
+		context.write(&[ghi::DescriptorWrite::combined_image_sampler(
+			text_overlay_descriptor_set,
+			TEXT_OVERLAY_BINDING.slot(),
+			text_overlay,
+			text_sampler,
+			ghi::Layouts::Read,
+		)]);
+		let text_overlays = vec![UiTextOverlayTexture {
+			image: text_overlay.into(),
+			descriptor_set: text_overlay_descriptor_set,
+		}];
+		let output_pass =
+			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, main_attachment_image, output);
+		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
 			pipeline_manager,
@@ -308,20 +332,7 @@ impl UiRenderPass {
 			text_pipeline,
 			text_vertex_buffer,
 			text_sampler,
-			text_overlays: vec![UiTextOverlayTexture {
-				image: text_overlay.into(),
-				descriptor_set: {
-					let descriptor_set = context.create_descriptor_set(Some("UI Text"));
-					context.write(&[ghi::DescriptorWrite::combined_image_sampler(
-						descriptor_set,
-						TEXT_OVERLAY_BINDING.slot(),
-						text_overlay,
-						text_sampler,
-						ghi::Layouts::Read,
-					)]);
-					descriptor_set
-				},
-			}],
+			text_overlays,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			blur_downsample_workgroup,
@@ -342,6 +353,8 @@ impl UiRenderPass {
 			blur_half_scratch: blur_half_scratch_image,
 			blur_half_output: blur_half_output_image,
 			main_attachment: main_attachment_image,
+			output_pass,
+			bypass_pass,
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
 			text_system: TextSystem::new(),
@@ -613,6 +626,7 @@ impl RenderPass for UiRenderPass {
 		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
 		let blur_composite_descriptor_set = self.blur_composite_descriptor_set;
 		let main_attachment = self.main_attachment;
+		let output_command = self.output_pass.prepare(frame, sink, frame_allocator)?;
 		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(&prepared_batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
@@ -807,17 +821,19 @@ impl RenderPass for UiRenderPass {
 						}
 					},
 				);
+				// Resolve the working image only after every raster and blur batch has contributed to it.
+				output_command(command_buffer, &[]);
 			},
 		))
 	}
 
 	fn bypass<'a>(
 		&mut self,
-		_frame: &mut ghi::implementation::Frame,
-		_sink: &Sink,
-		_frame_allocator: &'a bumpalo::Bump,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		None
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

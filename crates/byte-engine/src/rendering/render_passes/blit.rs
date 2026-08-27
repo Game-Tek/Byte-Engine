@@ -1,9 +1,6 @@
-use crate::{
-	core::Entity,
-	rendering::{
-		RenderPass, Sink,
-		render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
-	},
+use crate::rendering::{
+	Sink,
+	render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
 };
 
 /// The `ImageBypassPass` struct preserves an intermediate image result when an effect is bypassed.
@@ -16,8 +13,9 @@ impl ImageBypassPass {
 	pub(crate) fn new(
 		render_pass_builder: &mut RenderPassBuilder<'_>,
 		source: impl Into<ghi::BaseImageHandle>,
-		destination: impl Into<ghi::BaseImageHandle>,
+		destination: impl Into<ghi::ImageOrSwapchain>,
 	) -> Self {
+		let source = source.into();
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Render Pass Bypass", "byte-engine/rendering/blit/image.pipeline"),
@@ -50,83 +48,6 @@ impl ImageBypassPass {
 	}
 }
 
-#[derive(Clone)]
-pub struct BaseSwapchainBlitPass {
-	pipeline: simple_compute::Pipeline,
-}
-
-impl Entity for BaseSwapchainBlitPass {}
-
-impl BaseSwapchainBlitPass {
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
-		let pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new("Swapchain Blit", "byte-engine/rendering/blit/swapchain.pipeline"),
-		)
-		.expect("Failed to create swapchain blit shader");
-
-		Self { pipeline }
-	}
-}
-
-pub struct SwapchainBlitPass {
-	render_pass: simple_compute::Pass,
-}
-
-impl SwapchainBlitPass {
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let read_from_main = render_pass_builder.read_from("main");
-		Self::from_source(render_pass_builder, read_from_main)
-	}
-
-	/// Creates a swapchain forwarding pass for a source already declared by another pass.
-	pub(crate) fn from_source(render_pass_builder: &mut RenderPassBuilder, source: impl Into<ghi::BaseImageHandle>) -> Self {
-		let base = BaseSwapchainBlitPass::new(render_pass_builder);
-		let render_to_swapchain = render_pass_builder.render_to_swapchain();
-		let render_pass = base
-			.pipeline
-			.bind(
-				render_pass_builder,
-				"Swapchain Blit Pass Descriptor Set",
-				&[
-					simple_compute::Resource::image("source", source),
-					simple_compute::Resource::swapchain("result", render_to_swapchain),
-				],
-			)
-			.expect(
-				"Failed to bind swapchain blit resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
-			);
-
-		Self { render_pass }
-	}
-}
-
-impl Entity for SwapchainBlitPass {}
-
-impl RenderPass for SwapchainBlitPass {
-	fn name(&self) -> &'static str {
-		"swapchain blit"
-	}
-
-	fn prepare<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.render_pass.prepare(frame, sink, frame_allocator)
-	}
-
-	fn bypass<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.render_pass.prepare(frame, sink, frame_allocator)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
@@ -135,17 +56,10 @@ mod tests {
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
 
 	const IMAGE_BYPASS_SHADER: &str = include_str!("../../../assets/rendering/blit/image.besl");
-	const SWAPCHAIN_BLIT_SHADER: &str = include_str!("../../../assets/rendering/blit/swapchain.besl");
 
 	#[test]
 	fn image_bypass_besl_vm_copies_pixels_and_ignores_out_of_bounds_invocations() {
 		assert_copy_shader_behavior(IMAGE_BYPASS_SHADER);
-	}
-
-	/// Verifies exact production blits and the dispatch guard through the VM.
-	#[test]
-	fn swapchain_blit_besl_vm_copies_pixels_and_ignores_out_of_bounds_invocations() {
-		assert_copy_shader_behavior(SWAPCHAIN_BLIT_SHADER);
 	}
 
 	/// Executes one production copy shader and verifies forwarding and dispatch-boundary behavior.

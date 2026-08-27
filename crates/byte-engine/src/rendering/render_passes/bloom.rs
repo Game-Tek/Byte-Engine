@@ -75,10 +75,9 @@ impl BloomPass {
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: BloomPassSettings) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_render_target(
+		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Bloom Output"),
 		);
-		render_pass_builder.alias("Bloom Output", "main");
 
 		let context = render_pass_builder.context();
 		let level_count = settings.resolved_level_count();

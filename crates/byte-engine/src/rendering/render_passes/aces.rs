@@ -8,6 +8,7 @@ use crate::rendering::{
 const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
 	pipeline_id: "byte-engine/rendering/aces/tone-mapping.pipeline",
 	descriptor_set_name: "Tonemap Pass Descriptor Set",
+	output_name: "ACES Tonemap Output",
 	shader_error: "Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.",
 };
 
@@ -30,7 +31,7 @@ impl BaseAcesToneMapPass {
 /// The `AcesToneMapPass` struct provides one view with ACES tonemapping descriptor bindings.
 pub struct AcesToneMapPass {
 	render_pass: crate::rendering::render_pass::simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::SwapchainBlitPass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 }
 
 impl AcesToneMapPass {

@@ -37,10 +37,9 @@ impl LutRenderPass {
 
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");
-		let output = render_pass_builder.create_render_target(
+		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("LUT Output"),
 		);
-		render_pass_builder.alias("LUT Output", "main");
 
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,

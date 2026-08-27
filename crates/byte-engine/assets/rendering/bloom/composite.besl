@@ -5,7 +5,7 @@ BloomParameters: struct {
 
 scene_texture: descriptor<Texture2D, 0, read>;
 bloom_texture: descriptor<Texture2D, 1, read>;
-result_texture: descriptor<StorageImage<rgba16f>, 2, write>;
+result_texture: descriptor<StorageImage, 2, write>;
 bloom_parameters: descriptor<BloomParameters, 3, read, constant>;
 
 main: fn() -> void {

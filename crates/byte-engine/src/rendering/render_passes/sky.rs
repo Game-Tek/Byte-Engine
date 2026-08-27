@@ -88,6 +88,7 @@ pub struct AtmosphereSkyRenderPass {
 	transmittance_pass: simple_compute::Pass,
 	sky_view_pass: simple_compute::Pass,
 	composite_pass: simple_compute::Pass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
 	light_listener: DefaultListener<CreateMessage<Lights>>,
@@ -110,8 +111,12 @@ impl AtmosphereSkyRenderPass {
 	) -> Self {
 		let settings = AtmosphereSkyRenderPassSettings::default();
 		let depth = render_pass_builder.read_from("depth");
-		let _main_read = render_pass_builder.read_from("main");
-		let main = render_pass_builder.render_to("main");
+		let source = render_pass_builder.read_from("main");
+		let main_format = render_pass_builder.format_of("main");
+		// Separate source and result so the renderer can substitute the swapchain without losing foreground scene color.
+		let result = render_pass_builder.create_main_render_target(
+			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Atmosphere Sky Output"),
+		);
 		let transmittance_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Sky Transmittance LUT", "byte-engine/rendering/sky-transmittance.pipeline"),
@@ -183,7 +188,8 @@ impl AtmosphereSkyRenderPass {
 				"Sky Render Pass Descriptor Set",
 				&[
 					simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("main_texture", main),
+					simple_compute::Resource::image("source", source),
+					simple_compute::Resource::image("result", result),
 					simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler(
 						"transmittance_lut",
@@ -195,11 +201,13 @@ impl AtmosphereSkyRenderPass {
 				],
 			)
 			.expect("Failed to bind the sky resources. The most likely cause is a changed BESL binding contract.");
+		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, result);
 
 		Self {
 			transmittance_pass,
 			sky_view_pass,
 			composite_pass,
+			bypass_pass,
 			parameters,
 			settings,
 			light_listener,
@@ -319,12 +327,12 @@ impl RenderPass for AtmosphereSkyRenderPass {
 
 	fn bypass<'a>(
 		&mut self,
-		_frame: &mut ghi::implementation::Frame,
-		_sink: &Sink,
-		_frame_allocator: &'a bumpalo::Bump,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.update_sun_direction();
-		None
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 
@@ -476,32 +484,36 @@ mod tests {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
 		let sentinel = [0.2, 0.3, 0.4, 0.5];
 		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
-		let mut foreground_target = texture_2d(1, 1, &[sentinel]);
+		let mut foreground_source = texture_2d(1, 1, &[sentinel]);
+		let mut foreground_result = empty_image(1, 1);
 		let mut foreground_descriptors = DescriptorBindings::new();
 		foreground_descriptors.bind_texture(ResourceSlot::new(0), &mut foreground_depth);
-		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_target);
+		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_source);
+		foreground_descriptors.bind_image(ResourceSlot::new(2), &mut foreground_result);
 		run_at(&program, &mut foreground_descriptors, [0, 0]);
 		drop(foreground_descriptors);
-		assert_rgba_close(rgba(&foreground_target, [0, 0]), sentinel, 0.0);
+		assert_rgba_close(rgba(&foreground_result, [0, 0]), sentinel, 0.0);
 
-		let parameter_slot = ResourceSlot::new(4);
+		let parameter_slot = ResourceSlot::new(5);
 		let mut parameters = default_parameters(&program, parameter_slot);
 		let sky_scattering = [2.0, 3.0, 4.0, 1.0];
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 
 		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
-		let mut background_target = empty_image(1, 1);
+		let mut background_source = empty_image(1, 1);
+		let mut background_result = empty_image(1, 1);
 		let mut background_descriptors = DescriptorBindings::new();
 		background_descriptors.bind_texture(ResourceSlot::new(0), &mut background_depth);
-		background_descriptors.bind_image(ResourceSlot::new(1), &mut background_target);
-		background_descriptors.bind_texture(ResourceSlot::new(2), &mut sky_view);
-		background_descriptors.bind_texture(ResourceSlot::new(3), &mut transmittance);
+		background_descriptors.bind_image(ResourceSlot::new(1), &mut background_source);
+		background_descriptors.bind_image(ResourceSlot::new(2), &mut background_result);
+		background_descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
+		background_descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);
 		background_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut background_descriptors, [0, 0]);
 		drop(background_descriptors);
 
-		let background = rgba(&background_target, [0, 0]);
+		let background = rgba(&background_result, [0, 0]);
 
 		assert!(
 			background[..3].iter().all(|channel| channel.is_finite() && *channel > 1.0),
@@ -512,19 +524,21 @@ mod tests {
 		// Visibility stores transparent-only pixels premultiplied, so the post-scene sky must fill the remaining coverage.
 		let transparent_foreground = [0.1, 0.05, 0.02, 0.25];
 		let mut transparent_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
-		let mut transparent_target = texture_2d(1, 1, &[transparent_foreground]);
+		let mut transparent_source = texture_2d(1, 1, &[transparent_foreground]);
+		let mut transparent_result = empty_image(1, 1);
 		let mut transparent_descriptors = DescriptorBindings::new();
 		transparent_descriptors.bind_texture(ResourceSlot::new(0), &mut transparent_depth);
-		transparent_descriptors.bind_image(ResourceSlot::new(1), &mut transparent_target);
-		transparent_descriptors.bind_texture(ResourceSlot::new(2), &mut sky_view);
-		transparent_descriptors.bind_texture(ResourceSlot::new(3), &mut transmittance);
+		transparent_descriptors.bind_image(ResourceSlot::new(1), &mut transparent_source);
+		transparent_descriptors.bind_image(ResourceSlot::new(2), &mut transparent_result);
+		transparent_descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
+		transparent_descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);
 		transparent_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut transparent_descriptors, [0, 0]);
 		drop(transparent_descriptors);
 
 		let remaining_alpha = 1.0 - transparent_foreground[3];
 		assert_rgba_close(
-			rgba(&transparent_target, [0, 0]),
+			rgba(&transparent_result, [0, 0]),
 			[
 				transparent_foreground[0] + background[0] * remaining_alpha,
 				transparent_foreground[1] + background[1] * remaining_alpha,

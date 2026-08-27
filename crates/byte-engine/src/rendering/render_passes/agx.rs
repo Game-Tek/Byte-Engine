@@ -1,6 +1,7 @@
 const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
 	pipeline_id: "byte-engine/rendering/agx/tone-mapping.pipeline",
 	descriptor_set_name: "AGX Tonemap Pass Descriptor Set",
+	output_name: "AGX Tonemap Output",
 	shader_error: "Failed to create AGX tone mapping shader",
 };
 
@@ -24,7 +25,7 @@ impl BaseAgxToneMapPass {
 /// The `AgxToneMapPass` struct defines a per-view AGX tonemapping pass instance.
 pub struct AgxToneMapPass {
 	render_pass: crate::rendering::render_pass::simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::SwapchainBlitPass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 }
 
 impl AgxToneMapPass {

@@ -77,7 +77,10 @@ impl SmaaPass {
 	/// Creates a sink-local SMAA pass and remaps `main` for later passes.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
-		let output = render_pass_builder.render_to("main");
+		let main_format = render_pass_builder.format_of("main");
+		let output = render_pass_builder.create_main_render_target(
+			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("SMAA Output"),
+		);
 
 		let context = render_pass_builder.context();
 		let edges = context.build_dynamic_image(

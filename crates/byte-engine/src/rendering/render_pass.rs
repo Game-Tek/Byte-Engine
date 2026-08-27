@@ -4,6 +4,9 @@
 //! pipelines. Construct resources through [`RenderPassBuilder`] so the renderer
 //! can track access policies and named render targets. Existing implementations
 //! live in [`crate::rendering::render_passes`].
+//! Replace the color flowing through the graph with
+//! [`RenderPassBuilder::create_main_render_target`]. The builder supplies an
+//! intermediate image or the swapchain without exposing graph position to the pass.
 
 pub mod simple_compute;
 
@@ -135,15 +138,20 @@ fn execution_path(state: RenderPassState) -> RenderPassExecutionPath {
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
 /// dependencies of a render pass.
 ///
-/// Declare each output with [`Self::create_render_target`] or [`Self::render_to`]
-/// and each input with [`Self::read_from`]. Then construct the [`RenderPass`]
+/// Declare auxiliary outputs with [`Self::create_render_target`] or
+/// [`Self::render_to`] and inputs with [`Self::read_from`]. Use
+/// [`Self::create_main_render_target`] for a replacement color result so the
+/// renderer can select the final destination. Then construct the [`RenderPass`]
 /// that records commands for those resources.
 pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
+	final_output: bool,
+	final_output_written: bool,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	written_image_indices: Vec<usize>,
+	external_writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	pub(crate) images: &'a mut RenderTargets,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 }
@@ -160,11 +168,27 @@ impl<'a> RenderPassBuilder<'a> {
 			context,
 			sink_id,
 			swapchain,
+			final_output: false,
+			final_output_written: false,
 			consumed_resources: Vec::new(),
 			written_image_indices: Vec::new(),
+			external_writable_targets: Vec::new(),
 			images,
 			pipeline_manager,
 		}
+	}
+
+	/// Creates the builder used for the terminal pass in one sink-local graph.
+	pub(crate) fn new_for_final_pass(
+		context: &'a mut ghi::implementation::Context,
+		images: &'a mut RenderTargets,
+		sink_id: usize,
+		swapchain: ghi::SwapchainHandle,
+		pipeline_manager: crate::rendering::PipelineManagerClient,
+	) -> Self {
+		let mut builder = Self::new(context, images, sink_id, swapchain, pipeline_manager);
+		builder.final_output = true;
+		builder
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
@@ -206,6 +230,39 @@ impl<'a> RenderPassBuilder<'a> {
 		}
 	}
 
+	/// Creates a replacement for the color image named `main`.
+	///
+	/// The renderer supplies the sink swapchain when this pass is terminal. In
+	/// every other position, this creates and aliases the requested image. Bind
+	/// the returned target as a writable image without inspecting its variant.
+	/// Compute shaders must use a formatless storage-image output because the
+	/// swapchain format can differ from the intermediate format. Raster passes
+	/// should derive their attachment descriptor from the returned target. Next,
+	/// bind a compute output with [`simple_compute::Resource::image`].
+	pub fn create_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
+		let name = builder.get_name().expect(
+			"Main render target name is missing. The most likely cause is that the image builder was not given a name before replacing `main`.",
+		);
+		if self.final_output {
+			self.final_output_written = true;
+			let target = ghi::ImageOrSwapchain::Swapchain(self.swapchain);
+			self.consumed_resources.push(("main", ghi::AccessPolicies::WRITE));
+			self.external_writable_targets.push((name.to_string(), target));
+			self.external_writable_targets.push(("main".to_string(), target));
+			return MainRenderTarget {
+				target,
+				format: ghi::Formats::BGRAu8,
+			};
+		}
+
+		let output = self.create_render_target(builder);
+		self.alias(name, "main");
+		MainRenderTarget {
+			target: output.image.into(),
+			format: output.format,
+		}
+	}
+
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 		self.images.read_from(name, self.sink_id);
@@ -224,13 +281,19 @@ impl<'a> RenderPassBuilder<'a> {
 		&self.pipeline_manager
 	}
 
-	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {
-		self.swapchain
+	/// Reports whether this builder gave its pass the terminal swapchain target.
+	pub(crate) fn writes_final_output(&self) -> bool {
+		self.final_output_written
 	}
 
-	/// Snapshots every current name and alias that resolves to an image written by this pass.
-	pub(crate) fn writable_targets(&self) -> Vec<(String, ghi::BaseImageHandle)> {
-		self.images.names_for_images(self.sink_id, &self.written_image_indices)
+	/// Snapshots every current name and alias that resolves to a target written by this pass.
+	pub(crate) fn writable_targets(&self) -> Vec<(String, ghi::ImageOrSwapchain)> {
+		self.images
+			.names_for_images(self.sink_id, &self.written_image_indices)
+			.into_iter()
+			.map(|(name, image)| (name, image.into()))
+			.chain(self.external_writable_targets.iter().cloned())
+			.collect()
 	}
 }
 
@@ -242,6 +305,12 @@ pub struct ReadFromResult {
 impl From<ReadFromResult> for ghi::BaseImageHandle {
 	fn from(value: ReadFromResult) -> Self {
 		value.image
+	}
+}
+
+impl From<ReadFromResult> for ghi::ImageOrSwapchain {
+	fn from(value: ReadFromResult) -> Self {
+		Self::Image(value.image)
 	}
 }
 
@@ -257,9 +326,37 @@ impl From<RenderToResult> for ghi::BaseImageHandle {
 	}
 }
 
+impl From<RenderToResult> for ghi::ImageOrSwapchain {
+	fn from(value: RenderToResult) -> Self {
+		Self::Image(value.image)
+	}
+}
+
 impl From<RenderToResult> for ghi::pipelines::raster::AttachmentDescriptor {
 	fn from(val: RenderToResult) -> Self {
 		ghi::pipelines::raster::AttachmentDescriptor::new(val.format)
+	}
+}
+
+/// The `MainRenderTarget` struct hides whether a replacement `main` output is an image or the sink swapchain.
+///
+/// Pass it directly to [`simple_compute::Resource::image`] or convert it into a
+/// raster attachment descriptor.
+#[derive(Clone, Copy)]
+pub struct MainRenderTarget {
+	target: ghi::ImageOrSwapchain,
+	format: ghi::Formats,
+}
+
+impl From<MainRenderTarget> for ghi::ImageOrSwapchain {
+	fn from(value: MainRenderTarget) -> Self {
+		value.target
+	}
+}
+
+impl From<MainRenderTarget> for ghi::pipelines::raster::AttachmentDescriptor {
+	fn from(value: MainRenderTarget) -> Self {
+		ghi::pipelines::raster::AttachmentDescriptor::new(value.format)
 	}
 }
 

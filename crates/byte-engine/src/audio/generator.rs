@@ -5,8 +5,8 @@
 //! playback settings and state so implementations can remain independent of the
 //! audio device.
 
-/// The [`Generator`] trait provides procedural audio sources for the output mixer.
-pub trait Generator {
+/// The [`Generator`] trait provides thread-safe procedural audio sources for the output mixer.
+pub trait Generator: Send + Sync {
 	fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]>;
 
 	fn done(&self, settings: PlaybackSettings, state: PlaybackState) -> bool;

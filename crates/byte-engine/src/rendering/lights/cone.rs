@@ -18,9 +18,9 @@ impl ConeLight {
 	///
 	/// The renderer derives the shadow range from the resolved luminous intensity. Use
 	/// [`Self::with_shadow_near`], [`Self::with_shadow_far`], or [`Self::with_shadow_range`] to
-	/// override that range. Submit the light through
-	/// [`crate::gameplay::world::DefaultWorld::light_factory_mut`] to make it available to the
-	/// active rendering pipeline.
+	/// override that range. Next, pass the returned light to
+	/// [`crate::core::factory::Creator::create`] on [`crate::gameplay::world::DefaultWorld`] to make it
+	/// available to the active rendering pipeline.
 	///
 	/// # Errors
 	///
@@ -55,7 +55,8 @@ impl ConeLight {
 	/// map. Until that upload completes, the light uses its dimmed unit-luminance color as a low-intensity
 	/// fallback. The cone cutoff still applies after the IES lookup.
 	///
-	/// Next, submit the returned light through [`crate::gameplay::world::DefaultWorld::light_factory_mut`].
+	/// Next, pass the returned light to [`crate::core::factory::Creator::create`] on
+	/// [`crate::gameplay::world::DefaultWorld`].
 	///
 	/// # Errors
 	///

@@ -17,7 +17,7 @@ impl VisibilityPipelineManager {
 	/// Retains queued transforms before resource adoption and applies them to already registered scene instances.
 	pub(crate) fn process_transform_updates(&mut self) {
 		while let Some(message) = self.transforms_listener.read() {
-			self.update_transform(*message.handle(), message.transform());
+			self.update_transform(message.handle(), message.transform());
 		}
 	}
 

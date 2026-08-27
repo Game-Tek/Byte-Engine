@@ -154,15 +154,15 @@ fn main() {
 				.expect("animation root motion always returns a normalized finite rotation");
 			root_orientation = delta_orientation.compose(root_orientation);
 
-			let world = app.world_mut();
-			world.transforms_channel_mut().send(TransformationUpdate::new(
+			let world = app.world();
+			world.transforms_channel().send(TransformationUpdate::new(
 				animated_handle,
 				Transform::new(root_position, Scale::identity(), root_orientation),
 			));
 			// `UpdatePose` crosses into renderer-owned state, so it owns a matrix
 			// vector. Graph evaluation itself continues to reuse its retained buffers.
 			world
-				.poses_channel_mut()
+				.poses_channel()
 				.send(UpdatePose::new(animated_handle, pose.global_pose().to_vec()));
 		})
 		.is_some()
@@ -173,7 +173,7 @@ fn main() {
 fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Handle {
 	let camera = Camera::new();
 	let camera = app
-		.world_mut()
+		.world()
 		.create(camera)
 		.with(Transform::new(
 			Point::new(0.0, 1.5, 5.0),
@@ -184,9 +184,9 @@ fn create_scene(app: &mut GraphicsApplication) -> byte_engine::core::factory::Ha
 
 	let mut window = Window::new("Animation Graph", Extent::rectangle(1280, 720));
 	window.attach(camera);
-	app.window_factory_mut().create(window);
+	app.window_factory().create(window);
 
-	app.world_mut()
+	app.world()
 		.create(RenderableMesh::resource(MODEL_RESOURCE))
 		.with(Transform::from_position(Point::origin()))
 		.into()

@@ -1,7 +1,6 @@
 /// The `Environment` struct identifies the baked image used for scene lighting and reflections.
 ///
-/// Create an environment through
-/// [`crate::gameplay::world::DefaultWorld::environment_factory_mut`]
+/// Create an environment through [`crate::gameplay::world::DefaultWorld::factory`]
 /// after installing the visibility pipeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Environment {

@@ -1,11 +1,12 @@
 //! Graphics pipeline and render-pass setup.
 
 use super::*;
+use crate::rendering::{ConeLight, DirectionalLight, PointLight};
 
 /// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	defaults::setup_default_pipeline_compilation(application);
-	let listener = application.world().renderable_factory().listener();
+	let listener = application.world().factory::<RenderableMesh>().listener();
 	let delete_listener = application.world().delete_channel().listener();
 	let transforms_listener = application.world().transforms_channel().listener();
 
@@ -38,14 +39,14 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			frame_allocator: &'a bumpalo::Bump,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			while let Some(message) = self.mesh_receiver.read() {
-				let handle = *message.handle();
+				let handle = message.handle();
 
 				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
 			}
 
 			while let Some(message) = self.transforms_listener.read() {
 				self.pipeline_manager
-					.update_transform(frame, *message.handle(), message.transform());
+					.update_transform(frame, message.handle(), message.transform());
 			}
 
 			while let Some(message) = self.mesh_delete_receiver.read() {
@@ -77,8 +78,8 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
 ///
 /// Next, create an [`Environment`] through
-/// [`DefaultWorld::environment_factory_mut`] to select the HDR image used for
-/// ambient and specular reflections.
+/// [`DefaultWorld::factory`] to select the HDR image used for ambient and
+/// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
@@ -150,10 +151,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}));
 
 	struct CustomPipelineManager {
-		light_receiver: DefaultListener<CreateMessage<Lights>>,
-		light_delete_receiver: DefaultListener<DeleteMessage>,
+		cone_light_receiver: DefaultListener<CreateMessage<ConeLight>>,
+		directional_light_receiver: DefaultListener<CreateMessage<DirectionalLight>>,
+		point_light_receiver: DefaultListener<CreateMessage<PointLight>>,
+		delete_receiver: DefaultListener<DeleteMessage>,
 		mesh_receiver: DefaultListener<CreateMessage<RenderableMesh>>,
-		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		pose_receiver: DefaultListener<UpdatePose>,
 		environment_receiver: DefaultListener<CreateMessage<Environment>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
@@ -162,28 +164,41 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	impl CustomPipelineManager {
 		/// Drains light creation messages into the visibility scene.
 		fn request_pending_lights(&mut self) {
-			while let Some(message) = self.light_receiver.read() {
-				let handle = *message.handle();
-				self.visibility_pipeline_manager.create_light(handle, message.into_data());
+			// Concrete routes let application-defined creation stay strongly typed.
+			// The visibility scene erases each value only at its storage boundary.
+			while let Some(message) = self.cone_light_receiver.read() {
+				let handle = message.handle();
+				self.visibility_pipeline_manager
+					.create_light(handle, message.into_data().into());
+			}
+
+			while let Some(message) = self.directional_light_receiver.read() {
+				let handle = message.handle();
+				self.visibility_pipeline_manager
+					.create_light(handle, message.into_data().into());
+			}
+
+			while let Some(message) = self.point_light_receiver.read() {
+				let handle = message.handle();
+				self.visibility_pipeline_manager
+					.create_light(handle, message.into_data().into());
 			}
 		}
 
 		/// Drains renderable creation messages into the visibility resource request path.
 		fn request_pending_meshes(&mut self) {
 			while let Some(message) = self.mesh_receiver.read() {
-				let handle = *message.handle();
+				let handle = message.handle();
 				self.visibility_pipeline_manager.request_mesh(handle, message.into_data());
 			}
 		}
 
 		/// Drains pending deletion messages.
 		fn process_deletions(&mut self) {
-			while let Some(message) = self.light_delete_receiver.read() {
-				self.visibility_pipeline_manager.remove_light(message.into_handle());
-			}
-
-			while let Some(message) = self.mesh_delete_receiver.read() {
-				self.visibility_pipeline_manager.remove_mesh(message.into_handle());
+			while let Some(message) = self.delete_receiver.read() {
+				let handle = message.into_handle();
+				self.visibility_pipeline_manager.remove_light(handle);
+				self.visibility_pipeline_manager.remove_mesh(handle);
 			}
 		}
 
@@ -239,13 +254,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	{
-		let light_receiver = application.world().light_factory().listener();
-		let light_delete_receiver = application.world().delete_channel().listener();
-		let mesh_receiver = application.world().renderable_factory().listener();
-		let mesh_delete_receiver = application.world().delete_channel().listener();
+		let cone_light_receiver = application.world().factory::<ConeLight>().listener();
+		let directional_light_receiver = application.world().factory::<DirectionalLight>().listener();
+		let point_light_receiver = application.world().factory::<PointLight>().listener();
+		let delete_receiver = application.world().delete_channel().listener();
+		let mesh_receiver = application.world().factory::<RenderableMesh>().listener();
 		let transforms_listener = application.world().transforms_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();
-		let environment_receiver = application.world().environment_factory().listener();
+		let environment_receiver = application.world().factory::<Environment>().listener();
 
 		let renderer = &mut application.renderer;
 		let pipeline_manager = renderer.pipeline_manager_client();
@@ -260,10 +276,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				gtao_configuration,
 				visibility_pipeline_settings,
 			),
-			light_receiver,
-			light_delete_receiver,
+			cone_light_receiver,
+			directional_light_receiver,
+			point_light_receiver,
+			delete_receiver,
 			mesh_receiver,
-			mesh_delete_receiver,
 			pose_receiver,
 			environment_receiver,
 		};
@@ -272,10 +289,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 }
 
-/// Installs the retained UI render pass fed by UI render messages.
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultListener<CreateMessage<Render>>) {
+/// Installs the retained UI render pass fed by UI render messages from `ui`.
+///
+/// Register this pass before publishing renders that every sink must observe.
+pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>) {
+	let ui = ui.clone();
 	let renderer = &mut application.renderer;
-	let ui_channel = ui.clone_channel();
 
 	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
 		struct CustomRenderPass {
@@ -312,14 +331,17 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 		}
 
 		Box::new(CustomRenderPass {
-			listener: ui_channel.listener(),
+			listener: ui.listener(),
 			render_pass: UiRenderPass::new(render_pass_builder),
 		})
 	});
 }
 
 /// Drains all pending pass inputs so active and bypassed paths adopt the same application state.
-pub(super) fn drain_render_pass_messages<M: Clone>(listener: &mut DefaultListener<M>, mut adopt: impl FnMut(M)) {
+pub(super) fn drain_render_pass_messages<M: Clone + Send + Sync + 'static>(
+	listener: &mut DefaultListener<M>,
+	mut adopt: impl FnMut(M),
+) {
 	while let Some(message) = listener.read() {
 		adopt(message);
 	}
@@ -327,9 +349,6 @@ pub(super) fn drain_render_pass_messages<M: Clone>(listener: &mut DefaultListene
 
 /// Installs the AGX tonemapping pass for post-scene color mapping.
 pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
-	let renderable_mesh_factory = application.world().renderable_factory();
-	let listener = renderable_mesh_factory.listener();
-
 	let renderer = &mut application.renderer;
 
 	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
@@ -431,15 +450,15 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 
 /// Installs the atmosphere sky pass used as a post-scene background.
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
-	// Keep channel handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
-	let light_channel = application.world().light_factory().listener().clone_channel();
+	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
+	let light_factory = application.world().factory::<DirectionalLight>();
 	let transform_channel = application.world().transforms_channel().clone();
 	let renderer = &mut application.renderer;
 
 	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
 		Box::new(AtmosphereSkyRenderPass::new(
 			render_pass_builder,
-			light_channel.listener(),
+			light_factory.listener(),
 			transform_channel.listener(),
 		))
 	});

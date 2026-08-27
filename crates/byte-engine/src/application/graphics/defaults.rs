@@ -10,7 +10,7 @@
 ///
 /// After setup, create application actions through
 /// [`GraphicsApplication::action_factory`], select scene lighting through
-/// [`crate::gameplay::world::DefaultWorld::environment_factory_mut`], and run
+/// [`crate::gameplay::world::DefaultWorld::factory`], and run
 /// the application with [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
@@ -50,14 +50,14 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 	for server in servers {
 		application
 			.threads
-			.push(Thread::new(application.application_events.1.clone(), move |mut events| {
+			.push(Thread::new(application.application_events.0.listener(), move |mut events| {
 				let runtime = build_single_threaded_async_runtime();
 
 				runtime.enter(|| {
 					runtime.spawn(server.run()).detach();
 
 					loop {
-						if matches!(events.try_recv(), Ok(Events::Close)) {
+						if matches!(events.read(), Some(Events::Close)) {
 							return;
 						}
 
@@ -81,7 +81,7 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {
 	application
 		.threads
-		.push(Thread::new(application.application_events.1.clone(), move |mut e| {
+		.push(Thread::new(application.application_events.0.listener(), move |mut events| {
 			let runtime = build_single_threaded_async_runtime();
 
 			// Compio separates task execution from I/O polling. Enter the runtime so
@@ -92,7 +92,7 @@ pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks
 				}
 
 				loop {
-					if let Ok(Events::Close) = e.try_recv() {
+					if let Some(Events::Close) = events.read() {
 						return;
 					}
 
@@ -224,7 +224,6 @@ pub fn setup_default_resource_and_asset_management(
 
 /// Registers source image formats loaded lazily by the default debug application.
 #[cfg(debug_assertions)]
-
 fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 
@@ -260,7 +259,7 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 /// Next, submit a [`crate::audio::generator::Generator`] through
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
 /// worker, or create an [`crate::audio::graph::AudioGraph`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 pub fn setup_default_audio(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
@@ -278,7 +277,7 @@ pub fn setup_default_audio(
 
 	application
 		.threads
-		.push(Thread::new(application.application_events.0.spawn_rx(), {
+		.push(Thread::new(application.application_events.0.listener(), {
 			let mut generators_listener = application.generator_factory.listener();
 
 			move |mut receiver| {
@@ -294,7 +293,7 @@ pub fn setup_default_audio(
 				let _entered = span.enter();
 
 				loop {
-					if receiver.closed() || matches!(receiver.try_recv(), Ok(Events::Close)) {
+					if matches!(receiver.read(), Some(Events::Close)) {
 						break;
 					}
 
@@ -303,7 +302,7 @@ pub fn setup_default_audio(
 					}
 
 					while let Some(message) = audio_graphs_listener.read() {
-						let handle = *message.handle();
+						let handle = message.handle();
 
 						// A derived creation replaces the old generation before
 						// any completion can be adopted for the same handle.

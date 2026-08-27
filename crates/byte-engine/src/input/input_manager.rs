@@ -212,7 +212,7 @@ impl InputManager {
 	/// [`ActionEvent`] values.
 	pub fn update(&mut self, frame_allocator: &bumpalo::Bump) {
 		while let Some(message) = self.action_listener.read() {
-			let handle = *message.handle();
+			let handle = message.handle();
 			let action = message.into_data();
 
 			let (name, r#type, input_events, tick_policy) = (action.name, action.r#type, action.bindings, action.tick_policy);

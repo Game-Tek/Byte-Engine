@@ -15,7 +15,7 @@ use crate::{
 	},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
-		Lights, Sink,
+		DirectionalLight, Sink,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_compute},
 	},
 };
@@ -91,7 +91,7 @@ pub struct AtmosphereSkyRenderPass {
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
-	light_listener: DefaultListener<CreateMessage<Lights>>,
+	directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 	transform_listener: DefaultListener<TransformationUpdate>,
 	directional_light: Option<Handle>,
 	transmittance_valid: bool,
@@ -106,7 +106,7 @@ impl AtmosphereSkyRenderPass {
 	/// The newest directional light controls the sun direction. Publish that light's transform next so the sky can use its orientation.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
-		light_listener: DefaultListener<CreateMessage<Lights>>,
+		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
 		let settings = AtmosphereSkyRenderPassSettings::default();
@@ -210,7 +210,7 @@ impl AtmosphereSkyRenderPass {
 			bypass_pass,
 			parameters,
 			settings,
-			light_listener,
+			directional_lights,
 			transform_listener,
 			directional_light: None,
 			transmittance_valid: false,
@@ -220,14 +220,12 @@ impl AtmosphereSkyRenderPass {
 
 	/// Adopts the newest directional light and applies its latest orientation to the sky.
 	fn update_sun_direction(&mut self) {
-		while let Some(message) = self.light_listener.read() {
-			if matches!(message.data(), Lights::Direction(_)) {
-				self.directional_light = Some(*message.handle());
-			}
+		while let Some(message) = self.directional_lights.read() {
+			self.directional_light = Some(message.handle());
 		}
 
 		while let Some(message) = self.transform_listener.read() {
-			if self.directional_light == Some(*message.handle()) {
+			if self.directional_light == Some(message.handle()) {
 				// Directional-light orientation points along ray travel; the atmosphere needs the direction toward the sun.
 				self.settings.sun_direction = -math::direction_from_orientation(message.transform().get_orientation());
 				self.sky_view_camera_height = None;

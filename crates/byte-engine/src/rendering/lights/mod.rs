@@ -1,11 +1,11 @@
 //! Light entities consumed by scene rendering pipelines.
 //!
-//! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values and submit them through
-//! [`crate::gameplay::world::DefaultWorld::light_factory_mut`]. The associated
+//! Create [`ConeLight`], [`DirectionalLight`], or [`PointLight`] values through
+//! [`crate::core::factory::Creator::create`] on [`crate::gameplay::world::DefaultWorld`]. The associated
 //! [`crate::gameplay::Transform`] controls each light's position and orientation. For measured IES
 //! profiles, the transform also controls the emission axis and C0 plane. Use [`ConeLight::new_ies`]
-//! or [`PointLight::new_ies`] to attach the profile. [`Lights`] is the erased representation used by
-//! the world factory.
+//! or [`PointLight::new_ies`] to attach the profile. The renderer erases concrete
+//! lights only at its internal scene-storage boundary.
 //!
 //! Transform positions and photometric reference distances use meters. The renderer resolves authored
 //! units on the CPU and sends scene-referred RGB lux or candela to the GPU.
@@ -45,9 +45,8 @@ pub enum LightClasses {
 }
 
 #[derive(Clone)]
-/// The [`Lights`] enum carries supported concrete light values through world
-/// creation messages.
-pub enum Lights {
+/// The `Lights` enum gives renderer storage one internal representation for supported light types.
+pub(crate) enum Lights {
 	Cone(ConeLight),
 	Direction(DirectionalLight),
 	Point(PointLight),

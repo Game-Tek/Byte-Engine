@@ -19,8 +19,6 @@ pub mod thread;
 pub mod tracy;
 pub use application::{Application, BaseApplication};
 pub use tracy::{TracySetupError, setup_tracy};
-pub use trotcast::Channel as Sender;
-pub use trotcast::Receiver;
 
 #[cfg(feature = "headed")]
 pub mod graphics;

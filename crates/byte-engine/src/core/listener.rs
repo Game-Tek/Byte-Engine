@@ -1,20 +1,10 @@
 use std::{collections::VecDeque, marker::PhantomData};
 
-use trotcast::Receiver;
+use crate::core::message_bus::ListenerToken;
 
-use crate::core::channel::DefaultChannel;
-
-/// The `Listener` trait lets consumers receive messages without depending on a
-/// specific transport.
+/// The `Listener` trait lets consumers receive messages without depending on a specific transport.
 pub trait Listener<M> {
 	fn read(&mut self) -> Option<M>;
-
-	// fn iter(&mut self) -> ListenerIterator<'_, Self, M>
-	// where
-	//     Self: Sized,
-	// {
-	//     ListenerIterator::new(self)
-	// }
 
 	fn to_vec(&mut self) -> Vec<M> {
 		let mut vec = Vec::new();
@@ -25,8 +15,7 @@ pub trait Listener<M> {
 	}
 }
 
-/// The `ListenerIterator` struct adapts a [`Listener`] for use in iterator-based
-/// message processing.
+/// The `ListenerIterator` struct adapts a [`Listener`] for iterator-based message processing.
 pub struct ListenerIterator<'a, L: ?Sized, M>
 where
 	L: Listener<M>,
@@ -47,7 +36,7 @@ where
 	}
 }
 
-impl<'a, L: ?Sized, M> Iterator for ListenerIterator<'a, L, M>
+impl<L: ?Sized, M> Iterator for ListenerIterator<'_, L, M>
 where
 	L: Listener<M>,
 {
@@ -67,38 +56,50 @@ impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
 	}
 }
 
-/// The `DefaultListener` struct reads broadcast messages from a `trotcast` receiver.
+/// The `DefaultListener` struct owns one future-only cursor in a typed message route.
 ///
 /// Use [`Self::new_listener`] to add a consumer. The new listener receives future
 /// messages but does not inherit messages already queued for this listener.
 /// Call [`Listener::read`] during the consumer's update, or use
 /// [`Self::filtered`] first when the consumer needs only part of the stream.
-#[derive(Clone)]
-pub struct DefaultListener<M>(pub(super) Receiver<M>);
+pub struct DefaultListener<M>
+where
+	M: Clone + Send + Sync + 'static,
+{
+	token: ListenerToken<M>,
+}
 
-impl<M: Clone> DefaultListener<M> {
+impl<M> DefaultListener<M>
+where
+	M: Clone + Send + Sync + 'static,
+{
 	/// Creates another listener for future messages on the same channel.
 	///
 	/// The new listener does not receive messages already queued for this listener.
 	pub fn new_listener(&self) -> Self {
-		DefaultListener(self.0.clone())
+		Self {
+			token: self.token.new_listener().unwrap_or_else(|error| panic!("{error}")),
+		}
 	}
 
 	pub fn filtered<F>(&self, filter: F) -> FilteredListener<DefaultListener<M>, M, F>
 	where
 		F: Fn(&M) -> bool,
 	{
-		FilteredListener(DefaultListener(self.0.clone()), filter, PhantomData)
+		FilteredListener(self.new_listener(), filter, PhantomData)
 	}
 
-	pub fn clone_channel(&self) -> DefaultChannel<M> {
-		DefaultChannel(self.0.clone_channel())
+	pub(crate) fn from_token(token: ListenerToken<M>) -> Self {
+		Self { token }
 	}
 }
 
-impl<M: Clone> Listener<M> for DefaultListener<M> {
+impl<M> Listener<M> for DefaultListener<M>
+where
+	M: Clone + Send + Sync + 'static,
+{
 	fn read(&mut self) -> Option<M> {
-		self.0.try_recv().ok()
+		self.token.read()
 	}
 }
 
@@ -107,13 +108,6 @@ pub struct FilteredListener<L, M: Clone, F>(L, F, PhantomData<M>)
 where
 	L: Listener<M>,
 	F: Fn(&M) -> bool;
-
-impl<R, M: Clone, F> FilteredListener<R, M, F>
-where
-	R: Listener<M>,
-	F: Fn(&M) -> bool,
-{
-}
 
 impl<L, M: Clone, F> Listener<M> for FilteredListener<L, M, F>
 where
@@ -210,17 +204,5 @@ mod tests {
 
 		assert_eq!(stack.to_vec(), [3, 2, 1]);
 		assert_eq!(queue.to_vec(), [1, 2, 3]);
-	}
-
-	#[test]
-	fn cloned_channel_publishes_into_the_same_broadcast_stream() {
-		let channel = DefaultChannel::with_expected_listeners(2);
-		let listener = channel.listener();
-		let cloned_channel = listener.clone_channel();
-		let mut observer = listener.new_listener();
-
-		cloned_channel.send("from clone");
-
-		assert_eq!(observer.read(), Some("from clone"));
 	}
 }

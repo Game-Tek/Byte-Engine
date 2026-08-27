@@ -6,7 +6,7 @@ use super::{AudioGraph, AudioGraphTime};
 ///
 /// Next, pass the graph to [`round_robin`], [`random`], `loop`, [`gain`],
 /// [`varispeed`], or [`custom`], or publish it through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 	AudioGraph::sample(resource_id)
 }
@@ -49,7 +49,7 @@ pub fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 /// adding another node.
 ///
 /// Next, pass the graph to [`gain`] or publish it through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 ///
 /// # Panics
 ///
@@ -63,7 +63,7 @@ pub fn r#loop(input: AudioGraph) -> AudioGraph {
 /// A gain of `1.0` returns the input directly without a gain node.
 ///
 /// Next, publish the graph through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 ///
 /// # Panics
 ///
@@ -78,7 +78,7 @@ pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 /// A rate of `1.0` returns the input directly without a varispeed node. A rate
 /// of `2.0` plays it twice as fast and one octave higher, while `0.5` plays it
 /// at half speed and one octave lower. Next, publish the graph through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 ///
 /// # Panics
 ///
@@ -94,7 +94,7 @@ pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 /// A ratio of `1.0` returns the input directly without a pitch-shift node. The
 /// real-time processor uses a 1024-sample window, which adds about 21
 /// milliseconds of latency at 48 kHz. Next, publish the graph through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 ///
 /// # Panics
 ///
@@ -122,7 +122,7 @@ pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 /// This closure runs on the audio worker. It must return quickly and must not
 /// allocate, block, lock, perform resource I/O, or panic. Next, publish the
 /// graph through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 ///
 /// # Panics
 ///

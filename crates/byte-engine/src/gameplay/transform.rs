@@ -118,48 +118,20 @@ impl Orientable for Transform {
 	}
 }
 
-/// The `TransformationUpdate` struct carries a complete entity transform through a channel.
-///
-/// Call [`Self::apply`] to publish a transform update to systems that own the target entity.
-#[derive(Clone, Debug)]
-pub struct TransformationUpdate {
-	handle: Handle,
-	transform: Transform,
-}
+/// The `TransformationUpdate` type keeps transform creation and replacement on one typed route.
+pub type TransformationUpdate = CreateMessage<Transform>;
 
-impl TransformationUpdate {
-	/// Creates a transform update for `handle`.
-	pub fn new(handle: Handle, transform: Transform) -> Self {
-		Self { handle, transform }
-	}
-
+impl CreateMessage<Transform> {
 	/// Publishes a transform update to `channel`.
-	pub fn apply(channel: &mut DefaultChannel<Self>, handle: Handle, transform: Transform) {
+	pub fn apply(channel: &DefaultChannel<Self>, handle: Handle, transform: Transform) {
 		channel.send(Self::new(handle, transform));
 	}
 
 	/// Returns the transform payload.
 	pub fn transform(&self) -> &Transform {
-		&self.transform
-	}
-
-	/// Returns the target entity handle.
-	pub fn handle(&self) -> &Handle {
-		&self.handle
+		self.data()
 	}
 }
-
-impl Message for TransformationUpdate {}
-
-impl TargetedMessage for TransformationUpdate {
-	type Payload = Transform;
-
-	fn from_handle_and_payload(handle: Handle, transform: Self::Payload) -> Self {
-		Self::new(handle, transform)
-	}
-}
-
-pub trait Publisher {}
 
 #[cfg(test)]
 mod tests {
@@ -226,13 +198,13 @@ mod tests {
 		let mut factory = Factory::new();
 		let handle = factory.create("entity");
 		let transform = Transform::from_position(Point::new(7.0, 8.0, 9.0));
-		let mut channel = DefaultChannel::new();
+		let channel = DefaultChannel::new();
 		let mut listener = channel.listener();
 
-		TransformationUpdate::apply(&mut channel, handle, transform);
+		TransformationUpdate::apply(&channel, handle, transform);
 		let update = listener.read().expect("transformation update");
 
-		assert_eq!(update.handle(), &handle);
+		assert_eq!(update.handle(), handle);
 		assert_eq!(update.transform().get_position(), Point::new(7.0, 8.0, 9.0));
 	}
 }
@@ -243,9 +215,7 @@ use maths_rs::mat::{MatScale as _, MatTranslate as _};
 use crate::{
 	core::{
 		channel::{Channel as _, DefaultChannel},
-		factory::Handle,
-		message::Message,
-		targeted_message::TargetedMessage,
+		factory::{CreateMessage, Handle},
 	},
 	space::{Orientable, Positionable},
 };

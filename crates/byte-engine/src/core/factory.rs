@@ -11,7 +11,7 @@
 /// [`Self::create`]. Use [`Self::derive`] when another representation must keep
 /// the same logical handle.
 #[derive(Clone)]
-pub struct Factory<T: Clone + ?Sized> {
+pub struct Factory<T: Clone + Send + Sync + 'static> {
 	channel: DefaultChannel<CreateMessage<T>>,
 }
 
@@ -23,7 +23,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// [`Creation::with`] for each additional representation that must share its handle.
 pub trait Creator<T> {
 	/// Creates a value in the owner's matching factory and starts a shared-handle creation chain.
-	fn create(&mut self, value: T) -> Creation<'_, Self>
+	fn create(&self, value: T) -> Creation<'_, Self>
 	where
 		Self: Sized,
 	{
@@ -33,7 +33,7 @@ pub trait Creator<T> {
 
 	/// Publishes a value with a new handle or the supplied shared handle.
 	#[doc(hidden)]
-	fn publish(&mut self, handle: Option<Handle>, value: T) -> Handle;
+	fn publish(&self, handle: Option<Handle>, value: T) -> Handle;
 }
 
 /// The `Creation` struct keeps one stable handle while an owner creates multiple entity representations.
@@ -41,7 +41,7 @@ pub trait Creator<T> {
 /// Chain [`Self::with`] to publish another representation, then convert the
 /// result into [`Handle`] when another API needs the entity identity.
 pub struct Creation<'creator, C: ?Sized> {
-	creator: &'creator mut C,
+	creator: &'creator C,
 	handle: Handle,
 }
 
@@ -68,13 +68,13 @@ impl<C: ?Sized> From<Creation<'_, C>> for Handle {
 	}
 }
 
-impl<T: Clone> Default for Factory<T> {
+impl<T: Clone + Send + Sync + 'static> Default for Factory<T> {
 	fn default() -> Self {
 		Self::new()
 	}
 }
 
-impl<T: Clone> Factory<T> {
+impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	/// Creates an empty creation stream.
 	///
 	/// Next, call [`Self::listener`] for each system that mirrors created values,
@@ -90,7 +90,7 @@ impl<T: Clone> Factory<T> {
 	/// Consumers read the resulting [`CreateMessage`] from listeners created by
 	/// [`Self::listener`]. Pass the returned handle to [`Self::derive`] when a
 	/// second factory publishes another representation of the same entity.
-	pub fn create(&mut self, data: T) -> Handle {
+	pub fn create(&self, data: T) -> Handle {
 		let handle = Handle::new();
 		let message = CreateMessage::new(handle, data);
 
@@ -102,8 +102,7 @@ impl<T: Clone> Factory<T> {
 	/// Creates multiple entities in a single statically-sized batch.
 	///
 	/// Returns an array of [`Handle`]s corresponding to the created entities.
-	/// May be more efficient than calling [`Self::create`] multiple times.
-	pub fn create_array<const N: usize>(&mut self, data: [T; N]) -> [Handle; N] {
+	pub fn create_array<const N: usize>(&self, data: [T; N]) -> [Handle; N] {
 		let mut handles = [Handle(0); N];
 		for (i, d) in data.into_iter().enumerate() {
 			handles[i] = self.create(d);
@@ -121,17 +120,21 @@ impl<T: Clone> Factory<T> {
 		self.channel.send(message);
 	}
 
-	/// Creates a consumer for current and future creation messages.
+	/// Creates a consumer for creation messages published after registration.
 	///
 	/// Next, call [`Self::create`] or [`Self::derive`] and drain the messages
 	/// through [`crate::core::listener::Listener::read`].
 	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
 		self.channel.listener()
 	}
+
+	pub(crate) fn from_channel(channel: DefaultChannel<CreateMessage<T>>) -> Self {
+		Self { channel }
+	}
 }
 
 #[derive(Debug, Clone)]
-/// The [`CreateMessage`] struct carries a created value and the stable handle
+/// The `CreateMessage` struct carries a created value and the stable handle
 /// shared by systems that mirror it.
 pub struct CreateMessage<T: Clone> {
 	handle: Handle,
@@ -139,7 +142,8 @@ pub struct CreateMessage<T: Clone> {
 }
 
 impl<T: Clone> CreateMessage<T> {
-	fn new(handle: Handle, data: T) -> Self {
+	/// Creates a creation or targeted replacement message for an existing handle.
+	pub fn new(handle: Handle, data: T) -> Self {
 		CreateMessage { handle, data }
 	}
 
@@ -151,8 +155,8 @@ impl<T: Clone> CreateMessage<T> {
 		self.data
 	}
 
-	pub fn handle(&self) -> &Handle {
-		&self.handle
+	pub fn handle(&self) -> Handle {
+		self.handle
 	}
 }
 
@@ -167,7 +171,7 @@ impl<T: Clone> TargetedMessage for CreateMessage<T> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-/// The [`Handle`] struct identifies one creation stream entry across consuming
+/// The `Handle` struct identifies one creation stream entry across consuming
 /// systems.
 pub struct Handle(u32);
 
@@ -185,7 +189,7 @@ mod tests {
 
 	#[test]
 	fn create_assigns_distinct_handles_and_broadcasts_in_creation_order() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let mut listener = factory.listener();
 
 		let first = factory.create("first");
@@ -194,9 +198,9 @@ mod tests {
 
 		assert_ne!(first, second);
 		assert_eq!(messages.len(), 2);
-		assert_eq!(messages[0].handle(), &first);
+		assert_eq!(messages[0].handle(), first);
 		assert_eq!(messages[0].data(), &"first");
-		assert_eq!(messages[1].handle(), &second);
+		assert_eq!(messages[1].handle(), second);
 		assert_eq!(messages[1].data(), &"second");
 	}
 
@@ -208,7 +212,7 @@ mod tests {
 		}
 
 		impl Creator<String> for Owner {
-			fn publish(&mut self, handle: Option<Handle>, value: String) -> Handle {
+			fn publish(&self, handle: Option<Handle>, value: String) -> Handle {
 				if let Some(handle) = handle {
 					self.labels.derive(handle, value);
 					handle
@@ -219,7 +223,7 @@ mod tests {
 		}
 
 		impl Creator<u32> for Owner {
-			fn publish(&mut self, handle: Option<Handle>, value: u32) -> Handle {
+			fn publish(&self, handle: Option<Handle>, value: u32) -> Handle {
 				if let Some(handle) = handle {
 					self.indices.derive(handle, value);
 					handle
@@ -229,7 +233,7 @@ mod tests {
 			}
 		}
 
-		let mut owner = Owner {
+		let owner = Owner {
 			labels: Factory::new(),
 			indices: Factory::new(),
 		};
@@ -238,13 +242,13 @@ mod tests {
 
 		let handle: Handle = owner.create(String::from("entity")).with(7).into();
 
-		assert_eq!(labels.read().expect("label creation").handle(), &handle);
-		assert_eq!(indices.read().expect("index creation").handle(), &handle);
+		assert_eq!(labels.read().expect("label creation").handle(), handle);
+		assert_eq!(indices.read().expect("index creation").handle(), handle);
 	}
 
 	#[test]
 	fn derive_reuses_the_supplied_identity() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let mut listener = factory.listener();
 		let handle = factory.create(String::from("source"));
 		factory.derive(handle, String::from("derived"));
@@ -259,13 +263,13 @@ mod tests {
 	#[test]
 	fn cloned_factories_share_the_creation_stream() {
 		let original = Factory::new();
-		let mut clone = original.clone();
+		let clone = original.clone();
 		let mut listener = original.listener();
 
 		let handle = clone.create(7);
 		let message = listener.read().expect("clone publishes to shared channel");
 
-		assert_eq!(message.handle(), &handle);
+		assert_eq!(message.handle(), handle);
 		assert_eq!(message.data(), &7);
 	}
 }

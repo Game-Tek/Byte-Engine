@@ -74,7 +74,7 @@ pub mod utils;
 pub use camera::Camera;
 pub use environment::Environment;
 pub use lights::{
-	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, Lights, PhotometricError, PhotometricIntensity,
+	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, PhotometricError, PhotometricIntensity,
 	PointLight,
 };
 pub use pipeline_compilation::{PipelineKey, PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};

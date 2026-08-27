@@ -10,11 +10,13 @@ use std::{fmt::Debug, sync::Arc};
 use screenshot::ScreenshotBroker;
 use utils::sync::Mutex;
 
-use crate::application::{Receiver, Sender};
 use crate::{
 	application::Events,
 	configuration::{Configuration, ConfigurationEvent},
-	core::{Entity, EntityHandle, listener::Listener},
+	core::{
+		Entity, EntityHandle,
+		channel::{Channel, DefaultChannel},
+	},
 };
 
 #[cfg(feature = "headed")]
@@ -47,7 +49,7 @@ pub trait Inspectable: Send + Sync {
 /// shared by Byte Engine Inspection Protocol adapters.
 pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
-	events: Sender<Events>,
+	events: DefaultChannel<Events>,
 	configuration: Configuration,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
@@ -55,12 +57,15 @@ pub struct Inspector {
 
 impl Inspector {
 	/// Creates an inspector that can close the owning application through its event channel.
-	pub fn new(tx: Sender<Events>, configuration: Configuration) -> Self {
+	///
+	/// Register the application's [`crate::core::listener::DefaultListener`] before
+	/// passing the channel so close requests cannot be published without a consumer.
+	pub fn new(events: DefaultChannel<Events>, configuration: Configuration) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
 		Self {
 			entities,
-			events: tx,
+			events,
 			configuration,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
@@ -108,6 +113,6 @@ impl Inspector {
 
 	/// Requests application shutdown through the inspector event channel.
 	pub fn close_application(&self) {
-		self.events.send(Events::Close).unwrap();
+		self.events.send(Events::Close);
 	}
 }

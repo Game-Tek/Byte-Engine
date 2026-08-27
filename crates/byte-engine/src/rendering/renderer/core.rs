@@ -440,17 +440,20 @@ impl Renderer {
 				"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
 			);
 		} else {
-			// A scene-only graph has no terminal pass that can receive the swapchain directly.
-			let mut builder = RenderPassBuilder::new(
-				&mut self.context,
-				&mut self.render_targets,
-				sink_id,
-				swapchain,
-				self.pipeline_compilation_client.clone(),
-			);
-			let source = builder.read_from("main");
-			let copy = crate::rendering::render_passes::blit::ImageBypassPass::new(&mut builder, source, swapchain);
-			self.scene_presentation_copies.push((sink_id, copy));
+			// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
+			// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
+			if self.render_targets.get("main", sink_id).is_some() {
+				let mut builder = RenderPassBuilder::new(
+					&mut self.context,
+					&mut self.render_targets,
+					sink_id,
+					swapchain,
+					self.pipeline_compilation_client.clone(),
+				);
+				let source = builder.read_from("main");
+				let copy = crate::rendering::render_passes::blit::ImageBypassPass::new(&mut builder, source, swapchain);
+				self.scene_presentation_copies.push((sink_id, copy));
+			}
 		}
 
 		for (render_pass, writable_targets) in render_passes_for_sink {
@@ -503,7 +506,7 @@ impl Renderer {
 			let span = debug_span!("Renderer::update_camera_transforms");
 			let _enter = span.enter();
 			while let Some(message) = transforms_listener.read() {
-				let handle = *message.handle();
+				let handle = message.handle();
 
 				if let Some((camera, transform)) = self
 					.cameras

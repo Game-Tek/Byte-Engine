@@ -9,8 +9,8 @@ pub struct DirectionalLight {
 impl DirectionalLight {
 	/// Creates a directional light whose GPU color is scene illuminance in lux.
 	///
-	/// Submit the returned light through [`crate::gameplay::world::DefaultWorld::light_factory_mut`]
-	/// to make it available to the active rendering pipeline.
+	/// Next, pass the returned light to [`crate::core::factory::Creator::create`] on
+	/// [`crate::gameplay::world::DefaultWorld`] to make it available to the active rendering pipeline.
 	///
 	/// # Errors
 	///

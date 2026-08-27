@@ -287,11 +287,22 @@ mod tests {
 
 	use super::HttpInspectorServer;
 	use crate::{
-		application::Sender,
+		application::Events,
 		configuration::Configuration,
-		core::EntityHandle,
+		core::{
+			EntityHandle,
+			channel::DefaultChannel,
+			listener::{DefaultListener, Listener as _},
+		},
 		inspector::{Inspector, screenshot::Screenshot},
 	};
+
+	/// Creates an inspector with a live future-only application event listener.
+	fn test_inspector(configuration: Configuration) -> (EntityHandle<Inspector>, DefaultListener<Events>) {
+		let events = DefaultChannel::new();
+		let listener = events.listener();
+		(EntityHandle::from(Inspector::new(events, configuration)), listener)
+	}
 
 	#[test]
 	fn server_answers_entity_requests_over_http() {
@@ -300,7 +311,7 @@ mod tests {
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
+		let (inspector, _events) = test_inspector(Configuration::new());
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
@@ -319,12 +330,35 @@ mod tests {
 	}
 
 	#[test]
+	fn server_publishes_application_close_requests() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let (inspector, mut events) = test_inspector(Configuration::new());
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
+		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
+		stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		stream
+			.write_all(b"DELETE / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.expect("request application close");
+
+		let mut response = String::new();
+		stream.read_to_string(&mut response).expect("read inspector response");
+
+		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+		assert_eq!(events.read(), Some(Events::Close));
+	}
+
+	#[test]
 	fn server_returns_screenshot_with_capture_headers() {
 		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
+		let (inspector, _events) = test_inspector(Configuration::new());
 		let screenshots = inspector.screenshots();
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 		let responder = std::thread::spawn(move || {
@@ -369,7 +403,7 @@ mod tests {
 
 	#[test]
 	fn server_rejects_missing_screenshot_sink() {
-		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), Configuration::new()));
+		let (inspector, _events) = test_inspector(Configuration::new());
 		let response = super::screenshot_response(&inspector, None);
 		assert_eq!(response.status(), oxhttp::model::StatusCode::BAD_REQUEST);
 	}
@@ -445,7 +479,7 @@ mod tests {
 		let configuration = Configuration::new();
 		let _port = configuration.register("render.pass.");
 		configuration.update("render.pass.bloom", "bypassed");
-		let inspector = EntityHandle::from(Inspector::new(Sender::new(1), configuration));
+		let (inspector, _events) = test_inspector(configuration);
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");

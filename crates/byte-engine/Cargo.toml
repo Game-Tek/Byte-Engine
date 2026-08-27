@@ -35,6 +35,10 @@ name = "animation_graph"
 harness = false
 
 [[bench]]
+name = "channel"
+harness = false
+
+[[bench]]
 name = "audio_graph"
 harness = false
 required-features = ["headed"]
@@ -70,7 +74,6 @@ smallbox = "0.8"
 rustfft = "6.4.1"
 realfft = "3.5.0"
 hidapi = "2.6.1"
-trotcast = "0.5.0"
 ctrlc = "3.5.1"
 fontdue = "0.9.3"
 artnet_protocol = { version = "0.4.4", optional = true }

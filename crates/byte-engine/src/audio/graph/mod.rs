@@ -1,7 +1,7 @@
 //! Inline-authored audio processing graphs.
 //!
 //! Build a graph with the functions in [`fns`], then publish it through
-//! [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`]. The
+//! [`crate::gameplay::world::DefaultWorld::audio_graph_factory`]. The
 //! default audio worker validates and compiles each graph before its sample
 //! resources cross to the audio thread.
 
@@ -217,7 +217,7 @@ mod tests {
 			&[AudioProcessor::PitchShift(2.0), AudioProcessor::Gain(0.25)]
 		);
 		assert_eq!(fourth.data().resource_id, "audio/a.wav");
-		assert_eq!(replacement.handle(), &first_handle);
+		assert_eq!(replacement.handle(), first_handle);
 		assert_eq!(replacement.data().resource_id, "audio/b.wav");
 	}
 

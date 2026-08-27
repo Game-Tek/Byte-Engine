@@ -1,6 +1,7 @@
 //! Audio graph authoring and publication.
 
 use super::*;
+use crate::core::message_bus::MessageScope;
 
 /// The `AudioGraph` struct describes resource-backed sources and the nodes that
 /// select and process one source for the default audio output.
@@ -8,9 +9,9 @@ use super::*;
 /// Build it with [`fns::sample`], [`fns::round_robin`], [`fns::random`], `loop`,
 /// [`fns::gain`], [`fns::varispeed`], [`fns::pitch_shift`], and
 /// [`fns::custom`]. Next, submit the same mutable graph again through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`] to advance
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`] to advance
 /// its selector nodes. Stop its current play through
-/// [`crate::gameplay::world::DefaultWorld::delete_channel_mut`].
+/// [`crate::gameplay::world::DefaultWorld::delete_channel`].
 #[must_use = "Audio graphs do not play until they are published through the world's audio graph factory"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioGraph {
@@ -217,13 +218,24 @@ impl Default for AudioGraphFactory {
 }
 
 impl AudioGraphFactory {
-	/// Creates an empty graph factory.
+	/// Creates a standalone empty graph factory.
 	///
-	/// Applications normally use
-	/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`] instead.
+	/// Use this constructor for isolated tests. Applications normally use
+	/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`] instead.
 	pub fn new() -> Self {
 		Self {
 			compiled_graphs: Factory::new(),
+		}
+	}
+
+	/// Creates a graph factory that publishes through a shared message scope.
+	///
+	/// Use this during application setup so audio graph creation participates in
+	/// unified message diagnostics. Next, install the audio worker's listener
+	/// before calling [`Self::create`].
+	pub(crate) fn in_scope(scope: &MessageScope) -> Self {
+		Self {
+			compiled_graphs: scope.factory(),
 		}
 	}
 
@@ -233,9 +245,9 @@ impl AudioGraphFactory {
 	/// submit it again to play its next selection.
 	///
 	/// Send the returned handle through
-	/// [`crate::gameplay::world::DefaultWorld::delete_channel_mut`] to stop the
+	/// [`crate::gameplay::world::DefaultWorld::delete_channel`] to stop the
 	/// graph.
-	pub fn create(&mut self, graph: &mut AudioGraph) -> Handle {
+	pub fn create(&self, graph: &mut AudioGraph) -> Handle {
 		let (compiled, selector_commits) = compile_for_factory(graph);
 		let handle = self.compiled_graphs.create(compiled);
 		graph.commit_selectors(&selector_commits);
@@ -248,7 +260,7 @@ impl AudioGraphFactory {
 	///
 	/// Use this to replace a graph while preserving the identity returned by
 	/// [`Self::create`].
-	pub fn derive(&mut self, handle: Handle, graph: &mut AudioGraph) {
+	pub fn derive(&self, handle: Handle, graph: &mut AudioGraph) {
 		let (compiled, selector_commits) = compile_for_factory(graph);
 		self.compiled_graphs.derive(handle, compiled);
 		graph.commit_selectors(&selector_commits);
@@ -266,4 +278,33 @@ fn compile_for_factory(graph: &mut AudioGraph) -> (CompiledAudioGraph, SelectorC
 	graph
 		.compile_selection()
 		.unwrap_or_else(|error| panic!("Audio graph was not created. The authored graph is invalid: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::AudioGraphFactory;
+	use crate::{
+		audio::graph::fns,
+		core::{
+			listener::Listener,
+			message_bus::{MessageBus, MessageBusConfig},
+		},
+	};
+
+	/// Verifies that scoped audio factories share one lazily registered creation route.
+	#[test]
+	fn scoped_factories_share_compiled_graph_creations() {
+		let bus = MessageBus::new(MessageBusConfig::new(1, 8, 1024)).expect("valid audio test bus");
+		let scope = bus.new_scope("audio-test");
+		let producer = AudioGraphFactory::in_scope(&scope);
+		let observer = AudioGraphFactory::in_scope(&scope);
+		let mut listener = observer.listener();
+		let mut graph = fns::sample("audio/test.wav");
+
+		let handle = producer.create(&mut graph);
+		let message = listener.read().expect("scoped audio graph creation");
+
+		assert_eq!(message.handle(), handle);
+		assert_eq!(scope.topics().len(), 1);
+	}
 }

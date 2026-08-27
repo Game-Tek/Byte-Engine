@@ -38,7 +38,7 @@ pub trait AudioSystem: Entity {
 /// [`crate::application::graphics::GraphicsApplication::generator_factory`] so
 /// the worker can mix it into the hardware stream, or publish an
 /// [`super::graph::AudioGraph`] through
-/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory_mut`].
+/// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
 pub struct DefaultAudioSystem {
 	device: Device,
 	sources: Vec<Source>,

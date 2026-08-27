@@ -27,7 +27,6 @@ use crate::{
 };
 
 /// The `World` struct owns Dynabit simulation state and synchronizes it with entity handles.
-#[derive(Clone)]
 pub struct World {
 	bodies: StableVec<PhysicsBody>,
 	gravity: Vector,
@@ -77,16 +76,16 @@ impl World {
 		&mut self,
 		time: Time,
 		transforms_rx: &mut impl Listener<TransformationUpdate>,
-		transforms_tx: &mut impl Channel<TransformationUpdate>,
+		transforms_tx: &impl Channel<TransformationUpdate>,
 		allocator: &mut bumpalo::Bump,
 	) {
 		while let Some(message) = self.body_listener.read() {
-			let handle = *message.handle();
+			let handle = message.handle();
 			let body = message.into_data();
 			self.create_body(handle, body);
 		}
 		while let Some(message) = transforms_rx.read() {
-			if let Some(index) = self.handles_to_bodies.get(message.handle()).copied() {
+			if let Some(index) = self.handles_to_bodies.get(&message.handle()).copied() {
 				let body = &mut self.bodies[index];
 				body.position = message.transform().get_position();
 				body.orientation = message.transform().get_orientation();
@@ -129,7 +128,7 @@ impl World {
 	}
 
 	/// Advances dynamic bodies and publishes their transforms.
-	pub fn update_bodies(&mut self, dt: MediaTime, transforms_tx: &mut impl Channel<TransformationUpdate>) {
+	pub fn update_bodies(&mut self, dt: MediaTime, transforms_tx: &impl Channel<TransformationUpdate>) {
 		for body in self.bodies.iter_mut().filter(|body| body.body_type == BodyTypes::Dynamic) {
 			body.update(dt);
 			transforms_tx.send(TransformationUpdate::new(
@@ -443,7 +442,7 @@ mod tests {
 		world.update_bodies(MediaTime::ZERO, &mut transforms);
 
 		let update = transforms_rx.read().expect("dynamic body transform update");
-		assert_eq!(*update.handle(), handle);
+		assert_eq!(update.handle(), handle);
 		assert_eq!(update.transform().scale(), expected_scale);
 	}
 

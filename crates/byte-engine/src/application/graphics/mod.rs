@@ -30,6 +30,11 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
+/// - `messages.max-topics`: Sets the maximum number of typed routes. The default is `64`.
+/// - `messages.cells-per-topic`: Sets the fixed payload-cell budget for each typed route. The default is `512`.
+/// - `messages.cell-bytes`: Sets the size of each payload cell in bytes. The default is `256`.
+/// - `messages.cell-alignment`: Sets the alignment of each payload cell. The default is `64`.
+/// - `messages.listeners-per-topic`: Sets the maximum simultaneous listeners on one typed route. The default is `64`.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `6`.
@@ -41,6 +46,8 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
 	application: BaseApplication,
+	message_bus: MessageBus,
+	messages: MessageScope,
 
 	tick_count: u64,
 	start_time: std::time::Instant,
@@ -48,7 +55,7 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
-	application_events: (Sender<Events>, Receiver<Events>),
+	application_events: (DefaultChannel<Events>, DefaultListener<Events>),
 	http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	configuration: Configuration,
@@ -58,9 +65,9 @@ pub struct GraphicsApplication {
 
 	generator_factory: Factory<Arc<dyn Generator>>,
 
-	world_factory: Factory<DefaultWorld>,
 	world: DefaultWorld,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
+	physics_transforms_listener: DefaultListener<TransformationUpdate>,
 	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 
 	input_system: input::InputManager,
@@ -95,6 +102,7 @@ impl Application for GraphicsApplication {
 		let start_time = std::time::Instant::now();
 
 		let application = BaseApplication::new(name, parameters);
+		let (message_bus, messages, world_messages) = create_message_bus(&application);
 
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
@@ -107,11 +115,11 @@ impl Application for GraphicsApplication {
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
-		let action_factory = Factory::new();
+		let action_factory = messages.factory();
 
 		let input_system = {
 			let action_listener = action_factory.listener();
-			let event_channel = DefaultChannel::new();
+			let event_channel = messages.channel();
 
 			input::InputManager::new(action_listener, event_channel)
 		};
@@ -129,32 +137,39 @@ impl Application for GraphicsApplication {
 			.get_parameter("kill-after")
 			.map(|p| p.value.parse::<u64>().unwrap());
 
-		let tx = Sender::new(16);
+		// Register the application listener before control handlers can publish a
+		// close request. Worker listeners join this future-only route during setup.
+		let application_events: (DefaultChannel<Events>, DefaultListener<Events>) = {
+			let channel = messages.channel();
+			let listener = channel.listener();
+			(channel, listener)
+		};
 
 		ctrlc::set_handler({
-			let tx = tx.clone();
+			let events = application_events.0.clone();
 			move || {
-				tx.send(Events::Close).unwrap();
+				events.send(Events::Close);
 			}
 		})
 		.unwrap();
 
-		let inspector = EntityHandle::from(Inspector::new(tx.clone(), configuration.clone()));
+		let inspector = EntityHandle::from(Inspector::new(application_events.0.clone(), configuration.clone()));
 		let screenshot_broker = inspector.screenshots();
 		let http_inspector = HttpInspectorServer::new(inspector);
 
-		let rx = tx.spawn_rx();
-		let application_events = (tx, rx);
-
-		let window_factory = Factory::new();
+		let window_factory = messages.factory();
 		let window_factory_listener = window_factory.listener();
 
-		let world = DefaultWorld::new();
-		let cameras_listener = world.camera_factory().listener();
+		let world = DefaultWorld::with_messages(world_messages);
+		let cameras_listener = world.factory::<Camera>().listener();
+		let physics_transforms_listener = world.transforms_channel().listener();
 		let renderer_transforms_listener = world.transforms_channel().listener();
+		let generator_factory = messages.factory();
 
 		GraphicsApplication {
 			application,
+			message_bus,
+			messages,
 
 			application_events,
 			http_inspector,
@@ -164,11 +179,11 @@ impl Application for GraphicsApplication {
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
 
-			generator_factory: Factory::new(),
+			generator_factory,
 
-			world_factory: Factory::new(),
 			world,
 			cameras_listener,
+			physics_transforms_listener,
 			renderer_transforms_listener,
 
 			input_system,
@@ -262,7 +277,7 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::process_application_events");
 			let _enter = span.enter();
-			if let Ok(e) = self.application_events.1.try_recv() {
+			if let Some(e) = self.application_events.1.read() {
 				match e {
 					Events::Close => {
 						close = true;
@@ -324,7 +339,9 @@ impl GraphicsApplication {
 			self.input_system.update(&self.application.frame_allocator);
 		}
 
-		let mut physics_transforms_listener = self.world.transforms_channel().listener();
+		// Physics publishes its results back to the shared transform route. Discard
+		// those prior-frame outputs before collecting commands from this user tick.
+		while self.physics_transforms_listener.read().is_some() {}
 
 		let result = {
 			let span = debug_span!("GraphicsApplication::user_tick");
@@ -335,8 +352,11 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_world");
 			let _enter = span.enter();
-			self.world
-				.update(time, &mut physics_transforms_listener, &mut self.application.frame_allocator);
+			self.world.update(
+				time,
+				&mut self.physics_transforms_listener,
+				&mut self.application.frame_allocator,
+			);
 		}
 
 		{
@@ -349,7 +369,7 @@ impl GraphicsApplication {
 			}
 
 			while let Some(message) = self.cameras_listener.read() {
-				self.renderer.create_camera(*message.handle(), message.into_data());
+				self.renderer.create_camera(message.handle(), message.into_data());
 			}
 		}
 
@@ -419,8 +439,8 @@ impl GraphicsApplication {
 			return;
 		}
 
-		while self.application_events.1.try_recv().is_ok() {}
-		let _ = self.application_events.0.blocking_send(Events::Close);
+		while self.application_events.1.read().is_some() {}
+		self.application_events.0.send(Events::Close);
 		self.threads.drain(..).for_each(|thread| {
 			let _ = thread.join();
 		});
@@ -458,29 +478,25 @@ impl GraphicsApplication {
 		&self.window_factory.0
 	}
 
-	/// Returns mutable access to the factory used to request new windows.
-	pub fn window_factory_mut(&mut self) -> &mut Factory<Window> {
-		&mut self.window_factory.0
-	}
-
 	/// Returns the factory used to register input actions.
 	pub fn action_factory(&self) -> &Factory<Action> {
 		&self.action_factory
 	}
 
-	/// Returns mutable access to the factory used to register input actions.
-	pub fn action_factory_mut(&mut self) -> &mut Factory<Action> {
-		&mut self.action_factory
+	/// Returns the application-owned namespace used by headed-runtime channels and factories.
+	///
+	/// Next, call [`MessageScope::channel`] or [`MessageScope::factory`] to add an
+	/// application-defined message route without declaring its type at startup.
+	pub fn messages(&self) -> &MessageScope {
+		&self.messages
 	}
 
-	/// Returns the factory used to create additional worlds.
-	pub fn world_factory(&self) -> &Factory<DefaultWorld> {
-		&self.world_factory
-	}
-
-	/// Returns mutable access to the factory used to create additional worlds.
-	pub fn world_factory_mut(&mut self) -> &mut Factory<DefaultWorld> {
-		&mut self.world_factory
+	/// Returns the shared fixed-storage message bus for diagnostics and new scopes.
+	///
+	/// Next, call [`MessageBus::topics`] to inspect registered routes or
+	/// [`MessageBus::new_scope`] to isolate routes owned by another subsystem.
+	pub fn message_bus(&self) -> &MessageBus {
+		&self.message_bus
 	}
 
 	/// Returns the default world updated by the graphics application loop.
@@ -496,11 +512,6 @@ impl GraphicsApplication {
 	/// Returns the audio generator factory used by default audio setup.
 	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
 		&self.generator_factory
-	}
-
-	/// Returns mutable access to the audio generator factory used by default audio setup.
-	pub fn generator_factory_mut(&mut self) -> &mut Factory<Arc<dyn Generator>> {
-		&mut self.generator_factory
 	}
 
 	/// Runs ticks until the application is closed.
@@ -548,6 +559,50 @@ fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration:
 }
 
 const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
+
+/// Allocates the application bus and its initial isolated namespaces.
+fn create_message_bus(application: &BaseApplication) -> (MessageBus, MessageScope, MessageScope) {
+	let message_bus = MessageBus::new(message_bus_config(application)).unwrap_or_else(|error| panic!("{error}"));
+	let application_messages = message_bus.new_scope("application");
+	let world_messages = message_bus.new_scope("world");
+	(message_bus, application_messages, world_messages)
+}
+
+/// Resolves the fixed message-storage limits from application startup parameters.
+fn message_bus_config(application: &BaseApplication) -> MessageBusConfig {
+	let defaults = MessageBusConfig::default();
+
+	MessageBusConfig::new(
+		message_bus_limit(application, "messages.max-topics", defaults.max_topics),
+		message_bus_limit(application, "messages.cells-per-topic", defaults.cells_per_topic),
+		message_bus_limit(application, "messages.cell-bytes", defaults.cell_bytes),
+	)
+	.with_cell_alignment(message_bus_limit(
+		application,
+		"messages.cell-alignment",
+		defaults.cell_alignment,
+	))
+	.with_max_listeners_per_topic(message_bus_limit(
+		application,
+		"messages.listeners-per-topic",
+		defaults.max_listeners_per_topic,
+	))
+}
+
+/// Parses one unsigned message-storage limit while preserving the configured default.
+fn message_bus_limit(application: &BaseApplication, name: &str, default: usize) -> usize {
+	application
+		.get_parameter(name)
+		.map(|parameter| {
+			parameter.value().parse::<usize>().unwrap_or_else(|error| {
+				panic!(
+					"Message bus parameter '{name}' is invalid. The most likely cause is that '{}' is not an unsigned integer: {error}",
+					parameter.value()
+				)
+			})
+		})
+		.unwrap_or(default)
+}
 
 /// Resolves an explicit path as supplied while anchoring the development default to its Cargo application.
 fn resolve_application_directory(parameter: Option<&Parameter>, default_directory: &str) -> std::path::PathBuf {
@@ -676,7 +731,7 @@ use tracing::{Level, debug_span, instrument, span};
 use utils::{Box, sync::RwLock};
 
 use super::{
-	Events, Parameter, Receiver, Sender, Time,
+	Events, Parameter, Time,
 	application::{Application, BaseApplication},
 };
 use crate::{
@@ -689,6 +744,7 @@ use crate::{
 		factory::{CreateMessage, Creator, Factory},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
+		message_bus::{MessageBus, MessageBusConfig, MessageScope},
 		task,
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
@@ -698,7 +754,6 @@ use crate::{
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
 		Environment, RenderableMesh, UpdatePose,
-		lights::{Light, Lights},
 		pipeline_manager::PipelineManager,
 		pipelines::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
@@ -722,7 +777,7 @@ use crate::{
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
 impl Creator<Window> for GraphicsApplication {
-	fn publish(&mut self, handle: Option<crate::core::factory::Handle>, window: Window) -> crate::core::factory::Handle {
+	fn publish(&self, handle: Option<crate::core::factory::Handle>, window: Window) -> crate::core::factory::Handle {
 		if let Some(handle) = handle {
 			self.window_factory.0.derive(handle, window);
 			handle

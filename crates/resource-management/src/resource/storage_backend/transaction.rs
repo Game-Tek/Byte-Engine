@@ -1,9 +1,14 @@
+use std::future::Future;
+
 use compio::{
 	buf::{BufResult, IoBuf},
 	io::{AsyncWrite, AsyncWriteAtExt},
 };
 
-use crate::{ProcessedAsset, SerializableResource, resource::ResourceId};
+use crate::{
+	ProcessedAsset, SerializableResource,
+	resource::{ResourceId, ResourcePayloadEncoding},
+};
 
 const FILE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -12,12 +17,20 @@ const FILE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 /// Call [`Self::write_all`] with borrowed payload bytes, then pass the completed
 /// transaction to [`Self::commit`]. File targets buffer small writes and flush
 /// them asynchronously. Memory-backed targets complete without suspending.
+/// Transactions are incremental, so they preserve payload bytes without CPU compression.
 pub struct ResourceTransaction<'a> {
 	// Backend dispatch happens once during commit. Payload writes only touch the
 	// concrete writer below, so the processor's hot path never uses a dyn writer.
 	guard: ResourceReservationGuard<'a>,
 	resource_id: ResourceId,
 	writer: ResourceWriter,
+	decoded_payload: Option<DecodedResourcePayload>,
+}
+
+/// The `DecodedResourcePayload` struct carries a precomputed client-facing identity for encoded bytes.
+struct DecodedResourcePayload {
+	decoded_size: usize,
+	encoding: ResourcePayloadEncoding,
 }
 
 #[derive(Clone, Copy)]
@@ -51,8 +64,27 @@ impl<'a> ResourceTransaction<'a> {
 		Self {
 			guard: ResourceReservationGuard { backend, reservation },
 			resource_id,
+			decoded_payload: None,
 			writer,
 		}
+	}
+
+	/// Records the decoded identity of a complete payload compressed before this transaction began.
+	pub(crate) fn with_compressed_payload(
+		mut self,
+		decoded_size: usize,
+		decoded_hash: u64,
+		encoding: ResourcePayloadEncoding,
+	) -> Self {
+		assert!(
+			encoding.requires_cpu_decompression(),
+			"Compressed resource metadata requires a CPU encoding. The most likely cause is that a prepared payload was marked as raw or GPU-backed."
+		);
+		// The decoded hash is already known, so hashing the encoded bytes while
+		// writing would add work and produce an identity that is immediately discarded.
+		self.writer.set_hash(decoded_hash);
+		self.decoded_payload = Some(DecodedResourcePayload { decoded_size, encoding });
+		self
 	}
 
 	/// Returns the exact payload size reserved by the storage backend.
@@ -101,12 +133,13 @@ impl<'a> ResourceTransaction<'a> {
 			mut guard,
 			resource_id,
 			writer,
+			decoded_payload,
 		} = self;
 		if ResourceId::from(resource.id()) != resource_id {
 			return Err(());
 		}
 
-		let output = writer.finish().await.map_err(|_| ())?;
+		let output = writer.finish(decoded_payload).await.map_err(|_| ())?;
 		let stored = guard
 			.backend
 			.commit_resource(resource_id, guard.reservation, resource, output, allocator)?;
@@ -131,6 +164,35 @@ impl AsyncWrite for ResourceTransaction<'_> {
 	}
 }
 
+/// Prepares and writes one complete owned payload through a caller-selected transaction factory.
+pub(crate) async fn write_complete_owned_resource<'a, T, Begin, BeginFuture>(
+	data: T,
+	compression_policy: crate::resource::ResourceCompressionPolicy,
+	begin: Begin,
+) -> Result<ResourceTransaction<'a>, ()>
+where
+	T: IoBuf,
+	Begin: FnOnce(usize) -> BeginFuture,
+	BeginFuture: Future<Output = Result<ResourceTransaction<'a>, ()>>,
+{
+	let prepared = crate::resource::compression::prepare(data.as_init(), compression_policy);
+	if let Some(prepared) = prepared {
+		let mut transaction = begin(prepared.bytes.len()).await?.with_compressed_payload(
+			prepared.decoded_size,
+			prepared.decoded_hash,
+			prepared.encoding,
+		);
+		let BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, prepared.bytes).await;
+		result.map_err(|_| ())?;
+		Ok(transaction)
+	} else {
+		let mut transaction = begin(data.buf_len()).await?;
+		let BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
+		result.map_err(|_| ())?;
+		Ok(transaction)
+	}
+}
+
 /// The `ResourceTransactionCommit` trait keeps backend publication outside the payload write hot path.
 pub(super) trait ResourceTransactionCommit: Sync {
 	fn abort_resource(&self, _reservation: ResourceReservation) {}
@@ -150,6 +212,28 @@ pub(super) struct ResourceWriter {
 	target: ResourceWriteTarget,
 	expected_size: usize,
 	written_size: usize,
+	hash: ResourceHash,
+}
+
+/// The `ResourceHash` enum either computes stored-byte identity or carries a known decoded identity.
+enum ResourceHash {
+	Compute(md5::Context),
+	Known(u64),
+}
+
+impl ResourceHash {
+	fn consume(&mut self, data: &[u8]) {
+		if let Self::Compute(hasher) = self {
+			hasher.consume(data);
+		}
+	}
+
+	fn finish(self) -> u64 {
+		match self {
+			Self::Compute(hasher) => digest_hash(hasher.finalize()),
+			Self::Known(hash) => hash,
+		}
+	}
 }
 
 impl ResourceWriter {
@@ -182,7 +266,13 @@ impl ResourceWriter {
 			target,
 			expected_size,
 			written_size: 0,
+			hash: ResourceHash::Compute(md5::Context::new()),
 		}
+	}
+
+	/// Uses a precomputed decoded hash instead of hashing the stored payload bytes.
+	fn set_hash(&mut self, hash: u64) {
+		self.hash = ResourceHash::Known(hash);
 	}
 
 	/// Copies one borrowed input into the concrete target and updates transaction accounting.
@@ -196,6 +286,7 @@ impl ResourceWriter {
 		}
 
 		self.target.write_all(data).await?;
+		self.hash.consume(data);
 		self.written_size += data.len();
 		Ok(())
 	}
@@ -216,6 +307,7 @@ impl ResourceWriter {
 
 		let BufResult(result, buffer) = self.target.write_owned(buffer).await;
 		if result.is_ok() {
+			self.hash.consume(buffer.as_init());
 			self.written_size += size;
 		}
 		BufResult(result, buffer)
@@ -226,7 +318,7 @@ impl ResourceWriter {
 	}
 
 	/// Verifies the exact-size contract and durably finishes payload I/O before metadata publication.
-	async fn finish(self) -> std::io::Result<ResourceWriteOutput> {
+	async fn finish(self, decoded_payload: Option<DecodedResourcePayload>) -> std::io::Result<ResourceWriteOutput> {
 		if self.written_size != self.expected_size {
 			return Err(std::io::Error::new(
 				std::io::ErrorKind::UnexpectedEof,
@@ -234,12 +326,20 @@ impl ResourceWriter {
 			));
 		}
 
-		let (target, hash) = self.target.finish().await?;
+		let target = self.target.finish().await?;
+		let hash = self.hash.finish();
+		let (size, encoding) = if let Some(decoded) = decoded_payload {
+			(decoded.decoded_size, decoded.encoding)
+		} else {
+			(self.written_size, ResourcePayloadEncoding::Raw)
+		};
 
 		Ok(ResourceWriteOutput {
 			target,
 			hash,
-			size: self.written_size,
+			size,
+			stored_size: self.written_size,
+			encoding,
 		})
 	}
 }
@@ -310,20 +410,17 @@ impl ResourceWriteTarget {
 		}
 	}
 
-	async fn finish(self) -> std::io::Result<(FinishedResourceWriteTarget, u64)> {
+	async fn finish(self) -> std::io::Result<FinishedResourceWriteTarget> {
 		match self {
 			#[cfg(test)]
-			Self::Memory(data) => {
-				let hash = digest_hash(md5::compute(&data));
-				Ok((FinishedResourceWriteTarget::Memory(data), hash))
-			}
+			Self::Memory(data) => Ok(FinishedResourceWriteTarget::Memory(data)),
 			Self::ReservedFile(file) => {
-				let hash = file.finish().await?;
-				Ok((FinishedResourceWriteTarget::ReservedFile, hash))
+				file.finish().await?;
+				Ok(FinishedResourceWriteTarget::ReservedFile)
 			}
 			Self::StagedFile { file, staging } => {
-				let hash = file.finish().await?;
-				Ok((FinishedResourceWriteTarget::StagedFile(staging), hash))
+				file.finish().await?;
+				Ok(FinishedResourceWriteTarget::StagedFile(staging))
 			}
 		}
 	}
@@ -336,7 +433,6 @@ struct AsyncResourceFile {
 	flushed_size: usize,
 	buffer: Vec<u8>,
 	desired_buffer_capacity: usize,
-	hasher: md5::Context,
 	#[cfg(test)]
 	direct_write_count: usize,
 }
@@ -349,7 +445,6 @@ impl AsyncResourceFile {
 			flushed_size: 0,
 			buffer: Vec::new(),
 			desired_buffer_capacity: expected_size.min(FILE_WRITE_BUFFER_SIZE),
-			hasher: md5::Context::new(),
 			#[cfg(test)]
 			direct_write_count: 0,
 		}
@@ -406,7 +501,6 @@ impl AsyncResourceFile {
 		let size = buffer.buf_len();
 		let BufResult(result, buffer) = self.file.write_all_at(buffer, write_offset).await;
 		if result.is_ok() {
-			self.hasher.consume(buffer.as_init());
 			self.flushed_size += size;
 			#[cfg(test)]
 			{
@@ -430,7 +524,6 @@ impl AsyncResourceFile {
 			self.buffer = buffer;
 			return Err(error);
 		}
-		self.hasher.consume(&buffer);
 		buffer.clear();
 		self.buffer = buffer;
 		self.flushed_size += size;
@@ -452,11 +545,11 @@ impl AsyncResourceFile {
 	}
 
 	/// Flushes and synchronizes the file, then closes its transaction-owned handle.
-	async fn finish(mut self) -> std::io::Result<u64> {
+	async fn finish(mut self) -> std::io::Result<()> {
 		self.flush().await?;
 		self.file.sync_data().await?;
 		self.file.close().await?;
-		Ok(digest_hash(self.hasher.finalize()))
+		Ok(())
 	}
 }
 
@@ -501,17 +594,19 @@ impl StagedResourceFile {
 
 	/// Encodes the staged decoded bytes into one native GPU I/O container before publication.
 	#[cfg(feature = "gpu-processing")]
-	fn compress(self, destination: &std::path::Path, compression: super::super::reader::ResourceCompression) -> Result<(), ()> {
+	fn compress(self, destination: &std::path::Path, encoding: ResourcePayloadEncoding) -> Result<usize, ()> {
 		if destination.exists() {
-			return Ok(());
+			return usize::try_from(std::fs::metadata(destination).map_err(|_| ())?.len()).map_err(|_| ());
 		}
 
 		let source = std::fs::File::open(&self.path).map_err(|_| ())?;
+		// SAFETY: The completed staging file is not mutated while this immutable
+		// mapping is alive, and the file handle remains open through compression.
 		let decoded = unsafe { memmap2::MmapOptions::new().map(&source) }.map_err(|_| ())?;
 		let compressed_staging = self.path.with_extension("compressed");
-		let method = match compression {
-			super::super::reader::ResourceCompression::None => return Err(()),
-			super::super::reader::ResourceCompression::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+		let method = match encoding {
+			ResourcePayloadEncoding::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+			ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => return Err(()),
 		};
 
 		if ghi::io::write_compressed_file(&compressed_staging, method, &decoded).is_err() {
@@ -521,10 +616,10 @@ impl StagedResourceFile {
 		drop(decoded);
 
 		match std::fs::rename(&compressed_staging, destination) {
-			Ok(()) => Ok(()),
+			Ok(()) => usize::try_from(std::fs::metadata(destination).map_err(|_| ())?.len()).map_err(|_| ()),
 			Err(_) if destination.exists() => {
 				let _ = std::fs::remove_file(compressed_staging);
-				Ok(())
+				usize::try_from(std::fs::metadata(destination).map_err(|_| ())?.len()).map_err(|_| ())
 			}
 			Err(_) => {
 				let _ = std::fs::remove_file(compressed_staging);
@@ -553,7 +648,11 @@ enum FinishedResourceWriteTarget {
 pub(super) struct ResourceWriteOutput {
 	target: FinishedResourceWriteTarget,
 	hash: u64,
+	/// Number of bytes clients receive after CPU decompression.
 	size: usize,
+	/// Number of bytes occupied by the prepared payload before backend-specific encoding.
+	stored_size: usize,
+	encoding: ResourcePayloadEncoding,
 }
 
 impl ResourceWriteOutput {
@@ -563,6 +662,14 @@ impl ResourceWriteOutput {
 
 	pub(super) fn size(&self) -> usize {
 		self.size
+	}
+
+	pub(super) fn stored_size(&self) -> usize {
+		self.stored_size
+	}
+
+	pub(super) fn encoding(&self) -> ResourcePayloadEncoding {
+		self.encoding
 	}
 
 	#[cfg(test)]
@@ -581,7 +688,7 @@ impl ResourceWriteOutput {
 	}
 
 	pub(super) fn persist_staged_file(self, destination: &std::path::Path) -> Result<(), ()> {
-		let expected_size = u64::try_from(self.size).map_err(|_| ())?;
+		let expected_size = u64::try_from(self.stored_size).map_err(|_| ())?;
 		match self.target {
 			FinishedResourceWriteTarget::StagedFile(file) => file.persist(destination, expected_size),
 			_ => Err(()),
@@ -591,19 +698,19 @@ impl ResourceWriteOutput {
 	pub(super) fn persist_compressed_file(
 		self,
 		destination: &std::path::Path,
-		compression: super::super::reader::ResourceCompression,
-	) -> Result<(), ()> {
+		encoding: ResourcePayloadEncoding,
+	) -> Result<usize, ()> {
 		#[cfg(feature = "gpu-processing")]
 		{
 			match self.target {
-				FinishedResourceWriteTarget::StagedFile(file) => file.compress(destination, compression),
+				FinishedResourceWriteTarget::StagedFile(file) => file.compress(destination, encoding),
 				_ => Err(()),
 			}
 		}
 
 		#[cfg(not(feature = "gpu-processing"))]
 		{
-			let _ = (destination, compression);
+			let _ = (destination, encoding);
 			Err(())
 		}
 	}

@@ -2,6 +2,8 @@
 
 pub mod resource_manager;
 
+pub(crate) mod compression;
+
 pub mod resource_handler;
 
 pub mod storage_backend;
@@ -11,13 +13,16 @@ pub mod resource_id;
 pub mod read_target;
 pub mod reader;
 
+pub use compression::{ResourceCompressionPolicy, ResourcePayloadEncoding};
 pub use read_target::ReadTargets;
 pub use read_target::ReadTargetsMut;
-pub use reader::{ResourceCompression, ResourceGpuBacking, ResourceReaderBacking};
+pub use reader::{ResourceGpuBacking, ResourceReaderBacking};
 pub use resource_id::ResourceId;
 #[cfg(debug_assertions)]
 pub use resource_manager::{ResourceUpdate, ResourceUpdateListener};
-pub use storage_backend::redb::{ReDBStorageBackend, ResourceStorageMode, ResourceStorageSettings};
+pub use storage_backend::redb::{
+	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
+};
 pub use storage_backend::{
 	DynReadStorageBackend, DynStorageBackend, DynWriteStorageBackend, ReadStorageBackend, ResourceTransaction, StorageBackend,
 	WriteStorageBackend,

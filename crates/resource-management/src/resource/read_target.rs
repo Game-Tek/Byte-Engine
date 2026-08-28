@@ -5,9 +5,12 @@ use crate::{Reference, Stream, resource::reader::ResourceReaderBacking, stream::
 
 #[derive(Debug)]
 /// The `ReadTargets` enum provides read-only access to resource data after a read completes.
+///
+/// CPU readers return decoded bytes in every buffer and backing variant.
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
 	Buffer(&'a [u8]),
+	/// Selected named ranges from an uncompressed payload.
 	Streams(Vec<Stream<'a>>),
 	/// Storage owned by the reader, including mapped files when the backend supports them.
 	Backing(ResourceReaderBacking),
@@ -48,6 +51,9 @@ impl<'a> From<ReadTargetsMut<'a>> for ReadTargets<'a> {
 
 #[derive(Debug)]
 /// The `ReadTargetsMut` enum lets callers select where a resource reader writes binary data.
+///
+/// CPU-compressed resources accept only an exact full-size [`Self::Buffer`] or
+/// [`Self::Box`], or [`Self::BackingStorage`] when the reader should allocate.
 pub enum ReadTargetsMut<'a> {
 	Box {
 		buffer: Box<[u8]>,
@@ -63,6 +69,7 @@ pub enum ReadTargetsMut<'a> {
 		/// Number of bytes to read from the source. Defaults to `buffer.len()` when `None`.
 		size: Option<usize>,
 	},
+	/// Selects named ranges from an uncompressed payload.
 	Streams(Vec<StreamMut<'a>>),
 	/// Requests reader-owned storage when the caller does not provide a buffer.
 	BackingStorage,
@@ -85,6 +92,7 @@ impl<'a> ReadTargetsMut<'a> {
 
 	/// Sets the byte offset into the source resource data to start reading from.
 	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream offset.
+	/// CPU-compressed resources reject nonzero offsets.
 	pub fn with_offset(mut self, offset: usize) -> Self {
 		match &mut self {
 			ReadTargetsMut::Box { offset: target, .. } | ReadTargetsMut::Buffer { offset: target, .. } => *target = offset,
@@ -95,6 +103,7 @@ impl<'a> ReadTargetsMut<'a> {
 
 	/// Sets the number of bytes to read from the source.
 	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream size.
+	/// CPU-compressed resources require the complete decoded size.
 	pub fn with_size(mut self, size: usize) -> Self {
 		match &mut self {
 			ReadTargetsMut::Box { size: target, .. } | ReadTargetsMut::Buffer { size: target, .. } => *target = Some(size),

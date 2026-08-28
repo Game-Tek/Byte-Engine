@@ -12,7 +12,7 @@ Each stored resource has two parts:
 - metadata, stored as an archived `SerializableResource`
 - binary payload bytes, stored as resource data
 
-The metadata contains the public ID, hashed UID, resource class, binary size, content hash, serialized typed model, optional stream descriptions, and queryable properties.
+The metadata contains the public ID, hashed UID, resource class, decoded and stored binary sizes, content hash, payload encoding, serialized typed model, optional stream descriptions, and queryable properties.
 The binary payload contains the actual bytes consumed by a renderer, audio system, or other runtime system.
 
 ## Typed references
@@ -33,10 +33,16 @@ A mesh reference resolves primitive materials and exposes stream descriptions fo
 
 The Redb storage backend stores metadata in `resources.db`. It supports two payload storage modes:
 
-- `files` stores each resource payload in a separate hash-named file. This mode is the default.
+- `files` stores each resource payload in a separate extensionless file named from its resource ID, decoded hash, and encoding. This mode is the default. Read the resource's persisted `encoding` to interpret the file contents.
 - `packed` stores every payload in a reusable range of `resources.pack` and records each resource offset in `resources.db`.
 
 One mode applies to the whole resource store. The backend records that mode when it creates the store and discovers it when the store is reopened. It rejects a conflicting mode instead of mixing payload layouts.
+
+Complete resource payloads use CPU LZ4 compression by default. The backend keeps a payload uncompressed when it is smaller than 1 KiB, compression would not save more than 12.5 percent, or the temporary compression output cannot be prepared safely. Set `ProcessedAsset::with_compression(ResourceCompressionPolicy::Disabled)` when one resource must remain uncompressed.
+
+The resource hash always identifies decoded bytes, so changing the storage encoding does not change resource identity. Each resource stores one `encoding`: `raw`, `cpu-lz4`, or `metal-io-lz4`. CPU and GPU encodings are mutually exclusive by construction. Inspect `encoding`, `size`, and `stored_size` when you need to distinguish the client-facing payload from its physical extent.
+
+Only complete payload store calls apply CPU compression. A `ResourceTransaction` created with `begin_resource` stays uncompressed because its bytes can arrive through partial writes. The per-resource CPU policy and store-wide native texture policy select the final encoding; they are not additional resource state.
 
 Packed replacements use copy-on-write publication so an interrupted bake cannot replace valid metadata with partial bytes. After publication, the backend reuses the old range when no mapped reader still owns it. Deletion also returns its range. The allocator merges adjacent free ranges, chooses the smallest range that fits, and grows `resources.pack` only when no free range is large enough. When you reopen the store, it reconstructs free ranges from the live offsets in `resources.db`, which also recovers space left by an interrupted bake.
 
@@ -67,9 +73,14 @@ buffer, or stream target when you need ownership or preallocated memory.
 Use the default target when the consumer can borrow the backing storage directly.
 Use explicit targets when the consumer needs a specific allocation, lifetime, or stream layout.
 
+A CPU-compressed resource is always decoded before a client receives it. Load it into either an exact buffer sized to `Reference::size` or reader-owned backing storage. Partial ranges and separate stream targets are unavailable for one compressed block. If you need named ranges, load reader-owned backing storage first, then use the resource's `StreamDescription` values to select ranges from the decoded bytes.
+
 ## Rust API
 
 - [`ResourceManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html)
 - [`Reference`](https://docs.rs/byte-engine-resource-management/latest/resource_management/reference/struct.Reference.html)
 - [`StreamDescription`](https://docs.rs/byte-engine-resource-management/latest/resource_management/struct.StreamDescription.html)
 - [`ReadTargetsMut`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/read_target/enum.ReadTargetsMut.html)
+- [`ResourceCompressionPolicy`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourceCompressionPolicy.html)
+- [`ResourcePayloadEncoding`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourcePayloadEncoding.html)
+- [`ResourceGpuCompressionPolicy`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourceGpuCompressionPolicy.html)

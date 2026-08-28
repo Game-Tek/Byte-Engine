@@ -109,7 +109,8 @@ impl Application for GraphicsApplication {
 		// Opening an application store first removes resources baked by an incompatible engine revision.
 		let resource_storage = ReDBStorageBackend::new_writable_with_settings(
 			resources_path,
-			ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4),
+			ResourceStorageSettings::new(ResourceStorageMode::Files)
+				.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
 		)
 		.unwrap(); // TODO: revise this
 
@@ -721,7 +722,7 @@ use std::{sync::Arc, thread};
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{
 	resource::{
-		ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings,
+		ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
 		resource_manager::ResourceManager,
 	},
 	resources::material::Material,

@@ -417,9 +417,12 @@ impl VisibilityPipelineManager {
 		let resource_management::resource::ResourceReaderBacking::Gpu(backing) = backing else {
 			return Err("the compressed texture returned CPU-readable backing".to_string());
 		};
-		let compression = match backing.compression() {
-			resource_management::resource::ResourceCompression::None => ghi::io::ResourceIoCompression::None,
-			resource_management::resource::ResourceCompression::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+		let compression = match backing.encoding() {
+			resource_management::resource::ResourcePayloadEncoding::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
+			resource_management::resource::ResourcePayloadEncoding::Raw
+			| resource_management::resource::ResourcePayloadEncoding::CpuLz4 => {
+				return Err("the GPU texture backing declared a CPU-readable encoding".to_string());
+			}
 		};
 		let file = self
 			.resource_io_queue

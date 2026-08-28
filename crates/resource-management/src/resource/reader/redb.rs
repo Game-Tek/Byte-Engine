@@ -1,4 +1,4 @@
-use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};
+use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking, StoredResourceReader};
 use crate::{
 	StreamDescription,
 	r#async::{self, BoxedFuture},
@@ -8,7 +8,7 @@ use crate::{
 /// The `FileResourceReader` struct provides mapped payload bytes for deferred resource loads.
 #[derive(Debug)]
 pub struct FileResourceReader {
-	backing: ResourceReaderBacking,
+	reader: StoredResourceReader,
 }
 
 impl FileResourceReader {
@@ -25,30 +25,57 @@ impl FileResourceReader {
 		size: u64,
 		lease: Option<std::sync::Arc<()>>,
 	) -> Result<Self, ()> {
-		// Empty resources do not map file pages and therefore need no allocator lease.
-		let end = offset.checked_add(size).ok_or(())?;
+		let decoded_size = usize::try_from(size).map_err(|_| ())?;
+		Self::new_stored_range(
+			file,
+			file_size,
+			offset,
+			size,
+			decoded_size,
+			crate::resource::ResourcePayloadEncoding::Raw,
+			lease,
+		)
+	}
+
+	/// Maps one stored range while keeping its CPU encoding private from clients.
+	pub(crate) fn new_stored_range(
+		file: impl memmap2::MmapAsRawDesc,
+		file_size: u64,
+		offset: u64,
+		stored_size: u64,
+		decoded_size: usize,
+		encoding: crate::resource::ResourcePayloadEncoding,
+		lease: Option<std::sync::Arc<()>>,
+	) -> Result<Self, ()> {
+		let end = offset.checked_add(stored_size).ok_or(())?;
 		if end > file_size {
 			return Err(());
 		}
-		let backing = if size == 0 {
+		let backing = if stored_size == 0 {
 			ResourceReaderBacking::Buffer(Box::new([]))
 		} else {
-			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, size, lease)?)
+			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, stored_size, lease)?)
 		};
-		Ok(Self { backing })
+		Ok(Self {
+			reader: StoredResourceReader::new(backing, encoding, decoded_size),
+		})
 	}
 
 	/// Creates a reader that transfers ownership of a native GPU I/O source instead of mapping CPU bytes.
-	pub fn new_gpu(path: std::path::PathBuf, compression: super::ResourceCompression) -> Self {
+	pub fn new_gpu(path: std::path::PathBuf, encoding: crate::resource::ResourcePayloadEncoding) -> Self {
 		Self {
-			backing: ResourceReaderBacking::Gpu(super::ResourceGpuBacking::new(path, compression)),
+			reader: StoredResourceReader::new(
+				ResourceReaderBacking::Gpu(super::ResourceGpuBacking::new(path, encoding)),
+				encoding,
+				0,
+			),
 		}
 	}
 }
 
 impl ResourceReader for FileResourceReader {
-	fn is_gpu_backed(&self) -> bool {
-		matches!(self.backing, ResourceReaderBacking::Gpu(_))
+	fn encoding(&self) -> crate::resource::ResourcePayloadEncoding {
+		self.reader.encoding()
 	}
 
 	fn read_into<'b, 'c: 'b, 'a: 'b>(
@@ -56,67 +83,11 @@ impl ResourceReader for FileResourceReader {
 		stream_descriptions: Option<&'c [StreamDescription]>,
 		read_target: ReadTargetsMut<'a>,
 	) -> BoxedFuture<'b, Result<ReadTargets<'a>, ()>> {
-		r#async::future(async move {
-			let data = self.backing.try_as_slice().ok_or(())?;
-			match read_target {
-				ReadTargetsMut::Buffer { buffer, offset, size } => {
-					let read_len = size
-						.unwrap_or(buffer.len())
-						.min(buffer.len())
-						.min(data.len().saturating_sub(offset));
-					buffer[..read_len].copy_from_slice(&data[offset..][..read_len]);
-					Ok(ReadTargets::Buffer(&buffer[..read_len]))
-				}
-				ReadTargetsMut::Box {
-					mut buffer,
-					offset,
-					size,
-				} => {
-					let read_len = size
-						.unwrap_or(buffer.len())
-						.min(buffer.len())
-						.min(data.len().saturating_sub(offset));
-					buffer[..read_len].copy_from_slice(&data[offset..][..read_len]);
-					if read_len < buffer.len() {
-						let mut v = buffer.into_vec();
-						v.truncate(read_len);
-						Ok(ReadTargets::Box(v.into_boxed_slice()))
-					} else {
-						Ok(ReadTargets::Box(buffer))
-					}
-				}
-				ReadTargetsMut::Streams(mut streams) => {
-					if let Some(stream_descriptions) = stream_descriptions {
-						for sd in stream_descriptions {
-							let stream_offset = sd.offset;
-							if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
-								let offset = s.offset();
-								let read_len = s
-									.size()
-									.unwrap_or(s.buffer().len())
-									.min(s.buffer().len())
-									.min(data.len().saturating_sub(stream_offset + offset));
-								s.buffer_mut()[..read_len].copy_from_slice(&data[(stream_offset + offset)..][..read_len]);
-							}
-						}
-
-						Ok(ReadTargets::Streams(
-							streams.into_iter().map(|stream| stream.into()).collect(),
-						))
-					} else {
-						log::error!(
-							"Resource streams could not be loaded. The most likely cause is that stream descriptions are missing."
-						);
-						Err(())
-					}
-				}
-				ReadTargetsMut::BackingStorage => Err(()),
-			}
-		})
+		self.reader.read_into(stream_descriptions, read_target)
 	}
 
 	fn into_backing_storage(self: Box<Self>) -> BoxedFuture<'static, Result<ResourceReaderBacking, Box<dyn ResourceReader>>> {
-		r#async::future(async move { Ok(self.backing) })
+		Box::new(self.reader).into_backing_storage()
 	}
 }
 

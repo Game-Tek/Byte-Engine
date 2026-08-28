@@ -4,11 +4,15 @@ pub mod redb;
 mod transaction;
 
 pub use transaction::ResourceTransaction;
+pub(crate) use transaction::write_complete_owned_resource;
 use transaction::{ResourceTransactionCommit, ResourceWriteOutput, ResourceWriter, StagedResourceFile};
 
+/// The `StorageBackend` trait composes typed resource reads and writes for one storage implementation.
 pub trait StorageBackend: ReadStorageBackend + WriteStorageBackend {}
+/// The `DynStorageBackend` trait provides object-safe resource reads and writes for runtime-selected storage.
 pub trait DynStorageBackend: DynReadStorageBackend + DynWriteStorageBackend {}
 
+/// The `ReadStorageBackend` trait provides metadata and decoded payload readers for stored resources.
 pub trait ReadStorageBackend: Sync + Send {
 	fn list(&self) -> impl Future<Output = Result<Vec<String>, String>>;
 	fn read<'a>(&'a self, id: ResourceId<'a>)
@@ -37,6 +41,7 @@ pub trait ReadStorageBackend: Sync + Send {
 	}
 }
 
+/// The `DynReadStorageBackend` trait provides object-safe resource lookup for runtime-selected storage.
 pub trait DynReadStorageBackend: Send + Sync {
 	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>>;
 	fn read<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Option<(SerializableResource, MultiResourceReader)>>;
@@ -54,6 +59,10 @@ pub trait DynReadStorageBackend: Send + Sync {
 	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool>;
 }
 
+/// The `WriteStorageBackend` trait provides complete and incremental resource-authoring paths.
+///
+/// Use [`Self::store`] for complete payloads that may use CPU compression. Use
+/// [`Self::begin_resource`] when a processor must write incrementally without compression.
 pub trait WriteStorageBackend: Sync + Send {
 	/// Removes every stored resource while preserving the backend configuration.
 	///
@@ -64,6 +73,9 @@ pub trait WriteStorageBackend: Sync + Send {
 
 	/// Reserves exact payload storage before a processor starts writing.
 	///
+	/// This incremental path always stores bytes uncompressed. Use [`Self::store`]
+	/// when the complete payload is available and may use CPU compression.
+	///
 	/// Await [`ResourceTransaction::write_all`] until exactly `size` bytes have
 	/// been accepted, then await [`ResourceTransaction::commit`].
 	fn begin_resource<'a>(
@@ -71,6 +83,13 @@ pub trait WriteStorageBackend: Sync + Send {
 		id: ResourceId<'_>,
 		size: usize,
 	) -> impl Future<Output = Result<ResourceTransaction<'a>, ()>> + 'a;
+
+	/// Returns the CPU compression policy this backend applies to one complete resource.
+	///
+	/// Native GPU encodings override this hook so their payload remains entirely outside the CPU compression path.
+	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> crate::resource::ResourceCompressionPolicy {
+		resource.compression_policy()
+	}
 
 	fn store<'a>(
 		&'a self,
@@ -97,10 +116,10 @@ pub trait WriteStorageBackend: Sync + Send {
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
 		async move {
-			let size = data.buf_len();
-			let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
-			let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
-			result.map_err(|_| ())?;
+			let id = ResourceId::new(resource.id());
+			let compression_policy = self.cpu_compression_policy(&resource);
+			let transaction =
+				write_complete_owned_resource(data, compression_policy, |size| self.begin_resource(id, size)).await?;
 			transaction.commit(resource, allocator).await
 		}
 	}
@@ -112,8 +131,21 @@ pub trait WriteStorageBackend: Sync + Send {
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
 		async move {
-			let mut transaction = self.begin_resource(ResourceId::new(resource.id()), data.len()).await?;
-			transaction.write_all(data).await.map_err(|_| ())?;
+			let prepared = crate::resource::compression::prepare(data, self.cpu_compression_policy(&resource));
+			let transaction = if let Some(prepared) = prepared {
+				let mut transaction = self
+					.begin_resource(ResourceId::new(resource.id()), prepared.bytes.len())
+					.await?
+					.with_compressed_payload(prepared.decoded_size, prepared.decoded_hash, prepared.encoding);
+				let compio::buf::BufResult(result, _) =
+					compio::io::AsyncWriteExt::write_all(&mut transaction, prepared.bytes).await;
+				result.map_err(|_| ())?;
+				transaction
+			} else {
+				let mut transaction = self.begin_resource(ResourceId::new(resource.id()), data.len()).await?;
+				transaction.write_all(data).await.map_err(|_| ())?;
+				transaction
+			};
 			transaction.commit(resource, allocator).await
 		}
 	}
@@ -129,10 +161,12 @@ pub trait WriteStorageBackend: Sync + Send {
 	fn start(&self, _: ResourceId<'_>) {}
 }
 
+/// The `DynWriteStorageBackend` trait provides object-safe resource authoring for runtime-selected storage.
 pub trait DynWriteStorageBackend: Send + Sync {
 	fn clear(&self) -> BoxedFuture<'_, Result<(), String>>;
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
 	fn begin_resource<'a>(&'a self, id: ResourceId<'_>, size: usize) -> BoxedFuture<'a, Result<ResourceTransaction<'a>, ()>>;
+	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> crate::resource::ResourceCompressionPolicy;
 	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>>;
 	fn store_in<'a>(
 		&'a self,
@@ -298,6 +332,10 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 		Box::pin(WriteStorageBackend::begin_resource(self, id, size))
 	}
 
+	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> crate::resource::ResourceCompressionPolicy {
+		WriteStorageBackend::cpu_compression_policy(self, resource)
+	}
+
 	fn store<'a>(&'a self, resource: ProcessedAsset, data: &'a [u8]) -> BoxedFuture<'a, Result<SerializableResource, ()>> {
 		Box::pin(WriteStorageBackend::store(self, resource, data))
 	}
@@ -331,7 +369,7 @@ pub mod tests {
 	use utils::{hash::HashMap, sync::Mutex};
 
 	use super::*;
-	use crate::resource::resource_handler::tests::MemoryResourceReader;
+	use crate::resource::reader::{ResourceReaderBacking, StoredResourceReader};
 
 	/// The `TestStorageBackend` struct keeps baked resources and development traces in memory for focused tests.
 	#[derive(Clone)]
@@ -363,6 +401,7 @@ pub mod tests {
 						resource: resource.resource,
 						streams: resource.streams,
 						queryable_properties: resource.queryable_properties,
+						compression: crate::resource::ResourceCompressionPolicy::Enabled,
 					}
 				})
 				.collect()
@@ -385,23 +424,27 @@ pub mod tests {
 						resource: resource.resource,
 						streams: resource.streams,
 						queryable_properties: resource.queryable_properties,
+						compression: crate::resource::ResourceCompressionPolicy::Enabled,
 					}
 				})
 		}
 
 		pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
-			Some(
-				self.resources
-					.lock()
-					.iter()
-					.find(|x| {
-						let resource: SerializableResource = crate::from_slice(&x.1.0).unwrap();
-						resource.id == name.as_ref()
-					})?
-					.1
-					.1
-					.clone(),
-			)
+			let resources = self.resources.lock();
+			let (serialized, stored) = resources.iter().find_map(|(_, value)| {
+				let resource: SerializableResource = crate::from_slice(&value.0).ok()?;
+				(resource.id() == name.as_ref()).then_some((resource, &value.1))
+			})?;
+
+			match serialized.encoding() {
+				crate::resource::ResourcePayloadEncoding::Raw => Some(stored.clone()),
+				crate::resource::ResourcePayloadEncoding::CpuLz4 => {
+					let mut decoded = vec![0; serialized.size()].into_boxed_slice();
+					crate::resource::compression::decompress_into(stored, &mut decoded).ok()?;
+					Some(decoded)
+				}
+				crate::resource::ResourcePayloadEncoding::MetalIoLz4 => None,
+			}
 		}
 	}
 
@@ -425,7 +468,11 @@ pub mod tests {
 
 				let resource: SerializableResource = crate::from_slice(&resource).unwrap();
 
-				let resource_reader: MultiResourceReader = Box::new(MemoryResourceReader::new(data));
+				let resource_reader: MultiResourceReader = Box::new(StoredResourceReader::new(
+					ResourceReaderBacking::Buffer(data),
+					resource.encoding(),
+					resource.size(),
+				));
 
 				Some((resource, resource_reader))
 			})
@@ -502,8 +549,10 @@ pub mod tests {
 			let id = resource.id().to_string();
 			let hash = output.hash();
 			let size = output.size();
+			let stored_size = output.stored_size();
+			let encoding = output.encoding();
 			let data = output.into_memory()?;
-			let container = resource.into_serializable(hash, size);
+			let container = resource.into_serializable(hash, size, stored_size, encoding);
 			let serialized_container = crate::to_vec_in(&container, allocator).map_err(|_| ())?;
 
 			self.resources

@@ -335,6 +335,9 @@ impl<'a> BakeContext<'a> {
 
 	/// Reserves exact resource storage before a processor starts writing its payload.
 	///
+	/// This incremental authoring path always stores bytes uncompressed. Use
+	/// [`Self::store_resource`] when the complete payload is available.
+	///
 	/// Write exactly `size` bytes through [`resource::ResourceTransaction::write_all`], then pass the
 	/// transaction to [`Self::commit_primary`], [`Self::commit_resource`], or
 	/// [`Self::commit_generated`].
@@ -443,10 +446,7 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 		data: T,
 	) -> Result<SerializableResource, LoadErrors> {
-		let size = data.buf_len();
-		let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
-		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
-		result.map_err(|_| LoadErrors::FailedToStore)?;
+		let transaction = write_complete_owned_resource(self.resource_storage_backend, &resource, data).await?;
 
 		self.commit_resource(transaction, resource).await
 	}
@@ -467,10 +467,7 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 		data: T,
 	) -> Result<SerializableResource, LoadErrors> {
-		let size = data.buf_len();
-		let mut transaction = self.begin_resource(ResourceId::new(resource.id()), size).await?;
-		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, data).await;
-		result.map_err(|_| LoadErrors::FailedToStore)?;
+		let transaction = write_complete_owned_resource(self.resource_storage_backend, &resource, data).await?;
 
 		self.commit_generated(transaction, resource).await
 	}
@@ -492,6 +489,20 @@ impl<'a> BakeContext<'a> {
 	pub fn allocator(&self) -> &'a dyn Allocator {
 		self.allocator
 	}
+}
+
+/// Writes a complete owned payload after applying the backend and per-resource CPU compression policy.
+async fn write_complete_owned_resource<'a, T: compio::buf::IoBuf>(
+	storage: &'a dyn resource::DynWriteStorageBackend,
+	resource: &ProcessedAsset,
+	data: T,
+) -> Result<resource::ResourceTransaction<'a>, LoadErrors> {
+	let id = ResourceId::new(resource.id());
+	resource::storage_backend::write_complete_owned_resource(data, storage.cpu_compression_policy(resource), |size| {
+		storage.begin_resource(id, size)
+	})
+	.await
+	.map_err(|_| LoadErrors::FailedToStore)
 }
 
 use std::{alloc::Allocator, cell::Cell, fmt, future::Future};

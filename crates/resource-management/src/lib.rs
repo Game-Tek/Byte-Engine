@@ -159,9 +159,15 @@ pub struct ProcessedAsset {
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
 	queryable_properties: Vec<QueryableProperty>,
+	compression: resource::ResourceCompressionPolicy,
 }
 
 impl ProcessedAsset {
+	/// Creates processed metadata for one runtime resource with CPU compression enabled.
+	///
+	/// Next, attach any named ranges with [`Self::with_streams`] or change the
+	/// compression policy with [`Self::with_compression`] before passing the
+	/// resource to [`WriteStorageBackend::store`](resource::WriteStorageBackend::store).
 	pub fn new<T: Model>(id: ResourceId<'_>, resource: T) -> Self {
 		ProcessedAsset {
 			id: id.to_string(),
@@ -170,6 +176,7 @@ impl ProcessedAsset {
 			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
+			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
 	}
 
@@ -187,6 +194,11 @@ impl ProcessedAsset {
 		&self.resource
 	}
 
+	/// Returns whether whole-resource storage may apply CPU compression.
+	pub fn compression_policy(&self) -> resource::ResourceCompressionPolicy {
+		self.compression
+	}
+
 	/// Attaches the source versions observed while the asset handler produced this resource.
 	pub(crate) fn with_asset_dependencies(mut self, asset_dependencies: Vec<asset::storage_backend::AssetDependency>) -> Self {
 		self.asset_dependencies = asset_dependencies;
@@ -195,19 +207,31 @@ impl ProcessedAsset {
 	}
 
 	/// Moves processed metadata into a serializable resource container.
-	pub fn into_serializable(self, hash: u64, size: usize) -> SerializableResource {
+	pub fn into_serializable(
+		self,
+		hash: u64,
+		size: usize,
+		stored_size: usize,
+		encoding: resource::ResourcePayloadEncoding,
+	) -> SerializableResource {
 		SerializableResource {
 			id: self.id,
 			hash,
 			class: self.class,
 			asset_dependencies: self.asset_dependencies,
 			size,
+			stored_size,
+			encoding,
 			resource: self.resource,
 			streams: self.streams,
 			queryable_properties: self.queryable_properties,
 		}
 	}
 
+	/// Creates processed metadata from an already serialized model with CPU compression enabled.
+	///
+	/// Next, pass the result and its complete binary payload to
+	/// [`WriteStorageBackend::store`](resource::WriteStorageBackend::store).
 	pub fn new_with_serialized(id: &str, class: &str, resource: DataStorage) -> Self {
 		ProcessedAsset {
 			id: id.to_string(),
@@ -219,12 +243,26 @@ impl ProcessedAsset {
 				name: "name".to_string(),
 				value: QueryableValue::String(id.to_string()),
 			}],
+			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
 	}
 
+	/// Attaches named decoded ranges that consumers can select from an uncompressed payload.
+	///
+	/// If whole-resource compression is retained, load decoded backing storage with
+	/// [`Reference::load`] before selecting these ranges.
 	pub fn with_streams(mut self, streams: Vec<StreamDescription>) -> Self {
 		self.streams = Some(streams);
 
+		self
+	}
+
+	/// Selects whether whole-resource store calls may apply CPU compression.
+	///
+	/// Compression is enabled by default. Partial [`ResourceTransaction`](resource::ResourceTransaction)
+	/// writes remain uncompressed regardless of this setting.
+	pub fn with_compression(mut self, compression: resource::ResourceCompressionPolicy) -> Self {
+		self.compression = compression;
 		self
 	}
 }
@@ -242,6 +280,7 @@ impl<'a, T: Resource + ResourceArchive + Clone> From<Reference<T>> for Processed
 			resource: to_vec(&value.resource).unwrap(),
 			streams: None,
 			queryable_properties,
+			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
 	}
 }
@@ -255,12 +294,13 @@ impl From<SerializableResource> for ProcessedAsset {
 			resource: value.resource.clone(),
 			streams: None,
 			queryable_properties: value.queryable_properties,
+			compression: resource::ResourceCompressionPolicy::Enabled,
 		}
 	}
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-
+/// The `StreamDescription` struct identifies one named range in decoded resource bytes.
 pub struct StreamDescription {
 	/// The subresource name, such as `Vertex` or `Index`.
 	name: String,
@@ -294,7 +334,7 @@ impl StreamDescription {
 }
 
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-
+/// The `SerializableResource` struct persists runtime metadata and the explicit encoding of its binary payload.
 pub struct SerializableResource {
 	/// The stable, public resource ID.
 	id: String,
@@ -302,18 +342,29 @@ pub struct SerializableResource {
 	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
 	asset_dependencies: Vec<asset::storage_backend::AssetDependency>,
+	/// Number of bytes clients receive after CPU decompression.
 	size: usize,
+	/// Number of bytes occupied by the encoded payload in storage.
+	stored_size: usize,
+	encoding: resource::ResourcePayloadEncoding,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
 	queryable_properties: Vec<QueryableProperty>,
 }
 
 impl SerializableResource {
+	/// Creates persisted resource metadata for an explicitly encoded payload.
+	///
+	/// `size` is the decoded size clients receive and `stored_size` is the physical
+	/// payload extent. Next, construct a reader that applies [`Self::encoding`]
+	/// before exposing the payload.
 	pub fn new(
 		id: String,
 		hash: u64,
 		class: String,
 		size: usize,
+		stored_size: usize,
+		encoding: resource::ResourcePayloadEncoding,
 		resource: DataStorage,
 		streams: Option<Vec<StreamDescription>>,
 		queryable_properties: Vec<QueryableProperty>,
@@ -324,6 +375,8 @@ impl SerializableResource {
 			class,
 			asset_dependencies: Vec::new(),
 			size,
+			stored_size,
+			encoding,
 			resource,
 			streams,
 			queryable_properties,
@@ -351,8 +404,19 @@ impl SerializableResource {
 		&self.class
 	}
 
+	/// Returns the decoded payload size clients must allocate before loading.
 	pub fn size(&self) -> usize {
 		self.size
+	}
+
+	/// Returns the physical encoded payload size used for files and packed allocation.
+	pub fn stored_size(&self) -> usize {
+		self.stored_size
+	}
+
+	/// Returns the explicit storage and delivery encoding for this resource payload.
+	pub fn encoding(&self) -> resource::ResourcePayloadEncoding {
+		self.encoding
 	}
 
 	pub fn resource(&self) -> &[u8] {

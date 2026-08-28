@@ -6,7 +6,7 @@
 
 mod packed_allocator;
 
-/// The `RedbStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
+/// The `ReDBStorageBackend` struct provides persistent storage for baked resource metadata and payloads.
 ///
 /// Use one backend instance for a directory while it can be updated. Drop any
 /// read-only backend and its returned mapped backings before opening that
@@ -15,7 +15,7 @@ pub struct ReDBStorageBackend {
 	db: RedbDatabase,
 	base_path: std::path::PathBuf,
 	storage_mode: ResourceStorageMode,
-	image_compression: ResourceCompression,
+	image_compression: ResourceGpuCompressionPolicy,
 	packed_allocator: Option<PackedResourceAllocator>,
 }
 
@@ -59,7 +59,7 @@ impl ReDBStorageBackend {
 			db,
 			base_path,
 			storage_mode: ResourceStorageMode::Files,
-			image_compression: ResourceCompression::None,
+			image_compression: ResourceGpuCompressionPolicy::Disabled,
 			packed_allocator: None,
 		};
 		let settings = backend.persisted_settings()?;
@@ -99,7 +99,7 @@ impl ReDBStorageBackend {
 	fn open_writable(
 		base_path: std::path::PathBuf,
 		requested_mode: Option<ResourceStorageMode>,
-		requested_compression: Option<ResourceCompression>,
+		requested_compression: Option<ResourceGpuCompressionPolicy>,
 	) -> Result<Self, String> {
 		std::fs::create_dir_all(&base_path).unwrap();
 		let db = if cfg!(test) {
@@ -127,7 +127,6 @@ impl ReDBStorageBackend {
 		let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
 		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
 		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
-		let _ = write.open_table(RESOURCE_COMPRESSION_TABLE);
 		#[cfg(debug_assertions)]
 		let _ = write.open_table(RESOURCE_TRACES_TABLE);
 		let settings = {
@@ -153,7 +152,7 @@ impl ReDBStorageBackend {
 			let stored_compression = configuration
 				.get(IMAGE_COMPRESSION_KEY)
 				.unwrap()
-				.map(|value| ResourceCompression::from_bytes(value.value()))
+				.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
 				.transpose()?
 				.unwrap_or_default();
 			let image_compression = match requested_compression {
@@ -280,7 +279,7 @@ impl ReDBStorageBackend {
 		let image_compression = table
 			.get(IMAGE_COMPRESSION_KEY)
 			.map_err(|error| format!("resource image compression could not be read: {error}"))?
-			.map(|value| ResourceCompression::from_bytes(value.value()))
+			.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
 			.transpose()?
 			.unwrap_or_default();
 		let settings = ResourceStorageSettings {
@@ -295,57 +294,61 @@ impl ReDBStorageBackend {
 	async fn open_reader(
 		&self,
 		id: [u8; 16],
-		compression: ResourceCompression,
-		resource_hash: u64,
-		resource_size: usize,
+		resource: &SerializableResource,
 		packed_offset: Option<u64>,
 		packed_lease: Option<std::sync::Arc<()>>,
 	) -> Option<MultiResourceReader> {
-		match self.storage_mode {
+		let stored_size = u64::try_from(resource.stored_size()).ok()?;
+		let (file, offset) = match self.storage_mode {
 			ResourceStorageMode::Files => {
-				let path = resource_payload_path(&self.base_path, id, resource_hash, compression);
+				let path = resource_payload_path(&self.base_path, id, resource.hash(), resource.encoding());
 				let file = AsyncFile::open(&path).await.ok()?;
-				if compression != ResourceCompression::None {
-					return Some(Box::new(FileResourceReader::new_gpu(path, compression)));
+				if file.metadata().await.ok()?.len() != stored_size {
+					log::error!(
+						"Resource payload size does not match its metadata. The most likely cause is a corrupt or incomplete resource file."
+					);
+					return None;
 				}
-				let size = file.metadata().await.ok()?.len();
-				Some(Box::new(FileResourceReader::new(&file, size).ok()?))
+				if resource.encoding().is_gpu_backed() {
+					return Some(Box::new(FileResourceReader::new_gpu(path, resource.encoding())));
+				}
+				(file, 0)
 			}
 			ResourceStorageMode::Packed => {
 				let file = AsyncFile::open(self.base_path.join(PACKED_RESOURCES_FILE)).await.ok()?;
-				let file_size = file.metadata().await.ok()?.len();
-				let resource_size = u64::try_from(resource_size).ok()?;
-				let reader =
-					FileResourceReader::new_range(&file, file_size, packed_offset?, resource_size, packed_lease).ok()?;
-				Some(Box::new(reader))
+				(file, packed_offset?)
 			}
-		}
+		};
+		let file_size = file.metadata().await.ok()?.len();
+		let reader = FileResourceReader::new_stored_range(
+			&file,
+			file_size,
+			offset,
+			stored_size,
+			resource.size(),
+			resource.encoding(),
+			packed_lease,
+		)
+		.ok()?;
+		Some(Box::new(reader))
 	}
 
 	/// Reads one metadata snapshot and leases its packed range before a writer can retire it.
-	fn read_location(
-		&self,
-		id: ResourceId,
-	) -> Option<(
-		SerializableResource,
-		Option<u64>,
-		ResourceCompression,
-		Option<std::sync::Arc<()>>,
-	)> {
+	fn read_location(&self, id: ResourceId) -> Option<(SerializableResource, Option<u64>, Option<std::sync::Arc<()>>)> {
 		if let Some(allocator) = &self.packed_allocator {
 			let mut state = allocator.lock_state();
-			let (resource, packed_offset, compression) = self.read_record(id)?;
-			let range = PackedRange::new(packed_offset?, u64::try_from(resource.size()).ok()?);
+			let (resource, packed_offset) = self.read_record(id)?;
+			let range = PackedRange::new(packed_offset?, u64::try_from(resource.stored_size()).ok()?);
 			let lease = state.lease(range).ok()?;
-			return Some((resource, packed_offset, compression, lease));
+			return Some((resource, packed_offset, lease));
 		}
 
-		let (resource, packed_offset, compression) = self.read_record(id)?;
-		Some((resource, packed_offset, compression, None))
+		let (resource, packed_offset) = self.read_record(id)?;
+		Some((resource, packed_offset, None))
 	}
 
-	/// Reads resource metadata, its packed offset, and its encoding from one redb snapshot.
-	fn read_record(&self, id: ResourceId) -> Option<(SerializableResource, Option<u64>, ResourceCompression)> {
+	/// Reads resource metadata and its optional packed offset from one redb snapshot.
+	fn read_record(&self, id: ResourceId) -> Option<(SerializableResource, Option<u64>)> {
 		let read = self.begin_read().ok()?;
 		let table = read.open_table(RESOURCES_TABLE).ok()?;
 		let resource = table
@@ -361,23 +364,25 @@ impl ReDBStorageBackend {
 		} else {
 			None
 		};
-		let compression = read_resource_compression(&read, &id).ok()?;
-		Some((resource, packed_offset, compression))
+		Some((resource, packed_offset))
+	}
+
+	/// Selects the one persisted encoding after CPU preparation and backend policy have both run.
+	fn payload_encoding_for(&self, resource: &ProcessedAsset, encoding: ResourcePayloadEncoding) -> ResourcePayloadEncoding {
+		if self.image_compression == ResourceGpuCompressionPolicy::Disabled || encoding != ResourcePayloadEncoding::Raw {
+			return encoding;
+		}
+		if is_direct_texture(resource.class(), resource.serialized_metadata()) {
+			ResourcePayloadEncoding::MetalIoLz4
+		} else {
+			ResourcePayloadEncoding::Raw
+		}
 	}
 
 	/// Opens one resource reader after securing any packed range that backs it.
 	async fn read_resource(&self, id: ResourceId) -> Option<(SerializableResource, MultiResourceReader)> {
-		let (resource, packed_offset, compression, packed_lease) = self.read_location(id)?;
-		let resource_reader = self
-			.open_reader(
-				id.0,
-				compression,
-				resource.hash(),
-				resource.size(),
-				packed_offset,
-				packed_lease,
-			)
-			.await?;
+		let (resource, packed_offset, packed_lease) = self.read_location(id)?;
+		let resource_reader = self.open_reader(id.0, &resource, packed_offset, packed_lease).await?;
 
 		Some((resource, resource_reader))
 	}
@@ -402,21 +407,21 @@ impl ReDBStorageBackend {
 		};
 		let id = ResourceId::from(id.as_ref());
 		let mut deleted_hash = None;
+		let mut deleted_encoding = ResourcePayloadEncoding::Raw;
 		let mut deleted_range = None;
-		let deleted_compression;
 
 		{
 			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
 			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).unwrap();
-			let mut compression_table = write.open_table(RESOURCE_COMPRESSION_TABLE).unwrap();
 			#[cfg(debug_assertions)]
 			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
 
 			if let Some(existing) = resources_table.get(&id).unwrap() {
 				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
 				deleted_hash = Some(resource.hash());
+				deleted_encoding = resource.encoding();
 				if self.storage_mode == ResourceStorageMode::Packed {
 					let offset = packed_offsets
 						.get(&id)
@@ -425,20 +430,13 @@ impl ReDBStorageBackend {
 						.value();
 					deleted_range = Some(PackedRange::new(
 						offset,
-						u64::try_from(resource.size()).expect("stored resource size should fit in u64"),
+						u64::try_from(resource.stored_size()).expect("stored resource size should fit in u64"),
 					));
 				}
 				remove_indexes(&mut class_table, &mut property_table, &resource, id.0);
 			}
-			deleted_compression = compression_table
-				.get(&id)
-				.unwrap()
-				.map(|value| ResourceCompression::from_bytes(value.value()).unwrap_or_default())
-				.unwrap_or_default();
-
 			let _ = resources_table.remove(&id);
 			let _ = packed_offsets.remove(&id);
-			let _ = compression_table.remove(&id);
 			#[cfg(debug_assertions)]
 			let _ = traces_table.remove(&id);
 		}
@@ -453,7 +451,7 @@ impl ReDBStorageBackend {
 		}
 
 		Ok(if self.storage_mode == ResourceStorageMode::Files {
-			deleted_hash.map(|hash| resource_payload_path(&self.base_path, id.0, hash, deleted_compression))
+			deleted_hash.map(|hash| resource_payload_path(&self.base_path, id.0, hash, deleted_encoding))
 		} else {
 			None
 		})
@@ -489,9 +487,6 @@ impl ReDBStorageBackend {
 			let mut packed_offsets = write
 				.open_table(PACKED_RESOURCE_OFFSETS_TABLE)
 				.map_err(|error| resource_clear_error("open the packed resource offsets", error))?;
-			let mut compression_table = write
-				.open_table(RESOURCE_COMPRESSION_TABLE)
-				.map_err(|error| resource_clear_error("open the resource compression table", error))?;
 			#[cfg(debug_assertions)]
 			let mut traces_table = write
 				.open_table(RESOURCE_TRACES_TABLE)
@@ -517,7 +512,7 @@ impl ReDBStorageBackend {
 						.value();
 					retired_ranges.push(PackedRange::new(
 						offset,
-						u64::try_from(resource.size()).map_err(|_| {
+						u64::try_from(resource.stored_size()).map_err(|_| {
 							"Failed to clear packed resources. The most likely cause is an unsupported resource size."
 								.to_string()
 						})?,
@@ -537,9 +532,6 @@ impl ReDBStorageBackend {
 			packed_offsets
 				.retain(|_, _| false)
 				.map_err(|error| resource_clear_error("clear the packed resource offsets", error))?;
-			compression_table
-				.retain(|_, _| false)
-				.map_err(|error| resource_clear_error("clear the resource compression table", error))?;
 			#[cfg(debug_assertions)]
 			traces_table
 				.retain(|_, _| false)
@@ -740,6 +732,16 @@ impl WriteStorageBackend for ReDBStorageBackend {
 		Ok(())
 	}
 
+	fn cpu_compression_policy(&self, resource: &ProcessedAsset) -> ResourceCompressionPolicy {
+		if self.image_compression != ResourceGpuCompressionPolicy::Disabled
+			&& is_direct_texture(resource.class(), resource.serialized_metadata())
+		{
+			ResourceCompressionPolicy::Disabled
+		} else {
+			resource.compression_policy()
+		}
+	}
+
 	fn begin_resource<'a>(
 		&'a self,
 		id: asset::ResourceId<'_>,
@@ -807,35 +809,34 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 	) -> Result<SerializableResource, ()> {
 		let hash = output.hash();
 		let size = output.size();
-		let compression = if is_direct_texture(resource.class(), resource.serialized_metadata()) {
-			self.image_compression
-		} else {
-			ResourceCompression::None
-		};
-		let resource = resource.into_serializable(hash, size);
-		let serialized_resource = crate::to_vec_in(&resource, allocator).map_err(|_| ())?;
+		let prepared_stored_size = output.stored_size();
+		let encoding = self.payload_encoding_for(&resource, output.encoding());
 		let packed_range = backend_reservation.map(|reservation| PackedRange::new(reservation.offset, reservation.size));
 
-		match self.storage_mode {
+		let stored_size = match self.storage_mode {
 			ResourceStorageMode::Files => {
 				if packed_range.is_some() {
 					return Err(());
 				}
-				let destination = resource_payload_path(&self.base_path, resource_id.0, hash, compression);
-				match compression {
-					compression if compression != ResourceCompression::None => {
-						output.persist_compressed_file(&destination, compression)?;
+				let destination = resource_payload_path(&self.base_path, resource_id.0, hash, encoding);
+				match encoding {
+					ResourcePayloadEncoding::MetalIoLz4 => output.persist_compressed_file(&destination, encoding)?,
+					ResourcePayloadEncoding::Raw | ResourcePayloadEncoding::CpuLz4 => {
+						output.persist_staged_file(&destination)?;
+						prepared_stored_size
 					}
-					_ => output.persist_staged_file(&destination)?,
 				}
 			}
 			ResourceStorageMode::Packed => {
-				if packed_range.is_none() {
+				if packed_range.is_none() || encoding.is_gpu_backed() {
 					return Err(());
 				}
 				output.finish_reserved_file()?;
+				prepared_stored_size
 			}
-		}
+		};
+		let resource = resource.into_serializable(hash, size, stored_size, encoding);
+		let serialized_resource = crate::to_vec_in(&resource, allocator).map_err(|_| ())?;
 		let packed_allocator = self.packed_allocator.as_ref();
 		let mut allocator_state = packed_allocator.map(|allocator| allocator.lock_state());
 
@@ -850,13 +851,15 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).map_err(|_| ())?;
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).map_err(|_| ())?;
 			let mut packed_offsets = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE).map_err(|_| ())?;
-			let mut compression_table = write.open_table(RESOURCE_COMPRESSION_TABLE).map_err(|_| ())?;
 
 			if let Some(existing) = resources_table.get(&resource_id).map_err(|_| ())? {
 				let existing: SerializableResource = crate::from_slice(existing.value()).map_err(|_| ())?;
 				if self.storage_mode == ResourceStorageMode::Packed {
 					let offset = packed_offsets.get(&resource_id).map_err(|_| ())?.ok_or(())?.value();
-					replaced_range = Some(PackedRange::new(offset, u64::try_from(existing.size()).map_err(|_| ())?));
+					replaced_range = Some(PackedRange::new(
+						offset,
+						u64::try_from(existing.stored_size()).map_err(|_| ())?,
+					));
 				}
 				remove_indexes(&mut class_table, &mut property_table, &existing, resource_id.0);
 			}
@@ -868,13 +871,6 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 				packed_offsets.insert(&resource_id, range.offset).map_err(|_| ())?;
 			} else {
 				let _ = packed_offsets.remove(&resource_id);
-			}
-			if compression == ResourceCompression::None {
-				let _ = compression_table.remove(&resource_id);
-			} else {
-				compression_table
-					.insert(&resource_id, compression.as_bytes())
-					.map_err(|_| ())?;
 			}
 			insert_indexes(&mut class_table, &mut property_table, &resource, resource_id.0);
 		}
@@ -923,52 +919,66 @@ impl ResourceStorageMode {
 	}
 }
 
-impl ResourceCompression {
+/// Selects whether a file-mode store prepares ordinary textures for native Metal I/O.
+///
+/// This policy selects the final [`ResourcePayloadEncoding`]; it is not stored as
+/// separate per-resource compression state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResourceGpuCompressionPolicy {
+	#[default]
+	Disabled,
+	MetalIoLz4,
+}
+
+impl ResourceGpuCompressionPolicy {
 	fn as_bytes(self) -> &'static [u8] {
 		match self {
-			Self::None => b"none",
+			Self::Disabled => b"none",
 			Self::MetalIoLz4 => b"metal-io-lz4",
 		}
 	}
 
 	fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
 		match bytes {
-			b"none" => Ok(Self::None),
+			b"none" => Ok(Self::Disabled),
 			b"metal-io-lz4" => Ok(Self::MetalIoLz4),
 			_ => Err("resource image compression is not recognized".to_string()),
 		}
 	}
 }
 
-/// The `ResourceStorageSettings` struct selects persistent payload layout and texture transport compression.
+/// The `ResourceStorageSettings` struct selects persistent payload layout and native texture transport compression.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResourceStorageSettings {
 	storage_mode: ResourceStorageMode,
-	image_compression: ResourceCompression,
+	image_compression: ResourceGpuCompressionPolicy,
 }
 
 impl ResourceStorageSettings {
+	/// Creates storage settings with native GPU compression disabled.
 	pub fn new(storage_mode: ResourceStorageMode) -> Self {
 		Self {
 			storage_mode,
-			image_compression: ResourceCompression::None,
+			image_compression: ResourceGpuCompressionPolicy::Disabled,
 		}
 	}
 
-	pub fn image_compression(mut self, compression: ResourceCompression) -> Self {
+	/// Selects the native GPU compression policy for compatible textures.
+	pub fn image_compression(mut self, compression: ResourceGpuCompressionPolicy) -> Self {
 		self.image_compression = compression;
 		self
 	}
 
 	fn validate(self) -> Result<(), String> {
-		if self.storage_mode == ResourceStorageMode::Packed && self.image_compression != ResourceCompression::None {
+		if self.storage_mode == ResourceStorageMode::Packed && self.image_compression != ResourceGpuCompressionPolicy::Disabled
+		{
 			return Err(
 				"Compressed image storage requires file mode. The most likely cause is that native texture compression was combined with the current raw packed layout."
 					.to_string(),
 			);
 		}
 		#[cfg(not(all(target_os = "macos", feature = "gpu-processing")))]
-		if self.image_compression == ResourceCompression::MetalIoLz4 {
+		if self.image_compression == ResourceGpuCompressionPolicy::MetalIoLz4 {
 			return Err(
 				"Metal I/O LZ4 image compression is unavailable. The most likely cause is that BELD is not running on macOS with GPU processing enabled."
 					.to_string(),
@@ -1018,7 +1028,7 @@ fn read_packed_ranges(db: &redb::Database) -> Result<Vec<PackedRange>, String> {
 				)
 			})?
 			.value();
-		let size = u64::try_from(resource.size()).map_err(|_| {
+		let size = u64::try_from(resource.stored_size()).map_err(|_| {
 			format!(
 				"Packed resource size is invalid for '{}'. The most likely cause is incompatible resource metadata.",
 				resource.id()
@@ -1119,12 +1129,8 @@ fn resource_clear_error(action: &str, error: impl std::fmt::Display) -> String {
 	)
 }
 
-fn resource_payload_path(base_path: &Path, key: [u8; 16], hash: u64, compression: ResourceCompression) -> std::path::PathBuf {
-	let suffix = match compression {
-		ResourceCompression::None => "",
-		ResourceCompression::MetalIoLz4 => ".mtlio-lz4",
-	};
-	base_path.join(format!("{}-{hash:016x}{suffix}", resource_key_hex(key)))
+fn resource_payload_path(base_path: &Path, key: [u8; 16], hash: u64, encoding: ResourcePayloadEncoding) -> std::path::PathBuf {
+	base_path.join(format!("{}-{hash:016x}-{}", resource_key_hex(key), encoding.as_str()))
 }
 
 /// Enumerates backend-owned payload files on a blocking worker because Compio does not provide directory iteration.
@@ -1179,24 +1185,17 @@ fn resource_payload_paths_in(base_path: &Path) -> Result<Vec<std::path::PathBuf>
 
 /// Returns whether a file name is one of this backend's content-addressed payload extents.
 fn is_resource_payload_name(name: &str) -> bool {
-	let name = name.strip_suffix(".mtlio-lz4").unwrap_or(name);
-	let Some((resource_id, hash)) = name.split_once('-') else {
+	let Some((resource_id, remainder)) = name.split_once('-') else {
+		return false;
+	};
+	let Some((hash, encoding)) = remainder.split_once('-') else {
 		return false;
 	};
 
-	ResourceId::from_uid_hex(resource_id).is_some() && hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-/// Reads one resource's physical encoding while treating absent entries as raw data.
-fn read_resource_compression(read: &redb::ReadTransaction, id: &ResourceId) -> Result<ResourceCompression, ()> {
-	read.open_table(RESOURCE_COMPRESSION_TABLE)
-		.map_err(|_| ())?
-		.get(id)
-		.map_err(|_| ())?
-		.map(|value| ResourceCompression::from_bytes(value.value()))
-		.transpose()
-		.map_err(|_| ())
-		.map(Option::unwrap_or_default)
+	ResourceId::from_uid_hex(resource_id).is_some()
+		&& hash.len() == 16
+		&& hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+		&& matches!(encoding, "raw" | "cpu-lz4" | "metal-io-lz4")
 }
 
 /// Selects ordinary textures while environment images retain their existing multi-image CPU upload path.
@@ -1274,7 +1273,6 @@ const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefin
 const STORE_CONFIGURATION_TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("store-configuration");
 const PACKED_RESOURCE_OFFSETS_TABLE: redb::TableDefinition<[u8; 16], u64> =
 	redb::TableDefinition::new("packed-resource-offsets");
-const RESOURCE_COMPRESSION_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-compression");
 const RESOURCE_CLASS_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> = redb::TableDefinition::new("resource-class-index");
 const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 	redb::TableDefinition::new("resource-property-index");
@@ -1395,13 +1393,13 @@ mod tests {
 				&backend.base_path,
 				super::ResourceId::from(first_id.as_ref()).0,
 				first.hash(),
-				crate::resource::ResourceCompression::None,
+				first.encoding(),
 			);
 			let stale_payload_path = resource_payload_path(
 				&backend.base_path,
 				super::ResourceId::from("stale.test").0,
 				0x1234,
-				crate::resource::ResourceCompression::None,
+				crate::resource::ResourcePayloadEncoding::Raw,
 			);
 			if storage_mode == ResourceStorageMode::Files {
 				std::fs::write(&stale_payload_path, b"stale").unwrap();
@@ -1465,7 +1463,7 @@ mod tests {
 	#[test]
 	fn compressed_images_reject_the_raw_packed_layout() {
 		let settings = ResourceStorageSettings::new(ResourceStorageMode::Packed)
-			.image_compression(crate::resource::ResourceCompression::MetalIoLz4);
+			.image_compression(crate::resource::ResourceGpuCompressionPolicy::MetalIoLz4);
 
 		assert!(settings.validate().is_err());
 	}
@@ -1511,7 +1509,7 @@ mod tests {
 
 		use crate::{
 			StreamDescription,
-			resource::{ResourceCompression, ResourceReaderBacking},
+			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
 			resources::image::Image,
 			types::{Formats, Gamma},
 		};
@@ -1523,17 +1521,18 @@ mod tests {
 		));
 		let backend = ReDBStorageBackend::new_writable_with_settings(
 			path.clone(),
-			ResourceStorageSettings::new(ResourceStorageMode::Files).image_compression(ResourceCompression::MetalIoLz4),
+			ResourceStorageSettings::new(ResourceStorageMode::Files)
+				.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
 		)
 		.unwrap();
 		let id = crate::asset::ResourceId::new("texture.image");
-		let decoded = [7_u8; 4 * 4 * 4];
+		let decoded = [7_u8; 32 * 32 * 4];
 		let resource = ProcessedAsset::new(
 			id,
 			Image {
 				format: Formats::RGBA8,
 				gamma: Gamma::Linear,
-				extent: [4, 4, 1],
+				extent: [32, 32, 1],
 				mip_count: 1,
 				ibl: None,
 				photometry: None,
@@ -1549,16 +1548,21 @@ mod tests {
 			);
 		};
 
-		assert_eq!(backing.compression(), ResourceCompression::MetalIoLz4);
+		assert_eq!(backing.encoding(), ResourcePayloadEncoding::MetalIoLz4);
 		assert!(backing.path().exists());
 		assert_eq!(stored.size(), decoded.len());
+		assert_eq!(
+			stored.stored_size(),
+			std::fs::metadata(backing.path()).unwrap().len() as usize
+		);
+		assert_eq!(stored.encoding(), ResourcePayloadEncoding::MetalIoLz4);
 		assert_eq!(
 			backing.path(),
 			resource_payload_path(
 				&path,
 				crate::resource::ResourceId::from(id.as_ref()).0,
 				stored.hash(),
-				ResourceCompression::MetalIoLz4,
+				ResourcePayloadEncoding::MetalIoLz4,
 			)
 		);
 
@@ -1670,13 +1674,15 @@ mod tests {
 		let id = crate::asset::ResourceId::new("owned-store.test");
 		let expected = (0..(64 * 1024 + 17)).map(|index| index as u8).collect::<Vec<_>>();
 
-		WriteStorageBackend::store_owned(
+		let stored_resource = WriteStorageBackend::store_owned(
 			&backend,
 			ProcessedAsset::new(id, MockShaderModel { stage: "owned".into() }),
 			expected.clone(),
 		)
 		.await
 		.unwrap();
+		assert_eq!(stored_resource.encoding(), crate::resource::ResourcePayloadEncoding::CpuLz4);
+		assert!(stored_resource.stored_size() < stored_resource.size());
 
 		let (_, reader) = backend.read(id).await.unwrap();
 		let stored = reader.into_backing_storage().await.unwrap();
@@ -2365,6 +2371,8 @@ use crate::ResourceTraceItem;
 use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource, asset,
 	r#async::{self, BoxedFuture, File as AsyncFile},
-	resource::reader::ResourceCompression,
-	resource::{ResourceId, reader::redb::FileResourceReader, resource_handler::MultiResourceReader},
+	resource::{
+		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, reader::redb::FileResourceReader,
+		resource_handler::MultiResourceReader,
+	},
 };

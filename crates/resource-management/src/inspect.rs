@@ -58,6 +58,8 @@ pub fn inspect_resource(resource: &SerializableResource) -> Result<ResourceInspe
 		"class": resource.class(),
 		"hash": resource.hash(),
 		"size": resource.size(),
+		"stored_size": resource.stored_size(),
+		"encoding": resource.encoding().as_str(),
 		"serialized_resource_size": resource.resource().len(),
 		"properties": queryable_properties_to_json(resource),
 		"streams": streams_to_json(resource),

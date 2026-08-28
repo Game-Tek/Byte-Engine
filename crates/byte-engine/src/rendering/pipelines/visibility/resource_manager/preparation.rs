@@ -33,6 +33,254 @@ fn photometric_profile_metadata_is_valid(
 		&& photometry.intensity_scale_candela > 0.0
 }
 
+/// Copies one named range from a complete decoded payload into its upload destination.
+fn copy_decoded_stream(
+	decoded: &[u8],
+	stream_descriptions: &[resource_management::StreamDescription],
+	stream: &mut resource_management::stream::StreamMut<'_>,
+	resource_id: &str,
+) -> Result<(), ()> {
+	let name = stream.name();
+	let description = stream_descriptions
+		.iter()
+		.find(|description| description.name() == name)
+		.ok_or_else(|| {
+			log::error!(
+				"Resource stream '{}' is missing for {}. The most likely cause is that the baked stream metadata does not match the image metadata.",
+				name,
+				resource_id
+			);
+		})?;
+	if description.size() != stream.buffer().len() {
+		log::error!(
+			"Resource stream '{}' has the wrong size for {}. The most likely cause is that the baked stream size does not match the texture upload layout.",
+			name,
+			resource_id
+		);
+		return Err(());
+	}
+
+	let end = description.offset().checked_add(description.size()).ok_or_else(|| {
+		log::error!(
+			"Resource stream '{}' range overflowed for {}. The most likely cause is corrupt baked stream metadata.",
+			name,
+			resource_id
+		);
+	})?;
+	let source = decoded.get(description.offset()..end).ok_or_else(|| {
+		log::error!(
+			"Resource stream '{}' is outside the decoded payload for {}. The most likely cause is corrupt compressed data or mismatched stream metadata.",
+			name,
+			resource_id
+		);
+	})?;
+	stream.buffer_mut().copy_from_slice(source);
+	Ok(())
+}
+
+/// Loads named image ranges directly or through one resource-owned decoded backing.
+async fn load_image_streams<'a>(
+	reference: &mut Reference<ResourceImage>,
+	mut streams: SmallVec<[resource_management::stream::StreamMut<'a>; 16]>,
+	resource_kind: &str,
+	id: &str,
+) -> Result<(), ()> {
+	if reference.requires_cpu_decompression() {
+		let loaded = reference
+			.load(resource_management::resource::ReadTargetsMut::backing_storage())
+			.await
+			.map_err(|_| {
+				log::error!(
+					"Visibility {} decompression failed for {}. The most likely cause is corrupt compressed data or mismatched resource metadata.",
+					resource_kind,
+					id
+				);
+			})?;
+		let stream_descriptions = reference.streams().ok_or_else(|| {
+			log::error!(
+				"Visibility {} stream metadata is missing for {}. The most likely cause is that the image was baked without its named payload ranges.",
+				resource_kind,
+				id
+			);
+		})?;
+		let decoded = loaded.buffer().ok_or_else(|| {
+			log::error!(
+				"Visibility {} decompression returned no CPU buffer for {}. The most likely cause is that the resource used a GPU-only backing.",
+				resource_kind,
+				id
+			);
+		})?;
+		for stream in &mut streams {
+			copy_decoded_stream(decoded, stream_descriptions, stream, id)?;
+		}
+		return Ok(());
+	}
+
+	let loaded = reference.load(streams.into_vec().into()).await.map_err(|_| {
+		log::error!(
+			"Visibility {} stream load failed for {}. The most likely cause is that the baked image payload is missing one or more named ranges.",
+			resource_kind,
+			id
+		);
+	})?;
+	if matches!(loaded, ReadTargets::Streams(_)) {
+		Ok(())
+	} else {
+		log::error!(
+			"Visibility {} load returned an unexpected target for {}. The most likely cause is that the resource reader ignored the requested named ranges.",
+			resource_kind,
+			id
+		);
+		Err(())
+	}
+}
+
+/// Returns whether every mip occupies one contiguous complete decoded payload in level order.
+fn texture_payload_is_compact(
+	decoded_size: usize,
+	stream_descriptions: Option<&[resource_management::StreamDescription]>,
+	stream_names: &[MipStreamName],
+	layouts: &[TextureUploadLayout],
+) -> bool {
+	let Some(stream_descriptions) = stream_descriptions else {
+		return false;
+	};
+	let mut offset = 0usize;
+	for (name, layout) in stream_names.iter().zip(layouts) {
+		let Some(description) = stream_descriptions
+			.iter()
+			.find(|description| description.name() == name.as_str())
+		else {
+			return false;
+		};
+		if description.offset() != offset || description.size() != layout.compact_size {
+			return false;
+		}
+		let Some(next_offset) = offset.checked_add(layout.compact_size) else {
+			return false;
+		};
+		offset = next_offset;
+	}
+	offset == decoded_size
+}
+
+/// Moves a decoded compact mip chain backward into independently padded upload regions.
+fn expand_compact_texture_levels(bytes: &mut [u8], decoded_size: usize, layouts: &[TextureUploadLayout]) -> Result<(), ()> {
+	let mut source_end = decoded_size;
+	for layout in layouts.iter().rev() {
+		let source_start = source_end.checked_sub(layout.compact_size).ok_or(())?;
+		let destination_end = layout.offset.checked_add(layout.compact_size).ok_or(())?;
+		if layout.offset < source_start || destination_end > bytes.len() {
+			return Err(());
+		}
+		if layout.offset != source_start {
+			bytes.copy_within(source_start..source_end, layout.offset);
+		}
+		source_end = source_start;
+	}
+	(source_end == 0).then_some(()).ok_or(())
+}
+
+/// Loads one contiguous decoded texture range into caller-provided staging.
+async fn load_texture_into(reference: &mut Reference<ResourceImage>, destination: &mut [u8], id: &str) -> Result<(), ()> {
+	let expected_size = destination.len();
+	let loaded = reference.load(destination.into()).await.map_err(|_| {
+		log::error!(
+			"Visibility texture load failed for {}. The most likely cause is that the requested texture bytes could not be decoded into staging.",
+			id
+		);
+	})?;
+	if loaded.buffer().is_none_or(|buffer| buffer.len() != expected_size) {
+		log::error!(
+			"Visibility texture load returned the wrong byte count for {}. The most likely cause is that the resource reader did not satisfy the requested payload range.",
+			id
+		);
+		return Err(());
+	}
+	Ok(())
+}
+
+/// Loads a complete compact mip chain directly into its final staging lease.
+async fn load_compact_texture_bytes(
+	reference: &mut Reference<ResourceImage>,
+	staging: &mut upload_staging::StagingLease,
+	layouts: &[TextureUploadLayout],
+	id: &str,
+) -> Result<(), ()> {
+	let decoded_size = reference.size;
+	let destination = staging.bytes_mut().get_mut(..decoded_size).ok_or_else(|| {
+		log::error!(
+			"Visibility texture staging is too small for {}. The most likely cause is that the decoded mip chain exceeds its padded upload layout.",
+			id
+		);
+	})?;
+	load_texture_into(reference, destination, id).await?;
+	expand_compact_texture_levels(staging.bytes_mut(), decoded_size, layouts).map_err(|_| {
+		log::error!(
+			"Visibility texture mip layout is invalid for {}. The most likely cause is that compact mip bytes cannot be expanded into their padded upload ranges.",
+			id
+		);
+	})
+}
+
+/// Loads all texture levels while avoiding an intermediate decoded allocation for compact mip chains.
+async fn load_texture_bytes(
+	reference: &mut Reference<ResourceImage>,
+	staging: &mut upload_staging::StagingLease,
+	layouts: &[TextureUploadLayout],
+	id: &str,
+) -> Result<(), ()> {
+	if let [layout] = layouts
+		&& (!reference.requires_cpu_decompression() || reference.size == layout.compact_size)
+	{
+		return load_texture_into(reference, &mut staging.bytes_mut()[..layout.compact_size], id).await;
+	}
+
+	let stream_names: [MipStreamName; u32::BITS as usize] = std::array::from_fn(|level| MipStreamName::new(level as u32));
+	if reference.requires_cpu_decompression()
+		&& texture_payload_is_compact(reference.size, reference.streams(), &stream_names, layouts)
+	{
+		return load_compact_texture_bytes(reference, staging, layouts, id).await;
+	}
+
+	let mut streams = SmallVec::new();
+	let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
+	for (name, layout) in stream_names.iter().zip(layouts) {
+		let region = allocator.take(layout.padded_size);
+		streams.push(resource_management::stream::StreamMut::new(
+			name.as_str(),
+			&mut region[..layout.compact_size],
+		));
+	}
+	load_image_streams(reference, streams, "texture", id).await
+}
+
+/// Loads all environment ranges through the read shape supported by the stored CPU encoding.
+async fn load_environment_bytes(
+	reference: &mut Reference<ResourceImage>,
+	staging: &mut upload_staging::StagingLease,
+	diffuse_upload: &TextureUploadLayout,
+	specular_uploads: &[TextureUploadLayout; IBL_SPECULAR_LEVEL_COUNT],
+	specular_stream_names: &[String; IBL_SPECULAR_LEVEL_COUNT],
+	id: &str,
+) -> Result<(), ()> {
+	let mut streams = SmallVec::new();
+	let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
+	let diffuse_region = allocator.take(diffuse_upload.padded_size);
+	streams.push(resource_management::stream::StreamMut::new(
+		resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
+		&mut diffuse_region[..diffuse_upload.compact_size],
+	));
+	for (name, upload) in specular_stream_names.iter().zip(specular_uploads) {
+		let region = allocator.take(upload.padded_size);
+		streams.push(resource_management::stream::StreamMut::new(
+			name,
+			&mut region[..upload.compact_size],
+		));
+	}
+	load_image_streams(reference, streams, "environment", id).await
+}
+
 impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
 		context: &mut ghi::implementation::Context,
@@ -327,45 +575,7 @@ impl VisibilityPipelineResourceManager {
 			);
 		})?;
 
-		if mip_count == 1 {
-			let layout = layouts[0];
-			let loaded = reference
-				.load((&mut staging.bytes_mut()[..layout.compact_size]).into())
-				.await
-				.map_err(|_| {
-					log::error!(
-						"Visibility texture load failed for {}. The most likely cause is that the texture payload could not be read from storage.", id
-					);
-				})?;
-			if loaded.buffer().is_none() {
-				log::error!(
-					"Visibility texture load target is not CPU-readable for {}. The most likely cause is that the image resource did not load into a byte buffer.",
-					id
-				);
-				return Err(());
-			}
-		} else {
-			// Named reads keep every offline-generated level aligned with its independently padded GPU upload region.
-			let mip_stream_names: [MipStreamName; u32::BITS as usize] =
-				std::array::from_fn(|level| MipStreamName::new(level as u32));
-			let mut streams = Vec::with_capacity(mip_count as usize);
-			let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
-			for (name, layout) in mip_stream_names.iter().zip(&layouts) {
-				let region = allocator.take(layout.padded_size);
-				streams.push(resource_management::stream::StreamMut::new(
-					name.as_str(),
-					&mut region[..layout.compact_size],
-				));
-			}
-			let loaded = reference.load(streams.into()).await.map_err(|_| {
-				log::error!(
-					"Visibility texture mip load failed for {}. The most likely cause is that the baked image payload is missing one or more named mip streams.", id
-				);
-			})?;
-			if !matches!(loaded, ReadTargets::Streams(_)) {
-				return Err(());
-			}
-		}
+		load_texture_bytes(&mut reference, &mut staging, &layouts, id).await?;
 		for layout in &layouts {
 			let range = layout.offset..layout.offset + layout.padded_size;
 			pack_texture_rows_in_place(&mut staging.bytes_mut()[range], layout);
@@ -578,35 +788,15 @@ impl VisibilityPipelineResourceManager {
 			resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
 		});
 
-		// A single stream read keeps the parent image and all of its baked lighting subresources atomic.
-		let mut streams = Vec::with_capacity(1 + IBL_SPECULAR_LEVEL_COUNT);
-		let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
-		let diffuse_region = allocator.take(diffuse_upload.padded_size);
-		streams.push(resource_management::stream::StreamMut::new(
-			resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
-			&mut diffuse_region[..diffuse_upload.compact_size],
-		));
-		for (name, upload) in specular_stream_names.iter().zip(specular_uploads.iter()) {
-			let region = allocator.take(upload.padded_size);
-			streams.push(resource_management::stream::StreamMut::new(
-				name,
-				&mut region[..upload.compact_size],
-			));
-		}
-		let loaded = reference.load(streams.into()).await.map_err(|_| {
-			log::error!(
-				"Visibility environment IBL stream load failed for {}. The most likely cause is that the baked image payload is missing one or more named IBL streams.",
-				id
-			);
-		})?;
-		if !matches!(loaded, ReadTargets::Streams(_)) {
-			log::error!(
-				"Visibility environment IBL load returned an unexpected target for {}. The most likely cause is that the resource reader ignored the requested named streams.",
-				id
-			);
-			return Err(());
-		}
-		drop(loaded);
+		load_environment_bytes(
+			&mut reference,
+			&mut staging,
+			&diffuse_upload,
+			&specular_uploads,
+			&specular_stream_names,
+			&id,
+		)
+		.await?;
 		for upload in std::iter::once(&diffuse_upload).chain(specular_uploads.iter()) {
 			let range = upload.offset..upload.offset + upload.padded_size;
 			pack_texture_rows_in_place(&mut staging.bytes_mut()[range], upload);
@@ -815,11 +1005,15 @@ impl VisibilityPipelineResourceManager {
 #[cfg(test)]
 mod tests {
 	use resource_management::{
+		StreamDescription,
 		resources::image::{Image, ImagePhotometry},
 		types::{Formats, Gamma},
 	};
 
-	use super::photometric_profile_metadata_is_valid;
+	use super::{
+		MipStreamName, TextureUploadLayout, copy_decoded_stream, expand_compact_texture_levels,
+		photometric_profile_metadata_is_valid, texture_payload_is_compact,
+	};
 
 	fn valid_profile_image() -> Image {
 		Image {
@@ -853,5 +1047,52 @@ mod tests {
 		assert!(!photometric_profile_metadata_is_valid(&non_profile_format, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&mipmapped, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&valid, &invalid_scale));
+	}
+
+	#[test]
+	fn decoded_stream_copy_uses_explicit_named_ranges() {
+		let decoded = [10_u8, 11, 12, 13, 14, 15];
+		let descriptions = [StreamDescription::new("mip[0]", 3, 2)];
+		let mut destination = [0_u8; 3];
+		{
+			let mut stream = resource_management::stream::StreamMut::new("mip[0]", &mut destination);
+			copy_decoded_stream(&decoded, &descriptions, &mut stream, "texture").unwrap();
+		}
+
+		assert_eq!(destination, [12, 13, 14]);
+		{
+			let mut missing = resource_management::stream::StreamMut::new("missing", &mut destination);
+			assert!(copy_decoded_stream(&decoded, &descriptions, &mut missing, "texture").is_err());
+		}
+		let mut short = resource_management::stream::StreamMut::new("mip[0]", &mut destination[..2]);
+		assert!(copy_decoded_stream(&decoded, &descriptions, &mut short, "texture").is_err());
+	}
+
+	fn upload_layout(offset: usize, compact_size: usize, padded_size: usize) -> TextureUploadLayout {
+		TextureUploadLayout {
+			offset,
+			compact_bytes_per_row: compact_size,
+			row_count: 1,
+			compact_bytes_per_image: compact_size,
+			compact_size,
+			source_bytes_per_row: padded_size,
+			source_bytes_per_image: padded_size,
+			padded_size,
+		}
+	}
+
+	#[test]
+	fn compact_texture_payload_moves_levels_into_padded_regions_without_scratch_storage() {
+		let layouts = [upload_layout(0, 4, 8), upload_layout(8, 2, 4)];
+		let names = [MipStreamName::new(0), MipStreamName::new(1)];
+		let descriptions = [StreamDescription::new("mip[0]", 4, 0), StreamDescription::new("mip[1]", 2, 4)];
+		let mut staging = [1_u8, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0];
+
+		assert!(texture_payload_is_compact(6, Some(&descriptions), &names, &layouts));
+		expand_compact_texture_levels(&mut staging, 6, &layouts).unwrap();
+
+		assert_eq!(&staging[..4], &[1, 2, 3, 4]);
+		assert_eq!(&staging[8..10], &[5, 6]);
+		assert!(!texture_payload_is_compact(7, Some(&descriptions), &names, &layouts));
 	}
 }

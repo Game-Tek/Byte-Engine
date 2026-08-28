@@ -25,6 +25,10 @@ pub mod tests {
 	}
 
 	impl ResourceReader for MemoryResourceReader {
+		fn encoding(&self) -> crate::resource::ResourcePayloadEncoding {
+			crate::resource::ResourcePayloadEncoding::Raw
+		}
+
 		fn read_into<'b, 'c: 'b, 'a: 'b>(
 			&'b mut self,
 			stream_descriptions: Option<&'c [StreamDescription]>,

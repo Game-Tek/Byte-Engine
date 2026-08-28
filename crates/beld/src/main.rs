@@ -205,10 +205,10 @@ enum TextureCompression {
 	MetalIoLz4,
 }
 
-impl From<TextureCompression> for resource_management::resource::ResourceCompression {
+impl From<TextureCompression> for resource_management::resource::ResourceGpuCompressionPolicy {
 	fn from(value: TextureCompression) -> Self {
 		match value {
-			TextureCompression::None => Self::None,
+			TextureCompression::None => Self::Disabled,
 			TextureCompression::MetalIoLz4 => Self::MetalIoLz4,
 		}
 	}

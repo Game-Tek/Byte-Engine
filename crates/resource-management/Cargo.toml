@@ -59,6 +59,7 @@ vorbis_rs = "0.5.5"
 compio = { version = "0.19.1", features = ["dispatcher", "fs", "io", "macros", "process", "time"] }
 bumpalo = { version = "3.20.0", features = ["allocator_api"] }
 memmap2 = "0.9.5"
+lz4_flex = { version = "0.14.0", default-features = false, features = ["checked-decode", "safe-decode", "safe-encode"] }
 announcement = "0.1.0"
 notify-debouncer-full = "0.7.0"
 

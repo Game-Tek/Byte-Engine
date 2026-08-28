@@ -96,7 +96,19 @@ impl<'a, T: Resource + 'a> Reference<T> {
 
 	/// Returns whether the deferred data must be loaded through native GPU resource I/O.
 	pub fn is_gpu_backed(&self) -> bool {
-		self.reader.as_ref().is_some_and(|reader| reader.is_gpu_backed())
+		self.encoding().is_gpu_backed()
+	}
+
+	/// Returns the storage and delivery encoding recorded for the deferred payload.
+	///
+	/// [`Self::load`] always decodes this encoding before returning bytes.
+	pub fn encoding(&self) -> crate::resource::ResourcePayloadEncoding {
+		self.reader.as_ref().map(|reader| reader.encoding()).unwrap_or_default()
+	}
+
+	/// Returns whether loading requires full-resource CPU decompression.
+	pub fn requires_cpu_decompression(&self) -> bool {
+		self.encoding().requires_cpu_decompression()
 	}
 
 	pub fn into_resource(self) -> T {
@@ -118,8 +130,9 @@ impl<'a, T: Resource + 'a> Reference<T> {
 	///
 	/// If `read_target` requests backing storage, the reader serves resource-owned bytes directly.
 	/// File-backed resources use mapped files when the storage backend supports them. If direct
-	/// backing storage is unavailable, the resource falls back to an owned buffer. Explicit buffer,
-	/// box, and stream targets are still filled by reading into the caller-selected target.
+	/// backing storage is unavailable, the resource falls back to an owned buffer. CPU-compressed
+	/// resources require one exact post-decompression buffer or reader-owned backing storage;
+	/// partial ranges and separate stream targets are rejected.
 	///
 	/// Await this method, then pass the returned [`ReadTargets`] to the renderer,
 	/// audio system, or other consumer together with the metadata from
@@ -128,8 +141,12 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 
 		if matches!(read_target, ReadTargetsMut::BackingStorage) {
+			let encoding = reader.encoding();
 			return match reader.into_backing_storage().await {
 				Ok(backing) => Ok(ReadTargets::Backing(backing)),
+				// A compressed reader already attempted the complete decode. Retrying
+				// into a second allocation would repeat both allocation and decompression.
+				Err(_) if encoding.requires_cpu_decompression() => Err(LoadResults::LoadFailed),
 				Err(mut reader) => {
 					let read_target = ReadTargetsMut::create_buffer(self);
 					reader

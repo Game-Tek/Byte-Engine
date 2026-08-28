@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, time::Instant};
 
 use resource_management::{
 	asset::FileStorageBackend,
-	resource::{ReDBStorageBackend, ResourceCompression, ResourceStorageMode, ResourceStorageSettings},
+	resource::{ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings},
 };
 use utils::{r#async::StreamExt, sync::Arc};
 
@@ -16,7 +16,7 @@ pub async fn bake(
 	destination_path: String,
 	ids: Vec<String>,
 	storage_mode: Option<ResourceStorageMode>,
-	texture_compression: Option<ResourceCompression>,
+	texture_compression: Option<ResourceGpuCompressionPolicy>,
 	memory_budget: NonZeroUsize,
 ) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);

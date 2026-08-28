@@ -84,7 +84,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" \
   --storage-mode packed bake
 ```
 
-The default `files` mode writes one hash-named payload file per resource. BELD records the selected mode in `resources.db`, and the application discovers it when opening the store. Clear the destination before changing its mode.
+The default `files` mode writes one extensionless payload file per resource. Its basename contains the resource ID, decoded hash, and encoding. BELD records the selected mode and each resource's payload encoding in `resources.db`, and the application discovers them when opening the store. Clear the destination before changing its mode.
 
 In packed mode, rebuilding or deleting a resource returns its old range to a coalescing free-space allocator after active mapped readers release it. BELD reuses the smallest suitable range and grows `resources.pack` only when none fits. If BELD warns that the pack is fragmented, delete the destination resource directory and run the bake again to produce a compact pack.
 

@@ -395,6 +395,93 @@ struct PreparedShader {
 	backing: resource_management::resource::reader::ResourceReaderBacking,
 }
 
+/// Converts one persisted shader stage into its GHI stage.
+fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::ShaderTypes {
+	match stage {
+		resource_management::types::ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
+		resource_management::types::ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
+		resource_management::types::ShaderTypes::Compute => ghi::ShaderTypes::Compute,
+		resource_management::types::ShaderTypes::Task => ghi::ShaderTypes::Task,
+		resource_management::types::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
+		resource_management::types::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
+		resource_management::types::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
+		resource_management::types::ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
+		resource_management::types::ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
+		resource_management::types::ShaderTypes::Miss => ghi::ShaderTypes::Miss,
+		resource_management::types::ShaderTypes::Callable => ghi::ShaderTypes::Callable,
+	}
+}
+
+/// Converts one persisted binding into the descriptor used for detached shader creation.
+fn binding_to_descriptor(binding: &resource_management::resources::material::Binding) -> ghi::ShaderResourceDescriptor {
+	use resource_management::resources::material::{BindingKind, TextureView};
+
+	let kind = match binding.kind {
+		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
+		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
+		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
+	};
+	let access = (if binding.read {
+		ghi::AccessPolicies::READ
+	} else {
+		ghi::AccessPolicies::empty()
+	}) | if binding.write {
+		ghi::AccessPolicies::WRITE
+	} else {
+		ghi::AccessPolicies::empty()
+	};
+	let descriptor = ghi::ShaderResourceDescriptor::new(ghi::ResourceSlot::new(binding.slot), kind, binding.count, access);
+	let descriptor =
+		match binding.kind {
+			BindingKind::StorageBuffer => descriptor.buffer_stride(binding.buffer_stride.expect(
+				"Missing persisted storage-buffer stride. The most likely cause is a stale shader interface resource.",
+			)),
+			_ => descriptor,
+		};
+
+	match binding.kind {
+		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
+			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
+			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
+			TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
+			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
+		}),
+		_ => descriptor,
+	}
+}
+
+/// Borrows persisted shader bytes in the source representation expected by GHI.
+fn shader_artifact_source<'a>(
+	artifact: &'a resource_management::resources::material::ShaderArtifact,
+	workgroup_size: Option<(u32, u32, u32)>,
+	bytes: &'a [u8],
+) -> Result<ghi::shader::Sources<'a>, String> {
+	use resource_management::resources::material::ShaderArtifact;
+
+	match artifact {
+		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
+		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL(bytes)),
+		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
+			source: std::str::from_utf8(bytes).map_err(|_| {
+				"Failed to read baked HLSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
+			})?,
+			entry_point,
+		}),
+		ShaderArtifact::Msl { entry_point } => Ok(ghi::shader::Sources::MTL {
+			source: std::str::from_utf8(bytes).map_err(|_| {
+				"Failed to read baked MSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
+			})?,
+			entry_point,
+		}),
+		ShaderArtifact::Mtlb { entry_point } => Ok(ghi::shader::Sources::MTLB {
+			binary: bytes,
+			entry_point,
+			threadgroup_size: workgroup_size.map(|(width, height, depth)| utils::Extent::new(width, height, depth)),
+		}),
+	}
+}
+
 /// Loads one shader resource without borrowing mutable GHI factory state.
 async fn prepare_shader(resources: &resource_management::ResourceManager, id: &str) -> Result<PreparedShader, String> {
 	use resource_management::resource::ReadStorageBackend as _;
@@ -403,7 +490,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		resources.request(id).await.map_err(|_| {
 			format!("Shader resource '{id}' could not be loaded. The most likely cause is that the shader asset was not baked.")
 		})?;
-	let stage = crate::rendering::resource_loading::shader_type_to_ghi(shader.resource().stage);
+	let stage = shader_type_to_ghi(shader.resource().stage);
 	let artifact = shader.resource().artifact.clone();
 	let workgroup = shader.resource().interface.workgroup_size;
 	let descriptors = shader
@@ -411,7 +498,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.interface
 		.bindings
 		.iter()
-		.map(crate::rendering::resource_loading::binding_to_descriptor)
+		.map(binding_to_descriptor)
 		.collect::<Vec<_>>();
 	let bindings = shader
 		.resource()
@@ -433,7 +520,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
 	// Validate persisted source metadata before mutable GHI adoption begins.
-	let _ = crate::rendering::resource_loading::shader_artifact_source(&artifact, workgroup, backing.as_slice())?;
+	let _ = shader_artifact_source(&artifact, workgroup, backing.as_slice())?;
 	Ok(PreparedShader {
 		id: id.to_string(),
 		stage,
@@ -452,11 +539,7 @@ fn adopt_shader(
 ) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
 	use ghi::Device as _;
 
-	let source = crate::rendering::resource_loading::shader_artifact_source(
-		&prepared.artifact,
-		prepared.workgroup,
-		prepared.backing.as_slice(),
-	)?;
+	let source = shader_artifact_source(&prepared.artifact, prepared.workgroup, prepared.backing.as_slice())?;
 	let handle = factory
 		.create_shader(Some(&prepared.id), source, prepared.stage, prepared.descriptors)
 		.map_err(|_| {

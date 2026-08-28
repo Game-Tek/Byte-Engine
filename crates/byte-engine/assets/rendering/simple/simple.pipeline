@@ -1,0 +1,1 @@
+{"name":"Simple Scene","kind":{"type":"raster","shaders":["byte-engine/rendering/simple/vertex.besl","byte-engine/rendering/simple/fragment.besl"],"push_constants":[{"offset":0,"size":4}],"vertex_elements":[{"name":"POSITION","format":"float3","binding":0}],"attachments":[{"format":"rgba16_float"},{"format":"depth32"}],"depth_write":true}}

@@ -474,6 +474,22 @@ impl GraphicsApplication {
 		&self.renderer
 	}
 
+	/// Returns mutable renderer access for application-defined pipeline setup.
+	///
+	/// Use this during startup to create renderer-owned GHI resources. For an
+	/// asynchronous resource integration, create the mapped transfer buffer and
+	/// [`crate::rendering::resource_loading::UploadStagingArena`] here, keep the
+	/// buffer handle in the pipeline manager's upload store, and run the staging
+	/// worker and resource servers through application-owned tasks. Then call
+	/// [`Renderer::add_pipeline_manager`] before the application starts rendering.
+	///
+	/// The opposite lifetime is equally important: stop and join those tasks
+	/// before this application drops the renderer. The built-in Simple and
+	/// Visibility setup functions demonstrate that shutdown ordering.
+	pub fn renderer_mut(&mut self) -> &mut Renderer {
+		&mut self.renderer
+	}
+
 	/// Returns the factory used to request new windows.
 	pub fn window_factory(&self) -> &Factory<Window> {
 		&self.window_factory.0
@@ -760,7 +776,7 @@ use crate::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
 			visibility::{
 				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
-				VisibilityPipelineSettings, resource_manager::VisibilityPipelineResourceManager,
+				VisibilityPipelineSettings, resource_manager::VisibilityResourcePreparer,
 			},
 		},
 		render_pass::RenderPass,

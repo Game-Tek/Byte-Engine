@@ -51,6 +51,7 @@ struct Mesh {
 pub struct MeshBuffersStats<I> {
 	vertex_count: usize,
 	index_count: usize,
+	next_mesh_id: usize,
 
 	meshes: HashMap<usize, Mesh>,
 
@@ -89,42 +90,21 @@ impl InstanceBatch {
 }
 
 impl<I> MeshBuffersStats<I> {
-	pub fn does_mesh_exist(&self, hash: u64) -> Option<usize> {
-		if self.meshes.contains_key(&(hash as usize)) {
-			Some(hash as usize)
-		} else {
-			None
-		}
-	}
-
-	pub fn add_mesh(&mut self, mesh: MeshStats, hash: u64) -> AddMeshResponse {
-		if let Some(existing_mesh) = self.meshes.get(&(hash as usize)) {
-			assert_eq!(
-				existing_mesh.vertex_count, mesh.vertex_count,
-				"Tried to add a mesh with a hash which already exists but their vertex counts don't match."
-			);
-			assert_eq!(
-				existing_mesh.index_count, mesh.index_count,
-				"Tried to add a mesh with a hash which already exists but their index counts don't match."
-			);
-
-			return AddMeshResponse {
-				id: hash as _,
-				base_vertex: existing_mesh.base_vertex,
-				base_index: existing_mesh.base_index,
-			};
-		}
-
+	/// Reserves storage for one newly resident mesh and assigns an opaque renderer-local ID.
+	pub fn add_mesh(&mut self, mesh: MeshStats) -> AddMeshResponse {
 		let vertex_offset = self.vertex_offset();
 		let index_offset = self.index_offset();
+		let mesh_id = self.next_mesh_id;
+		self.next_mesh_id = self
+			.next_mesh_id
+			.checked_add(1)
+			.expect("Mesh buffer IDs exhausted. The most likely cause is an impractically large number of resident meshes.");
 
 		self.vertex_count += mesh.vertex_count;
 		self.index_count += mesh.index_count;
 
-		let mesh_id = hash as usize;
-
 		self.meshes.insert(
-			hash as usize,
+			mesh_id,
 			Mesh {
 				base_vertex: vertex_offset,
 				base_index: index_offset,
@@ -242,6 +222,7 @@ impl<I> Default for MeshBuffersStats<I> {
 		Self {
 			vertex_count: 0,
 			index_count: 0,
+			next_mesh_id: 0,
 			meshes: HashMap::with_capacity(4096),
 			instances: StableVec::new(),
 		}
@@ -336,7 +317,7 @@ mod tests {
 	fn test_one_mesh_and_instance() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
 
 		assert_eq!(mesh.vertex_offset(), 0);
 		assert_eq!(mesh.index_offset(), 0);
@@ -359,7 +340,7 @@ mod tests {
 	fn test_one_mesh_and_two_instances() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
 
 		assert_eq!(mesh.vertex_offset(), 0);
 		assert_eq!(mesh.index_offset(), 0);
@@ -383,8 +364,8 @@ mod tests {
 	fn test_two_meshes_and_two_instances() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh1 = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
-		let mesh2 = mesh_buffer_stats.add_mesh(MeshStats::new(64, 192), 2);
+		let mesh1 = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
+		let mesh2 = mesh_buffer_stats.add_mesh(MeshStats::new(64, 192));
 
 		assert_eq!(mesh1.vertex_offset(), 0);
 		assert_eq!(mesh1.index_offset(), 0);
@@ -420,7 +401,7 @@ mod tests {
 	fn test_removed_instance_does_not_shift_or_batch_through_hole() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
 		let first = mesh_buffer_stats.add_instance(mesh.id(), "first");
 		let second = mesh_buffer_stats.add_instance(mesh.id(), "second");
 		let third = mesh_buffer_stats.add_instance(mesh.id(), "third");
@@ -442,8 +423,8 @@ mod tests {
 	#[test]
 	fn heap_and_frame_allocators_preserve_mesh_switch_and_hole_batches() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
-		let first_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(10, 30), 1);
-		let second_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(20, 60), 2);
+		let first_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(10, 30));
+		let second_mesh = mesh_buffer_stats.add_mesh(MeshStats::new(20, 60));
 
 		mesh_buffer_stats.add_instance(first_mesh.id(), "first");
 		let removed = mesh_buffer_stats.add_instance(first_mesh.id(), "removed");

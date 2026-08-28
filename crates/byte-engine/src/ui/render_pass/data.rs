@@ -653,19 +653,6 @@ pub(super) fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> 
 	}
 }
 
-// Reads the dispatch contract persisted beside a production compute shader.
-pub(super) fn blur_shader_workgroup(shader: &crate::rendering::resource_loading::LoadedShader, name: &str) -> Extent {
-	assert!(
-		matches!(shader.stage, ResourceShaderTypes::Compute),
-		"Invalid {name} shader stage. The most likely cause is incorrect BESL sidecar metadata."
-	);
-	let (width, height, depth) = shader
-		.interface
-		.workgroup_size
-		.unwrap_or_else(|| panic!("Missing {name} workgroup. The most likely cause is an incomplete BESL compute sidecar."));
-	Extent::new(width, height, depth)
-}
-
 pub(super) fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
 	clip.map(|clip| DrawClip {
 		position: [clip.x(), clip.y()],

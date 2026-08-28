@@ -4,6 +4,7 @@
 pub mod pipeline_manager;
 #[doc(hidden)]
 pub mod render_pass;
+pub(crate) mod resource_manager;
 #[doc(hidden)]
 pub mod shader_generator;
 

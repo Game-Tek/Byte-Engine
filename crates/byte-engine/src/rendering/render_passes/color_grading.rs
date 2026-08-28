@@ -3,13 +3,10 @@ use ghi::{
 	frame::Frame as _,
 	types::Size as _,
 };
-use resource_management::{
-	Reference,
-	resources::lut::{Lut, LutKind},
-};
+use resource_management::resources::lut::{Lut, LutKind};
 use utils::Extent;
 
-use super::lut::{LutShaderParameters, load_lut_bytes, lut_shader_parameters, write_lut_bytes_to_rgba16f_upload_target};
+use super::lut::{LutShaderParameters, PreparedLut, lut_shader_parameters, write_lut_bytes_to_rgba16f_upload_target};
 use crate::{
 	core::Entity,
 	rendering::{
@@ -57,7 +54,7 @@ pub struct ColorGradingPass {
 	bypass_pass: ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
-	lut_reference: Option<Reference<Lut>>,
+	lut_bytes: Option<std::sync::Arc<[u8]>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
 	workflow: ColorGradingWorkflow,
@@ -69,9 +66,14 @@ impl ColorGradingPass {
 	/// Creates one fused grading and output pass from a workflow-specific creative LUT.
 	///
 	/// The ACES workflow expects an ACEScct-to-ACEScct LUT. The DaVinci workflow
-	/// expects a DaVinci Wide Gamut/Intermediate-to-Intermediate LUT.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, workflow: ColorGradingWorkflow, lut: Reference<Lut>) -> Self {
-		let lut_metadata = lut.resource().clone();
+	/// expects a DaVinci Wide Gamut/Intermediate-to-Intermediate LUT. Prepare the
+	/// LUT through [`PreparedLut::load`] on application-owned asynchronous work
+	/// before constructing this render-thread pass.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, workflow: ColorGradingWorkflow, lut: PreparedLut) -> Self {
+		let PreparedLut {
+			metadata: lut_metadata,
+			bytes,
+		} = lut;
 		assert!(
 			matches!(lut_metadata.kind, LutKind::ThreeDimensional),
 			"Unsupported color-grading LUT. The most likely cause is that the injected resource is not a 3D LUT."
@@ -126,7 +128,7 @@ impl ColorGradingPass {
 			bypass_pass,
 			_parameters: parameters,
 			lut: lut_metadata,
-			lut_reference: Some(lut),
+			lut_bytes: Some(bytes),
 			lut_image,
 			lut_uploaded: false,
 			workflow,
@@ -139,14 +141,12 @@ impl ColorGradingPass {
 			return;
 		}
 
-		let reference = self.lut_reference.as_mut().expect(
-			"Color-grading LUT reference is missing. The most likely cause is that the pass lost its resource before the first frame.",
+		let bytes = self.lut_bytes.take().expect(
+			"Color-grading LUT bytes are missing. The most likely cause is that the pass discarded its prepared resource before the first frame.",
 		);
-		let bytes = load_lut_bytes(reference);
 		let target = frame.get_texture_slice_mut(self.lut_image.into());
 		write_lut_bytes_to_rgba16f_upload_target(&self.lut, &bytes, target);
 		frame.sync_texture(self.lut_image.into());
-		self.lut_reference = None;
 		self.lut_uploaded = true;
 	}
 }

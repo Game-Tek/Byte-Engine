@@ -265,6 +265,12 @@ impl Renderer {
 
 	/// Registers a scene pipeline manager with the renderer.
 	///
+	/// The renderer calls [`PipelineManager::begin_frame`] before frame
+	/// preparation and calls [`PipelineManager::record_frame_uploads`] only when
+	/// that boundary reports pending upload work. This makes a pipeline manager
+	/// the render-thread owner of the shared resource loader, upload queue, and
+	/// implementation-specific store.
+	///
 	/// Next, add post-scene passes with
 	/// [`Self::add_post_scene_render_pass_for_all_sinks`] or create a window with
 	/// [`Self::create_window`].

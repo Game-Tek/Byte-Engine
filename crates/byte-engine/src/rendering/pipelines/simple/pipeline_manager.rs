@@ -1,37 +1,65 @@
-//! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
+//! Simple scene rendering and the render-thread half of asynchronous mesh loading.
+//!
+//! This module shows where the shared resource lifecycle meets renderer frame
+//! callbacks. Scene creation enters through [`PipelineManager::request_mesh`].
+//! [`crate::rendering::pipeline_manager::PipelineManager::begin_frame`] retires
+//! completed GPU work and drains prepared meshes. Its reciprocal
+//! `record_frame_uploads` callback delegates exact placement to
+//! `SimpleResourceStore`. Finally, `prepare`
+//! resolves pending scene instances and builds draws only from resident meshes.
+//!
+//! Keep this orchestration layer when adapting the example, but replace the
+//! resource protocol and store with the future renderer's formats and resident
+//! tables. Application task and staging setup lives in
+//! [`crate::application::graphics::setup_simple_render_pipeline`].
 
+/// The `PipelineManager` struct coordinates Simple scene state with shared loading and renderer-owned storage.
+///
+/// It owns all render-thread halves of the integration: logical request state,
+/// pending scene instances, the frame upload queue, resident lookup, exact GPU
+/// storage, and sink-local passes. Worker tasks own only preparation.
 pub struct PipelineManager {
-	/// Buffer containing all vertex positions for meshes.
-	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
-	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
 	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[AffineShaderMatrix; 1024]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
-	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
-	pub(super) pipeline: ghi::PipelineHandle,
+	pipeline: crate::rendering::PipelineRef,
+	pipeline_manager: crate::rendering::PipelineManagerClient,
+	resource_loader: ResourceLoader<SimpleMeshResource>,
+	uploads: FrameUploadQueue<PreparedSimpleMesh, ResidentSimpleMesh>,
+	pub(super) resource_store: SimpleResourceStore,
+	resident_meshes: HashMap<MeshKey, ResidentSimpleMesh>,
+	pending_renderables: Vec<PendingRenderable>,
 	// TODO: Replace this temporary map with proper retained component storage.
 	renderable_transforms: HashMap<Handle, Transform>,
 	sinks: Vec<RenderPass>,
 }
 
-const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
-	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
+/// The `PendingRenderable` struct keeps scene identity separate from one coalesced mesh request.
+///
+/// Multiple values may point to the same resource reference. This is why
+/// deleting one instance cancels loading only when no other pending instance
+/// still consumes that resource.
+struct PendingRenderable {
+	handle: Handle,
+	key: MeshKey,
+	resource: ResourceRef,
+}
 
 impl PipelineManager {
-	pub fn new(
+	/// Creates the Simple scene, renderer-owned mesh store, and shared async loading client.
+	///
+	/// The application must already have created the loader, its running server,
+	/// the staging arena backed by `staging_buffer`, and the asynchronously driven
+	/// pipeline compiler represented by `pipeline_manager`. This constructor only
+	/// queues the Simple pipeline request; it never waits for shader resources or
+	/// creates shaders on the render thread. Next, register this value through
+	/// [`crate::rendering::Renderer::add_pipeline_manager`].
+	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		resources: &resource_management::resource::resource_manager::ResourceManager,
+		pipeline_manager: crate::rendering::PipelineManagerClient,
+		resource_loader: ResourceLoader<SimpleMeshResource>,
+		staging_buffer: ghi::BaseBufferHandle,
 	) -> Self {
-		let vertex_positions_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("Vertex Positions")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-
-		let indeces_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("Indeces")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
+		let resource_store = SimpleResourceStore::new(context, staging_buffer);
 
 		let camera_data_buffer = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -45,143 +73,69 @@ impl PipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let vertex_shader = load_besl_shader(
-			context,
-			resources,
-			"byte-engine/rendering/simple/vertex.besl",
-			"Vertex Shader",
-		);
-
-		let fragment_shader = load_besl_shader(
-			context,
-			resources,
-			"byte-engine/rendering/simple/fragment.besl",
-			"Fragment Shader",
-		);
-
-		let pipeline = context.create_raster_pipeline(
-			ghi::pipelines::raster::Builder::new(
-				&[ghi::pipelines::PushConstantRange::new(0, 4)],
-				&VERTEX_LAYOUT,
-				&[
-					ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-					ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
-				],
-				&[
-					ghi::pipelines::raster::AttachmentDescriptor::new(crate::rendering::SCENE_COLOR_FORMAT),
-					ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
-				],
-			)
-			.name("Vertex Shader"),
-		);
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/simple/simple.pipeline");
 
 		Self {
-			vertex_positions_buffer,
-			indeces_buffer,
-
-			mesh_buffers_stats: MeshBuffersStats::default(),
-
 			instance_data_buffer,
 			camera_data_buffer,
-
 			pipeline,
-
+			pipeline_manager,
+			resource_loader,
+			uploads: FrameUploadQueue::default(),
+			resource_store,
+			resident_meshes: HashMap::new(),
+			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::new(),
 			sinks: Vec::with_capacity(4),
 		}
 	}
 
-	/// Creates or replaces a mesh instance while preserving transform updates received before creation.
-	pub fn create_mesh(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, renderable: RenderableMesh) {
-		// Creation messages are upserts, but the latest independently published transform must survive replacement.
+	/// Requests or reuses a mesh and delays instance creation until GPU upload completion.
+	///
+	/// Call this while adopting a scene creation message. Duplicate mesh keys
+	/// coalesce in the loader while each handle retains independent pending state.
+	/// Failed dependencies retry without changing their stable reference.
+	pub fn request_mesh(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, renderable: RenderableMesh) {
+		let source = renderable.source().clone();
+		let key = source.key();
+
+		// Creation is an upsert. Keep the independently retained transform while
+		// replacing resident or pending geometry for this handle.
 		self.remove_mesh_instance(handle);
+		self.remove_pending_for_upsert(handle, key);
 
-		let mesh = renderable.source();
+		if let Some(resident) = self.resident_meshes.get(&key).copied() {
+			self.add_resident_instance(frame, handle, resident);
+			return;
+		}
 
-		let mesh_id = match mesh {
-			MeshSource::Generated(generator) => 'a: {
-				let mesh_hash = generator.hash();
-
-				if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
-					break 'a mesh_id;
-				}
-
-				let positions = generator.positions();
-
-				let indices = generator.indices();
-
-				debug_assert!(
-					indices.iter().all(|&index| u16::try_from(index).is_ok()),
-					"Simple mesh index exceeds u16. The most likely cause is submitting geometry that is too large for the simple pipeline."
+		let resource = match self.resource_loader.request(key, source) {
+			Ok(resource) => resource,
+			Err(_) => {
+				log::error!(
+					"Simple mesh request capacity is full for '{key}'. The most likely cause is more unique meshes than the configured loader capacity."
 				);
-
-				let indices = indices.iter().map(|&index| index as u16);
-
-				let vertex_count = positions.len();
-
-				let index_count = indices.len();
-
-				let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
-
-				let mesh_ref = self
-					.mesh_buffers_stats
-					.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
-
-				let vertex_buffer_offset = mesh_ref.vertex_offset();
-
-				let index_buffer_offset = mesh_ref.index_offset();
-
-				debug_assert!(
-					vertex_buffer_offset
-						.checked_add(vertex_count)
-						.is_some_and(|end| end <= vertex_buffer.len()),
-					"Simple vertex buffer is too small. The most likely cause is inconsistent mesh allocation statistics."
-				);
-
-				vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
-
-				frame.sync_buffer(self.vertex_positions_buffer);
-
-				let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
-
-				debug_assert!(
-					index_buffer_offset
-						.checked_add(index_count)
-						.is_some_and(|end| end <= index_buffer.len()),
-					"Simple index buffer is too small. The most likely cause is inconsistent mesh allocation statistics."
-				);
-
-				index_buffer[index_buffer_offset..][..index_count]
-					.iter_mut()
-					.zip(indices)
-					.for_each(|(dst, src)| {
-						*dst = src;
-					});
-
-				frame.sync_buffer(self.indeces_buffer);
-
-				mesh_ref.id()
-			}
-			_ => {
-				log::warn!("SimpleRenderModel does not support non-generated meshes");
-
 				return;
 			}
 		};
-
-		let instace_id = self.mesh_buffers_stats.add_instance(mesh_id, handle);
-
-		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
-
-		let transform = self.renderable_transforms.get(&handle).cloned().unwrap_or_default();
-		instance_data_buffer[instace_id.index()] = transform.get_matrix().into();
+		if matches!(
+			self.resource_loader.state(resource),
+			ResourceState::Failed | ResourceState::Cancelled
+		) {
+			self.resource_loader.retry(resource);
+		}
+		self.pending_renderables.push(PendingRenderable { handle, key, resource });
+		self.resource_loader.submit_requests(usize::MAX);
 	}
 
 	/// Retains the latest transform and applies it immediately when the mesh instance is resident.
+	///
+	/// Updates arriving before residency are not lost; instance creation reads the
+	/// retained transform after the upload completes.
 	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: &Transform) {
 		self.renderable_transforms.insert(handle, transform.clone());
 
-		let Some(idx) = self.mesh_buffers_stats.get_instance_id(handle) else {
+		let Some(idx) = self.resource_store.instance_id(handle) else {
 			return;
 		};
 
@@ -191,31 +145,130 @@ impl PipelineManager {
 	}
 
 	/// Removes a mesh and any transform retained for later creation.
+	///
+	/// Pending loading is cancelled only when this was the last scene consumer
+	/// and renderer storage has not claimed the request.
 	pub fn remove_mesh(&mut self, handle: Handle) {
 		self.remove_mesh_instance(handle);
+		self.remove_pending_and_cancel_orphan(handle);
 		self.renderable_transforms.remove(&handle);
 	}
 
 	/// Removes only resident instance state so an upsert can reuse the retained transform.
 	fn remove_mesh_instance(&mut self, handle: Handle) {
-		let Some(instance_id) = self.mesh_buffers_stats.get_instance_id(handle) else {
+		let Some(instance_id) = self.resource_store.instance_id(handle) else {
 			return;
 		};
 
-		self.mesh_buffers_stats.remove_instance(instance_id);
+		self.resource_store.remove_instance(instance_id);
+	}
+
+	/// Replaces pending state without cancelling an identical in-flight request.
+	fn remove_pending_for_upsert(&mut self, handle: Handle, replacement_key: MeshKey) {
+		let Some(index) = self.pending_renderables.iter().position(|pending| pending.handle == handle) else {
+			return;
+		};
+		let pending = self.pending_renderables.swap_remove(index);
+		if pending.key != replacement_key {
+			self.cancel_if_orphaned(pending);
+		}
+	}
+
+	/// Removes pending scene state and cancels work that has no remaining consumer.
+	fn remove_pending_and_cancel_orphan(&mut self, handle: Handle) {
+		let Some(index) = self.pending_renderables.iter().position(|pending| pending.handle == handle) else {
+			return;
+		};
+		let pending = self.pending_renderables.swap_remove(index);
+		self.cancel_if_orphaned(pending);
+	}
+
+	/// Cancels an unfinished mesh revision only when no other instance still waits for it.
+	fn cancel_if_orphaned(&mut self, pending: PendingRenderable) {
+		if !self.resident_meshes.contains_key(&pending.key)
+			&& !self
+				.pending_renderables
+				.iter()
+				.any(|other| other.resource == pending.resource)
+			&& matches!(
+				self.resource_loader.state(pending.resource),
+				ResourceState::Queued | ResourceState::Loading
+			) {
+			self.resource_loader.cancel(pending.resource);
+		}
+	}
+
+	/// Allocates one resident instance and initializes its retained transform.
+	fn add_resident_instance(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, resident: ResidentSimpleMesh) {
+		let instance = self.resource_store.add_instance(&resident, handle);
+		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+		if instance.index() >= instance_data.len() {
+			self.resource_store.remove_instance(instance);
+			log::error!("Simple instance storage is full. The most likely cause is more than 1,024 live renderable instances.");
+			return;
+		}
+		let transform = self.renderable_transforms.get(&handle).cloned().unwrap_or_default();
+		instance_data[instance.index()] = transform.get_matrix().into();
+	}
+
+	/// Creates scene instances whose shared mesh uploads completed at the frame boundary.
+	fn resolve_pending_renderables(&mut self, frame: &mut ghi::implementation::Frame) {
+		let mut index = 0usize;
+		while index < self.pending_renderables.len() {
+			let key = self.pending_renderables[index].key;
+			let Some(resident) = self.resident_meshes.get(&key).copied() else {
+				index += 1;
+				continue;
+			};
+			let pending = self.pending_renderables.swap_remove(index);
+			self.add_resident_instance(frame, pending.handle, resident);
+		}
 	}
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
-	fn begin_frame(&mut self, _completed_frame: Option<ghi::FrameKey>) -> bool {
-		false
+	fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
+		for (token, resident) in self.uploads.retire_frame(completed_frame, &mut self.resource_loader) {
+			let key = *self
+				.resource_loader
+				.key(token.reference())
+				.expect("Completed Simple uploads retain their logical loader key.");
+			self.resident_meshes.insert(key, resident);
+		}
+
+		for _ in 0..64 {
+			let Some(completion) = self.resource_loader.take_completion() else {
+				break;
+			};
+			let token = completion.token();
+			match completion.into_result() {
+				Ok(prepared) => self.uploads.enqueue(token, prepared),
+				Err(error) => {
+					let key = self
+						.resource_loader
+						.key(token.reference())
+						.map(ToString::to_string)
+						.unwrap_or_else(|| "unknown".to_string());
+					log::error!("Simple mesh preparation failed for '{key}': {error}");
+				}
+			}
+		}
+		self.resource_loader.submit_requests(64);
+		self.uploads.has_pending()
 	}
 
-	fn record_frame_uploads(
-		&mut self,
-		_frame: ghi::FrameKey,
-		_recording: &mut ghi::implementation::CommandBufferRecording<'_>,
-	) {
+	fn record_frame_uploads(&mut self, frame: ghi::FrameKey, recording: &mut ghi::implementation::CommandBufferRecording<'_>) {
+		for (token, error) in self
+			.uploads
+			.record_frame(frame, recording, &mut self.resource_loader, &mut self.resource_store)
+		{
+			let key = self
+				.resource_loader
+				.key(token.reference())
+				.map(ToString::to_string)
+				.unwrap_or_else(|| "unknown".to_string());
+			log::error!("Simple mesh upload failed for '{key}': {error}");
+		}
 	}
 
 	fn prepare<'a>(
@@ -224,7 +277,9 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
-		let instance_batches = self.mesh_buffers_stats.get_instance_batches_in(frame_allocator);
+		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
+		self.resolve_pending_renderables(frame);
+		let instance_batches = self.resource_store.instance_batches_in(frame_allocator);
 
 		let instance_batches = frame_allocator.alloc_slice_copy(&instance_batches);
 
@@ -239,7 +294,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			.map(|(sink, sink_state)| {
 				crate::rendering::render_pass::allocate_render_command(
 					frame_allocator,
-					sink_state.prepare(frame, sink, self, instance_batches),
+					sink_state.prepare(frame, sink, self, pipeline, instance_batches),
 				)
 			})
 			.collect::<SmallVec<[_; 16]>>();
@@ -271,59 +326,23 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
-fn load_besl_shader(
-	context: &mut ghi::implementation::Context,
-	resources: &resource_management::resource::resource_manager::ResourceManager,
-	id: &str,
-	name: &str,
-) -> ghi::ShaderHandle {
-	crate::rendering::resource_loading::load_shader(context, resources, id, name)
-		.unwrap_or_else(|error| panic!("{error}"))
-		.handle
-}
-
-use std::{
-	collections::{VecDeque, hash_map::Entry},
-	sync::Arc,
-};
-
-use ghi::{
-	command_buffer::{
-		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
-	frame::Frame,
-};
-use math::{AffineShaderMatrix, ShaderMatrix};
-use resource_management::asset::handler::implementations::bema::ProgramGenerator;
+use ghi::context::{Context as _, ContextCreate as _};
+use math::AffineShaderMatrix;
 use smallvec::SmallVec;
-use utils::{
-	Box, Extent,
-	hash::{HashMap, HashMapExt},
-	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
-	sync::RwLock,
-};
+use utils::hash::{HashMap, HashMapExt};
 
 use crate::{
-	core::{
-		Entity,
-		channel::DefaultChannel,
-		entity::{self},
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-	},
+	core::factory::Handle,
 	gameplay::transform::Transform,
-	rendering::Camera,
 	rendering::{
 		RenderableMesh, Sink,
-		lights::{Light, Lights},
-		make_perspective_view_from_camera,
-		pipelines::simple::{CameraShaderData, RenderPass, render_pass},
+		pipelines::simple::{
+			CameraShaderData, RenderPass,
+			resource_manager::{PreparedSimpleMesh, ResidentSimpleMesh, SimpleMeshResource, SimpleResourceStore},
+		},
 		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
-		renderable::mesh::MeshSource,
-		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
-		view::View,
+		renderable::mesh::MeshKey,
+		resource_loading::{FrameUploadQueue, ResourceLoader, ResourceRef, ResourceState},
 	},
 };
 

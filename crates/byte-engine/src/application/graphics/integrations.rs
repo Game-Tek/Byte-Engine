@@ -1,7 +1,7 @@
 //! Adapters between the graphics application and external event protocols.
 //!
 //! [`process_default_window_input`] targets device classes installed by
-//! [`super::setup_default_input`]. [`setup_default_dmx`] is optional and should
+//! [`super::setup_default_input`]. `setup_default_dmx` is optional and should
 //! only be installed by applications that publish color values to Art-Net.
 
 #[cfg(feature = "dmx")]

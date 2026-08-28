@@ -1,48 +1,21 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
-use core::slice::SlicePattern;
-use std::{
-	collections::{VecDeque, hash_map::Entry},
-	sync::Arc,
-};
-
-use besl::ParserNode;
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	frame::Frame,
-};
-use resource_management::{
-	asset::handler::implementations::bema::ProgramGenerator, shader::generator::ShaderGenerationSettings,
-};
-use utils::{
-	Box, Extent,
-	hash::{HashMap, HashMapExt},
-	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
-	sync::RwLock,
 };
 
 use crate::{
-	core::{
-		Entity, EntityHandle,
-		entity::{self},
-		listener::Listener,
-	},
-	rendering::Camera,
+	core::Entity,
 	rendering::{
-		RenderableMesh, Sink,
-		common_shader_generator::CommonShaderScope,
-		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
+		Sink,
 		pipelines::simple::{CameraShaderData, PipelineManager},
-		render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn},
-		renderable::mesh::MeshSource,
-		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
-		view::View,
+		render_pass::RenderPassFunction,
+		utils::InstanceBatch,
 	},
-	space::Transformable,
 };
 
 pub struct RenderPass {
@@ -76,6 +49,7 @@ impl RenderPass {
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		sm: &PipelineManager,
+		pipeline: ghi::PipelineHandle,
 		instance_batches: &'a [InstanceBatch],
 	) -> impl RenderPassFunction + 'a {
 		let camera_data_buffer = sm.camera_data_buffer;
@@ -86,11 +60,9 @@ impl RenderPass {
 			vp: sink.view_projection().into(),
 		};
 
-		let vertex_buffer = sm.vertex_positions_buffer;
+		let vertex_buffer = sm.resource_store.vertex_positions_buffer;
 
-		let index_buffer = sm.indeces_buffer;
-
-		let pipeline = sm.pipeline;
+		let index_buffer = sm.resource_store.indices_buffer;
 
 		let descriptor_set = self.descriptor_set;
 

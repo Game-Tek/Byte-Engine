@@ -1,10 +1,10 @@
-/// The `LutRenderPass` struct applies a baked 3D LUT to the current `main` render target.
+/// The `LutRenderPass` struct applies an asynchronously prepared 3D LUT through renderer-owned GPU storage.
 pub struct LutRenderPass {
 	pass: simple_compute::Pass,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
-	lut_reference: Option<Reference<Lut>>,
+	lut_bytes: Option<std::sync::Arc<[u8]>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
 }
@@ -20,15 +20,18 @@ pub(super) struct LutShaderParameters {
 impl Entity for LutRenderPass {}
 
 impl LutRenderPass {
-	/// Creates a LUT grading pass from an injected LUT reference.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, lut: Reference<Lut>) -> Self {
+	/// Creates a LUT grading pass from asynchronously prepared metadata and bytes.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, lut: PreparedLut) -> Self {
 		Self::with_settings(render_pass_builder, LutRenderPassSettings { lut })
 	}
 
-	/// Creates a LUT grading pass with caller-supplied settings.
+	/// Creates a LUT grading pass with caller-prepared metadata and immutable bytes.
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: LutRenderPassSettings) -> Self {
 		let LutRenderPassSettings { lut } = settings;
-		let lut_metadata = lut.resource().clone();
+		let PreparedLut {
+			metadata: lut_metadata,
+			bytes,
+		} = lut;
 
 		assert!(
 			matches!(lut_metadata.kind, LutKind::ThreeDimensional),
@@ -99,7 +102,7 @@ impl LutRenderPass {
 			bypass_pass,
 			_parameters: parameters,
 			lut: lut_metadata,
-			lut_reference: Some(lut),
+			lut_bytes: Some(bytes),
 			lut_image,
 			lut_uploaded: false,
 		}
@@ -111,17 +114,15 @@ impl LutRenderPass {
 			return;
 		}
 
-		let lut_reference = self.lut_reference.as_mut().expect(
-			"LUT reference missing during LUT upload. The most likely cause is that the LUT render pass lost its source resource before the first frame.",
+		let lut_bytes = self.lut_bytes.take().expect(
+			"LUT bytes are missing during LUT upload. The most likely cause is that the pass discarded its prepared resource before the first frame.",
 		);
-		let lut_bytes = load_lut_bytes(lut_reference);
 		let target = frame.get_texture_slice_mut(self.lut_image.into());
 
 		write_lut_bytes_to_rgba16f_upload_target(&self.lut, &lut_bytes, target);
 		frame.sync_texture(self.lut_image.into());
 
 		self.lut_uploaded = true;
-		self.lut_reference = None;
 	}
 }
 
@@ -173,27 +174,29 @@ impl RenderPass for LutRenderPass {
 	}
 }
 
-/// Reads the baked LUT payload from the resource reference into owned bytes.
-pub(super) fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
+/// Reads the baked LUT payload into owned worker-side bytes.
+async fn load_lut_bytes(reference: &mut Reference<Lut>) -> Result<StdBox<[u8]>, String> {
 	let read_target = ReadTargetsMut::Box {
 		buffer: vec![0_u8; reference.size].into_boxed_slice(),
 		offset: 0,
 		size: None,
 	};
-	let read_result = crate::rendering::resource_loading::block_on(reference.load(read_target)).expect(
-		"Failed to read LUT resource data. The most likely cause is that the cached LUT payload is missing or unreadable.",
-	);
+	let read_result = reference.load(read_target).await.map_err(|_| {
+		"LUT resource data could not be read. The most likely cause is that the cached payload is missing or unreadable."
+			.to_string()
+	})?;
 
-	match read_result {
+	Ok(match read_result {
 		resource_management::resource::ReadTargets::Box(bytes) => bytes,
 		resource_management::resource::ReadTargets::Buffer(bytes) => bytes.into(),
 		resource_management::resource::ReadTargets::Backing(backing) => backing.as_slice().into(),
 		resource_management::resource::ReadTargets::Streams(_) => {
-			panic!(
-				"Unexpected LUT stream layout. The most likely cause is that the LUT resource was stored as streams instead of a flat payload."
+			return Err(
+				"LUT resource has an unsupported stream layout. The most likely cause is that it was stored as streams instead of a flat payload."
+					.to_string(),
 			);
 		}
-	}
+	})
 }
 
 /// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
@@ -246,9 +249,34 @@ fn expected_lut_payload_size(lut: &Lut) -> usize {
 		.expect("Invalid LUT payload size calculation. The most likely cause is that the LUT dimensions overflowed.")
 }
 
-/// The `LutRenderPassSettings` struct carries the LUT resource used by the LUT grading pass.
+/// The `PreparedLut` struct keeps asynchronously loaded LUT metadata and bytes independent from GPU placement.
+#[derive(Clone)]
+pub struct PreparedLut {
+	pub(super) metadata: Lut,
+	pub(super) bytes: std::sync::Arc<[u8]>,
+}
+
+impl PreparedLut {
+	/// Loads one LUT completely on an application-owned asynchronous task.
+	///
+	/// Pass the result to [`LutRenderPass::new`] or a color-grading setup
+	/// function on the render thread. GPU image creation remains owned by the
+	/// selected render pass.
+	pub async fn load(resource_manager: &resource_management::ResourceManager, id: &str) -> Result<Self, String> {
+		let mut reference: Reference<Lut> = resource_manager.request(id).await.map_err(|_| {
+			format!(
+				"LUT resource '{id}' could not be loaded. The most likely cause is that the asset is missing or was not baked."
+			)
+		})?;
+		let metadata = reference.resource().clone();
+		let bytes = load_lut_bytes(&mut reference).await?.into();
+		Ok(Self { metadata, bytes })
+	}
+}
+
+/// The `LutRenderPassSettings` struct carries one prepared LUT into renderer-owned GPU storage.
 pub struct LutRenderPassSettings {
-	pub lut: Reference<Lut>,
+	pub lut: PreparedLut,
 }
 
 #[cfg(test)]

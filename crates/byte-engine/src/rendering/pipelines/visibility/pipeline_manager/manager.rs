@@ -26,6 +26,12 @@ impl VisibilityPipelineManager {
 		self.scene.write_skinned_pose(handle, global_matrices);
 	}
 
+	/// Creates scene-visible Visibility state around an already running resource-loading client.
+	///
+	/// The application must create staging, preparer servers, and the client
+	/// first. Next, register this manager through
+	/// [`crate::rendering::Renderer::add_pipeline_manager`]; its frame callbacks
+	/// will drive transfer retirement and recording.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
@@ -40,10 +46,22 @@ impl VisibilityPipelineManager {
 			context,
 			&pipeline_manager,
 			SkinningSourceBuffers::new(
-				resource_manager.gpu_vertex_data_manager.skinning_rest_positions_buffer.into(),
-				resource_manager.gpu_vertex_data_manager.skinning_rest_normals_buffer.into(),
-				resource_manager.gpu_vertex_data_manager.skinning_joints_buffer.into(),
-				resource_manager.gpu_vertex_data_manager.skinning_weights_buffer.into(),
+				resource_manager
+					.store()
+					.gpu_vertex_data_manager
+					.skinning_rest_positions_buffer
+					.into(),
+				resource_manager
+					.store()
+					.gpu_vertex_data_manager
+					.skinning_rest_normals_buffer
+					.into(),
+				resource_manager.store().gpu_vertex_data_manager.skinning_joints_buffer.into(),
+				resource_manager
+					.store()
+					.gpu_vertex_data_manager
+					.skinning_weights_buffer
+					.into(),
 			),
 		);
 		let materials_data = vec![MaterialData::default(); MAX_MATERIALS]
@@ -84,12 +102,12 @@ impl VisibilityPipelineManager {
 			meshlets_data_buffer,
 		) = {
 			(
-				resource_manager.gpu_vertex_data_manager.vertex_positions_buffer,
-				resource_manager.gpu_vertex_data_manager.vertex_normals_buffer,
-				resource_manager.gpu_vertex_data_manager.vertex_uvs_buffer,
-				resource_manager.gpu_vertex_data_manager.vertex_indices_buffer,
-				resource_manager.gpu_vertex_data_manager.primitive_indices_buffer,
-				resource_manager.gpu_vertex_data_manager.meshlets_data_buffer,
+				resource_manager.store().gpu_vertex_data_manager.vertex_positions_buffer,
+				resource_manager.store().gpu_vertex_data_manager.vertex_normals_buffer,
+				resource_manager.store().gpu_vertex_data_manager.vertex_uvs_buffer,
+				resource_manager.store().gpu_vertex_data_manager.vertex_indices_buffer,
+				resource_manager.store().gpu_vertex_data_manager.primitive_indices_buffer,
+				resource_manager.store().gpu_vertex_data_manager.meshlets_data_buffer,
 			)
 		};
 		context.write(&[
@@ -146,11 +164,6 @@ impl VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
-			vec![ghi::pipelines::PushConstantRange::new(0, 8)],
-			context.create_factory(),
-			pipeline_manager.clone(),
-		));
 		#[cfg(target_os = "macos")]
 		let resource_io_queue = context
 			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name("Visibility Texture I/O"))
@@ -173,7 +186,6 @@ impl VisibilityPipelineManager {
 			resource_io_queue,
 			#[cfg(target_os = "macos")]
 			pending_texture_io: Vec::new(),
-			requested_meshes: std::collections::HashSet::new(),
 			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::new(),
 			loaded_meshes: HashMap::new(),
@@ -182,6 +194,8 @@ impl VisibilityPipelineManager {
 			loaded_ies_profiles: HashMap::new(),
 			incomplete_renderables: HashSet::new(),
 			environment_resource_id: None,
+			loaded_environments: HashMap::new(),
+			environment_descriptors_dirty: false,
 			environment_texture,
 			cone_shadow_map_pool_capacity: settings.cone_shadow_map_pool_capacity,
 			point_shadow_map_pool_capacity: settings.point_shadow_map_pool_capacity,
@@ -211,6 +225,7 @@ impl VisibilityPipelineManager {
 		}
 	}
 
+	/// Adds one light and requests its optional photometric texture dependency.
 	pub(crate) fn create_light(&mut self, handle: Handle, light: Lights) {
 		if let Some(resource_id) = ies_profile_resource_id(&light) {
 			self.resource_manager.request_image(resource_id.to_owned());
@@ -222,9 +237,14 @@ impl VisibilityPipelineManager {
 	pub(crate) fn create_environment(&mut self, environment: Environment) {
 		let resource_id = environment.resource_id().to_owned();
 		self.environment_resource_id = Some(resource_id.clone());
+		if let Some(environment) = self.loaded_environments.get(&resource_id) {
+			self.environment_texture = *environment;
+			self.environment_descriptors_dirty = true;
+		}
 		self.resource_manager.request_environment(resource_id);
 	}
 
+	/// Removes one resident light without changing shared texture residency.
 	pub(crate) fn remove_light(&mut self, handle: Handle) {
 		let Some((handle, _)) = self
 			.scene
@@ -244,19 +264,18 @@ impl VisibilityPipelineManager {
 		self.remove_mesh_instance(handle);
 
 		let source = renderable.source().clone();
-		let mesh_key = VisibilityMeshKey::from_source(&source);
-		if self.requested_meshes.insert(mesh_key.clone()) {
-			let source_kind = match &source {
-				MeshSource::Resource(_) => "resource",
-				MeshSource::Generated(_) => "generated",
-			};
-			log::debug!("Visibility mesh requested: key={}, source={}", mesh_key, source_kind);
-			self.resource_manager.request_mesh(mesh_key.clone(), source);
-		}
+		let mesh_key = source.key();
+		let source_kind = match &source {
+			MeshSource::Resource(_) => "resource",
+			MeshSource::Generated(_) => "generated",
+		};
+		log::debug!("Visibility mesh requested: key={}, source={}", mesh_key, source_kind);
+		// The shared loader coalesces active or resident requests and retries failed revisions.
+		self.resource_manager.request_mesh(mesh_key, source);
 		self.pending_renderables.push(PendingRenderableInstance {
 			handle,
 			renderable,
-			mesh_key: mesh_key.clone(),
+			mesh_key,
 		});
 		self.resolve_pending_renderables_for_mesh(&mesh_key);
 	}
@@ -274,6 +293,12 @@ impl VisibilityPipelineManager {
 		self.scene.remove_renderable(handle);
 	}
 
+	/// Finishes renderer-specific adoption and publishes only fully usable resources.
+	///
+	/// This method is the return path from the resource client to scene state. It
+	/// interns factory objects, assigns table slots, submits or polls native I/O,
+	/// marks loader tokens ready or failed, and resolves waiting renderables after
+	/// their complete dependency closure becomes resident.
 	pub(crate) fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		#[cfg(target_os = "macos")]
 		self.poll_texture_io(frame);
@@ -297,16 +322,42 @@ impl VisibilityPipelineManager {
 					self.resolve_pending_renderables_for_mesh(&key);
 				}
 				VisibilityResourceCompletion::MaterialReady {
+					token,
 					id,
-					index,
 					pipeline,
 					alpha_mode,
 					coverage,
 					textures,
-				} => self.adopt_material_completion(id, index, pipeline, alpha_mode, coverage, textures),
+				} => {
+					// Claim the lifecycle before renderer-owned slots or material tables change.
+					if !self.resource_manager.mark_uploading(token) {
+						continue;
+					}
+					let Ok(index) = self.resource_manager.material_slot(&id) else {
+						self.resource_manager.mark_failed(token);
+						continue;
+					};
+					let textures = textures
+						.into_iter()
+						.map(|texture| {
+							texture
+								.map(|id| {
+									let key = VisibilityTextureKey::new(id.clone());
+									self.resource_manager.texture_slot(&key).map(|index| (id, index))
+								})
+								.transpose()
+						})
+						.collect::<Result<Vec<_>, _>>();
+					let Ok(textures) = textures else {
+						self.resource_manager.mark_failed(token);
+						continue;
+					};
+					self.adopt_material_completion(id, index, pipeline, alpha_mode, coverage, textures);
+					self.resource_manager.mark_ready(token);
+				}
 				VisibilityResourceCompletion::ImageReady {
+					token,
 					key,
-					index,
 					image,
 					sampler,
 					upload,
@@ -316,21 +367,47 @@ impl VisibilityPipelineManager {
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
 					self.resource_manager
-						.enqueue_texture_upload(key, index, image, sampler, upload, photometry);
+						.enqueue_texture_upload(token, key, image, sampler, upload, photometry);
 				}
 				#[cfg(target_os = "macos")]
 				VisibilityResourceCompletion::GpuImageReady {
+					token,
 					key,
-					index,
 					image,
 					sampler,
-					resource,
+					backing,
+					streams,
+					format,
+					extent,
+					mip_count,
 					photometry,
 				} => {
+					// Native I/O bypasses the frame upload queue, so it claims the
+					// same Loading -> Uploading transition before assigning a slot.
+					if !self.resource_manager.mark_uploading(token) {
+						continue;
+					}
+					let Ok(index) = self.resource_manager.texture_slot(&key) else {
+						self.resource_manager.mark_failed(token);
+						continue;
+					};
 					let image = ghi::BaseImageHandle::from(frame.intern_image(image));
 					let sampler = frame.intern_sampler(sampler);
-					if let Err(error) = self.submit_texture_io(frame, key.clone(), index, image, sampler, resource, photometry)
-					{
+					if let Err(error) = self.submit_texture_io(
+						frame,
+						token,
+						key.clone(),
+						index,
+						image,
+						sampler,
+						backing,
+						streams.as_deref(),
+						format,
+						extent,
+						mip_count,
+						photometry,
+					) {
+						self.resource_manager.mark_failed(token);
 						log::error!(
 							"Visibility texture I/O submission failed for {}. The most likely cause is incompatible compressed texture data. Error: {}",
 							key,
@@ -339,16 +416,19 @@ impl VisibilityPipelineManager {
 					}
 				}
 				#[cfg(not(target_os = "macos"))]
-				VisibilityResourceCompletion::GpuImageReady { key, .. } => {
+				VisibilityResourceCompletion::GpuImageReady { token, key, .. } => {
+					self.resource_manager.mark_failed(token);
 					log::error!(
 						"Visibility texture I/O is unavailable for {}. The most likely cause is that a Metal-compressed resource store was opened on another backend.",
 						key
 					);
 				}
-				VisibilityResourceCompletion::EnvironmentReady { id, environment } => {
+				VisibilityResourceCompletion::EnvironmentReady { token, id, environment } => {
 					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
 						let upload = environment.intern(id, frame);
-						self.resource_manager.enqueue_environment_upload(upload);
+						self.resource_manager.enqueue_environment_upload(token, upload);
+					} else {
+						self.resource_manager.mark_failed(token);
 					}
 				}
 				VisibilityResourceCompletion::TextureUploadReady {
@@ -366,13 +446,15 @@ impl VisibilityPipelineManager {
 					specular_image,
 					sampler,
 				} => {
+					let environment = EnvironmentTexture {
+						diffuse_image,
+						specular_image,
+						sampler,
+					};
+					self.loaded_environments.insert(id.clone(), environment);
 					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
-						self.environment_texture = EnvironmentTexture {
-							diffuse_image,
-							specular_image,
-							sampler,
-						};
-						self.write_environment_descriptors(frame);
+						self.environment_texture = environment;
+						self.environment_descriptors_dirty = true;
 						log::debug!(
 							"Visibility environment IBL adopted: id={}, specular_levels={}",
 							id,
@@ -388,6 +470,10 @@ impl VisibilityPipelineManager {
 				}
 			}
 		}
+		if self.environment_descriptors_dirty {
+			self.write_environment_descriptors(frame);
+			self.environment_descriptors_dirty = false;
+		}
 	}
 
 	/// Submits every persisted mip directly into one interned image.
@@ -395,28 +481,18 @@ impl VisibilityPipelineManager {
 	fn submit_texture_io(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
+		token: crate::rendering::resource_loading::ResourceToken,
 		key: VisibilityTextureKey,
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
-		mut resource: Reference<ResourceImage>,
+		backing: resource_management::resource::ResourceGpuBacking,
+		streams: Option<&[resource_management::StreamDescription]>,
+		format: ghi::Formats,
+		extent: Extent,
+		mip_count: u32,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	) -> Result<(), String> {
-		let format = resource_image_format_to_ghi(resource.resource().format);
-		let extent = Extent::from(resource.resource().extent);
-		let mip_count = resource.resource().mip_count.max(1);
-		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
-			.map_err(|_| "the compressed texture has an invalid zero-sized extent".to_string())?;
-		if mip_count > available_mip_count {
-			return Err(format!(
-				"the compressed texture declares {mip_count} mips but its extent supports {available_mip_count}"
-			));
-		}
-		let backing = crate::rendering::resource_loading::block_on(resource.consume_reader().into_backing_storage())
-			.map_err(|_| "the compressed resource reader did not return its backing".to_string())?;
-		let resource_management::resource::ResourceReaderBacking::Gpu(backing) = backing else {
-			return Err("the compressed texture returned CPU-readable backing".to_string());
-		};
 		let compression = match backing.encoding() {
 			resource_management::resource::ResourcePayloadEncoding::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
 			resource_management::resource::ResourcePayloadEncoding::Raw
@@ -429,10 +505,9 @@ impl VisibilityPipelineManager {
 			.open_file(
 				ghi::io::ResourceIoFileDescriptor::new(backing.path())
 					.compression(compression)
-					.name(resource.id()),
+					.name(key.as_str()),
 			)
 			.map_err(|error| error.to_string())?;
-		let streams = resource.streams();
 		let mut requests = SmallVec::<[ghi::io::ResourceIoRequest; 16]>::new();
 
 		for mip_level in 0..mip_count {
@@ -468,6 +543,7 @@ impl VisibilityPipelineManager {
 			.submit(frame.device(), Some(key.as_str()), &requests)
 			.map_err(|error| error.to_string())?;
 		self.pending_texture_io.push(PendingTextureIo {
+			token,
 			key,
 			index,
 			image,
@@ -487,17 +563,20 @@ impl VisibilityPipelineManager {
 				ghi::io::ResourceIoStatus::Pending => index += 1,
 				ghi::io::ResourceIoStatus::Complete => {
 					let completed = self.pending_texture_io.swap_remove(index);
-					self.adopt_texture_completion(
-						frame,
-						completed.key,
-						completed.index,
-						completed.image,
-						completed.sampler,
-						completed.photometry,
-					);
+					if self.resource_manager.mark_ready(completed.token) {
+						self.adopt_texture_completion(
+							frame,
+							completed.key,
+							completed.index,
+							completed.image,
+							completed.sampler,
+							completed.photometry,
+						);
+					}
 				}
 				status => {
 					let failed = self.pending_texture_io.swap_remove(index);
+					self.resource_manager.mark_failed(failed.token);
 					log::error!(
 						"Visibility texture I/O failed for {} with status {:?}. The most likely cause is unreadable or incompatible compressed texture data.",
 						failed.key,

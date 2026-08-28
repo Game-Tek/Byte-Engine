@@ -1,3 +1,18 @@
+//! Visibility scene ownership and the final adoption half of asynchronous resource loading.
+//!
+//! The resource-manager client stops at renderer-oriented completion values.
+//! [`VisibilityPipelineManager`] consumes them during frame preparation,
+//! interns detached factory objects, starts or polls native GPU I/O, updates
+//! material and texture tables, resolves dependency-complete renderables, and
+//! only then builds draws. This final layer exists because loading completion is
+//! not always the same as scene readiness.
+//!
+//! To trace the complete flow, start with
+//! `VisibilityResourcePreparer::spawn`, follow the client's `begin_frame` and
+//! `record_frame_uploads` callbacks, then read
+//! `VisibilityPipelineManager::adopt_resource_completions`. Application wiring
+//! is in [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
+
 mod data;
 mod environment;
 mod manager;
@@ -29,6 +44,7 @@ struct EnvironmentTexture {
 /// The `PendingTextureIo` struct retains one texture until native resource I/O completes.
 #[cfg(target_os = "macos")]
 struct PendingTextureIo {
+	token: crate::rendering::resource_loading::ResourceToken,
 	key: VisibilityTextureKey,
 	index: u32,
 	image: ghi::BaseImageHandle,
@@ -100,6 +116,11 @@ impl VisibilityPipelineSettings {
 
 /// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
 ///
+/// It owns scene-visible residency and the renderer-specific second-stage
+/// adoption that cannot live in the shared loader: object interning, native
+/// texture I/O, shader-table updates, dependency closure, and sink-local draw
+/// preparation. Its resource-manager client owns request and transfer state.
+///
 /// See the [visibility render-model guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering/render-models/visibility)
 /// for its frame stages, resource ownership, and material evaluation path.
 pub struct VisibilityPipelineManager {
@@ -128,7 +149,6 @@ pub struct VisibilityPipelineManager {
 	resource_io_queue: ghi::implementation::ResourceIoQueue,
 	#[cfg(target_os = "macos")]
 	pending_texture_io: Vec<PendingTextureIo>,
-	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
 	pending_renderables: Vec<PendingRenderableInstance>,
 	// TODO: Replace this temporary map with proper retained component storage.
 	renderable_transforms: HashMap<Handle, Transform>,
@@ -141,6 +161,10 @@ pub struct VisibilityPipelineManager {
 	incomplete_renderables: HashSet<Handle>,
 	/// Requested environment resource retained until its asynchronous upload completes.
 	environment_resource_id: Option<String>,
+	/// Completed environment residents remain selectable without repeating GPU work.
+	loaded_environments: HashMap<String, EnvironmentTexture>,
+	/// A cached environment selection needs publication to existing sink descriptors.
+	environment_descriptors_dirty: bool,
 	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
 	environment_texture: EnvironmentTexture,
 	/// Maximum number of local-light maps reused by each sink during a frame.
@@ -335,11 +359,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect::<SmallVec<[_; 16]>>();
 
 		log::debug!(
-			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}, cone_shadow_pool_capacity={}, point_shadow_count={}, point_shadow_pool_capacity={}",
+			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, directional_shadow_enabled={}, cone_shadow_count={}, cone_shadow_pool_capacity={}, point_shadow_count={}, point_shadow_pool_capacity={}",
 			sinks.len(),
 			self.scene.sink_states.len(),
 			commands.len(),
-			self.requested_meshes.len(),
 			self.loaded_meshes.len(),
 			self.pending_renderables.len(),
 			self.scene.render_entities.len(),
@@ -1613,10 +1636,8 @@ use ghi::io::{ResourceIoContext as _, ResourceIoQueue as _, ResourceIoTicket as 
 use log::{error, warn};
 use math::{AffineShaderMatrix, Matrix, ShaderMatrix, UnitVector};
 use maths_rs::Vec4f;
-use resource_management::Reference;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
-use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding, identity_affine_matrix4x3_columns};
 use resource_management::shader::besl::backends::glsl::GLSLTranspiler;
@@ -1645,8 +1666,8 @@ use crate::rendering::pipelines::visibility::render_pass::{
 	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, VisibilityPipelineRenderPass,
 };
 use crate::rendering::pipelines::visibility::resource_manager::{
-	IBL_SPECULAR_LEVEL_COUNT, MaterialPipelineConfig, MipStreamName, VisibilityMeshKey,
-	VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion, VisibilityTextureKey, resource_image_format_to_ghi,
+	IBL_SPECULAR_LEVEL_COUNT, MipStreamName, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
+	VisibilityRenderResource, VisibilityResourceCompletion, VisibilityTextureKey, resource_image_format_to_ghi,
 	texture_mip_extent,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;

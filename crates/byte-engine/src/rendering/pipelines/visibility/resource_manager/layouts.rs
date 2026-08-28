@@ -1,5 +1,14 @@
+//! Pure layout calculations shared by Visibility preparation and upload recording.
+//!
+//! Keep these functions free of resource I/O and renderer mutation. Preparers
+//! use them to size and pack staging regions; the render-thread store uses the
+//! same results to build copy descriptors. This shared representation prevents
+//! the two sides of the asynchronous boundary from deriving incompatible row
+//! pitches, mip extents, or offsets.
+
 use super::*;
 
+/// The `MipStreamName` struct formats baked mip identifiers without a transient heap allocation.
 pub(crate) struct MipStreamName {
 	bytes: [u8; 16],
 	len: usize,
@@ -29,12 +38,18 @@ impl MipStreamName {
 		Self { bytes, len }
 	}
 
+	/// Returns the formatted identifier used to request one baked mip stream.
 	pub(crate) fn as_str(&self) -> &str {
 		std::str::from_utf8(&self.bytes[..self.len]).expect("Mip stream names contain only ASCII bytes.")
 	}
 }
 
 #[derive(Clone, Copy)]
+/// The `TextureUploadLayout` struct connects one compact resource image to its row-padded GPU copy region.
+///
+/// Preparation uses compact fields while loading and padded fields while
+/// arranging staging. Recording uses the same offset and source pitches, so no
+/// backend-specific layout decision is repeated across threads.
 pub(super) struct TextureUploadLayout {
 	pub(super) offset: usize,
 	pub(super) compact_bytes_per_row: usize,

@@ -12,8 +12,6 @@ pub mod scene_manager;
 #[doc(hidden)]
 pub mod shader_generator;
 pub(crate) mod skinning;
-pub(crate) mod upload_staging;
-
 pub(crate) use layout::*;
 pub use pipeline_manager::{
 	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,

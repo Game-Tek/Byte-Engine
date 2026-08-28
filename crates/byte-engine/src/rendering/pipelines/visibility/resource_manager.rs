@@ -1,6 +1,48 @@
-use std::collections::VecDeque;
+//! Visibility's resource protocol, worker preparation, dependency routing, and GPU storage policy.
+//!
+//! This module proves that the same shared lifecycle used by Simple can support
+//! a renderer with unrelated resource shapes. Visibility loads meshes,
+//! materials, images, and environments. Its store writes meshlets and parallel
+//! vertex-property streams, assigns stable material and bindless texture slots,
+//! and publishes renderer-specific completion values.
+//!
+//! # Request and preparation direction
+//!
+//! Scene methods call
+//! `VisibilityPipelineResourceManagerClient::request_mesh`,
+//! `VisibilityPipelineResourceManagerClient::request_image`, or
+//! `VisibilityPipelineResourceManagerClient::request_environment`. The client
+//! coalesces a `VisibilityResourceKey` and submits a
+//! `VisibilityResourceRequest` to one of four independent
+//! `VisibilityResourcePreparer` lanes. Preparers perform resource I/O,
+//! validate formats, fill staging, and create detached factory objects. They
+//! preserve logical IDs but never assign Visibility table slots or vertex
+//! offsets.
+//!
+//! # Adoption and publication direction
+//!
+//! `VisibilityPipelineResourceManagerClient::begin_frame` drains prepared
+//! values. Meshes and CPU-backed images continue through the shared frame upload
+//! queue. Materials and detached factory objects return to the Visibility
+//! pipeline manager for render-thread interning and table updates. Native GPU-I/O
+//! images use the same loader token transitions, but publish only after their
+//! native completion. The client returns all outcomes as
+//! `VisibilityResourceCompletion` so the pipeline manager remains the only
+//! owner of scene-visible state.
+//!
+//! # Why dependencies stay here
+//!
+//! A loaded mesh can discover materials, and a material can discover textures.
+//! `VisibilityResourceDependencies` records that graph so a repeated resident
+//! mesh request can retry only failed descendants. The shared loader cannot own
+//! this rule because Simple has no material or texture dependency graph. A future
+//! renderer should keep its equivalent graph beside its client and store.
+//!
+//! Start at `VisibilityResourcePreparer::spawn` for construction, then follow
+//! the client frame callbacks into `VisibilityResourceStore` to see exactly
+//! where generic lifecycle ends and Visibility placement begins.
+
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
 
 use ghi::Device as _;
 use ghi::context::{Context as _, ContextCreate as _};
@@ -21,13 +63,13 @@ use smallvec::SmallVec;
 use utils::Extent;
 use utils::hash::{HashMap, HashMapExt};
 
-pub(super) use super::upload_staging;
 use crate::core::EntityHandle;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::{
 	GPUVertexDataManager, MeshData as GpuMeshData, PreparedGpuMesh,
 };
 use crate::rendering::pipelines::visibility::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS};
 use crate::rendering::renderable::mesh::MeshSource;
+use crate::rendering::resource_loading as upload_staging;
 use crate::resource_management::{self};
 
 pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
@@ -42,7 +84,6 @@ mod worker;
 
 pub(crate) use layouts::*;
 pub(crate) use preparation::*;
-pub use state::ResourceStates;
 pub(crate) use state::*;
 pub(crate) use worker::*;
 
@@ -71,7 +112,7 @@ mod tests {
 		let executor = resource_management::r#async::Executor::new().expect("mesh metadata test executor");
 		let mesh = executor
 			.block_on(async {
-				let (staging, worker) = super::super::upload_staging::UploadStagingArena::new_for_test(bytes);
+				let (staging, worker) = crate::rendering::resource_loading::UploadStagingArena::new_for_test(bytes);
 				resource_management::r#async::spawn(worker.run()).detach();
 				PreparedGpuMesh::prepare_generated_mesh(&crate::rendering::mesh::generator::BoxMeshGenerator::new(), staging)
 					.await
@@ -96,35 +137,6 @@ mod tests {
 			&primitive_skins,
 			0,
 		));
-	}
-
-	#[test]
-	fn resource_commands_reach_the_async_worker_in_fifo_order() {
-		let executor = resource_management::r#async::Executor::new().expect("expected test value");
-		let (sender, receiver) = kanal::unbounded_async();
-		let sender = sender.to_sync();
-
-		for id in ["first", "second", "third"] {
-			sender
-				.send(VisibilityTransferCommand::RequestEnvironment { id: id.to_string() })
-				.expect("expected test value");
-		}
-
-		let received = executor.block_on(async {
-			let mut ids = Vec::new();
-			for _ in 0..3 {
-				let VisibilityTransferCommand::RequestEnvironment { id } = receiver.recv().await.expect("expected test value")
-				else {
-					panic!(
-						"Unexpected visibility command. The most likely cause is that the FIFO test enqueued the wrong variant."
-					);
-				};
-				ids.push(id);
-			}
-			ids
-		});
-
-		assert_eq!(received, ["first", "second", "third"]);
 	}
 
 	#[test]

@@ -54,7 +54,31 @@ pub enum MeshSource {
 	Generated(Arc<dyn MeshGenerator>),
 }
 
+/// The `MeshKey` enum identifies one geometry source independently of renderer storage or scene instances.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum MeshKey {
+	Resource(&'static str),
+	Generated(u64),
+}
+
+impl std::fmt::Display for MeshKey {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Resource(id) => write!(formatter, "resource:{id}"),
+			Self::Generated(hash) => write!(formatter, "generated:{hash}"),
+		}
+	}
+}
+
 impl MeshSource {
+	/// Returns the allocation-free logical key shared by every renderer implementation.
+	pub(crate) fn key(&self) -> MeshKey {
+		match self {
+			Self::Resource(id) => MeshKey::Resource(id),
+			Self::Generated(generator) => MeshKey::Generated(generator.hash()),
+		}
+	}
+
 	pub fn sphere(radius: f32) -> Self {
 		MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
 	}

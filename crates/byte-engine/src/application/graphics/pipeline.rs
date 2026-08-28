@@ -3,14 +3,56 @@
 use super::*;
 use crate::rendering::{ConeLight, DirectionalLight, PointLight};
 
-/// Installs the simple scene pipeline for debugging and prototype rendering.
-pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
+/// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
+///
+/// This setup is the smallest end-to-end implementation of
+/// [`rendering::resource_loading`]. It creates one mapped staging arena, one
+/// preparation server, and a Simple-owned store whose position and index
+/// streams intentionally differ from Visibility storage. The supplied callback
+/// owns task placement so this function does not impose an executor or thread
+/// policy on the application. Simple's shaders use the renderer's asynchronous
+/// pipeline compilation servers; this setup never waits for shader resources.
+///
+/// Add the supplied task to a queue from [`defaults::build_deferred_tasks_queue`],
+/// then start that queue with [`defaults::launch_deferred_tasks_thread`] after
+/// every subsystem has registered its work. At shutdown, join that task before
+/// dropping the renderer and mapped upload buffer.
+pub fn setup_simple_render_pipeline(
+	application: &mut GraphicsApplication,
+	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
+) {
 	defaults::setup_default_pipeline_compilation(application);
 	let listener = application.world().factory::<RenderableMesh>().listener();
 	let delete_listener = application.world().delete_channel().listener();
 	let transforms_listener = application.world().transforms_channel().listener();
+	let application_resources = application.resource_manager.clone();
 
 	let renderer = &mut application.renderer;
+	let pipeline_compiler = renderer.pipeline_manager_client();
+	let context = renderer.context_mut();
+	let upload_buffer: ghi::BufferHandle<[u8; rendering::pipelines::simple::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT]> =
+		context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+				.name("Simple Async Upload Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
+		);
+	// The application-owned worker keeps this exclusive mapping alive until
+	// shutdown, while submitted staging leases stay retained by the upload queue.
+	#[allow(unsafe_code)]
+	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
+	let (upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::new(upload_mapping);
+	let (resource_loader, loading_endpoint) = rendering::resource_loading::ResourceLoader::<
+		rendering::pipelines::simple::resource_manager::SimpleMeshResource,
+	>::new(4096, 64);
+	let loading_server = loading_endpoint.server(rendering::pipelines::simple::resource_manager::SimpleMeshPreparer::new(
+		application_resources,
+		upload_staging,
+	));
+
+	spawn_loading_task(std::boxed::Box::new(move |runtime| {
+		runtime.spawn(upload_staging_worker.run()).detach();
+		runtime.spawn(loading_server.run()).detach();
+	}));
 
 	struct CustomPipelineManager {
 		pipeline_manager: SimplePipelineManager,
@@ -41,7 +83,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle();
 
-				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
+				self.pipeline_manager.request_mesh(frame, handle, message.into_data());
 			}
 
 			while let Some(message) = self.transforms_listener.read() {
@@ -65,7 +107,12 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	let sm = {
 		CustomPipelineManager {
-			pipeline_manager: SimplePipelineManager::new(renderer.context_mut(), &application.resource_manager),
+			pipeline_manager: SimplePipelineManager::new(
+				renderer.context_mut(),
+				pipeline_compiler,
+				resource_loader,
+				upload_buffer.into(),
+			),
 			mesh_receiver: listener,
 			mesh_delete_receiver: delete_listener,
 			transforms_listener,
@@ -76,6 +123,17 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 }
 
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
+///
+/// Visibility demonstrates the same shared lifecycle with four preparation
+/// lanes, meshlets and parallel vertex streams, material and bindless texture
+/// slots, CPU texture transfers, and native GPU-I/O adoption. Those choices are
+/// implemented by Visibility's preparer and store; they are not requirements of
+/// the shared loader.
+///
+/// The supplied callback must run the staging worker and every preparation
+/// server on application-owned async tasks. Join those tasks before renderer
+/// shutdown so no worker retains a mapping or detached GHI factory after its
+/// context is dropped.
 ///
 /// Next, create an [`Environment`] through
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
@@ -120,7 +178,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	let application_resource_manager = application.resource_manager.clone();
 	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
+	let pipeline_manager = renderer.pipeline_manager_client();
 	let context = renderer.context_mut();
+	let material_pipeline_config = rendering::pipelines::visibility::resource_manager::MaterialPipelineConfig::new(
+		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
+		pipeline_manager.clone(),
+	);
 
 	let upload_buffer: ghi::BufferHandle<
 		[u8; rendering::pipelines::visibility::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT],
@@ -135,19 +198,21 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	// shutdown joins its worker before the renderer drops the backing GHI context.
 	#[allow(unsafe_code)]
 	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
-	let (upload_staging, upload_staging_worker) =
-		rendering::pipelines::visibility::upload_staging::UploadStagingArena::new(upload_mapping);
+	let (upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::new(upload_mapping);
 
-	let (resource_manager_client, resource_manager) = VisibilityPipelineResourceManager::spawn(
-		renderer.context_mut(),
+	let (resource_manager_client, resource_servers) = VisibilityResourcePreparer::spawn(
+		context,
 		application_resource_manager,
 		upload_staging,
 		upload_buffer.into(),
+		material_pipeline_config,
 	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
 		runtime.spawn(upload_staging_worker.run()).detach();
-		runtime.spawn(resource_manager.run()).detach();
+		for server in resource_servers {
+			runtime.spawn(server.run()).detach();
+		}
 	}));
 
 	struct CustomPipelineManager {
@@ -264,8 +329,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let environment_receiver = application.world().factory::<Environment>().listener();
 
 		let renderer = &mut application.renderer;
-		let pipeline_manager = renderer.pipeline_manager_client();
-
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
 				renderer.context_mut(),
@@ -371,69 +434,63 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
-/// Installs a fused ACEScg/ACEScct grading and SDR output pass.
+/// Installs a fused ACEScg/ACEScct grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return ACEScct values. The pass uses an AP1-aware
 /// fitted SDR transform; it does not claim ACES reference-transform compliance.
-/// Call this after scene-linear effects. Later passes consume its remapped `main` output.
-pub fn setup_aces_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
-	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::Aces);
+/// Load it with [`crate::rendering::render_passes::lut::PreparedLut::load`] on
+/// application-owned asynchronous work before calling this setup function. Call
+/// this after scene-linear effects. Later passes consume its remapped `main` output.
+pub fn setup_aces_color_grading_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+) {
+	setup_color_grading_render_pass(application, lut, ColorGradingWorkflow::Aces);
 }
 
-/// Installs a fused DaVinci Wide Gamut/Intermediate grading and SDR output pass.
+/// Installs a fused DaVinci Wide Gamut/Intermediate grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return DaVinci Wide Gamut/Intermediate values. The
 /// pass uses AgX for SDR display rendering and does not claim parity with
-/// DaVinci Resolve color management. Call this after scene-linear effects. Later
-/// passes consume its remapped `main` output.
-pub fn setup_dwg_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
-	setup_color_grading_render_pass(application, lut_id, ColorGradingWorkflow::DaVinciWideGamut);
+/// DaVinci Resolve color management. Load it with
+/// [`crate::rendering::render_passes::lut::PreparedLut::load`] on
+/// application-owned asynchronous work before calling this setup function. Call
+/// this after scene-linear effects. Later passes consume its remapped `main` output.
+pub fn setup_dwg_color_grading_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+) {
+	setup_color_grading_render_pass(application, lut, ColorGradingWorkflow::DaVinciWideGamut);
 }
 
 /// Loads and installs one fixed color-grading workflow for every render sink.
-fn setup_color_grading_render_pass(application: &mut GraphicsApplication, lut_id: &str, workflow: ColorGradingWorkflow) {
-	let resource_manager = application.resource_manager_handle();
-	let lut_id = lut_id.to_owned();
-
+fn setup_color_grading_render_pass(
+	application: &mut GraphicsApplication,
+	lut: crate::rendering::render_passes::lut::PreparedLut,
+	workflow: ColorGradingWorkflow,
+) {
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			let lut = crate::rendering::resource_loading::request::<resource_management::resources::lut::Lut>(
-				&resource_manager,
-				&lut_id,
-			)
-			.unwrap_or_else(|error| {
-				panic!(
-					"Failed to load color-grading LUT asset '{lut_id}': {error}. The most likely cause is that the LUT asset is missing, unreadable, or could not be baked."
-				)
-			});
-
-			Box::new(ColorGradingPass::new(render_pass_builder, workflow, lut))
+			Box::new(ColorGradingPass::new(render_pass_builder, workflow, lut.clone()))
 		});
 }
 
-/// Installs a 3D LUT grading pass from a resource or development asset ID.
+/// Installs a 3D LUT grading pass from asynchronously prepared resource data.
 ///
-/// Each sink loads an independent reference to the LUT when its pass is created.
-/// Call this after passes that produce the HDR `main` target and before tone mapping.
-pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut_id: &str) {
-	let resource_manager = application.resource_manager_handle();
-	let lut_id = lut_id.to_owned();
-
+/// Load the resource once with
+/// [`crate::rendering::render_passes::lut::PreparedLut::load`] on
+/// application-owned asynchronous work. Each sink shares those immutable bytes
+/// while creating its own renderer-owned image. Call this after passes that
+/// produce the HDR `main` target and before tone mapping.
+pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut: crate::rendering::render_passes::lut::PreparedLut) {
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
-			let lut = crate::rendering::resource_loading::request::<resource_management::resources::lut::Lut>(
-				&resource_manager,
-				&lut_id,
-			)
-			.unwrap_or_else(|error| {
-				panic!(
-					"Failed to load LUT render pass asset '{lut_id}': {error}. The most likely cause is that the LUT asset is missing, unreadable, or could not be baked."
-				)
-			});
-
-			Box::new(crate::rendering::render_passes::lut::LutRenderPass::new(render_pass_builder, lut))
+			Box::new(crate::rendering::render_passes::lut::LutRenderPass::new(
+				render_pass_builder,
+				lut.clone(),
+			))
 		});
 }
 

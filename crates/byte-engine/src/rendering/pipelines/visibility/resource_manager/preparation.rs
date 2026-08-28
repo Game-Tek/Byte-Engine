@@ -1,22 +1,29 @@
+//! Worker-side resource I/O and conversion for the Visibility protocol.
+//!
+//! The preparer deliberately stops before renderer storage. It can validate
+//! baked metadata, allocate staging, convert texture row layouts, compile
+//! material pipelines through a thread-safe client, and create detached GHI
+//! factory objects. Buffer offsets, bindless slots, object interning, and
+//! scene-visible publication remain render-thread responsibilities in
+//! [`super::VisibilityResourceStore`] and the Visibility pipeline manager.
+//!
+//! To add a resource family, first add request, key, prepared, and completion
+//! variants in [`super::state`]. Implement only I/O and conversion here. Then add
+//! renderer placement in the store or explicit adoption in the pipeline manager.
+
 use super::*;
 
-/// The `VisibilityPipelineResourceManager` struct owns asynchronous visibility resource workloads.
-pub(crate) struct VisibilityPipelineResourceManager {
-	/// Image resources used by material evaluation and local-light IES profiles.
-	images: Vec<ResourceStates<(), ()>>,
-	/// Mapping from shared material-texture or IES-profile resource ID to bindless image index.
-	images_by_resource: HashMap<String, usize>,
-	/// Material pipelines
-	materials: Vec<ResourceStates<String, ()>>,
-	/// Mapping from material ID to material index.
-	material_by_name: HashMap<String, usize>,
+/// The `VisibilityResourcePreparer` struct owns one lane's resource services, staging client, and detached GPU factory.
+///
+/// Each server owns a separate value, which permits sequential reuse of its
+/// mutable factory without locks while cloned endpoints distribute work across
+/// lanes.
+pub(crate) struct VisibilityResourcePreparer {
 	/// Resource manager for loading assets.
 	resource_manager: EntityHandle<ResourceManager>,
-	/// Unified command channel used by callers and independently prepared resources.
-	commands: kanal::Sender<VisibilityTransferCommand>,
+	/// Detached GPU factory owned by this sequential preparation lane.
 	resource_factory: Option<ghi::implementation::Factory>,
-	material_pipeline_config: Option<MaterialPipelineConfig>,
-	work_completions: Sender<VisibilityResourceCompletion>,
+	material_pipeline_config: MaterialPipelineConfig,
 	upload_staging: Arc<super::upload_staging::UploadStagingArena>,
 }
 
@@ -281,251 +288,256 @@ async fn load_environment_bytes(
 	load_image_streams(reference, streams, "environment", id).await
 }
 
-impl VisibilityPipelineResourceManager {
-	pub(crate) fn spawn(
-		context: &mut ghi::implementation::Context,
+impl VisibilityResourcePreparer {
+	/// Creates one sequential preparation lane over shared resource and upload services.
+	///
+	/// Usually call [`Self::spawn`] instead; it creates the shared loader and the
+	/// configured set of independent servers together.
+	pub(crate) fn new(
 		resource_manager: EntityHandle<ResourceManager>,
 		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
-		staging_data_buffer: ghi::BaseBufferHandle,
-	) -> (
-		VisibilityPipelineResourceManagerClient,
-		VisibilityPipelineResourceManagerWorker,
-	) {
-		let gpu_vertex_data_manager = GPUVertexDataManager::new(context);
-		let (commands, command_receiver) = kanal::unbounded_async();
-		let commands = commands.to_sync();
-		let (work_completions, work_completion_receiver) = mpsc::channel();
-		let (prepared_upload_sender, prepared_uploads) = mpsc::channel();
-		let resource_manager = Self::new(resource_manager, commands.clone(), work_completions.clone(), upload_staging);
-
-		(
-			VisibilityPipelineResourceManagerClient {
-				gpu_vertex_data_manager,
-				commands: commands.clone(),
-				completions: work_completion_receiver,
-				upload_completions: CompletionList::new(),
-				prepared_uploads,
-				pending_uploads: VecDeque::new(),
-				submitted_uploads: VecDeque::new(),
-				staging_data_buffer,
-			},
-			VisibilityPipelineResourceManagerWorker {
-				resource_manager,
-				commands: command_receiver,
-				prepared_uploads: prepared_upload_sender,
-			},
-		)
-	}
-
-	fn new(
-		resource_manager: EntityHandle<ResourceManager>,
-		commands: kanal::Sender<VisibilityTransferCommand>,
-		work_completions: Sender<VisibilityResourceCompletion>,
-		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
+		resource_factory: Option<ghi::implementation::Factory>,
+		material_pipeline_config: MaterialPipelineConfig,
 	) -> Self {
 		Self {
-			images: Vec::with_capacity(4096),
-			images_by_resource: HashMap::with_capacity(4096),
-			materials: Vec::with_capacity(4096),
-			material_by_name: HashMap::with_capacity(4096),
 			resource_manager,
-			commands,
-			resource_factory: None,
-			material_pipeline_config: None,
-			work_completions,
+			resource_factory,
+			material_pipeline_config,
 			upload_staging,
 		}
 	}
 
-	/// Runs one CPU preparation job on the current resource runtime and returns its result through the unified queue.
-	fn spawn_preparation(&self, preparation: impl std::future::Future<Output = VisibilityTransferCommand> + 'static) {
-		let commands = self.commands.clone();
-		resource_management::r#async::spawn(async move {
-			let command = preparation.await;
-			if commands.send(command).is_err() {
-				log::error!(
-					"Visibility preparation completion failed. The most likely cause is that the transfer worker stopped receiving resource work."
-				);
-			}
-		})
-		.detach();
-	}
-
-	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
-	pub(crate) fn configure_material_pipeline(&mut self, mut config: MaterialPipelineConfig) {
-		self.resource_factory = config.resource_factory.take();
-		self.material_pipeline_config = Some(config);
-	}
-
-	/// Starts mesh metadata preparation without waiting for any material dependency.
-	pub(super) fn request_mesh_preparation(&self, key: VisibilityMeshKey, source: MeshSource) {
-		let resource_manager = self.resource_manager.clone();
-		self.spawn_preparation(async move {
-			match source {
-				MeshSource::Resource(id) => match resource_manager.request::<ResourceMesh>(id).await {
-					Ok(resource) => VisibilityTransferCommand::ResourceMeshLoaded {
-						key,
-						resource,
-					},
-					Err(_) => {
-						log::error!(
-							"Visibility mesh resource request failed for {}. The most likely cause is that the mesh id is missing or the asset database is not loaded.",
-							id
-						);
-						VisibilityTransferCommand::PreparationFailed {
-							key: VisibilityResourceKey::Mesh(key),
-						}
-					}
-				},
-				MeshSource::Generated(generator) => VisibilityTransferCommand::GeneratedMeshLoaded {
-					key,
-					generator,
-				},
-			}
-		});
-	}
-
-	/// Reserves render dependencies from mesh metadata, then prepares only that mesh's upload data.
-	pub(super) fn prepare_loaded_resource_mesh(&mut self, key: VisibilityMeshKey, resource: Reference<ResourceMesh>) {
-		let resource_data = resource.resource();
-		let material_indices = resource_data
-			.primitives
-			.iter()
-			.map(|primitive| self.request_material(&primitive.material.id))
-			.collect::<Vec<_>>();
-		let primitive_skins = resource_data
-			.primitives
-			.iter()
-			.map(|primitive| primitive.skin)
-			.collect::<Vec<_>>();
-		let skin_bindings = resource_data.skins.iter().cloned().map(Arc::new).collect::<Vec<_>>();
-		let skeleton_node_count = resource_data
-			.skeleton
-			.as_ref()
-			.map(|skeleton| skeleton.resource().nodes.len() as u32)
-			.unwrap_or(0);
-		let upload_staging = self.upload_staging.clone();
-		self.spawn_preparation(async move {
-			match PreparedGpuMesh::prepare_resource_mesh(resource, upload_staging).await {
-				Some(mesh) => VisibilityTransferCommand::UploadPrepared(PreparedUpload::ResourceMesh {
+	/// Loads mesh metadata and stages the exact Visibility geometry streams without assigning renderer slots.
+	async fn prepare_mesh(
+		&mut self,
+		key: VisibilityMeshKey,
+		source: MeshSource,
+	) -> Result<VisibilityPreparedResource, VisibilityResourceError> {
+		let failure = || VisibilityResourceError::new(VisibilityResourceKey::Mesh(key));
+		match source {
+			MeshSource::Resource(id) => {
+				let resource: Reference<ResourceMesh> = self.resource_manager.request(id).await.map_err(|_| {
+					log::error!(
+						"Visibility mesh resource request failed for {}. The most likely cause is that the mesh id is missing or the asset database is not loaded.",
+						id
+					);
+					failure()
+				})?;
+				let resource_data = resource.resource();
+				let material_ids = resource_data
+					.primitives
+					.iter()
+					.map(|primitive| primitive.material.id.clone())
+					.collect::<Vec<_>>();
+				let primitive_skins = resource_data
+					.primitives
+					.iter()
+					.map(|primitive| primitive.skin)
+					.collect::<Vec<_>>();
+				let skin_bindings = resource_data.skins.iter().cloned().map(Arc::new).collect::<Vec<_>>();
+				let skeleton_node_count = resource_data
+					.skeleton
+					.as_ref()
+					.map(|skeleton| skeleton.resource().nodes.len() as u32)
+					.unwrap_or(0);
+				let mesh = PreparedGpuMesh::prepare_resource_mesh(resource, self.upload_staging.clone())
+					.await
+					.ok_or_else(failure)?;
+				Ok(VisibilityPreparedResource::Mesh(PreparedUpload::ResourceMesh {
 					key,
 					mesh,
-					material_indices,
+					material_ids,
 					primitive_skins,
 					skin_bindings,
 					skeleton_node_count,
-				}),
-				None => VisibilityTransferCommand::PreparationFailed {
-					key: VisibilityResourceKey::Mesh(key),
-				},
+				}))
 			}
-		});
-	}
-
-	/// Reserves the default material and prepares generated geometry for the common upload queue.
-	pub(super) fn prepare_loaded_generated_mesh(
-		&mut self,
-		key: VisibilityMeshKey,
-		generator: Arc<dyn crate::rendering::mesh::generator::MeshGenerator>,
-	) {
-		let material_index = self.request_material("white_solid.bema");
-		let upload_staging = self.upload_staging.clone();
-		self.spawn_preparation(async move {
-			match PreparedGpuMesh::prepare_generated_mesh(generator.as_ref(), upload_staging).await {
-				Some(mesh) => VisibilityTransferCommand::UploadPrepared(PreparedUpload::GeneratedMesh {
+			MeshSource::Generated(generator) => {
+				let mesh = PreparedGpuMesh::prepare_generated_mesh(generator.as_ref(), self.upload_staging.clone())
+					.await
+					.ok_or_else(failure)?;
+				Ok(VisibilityPreparedResource::Mesh(PreparedUpload::GeneratedMesh {
 					key,
 					mesh,
-					material_index,
-				}),
-				None => VisibilityTransferCommand::PreparationFailed {
-					key: VisibilityResourceKey::Mesh(key),
-				},
+					material_id: "white_solid.bema".to_string(),
+				}))
 			}
-		});
-	}
-
-	/// Sends one loading result without blocking the resource task.
-	pub(super) fn send_completion(&self, completion: VisibilityResourceCompletion) {
-		if self.work_completions.send(completion).is_err() {
-			log::error!(
-				"Visibility resource completion failed. The most likely cause is that the render thread stopped receiving worker results."
-			);
 		}
 	}
 
-	/// Adopts a requested pipeline reference and starts every texture dependency independently.
-	pub(super) fn adopt_prepared_material(
-		&mut self,
-		id: String,
-		index: u32,
-		alpha_mode: AlphaMode,
-		coverage: resource_management::resources::material::MaterialCoverage,
-		texture_keys: Vec<Option<VisibilityTextureKey>>,
-		pipeline: crate::rendering::PipelineRef,
-	) {
-		let textures = texture_keys
-			.into_iter()
-			.map(|key| {
-				key.map(|key| {
-					let index = self.request_texture_dependency(key.clone());
-					(key.as_str().to_string(), index)
-				})
+	/// Loads one material variant and requests its specialized pipeline without assigning material or texture slots.
+	async fn prepare_material(&mut self, id: String) -> Result<VisibilityPreparedResource, VisibilityResourceError> {
+		let failure_key = VisibilityResourceKey::Material(id.clone());
+		let mut reference: Reference<ResourceVariant> = self.resource_manager.request(&id).await.map_err(|_| {
+			log::error!(
+				"Visibility material variant request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
+				id
+			);
+			VisibilityResourceError::new(failure_key.clone())
+		})?;
+		let variant = reference.resource_mut();
+		let alpha_mode = variant.alpha_mode.clone();
+		let texture_keys = variant
+			.variables
+			.iter()
+			.map(|parameter| match parameter.value {
+				Value::Image(ref image) => Some(VisibilityTextureKey::new(image.id())),
+				_ => None,
 			})
-			.collect();
-		self.send_completion(VisibilityResourceCompletion::MaterialReady {
+			.collect::<Vec<_>>();
+		let material = variant.material.resource_mut();
+		let coverage = material.coverage;
+		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
+			log::error!(
+				"Unsupported visibility material model for {}. The most likely cause is that this material targets a different render model or pass.",
+				id
+			);
+			return Err(VisibilityResourceError::new(failure_key));
+		}
+		if material.shaders().first().is_none() {
+			log::error!(
+				"Visibility material shader is missing for {}. The most likely cause is that the material was baked without a compute shader.",
+				id
+			);
+			return Err(VisibilityResourceError::new(failure_key));
+		}
+		let pipeline = self
+			.material_pipeline_config
+			.pipeline_manager
+			.request_specialized_compute_pipeline(
+				crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest::new(
+					id.clone(),
+					self.material_pipeline_config.push_constant_ranges.clone(),
+				),
+			);
+		Ok(VisibilityPreparedResource::Material {
 			id,
-			index,
-			pipeline,
 			alpha_mode,
 			coverage,
-			textures,
-		});
+			texture_keys,
+			pipeline,
+		})
 	}
 
-	/// Queues a texture dependency discovered while loading another resource.
-	fn request_texture_dependency(&mut self, key: VisibilityTextureKey) -> u32 {
-		let (index, inserted) = self.reserve_texture_slot(key.as_str());
-		if inserted {
-			self.request_image_preparation(key, index);
-		}
-		index
-	}
-
-	/// Requests one image outside material dependency discovery, such as a light's IES profile.
-	pub(super) fn request_image(&mut self, key: VisibilityTextureKey) {
-		self.request_texture_dependency(key);
-	}
-
-	/// Starts one texture's CPU preparation without waiting for sibling textures or its material pipeline.
-	pub(super) fn request_image_preparation(&self, key: VisibilityTextureKey, index: u32) {
-		let resource_manager = self.resource_manager.clone();
-		let upload_staging = self.upload_staging.clone();
-		let failure_key = key.clone();
-		self.spawn_preparation(async move {
-			let resource: Result<Reference<ResourceImage>, ()> = resource_manager.request(key.as_str()).await.map_err(|error| {
-				log::error!(
-					"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {}",
-					key,
-					error
-				);
-			});
-			match resource {
-				Ok(resource) if resource.is_gpu_backed() => VisibilityTransferCommand::TextureResourceLoaded {
-					key,
-					index,
-					resource,
-				},
-				Ok(resource) => match Self::prepare_texture(resource, upload_staging, key, index).await {
-					Ok(texture) => VisibilityTransferCommand::TexturePrepared { texture },
-					Err(()) => VisibilityTransferCommand::PreparationFailed {
-						key: VisibilityResourceKey::Texture(failure_key),
-					},
-				},
-				Err(()) => VisibilityTransferCommand::PreparationFailed {
-					key: VisibilityResourceKey::Texture(failure_key),
-				},
+	/// Loads one image and creates detached GPU objects while retaining either staged bytes or native backing.
+	async fn prepare_image(
+		&mut self,
+		key: VisibilityTextureKey,
+	) -> Result<VisibilityPreparedResource, VisibilityResourceError> {
+		let failure_key = VisibilityResourceKey::Texture(key.clone());
+		let resource: Reference<ResourceImage> = self.resource_manager.request(key.as_str()).await.map_err(|error| {
+			log::error!(
+				"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {}",
+				key,
+				error
+			);
+			VisibilityResourceError::new(failure_key.clone())
+		})?;
+		let prepared = if resource.is_gpu_backed() {
+			let texture = Self::prepare_gpu_texture(resource, key)
+				.await
+				.map_err(|()| VisibilityResourceError::new(failure_key))?;
+			let (image, sampler) = self
+				.build_texture_objects(
+					&texture.key,
+					&texture.name,
+					texture.format,
+					texture.extent,
+					texture.mip_count,
+					texture.photometry.is_some(),
+				)
+				.ok_or_else(|| VisibilityResourceError::new(VisibilityResourceKey::Texture(texture.key.clone())))?;
+			PreparedVisibilityImage::Gpu {
+				key: texture.key,
+				image,
+				sampler,
+				backing: texture.backing,
+				streams: texture.streams,
+				format: texture.format,
+				extent: texture.extent,
+				mip_count: texture.mip_count,
+				photometry: texture.photometry,
 			}
-		});
+		} else {
+			let texture = Self::prepare_texture(resource, self.upload_staging.clone(), key)
+				.await
+				.map_err(|()| VisibilityResourceError::new(failure_key))?;
+			let (image, sampler) = self
+				.build_texture_objects(
+					&texture.key,
+					&texture.name,
+					texture.format,
+					texture.extent,
+					texture.mip_count,
+					texture.photometry.is_some(),
+				)
+				.ok_or_else(|| VisibilityResourceError::new(VisibilityResourceKey::Texture(texture.key.clone())))?;
+			PreparedVisibilityImage::Cpu {
+				key: texture.key,
+				image,
+				sampler,
+				upload: texture.upload,
+				photometry: texture.photometry,
+			}
+		};
+		Ok(VisibilityPreparedResource::Image(prepared))
+	}
+
+	/// Extracts and validates native GPU backing without blocking render-thread adoption.
+	async fn prepare_gpu_texture(
+		mut reference: Reference<ResourceImage>,
+		key: VisibilityTextureKey,
+	) -> Result<PreparedGpuTexture, ()> {
+		let texture = reference.resource();
+		let name = reference.id().to_string();
+		let format = resource_image_format_to_ghi(texture.format);
+		let extent = Extent::from(texture.extent);
+		let mip_count = texture.mip_count.max(1);
+		let photometry = texture
+			.photometry
+			.clone()
+			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
+		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
+			.map_err(|_| {
+				log::error!(
+					"Visibility GPU texture dimensions are invalid for {}. The most likely cause is that the baked image has a zero width or height.",
+					key
+				);
+			})?;
+		if mip_count > available_mip_count {
+			log::error!(
+				"Visibility GPU texture mip metadata is invalid for {}: declared {}, available {}. The most likely cause is that the baked mip count does not match the image dimensions.",
+				key,
+				mip_count,
+				available_mip_count
+			);
+			return Err(());
+		}
+		let streams = reference.streams().map(<[resource_management::StreamDescription]>::to_vec);
+		let backing = reference.consume_reader().into_backing_storage().await.map_err(|_| {
+			log::error!(
+				"Visibility GPU texture backing extraction failed for {}. The most likely cause is that the compressed resource reader did not return its persisted backing.",
+				key
+			);
+		})?;
+		let resource_management::resource::ResourceReaderBacking::Gpu(backing) = backing else {
+			log::error!(
+				"Visibility GPU texture backing is CPU-readable for {}. The most likely cause is inconsistent resource encoding metadata.",
+				key
+			);
+			return Err(());
+		};
+
+		Ok(PreparedGpuTexture {
+			key,
+			name,
+			format,
+			extent,
+			mip_count,
+			backing,
+			streams,
+			photometry,
+		})
 	}
 
 	/// Loads one texture into owned row-padded data without borrowing transfer memory.
@@ -533,7 +545,6 @@ impl VisibilityPipelineResourceManager {
 		mut reference: Reference<ResourceImage>,
 		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
 		key: VisibilityTextureKey,
-		index: u32,
 	) -> Result<PreparedTexture, ()> {
 		let id = key.as_str();
 		let texture = reference.resource();
@@ -584,7 +595,6 @@ impl VisibilityPipelineResourceManager {
 
 		Ok(PreparedTexture {
 			key,
-			index,
 			name: reference.id().to_string(),
 			format,
 			extent,
@@ -592,64 +602,6 @@ impl VisibilityPipelineResourceManager {
 			upload,
 			photometry,
 		})
-	}
-
-	/// Creates detached texture objects after CPU preparation, then exposes them for render-thread interning.
-	pub(super) fn adopt_prepared_texture(&mut self, texture: PreparedTexture) {
-		let PreparedTexture {
-			key,
-			index,
-			name,
-			format,
-			extent,
-			mip_count,
-			upload,
-			photometry,
-		} = texture;
-		let Some((image, sampler)) = self.build_texture_objects(&key, &name, format, extent, mip_count, photometry.is_some())
-		else {
-			return;
-		};
-
-		self.send_completion(VisibilityResourceCompletion::ImageReady {
-			key,
-			index,
-			image,
-			sampler,
-			upload,
-			photometry,
-		});
-	}
-
-	/// Creates detached texture objects while retaining the compressed resource for direct GPU I/O.
-	pub(super) fn adopt_loaded_gpu_texture(
-		&mut self,
-		key: VisibilityTextureKey,
-		index: u32,
-		resource: Reference<ResourceImage>,
-	) {
-		let texture = resource.resource();
-		let name = resource.id().to_string();
-		let format = resource_image_format_to_ghi(texture.format);
-		let extent = Extent::from(texture.extent);
-		let mip_count = texture.mip_count.max(1);
-		let photometry = texture
-			.photometry
-			.clone()
-			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
-		let Some((image, sampler)) = self.build_texture_objects(&key, &name, format, extent, mip_count, photometry.is_some())
-		else {
-			return;
-		};
-
-		self.send_completion(VisibilityResourceCompletion::GpuImageReady {
-			key,
-			index,
-			image,
-			sampler,
-			resource,
-			photometry,
-		});
 	}
 
 	/// Builds the detached image and sampler shared by raw and compressed texture paths.
@@ -667,9 +619,6 @@ impl VisibilityPipelineResourceManager {
 				"Visibility texture creation failed for {}. The most likely cause is that material pipeline creation was configured without a factory.",
 				name
 			);
-			self.send_completion(VisibilityResourceCompletion::Failed {
-				key: VisibilityResourceKey::Texture(key.clone()),
-			});
 			return None;
 		};
 		let image = device.build_image(
@@ -687,21 +636,6 @@ impl VisibilityPipelineResourceManager {
 		};
 		let sampler = device.build_sampler(sampler_builder.max_lod((mip_count - 1) as f32));
 		Some((image, sampler))
-	}
-
-	/// Starts one environment's complete CPU preparation without holding the transfer scheduler.
-	pub(super) fn request_environment_preparation(&self, id: String) {
-		let resource_manager = self.resource_manager.clone();
-		let upload_staging = self.upload_staging.clone();
-		let failure_id = id.clone();
-		self.spawn_preparation(async move {
-			match Self::prepare_environment(resource_manager, upload_staging, id).await {
-				Ok(environment) => VisibilityTransferCommand::EnvironmentPrepared { environment },
-				Err(()) => VisibilityTransferCommand::PreparationFailed {
-					key: VisibilityResourceKey::Environment(failure_id),
-				},
-			}
-		});
 	}
 
 	/// Loads the diffuse and roughness-prefiltered streams into owned upload data.
@@ -814,8 +748,15 @@ impl VisibilityPipelineResourceManager {
 		})
 	}
 
-	/// Creates detached environment objects after every baked stream is prepared.
-	pub(super) fn adopt_prepared_environment(&mut self, environment: PreparedEnvironment) {
+	/// Loads every IBL stream and creates detached cube resources without publishing renderer storage.
+	async fn prepare_environment_resource(
+		&mut self,
+		id: String,
+	) -> Result<VisibilityPreparedResource, VisibilityResourceError> {
+		let failure_key = VisibilityResourceKey::Environment(id.clone());
+		let environment = Self::prepare_environment(self.resource_manager.clone(), self.upload_staging.clone(), id)
+			.await
+			.map_err(|()| VisibilityResourceError::new(failure_key.clone()))?;
 		let PreparedEnvironment {
 			id,
 			diffuse_format,
@@ -831,10 +772,7 @@ impl VisibilityPipelineResourceManager {
 				"Visibility environment creation failed for {}. The most likely cause is that the resource worker was configured without a GPU factory.",
 				id
 			);
-			self.send_completion(VisibilityResourceCompletion::Failed {
-				key: VisibilityResourceKey::Environment(id),
-			});
-			return;
+			return Err(VisibilityResourceError::new(failure_key));
 		};
 		let diffuse_name = format!("{id} diffuse irradiance");
 		let diffuse_image = device.build_image(
@@ -857,7 +795,7 @@ impl VisibilityPipelineResourceManager {
 		);
 		let sampler = device.build_sampler(default_material_sampler_builder().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
 
-		self.send_completion(VisibilityResourceCompletion::EnvironmentReady {
+		Ok(VisibilityPreparedResource::Environment {
 			id,
 			environment: FactoryEnvironment {
 				diffuse_image,
@@ -867,138 +805,24 @@ impl VisibilityPipelineResourceManager {
 				diffuse_upload,
 				specular_uploads,
 			},
-		});
+		})
 	}
+}
 
-	/// Reserves a bindless texture slot and reports whether the slot was newly created.
-	pub(super) fn reserve_texture_slot(&mut self, texture_id: &str) -> (u32, bool) {
-		if let Some(index) = self.images_by_resource.get(texture_id) {
-			return (*index as u32, false);
+impl crate::rendering::resource_loading::ResourcePreparer<VisibilityRenderResource> for VisibilityResourcePreparer {
+	/// Prepares one logical Visibility resource without assigning renderer-owned storage.
+	fn prepare(
+		&mut self,
+		request: VisibilityResourceRequest,
+	) -> impl std::future::Future<Output = Result<VisibilityPreparedResource, VisibilityResourceError>> + '_ {
+		async move {
+			match request {
+				VisibilityResourceRequest::Mesh { key, source } => self.prepare_mesh(key, source).await,
+				VisibilityResourceRequest::Material { id } => self.prepare_material(id).await,
+				VisibilityResourceRequest::Image { key } => self.prepare_image(key).await,
+				VisibilityResourceRequest::Environment { id } => self.prepare_environment_resource(id).await,
+			}
 		}
-
-		let idx = self.images.len() as u32;
-
-		if idx as usize >= crate::rendering::pipelines::visibility::MAX_BINDLESS_TEXTURES {
-			panic!(
-				"Visibility texture limit exceeded. The most likely cause is that the scene created more texture variants than the visibility pipeline supports."
-			);
-		}
-
-		self.images.push(ResourceStates::pending(()));
-		self.images_by_resource.insert(texture_id.to_string(), idx as usize);
-
-		(idx, true)
-	}
-
-	/// Reserves a material slot and immediately starts its independent dependency preparation.
-	fn request_material(&mut self, material_id: &str) -> u32 {
-		let (index, inserted) = self.reserve_material_slot(material_id);
-		if inserted {
-			let id = material_id.to_string();
-			let Some(config) = self.material_pipeline_config.as_ref() else {
-				log::error!(
-					"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager did not configure the resource worker before requesting meshes.",
-					id
-				);
-				self.send_completion(VisibilityResourceCompletion::Failed {
-					key: VisibilityResourceKey::Material(id),
-				});
-				return index;
-			};
-			let push_constant_ranges = config.push_constant_ranges.clone();
-			let pipeline_manager = config.pipeline_manager.clone();
-			let resource_manager = self.resource_manager.clone();
-			let commands = self.commands.clone();
-
-			resource_management::r#async::spawn(async move {
-				let result = async {
-					let mut reference: Reference<ResourceVariant> = resource_manager.request(&id).await.map_err(|_| {
-						log::error!(
-							"Visibility material variant request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
-							id
-						);
-					})?;
-					let variant = reference.resource_mut();
-					let alpha_mode = variant.alpha_mode.clone();
-					let texture_keys = variant
-						.variables
-						.iter()
-						.map(|parameter| match parameter.value {
-							Value::Image(ref image) => Some(VisibilityTextureKey::new(image.id())),
-							_ => None,
-						})
-						.collect::<Vec<_>>();
-					let material = variant.material.resource_mut();
-					let coverage = material.coverage;
-					if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
-						log::error!(
-							"Unsupported visibility material model for {}. The most likely cause is that this material targets a different render model or pass.",
-							id
-						);
-						return Err(());
-					}
-
-					let shader_resource_id = material.shaders().first().map(|shader| shader.id().to_string()).ok_or_else(|| {
-						log::error!(
-							"Visibility material shader is missing for {}. The most likely cause is that the material was baked without a compute shader.",
-							id
-						);
-					})?;
-					// Pipeline submission is independent of GPU transfer availability. Send it
-					// directly to the existing compiler workers as soon as the variant is known.
-					let pipeline = pipeline_manager.request_specialized_compute_pipeline(
-						crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest::new(
-							id.clone(),
-							push_constant_ranges,
-						),
-					);
-					Ok(VisibilityTransferCommand::MaterialPrepared {
-						id: id.clone(),
-						index,
-						alpha_mode,
-						coverage,
-						texture_keys,
-						pipeline,
-					})
-				}
-				.await;
-
-				let command = match result {
-					Ok(command) => command,
-					Err(()) => VisibilityTransferCommand::PreparationFailed {
-						key: VisibilityResourceKey::Material(id),
-					},
-				};
-				if commands.send(command).is_err() {
-					log::error!(
-						"Visibility material preparation completion failed. The most likely cause is that the transfer worker stopped receiving resource work."
-					);
-				}
-			})
-			.detach();
-		}
-		index
-	}
-
-	/// Reserves a material slot and reports whether the slot was newly created.
-	fn reserve_material_slot(&mut self, material_id: &str) -> (u32, bool) {
-		if let Some(index) = self.material_by_name.get(material_id) {
-			return (*index as u32, false);
-		}
-
-		let idx = self.materials.len() as u32;
-
-		if idx as usize >= MAX_MATERIALS {
-			panic!(
-				"Visibility material limit exceeded. The most likely cause is that the scene created more material variants than the visibility pipeline supports."
-			);
-		}
-
-		let material_id = material_id.to_string();
-		self.materials.push(ResourceStates::pending(material_id.clone()));
-		self.material_by_name.insert(material_id, idx as usize);
-
-		(idx, true)
 	}
 }
 

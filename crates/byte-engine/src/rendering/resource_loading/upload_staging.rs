@@ -1,18 +1,31 @@
 use std::{collections::VecDeque, sync::Arc};
 
-/// The `UploadStagingArena` struct hands out exclusive slices of one persistently mapped GPU transfer-source buffer.
+/// The `UploadStagingArena` struct gives preparers exclusive regions of one persistently mapped transfer buffer.
 ///
-/// Request a [`StagingLease`] with [`Self::allocate`], load or convert the resource directly into that lease, then keep
-/// the lease alive until the GPU transfer frame completes.
-pub(crate) struct UploadStagingArena {
+/// Share this lightweight client with asynchronous preparers. Request a
+/// [`StagingLease`] with [`Self::allocate`], load or convert directly into its
+/// bytes, and move the lease inside the prepared upload. The reverse path is
+/// automatic: when the frame upload queue drops the lease after GPU completion,
+/// its region returns to [`UploadStagingWorker`] for coalescing and reuse.
+///
+/// The arena owns raw access transferred from one GHI mapping, not the backing
+/// buffer or context. Keep the GHI context and mapped buffer alive until the
+/// arena, its worker, and every lease have been dropped.
+pub struct UploadStagingArena {
 	byte_count: usize,
 	commands: kanal::AsyncSender<StagingCommand>,
 	returner: kanal::Sender<StagingCommand>,
 }
 
-/// The `UploadStagingWorker` struct exclusively owns upload-region allocation state.
-pub(crate) struct UploadStagingWorker {
-	available_regions: VecDeque<StagingRegion>,
+/// The `UploadStagingWorker` struct serializes allocation and reclamation for one mapped staging arena.
+///
+/// Run one worker per [`UploadStagingArena`] on an application-owned async task.
+/// Keeping free-region state here lets preparers share the arena without
+/// placing synchronization inside GHI or exposing mapped pointers across the
+/// public allocation API. The worker exits after every arena client and lease
+/// return channel has been dropped.
+pub struct UploadStagingWorker {
+	available_regions: Vec<StagingRegion>,
 	pending_allocations: VecDeque<StagingAllocationRequest>,
 	commands: kanal::AsyncReceiver<StagingCommand>,
 }
@@ -35,8 +48,13 @@ enum StagingCommand {
 }
 
 impl UploadStagingArena {
-	/// Creates an arena that exclusively owns a transferred GHI buffer mapping.
-	pub(crate) fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
+	/// Creates the client and worker halves for one transferred GHI buffer mapping.
+	///
+	/// The mapping must cover the upload buffer used as the source in the
+	/// renderer's [`super::ResourceUploadStore`]. Next, run
+	/// [`UploadStagingWorker::run`] on an application-owned task and retain the
+	/// mapped buffer handle in the renderer that records copies.
+	pub fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
 		let (address, byte_count) = mapping.into_raw_parts();
 		Self::from_region(StagingRegion {
 			offset: 0,
@@ -55,7 +73,7 @@ impl UploadStagingArena {
 				commands,
 			}),
 			UploadStagingWorker {
-				available_regions: VecDeque::from([region]),
+				available_regions: vec![region],
 				pending_allocations: VecDeque::new(),
 				commands: command_receiver,
 			},
@@ -71,8 +89,14 @@ impl UploadStagingArena {
 		})
 	}
 
-	/// Waits until one aligned region is available or rejects a request larger than the complete arena.
-	pub(crate) async fn allocate(self: &Arc<Self>, byte_count: usize, alignment: usize) -> Option<StagingLease> {
+	/// Waits for one aligned exclusive region or rejects a request larger than the complete arena.
+	///
+	/// Allocation requests are served in FIFO order. A large request at the head
+	/// can therefore hold smaller requests until returned regions coalesce; this
+	/// favors predictable ordering over opportunistic reordering. `alignment`
+	/// must be a non-zero power of two. `None` means the complete arena is too
+	/// small or its worker has stopped.
+	pub async fn allocate(self: &Arc<Self>, byte_count: usize, alignment: usize) -> Option<StagingLease> {
 		assert!(
 			alignment.is_power_of_two(),
 			"Upload staging alignment must be a non-zero power of two."
@@ -99,7 +123,11 @@ impl UploadStagingArena {
 
 impl UploadStagingWorker {
 	/// Serves allocation and return messages until every staging client is dropped.
-	pub(crate) async fn run(mut self) {
+	///
+	/// Move this future to the same application-owned runtime as resource loading
+	/// servers. Do not run two workers for one arena because this value is the
+	/// exclusive owner of free-region state.
+	pub async fn run(mut self) {
 		while let Ok(command) = self.commands.recv().await {
 			match command {
 				StagingCommand::Allocate(request) => self.pending_allocations.push_back(request),
@@ -134,10 +162,7 @@ impl UploadStagingWorker {
 				.checked_add(byte_count)
 				.is_some_and(|end| end <= region.offset + region.byte_count)
 		})?;
-		let region = self
-			.available_regions
-			.remove(index)
-			.expect("The staging region index was selected from this queue.");
+		let region = self.available_regions.remove(index);
 		let aligned_offset = region.offset.next_multiple_of(alignment);
 		let prefix_len = aligned_offset - region.offset;
 		let suffix_len = region.byte_count - prefix_len - byte_count;
@@ -147,14 +172,14 @@ impl UploadStagingWorker {
 			.expect("Upload staging address overflowed. The most likely cause is a corrupted mapped region.");
 
 		if prefix_len != 0 {
-			self.available_regions.push_back(StagingRegion {
+			self.available_regions.push(StagingRegion {
 				offset: region.offset,
 				address: region.address,
 				byte_count: prefix_len,
 			});
 		}
 		if suffix_len != 0 {
-			self.available_regions.push_back(StagingRegion {
+			self.available_regions.push(StagingRegion {
 				offset: aligned_offset + byte_count,
 				address: aligned_address + byte_count,
 				byte_count: suffix_len,
@@ -169,52 +194,42 @@ impl UploadStagingWorker {
 	}
 
 	fn return_region(&mut self, region: StagingRegion) {
-		self.available_regions.push_back(region);
-		self.available_regions
-			.make_contiguous()
-			.sort_unstable_by_key(|region| region.offset);
-		let mut coalesced = VecDeque::with_capacity(self.available_regions.len());
-		while let Some(region) = self.available_regions.pop_front() {
-			let Some(previous) = coalesced.pop_back() else {
-				coalesced.push_back(region);
-				continue;
-			};
-			if previous.offset + previous.byte_count == region.offset {
-				coalesced.push_back(join_adjacent_regions(previous, region));
-			} else {
-				coalesced.push_back(previous);
-				coalesced.push_back(region);
+		self.available_regions.push(region);
+		self.available_regions.sort_unstable_by_key(|region| region.offset);
+		self.available_regions.dedup_by(|right, left| {
+			if left.offset + left.byte_count != right.offset {
+				return false;
 			}
-		}
-		self.available_regions = coalesced;
+			// Reconstruct one ownership token after both adjacent exclusive regions return to the arena.
+			assert_eq!(
+				left.address + left.byte_count,
+				right.address,
+				"Adjacent staging offsets must map adjacent memory."
+			);
+			left.byte_count += right.byte_count;
+			true
+		});
 	}
 }
 
-/// Reconstructs one ownership token after both adjacent exclusive regions return to the arena.
-fn join_adjacent_regions(left: StagingRegion, right: StagingRegion) -> StagingRegion {
-	let total_len = left.byte_count + right.byte_count;
-
-	assert_eq!(
-		left.address + left.byte_count,
-		right.address,
-		"Adjacent upload staging offsets must also refer to adjacent mapped memory."
-	);
-	StagingRegion {
-		offset: left.offset,
-		address: left.address,
-		byte_count: total_len,
-	}
-}
-
-/// The `StagingLease` struct grants exclusive CPU access to one GPU upload-buffer region until its transfer completes.
-pub(crate) struct StagingLease {
+/// The `StagingLease` struct ties exclusive mapped bytes to their GPU-use lifetime.
+///
+/// Fill the region through [`Self::bytes_mut`], use [`Self::offset`] when
+/// recording a copy from the arena's backing buffer, and move the lease into
+/// the prepared upload. Do not free it manually. Dropping the lease returns the
+/// region to the worker, so the frame upload queue should own it until the exact
+/// transfer frame completes.
+pub struct StagingLease {
 	region: Option<StagingRegion>,
 	returner: kanal::Sender<StagingCommand>,
 }
 
 impl StagingLease {
 	/// Returns the lease's absolute byte offset in the GPU upload buffer.
-	pub(crate) fn offset(&self) -> usize {
+	///
+	/// Add renderer-specific subrange offsets to this value when building copy
+	/// descriptors.
+	pub fn offset(&self) -> usize {
 		self.region
 			.as_ref()
 			.expect("Live staging leases retain their mapped region.")
@@ -222,8 +237,11 @@ impl StagingLease {
 	}
 
 	/// Returns exclusive CPU access to the persistently mapped region.
+	///
+	/// Finish all writes before handing the lease to the render thread. The
+	/// exclusive borrow prevents concurrent safe access through this lease.
 	#[allow(unsafe_code)]
-	pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+	pub fn bytes_mut(&mut self) -> &mut [u8] {
 		let region = self.region.as_mut().expect("Live staging leases retain their mapped region.");
 		// The allocation worker only creates disjoint region tokens, and a lease
 		// provides mutable access through one exclusive `&mut self` at a time.
@@ -244,7 +262,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn full_arena_holds_requests_until_a_completed_lease_returns_capacity() {
+	fn leases_remain_disjoint_and_return_capacity_after_completion_or_cancellation() {
 		use std::{future::Future as _, task::Poll};
 
 		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
@@ -252,75 +270,27 @@ mod tests {
 		executor.block_on(async {
 			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
-			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
-			let mut blocked = std::pin::pin!(arena.allocate(16, 16));
-			let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-
-			assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
-
-			drop(complete);
-			let reused = blocked
-				.await
-				.expect("A returned staging lease must satisfy the blocked request.");
-
-			assert_eq!(reused.offset(), 0);
-		});
-	}
-
-	#[test]
-	fn simultaneous_leases_own_disjoint_mapped_slices() {
-		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
-		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
-			resource_management::r#async::spawn(worker.run()).detach();
 			let mut first = arena.allocate(24, 16).await.expect("first lease");
 			let mut second = arena.allocate(24, 16).await.expect("second lease");
-
 			assert_eq!(first.offset(), 0);
 			assert_eq!(second.offset(), 32);
 			first.bytes_mut().fill(3);
 			second.bytes_mut().fill(7);
-
 			assert!(first.bytes_mut().iter().all(|byte| *byte == 3));
 			assert!(second.bytes_mut().iter().all(|byte| *byte == 7));
-		});
-	}
-
-	#[test]
-	fn adjacent_returned_leases_coalesce_for_a_larger_waiting_request() {
-		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
-		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
-			resource_management::r#async::spawn(worker.run()).detach();
-			let first = arena.allocate(24, 16).await.expect("first lease");
-			let second = arena.allocate(24, 16).await.expect("second lease");
 			drop(first);
 			drop(second);
 			let complete = arena.allocate(64, 16).await.expect("coalesced lease");
-
 			assert_eq!(complete.offset(), 0);
-		});
-	}
-
-	#[test]
-	fn cancelled_allocation_returns_its_granted_region_to_the_owner() {
-		use std::future::Future as _;
-
-		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
-		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
-		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
-			resource_management::r#async::spawn(worker.run()).detach();
-			let complete = arena.allocate(64, 16).await.expect("complete arena lease");
-			let mut cancelled = Box::pin(arena.allocate(64, 16));
 			let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-
-			assert!(cancelled.as_mut().poll(&mut context).is_pending());
-			drop(cancelled);
+			let mut blocked = Box::pin(arena.allocate(64, 16));
+			assert!(matches!(blocked.as_mut().poll(&mut context), Poll::Pending));
 			drop(complete);
-
+			let reused = blocked.await.expect("A returned lease must satisfy the blocked request.");
+			let mut cancelled = Box::pin(arena.allocate(64, 16));
+			assert!(matches!(cancelled.as_mut().poll(&mut context), Poll::Pending));
+			drop(cancelled);
+			drop(reused);
 			let reused = arena
 				.allocate(64, 16)
 				.await

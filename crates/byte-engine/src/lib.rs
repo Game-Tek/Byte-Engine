@@ -64,7 +64,14 @@ extern crate ahi;
 #[cfg(feature = "headed")]
 extern crate besl;
 #[cfg(feature = "headed")]
-extern crate ghi;
+/// Graphics hardware interface types used by application-defined renderer extensions.
+///
+/// This re-export lets an external [`rendering::PipelineManager`] implement
+/// [`rendering::resource_loading::ResourceUploadStore`] and create its exact GPU
+/// layout without depending on Byte-Engine's private GHI package path. Create
+/// resources through [`application::graphics::GraphicsApplication::renderer_mut`],
+/// then register the manager with [`rendering::Renderer::add_pipeline_manager`].
+pub extern crate ghi;
 extern crate resource_management;
 extern crate utils as engine_utils;
 

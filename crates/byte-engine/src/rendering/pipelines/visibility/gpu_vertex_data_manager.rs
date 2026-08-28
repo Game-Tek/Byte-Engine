@@ -8,7 +8,7 @@ use resource_management::{
 };
 use utils::as_byte_slice;
 
-pub(super) use super::upload_staging;
+use crate::rendering::resource_loading as upload_staging;
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
 	pipelines::visibility::{
@@ -29,10 +29,7 @@ pub(super) use preparation::{PreparedGpuMeshCounts, pack_f32_uvs, prepared_mesh_
 #[cfg(test)]
 pub(super) use residency::checked_visibility_capacity;
 
-/// The `GPUVertexDataManager` is responsible for managing the vertex data buffers used in the visibility pipeline.
-/// It tracks buffer offsets and counts for various resources, and provides handles to the vertex data buffers.
-/// It performs uploads to the GPU of mesh resources.
-#[derive(Clone)]
+/// The `GPUVertexDataManager` struct owns Visibility's parallel geometry streams and append-only allocation offsets.
 pub(crate) struct GPUVertexDataManager {
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
@@ -75,8 +72,7 @@ mod tests {
 		let executor = resource_management::r#async::Executor::new().expect("mesh preparation test executor");
 		let prepared = executor
 			.block_on(async {
-				let (staging, worker) =
-					crate::rendering::pipelines::visibility::upload_staging::UploadStagingArena::new_for_test(bytes);
+				let (staging, worker) = crate::rendering::resource_loading::UploadStagingArena::new_for_test(bytes);
 				resource_management::r#async::spawn(worker.run()).detach();
 				PreparedGpuMesh::prepare_generated_mesh(&BoxMeshGenerator::new(), staging).await
 			})

@@ -398,20 +398,7 @@ impl ResourceUploadStore for VisibilityResourceStore {
 				photometry,
 			} => {
 				let index = self.texture_slot(key)?;
-				let copies = upload
-					.layouts
-					.iter()
-					.enumerate()
-					.map(|(level, layout)| {
-						staged_texture_copy(
-							self.staging_data_buffer,
-							upload.staging.offset(),
-							*image,
-							layout,
-							level as u32,
-						)
-					})
-					.collect::<SmallVec<[ghi::BufferImageCopyDescriptor; 16]>>();
+				let copies = upload.copy_descriptors(self.staging_data_buffer, *image);
 				transfer.copy_buffer_to_images(&copies);
 				Ok(VisibilityResourceCompletion::TextureUploadReady {
 					key: key.clone(),
@@ -608,22 +595,16 @@ impl VisibilityPipelineResourceManagerClient {
 						key,
 						image,
 						sampler,
-						backing,
-						streams,
-						format,
-						extent,
-						mip_count,
+						metadata,
+						source,
 						photometry,
 					} => self.completions.push(VisibilityResourceCompletion::GpuImageReady {
 						token,
 						key,
 						image,
 						sampler,
-						backing,
-						streams,
-						format,
-						extent,
-						mip_count,
+						metadata,
+						source,
 						photometry,
 					}),
 				},

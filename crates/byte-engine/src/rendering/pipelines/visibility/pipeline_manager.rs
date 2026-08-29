@@ -1666,9 +1666,8 @@ use crate::rendering::pipelines::visibility::render_pass::{
 	DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, VisibilityPipelineRenderPass,
 };
 use crate::rendering::pipelines::visibility::resource_manager::{
-	IBL_SPECULAR_LEVEL_COUNT, MipStreamName, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
-	VisibilityRenderResource, VisibilityResourceCompletion, VisibilityTextureKey, resource_image_format_to_ghi,
-	texture_mip_extent,
+	IBL_SPECULAR_LEVEL_COUNT, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityRenderResource,
+	VisibilityResourceCompletion, VisibilityTextureKey, resource_image_format_to_ghi,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{
@@ -1688,6 +1687,7 @@ use crate::rendering::pipelines::visibility::{
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
+use crate::rendering::resource_loading::{NativeTextureUpload, TextureMetadata};
 use crate::rendering::view::View;
 use crate::rendering::{
 	Environment, RenderableMesh, Sink, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,

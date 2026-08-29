@@ -71,11 +71,8 @@ pub(crate) enum VisibilityResourceCompletion {
 		key: VisibilityTextureKey,
 		image: ghi::factory::FactoryImage,
 		sampler: ghi::factory::FactorySampler,
-		backing: resource_management::resource::ResourceGpuBacking,
-		streams: Option<Vec<resource_management::StreamDescription>>,
-		format: ghi::Formats,
-		extent: Extent,
-		mip_count: u32,
+		metadata: TextureMetadata,
+		source: NativeTextureUpload,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
 	EnvironmentReady {
@@ -130,11 +127,8 @@ pub(crate) enum PreparedVisibilityImage {
 		key: VisibilityTextureKey,
 		image: ghi::factory::FactoryImage,
 		sampler: ghi::factory::FactorySampler,
-		backing: resource_management::resource::ResourceGpuBacking,
-		streams: Option<Vec<resource_management::StreamDescription>>,
-		format: ghi::Formats,
-		extent: Extent,
-		mip_count: u32,
+		metadata: TextureMetadata,
+		source: NativeTextureUpload,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	},
 }
@@ -260,29 +254,6 @@ impl std::fmt::Display for VisibilityResourceKey {
 	}
 }
 
-/// The `PreparedTexture` struct keeps CPU-ready texture layout and bytes independent from resident image creation.
-pub(crate) struct PreparedTexture {
-	pub(super) key: VisibilityTextureKey,
-	pub(super) name: String,
-	pub(super) format: ghi::Formats,
-	pub(super) extent: Extent,
-	pub(super) mip_count: u32,
-	pub(super) upload: TextureUpload,
-	pub(super) photometry: Option<resource_management::resources::image::ImagePhotometry>,
-}
-
-/// The `PreparedGpuTexture` struct keeps native-I/O backing metadata independent from resident image creation.
-pub(crate) struct PreparedGpuTexture {
-	pub(super) key: VisibilityTextureKey,
-	pub(super) name: String,
-	pub(super) format: ghi::Formats,
-	pub(super) extent: Extent,
-	pub(super) mip_count: u32,
-	pub(super) backing: resource_management::resource::ResourceGpuBacking,
-	pub(super) streams: Option<Vec<resource_management::StreamDescription>>,
-	pub(super) photometry: Option<resource_management::resources::image::ImagePhotometry>,
-}
-
 /// The `PreparedEnvironment` struct keeps every CPU-ready IBL stream independent from resident image creation.
 pub(crate) struct PreparedEnvironment {
 	pub(super) id: String,
@@ -365,13 +336,4 @@ impl MaterialPipelineConfig {
 			pipeline_manager,
 		}
 	}
-}
-
-/// The `TextureUpload` struct retains row-padded image bytes and copy layouts through GPU completion.
-///
-/// One staging lease may contain several mip levels. The frame upload queue owns
-/// this value until every recorded copy from that lease has completed.
-pub(crate) struct TextureUpload {
-	pub(super) staging: super::upload_staging::StagingLease,
-	pub(super) layouts: SmallVec<[TextureUploadLayout; 16]>,
 }

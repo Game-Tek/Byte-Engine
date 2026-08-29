@@ -40,228 +40,6 @@ fn photometric_profile_metadata_is_valid(
 		&& photometry.intensity_scale_candela > 0.0
 }
 
-/// Copies one named range from a complete decoded payload into its upload destination.
-fn copy_decoded_stream(
-	decoded: &[u8],
-	stream_descriptions: &[resource_management::StreamDescription],
-	stream: &mut resource_management::stream::StreamMut<'_>,
-	resource_id: &str,
-) -> Result<(), ()> {
-	let name = stream.name();
-	let description = stream_descriptions
-		.iter()
-		.find(|description| description.name() == name)
-		.ok_or_else(|| {
-			log::error!(
-				"Resource stream '{}' is missing for {}. The most likely cause is that the baked stream metadata does not match the image metadata.",
-				name,
-				resource_id
-			);
-		})?;
-	if description.size() != stream.buffer().len() {
-		log::error!(
-			"Resource stream '{}' has the wrong size for {}. The most likely cause is that the baked stream size does not match the texture upload layout.",
-			name,
-			resource_id
-		);
-		return Err(());
-	}
-
-	let end = description.offset().checked_add(description.size()).ok_or_else(|| {
-		log::error!(
-			"Resource stream '{}' range overflowed for {}. The most likely cause is corrupt baked stream metadata.",
-			name,
-			resource_id
-		);
-	})?;
-	let source = decoded.get(description.offset()..end).ok_or_else(|| {
-		log::error!(
-			"Resource stream '{}' is outside the decoded payload for {}. The most likely cause is corrupt compressed data or mismatched stream metadata.",
-			name,
-			resource_id
-		);
-	})?;
-	stream.buffer_mut().copy_from_slice(source);
-	Ok(())
-}
-
-/// Loads named image ranges directly or through one resource-owned decoded backing.
-async fn load_image_streams<'a>(
-	reference: &mut Reference<ResourceImage>,
-	mut streams: SmallVec<[resource_management::stream::StreamMut<'a>; 16]>,
-	resource_kind: &str,
-	id: &str,
-) -> Result<(), ()> {
-	if reference.requires_cpu_decompression() {
-		let loaded = reference
-			.load(resource_management::resource::ReadTargetsMut::backing_storage())
-			.await
-			.map_err(|_| {
-				log::error!(
-					"Visibility {} decompression failed for {}. The most likely cause is corrupt compressed data or mismatched resource metadata.",
-					resource_kind,
-					id
-				);
-			})?;
-		let stream_descriptions = reference.streams().ok_or_else(|| {
-			log::error!(
-				"Visibility {} stream metadata is missing for {}. The most likely cause is that the image was baked without its named payload ranges.",
-				resource_kind,
-				id
-			);
-		})?;
-		let decoded = loaded.buffer().ok_or_else(|| {
-			log::error!(
-				"Visibility {} decompression returned no CPU buffer for {}. The most likely cause is that the resource used a GPU-only backing.",
-				resource_kind,
-				id
-			);
-		})?;
-		for stream in &mut streams {
-			copy_decoded_stream(decoded, stream_descriptions, stream, id)?;
-		}
-		return Ok(());
-	}
-
-	let loaded = reference.load(streams.into_vec().into()).await.map_err(|_| {
-		log::error!(
-			"Visibility {} stream load failed for {}. The most likely cause is that the baked image payload is missing one or more named ranges.",
-			resource_kind,
-			id
-		);
-	})?;
-	if matches!(loaded, ReadTargets::Streams(_)) {
-		Ok(())
-	} else {
-		log::error!(
-			"Visibility {} load returned an unexpected target for {}. The most likely cause is that the resource reader ignored the requested named ranges.",
-			resource_kind,
-			id
-		);
-		Err(())
-	}
-}
-
-/// Returns whether every mip occupies one contiguous complete decoded payload in level order.
-fn texture_payload_is_compact(
-	decoded_size: usize,
-	stream_descriptions: Option<&[resource_management::StreamDescription]>,
-	stream_names: &[MipStreamName],
-	layouts: &[TextureUploadLayout],
-) -> bool {
-	let Some(stream_descriptions) = stream_descriptions else {
-		return false;
-	};
-	let mut offset = 0usize;
-	for (name, layout) in stream_names.iter().zip(layouts) {
-		let Some(description) = stream_descriptions
-			.iter()
-			.find(|description| description.name() == name.as_str())
-		else {
-			return false;
-		};
-		if description.offset() != offset || description.size() != layout.compact_size {
-			return false;
-		}
-		let Some(next_offset) = offset.checked_add(layout.compact_size) else {
-			return false;
-		};
-		offset = next_offset;
-	}
-	offset == decoded_size
-}
-
-/// Moves a decoded compact mip chain backward into independently padded upload regions.
-fn expand_compact_texture_levels(bytes: &mut [u8], decoded_size: usize, layouts: &[TextureUploadLayout]) -> Result<(), ()> {
-	let mut source_end = decoded_size;
-	for layout in layouts.iter().rev() {
-		let source_start = source_end.checked_sub(layout.compact_size).ok_or(())?;
-		let destination_end = layout.offset.checked_add(layout.compact_size).ok_or(())?;
-		if layout.offset < source_start || destination_end > bytes.len() {
-			return Err(());
-		}
-		if layout.offset != source_start {
-			bytes.copy_within(source_start..source_end, layout.offset);
-		}
-		source_end = source_start;
-	}
-	(source_end == 0).then_some(()).ok_or(())
-}
-
-/// Loads one contiguous decoded texture range into caller-provided staging.
-async fn load_texture_into(reference: &mut Reference<ResourceImage>, destination: &mut [u8], id: &str) -> Result<(), ()> {
-	let expected_size = destination.len();
-	let loaded = reference.load(destination.into()).await.map_err(|_| {
-		log::error!(
-			"Visibility texture load failed for {}. The most likely cause is that the requested texture bytes could not be decoded into staging.",
-			id
-		);
-	})?;
-	if loaded.buffer().is_none_or(|buffer| buffer.len() != expected_size) {
-		log::error!(
-			"Visibility texture load returned the wrong byte count for {}. The most likely cause is that the resource reader did not satisfy the requested payload range.",
-			id
-		);
-		return Err(());
-	}
-	Ok(())
-}
-
-/// Loads a complete compact mip chain directly into its final staging lease.
-async fn load_compact_texture_bytes(
-	reference: &mut Reference<ResourceImage>,
-	staging: &mut upload_staging::StagingLease,
-	layouts: &[TextureUploadLayout],
-	id: &str,
-) -> Result<(), ()> {
-	let decoded_size = reference.size;
-	let destination = staging.bytes_mut().get_mut(..decoded_size).ok_or_else(|| {
-		log::error!(
-			"Visibility texture staging is too small for {}. The most likely cause is that the decoded mip chain exceeds its padded upload layout.",
-			id
-		);
-	})?;
-	load_texture_into(reference, destination, id).await?;
-	expand_compact_texture_levels(staging.bytes_mut(), decoded_size, layouts).map_err(|_| {
-		log::error!(
-			"Visibility texture mip layout is invalid for {}. The most likely cause is that compact mip bytes cannot be expanded into their padded upload ranges.",
-			id
-		);
-	})
-}
-
-/// Loads all texture levels while avoiding an intermediate decoded allocation for compact mip chains.
-async fn load_texture_bytes(
-	reference: &mut Reference<ResourceImage>,
-	staging: &mut upload_staging::StagingLease,
-	layouts: &[TextureUploadLayout],
-	id: &str,
-) -> Result<(), ()> {
-	if let [layout] = layouts
-		&& (!reference.requires_cpu_decompression() || reference.size == layout.compact_size)
-	{
-		return load_texture_into(reference, &mut staging.bytes_mut()[..layout.compact_size], id).await;
-	}
-
-	let stream_names: [MipStreamName; u32::BITS as usize] = std::array::from_fn(|level| MipStreamName::new(level as u32));
-	if reference.requires_cpu_decompression()
-		&& texture_payload_is_compact(reference.size, reference.streams(), &stream_names, layouts)
-	{
-		return load_compact_texture_bytes(reference, staging, layouts, id).await;
-	}
-
-	let mut streams = SmallVec::new();
-	let mut allocator = utils::BufferAllocator::new(staging.bytes_mut());
-	for (name, layout) in stream_names.iter().zip(layouts) {
-		let region = allocator.take(layout.padded_size);
-		streams.push(resource_management::stream::StreamMut::new(
-			name.as_str(),
-			&mut region[..layout.compact_size],
-		));
-	}
-	load_image_streams(reference, streams, "texture", id).await
-}
-
 /// Loads all environment ranges through the read shape supported by the stored CPU encoding.
 async fn load_environment_bytes(
 	reference: &mut Reference<ResourceImage>,
@@ -285,7 +63,15 @@ async fn load_environment_bytes(
 			&mut region[..upload.compact_size],
 		));
 	}
-	load_image_streams(reference, streams, "environment", id).await
+	crate::rendering::resource_loading::texture::load_image_streams(reference, streams)
+		.await
+		.map_err(|error| {
+			log::error!(
+				"Visibility environment load failed for {}. The most likely cause is missing, corrupt, or mismatched IBL stream data. Error: {}",
+				id,
+				error
+			);
+		})
 }
 
 impl VisibilityResourcePreparer {
@@ -433,181 +219,51 @@ impl VisibilityResourcePreparer {
 			);
 			VisibilityResourceError::new(failure_key.clone())
 		})?;
-		let prepared = if resource.is_gpu_backed() {
-			let texture = Self::prepare_gpu_texture(resource, key)
-				.await
-				.map_err(|()| VisibilityResourceError::new(failure_key))?;
-			let (image, sampler) = self
-				.build_texture_objects(
-					&texture.key,
-					&texture.name,
-					texture.format,
-					texture.extent,
-					texture.mip_count,
-					texture.photometry.is_some(),
-				)
-				.ok_or_else(|| VisibilityResourceError::new(VisibilityResourceKey::Texture(texture.key.clone())))?;
-			PreparedVisibilityImage::Gpu {
-				key: texture.key,
+		let name = resource.id().to_string();
+		let texture = resource.resource();
+		let photometry = texture
+			.photometry
+			.clone()
+			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
+		let transfer = PreparedTextureTransfer::prepare(resource, self.upload_staging.clone())
+			.await
+			.map_err(|error| {
+				log::error!("Visibility texture preparation failed for {}. {}", key, error);
+				VisibilityResourceError::new(failure_key.clone())
+			})?;
+		let metadata = transfer.metadata();
+		let (image, sampler) = self
+			.build_texture_objects(
+				&name,
+				metadata.format(),
+				metadata.extent(),
+				metadata.mip_count(),
+				photometry.is_some(),
+			)
+			.ok_or_else(|| VisibilityResourceError::new(failure_key))?;
+		let prepared = match transfer.into_parts().1 {
+			PreparedTextureSource::Staged(upload) => PreparedVisibilityImage::Cpu {
+				key,
 				image,
 				sampler,
-				backing: texture.backing,
-				streams: texture.streams,
-				format: texture.format,
-				extent: texture.extent,
-				mip_count: texture.mip_count,
-				photometry: texture.photometry,
-			}
-		} else {
-			let texture = Self::prepare_texture(resource, self.upload_staging.clone(), key)
-				.await
-				.map_err(|()| VisibilityResourceError::new(failure_key))?;
-			let (image, sampler) = self
-				.build_texture_objects(
-					&texture.key,
-					&texture.name,
-					texture.format,
-					texture.extent,
-					texture.mip_count,
-					texture.photometry.is_some(),
-				)
-				.ok_or_else(|| VisibilityResourceError::new(VisibilityResourceKey::Texture(texture.key.clone())))?;
-			PreparedVisibilityImage::Cpu {
-				key: texture.key,
+				upload,
+				photometry,
+			},
+			PreparedTextureSource::Native(source) => PreparedVisibilityImage::Gpu {
+				key,
 				image,
 				sampler,
-				upload: texture.upload,
-				photometry: texture.photometry,
-			}
+				metadata,
+				source,
+				photometry,
+			},
 		};
 		Ok(VisibilityPreparedResource::Image(prepared))
 	}
 
-	/// Extracts and validates native GPU backing without blocking render-thread adoption.
-	async fn prepare_gpu_texture(
-		mut reference: Reference<ResourceImage>,
-		key: VisibilityTextureKey,
-	) -> Result<PreparedGpuTexture, ()> {
-		let texture = reference.resource();
-		let name = reference.id().to_string();
-		let format = resource_image_format_to_ghi(texture.format);
-		let extent = Extent::from(texture.extent);
-		let mip_count = texture.mip_count.max(1);
-		let photometry = texture
-			.photometry
-			.clone()
-			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
-		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
-			.map_err(|_| {
-				log::error!(
-					"Visibility GPU texture dimensions are invalid for {}. The most likely cause is that the baked image has a zero width or height.",
-					key
-				);
-			})?;
-		if mip_count > available_mip_count {
-			log::error!(
-				"Visibility GPU texture mip metadata is invalid for {}: declared {}, available {}. The most likely cause is that the baked mip count does not match the image dimensions.",
-				key,
-				mip_count,
-				available_mip_count
-			);
-			return Err(());
-		}
-		let streams = reference.streams().map(<[resource_management::StreamDescription]>::to_vec);
-		let backing = reference.consume_reader().into_backing_storage().await.map_err(|_| {
-			log::error!(
-				"Visibility GPU texture backing extraction failed for {}. The most likely cause is that the compressed resource reader did not return its persisted backing.",
-				key
-			);
-		})?;
-		let resource_management::resource::ResourceReaderBacking::Gpu(backing) = backing else {
-			log::error!(
-				"Visibility GPU texture backing is CPU-readable for {}. The most likely cause is inconsistent resource encoding metadata.",
-				key
-			);
-			return Err(());
-		};
-
-		Ok(PreparedGpuTexture {
-			key,
-			name,
-			format,
-			extent,
-			mip_count,
-			backing,
-			streams,
-			photometry,
-		})
-	}
-
-	/// Loads one texture into owned row-padded data without borrowing transfer memory.
-	async fn prepare_texture(
-		mut reference: Reference<ResourceImage>,
-		upload_staging: Arc<super::upload_staging::UploadStagingArena>,
-		key: VisibilityTextureKey,
-	) -> Result<PreparedTexture, ()> {
-		let id = key.as_str();
-		let texture = reference.resource();
-		let format = resource_image_format_to_ghi(texture.format);
-		let extent = Extent::from(texture.extent);
-		let photometry = texture
-			.photometry
-			.clone()
-			.filter(|photometry| photometric_profile_metadata_is_valid(texture, photometry));
-
-		let mip_count = texture.mip_count.max(1);
-		let available_mip_count = resource_management::resources::mips::mip_level_count(extent.width(), extent.height())
-			.map_err(|_| {
-				log::error!(
-					"Visibility texture dimensions are invalid for {}. The most likely cause is that the baked image has a zero width or height.", id
-				);
-			})?;
-		if mip_count > available_mip_count {
-			log::error!(
-				"Visibility texture mip metadata is invalid for {}: declared {}, available {}. The most likely cause is that the baked mip count does not match the image dimensions.",
-				id,
-				mip_count,
-				available_mip_count
-			);
-			return Err(());
-		}
-		let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
-		let mut upload_byte_count = 0usize;
-		for level in 0..mip_count {
-			let mip_extent = texture_mip_extent(extent, level);
-			let mut layout = texture_upload_layout(format, mip_extent, 1).ok_or(())?;
-			layout.offset = upload_byte_count;
-			upload_byte_count = upload_byte_count.checked_add(layout.padded_size).ok_or(())?;
-			layouts.push(layout);
-		}
-		let mut staging = upload_staging.allocate(upload_byte_count, 256).await.ok_or_else(|| {
-			log::error!(
-				"Visibility texture exceeds the GPU upload arena. The most likely cause is that its complete padded mip chain is larger than the configured upload capacity."
-			);
-		})?;
-
-		load_texture_bytes(&mut reference, &mut staging, &layouts, id).await?;
-		for layout in &layouts {
-			let range = layout.offset..layout.offset + layout.padded_size;
-			pack_texture_rows_in_place(&mut staging.bytes_mut()[range], layout);
-		}
-		let upload = TextureUpload { staging, layouts };
-
-		Ok(PreparedTexture {
-			key,
-			name: reference.id().to_string(),
-			format,
-			extent,
-			mip_count,
-			upload,
-			photometry,
-		})
-	}
-
-	/// Builds the detached image and sampler shared by raw and compressed texture paths.
+	/// Builds the detached image and sampler shared by staged and native texture paths.
 	fn build_texture_objects(
 		&mut self,
-		key: &VisibilityTextureKey,
 		name: &str,
 		format: ghi::Formats,
 		extent: Extent,
@@ -829,15 +485,11 @@ impl crate::rendering::resource_loading::ResourcePreparer<VisibilityRenderResour
 #[cfg(test)]
 mod tests {
 	use resource_management::{
-		StreamDescription,
 		resources::image::{Image, ImagePhotometry},
 		types::{Formats, Gamma},
 	};
 
-	use super::{
-		MipStreamName, TextureUploadLayout, copy_decoded_stream, expand_compact_texture_levels,
-		photometric_profile_metadata_is_valid, texture_payload_is_compact,
-	};
+	use super::photometric_profile_metadata_is_valid;
 
 	fn valid_profile_image() -> Image {
 		Image {
@@ -871,52 +523,5 @@ mod tests {
 		assert!(!photometric_profile_metadata_is_valid(&non_profile_format, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&mipmapped, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&valid, &invalid_scale));
-	}
-
-	#[test]
-	fn decoded_stream_copy_uses_explicit_named_ranges() {
-		let decoded = [10_u8, 11, 12, 13, 14, 15];
-		let descriptions = [StreamDescription::new("mip[0]", 3, 2)];
-		let mut destination = [0_u8; 3];
-		{
-			let mut stream = resource_management::stream::StreamMut::new("mip[0]", &mut destination);
-			copy_decoded_stream(&decoded, &descriptions, &mut stream, "texture").unwrap();
-		}
-
-		assert_eq!(destination, [12, 13, 14]);
-		{
-			let mut missing = resource_management::stream::StreamMut::new("missing", &mut destination);
-			assert!(copy_decoded_stream(&decoded, &descriptions, &mut missing, "texture").is_err());
-		}
-		let mut short = resource_management::stream::StreamMut::new("mip[0]", &mut destination[..2]);
-		assert!(copy_decoded_stream(&decoded, &descriptions, &mut short, "texture").is_err());
-	}
-
-	fn upload_layout(offset: usize, compact_size: usize, padded_size: usize) -> TextureUploadLayout {
-		TextureUploadLayout {
-			offset,
-			compact_bytes_per_row: compact_size,
-			row_count: 1,
-			compact_bytes_per_image: compact_size,
-			compact_size,
-			source_bytes_per_row: padded_size,
-			source_bytes_per_image: padded_size,
-			padded_size,
-		}
-	}
-
-	#[test]
-	fn compact_texture_payload_moves_levels_into_padded_regions_without_scratch_storage() {
-		let layouts = [upload_layout(0, 4, 8), upload_layout(8, 2, 4)];
-		let names = [MipStreamName::new(0), MipStreamName::new(1)];
-		let descriptions = [StreamDescription::new("mip[0]", 4, 0), StreamDescription::new("mip[1]", 2, 4)];
-		let mut staging = [1_u8, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0];
-
-		assert!(texture_payload_is_compact(6, Some(&descriptions), &names, &layouts));
-		expand_compact_texture_levels(&mut staging, 6, &layouts).unwrap();
-
-		assert_eq!(&staging[..4], &[1, 2, 3, 4]);
-		assert_eq!(&staging[8..10], &[5, 6]);
-		assert!(!texture_payload_is_compact(7, Some(&descriptions), &names, &layouts));
 	}
 }

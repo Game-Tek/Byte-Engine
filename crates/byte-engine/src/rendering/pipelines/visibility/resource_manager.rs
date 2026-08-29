@@ -53,7 +53,6 @@ use ghi::{
 	},
 };
 use resource_management::Reference;
-use resource_management::resource::ReadTargets;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::material::{Value, Variant as ResourceVariant};
@@ -70,6 +69,9 @@ use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::{
 use crate::rendering::pipelines::visibility::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::resource_loading as upload_staging;
+use crate::rendering::resource_loading::{
+	NativeTextureUpload, PreparedTextureSource, PreparedTextureTransfer, StagedTextureUpload as TextureUpload, TextureMetadata,
+};
 use crate::resource_management::{self};
 
 pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =

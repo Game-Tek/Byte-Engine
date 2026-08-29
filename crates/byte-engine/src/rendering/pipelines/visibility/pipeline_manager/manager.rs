@@ -375,11 +375,8 @@ impl VisibilityPipelineManager {
 					key,
 					image,
 					sampler,
-					backing,
-					streams,
-					format,
-					extent,
-					mip_count,
+					metadata,
+					source,
 					photometry,
 				} => {
 					// Native I/O bypasses the frame upload queue, so it claims the
@@ -393,20 +390,9 @@ impl VisibilityPipelineManager {
 					};
 					let image = ghi::BaseImageHandle::from(frame.intern_image(image));
 					let sampler = frame.intern_sampler(sampler);
-					if let Err(error) = self.submit_texture_io(
-						frame,
-						token,
-						key.clone(),
-						index,
-						image,
-						sampler,
-						backing,
-						streams.as_deref(),
-						format,
-						extent,
-						mip_count,
-						photometry,
-					) {
+					if let Err(error) =
+						self.submit_texture_io(frame, token, key.clone(), index, image, sampler, metadata, source, photometry)
+					{
 						self.resource_manager.mark_failed(token);
 						log::error!(
 							"Visibility texture I/O submission failed for {}. The most likely cause is incompatible compressed texture data. Error: {}",
@@ -486,57 +472,20 @@ impl VisibilityPipelineManager {
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
-		backing: resource_management::resource::ResourceGpuBacking,
-		streams: Option<&[resource_management::StreamDescription]>,
-		format: ghi::Formats,
-		extent: Extent,
-		mip_count: u32,
+		metadata: TextureMetadata,
+		source: NativeTextureUpload,
 		photometry: Option<resource_management::resources::image::ImagePhotometry>,
 	) -> Result<(), String> {
-		let compression = match backing.encoding() {
-			resource_management::resource::ResourcePayloadEncoding::MetalIoLz4 => ghi::io::ResourceIoCompression::Lz4,
-			resource_management::resource::ResourcePayloadEncoding::Raw
-			| resource_management::resource::ResourcePayloadEncoding::CpuLz4 => {
-				return Err("the GPU texture backing declared a CPU-readable encoding".to_string());
-			}
-		};
+		let compression = source.compression().map_err(|error| error.to_string())?;
 		let file = self
 			.resource_io_queue
 			.open_file(
-				ghi::io::ResourceIoFileDescriptor::new(backing.path())
+				ghi::io::ResourceIoFileDescriptor::new(source.path())
 					.compression(compression)
 					.name(key.as_str()),
 			)
 			.map_err(|error| error.to_string())?;
-		let mut requests = SmallVec::<[ghi::io::ResourceIoRequest; 16]>::new();
-
-		for mip_level in 0..mip_count {
-			let name = MipStreamName::new(mip_level);
-			let decoded_offset = match streams {
-				Some(streams) => streams
-					.iter()
-					.find(|stream| stream.name() == name.as_str())
-					.map(|stream| stream.offset())
-					.ok_or_else(|| format!("the compressed texture is missing stream '{}'", name.as_str()))?,
-				None if mip_count == 1 => 0,
-				None => return Err("the compressed mip chain has no stream descriptions".to_string()),
-			};
-			let mip_extent = texture_mip_extent(extent, mip_level);
-			let (bytes_per_row, _, bytes_per_image) =
-				format.compact_copy_layout(mip_extent.width().max(1), mip_extent.height().max(1));
-			requests.push(
-				ghi::io::ResourceIoImageLoad::new(
-					ghi::io::ResourceIoFileRegion::new(file, decoded_offset),
-					image,
-					0,
-					mip_level,
-					mip_extent,
-					bytes_per_row,
-					bytes_per_image,
-				)
-				.into(),
-			);
-		}
+		let requests = source.requests(metadata, file, image).map_err(|error| error.to_string())?;
 
 		let ticket = self
 			.resource_io_queue

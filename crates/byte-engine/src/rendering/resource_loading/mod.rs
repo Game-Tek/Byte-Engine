@@ -18,6 +18,8 @@
 //! 2. Implement [`ResourcePreparer`] for resource I/O and CPU conversion. A
 //!    preparer may create detached factory resources, but it must not assign
 //!    renderer buffer offsets, bindless slots, or other resident identities.
+//!    For a baked 2D texture, use [`PreparedTextureTransfer`] to share mip,
+//!    staging, and native-I/O mechanics without sharing image or sampler policy.
 //! 3. Create a [`ResourceLoader`] on the render thread. Convert its
 //!    [`ResourceLoadingEndpoint`] into one or more [`ResourceLoadingServer`]
 //!    values, and run each server on an application-owned async task.
@@ -146,12 +148,17 @@
 //! ```
 
 mod loader;
+pub(crate) mod texture;
 mod upload_queue;
 mod upload_staging;
 
 pub use loader::{
 	RenderResource, ResourceCompletion, ResourceLoader, ResourceLoadingEndpoint, ResourceLoadingServer, ResourcePreparer,
 	ResourceRef, ResourceState, ResourceToken,
+};
+pub use texture::{
+	NativeTextureUpload, PreparedTextureSource, PreparedTextureTransfer, StagedTextureUpload, TextureMetadata,
+	TexturePreparationError,
 };
 pub use upload_queue::{FrameUploadQueue, ResourceUploadStore};
 pub use upload_staging::{StagingLease, UploadStagingArena, UploadStagingWorker};

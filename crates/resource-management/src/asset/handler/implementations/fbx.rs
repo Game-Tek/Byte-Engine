@@ -825,7 +825,7 @@ mod tests {
 		let image: Image = crate::from_slice(&image_resource.resource).expect("diffuse image should deserialize");
 
 		assert_eq!(image_resource.class, "Image");
-		assert_eq!(image.extent, [1, 1, 1]);
+		assert_eq!(image.extent, [1, 1, 0]);
 	}
 
 	#[test]

@@ -94,7 +94,7 @@ impl PreparedTextureTransfer {
 	) -> Result<Self, TexturePreparationError> {
 		let image = reference.resource();
 		let [width, height, depth] = image.extent;
-		if width == 0 || height == 0 || depth != 1 {
+		if width == 0 || height == 0 || depth != 0 {
 			return Err(TexturePreparationError::Dimensions);
 		}
 		let mip_count = image.mip_count.max(1);
@@ -104,7 +104,7 @@ impl PreparedTextureTransfer {
 		}
 		let metadata = TextureMetadata {
 			format: resource_format_to_ghi(image.format),
-			extent: Extent::new(width, height, depth),
+			extent: Extent::rectangle(width, height),
 			mip_count,
 		};
 
@@ -402,11 +402,12 @@ impl MipStreamName {
 }
 
 pub(crate) fn texture_mip_extent(base_extent: Extent, level: u32) -> Extent {
-	Extent::new(
-		(base_extent.width() >> level).max(1),
-		(base_extent.height() >> level).max(1),
-		base_extent.depth().max(1),
-	)
+	debug_assert_eq!(
+		base_extent.depth(),
+		0,
+		"Texture mip extent is not two-dimensional. The most likely cause is unvalidated image metadata."
+	);
+	Extent::rectangle((base_extent.width() >> level).max(1), (base_extent.height() >> level).max(1))
 }
 
 pub(crate) async fn load_image_streams<'a>(
@@ -605,13 +606,55 @@ pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
 
 #[cfg(test)]
 mod tests {
+	use std::path::PathBuf;
+
+	use resource_management::{
+		ReferenceModel,
+		resource::{ResourcePayloadEncoding, reader::redb::FileResourceReader},
+		resources::image::Image,
+		types::Gamma,
+	};
+
 	use super::*;
+
+	fn native_image_reference(depth: u32) -> Reference<ResourceImage> {
+		let image = Image {
+			format: ResourceFormat::BC5,
+			gamma: Gamma::Linear,
+			extent: [4, 4, depth],
+			mip_count: 1,
+			ibl: None,
+			photometry: None,
+		};
+		let model = ReferenceModel::new("normal.image", 0, 16, &image, None);
+		let reader = Box::new(FileResourceReader::new_gpu(
+			PathBuf::from("normal.image"),
+			ResourcePayloadEncoding::MetalIoLz4,
+		));
+		Reference::from_model(model, image, reader)
+	}
+
+	#[resource_management::r#async::test]
+	async fn texture_preparation_accepts_only_zero_depth_for_two_dimensional_resources() {
+		let bytes = Box::leak(vec![0_u8; 16].into_boxed_slice());
+		let (staging, _worker) = UploadStagingArena::new_for_test(bytes);
+
+		let prepared = PreparedTextureTransfer::prepare(native_image_reference(0), staging.clone())
+			.await
+			.expect("zero-depth image metadata should prepare");
+		assert_eq!(prepared.metadata().extent(), Extent::rectangle(4, 4));
+		assert!(matches!(prepared.into_parts().1, PreparedTextureSource::Native(_)));
+		assert!(matches!(
+			PreparedTextureTransfer::prepare(native_image_reference(1), staging).await,
+			Err(TexturePreparationError::Dimensions)
+		));
+	}
 
 	#[test]
 	fn texture_layout_preserves_every_mip_and_gpu_row_pitch() {
 		let metadata = TextureMetadata {
 			format: ghi::Formats::RGBA8UNORM,
-			extent: Extent::new(17, 3, 1),
+			extent: Extent::rectangle(17, 3),
 			mip_count: 3,
 		};
 		let mut offset = 0;
@@ -635,7 +678,7 @@ mod tests {
 	#[test]
 	fn row_packing_keeps_compact_texels_at_each_padded_row_start() {
 		let layout =
-			TextureUploadLayout::new(ghi::Formats::RGBA8UNORM, Extent::new(2, 2, 1), 1, 0).expect("valid texture layout");
+			TextureUploadLayout::new(ghi::Formats::RGBA8UNORM, Extent::rectangle(2, 2), 1, 0).expect("valid texture layout");
 		let mut bytes = vec![0; layout.padded_size];
 		bytes[..16].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 

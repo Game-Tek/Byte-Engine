@@ -11,11 +11,11 @@ pub(crate) use crate::rendering::resource_loading::texture::TextureUploadLayout;
 
 /// Computes the independently uploaded 2D extent for one baked specular roughness level.
 pub(super) fn environment_mip_extent(base_extent: [u32; 3], level: u32) -> Extent {
-	Extent::new(
-		(base_extent[0] >> level).max(1),
-		(base_extent[1] >> level).max(1),
-		base_extent[2].max(1),
-	)
+	debug_assert_eq!(
+		base_extent[2], 0,
+		"Environment mip extent is not two-dimensional. The most likely cause is unvalidated IBL metadata."
+	);
+	Extent::rectangle((base_extent[0] >> level).max(1), (base_extent[1] >> level).max(1))
 }
 
 /// Returns the compact byte count expected for one ordinary single-mip IBL image.

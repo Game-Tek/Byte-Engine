@@ -231,7 +231,7 @@ fn produce_image_in<A: Allocator + Clone>(
 		return Ok((
 			Image {
 				format: output_format,
-				extent: image_resource_extent(output_format, extent),
+				extent: extent.as_array(),
 				gamma: *gamma,
 				mip_count: 1,
 				ibl: None,
@@ -317,7 +317,7 @@ fn produce_image_in<A: Allocator + Clone>(
 	Ok((
 		Image {
 			format: output_format,
-			extent: image_resource_extent(output_format, extent),
+			extent: extent.as_array(),
 			gamma: *gamma,
 			mip_count,
 			ibl: None,
@@ -385,13 +385,6 @@ fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<usize> {
 			.checked_mul(extent.height() as usize)?
 			.checked_mul(8),
 		_ => None,
-	}
-}
-
-fn image_resource_extent(format: Formats, extent: Extent) -> [u32; 3] {
-	match format {
-		Formats::BC5 | Formats::BC5SNORM => extent.as_array(),
-		_ => [extent.width(), extent.height(), extent.depth().max(1)],
 	}
 }
 
@@ -631,8 +624,27 @@ mod tests {
 		assert_eq!(asset.class, "Image");
 		assert_eq!(image.format, Formats::RGBA8SRGB);
 		assert_eq!(image.gamma, Gamma::SRGB);
-		assert_eq!(image.extent, [2, 1, 1]);
+		assert_eq!(image.extent, [2, 1, 0]);
 		assert_eq!(&*data, &[1, 2, 3, 0xFF, 4, 5, 6, 0xFF]);
+	}
+
+	#[test]
+	fn process_image_requires_zero_depth_for_two_dimensional_sources() {
+		let description = ImageDescription {
+			gamma: Gamma::SRGB,
+			semantic: Semantic::Other,
+			generate_mipmaps: false,
+		};
+		let source = [0_u8; 4];
+
+		assert!(
+			process_image(
+				ResourceId::new("textures/invalid-depth.png"),
+				description,
+				image_source(Extent::new(1, 1, 1), Formats::RGBA8, &source),
+			)
+			.is_err()
+		);
 	}
 
 	#[test]
@@ -769,7 +781,7 @@ mod tests {
 
 		assert_eq!(image.format, Formats::BC7SRGB);
 		assert_eq!(image.gamma, Gamma::SRGB);
-		assert_eq!(image.extent, [5, 7, 1]);
+		assert_eq!(image.extent, [5, 7, 0]);
 		assert_eq!(data.len(), 2 * 2 * 16);
 	}
 
@@ -798,7 +810,7 @@ mod tests {
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
 		assert_eq!(image.format, Formats::BC7);
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		// 4×4 image → 1×1 block grid → 1 block × 16 bytes
 
 		assert_eq!(data.len(), 16);

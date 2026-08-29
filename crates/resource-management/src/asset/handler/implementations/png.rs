@@ -162,7 +162,7 @@ mod tests {
 		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
 
 		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		assert_eq!(image.gamma, Gamma::SRGB);
 		assert_eq!(image.format, Formats::BC7SRGB);
 		assert_eq!(

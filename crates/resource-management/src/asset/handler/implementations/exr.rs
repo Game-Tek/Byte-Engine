@@ -225,14 +225,14 @@ mod tests {
 		assert_eq!(stored.class(), "Image");
 		assert_eq!(image.format, Formats::RGBA16F);
 		assert_eq!(image.gamma, Gamma::Linear);
-		assert_eq!(image.extent, [2, 1, 1]);
+		assert_eq!(image.extent, [2, 1, 0]);
 		assert_eq!(image.mip_count, 1);
 
 		let ibl = image.ibl.expect("EXR images must include baked IBL maps");
 
-		assert_eq!(ibl.diffuse_irradiance.extent, [8, 8, 1]);
+		assert_eq!(ibl.diffuse_irradiance.extent, [8, 8, 0]);
 		assert_eq!(ibl.diffuse_irradiance.array_layers, 6);
-		assert_eq!(ibl.prefiltered_specular.extent, [1, 1, 1]);
+		assert_eq!(ibl.prefiltered_specular.extent, [1, 1, 0]);
 		assert_eq!(ibl.prefiltered_specular.mip_count, 8);
 		assert_eq!(ibl.prefiltered_specular.array_layers, 6);
 		assert_eq!(base_values, vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);

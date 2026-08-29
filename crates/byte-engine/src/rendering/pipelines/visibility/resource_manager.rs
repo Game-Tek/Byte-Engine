@@ -225,11 +225,11 @@ mod tests {
 	#[test]
 	fn environment_specular_streams_form_one_gpu_mip_chain() {
 		let extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
-			std::array::from_fn(|level| environment_mip_extent([256, 256, 1], level as u32));
+			std::array::from_fn(|level| environment_mip_extent([256, 256, 0], level as u32));
 
-		assert_eq!(extents[0], Extent::new(256, 256, 1));
-		assert_eq!(extents[1], Extent::new(128, 128, 1));
-		assert_eq!(extents[7], Extent::new(2, 2, 1));
+		assert_eq!(extents[0], Extent::rectangle(256, 256));
+		assert_eq!(extents[1], Extent::rectangle(128, 128));
+		assert_eq!(extents[7], Extent::rectangle(2, 2));
 		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[0]), 256 * 256 * 8);
 		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[7]), 2 * 2 * 8);
 	}

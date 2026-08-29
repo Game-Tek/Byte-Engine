@@ -149,12 +149,12 @@ impl CubemapIBLLayout {
 		let subresource = |face_size, mip_count| ImageSubresource {
 			format: Formats::RGBA16F,
 			gamma: Gamma::Linear,
-			extent: [face_size, face_size, 1],
+			extent: [face_size, face_size, 0],
 			mip_count,
 			array_layers: CUBE_FACE_COUNT as u32,
 		};
 		(
-			[self.source_width, self.source_height, 1],
+			[self.source_width, self.source_height, 0],
 			ImageIBL {
 				diffuse_irradiance: subresource(DIFFUSE_CUBE_FACE_SIZE, 1),
 				prefiltered_specular: subresource(self.specular_face_size, IBL_PREFILTERED_SPECULAR_MIP_COUNT),
@@ -313,10 +313,10 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 	};
 
 	Ok(BakedImageIBL {
-		root_extent: [source_width, source_height, 1],
+		root_extent: [source_width, source_height, 0],
 		ibl: ImageIBL {
-			diffuse_irradiance: subresource([DIFFUSE_WIDTH, DIFFUSE_HEIGHT, 1], 1),
-			prefiltered_specular: subresource([specular_width, specular_height, 1], IBL_PREFILTERED_SPECULAR_MIP_COUNT),
+			diffuse_irradiance: subresource([DIFFUSE_WIDTH, DIFFUSE_HEIGHT, 0], 1),
+			prefiltered_specular: subresource([specular_width, specular_height, 0], IBL_PREFILTERED_SPECULAR_MIP_COUNT),
 		},
 		streams,
 		data: data.into_boxed_slice(),
@@ -934,13 +934,13 @@ mod tests {
 			second.data.as_ref(),
 			"fixed sampling must bake stable bytes"
 		);
-		assert_eq!(first.root_extent, [4, 2, 1]);
+		assert_eq!(first.root_extent, [4, 2, 0]);
 		assert_eq!(
 			first.ibl.diffuse_irradiance.extent,
-			[DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_CUBE_FACE_SIZE, 1]
+			[DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_CUBE_FACE_SIZE, 0]
 		);
 		assert_eq!(first.ibl.diffuse_irradiance.array_layers, 6);
-		assert_eq!(first.ibl.prefiltered_specular.extent, [1, 1, 1]);
+		assert_eq!(first.ibl.prefiltered_specular.extent, [1, 1, 0]);
 		assert_eq!(first.ibl.prefiltered_specular.array_layers, 6);
 		assert_eq!(first.ibl.prefiltered_specular.mip_count, IBL_PREFILTERED_SPECULAR_MIP_COUNT);
 		assert_eq!(first.streams.len(), IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
@@ -993,8 +993,8 @@ mod tests {
 		let root = &baked.streams[0];
 		let specular_zero = &baked.streams[1];
 
-		assert_eq!(baked.root_extent, [1025, 1, 1]);
-		assert_eq!(baked.ibl.prefiltered_specular.extent, [1, 1, 1]);
+		assert_eq!(baked.root_extent, [1025, 1, 0]);
+		assert_eq!(baked.ibl.prefiltered_specular.extent, [1, 1, 0]);
 		assert_eq!(root.size(), source.len());
 		assert_eq!(&baked.data[root.offset()..root.offset() + root.size()], source.as_slice());
 		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);

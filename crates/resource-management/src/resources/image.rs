@@ -17,6 +17,9 @@ pub fn ibl_prefiltered_specular_stream_name(mip_level: u32) -> String {
 }
 
 /// The `ImageSubresource` struct provides upload metadata for one image in a parent image's binary streams.
+///
+/// Extent uses zero for each unused trailing dimension. A two-dimensional
+/// subresource therefore stores `[width, height, 0]`.
 #[derive(
 	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, PartialEq, Eq,
 )]
@@ -57,6 +60,9 @@ pub struct ImagePhotometry {
 }
 
 /// The `Image` struct stores the metadata needed to upload a baked texture to the GPU.
+///
+/// Extent uses zero for each unused trailing dimension. A two-dimensional
+/// image therefore stores `[width, height, 0]`.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub struct Image {
 	// pub compression: Option<CompressionSchemes>,
@@ -96,20 +102,20 @@ mod tests {
 		let image = Image {
 			format: Formats::BC7SRGB,
 			gamma: Gamma::SRGB,
-			extent: [8, 4, 1],
+			extent: [8, 4, 0],
 			mip_count: 4,
 			ibl: Some(ImageIBL {
 				diffuse_irradiance: ImageSubresource {
 					format: Formats::RGBA16F,
 					gamma: Gamma::Linear,
-					extent: [32, 16, 1],
+					extent: [32, 16, 0],
 					mip_count: 1,
 					array_layers: 1,
 				},
 				prefiltered_specular: ImageSubresource {
 					format: Formats::RGBA16F,
 					gamma: Gamma::Linear,
-					extent: [128, 64, 1],
+					extent: [128, 64, 0],
 					mip_count: 8,
 					array_layers: 1,
 				},
@@ -130,12 +136,12 @@ mod tests {
 		assert_eq!(reference.size, 3);
 		assert_eq!(reference.resource.format, Formats::BC7SRGB);
 		assert_eq!(reference.resource.gamma, Gamma::SRGB);
-		assert_eq!(reference.resource.extent, [8, 4, 1]);
+		assert_eq!(reference.resource.extent, [8, 4, 0]);
 		assert_eq!(reference.resource.mip_count, 4);
 		let ibl = reference.resource.ibl.as_ref().expect("stored IBL metadata");
 
-		assert_eq!(ibl.diffuse_irradiance.extent, [32, 16, 1]);
-		assert_eq!(ibl.prefiltered_specular.extent, [128, 64, 1]);
+		assert_eq!(ibl.diffuse_irradiance.extent, [32, 16, 0]);
+		assert_eq!(ibl.prefiltered_specular.extent, [128, 64, 0]);
 		assert_eq!(ibl.prefiltered_specular.mip_count, 8);
 		assert_eq!(reference.resource.get_class(), "Image");
 	}
@@ -145,7 +151,7 @@ mod tests {
 		let image = Image {
 			format: Formats::RGBA8,
 			gamma: Gamma::Linear,
-			extent: [1, 1, 1],
+			extent: [1, 1, 0],
 			mip_count: 1,
 			ibl: None,
 			photometry: None,

@@ -71,7 +71,7 @@ impl AssetHandler for IESAssetHandler {
 		let image = Image {
 			format: Formats::R16F,
 			gamma: Gamma::Linear,
-			extent: [IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 1],
+			extent: [IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 0],
 			mip_count: 1,
 			ibl: None,
 			photometry: Some(ImagePhotometry { intensity_scale_candela }),
@@ -788,7 +788,7 @@ TILT=NONE
 		assert_eq!(reference.resource().gamma, Gamma::Linear);
 		assert_eq!(
 			reference.resource().extent,
-			[IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 1]
+			[IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 0]
 		);
 		assert!(reference.resource().photometry.is_some());
 
@@ -829,7 +829,7 @@ TILT=NONE
 
 		assert_eq!(image.format, Formats::R16F);
 		assert_eq!(image.gamma, Gamma::Linear);
-		assert_eq!(image.extent, [IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 1]);
+		assert_eq!(image.extent, [IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 0]);
 		assert_eq!(image.mip_count, 1);
 
 		let intensity_scale_candela = image

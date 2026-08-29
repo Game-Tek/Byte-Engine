@@ -79,6 +79,11 @@ pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[
 	partitions
 }
 
+/// The `Extent` struct represents the size and dimensionality of a region.
+///
+/// A zero marks an unused trailing dimension. Use [`Self::line`] for one-dimensional
+/// regions, [`Self::rectangle`] or [`Self::square`] for two-dimensional regions,
+/// and [`Self::cube`] when all three dimensions are used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Extent {
 	width: u32,
@@ -87,10 +92,15 @@ pub struct Extent {
 }
 
 impl Extent {
+	/// Creates an extent from explicit axis sizes.
+	///
+	/// Set each unused trailing dimension to zero. Prefer [`Self::line`],
+	/// [`Self::rectangle`], or [`Self::cube`] when the dimensionality is known.
 	pub fn new(width: u32, height: u32, depth: u32) -> Self {
 		Self { width, height, depth }
 	}
 
+	/// Creates a one-dimensional extent.
 	pub fn line(width: u32) -> Self {
 		Self {
 			width,
@@ -99,6 +109,7 @@ impl Extent {
 		}
 	}
 
+	/// Creates a square two-dimensional extent.
 	pub fn square(size: u32) -> Self {
 		Self {
 			width: size,
@@ -107,10 +118,12 @@ impl Extent {
 		}
 	}
 
+	/// Creates a rectangular two-dimensional extent.
 	pub fn rectangle(width: u32, height: u32) -> Self {
 		Self { width, height, depth: 0 }
 	}
 
+	/// Creates a three-dimensional extent.
 	pub fn cube(width: u32, height: u32, depth: u32) -> Self {
 		Self { width, height, depth }
 	}
@@ -140,12 +153,13 @@ impl Extent {
 		(self.width as f32) / (self.height as f32)
 	}
 
+	/// Returns the number of active axes encoded by nonzero dimensions.
 	pub fn dimensions(&self) -> u32 {
 		if self.width == 0 {
 			0
-		} else if self.depth > 1 {
+		} else if self.depth != 0 {
 			3
-		} else if self.height > 1 {
+		} else if self.height != 0 {
 			2
 		} else {
 			1
@@ -338,8 +352,8 @@ mod tests {
 		assert_eq!(Extent::line(8).dimensions(), 1);
 		assert_eq!(Extent::square(8).dimensions(), 2);
 		assert_eq!(Extent::cube(8, 4, 2).dimensions(), 3);
-		assert_eq!(Extent::new(8, 1, 1).dimensions(), 1);
-		assert_eq!(Extent::new(8, 8, 1).dimensions(), 2);
+		assert_eq!(Extent::new(8, 1, 1).dimensions(), 3);
+		assert_eq!(Extent::rectangle(8, 1).dimensions(), 2);
 		assert_eq!(Extent::new(0, 0, 0).dimensions(), 0);
 		assert_eq!((Extent::new(8, 1, 1) / 2).as_tuple(), (4, 1, 1));
 		assert_eq!((Extent::new(8, 4, 2) / 2).as_array(), [4, 2, 1]);

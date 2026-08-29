@@ -1160,7 +1160,7 @@ mod tests {
 		let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
 
 		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		assert_eq!(
 			image.mip_count, 1,
 			"explicit image fragments are not material-generated textures"
@@ -1191,7 +1191,7 @@ mod tests {
 		let image: Image = crate::from_slice(&resource.resource).expect("GLB image metadata should deserialize");
 
 		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		assert_eq!(
 			image.mip_count, 1,
 			"explicit image fragments are not material-generated textures"

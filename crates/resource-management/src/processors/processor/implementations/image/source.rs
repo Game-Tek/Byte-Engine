@@ -44,6 +44,9 @@ impl SourceEncoding {
 }
 
 /// The `ImageSource` struct lends contiguous decoder output and its source layout to the common image processor.
+///
+/// Supply a two-dimensional extent with zero depth. The processor rejects
+/// nonzero depth because this source path does not process volume images.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageSource<'a> {
 	pub extent: Extent,
@@ -53,7 +56,7 @@ pub struct ImageSource<'a> {
 }
 
 impl<'a> ImageSource<'a> {
-	/// Creates a borrowed source view that can be passed to [`super::process_image`] or its allocator-aware variants.
+	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image`] or its allocator-aware variants.
 	pub fn new(extent: Extent, channels: SourceChannels, encoding: SourceEncoding, data: &'a [u8]) -> Self {
 		Self {
 			extent,
@@ -140,7 +143,7 @@ pub(super) fn append_canonical_image_in<A: Allocator>(
 }
 
 fn validated_pixel_count(source: ImageSource<'_>) -> Option<usize> {
-	if source.extent.width() == 0 || source.extent.height() == 0 || source.extent.depth() > 1 {
+	if source.extent.width() == 0 || source.extent.height() == 0 || source.extent.depth() != 0 {
 		return None;
 	}
 	let pixel_count = source.extent.width().checked_mul(source.extent.height())? as usize;

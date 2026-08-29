@@ -315,7 +315,7 @@ async fn metal_texture_compression_persists_across_read_only_reopen() {
 			Image {
 				format: Formats::RGBA8,
 				gamma: Gamma::Linear,
-				extent: [32, 32, 1],
+				extent: [32, 32, 0],
 				mip_count: 1,
 				ibl: None,
 				photometry: None,

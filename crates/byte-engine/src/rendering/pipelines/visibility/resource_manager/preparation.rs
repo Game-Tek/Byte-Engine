@@ -34,7 +34,7 @@ fn photometric_profile_metadata_is_valid(
 ) -> bool {
 	image.format == resource_management::types::Formats::R16F
 		&& image.gamma == resource_management::types::Gamma::Linear
-		&& image.extent[2] == 1
+		&& image.extent[2] == 0
 		&& image.mip_count == 1
 		&& photometry.intensity_scale_candela.is_finite()
 		&& photometry.intensity_scale_candela > 0.0
@@ -348,16 +348,16 @@ impl VisibilityResourcePreparer {
 			);
 			return Err(());
 		}
-		let diffuse_extent = Extent::from(ibl.diffuse_irradiance.extent);
-		let specular_extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
-			std::array::from_fn(|level| environment_mip_extent(ibl.prefiltered_specular.extent, level as u32));
-		if diffuse_extent.depth().max(1) != 1 || specular_extents.iter().any(|extent| extent.depth().max(1) != 1) {
+		if ibl.diffuse_irradiance.extent[2] != 0 || ibl.prefiltered_specular.extent[2] != 0 {
 			log::error!(
 				"Visibility environment IBL extent is unsupported for {}. The most likely cause is that a baked IBL stream is not a two-dimensional lat-long image.",
 				id
 			);
 			return Err(());
 		}
+		let diffuse_extent = Extent::from(ibl.diffuse_irradiance.extent);
+		let specular_extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
+			std::array::from_fn(|level| environment_mip_extent(ibl.prefiltered_specular.extent, level as u32));
 
 		let mut diffuse_upload = texture_upload_layout(diffuse_format, diffuse_extent, 6).ok_or(())?;
 		let mut specular_uploads: [TextureUploadLayout; IBL_SPECULAR_LEVEL_COUNT] =
@@ -495,7 +495,7 @@ mod tests {
 		Image {
 			format: Formats::R16F,
 			gamma: Gamma::Linear,
-			extent: [721, 361, 1],
+			extent: [721, 361, 0],
 			mip_count: 1,
 			ibl: None,
 			photometry: None,
@@ -514,6 +514,8 @@ mod tests {
 		non_profile_format.format = Formats::RGBA16F;
 		let mut mipmapped = valid_profile_image();
 		mipmapped.mip_count = 2;
+		let mut volume = valid_profile_image();
+		volume.extent[2] = 1;
 		let invalid_scale = ImagePhotometry {
 			intensity_scale_candela: 0.0,
 		};
@@ -522,6 +524,7 @@ mod tests {
 		assert!(!photometric_profile_metadata_is_valid(&srgb, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&non_profile_format, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&mipmapped, &photometry));
+		assert!(!photometric_profile_metadata_is_valid(&volume, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&valid, &invalid_scale));
 	}
 }

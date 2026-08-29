@@ -1478,14 +1478,14 @@ mod tests {
 		let subresource = ImageSubresource {
 			format: Formats::RGBA16F,
 			gamma: Gamma::Linear,
-			extent: [4, 4, 1],
+			extent: [4, 4, 0],
 			mip_count: 1,
 			array_layers: 6,
 		};
 		let ordinary = Image {
 			format: Formats::RGBA8,
 			gamma: Gamma::Linear,
-			extent: [4, 4, 1],
+			extent: [4, 4, 0],
 			mip_count: 1,
 			ibl: None,
 			photometry: None,
@@ -1532,7 +1532,7 @@ mod tests {
 			Image {
 				format: Formats::RGBA8,
 				gamma: Gamma::Linear,
-				extent: [32, 32, 1],
+				extent: [32, 32, 0],
 				mip_count: 1,
 				ibl: None,
 				photometry: None,

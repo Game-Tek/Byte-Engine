@@ -16,12 +16,15 @@ use crate::{
 	core::{
 		Entity, EntityHandle,
 		channel::{Channel, DefaultChannel},
+		message_bus::MessageScope,
 	},
 };
 
 #[cfg(feature = "headed")]
 #[doc(hidden)]
 pub mod http;
+mod message;
+pub use message::TRANSFORMATION_UPDATE_MESSAGE_TYPE;
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
 
@@ -51,22 +54,25 @@ pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
+	messages: MessageScope,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
 }
 
 impl Inspector {
-	/// Creates an inspector that can close the owning application through its event channel.
+	/// Creates an inspector that can publish controls and targeted world messages.
 	///
-	/// Register the application's [`crate::core::listener::DefaultListener`] before
-	/// passing the channel so close requests cannot be published without a consumer.
-	pub fn new(events: DefaultChannel<Events>, configuration: Configuration) -> Self {
+	/// Register the application and world listeners before passing their routes so
+	/// inspector requests cannot be published without a consumer. Next, call
+	/// [`Self::post_message`] from the inspection protocol adapter.
+	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
 		Self {
 			entities,
 			events,
 			configuration,
+			messages,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
 		}

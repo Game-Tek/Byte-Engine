@@ -10,7 +10,7 @@ use oxhttp::{
 };
 
 use crate::{
-	core::EntityHandle,
+	core::{EntityHandle, factory::Handle},
 	inspector::{
 		Inspector,
 		screenshot::{ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
@@ -23,7 +23,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// through an HTTP API.
 ///
 /// Clients use this server to inspect registered entities and update their
-/// exposed properties.
+/// exposed properties. To move an entity, send `POST /messages` with a JSON
+/// object containing `type: "TransformationUpdate"`, its numeric `target`
+/// handle, and the complete transform `payload` documented by
+/// [`Inspector::post_message`].
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
 
@@ -53,8 +56,9 @@ impl HttpInspectorServer {
 	fn spawn(inspector: EntityHandle<Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
 		let i = inspector.clone();
 
-		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
+		let mut server = Server::new(move |mut request| match (request.method(), request.uri().path()) {
 			(&Method::GET, "/screenshots") => screenshot_response(&i, request.uri().query()),
+			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),
 			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
 				Ok(body) => Response::builder().body(Body::from(body)).unwrap(),
 				Err(error) => Response::builder()
@@ -152,6 +156,60 @@ impl HttpInspectorServer {
 		})
 	}
 }
+
+/// Parses and posts one complete message envelope from the HTTP request body.
+fn message_response(inspector: &Inspector, body: &mut Body) -> Response<Body> {
+	let request: serde_json::Value = match serde_json::from_reader(body) {
+		Ok(request) => request,
+		Err(error) => {
+			return response(
+				StatusCode::BAD_REQUEST,
+				&format!(
+					"Inspector message request is invalid JSON. The most likely cause is a malformed request body: {error}"
+				),
+			);
+		}
+	};
+	let (message_type, target, payload) = match parse_message_request(&request) {
+		Ok(request) => request,
+		Err(error) => return response(StatusCode::BAD_REQUEST, error),
+	};
+
+	match inspector.post_message(message_type, target, payload) {
+		Ok(()) => Response::builder()
+			.status(StatusCode::NO_CONTENT)
+			.body(Body::empty())
+			.unwrap(),
+		Err(error) => response(StatusCode::BAD_REQUEST, &error),
+	}
+}
+
+/// Validates the protocol envelope before a typed payload parser sees it.
+fn parse_message_request(request: &serde_json::Value) -> Result<(&str, Handle, &serde_json::Value), &'static str> {
+	let object = request.as_object().ok_or(INVALID_MESSAGE_REQUEST)?;
+	if object.len() != 3
+		|| object
+			.keys()
+			.any(|key| !matches!(key.as_str(), "type" | "target" | "payload"))
+	{
+		return Err(INVALID_MESSAGE_REQUEST);
+	}
+	let message_type = object
+		.get("type")
+		.and_then(serde_json::Value::as_str)
+		.filter(|value| !value.is_empty())
+		.ok_or(INVALID_MESSAGE_REQUEST)?;
+	let target = object
+		.get("target")
+		.and_then(serde_json::Value::as_u64)
+		.and_then(|target| u32::try_from(target).ok())
+		.map(Handle::from_id)
+		.ok_or(INVALID_MESSAGE_REQUEST)?;
+	let payload = object.get("payload").ok_or(INVALID_MESSAGE_REQUEST)?;
+	Ok((message_type, target, payload))
+}
+
+const INVALID_MESSAGE_REQUEST: &str = "Inspector message request is invalid. The most likely cause is that it must contain only a non-empty string `type`, an unsigned 32-bit `target`, and a `payload`.";
 
 /// Handles one screenshot request after HTTP routing has selected the endpoint.
 fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
@@ -292,16 +350,31 @@ mod tests {
 		core::{
 			EntityHandle,
 			channel::DefaultChannel,
+			factory::Handle,
 			listener::{DefaultListener, Listener as _},
+			message_bus::MessageBus,
 		},
-		inspector::{Inspector, screenshot::Screenshot},
+		gameplay::TransformationUpdate,
+		inspector::{Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::Screenshot},
 	};
 
-	/// Creates an inspector with a live future-only application event listener.
-	fn test_inspector(configuration: Configuration) -> (EntityHandle<Inspector>, DefaultListener<Events>) {
+	/// Creates an inspector with live future-only control and transform listeners.
+	fn test_inspector(
+		configuration: Configuration,
+	) -> (
+		EntityHandle<Inspector>,
+		DefaultListener<Events>,
+		DefaultListener<TransformationUpdate>,
+	) {
 		let events = DefaultChannel::new();
-		let listener = events.listener();
-		(EntityHandle::from(Inspector::new(events, configuration)), listener)
+		let event_listener = events.listener();
+		let messages = MessageBus::default().new_scope("http-inspector-test-world");
+		let transform_listener = messages.channel().listener();
+		(
+			EntityHandle::from(Inspector::new(events, configuration, messages)),
+			event_listener,
+			transform_listener,
+		)
 	}
 
 	#[test]
@@ -311,7 +384,7 @@ mod tests {
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let (inspector, _events) = test_inspector(Configuration::new());
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
@@ -335,7 +408,7 @@ mod tests {
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let (inspector, mut events) = test_inspector(Configuration::new());
+		let (inspector, mut events, _transforms) = test_inspector(Configuration::new());
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
 		stream
@@ -358,7 +431,7 @@ mod tests {
 		let address = reservation.local_addr().expect("read inspector test address");
 		drop(reservation);
 
-		let (inspector, _events) = test_inspector(Configuration::new());
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let screenshots = inspector.screenshots();
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 		let responder = std::thread::spawn(move || {
@@ -403,9 +476,42 @@ mod tests {
 
 	#[test]
 	fn server_rejects_missing_screenshot_sink() {
-		let (inspector, _events) = test_inspector(Configuration::new());
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let response = super::screenshot_response(&inspector, None);
 		assert_eq!(response.status(), oxhttp::model::StatusCode::BAD_REQUEST);
+	}
+
+	#[test]
+	fn server_posts_targeted_transform_updates_over_http() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
+		let target = Handle::from_id(47);
+		let body = format!(
+			r#"{{"type":"{TRANSFORMATION_UPDATE_MESSAGE_TYPE}","target":{},"payload":{{"position":[4.0,5.0,6.0],"scale":[1.0,2.0,3.0],"orientation":[0.0,0.0,0.0,1.0]}}}}"#,
+			target.id()
+		);
+		let request = format!(
+			"POST /messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+			body.len()
+		);
+
+		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
+		stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		stream.write_all(request.as_bytes()).expect("post inspector transform update");
+		let mut response = String::new();
+		stream.read_to_string(&mut response).expect("read inspector response");
+
+		assert!(response.starts_with("HTTP/1.1 204"), "unexpected response: {response}");
+		let update = transforms.read().expect("posted transform update");
+		assert_eq!(update.handle(), target);
+		assert_eq!(update.transform().get_position(), math::Point::new(4.0, 5.0, 6.0));
+		assert_eq!(update.transform().scale(), math::Scale::new(1.0, 2.0, 3.0));
 	}
 
 	#[test]
@@ -479,7 +585,7 @@ mod tests {
 		let configuration = Configuration::new();
 		let _port = configuration.register("render.pass.");
 		configuration.update("render.pass.bloom", "bypassed");
-		let (inspector, _events) = test_inspector(configuration);
+		let (inspector, _events, _transforms) = test_inspector(configuration);
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");

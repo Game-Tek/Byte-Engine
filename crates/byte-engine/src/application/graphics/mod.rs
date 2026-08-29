@@ -154,17 +154,22 @@ impl Application for GraphicsApplication {
 		})
 		.unwrap();
 
-		let inspector = EntityHandle::from(Inspector::new(application_events.0.clone(), configuration.clone()));
+		let world = DefaultWorld::with_messages(world_messages);
+		let cameras_listener = world.factory::<Camera>().listener();
+		let physics_transforms_listener = world.transforms_channel().listener();
+		let renderer_transforms_listener = world.transforms_channel().listener();
+
+		let inspector = EntityHandle::from(Inspector::new(
+			application_events.0.clone(),
+			configuration.clone(),
+			world.messages().clone(),
+		));
 		let screenshot_broker = inspector.screenshots();
 		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let window_factory = messages.factory();
 		let window_factory_listener = window_factory.listener();
 
-		let world = DefaultWorld::with_messages(world_messages);
-		let cameras_listener = world.factory::<Camera>().listener();
-		let physics_transforms_listener = world.transforms_channel().listener();
-		let renderer_transforms_listener = world.transforms_channel().listener();
 		let generator_factory = messages.factory();
 
 		GraphicsApplication {

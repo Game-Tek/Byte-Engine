@@ -180,6 +180,16 @@ impl Handle {
 	pub(crate) fn new() -> Self {
 		Self(COUNTER.fetch_add(1, Ordering::Relaxed))
 	}
+
+	/// Returns the process-local numeric identity used by inspection and diagnostics.
+	pub fn id(self) -> u32 {
+		self.0
+	}
+
+	/// Restores an identity supplied by a trusted engine protocol adapter.
+	pub(crate) fn from_id(id: u32) -> Self {
+		Self(id)
+	}
 }
 
 #[cfg(test)]

@@ -1,22 +1,22 @@
 //! Runtime inspection contracts and protocol-facing state access.
 //!
-//! Implement [`Inspectable`] on entities exposed to tooling, then register their
-//! handles with an [`Inspector`]. Protocol adapters should query this object
-//! rather than reaching into application subsystems directly.
+//! The [`Inspector`] exposes factory-created handles and passive message
+//! publication headers without retaining application values or message
+//! payloads. Protocol adapters should query this object rather than reaching
+//! into application subsystems directly.
 
-use std::{fmt::Debug, sync::Arc};
+use std::sync::Arc;
 
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
-use utils::sync::Mutex;
 
 use crate::{
 	application::Events,
 	configuration::{Configuration, ConfigurationEvent},
 	core::{
-		Entity, EntityHandle,
 		channel::{Channel, DefaultChannel},
-		message_bus::MessageScope,
+		message_bus::{MessageBus, MessageScope},
+		message_observer::{MessageObserver, ObservedEntity},
 	},
 };
 
@@ -48,31 +48,87 @@ pub trait Inspectable: Send + Sync {
 	}
 }
 
-/// The [`Inspector`] struct owns the entity registry and application controls
-/// shared by Byte Engine Inspection Protocol adapters.
+/// The `InspectedMessage` struct resolves one passive publication to its scope and Rust message type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InspectedMessage {
+	topic_id: usize,
+	scope: Arc<str>,
+	message_type: &'static str,
+	first_sequence: u64,
+	count: u64,
+}
+
+impl InspectedMessage {
+	/// Returns the stable bus-local route identifier.
+	pub fn topic_id(&self) -> usize {
+		self.topic_id
+	}
+
+	/// Returns the diagnostic name of the route's owning scope.
+	pub fn scope(&self) -> &str {
+		&self.scope
+	}
+
+	/// Returns the complete Rust type name, including generic arguments.
+	pub fn message_type(&self) -> &'static str {
+		self.message_type
+	}
+
+	/// Returns the first zero-based publication sequence in this range.
+	pub fn first_sequence(&self) -> u64 {
+		self.first_sequence
+	}
+
+	/// Returns the number of consecutive publications in this range.
+	pub fn count(&self) -> u64 {
+		self.count
+	}
+}
+
+/// The `InspectedMessageBatch` struct carries resolved publication ranges since the prior drain.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InspectedMessageBatch {
+	messages: Vec<InspectedMessage>,
+}
+
+impl InspectedMessageBatch {
+	/// Returns one range for each route that published since the prior drain.
+	pub fn messages(&self) -> &[InspectedMessage] {
+		&self.messages
+	}
+}
+
+/// The `Inspector` struct owns application controls and passive runtime diagnostics shared by protocol adapters.
 pub struct Inspector {
-	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
 	messages: MessageScope,
+	message_bus: MessageBus,
+	message_observer: MessageObserver,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
 }
 
 impl Inspector {
-	/// Creates an inspector that can publish controls and targeted world messages.
+	/// Creates an inspector that can publish controls and inspect one shared message bus.
 	///
 	/// Register the application and world listeners before passing their routes so
-	/// inspector requests cannot be published without a consumer. Next, call
-	/// [`Self::post_message`] from the inspection protocol adapter.
+	/// inspector requests cannot be published without a consumer. Attach message
+	/// observation before acquiring any routes in `messages`. Next, call
+	/// [`Self::post_message`] or query [`Self::entities`] from the protocol adapter.
 	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
-		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
-
+		let message_bus = messages.message_bus().clone();
+		let message_observer = message_bus.observer().unwrap_or_else(|| {
+			panic!(
+				"Inspector message observation is unavailable. The most likely cause is that MessageBus::observe was not called before acquiring application routes."
+			)
+		});
 		Self {
-			entities,
 			events,
 			configuration,
 			messages,
+			message_bus,
+			message_observer,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
 		}
@@ -89,32 +145,46 @@ impl Inspector {
 		self.configuration.events()
 	}
 
-	/// Returns inspectable entities, optionally filtered by class name.
-	pub fn get_entities(&self, class: Option<&str>) -> Vec<EntityHandle<dyn Inspectable>> {
-		let entities = self.entities.lock();
-		let mut result = Vec::new();
-
-		for entity in entities.iter() {
-			if let Some(class) = class {
-				if entity.class_name() == class {
-					result.push(entity.clone());
-				}
-			} else {
-				result.push(entity.clone());
-			}
+	/// Returns current factory-created entities, optionally filtered by a complete Rust type name.
+	pub fn entities(&self, entity_type: Option<&str>) -> Vec<ObservedEntity> {
+		let mut entities = self.message_observer.entities();
+		if let Some(entity_type) = entity_type {
+			entities.retain(|entity| entity.types().contains(&entity_type));
 		}
-
-		result
+		entities
 	}
 
-	/// Applies a property update to the inspectable entity at the given index.
-	pub fn call_set(&self, index: usize, key: &str, value: &str) -> Result<(), String> {
-		let entities = self.entities.lock();
-		let entity = entities.get(index).ok_or(
-			"Inspector entity not found. The most likely cause is that the entity index came from an outdated inspection response."
-				.to_string(),
-		)?;
-		Err("Inspector mutation dispatch is not implemented. The most likely cause is that Inspector::call_set is still a placeholder.".to_string())
+	/// Drains passive publication headers and resolves their route metadata.
+	///
+	/// Payloads remain opaque because general engine messages do not require a
+	/// serialization or reflection contract. Each result preserves sequence
+	/// within its route but does not claim ordering between routes.
+	pub fn drain_messages(&self) -> InspectedMessageBatch {
+		let topic_snapshots = self.message_bus.topics();
+		let batch = self.message_observer.drain_messages(&topic_snapshots);
+		let mut topics = vec![None; self.message_bus.config().max_topics];
+		for topic in topic_snapshots {
+			let topic_id = topic.topic_id;
+			topics[topic_id] = Some(topic);
+		}
+		let messages = batch
+			.messages()
+			.iter()
+			.map(|observation| {
+				let topic = topics[observation.topic_id()]
+					.as_ref()
+					.expect("An observed publication must retain its registered message topic");
+				InspectedMessage {
+					topic_id: observation.topic_id(),
+					scope: Arc::clone(&topic.scope),
+					message_type: topic.message_type,
+					first_sequence: observation.first_sequence(),
+					count: observation.count(),
+				}
+			})
+			.collect();
+
+		InspectedMessageBatch { messages }
 	}
 
 	/// Requests application shutdown through the inspector event channel.

@@ -22,11 +22,15 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The `HttpInspectorServer` struct exposes the Byte Engine Inspection Protocol
 /// through an HTTP API.
 ///
-/// Clients use this server to inspect registered entities and update their
-/// exposed properties. To move an entity, send `POST /messages` with a JSON
-/// object containing `type: "TransformationUpdate"`, its numeric `target`
-/// handle, and the complete transform `payload` documented by
-/// [`Inspector::post_message`].
+/// Clients use this server to inspect factory-created entities and drain
+/// passive publication ranges. `GET /entities` returns each numeric `target`
+/// and its Rust `types`. `GET /messages` returns the `scope`, complete generic
+/// `type`, `first_sequence`, and `count` for each route that published since
+/// the previous request. Payloads remain opaque.
+///
+/// To move an entity, send `POST /messages` with a JSON object containing
+/// `type: "TransformationUpdate"`, its numeric `target` handle, and the complete
+/// transform `payload` documented by [`Inspector::post_message`].
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
 
@@ -58,6 +62,7 @@ impl HttpInspectorServer {
 
 		let mut server = Server::new(move |mut request| match (request.method(), request.uri().path()) {
 			(&Method::GET, "/screenshots") => screenshot_response(&i, request.uri().query()),
+			(&Method::GET, "/messages") => messages_response(&i),
 			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),
 			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
 				Ok(body) => Response::builder().body(Body::from(body)).unwrap(),
@@ -68,73 +73,7 @@ impl HttpInspectorServer {
 					)))
 					.unwrap(),
 			},
-			(&Method::GET, "/entities") => {
-				let mut body = String::new();
-
-				let class_name = if let Some(pq) = request.uri().path_and_query() {
-					if let Some(query) = pq.query() {
-						let mut split = query.split("=");
-
-						let filter = split.next().unwrap_or("");
-						let value = split.next().unwrap_or("");
-
-						if filter.starts_with("class") { Some(value) } else { None }
-					} else {
-						None
-					}
-				} else {
-					None
-				};
-
-				let entities = i.get_entities(class_name);
-
-				if !entities.is_empty() {
-					for (index, entity) in entities.iter().enumerate() {
-						body.push_str(&format!("[{}] {}\n", index, entity.as_string()));
-					}
-				} else {
-					body.push_str("No entities found");
-				}
-
-				Response::builder().body(Body::from(body)).unwrap()
-			}
-			(&Method::PATCH, "/entities") => {
-				if let Some(pq) = request.uri().path_and_query() {
-					if let Some(query) = pq.query() {
-						let mut params = query.split('&');
-
-						let mut index_qp = params.next().unwrap().split('=');
-						let _ = index_qp.next().unwrap();
-						let index = index_qp.next().unwrap();
-
-						let mut key_qp = params.next().unwrap().split('=');
-						let _ = key_qp.next().unwrap();
-						let key = key_qp.next().unwrap();
-
-						let mut value_qp = params.next().unwrap().split('=');
-						let _ = value_qp.next().unwrap();
-						let value = value_qp.next().unwrap();
-
-						match i.call_set(index.parse().unwrap_or(0), key, value) {
-							Ok(_) => Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap(),
-							Err(e) => Response::builder()
-								.status(StatusCode::INTERNAL_SERVER_ERROR)
-								.body(Body::from(e))
-								.unwrap(),
-						}
-					} else {
-						Response::builder()
-							.status(StatusCode::BAD_REQUEST)
-							.body(Body::empty())
-							.unwrap()
-					}
-				} else {
-					Response::builder()
-						.status(StatusCode::BAD_REQUEST)
-						.body(Body::empty())
-						.unwrap()
-				}
-			}
+			(&Method::GET, "/entities") => entities_response(&i, request.uri().query()),
 			(&Method::DELETE, "/") => {
 				i.close_application();
 				Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap()
@@ -155,6 +94,51 @@ impl HttpInspectorServer {
 			_inspector: inspector,
 		})
 	}
+}
+
+/// Serializes the current factory-backed entity catalog.
+fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
+	let entity_type = query
+		.and_then(|query| query.strip_prefix("type=").or_else(|| query.strip_prefix("class=")))
+		.filter(|value| !value.is_empty());
+	let entities = inspector
+		.entities(entity_type)
+		.iter()
+		.map(|entity| {
+			serde_json::json!({
+				"target": entity.handle().id(),
+				"types": entity.types(),
+			})
+		})
+		.collect::<Vec<_>>();
+	json_response(&serde_json::Value::Array(entities))
+}
+
+/// Drains and serializes passive message publications without payloads.
+fn messages_response(inspector: &Inspector) -> Response<Body> {
+	let batch = inspector.drain_messages();
+	let messages = batch
+		.messages()
+		.iter()
+		.map(|message| {
+			serde_json::json!({
+				"topic": message.topic_id(),
+				"scope": message.scope(),
+				"type": message.message_type(),
+				"first_sequence": message.first_sequence(),
+				"count": message.count(),
+			})
+		})
+		.collect::<Vec<_>>();
+	json_response(&serde_json::json!({ "messages": messages }))
+}
+
+fn json_response(value: &serde_json::Value) -> Response<Body> {
+	Response::builder()
+		.status(StatusCode::OK)
+		.header("Content-Type", "application/json")
+		.body(Body::from(value.to_string()))
+		.expect("Inspector JSON response is valid. The most likely cause of failure is an invalid static header name.")
 }
 
 /// Parses and posts one complete message envelope from the HTTP request body.
@@ -349,7 +333,7 @@ mod tests {
 		configuration::Configuration,
 		core::{
 			EntityHandle,
-			channel::DefaultChannel,
+			channel::{Channel as _, DefaultChannel},
 			factory::Handle,
 			listener::{DefaultListener, Listener as _},
 			message_bus::MessageBus,
@@ -368,7 +352,9 @@ mod tests {
 	) {
 		let events = DefaultChannel::new();
 		let event_listener = events.listener();
-		let messages = MessageBus::default().new_scope("http-inspector-test-world");
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transform_listener = messages.channel().listener();
 		(
 			EntityHandle::from(Inspector::new(events, configuration, messages)),
@@ -399,7 +385,58 @@ mod tests {
 		stream.read_to_string(&mut response).expect("read inspector response");
 
 		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
-		assert!(response.ends_with("No entities found"), "unexpected response: {response}");
+		assert!(response.ends_with("[]"), "unexpected response: {response}");
+	}
+
+	#[test]
+	fn server_reports_factory_entities_and_generic_message_publications() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("http-observation-test");
+		let entity = messages.factory::<String>().create("crate".to_string());
+		let generic_messages = messages.channel::<Option<u32>>();
+		let _generic_listener = generic_messages.listener();
+		generic_messages.send(Some(7));
+		let inspector = EntityHandle::from(Inspector::new(DefaultChannel::new(), Configuration::new(), messages));
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
+
+		let mut entities_stream = TcpStream::connect(address).expect("connect to inspector entity endpoint");
+		entities_stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		entities_stream
+			.write_all(b"GET /entities HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.expect("request observed entities");
+		let mut entities_response = String::new();
+		entities_stream
+			.read_to_string(&mut entities_response)
+			.expect("read observed entities");
+		let entities_body = entities_response.split_once("\r\n\r\n").expect("entity response body").1;
+		let entities: serde_json::Value = serde_json::from_str(entities_body).expect("parse observed entities");
+		assert_eq!(entities[0]["target"], entity.id());
+		assert_eq!(entities[0]["types"][0], std::any::type_name::<String>());
+
+		let mut messages_stream = TcpStream::connect(address).expect("connect to inspector message endpoint");
+		messages_stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		messages_stream
+			.write_all(b"GET /messages HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.expect("request observed messages");
+		let mut messages_response = String::new();
+		messages_stream
+			.read_to_string(&mut messages_response)
+			.expect("read observed messages");
+		let messages_body = messages_response.split_once("\r\n\r\n").expect("message response body").1;
+		let messages: serde_json::Value = serde_json::from_str(messages_body).expect("parse observed messages");
+		assert_eq!(messages["messages"][0]["scope"], "http-observation-test");
+		assert_eq!(messages["messages"][0]["type"], std::any::type_name::<Option<u32>>());
+		assert_eq!(messages["messages"][0]["first_sequence"], 0);
+		assert_eq!(messages["messages"][0]["count"], 1);
 	}
 
 	#[test]

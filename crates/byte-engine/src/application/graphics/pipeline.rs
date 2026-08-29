@@ -23,7 +23,7 @@ pub fn setup_simple_render_pipeline(
 ) {
 	defaults::setup_default_pipeline_compilation(application);
 	let listener = application.world().factory::<RenderableMesh>().listener();
-	let delete_listener = application.world().delete_channel().listener();
+	let delete_listener = application.world().deletions_listener();
 	let transforms_listener = application.world().transforms_channel().listener();
 	let application_resources = application.resource_manager.clone();
 
@@ -322,7 +322,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let cone_light_receiver = application.world().factory::<ConeLight>().listener();
 		let directional_light_receiver = application.world().factory::<DirectionalLight>().listener();
 		let point_light_receiver = application.world().factory::<PointLight>().listener();
-		let delete_receiver = application.world().delete_channel().listener();
+		let delete_receiver = application.world().deletions_listener();
 		let mesh_receiver = application.world().factory::<RenderableMesh>().listener();
 		let transforms_listener = application.world().transforms_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();

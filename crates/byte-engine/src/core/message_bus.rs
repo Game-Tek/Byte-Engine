@@ -16,8 +16,8 @@ use std::{
 	fmt,
 	marker::PhantomData,
 	ptr::NonNull,
-	sync::Arc,
 	sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+	sync::{Arc, OnceLock},
 };
 
 use utils::sync::Mutex;
@@ -25,6 +25,7 @@ use utils::sync::Mutex;
 use crate::core::{
 	channel::{DefaultChannel, TrySendError},
 	factory::Factory,
+	message_observer::{MessageObservationError, MessageObserver},
 };
 
 /// The `MessageBusConfig` struct defines the fixed storage limits reserved at startup.
@@ -249,6 +250,7 @@ impl std::error::Error for MessageRouteError {}
 /// The `TopicSnapshot` struct reports one typed route's current state for diagnostics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicSnapshot {
+	pub topic_id: usize,
 	pub scope_id: u64,
 	pub scope: Arc<str>,
 	pub message_type: &'static str,
@@ -297,6 +299,35 @@ impl MessageBus {
 	/// Returns the immutable startup limits for this bus.
 	pub fn config(&self) -> MessageBusConfig {
 		self.inner.arena.config
+	}
+
+	/// Attaches the one passive observer for this bus.
+	///
+	/// The observer sees successful publications from every future route,
+	/// including application-defined generic types. Attach it before acquiring
+	/// the first channel or factory. Publication observation reads existing route
+	/// counters, so it never delays publishers.
+	pub fn observe(&self) -> Result<MessageObserver, MessageObservationError> {
+		let observer = MessageObserver::new(self.inner.arena.config.max_topics);
+		let registry = self.inner.registry.lock();
+		if self.inner.arena.observer.get().is_some() {
+			return Err(MessageObservationError::AlreadyAttached);
+		}
+		if registry.next_topic != 0 {
+			return Err(MessageObservationError::RoutesAlreadyRegistered);
+		}
+		self.inner
+			.arena
+			.observer
+			.set(observer.clone())
+			.map_err(|_| MessageObservationError::AlreadyAttached)?;
+		drop(registry);
+		Ok(observer)
+	}
+
+	/// Returns the diagnostics owner already attached to this bus.
+	pub(crate) fn observer(&self) -> Option<MessageObserver> {
+		self.inner.arena.observer.get().cloned()
 	}
 
 	/// Creates an isolated namespace over the same fixed arena.
@@ -355,6 +386,11 @@ pub struct MessageScope {
 }
 
 impl MessageScope {
+	/// Returns the shared bus that owns this namespace.
+	pub(crate) fn message_bus(&self) -> &MessageBus {
+		&self.bus
+	}
+
 	/// Acquires the canonical typed channel in this scope, registering it on first use.
 	///
 	/// Next, create listeners before publishing messages that they must observe.
@@ -495,6 +531,7 @@ struct Arena {
 	stamps: Box<[AtomicU64]>,
 	remaining_readers: Box<[AtomicUsize]>,
 	listeners: Box<[ListenerState]>,
+	observer: OnceLock<MessageObserver>,
 }
 
 impl Arena {
@@ -525,6 +562,7 @@ impl Arena {
 			stamps,
 			remaining_readers,
 			listeners,
+			observer: OnceLock::new(),
 		}
 	}
 }
@@ -742,8 +780,20 @@ where
 		stamp.store(ticket + 1, Ordering::Release);
 		writer.next_ticket = ticket + 1;
 		writer.next_slot = if slot + 1 == self.layout.capacity { 0 } else { slot + 1 };
-
 		Ok(())
+	}
+
+	/// Returns the diagnostics owner attached to this route's bus.
+	pub(crate) fn observer(&self) -> Option<&MessageObserver> {
+		self.arena.observer.get()
+	}
+
+	/// Removes one terminally deleted handle from the optional entity catalog.
+	#[inline(always)]
+	pub(crate) fn forget_entity(&self, handle: crate::core::factory::Handle) {
+		if let Some(observer) = self.arena.observer.get() {
+			forget_observed_entity(observer, handle);
+		}
 	}
 
 	/// Records one logical publication that encountered a full route.
@@ -863,6 +913,7 @@ where
 		let tail = writer.next_ticket;
 		let minimum = self.minimum_active_cursor(tail, writer.active_listeners);
 		TopicSnapshot {
+			topic_id: self.index,
 			scope_id: self.scope_id,
 			scope: Arc::clone(&self.scope),
 			message_type: type_name::<M>(),
@@ -874,6 +925,13 @@ where
 			disconnected: writer.disconnected,
 		}
 	}
+}
+
+/// Keeps the enabled diagnostics path out of ordinary deletion publication code.
+#[cold]
+#[inline(never)]
+fn forget_observed_entity(observer: &MessageObserver, handle: crate::core::factory::Handle) {
+	observer.forget_entity(handle);
 }
 
 impl<M> Topic<M> {
@@ -1090,6 +1148,7 @@ fn unreachable_type_collision<M>() -> MessageRouteError {
 #[cfg(test)]
 mod tests {
 	use std::{
+		any::type_name,
 		panic::{AssertUnwindSafe, catch_unwind},
 		sync::atomic::{AtomicUsize, Ordering},
 		sync::{Arc, Barrier},
@@ -1100,6 +1159,7 @@ mod tests {
 	use crate::core::{
 		channel::{Channel as _, DefaultChannel, TrySendError},
 		listener::Listener as _,
+		message_observer::MessageObservationError,
 	};
 
 	/// Creates a compact arena whose cells satisfy ordinary Rust value alignment.
@@ -1142,6 +1202,74 @@ mod tests {
 
 		assert_eq!(bus.topics().len(), 1);
 		assert_eq!(listener.read(), Some(ApplicationMessage { value: 42 }));
+	}
+
+	#[test]
+	fn passive_observation_resolves_distinct_generic_routes_without_payload_access() {
+		let bus = MessageBus::new(test_config(2, 4, 8, 1)).expect("valid test bus");
+		let observer = bus.observe().expect("attach observer");
+		let messages = bus.new_scope("application");
+		let integers = messages.channel::<Option<u32>>();
+		let counters = messages.channel::<Option<u64>>();
+		let _integer_listener = integers.listener();
+		let _counter_listener = counters.listener();
+
+		integers.send(Some(7));
+		counters.send(Some(11));
+
+		let batch = observer.drain_messages(&bus.topics());
+		let topics = bus.topics();
+		let observed_types = batch
+			.messages()
+			.iter()
+			.map(|message| {
+				topics
+					.iter()
+					.find(|topic| topic.topic_id == message.topic_id())
+					.expect("observed topic remains registered")
+					.message_type
+			})
+			.collect::<Vec<_>>();
+
+		assert_eq!(observed_types, [type_name::<Option<u32>>(), type_name::<Option<u64>>()]);
+		assert!(batch.messages().iter().all(|message| message.first_sequence() == 0));
+		assert!(batch.messages().iter().all(|message| message.count() == 1));
+	}
+
+	#[test]
+	fn passive_observation_collapses_publications_without_applying_backpressure() {
+		let bus = MessageBus::new(test_config(1, 4, 8, 1)).expect("valid test bus");
+		let observer = bus.observe().expect("attach observer");
+		let channel = bus.new_scope("application").channel::<u64>();
+		let mut listener = channel.listener();
+
+		channel.try_send(3).expect("first message fits");
+		channel
+			.try_send(5)
+			.expect("observer saturation does not fill the message route");
+
+		assert_eq!(listener.to_vec(), [3, 5]);
+		let batch = observer.drain_messages(&bus.topics());
+		assert_eq!(batch.messages().len(), 1);
+		assert_eq!(batch.messages()[0].first_sequence(), 0);
+		assert_eq!(batch.messages()[0].count(), 2);
+		assert!(observer.drain_messages(&bus.topics()).messages().is_empty());
+	}
+
+	#[test]
+	fn one_bus_rejects_a_second_passive_observer() {
+		let bus = MessageBus::new(test_config(1, 1, 8, 1)).expect("valid test bus");
+		let _observer = bus.observe().expect("attach first observer");
+
+		assert!(matches!(bus.observe(), Err(MessageObservationError::AlreadyAttached)));
+	}
+
+	#[test]
+	fn passive_observation_must_start_before_route_registration() {
+		let bus = MessageBus::new(test_config(1, 1, 8, 1)).expect("valid test bus");
+		let _channel = bus.new_scope("application").channel::<u64>();
+
+		assert!(matches!(bus.observe(), Err(MessageObservationError::RoutesAlreadyRegistered)));
 	}
 
 	#[test]

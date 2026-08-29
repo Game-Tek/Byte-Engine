@@ -92,8 +92,22 @@ impl DefaultWorld {
 		&self.transforms
 	}
 
-	pub fn delete_channel(&self) -> &DefaultChannel<DeleteMessage> {
-		&self.deletes
+	/// Creates a future-only listener for terminal entity deletions.
+	///
+	/// Next, keep the listener with the consuming system and remove matching
+	/// state when it receives a [`DeleteMessage`]. Publish deletions through
+	/// [`Self::delete`] so inspection diagnostics retire the same handle.
+	pub fn deletions_listener(&self) -> DefaultListener<DeleteMessage> {
+		self.deletes.listener()
+	}
+
+	/// Publishes one terminal deletion and removes the handle from inspection diagnostics.
+	///
+	/// Consumers created through [`Self::deletions_listener`] receive the same
+	/// handle and can retire their system-specific state.
+	pub fn delete(&self, handle: Handle) {
+		self.deletes.send(DeleteMessage::new(handle));
+		self.deletes.forget_entity(handle);
 	}
 
 	pub fn poses_channel(&self) -> &DefaultChannel<UpdatePose> {
@@ -161,7 +175,7 @@ use crate::{
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Creator, Factory, Handle},
-		listener::Listener,
+		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
 		message_bus::{MessageBus, MessageScope},
 		publisher::Publisher,
@@ -272,5 +286,20 @@ mod tests {
 		assert_eq!(sprite.handle(), handle);
 		assert_eq!(sprite.data(), &Sprite("floor.png"));
 		assert_eq!(transform.handle(), handle);
+	}
+
+	#[test]
+	fn world_deletion_retires_the_factory_handle_from_inspection() {
+		let message_bus = MessageBus::default();
+		let observer = message_bus.observe().expect("attach observer");
+		let world = DefaultWorld::with_messages(message_bus.new_scope("observed-world"));
+		let mut deletions = world.deletions_listener();
+		let handle = world.factory::<String>().create("temporary".to_string());
+
+		assert_eq!(observer.entities()[0].handle(), handle);
+		world.delete(handle);
+
+		assert_eq!(deletions.read().expect("world deletion").into_handle(), handle);
+		assert!(observer.entities().is_empty());
 	}
 }

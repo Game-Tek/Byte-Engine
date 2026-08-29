@@ -18,6 +18,7 @@ pub mod listener;
 #[doc(hidden)]
 pub mod message;
 pub mod message_bus;
+pub mod message_observer;
 #[doc(hidden)]
 pub mod publisher;
 #[doc(hidden)]

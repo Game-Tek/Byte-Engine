@@ -10,8 +10,8 @@ use crate::core::message_bus::MessageScope;
 /// [`fns::gain`], [`fns::varispeed`], [`fns::pitch_shift`], and
 /// [`fns::custom`]. Next, submit the same mutable graph again through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`] to advance
-/// its selector nodes. Stop its current play through
-/// [`crate::gameplay::world::DefaultWorld::delete_channel`].
+/// its selector nodes. Stop its current playback through
+/// [`crate::gameplay::world::DefaultWorld::delete`].
 #[must_use = "Audio graphs do not play until they are published through the world's audio graph factory"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioGraph {
@@ -244,9 +244,8 @@ impl AudioGraphFactory {
 	/// This commits each selector node on the selected path. Keep the graph and
 	/// submit it again to play its next selection.
 	///
-	/// Send the returned handle through
-	/// [`crate::gameplay::world::DefaultWorld::delete_channel`] to stop the
-	/// graph.
+	/// Pass the returned handle to
+	/// [`crate::gameplay::world::DefaultWorld::delete`] to stop the graph.
 	pub fn create(&self, graph: &mut AudioGraph) -> Handle {
 		let (compiled, selector_commits) = compile_for_factory(graph);
 		let handle = self.compiled_graphs.create(compiled);

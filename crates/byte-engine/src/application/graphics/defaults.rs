@@ -266,7 +266,7 @@ pub fn setup_default_audio(
 ) {
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 
-	let mut deletions_listener = application.world.delete_channel().listener();
+	let mut deletions_listener = application.world.deletions_listener();
 
 	let (mut sample_loader_client, sample_loader) =
 		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());

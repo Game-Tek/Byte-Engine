@@ -97,7 +97,9 @@ mod tests {
 
 	/// Creates an inspector whose transform route already has a listener.
 	fn test_inspector() -> (Inspector, crate::core::listener::DefaultListener<TransformationUpdate>) {
-		let messages = MessageBus::default().new_scope("inspector-test-world");
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("inspector-test-world");
 		let transforms = messages.channel();
 		let listener = transforms.listener();
 

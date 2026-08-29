@@ -103,6 +103,7 @@ impl Application for GraphicsApplication {
 
 		let application = BaseApplication::new(name, parameters);
 		let (message_bus, messages, world_messages) = create_message_bus(&application);
+		message_bus.observe().unwrap_or_else(|error| panic!("{error}"));
 
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 

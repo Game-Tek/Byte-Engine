@@ -13,6 +13,7 @@
 #[derive(Clone)]
 pub struct Factory<T: Clone + Send + Sync + 'static> {
 	channel: DefaultChannel<CreateMessage<T>>,
+	observer: Option<MessageObserver>,
 }
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -79,9 +80,11 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	///
 	/// Next, call [`Self::listener`] for each system that mirrors created values,
 	/// then publish values through [`Self::create`].
+	#[inline]
 	pub fn new() -> Self {
-		Factory {
+		Self {
 			channel: DefaultChannel::new(),
+			observer: None,
 		}
 	}
 
@@ -90,11 +93,15 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	/// Consumers read the resulting [`CreateMessage`] from listeners created by
 	/// [`Self::listener`]. Pass the returned handle to [`Self::derive`] when a
 	/// second factory publishes another representation of the same entity.
+	#[inline]
 	pub fn create(&self, data: T) -> Handle {
 		let handle = Handle::new();
 		let message = CreateMessage::new(handle, data);
 
 		self.channel.send(message);
+		if let Some(observer) = &self.observer {
+			record_observed_entity::<T>(observer, handle);
+		}
 
 		handle
 	}
@@ -114,10 +121,14 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	///
 	/// Use this after [`Self::create`] when another system-specific representation
 	/// must retain the original entity identity.
+	#[inline]
 	pub fn derive(&self, handle: Handle, data: T) {
 		let message = CreateMessage::new(handle, data);
 
 		self.channel.send(message);
+		if let Some(observer) = &self.observer {
+			record_observed_entity::<T>(observer, handle);
+		}
 	}
 
 	/// Creates a consumer for creation messages published after registration.
@@ -128,9 +139,18 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 		self.channel.listener()
 	}
 
+	#[inline]
 	pub(crate) fn from_channel(channel: DefaultChannel<CreateMessage<T>>) -> Self {
-		Self { channel }
+		let observer = channel.observer();
+		Self { channel, observer }
 	}
+}
+
+/// Keeps the enabled diagnostics path out of ordinary factory publication code.
+#[cold]
+#[inline(never)]
+fn record_observed_entity<T: 'static>(observer: &MessageObserver, handle: Handle) {
+	observer.observe_entity::<T>(handle);
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +215,7 @@ impl Handle {
 #[cfg(test)]
 mod tests {
 	use super::{Creator, Factory, Handle};
-	use crate::core::listener::Listener;
+	use crate::core::{listener::Listener, message_bus::MessageBus};
 
 	#[test]
 	fn create_assigns_distinct_handles_and_broadcasts_in_creation_order() {
@@ -282,6 +302,27 @@ mod tests {
 		assert_eq!(message.handle(), handle);
 		assert_eq!(message.data(), &7);
 	}
+
+	#[test]
+	fn observed_factories_catalog_every_type_once_under_the_shared_handle() {
+		let bus = MessageBus::default();
+		let observer = bus.observe().expect("attach observer");
+		let messages = bus.new_scope("factory-observation");
+		let labels = messages.factory::<String>();
+		let indices = messages.factory::<u32>();
+
+		let handle = labels.create("entity".to_string());
+		labels.derive(handle, "renamed".to_string());
+		indices.derive(handle, 7);
+
+		let entities = observer.entities();
+		assert_eq!(entities.len(), 1);
+		assert_eq!(entities[0].handle(), handle);
+		assert_eq!(
+			entities[0].types(),
+			[std::any::type_name::<String>(), std::any::type_name::<u32>()]
+		);
+	}
 }
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -290,5 +331,6 @@ use crate::core::{
 	channel::{Channel as _, DefaultChannel},
 	listener::{DefaultListener, Listener},
 	message::Message,
+	message_observer::MessageObserver,
 	targeted_message::TargetedMessage,
 };

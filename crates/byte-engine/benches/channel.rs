@@ -19,6 +19,7 @@ use divan::{Bencher, counter::ItemsCount};
 /// Draining below the current 128-message capacity prevents a blocking send.
 const DRAIN_BATCH_SIZE: usize = 64;
 const SCALAR_MESSAGE_COUNT: usize = 1_048_576;
+const OBSERVED_FACTORY_CREATE_COUNT: usize = 262_144;
 const BROADCAST_MESSAGE_COUNT: usize = 262_144;
 const CONTENDED_MESSAGE_COUNT: usize = 1_048_576;
 
@@ -72,6 +73,19 @@ fn shared_bus_single_producer_single_consumer(bencher: Bencher) {
 	});
 }
 
+/// Measures enabled passive publication observation without including observer setup or teardown.
+#[divan::bench(sample_count = 10, sample_size = 1)]
+fn observed_shared_bus_single_producer_single_consumer(bencher: Bencher) {
+	let bus = MessageBus::default();
+	let _observer = bus.observe().expect("attach benchmark observer");
+	let channel = bus.new_scope("benchmark").channel();
+	let mut listeners = [channel.listener()];
+
+	bencher.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT)).bench_local(|| {
+		publish_and_drain(&channel, &mut listeners, SCALAR_MESSAGE_COUNT, |sequence| sequence as u64);
+	});
+}
+
 /// Measures handle generation, creation publication, and one consumer read.
 #[divan::bench(sample_count = 10, sample_size = 1)]
 fn factory_create_single_consumer(bencher: Bencher) {
@@ -111,6 +125,34 @@ fn shared_bus_factory_create_single_consumer(bencher: Bencher) {
 			}
 		}
 	});
+}
+
+/// Measures enabled publication observation and semantic factory catalog updates.
+#[divan::bench(sample_count = 10, sample_size = 1)]
+fn observed_shared_bus_factory_create_single_consumer(bencher: Bencher) {
+	bencher
+		.counter(ItemsCount::new(OBSERVED_FACTORY_CREATE_COUNT))
+		.with_inputs(|| {
+			let bus = MessageBus::default();
+			let observer = bus.observe().expect("attach benchmark observer");
+			let factory = bus.new_scope("benchmark").factory();
+			let listener = factory.listener();
+			(factory, listener, observer)
+		})
+		.bench_local_values(|(factory, mut listener, observer)| {
+			for batch_start in (0..OBSERVED_FACTORY_CREATE_COUNT).step_by(DRAIN_BATCH_SIZE) {
+				let batch_end = batch_start + DRAIN_BATCH_SIZE;
+				for sequence in batch_start..batch_end {
+					divan::black_box(factory.create(divan::black_box(sequence as u64)));
+				}
+				for _ in batch_start..batch_end {
+					let message = listener.read().expect("The bounded factory batch must be available");
+					divan::black_box(message);
+				}
+			}
+			// Return owned state so its entity catalog is destroyed outside the timed region.
+			(factory, listener, observer)
+		});
 }
 
 /// Measures one scalar publication delivered to every registered consumer.

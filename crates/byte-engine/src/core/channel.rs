@@ -9,6 +9,7 @@
 use std::{any::type_name, fmt, sync::Arc};
 
 use crate::core::{
+	factory::Handle,
 	listener::DefaultListener,
 	message_bus::{MessageBus, MessageRouteError, Topic},
 };
@@ -125,6 +126,17 @@ where
 
 	pub(crate) fn from_topic(topic: Arc<Topic<M>>) -> Self {
 		Self { topic }
+	}
+
+	/// Returns the optional diagnostics owner attached to this route's bus.
+	pub(crate) fn observer(&self) -> Option<crate::core::message_observer::MessageObserver> {
+		self.topic.observer().cloned()
+	}
+
+	/// Removes one terminally deleted handle from this bus's optional diagnostics catalog.
+	#[inline(always)]
+	pub(crate) fn forget_entity(&self, handle: Handle) {
+		self.topic.forget_entity(handle);
 	}
 }
 

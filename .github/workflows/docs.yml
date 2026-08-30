@@ -1,0 +1,102 @@
+name: Deploy documentation
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-documentation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      # gxhash requires an explicit x86 baseline when Cargo analyzes the engine.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check deployment credentials
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [[ -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "::error::Missing CLOUDFLARE_ACCOUNT_ID. Add it as a GitHub Actions repository secret."
+            exit 1
+          fi
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN. Add it as a GitHub Actions repository secret."
+            exit 1
+          fi
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install nightly-2026-05-31 --profile minimal
+
+      - name: Cache Cargo downloads and API documentation tools
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/api-docs-tools
+          key: ${{ runner.os }}-docs-cargo-${{ hashFiles('Cargo.lock', 'scripts/generate-api-docs.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-docs-cargo-
+
+      - name: Cache Rust API build artifacts
+        uses: actions/cache@v6
+        with:
+          path: target/api-docs-json
+          # Source-sensitive keys let the immutable cache advance after engine changes.
+          key: ${{ runner.os }}-docs-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'scripts/generate-api-docs.sh', 'crates/**') }}
+          restore-keys: |
+            ${{ runner.os }}-docs-target-
+
+      - name: Install Linux documentation dependencies
+        run: |
+          # Rustdoc analyzes every public feature, including native audio and graphics crates.
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            pkg-config \
+            libasound2-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libvulkan-dev
+
+      - name: Install documentation dependencies
+        working-directory: docs-site
+        run: npm ci
+
+      - name: Build documentation
+        working-directory: docs-site
+        run: npm run build
+
+      - name: Deploy documentation
+        working-directory: docs-site
+        run: npm run deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -150,7 +150,7 @@ function useVisibleTableOfContents(
 					const heading = document.getElementById(
 						decodeURIComponent(item.url.slice(1)),
 					);
-					if (!heading || !content.contains(heading)) return true;
+					if (!heading || !content.contains(heading)) return false;
 
 					return (
 						heading.closest('[role="tabpanel"][data-state="inactive"]') ===
@@ -162,15 +162,15 @@ function useVisibleTableOfContents(
 
 		update();
 
-		// Fumadocs extracts every heading before client-side tabs hide inactive panels.
-		// Refilter the TOC whenever a rendered tab panel changes visibility.
+		// Fumadocs extracts every heading before client-side tabs mount only the
+		// active panel. Refilter when panels mount or change visibility.
 		const observer = new MutationObserver(update);
-		for (const panel of content.querySelectorAll('[role="tabpanel"]')) {
-			observer.observe(panel, {
-				attributes: true,
-				attributeFilter: ['data-state'],
-			});
-		}
+		observer.observe(content, {
+			attributes: true,
+			attributeFilter: ['data-state'],
+			childList: true,
+			subtree: true,
+		});
 
 		return () => observer.disconnect();
 	}, [contentRef, toc]);

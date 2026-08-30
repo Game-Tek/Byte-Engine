@@ -1,6 +1,6 @@
 {
 	"title": "Byte Engine",
 	"description": "Use Byte Engine to develop",
-	"pages": ["index", "---Setup---", "setup", "---Build---", "sample-project", "build"],
+	"pages": ["index", "setup", "---Build---", "sample-project", "build"],
 	"root": true
 }

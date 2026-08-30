@@ -10,6 +10,7 @@ import type { OpenAPIPageProps_Spec } from 'fumadocs-openapi/ui';
 import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { buttonVariants } from 'fumadocs-ui/components/ui/button';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { getLayoutTabs } from 'fumadocs-ui/layouts/shared';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
@@ -93,6 +94,7 @@ export const loadDocsPage = createServerFn({
 	});
 
 type DocsContentProps = {
+	docsRsUrl?: string;
 	githubUrl: string;
 	markdownUrl: string;
 };
@@ -109,6 +111,32 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 				footer={{ className: 'be-page-navigation' }}
 			>
 				<div className="flex justify-end gap-2">
+					{pageActions.docsRsUrl && (
+						<a
+							className={buttonVariants({
+								color: 'secondary',
+								size: 'sm',
+								className: 'gap-2 [&_svg]:size-3.5',
+							})}
+							href={pageActions.docsRsUrl}
+							rel="noreferrer"
+							target="_blank"
+						>
+							View on docs.rs
+							<svg
+								aria-hidden="true"
+								fill="none"
+								stroke="currentColor"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								strokeWidth="2"
+								viewBox="0 0 24 24"
+							>
+								<path d="M7 17 17 7" />
+								<path d="M7 7h10v10" />
+							</svg>
+						</a>
+					)}
 					<MarkdownCopyButton markdownUrl={pageActions.markdownUrl} />
 					<ViewOptionsPopover
 						githubUrl={pageActions.githubUrl}
@@ -424,8 +452,26 @@ function MdxDocsContent({ data }: { data: MdxDocsPageData }) {
 	const Content = clientLoader.getComponent(data.path);
 	const markdownUrl = getMarkdownUrl(data.url);
 	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/main/docs/${data.path}`;
+	const docsRsUrl = getDocsRsUrl(data.url);
 
-	return <Content githubUrl={githubUrl} markdownUrl={markdownUrl} />;
+	return (
+		<Content
+			docsRsUrl={docsRsUrl}
+			githubUrl={githubUrl}
+			markdownUrl={markdownUrl}
+		/>
+	);
+}
+
+const rustApiBaseUrl = '/docs/api/latest/byte_engine';
+const docsRsBaseUrl = 'https://docs.rs/byte-engine/latest/byte_engine/';
+
+function getDocsRsUrl(url: string) {
+	if (url === rustApiBaseUrl) return docsRsBaseUrl;
+	if (!url.startsWith(`${rustApiBaseUrl}/`)) return;
+
+	const modulePath = url.slice(rustApiBaseUrl.length + 1);
+	return `${docsRsBaseUrl}${modulePath}/index.html`;
 }
 
 function OpenAPIDocsContent({ data }: { data: OpenAPIDocsPageData }) {

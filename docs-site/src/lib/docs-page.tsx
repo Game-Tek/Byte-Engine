@@ -13,6 +13,7 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { getLayoutTabs } from 'fumadocs-ui/layouts/shared';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
+import { IconBox, IconConnections } from 'nucleo-glass';
 import {
 	DocsBody,
 	DocsDescription,
@@ -235,6 +236,52 @@ function getPageTreeName(name: ReactNode) {
 	return name.props.dangerouslySetInnerHTML?.__html;
 }
 
+function ApiNavigationName({ name, kind }: { name: string; kind: string }) {
+	return (
+		<span className="be-api-navigation-name">
+			<span>{name}</span>
+			<span className="be-api-navigation-kind">{kind}</span>
+		</span>
+	);
+}
+
+// The HTTP reference is virtual and the Rust reference is generated, so add
+// their shared navigation treatment after both sources become one page tree.
+function decorateApiNavigation(node: Node): Node {
+	if (node.type !== 'folder') return node;
+
+	const name = getPageTreeName(node.name);
+	if (name === 'Inspector') {
+		return {
+			...node,
+			name: <ApiNavigationName name={name} kind="http" />,
+			icon: (
+				<IconConnections
+					aria-hidden
+					className="be-glass-icon"
+					uniqueId="be-inspector-http-"
+				/>
+			),
+		};
+	}
+
+	if (node.index?.url === '/docs/api/latest/byte_engine') {
+		return {
+			...node,
+			name: <ApiNavigationName name="byte_engine" kind="rust" />,
+			icon: (
+				<IconBox
+					aria-hidden
+					className="be-glass-icon"
+					uniqueId="be-byte-engine-crate-"
+				/>
+			),
+		};
+	}
+
+	return node;
+}
+
 // Rebuild root folders from the flattened sections so Fumadocs can scope the
 // sidebar and render its native tab selector. Serialized names arrive as spans.
 function getSectionTree(tree: Root): Root {
@@ -269,6 +316,10 @@ function getSectionTree(tree: Root): Root {
 	}
 
 	for (const folder of children) {
+		if (folder.index?.url === '/docs/api/latest') {
+			folder.children = folder.children.map(decorateApiNavigation);
+		}
+
 		const index = folder.children.findIndex(
 			(node) => node.type === 'page' && node.url === folder.index?.url,
 		);

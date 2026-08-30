@@ -1,11 +1,63 @@
 /// The `Transform` struct stores an entity's world location, scale, and orientation.
 ///
 /// Use this type for gameplay entities that implement [`crate::space::Transformable`].
-#[derive(Debug, Clone)]
+/// Facet serializes it as `position: [x, y, z]`, `scale: [x, y, z]`, and
+/// `orientation: [x, y, z, w]`. Deserialization rejects unknown fields,
+/// non-finite components, and invalid orientations.
+#[derive(Debug, Clone, facet::Facet)]
+#[facet(opaque, proxy = SerializableTransform)]
 pub struct Transform {
 	position: Point,
 	scale: Scale,
 	orientation: Orientation,
+}
+
+/// The `SerializableTransform` struct defines the checked reflection boundary for engine transforms.
+#[derive(facet::Facet)]
+#[facet(deny_unknown_fields)]
+struct SerializableTransform {
+	position: [f32; 3],
+	scale: [f32; 3],
+	orientation: [f32; 4],
+}
+
+impl TryFrom<SerializableTransform> for Transform {
+	type Error = String;
+
+	fn try_from(value: SerializableTransform) -> Result<Self, Self::Error> {
+		if !value.position.into_iter().all(f32::is_finite)
+			|| !value.scale.into_iter().all(f32::is_finite)
+			|| !value.orientation.into_iter().all(f32::is_finite)
+		{
+			return Err(
+				"Transform payload is invalid. The most likely cause is that a position, scale, or orientation component is not finite."
+					.to_string(),
+			);
+		}
+
+		let [x, y, z, w] = value.orientation;
+		let orientation = Orientation::try_from_maths(math::Quaternion::new(x, y, z, w)).map_err(|error| {
+			format!(
+				"Transform orientation is invalid. The most likely cause is that the quaternion is zero-length or non-finite: {error}"
+			)
+		})?;
+		let [x, y, z] = value.position;
+		let position = Point::new(x, y, z);
+		let [x, y, z] = value.scale;
+
+		Ok(Self::new(position, Scale::new(x, y, z), orientation))
+	}
+}
+
+impl From<&Transform> for SerializableTransform {
+	fn from(value: &Transform) -> Self {
+		let orientation = value.orientation.into_maths();
+		Self {
+			position: [value.position.x(), value.position.y(), value.position.z()],
+			scale: [value.scale.x(), value.scale.y(), value.scale.z()],
+			orientation: [orientation.x, orientation.y, orientation.z, orientation.w],
+		}
+	}
 }
 
 impl Default for Transform {
@@ -118,7 +170,7 @@ impl Orientable for Transform {
 	}
 }
 
-/// The `TransformationUpdate` type keeps transform creation and replacement on one typed route.
+/// The `TransformationUpdate` type keeps transform creation and replacement on one typed route with a reflected payload.
 pub type TransformationUpdate = CreateMessage<Transform>;
 
 impl CreateMessage<Transform> {
@@ -206,6 +258,28 @@ mod tests {
 
 		assert_eq!(update.handle(), handle);
 		assert_eq!(update.transform().get_position(), Point::new(7.0, 8.0, 9.0));
+	}
+
+	#[test]
+	fn transformation_update_payload_has_a_reflected_json_shape() {
+		let mut factory = Factory::new();
+		let handle = factory.create("entity");
+		let update = TransformationUpdate::new(
+			handle,
+			Transform::new(Point::new(1.0, 2.0, 3.0), Scale::new(4.0, 5.0, 6.0), Orientation::identity()),
+		);
+
+		let json = facet_json::to_string(update.transform()).expect("serialize reflected transform payload");
+		let value: serde_json::Value = serde_json::from_str(&json).expect("parse reflected transform payload");
+
+		assert_eq!(
+			value,
+			serde_json::json!({
+				"position": [1, 2, 3],
+				"scale": [4, 5, 6],
+				"orientation": [0, 0, 0, 1]
+			})
+		);
 	}
 }
 

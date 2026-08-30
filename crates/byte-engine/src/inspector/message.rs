@@ -1,98 +1,88 @@
 //! Protocol-to-world message posting for runtime debugging tools.
 
-use math::{Orientation, Point, Quaternion, Scale};
+use facet::Facet;
 use serde_json::Value;
 
 use super::Inspector;
-use crate::{
-	core::{channel::Channel, factory::Handle},
-	gameplay::{Transform, TransformationUpdate},
-};
+use crate::core::{channel::Channel, factory::Handle, message_bus::MessageRouteError, targeted_message::TargetedMessage};
+
+pub(super) type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String> + Send + Sync + 'static>;
 
 /// The stable inspection-protocol name for a transform replacement message.
 pub const TRANSFORMATION_UPDATE_MESSAGE_TYPE: &str = "TransformationUpdate";
 
 impl Inspector {
-	/// Publishes one targeted world message from its stable protocol name and JSON payload.
+	/// Registers one reflected targeted message for protocol posting.
 	///
-	/// `TransformationUpdate` payloads contain `position`, `scale`, and `orientation`
-	/// arrays with three, three, and four finite numbers respectively. Quaternion
-	/// components use `[x, y, z, w]` order.
-	pub fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String> {
-		match message_type {
-			TRANSFORMATION_UPDATE_MESSAGE_TYPE => {
-				let transform = parse_transform_payload(payload)?;
-				self.messages
-					.channel::<TransformationUpdate>()
-					.send(TransformationUpdate::new(target, transform));
-				Ok(())
-			}
-			_ => Err(format!(
-				"Inspector message type is unsupported. The most likely cause is that '{message_type}' is not registered for inspector posting."
-			)),
-		}
-	}
-}
-
-/// Converts the protocol transform object into the engine's checked spatial types.
-fn parse_transform_payload(payload: &Value) -> Result<Transform, String> {
-	let object = payload.as_object().ok_or_else(invalid_transform_payload)?;
-	if object.len() != 3
-		|| object
-			.keys()
-			.any(|key| !matches!(key.as_str(), "position" | "scale" | "orientation"))
+	/// `message_type` becomes the stable protocol `type`, and the reflected shape
+	/// of `M::Payload` defines its JSON payload. Register every supported message
+	/// before sharing the inspector with a protocol server.
+	pub fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
+	where
+		M: TargetedMessage + Clone + Send + Sync + 'static,
+		M::Payload: Facet<'static>,
 	{
-		return Err(invalid_transform_payload());
-	}
-
-	let [position_x, position_y, position_z] = parse_f32_array::<3>(object.get("position"))?;
-	let [scale_x, scale_y, scale_z] = parse_f32_array::<3>(object.get("scale"))?;
-	let [rotation_x, rotation_y, rotation_z, rotation_w] = parse_f32_array::<4>(object.get("orientation"))?;
-	let orientation = Orientation::try_from_maths(Quaternion::new(rotation_x, rotation_y, rotation_z, rotation_w))
-		.map_err(|error| {
-			format!(
-				"TransformationUpdate orientation is invalid. The most likely cause is that the quaternion is zero-length or non-finite: {error}"
-			)
-		})?;
-
-	Ok(Transform::new(
-		Point::new(position_x, position_y, position_z),
-		Scale::new(scale_x, scale_y, scale_z),
-		orientation,
-	))
-}
-
-/// Reads one fixed-size array without accepting lossy or non-finite `f32` values.
-fn parse_f32_array<const N: usize>(value: Option<&Value>) -> Result<[f32; N], String> {
-	let values = value
-		.and_then(Value::as_array)
-		.filter(|values| values.len() == N)
-		.ok_or_else(invalid_transform_payload)?;
-	let mut result = [0.0; N];
-	for (result, value) in result.iter_mut().zip(values) {
-		let Some(value) = value.as_f64() else {
-			return Err(invalid_transform_payload());
-		};
-		let value = value as f32;
-		if !value.is_finite() {
-			return Err(invalid_transform_payload());
+		if message_type.is_empty() {
+			return Err(
+				"Inspector message could not be registered. The most likely cause is that its protocol type name is empty."
+					.to_string(),
+			);
 		}
-		*result = value;
+		if self.serializable_messages.contains_key(message_type) {
+			return Err(format!(
+				"Inspector message could not be registered. The most likely cause is that protocol type name '{message_type}' is already registered."
+			));
+		}
+
+		let channel = self
+			.messages
+			.try_channel::<M>()
+			.map_err(|error| registration_error(message_type, &error))?;
+		self.serializable_messages.insert(
+			message_type,
+			Box::new(move |target, payload| {
+				let json = payload.to_string();
+				let payload = facet_json::from_str::<M::Payload>(&json).map_err(|error| {
+					format!(
+						"Inspector message payload is invalid. The most likely cause is that '{message_type}' payload does not match its reflected shape: {error}"
+					)
+				})?;
+				channel.send(M::from_handle_and_payload(target, payload));
+				Ok(())
+			}),
+		);
+		Ok(())
 	}
-	Ok(result)
+
+	/// Publishes one registered targeted world message from its protocol name and reflected JSON payload.
+	///
+	/// Call [`Self::register_message`] for the message type before accepting posts.
+	pub fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String> {
+		self.serializable_messages
+			.get(message_type)
+			.ok_or_else(|| {
+				format!(
+				"Inspector message type is unsupported. The most likely cause is that '{message_type}' is not registered for inspector posting."
+				)
+			})?(target, payload)
+	}
 }
 
-fn invalid_transform_payload() -> String {
-	"TransformationUpdate payload is invalid. The most likely cause is that it must contain only `position: [x, y, z]`, `scale: [x, y, z]`, and `orientation: [x, y, z, w]` with finite numbers."
-		.to_string()
+fn registration_error(message_type: &str, error: &MessageRouteError) -> String {
+	format!(
+		"Inspector message could not be registered. The most likely cause is that the typed route for '{message_type}' is unavailable: {error}"
+	)
 }
 
 #[cfg(test)]
 mod tests {
+	use math::{Orientation, Point, Scale};
+
 	use super::*;
 	use crate::{
 		configuration::Configuration,
-		core::{channel::DefaultChannel, factory::Factory, listener::Listener, message_bus::MessageBus},
+		core::{channel::DefaultChannel, factory::Factory, listener::Listener, message::Message, message_bus::MessageBus},
+		gameplay::TransformationUpdate,
 	};
 
 	/// Creates an inspector whose transform route already has a listener.
@@ -103,10 +93,12 @@ mod tests {
 		let transforms = messages.channel();
 		let listener = transforms.listener();
 
-		(
-			Inspector::new(DefaultChannel::new(), Configuration::new(), messages),
-			listener,
-		)
+		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		inspector
+			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
+			.expect("register reflected transformation update");
+
+		(inspector, listener)
 	}
 
 	#[test]
@@ -167,7 +159,85 @@ mod tests {
 			)
 			.expect_err("incomplete transform payload");
 
-		assert!(error.contains("TransformationUpdate payload is invalid"));
+		assert!(error.contains("payload does not match its reflected shape"));
 		assert!(transforms.read().is_none());
+	}
+
+	#[test]
+	fn invalid_transform_orientations_do_not_publish() {
+		let (inspector, mut transforms) = test_inspector();
+		let target = Factory::new().create(());
+
+		let error = inspector
+			.post_message(
+				TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+				target,
+				&serde_json::json!({
+					"position": [1.0, 2.0, 3.0],
+					"scale": [1.0, 1.0, 1.0],
+					"orientation": [0.0, 0.0, 0.0, 0.0]
+				}),
+			)
+			.expect_err("invalid transform orientation");
+
+		assert!(error.contains("zero-length quaternion"));
+		assert!(transforms.read().is_none());
+	}
+
+	/// The `ReflectedPayload` struct provides an arbitrary reflected test payload.
+	#[derive(Clone, Debug, PartialEq, facet::Facet)]
+	#[facet(deny_unknown_fields)]
+	struct ReflectedPayload {
+		name: String,
+		weight: u32,
+	}
+
+	/// The `ReflectedTestMessage` struct verifies generic reflected-payload message registration.
+	#[derive(Clone, Debug, PartialEq)]
+	struct ReflectedTestMessage {
+		target: Handle,
+		payload: ReflectedPayload,
+	}
+
+	impl Message for ReflectedTestMessage {}
+
+	impl TargetedMessage for ReflectedTestMessage {
+		type Payload = ReflectedPayload;
+
+		fn from_handle_and_payload(target: Handle, payload: Self::Payload) -> Self {
+			Self { target, payload }
+		}
+	}
+
+	#[test]
+	fn any_targeted_message_with_a_reflected_payload_can_be_registered_and_posted() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("reflected-message-test-world");
+		let mut listener = messages.channel::<ReflectedTestMessage>().listener();
+		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		inspector
+			.register_message::<ReflectedTestMessage>("ReflectedTestMessage")
+			.expect("register reflected test message");
+		let target = Factory::new().create(());
+
+		inspector
+			.post_message(
+				"ReflectedTestMessage",
+				target,
+				&serde_json::json!({ "name": "crate", "weight": 7 }),
+			)
+			.expect("post reflected test message");
+
+		assert_eq!(
+			listener.read(),
+			Some(ReflectedTestMessage {
+				target,
+				payload: ReflectedPayload {
+					name: "crate".to_string(),
+					weight: 7,
+				},
+			})
+		);
 	}
 }

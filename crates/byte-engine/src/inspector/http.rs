@@ -28,9 +28,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `type`, `first_sequence`, and `count` for each route that published since
 /// the previous request. Payloads remain opaque.
 ///
-/// To move an entity, send `POST /messages` with a JSON object containing
+/// `POST /messages` accepts message types registered through
+/// [`Inspector::register_message`]. To move an entity, send a JSON object with
 /// `type: "TransformationUpdate"`, its numeric `target` handle, and the complete
-/// transform `payload` documented by [`Inspector::post_message`].
+/// reflected [`Transform`](crate::gameplay::Transform) payload.
 /// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
@@ -386,11 +387,11 @@ mod tests {
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transform_listener = messages.channel().listener();
-		(
-			EntityHandle::from(Inspector::new(events, configuration, messages)),
-			event_listener,
-			transform_listener,
-		)
+		let mut inspector = Inspector::new(events, configuration, messages);
+		inspector
+			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
+			.expect("register reflected transformation update");
+		(EntityHandle::from(inspector), event_listener, transform_listener)
 	}
 
 	#[test]

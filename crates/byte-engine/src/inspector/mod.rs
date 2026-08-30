@@ -1,11 +1,12 @@
 //! Runtime inspection contracts and protocol-facing state access.
 //!
 //! The [`Inspector`] exposes factory-created handles and passive message
-//! publication headers without retaining application values or message
-//! payloads. Protocol adapters should query this object rather than reaching
-//! into application subsystems directly.
+//! publication headers without retaining application values or published
+//! payloads. Registered post types deserialize their payloads through Facet.
+//! Protocol adapters should query this object rather than reaching into
+//! application subsystems directly.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
@@ -24,6 +25,7 @@ use crate::{
 #[doc(hidden)]
 pub mod http;
 mod message;
+use message::SerializableMessagePoster;
 pub use message::TRANSFORMATION_UPDATE_MESSAGE_TYPE;
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
@@ -103,6 +105,7 @@ pub struct Inspector {
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
 	messages: MessageScope,
+	serializable_messages: HashMap<&'static str, SerializableMessagePoster>,
 	message_bus: MessageBus,
 	message_observer: MessageObserver,
 	#[cfg(feature = "headed")]
@@ -115,7 +118,8 @@ impl Inspector {
 	/// Register the application and world listeners before passing their routes so
 	/// inspector requests cannot be published without a consumer. Attach message
 	/// observation before acquiring any routes in `messages`. Next, call
-	/// [`Self::post_message`] or query [`Self::entities`] from the protocol adapter.
+	/// [`Self::register_message`] for each supported post type before sharing the
+	/// inspector with a protocol adapter.
 	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
 		let message_bus = messages.message_bus().clone();
 		let message_observer = message_bus.observer().unwrap_or_else(|| {
@@ -127,6 +131,7 @@ impl Inspector {
 			events,
 			configuration,
 			messages,
+			serializable_messages: HashMap::new(),
 			message_bus,
 			message_observer,
 			#[cfg(feature = "headed")]

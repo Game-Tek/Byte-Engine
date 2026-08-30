@@ -1,8 +1,6 @@
 {
 	"title": "API",
 	"description": "Byte Engine HTTP and Rust API documentation.",
-	"icon": "Braces",
-	"pagesIndex": "[API](/docs/api/latest)",
 	"pages": ["inspector", "...latest"],
 	"root": true
 }

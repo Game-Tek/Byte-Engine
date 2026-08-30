@@ -2,5 +2,5 @@
 	"title": "Byte Engine",
 	"description": "Byte Engine documentation",
 	"icon": "BookOpen",
-	"pages": ["---Introduction---", "index", "requirements", "get-started", "---Use---", "use", "---Contribute---", "develop", "---Reference---", "reference", "---API---", "api"]
+	"pages": ["---Introduction---", "index", "requirements", "get-started", "---Use---", "use", "---Contribute---", "develop", "---Reference---", "reference", "---[Braces]API---", "...api"]
 }

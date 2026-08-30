@@ -160,11 +160,16 @@ impl Application for GraphicsApplication {
 		let physics_transforms_listener = world.transforms_channel().listener();
 		let renderer_transforms_listener = world.transforms_channel().listener();
 
-		// Reflected posting is enabled only after every future-only transform listener exists.
+		// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
 		let mut inspector = Inspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
 		inspector
 			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
 			.unwrap_or_else(|error| panic!("{error}"));
+		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+			inspector
+				.register_message::<DeleteMessage>(message_type)
+				.unwrap_or_else(|error| panic!("{error}"));
+		}
 		let inspector = EntityHandle::from(inspector);
 		let screenshot_broker = inspector.screenshots();
 		let http_inspector = HttpInspectorServer::new(inspector);
@@ -774,7 +779,9 @@ use crate::{
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	ghi::command_buffer::CommandBufferRecording as _,
 	input::{Action, input_trigger},
-	inspector::{Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, http::HttpInspectorServer},
+	inspector::{
+		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, http::HttpInspectorServer,
+	},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
 		Environment, RenderableMesh, UpdatePose,

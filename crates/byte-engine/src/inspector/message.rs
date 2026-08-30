@@ -1,6 +1,6 @@
 //! Protocol-to-world message posting for runtime debugging tools.
 
-use facet::Facet;
+use facet::{Facet, ScalarType};
 use serde_json::Value;
 
 use super::Inspector;
@@ -10,13 +10,20 @@ pub(super) type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result
 
 /// The stable inspection-protocol name for a transform replacement message.
 pub const TRANSFORMATION_UPDATE_MESSAGE_TYPE: &str = "TransformationUpdate";
+/// The stable inspection-protocol name for a terminal entity deletion.
+pub const DELETE_MESSAGE_TYPE: &str = "Delete";
+/// The alternate inspection-protocol name for a terminal entity deletion.
+pub const DESTROY_MESSAGE_TYPE: &str = "Destroy";
 
 impl Inspector {
 	/// Registers one reflected targeted message for protocol posting.
 	///
 	/// `message_type` becomes the stable protocol `type`, and the reflected shape
 	/// of `M::Payload` defines its JSON payload. Register every supported message
-	/// before sharing the inspector with a protocol server.
+	/// before sharing the inspector with a protocol server. Messages whose
+	/// [`TargetedMessage::ENDS_TARGET_LIFECYCLE`] value is `true` also retire the
+	/// target from entity diagnostics after publication. Reflected unit payloads
+	/// use JSON `null`.
 	pub fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
@@ -41,6 +48,11 @@ impl Inspector {
 		self.serializable_messages.insert(
 			message_type,
 			Box::new(move |target, payload| {
+				if matches!(M::Payload::SHAPE.scalar_type(), Some(ScalarType::Unit)) && !payload.is_null() {
+					return Err(format!(
+						"Inspector message payload is invalid. The most likely cause is that '{message_type}' requires JSON null for its reflected unit shape."
+					));
+				}
 				let json = payload.to_string();
 				let payload = facet_json::from_str::<M::Payload>(&json).map_err(|error| {
 					format!(
@@ -48,6 +60,10 @@ impl Inspector {
 					)
 				})?;
 				channel.send(M::from_handle_and_payload(target, payload));
+				// Terminal posts use the same diagnostic lifecycle as DefaultWorld::delete.
+				if M::ENDS_TARGET_LIFECYCLE {
+					channel.forget_entity(target);
+				}
 				Ok(())
 			}),
 		);
@@ -81,7 +97,14 @@ mod tests {
 	use super::*;
 	use crate::{
 		configuration::Configuration,
-		core::{channel::DefaultChannel, factory::Factory, listener::Listener, message::Message, message_bus::MessageBus},
+		core::{
+			channel::DefaultChannel,
+			factory::Factory,
+			listener::{DefaultListener, Listener},
+			message::{DeleteMessage, Message},
+			message_bus::MessageBus,
+			message_observer::MessageObserver,
+		},
 		gameplay::TransformationUpdate,
 	};
 
@@ -99,6 +122,24 @@ mod tests {
 			.expect("register reflected transformation update");
 
 		(inspector, listener)
+	}
+
+	/// Creates an inspector with both terminal protocol names on the canonical deletion route.
+	fn deletion_inspector() -> (Inspector, DefaultListener<DeleteMessage>, Factory<String>, MessageObserver) {
+		let message_bus = MessageBus::default();
+		let observer = message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("deletion-inspector-test-world");
+		let deletions = messages.channel::<DeleteMessage>();
+		let listener = deletions.listener();
+		let entities = messages.factory::<String>();
+		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+			inspector
+				.register_message::<DeleteMessage>(message_type)
+				.expect("register reflected deletion message");
+		}
+
+		(inspector, listener, entities, observer)
 	}
 
 	#[test]
@@ -125,6 +166,36 @@ mod tests {
 		assert_eq!(update.transform().get_position(), Point::new(1.0, 2.0, 3.0));
 		assert_eq!(update.transform().scale(), Scale::new(2.0, 3.0, 4.0));
 		assert_eq!(update.transform().get_orientation(), Orientation::identity());
+	}
+
+	#[test]
+	fn delete_and_destroy_posts_targeted_deletions_and_retire_entities() {
+		let (inspector, mut deletions, entities, observer) = deletion_inspector();
+		let delete_target = entities.create("delete-target".to_string());
+		let destroy_target = entities.create("destroy-target".to_string());
+		assert_eq!(observer.entities().len(), 2);
+
+		for (message_type, target) in [(DELETE_MESSAGE_TYPE, delete_target), (DESTROY_MESSAGE_TYPE, destroy_target)] {
+			inspector
+				.post_message(message_type, target, &Value::Null)
+				.expect("post reflected deletion");
+			assert_eq!(deletions.read().expect("posted deletion").into_handle(), target);
+			assert!(observer.entities().iter().all(|entity| entity.handle() != target));
+		}
+	}
+
+	#[test]
+	fn invalid_deletion_payloads_neither_publish_nor_retire_the_target() {
+		let (inspector, mut deletions, entities, observer) = deletion_inspector();
+		let target = entities.create("preserved-target".to_string());
+
+		let error = inspector
+			.post_message(DELETE_MESSAGE_TYPE, target, &serde_json::json!({}))
+			.expect_err("reject non-unit deletion payload");
+
+		assert!(error.contains("requires JSON null for its reflected unit shape"));
+		assert!(deletions.read().is_none());
+		assert_eq!(observer.entities()[0].handle(), target);
 	}
 
 	#[test]

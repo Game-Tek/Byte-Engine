@@ -29,7 +29,7 @@ use crate::{
 pub mod http;
 mod message;
 use message::SerializableMessagePoster;
-pub use message::TRANSFORMATION_UPDATE_MESSAGE_TYPE;
+pub use message::{DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
 

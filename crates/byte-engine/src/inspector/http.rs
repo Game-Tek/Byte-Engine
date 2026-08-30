@@ -32,7 +32,9 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `POST /messages` accepts message types registered through
 /// [`Inspector::register_message`]. To move an entity, send a JSON object with
 /// `type: "TransformationUpdate"`, its numeric `target` handle, and the complete
-/// reflected [`Transform`](crate::gameplay::Transform) payload.
+/// reflected [`Transform`](crate::gameplay::Transform) payload. To remove an
+/// entity, send `type: "Delete"` or `type: "Destroy"` with its target and a
+/// reflected unit payload represented by JSON `null`.
 /// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
@@ -381,10 +383,11 @@ mod tests {
 			channel::{Channel as _, DefaultChannel},
 			factory::Handle,
 			listener::{DefaultListener, Listener as _},
+			message::DeleteMessage,
 			message_bus::MessageBus,
 		},
 		gameplay::{Name, TransformationUpdate},
-		inspector::{Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::Screenshot},
+		inspector::{DESTROY_MESSAGE_TYPE, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::Screenshot},
 	};
 
 	/// Creates an inspector with live future-only control and transform listeners.
@@ -628,6 +631,46 @@ mod tests {
 		assert_eq!(update.handle(), target);
 		assert_eq!(update.transform().get_position(), math::Point::new(4.0, 5.0, 6.0));
 		assert_eq!(update.transform().scale(), math::Scale::new(1.0, 2.0, 3.0));
+	}
+
+	#[test]
+	fn server_posts_reflected_destroy_messages_and_retires_the_entity() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("http-destroy-test-world");
+		let mut deletions = messages.channel::<DeleteMessage>().listener();
+		let entities = messages.factory::<String>();
+		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		inspector
+			.register_message::<DeleteMessage>(DESTROY_MESSAGE_TYPE)
+			.expect("register reflected destroy message");
+		let inspector = EntityHandle::from(inspector);
+		let _server = HttpInspectorServer::spawn(inspector.clone(), [address]).expect("start inspector test server");
+		let target = entities.create("temporary".to_string());
+		let body = format!(
+			r#"{{"type":"{DESTROY_MESSAGE_TYPE}","target":{},"payload":null}}"#,
+			target.id()
+		);
+		let request = format!(
+			"POST /messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+			body.len()
+		);
+
+		let mut stream = TcpStream::connect(address).expect("connect to inspector test server");
+		stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		stream.write_all(request.as_bytes()).expect("post inspector destroy message");
+		let mut response = String::new();
+		stream.read_to_string(&mut response).expect("read inspector response");
+
+		assert!(response.starts_with("HTTP/1.1 204"), "unexpected response: {response}");
+		assert_eq!(deletions.read().expect("posted deletion").into_handle(), target);
+		assert!(inspector.entities(None, None).is_empty());
 	}
 
 	#[test]

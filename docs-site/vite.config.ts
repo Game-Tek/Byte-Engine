@@ -12,6 +12,15 @@ export default defineConfig({
 	resolve: {
 		tsconfigPaths: true,
 	},
+	environments: {
+		// Cloudflare uploads this environment as the Worker module graph. Vite
+		// leaves SSR output unminified by default, which exceeds the free limit.
+		ssr: {
+			build: {
+				minify: 'oxc',
+			},
+		},
+	},
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),

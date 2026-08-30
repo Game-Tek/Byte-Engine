@@ -14,13 +14,11 @@ cameras: descriptor<Cameras, 0, read, constant>;
 instances: descriptor<Instances, 1, read, device>;
 
 in_position: input<vec3f, 0>;
-instance_id: input<u32, 1>;
 position: output<vec4f, 0>;
 out_instance_index: output<u32, 0>;
 out_local_position: output<vec3f, 1>;
 
 main: fn () -> void {
-	let instance_index: u32 = instance_id;
 	let transform: mat4x3f = instances.transforms[instance_index];
 	let world_position: vec3f = transform * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
 	position = cameras.cameras[0].view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0);

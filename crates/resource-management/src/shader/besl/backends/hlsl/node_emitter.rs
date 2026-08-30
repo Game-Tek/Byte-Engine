@@ -43,6 +43,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		has_previous_parameter: bool,
 	) {
 		if name != "besl_main" {
+			if self.current_stage == HlslStage::Vertex {
+				self.emit_vertex_builtin_helper_parameters(string, has_previous_parameter);
+			}
 			return;
 		}
 		if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
@@ -81,6 +84,20 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push_str("out indices uint3 besl_triangles[");
 			string.push_str(&self.current_mesh_maximum_primitives.to_string());
 			string.push(']');
+		}
+	}
+	fn emit_function_call_extra_arguments(
+		&mut self,
+		string: &mut String,
+		function: &besl::NodeReference,
+		has_previous_argument: bool,
+	) {
+		if self.current_stage != HlslStage::Vertex {
+			return;
+		}
+		let function = function.borrow();
+		if matches!(function.node(), besl::Nodes::Function { name, .. } if name != "besl_main") {
+			self.emit_vertex_builtin_helper_arguments(string, has_previous_argument);
 		}
 	}
 	fn emit_function_call(

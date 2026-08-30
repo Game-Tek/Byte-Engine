@@ -104,8 +104,10 @@ Use these calls with an `atomicu32` buffer member or workgroup value.
 
 ## Vertex stage
 
-The vertex stage adds no stage-specific intrinsic names. Use the shared
-intrinsics above with the inputs and outputs supplied by the render model.
+The vertex stage adds no stage-specific intrinsic calls. Read the implicit
+`vertex_index` and `instance_index` values described in the
+[shader interface](/docs/reference/besl/interface#vertex-invocation-indices),
+then use the shared intrinsics above as needed.
 
 ## Fragment stage
 

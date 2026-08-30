@@ -335,4 +335,14 @@ impl ExecutableProgram {
 	pub fn builtin_position_layout(&self) -> Option<&BufferLayout> {
 		self.buffer_layout(builtin_position_slot())
 	}
+
+	/// Returns the layout required to bind the implicit `vertex_index` value.
+	pub fn builtin_vertex_index_layout(&self) -> Option<&BufferLayout> {
+		self.buffer_layout(builtin_vertex_index_slot())
+	}
+
+	/// Returns the layout required to bind the implicit `instance_index` value.
+	pub fn builtin_instance_index_layout(&self) -> Option<&BufferLayout> {
+		self.buffer_layout(builtin_instance_index_slot())
+	}
 }

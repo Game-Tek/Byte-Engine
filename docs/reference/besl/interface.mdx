@@ -25,6 +25,32 @@ Add a positive element count when a mesh stage emits per-primitive values:
 out_instance_index: output<u32, 0, 126>;
 ```
 
+## Vertex invocation indices
+
+Vertex shaders can read `vertex_index` and `instance_index` directly. Both are
+implicit `u32` values, so don't declare them as interface inputs or assign
+locations to them:
+
+```rust
+position: output<vec4f, 0>;
+
+main: fn () -> void {
+	let vertex: u32 = vertex_index;
+	let instance: u32 = instance_index;
+	// Use the indices to load vertex and per-instance data.
+}
+```
+
+BESL maps both indices to the matching system values on each backend:
+
+| BESL | Vulkan GLSL | HLSL | MSL |
+| --- | --- | --- | --- |
+| `vertex_index` | `gl_VertexIndex` | `SV_VertexID` | `[[vertex_id]]` |
+| `instance_index` | `gl_InstanceIndex` | `SV_InstanceID` | `[[instance_id]]` |
+
+These values are available only in the vertex stage. In VM tests, bind them
+through `builtin_vertex_index_slot()` and `builtin_instance_index_slot()`.
+
 ## Task payload and workgroup storage
 
 Task and mesh stages can share payload arrays. Task and compute stages can also

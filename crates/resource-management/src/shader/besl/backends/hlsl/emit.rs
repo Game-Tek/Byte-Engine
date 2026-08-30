@@ -200,6 +200,18 @@ impl Generator {
 			}
 			let format = format.borrow();
 			let type_name = Self::translate_type(format.get_name().unwrap());
+			if self.current_stage == HlslStage::Vertex && crate::shader::generator::is_vertex_builtin_input(name) {
+				string.push_str(type_name);
+				string.push(' ');
+				string.push_str(name);
+				string.push_str(match name.as_str() {
+					besl::VERTEX_INDEX_BUILTIN => " : SV_VertexID",
+					besl::INSTANCE_INDEX_BUILTIN => " : SV_InstanceID",
+					_ => unreachable!("Expected a validated vertex builtin"),
+				});
+				has_previous_parameter = true;
+				continue;
+			}
 			if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
 				string.push_str("nointerpolation ");
 			}
@@ -241,6 +253,46 @@ impl Generator {
 			});
 			string.push_str(&location.to_string());
 			has_previous_parameter = true;
+		}
+	}
+
+	/// Adds the vertex invocation indices to helper signatures when the shader uses them.
+	pub(crate) fn emit_vertex_builtin_helper_parameters(&self, string: &mut String, has_previous_parameter: bool) {
+		let mut has_previous_parameter = has_previous_parameter;
+		for input in &self.raster_inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, format, .. } = input.node() else {
+				continue;
+			};
+			if !crate::shader::generator::is_vertex_builtin_input(name) {
+				continue;
+			}
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			has_previous_parameter = true;
+		}
+	}
+
+	/// Forwards the vertex invocation indices through nested BESL helper calls.
+	pub(crate) fn emit_vertex_builtin_helper_arguments(&self, string: &mut String, has_previous_argument: bool) {
+		let mut has_previous_argument = has_previous_argument;
+		for input in &self.raster_inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, .. } = input.node() else {
+				continue;
+			};
+			if !crate::shader::generator::is_vertex_builtin_input(name) {
+				continue;
+			}
+			if has_previous_argument {
+				self.emit_separator(string);
+			}
+			string.push_str(name);
+			has_previous_argument = true;
 		}
 	}
 

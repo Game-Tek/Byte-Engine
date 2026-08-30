@@ -1190,23 +1190,38 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "float3 color;color;out.color=color;return out;");
 	}
 
-	#[test]
-	fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
-		let mut root = besl::Node::root();
-		let u32_type = root.get_child("u32").expect("Expected u32 type");
-		root.add_child(besl::Node::input("vertex_id", u32_type.clone(), 0).into());
-		root.add_child(besl::Node::input("instance_id", u32_type, 1).into());
-
-		let root = besl::compile_to_besl("main: fn () -> void { vertex_id; instance_id; }", Some(root)).unwrap();
+	#[compio::test]
+	async fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
+		let root = besl::compile_to_besl(
+			r#"
+			invocation_sum: fn () -> u32 {
+				return vertex_index + instance_index;
+			}
+			position: output<vec4f, 255>;
+			out_value: output<u32, 0>;
+			main: fn () -> void {
+				position = vec4f(f32(vertex_index), 0.0, 0.0, 1.0);
+				out_value = invocation_sum();
+			}
+			"#,
+			None,
+		)
+		.expect("Expected implicit vertex builtins to link");
 		let main = root.borrow().get_child("main").unwrap();
 		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "struct VertexInput{};");
-		assert_string_contains!(shader, "uint vertex_id [[vertex_id]],uint instance_id [[instance_id]]");
-		assert!(!shader.contains("uint vertex_id=vertex_id;"));
-		assert!(!shader.contains("uint instance_id=instance_id;"));
+		assert_string_contains!(shader, "uint vertex_index [[vertex_id]],uint instance_index [[instance_id]]");
+		assert_string_contains!(shader, "invocation_sum(vertex_index,instance_index)");
+		assert!(!shader.contains("uint vertex_index=vertex_index;"));
+		assert!(!shader.contains("uint instance_index=instance_index;"));
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-vertex-invocation-indices")
+			.await
+			.expect("Expected vertex invocation builtins to compile as native Metal semantics");
 	}
 
 	#[test]

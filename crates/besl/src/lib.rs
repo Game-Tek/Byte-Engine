@@ -22,6 +22,18 @@ pub use lexer::Operators;
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::{BindingTypes, BufferMemoryClass};
 
+/// Names the current vertex invocation's vertex index.
+///
+/// Vertex shaders can read this implicit `u32` value as `vertex_index` without declaring an
+/// interface input. Each graphics backend supplies its native vertex system value.
+pub const VERTEX_INDEX_BUILTIN: &str = "vertex_index";
+
+/// Names the current vertex invocation's instance index.
+///
+/// Vertex shaders can read this implicit `u32` value as `instance_index` without declaring an
+/// interface input. Each graphics backend supplies its native instance system value.
+pub const INSTANCE_INDEX_BUILTIN: &str = "instance_index";
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

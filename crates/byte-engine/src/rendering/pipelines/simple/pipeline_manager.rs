@@ -350,7 +350,9 @@ use crate::{
 
 mod tests {
 
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value, builtin_position_slot, input_slot, output_slot};
+	use besl::vm::{
+		DescriptorBindings, ResourceSlot, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot,
+	};
 	use resource_management::shader::{
 		besl::backends::{hlsl::HLSLTranspiler, msl::MSLTranspiler},
 		generator::ShaderGenerationSettings,
@@ -434,7 +436,7 @@ mod tests {
 
 		let mut input_position = input_buffer(&program, 0);
 
-		let mut input_instance = input_buffer(&program, 1);
+		let mut input_instance = buffer(&program, builtin_instance_index_slot());
 
 		let mut output_position = builtin_position_buffer(&program);
 
@@ -459,7 +461,7 @@ mod tests {
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
 
 		input_instance
-			.write("instance_id", Value::U32(3))
+			.write("instance_index", Value::U32(3))
 			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
 
 		{
@@ -471,7 +473,7 @@ mod tests {
 
 			descriptors.bind_buffer(input_slot(0), &mut input_position);
 
-			descriptors.bind_buffer(input_slot(1), &mut input_instance);
+			descriptors.bind_buffer(builtin_instance_index_slot(), &mut input_instance);
 
 			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
 

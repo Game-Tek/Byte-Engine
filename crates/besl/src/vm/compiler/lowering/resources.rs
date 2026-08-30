@@ -385,8 +385,13 @@ impl<'a> Compiler<'a> {
 				}
 
 				let value_type = resolve_value_type(format)?;
+				let slot = match name.as_str() {
+					crate::VERTEX_INDEX_BUILTIN => builtin_vertex_index_slot(),
+					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
+					_ => input_slot(*location),
+				};
 				(
-					input_slot(*location),
+					slot,
 					BufferLayout {
 						members: vec![BufferMemberLayout {
 							name: input_name.clone(),

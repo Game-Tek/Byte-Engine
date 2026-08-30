@@ -47,6 +47,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
 		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
 		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
 			return Err(());

@@ -272,6 +272,46 @@ mod tests {
 	}
 
 	#[test]
+	fn vertex_invocation_indices_lower_to_vulkan_builtins_inside_helpers() {
+		let root = besl::compile_to_besl(
+			r#"
+			invocation_sum: fn () -> u32 {
+				return vertex_index + instance_index;
+			}
+			out_value: output<u32, 0>;
+			main: fn () -> void {
+				out_value = invocation_sum();
+			}
+			"#,
+			None,
+		)
+		.expect("Expected implicit vertex builtins to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected vertex builtins to lower to GLSL");
+
+		assert_string_contains!(shader, "uint(gl_VertexIndex)");
+		assert_string_contains!(shader, "uint(gl_InstanceIndex)");
+		assert!(!shader.contains("layout(location=254)"));
+		assert!(!shader.contains("layout(location=255)"));
+	}
+
+	#[test]
+	fn vertex_invocation_indices_are_rejected_outside_the_vertex_stage() {
+		let root = besl::compile_to_besl("main: fn () -> void { vertex_index; }", None)
+			.expect("Expected implicit vertex builtin to link");
+		assert!(
+			Generator::new()
+				.generate(
+					&ShaderGenerationSettings::fragment(),
+					&root.get_main().expect("Expected main")
+				)
+				.is_err()
+		);
+	}
+
+	#[test]
 	fn culls_dead_locals_before_glsl_emission() {
 		let root = besl::compile_to_besl(
 			r#"

@@ -264,6 +264,10 @@ impl Node {
 			texture_cube_array.clone(),
 			array_texture_2d.clone(),
 			atomic_u32.clone(),
+			// Vertex invocation indices are implicit BESL values. Their placeholder locations are
+			// never exposed as vertex attributes; backends and the VM map them to dedicated built-ins.
+			Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 1).into(),
+			Node::input(crate::INSTANCE_INDEX_BUILTIN, u32_t.clone(), u8::MAX).into(),
 			builtin_intrinsic(
 				"sample",
 				vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],

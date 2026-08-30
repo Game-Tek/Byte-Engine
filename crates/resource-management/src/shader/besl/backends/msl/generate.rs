@@ -126,6 +126,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		order: &[besl::NodeReference],
 	) -> Result<String, ()> {
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, order)?;
+		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, order)?;
 		let intrinsic_requirements = Self::collect_intrinsic_requirements(order);
 		if intrinsic_requirements.uses_subgroup_intrinsics
 			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })

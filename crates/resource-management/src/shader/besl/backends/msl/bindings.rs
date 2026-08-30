@@ -843,11 +843,27 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
+		let mut has_previous_parameter = has_previous_parameter;
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
 			string.push_str("constant _resources& resources");
+			has_previous_parameter = true;
+		}
+		for (used, name) in [
+			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
+			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
+		] {
+			if !used {
+				continue;
+			}
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("uint ");
+			string.push_str(name);
+			has_previous_parameter = true;
 		}
 	}
 
@@ -920,11 +936,26 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
+		let mut has_previous_parameter = has_previous_parameter;
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
 			string.push_str("resources");
+			has_previous_parameter = true;
+		}
+		for (used, name) in [
+			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
+			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
+		] {
+			if !used {
+				continue;
+			}
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(name);
+			has_previous_parameter = true;
 		}
 	}
 }

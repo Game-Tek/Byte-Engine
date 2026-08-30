@@ -633,6 +633,36 @@ mod tests {
 	}
 
 	#[test]
+	fn vertex_invocation_indices_lower_to_system_semantics_and_reach_helpers() {
+		let root = besl::compile_to_besl(
+			r#"
+			invocation_sum: fn () -> u32 {
+				return vertex_index + instance_index;
+			}
+			out_value: output<u32, 0>;
+			main: fn () -> void {
+				out_value = invocation_sum();
+			}
+			"#,
+			None,
+		)
+		.expect("Expected implicit vertex builtins to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected vertex builtins to lower to HLSL");
+
+		assert_string_contains!(shader, "vertex_index : SV_VertexID");
+		assert_string_contains!(shader, "instance_index : SV_InstanceID");
+		assert_string_contains!(shader, "uint32_t invocation_sum(");
+		assert_string_contains!(shader, "out_value=invocation_sum(");
+		assert_eq!(shader.matches("vertex_index").count(), 4);
+		assert_eq!(shader.matches("instance_index").count(), 4);
+		assert_string_does_not_contain!(shader, "vertex_index : TEXCOORD");
+		assert_string_does_not_contain!(shader, "instance_index : TEXCOORD");
+	}
+
+	#[test]
 	fn output() {
 		let main = generator::tests::output();
 

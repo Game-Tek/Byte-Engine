@@ -15,9 +15,9 @@ use crate::shader::generator::{
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
-/// Raster-stage IO uses conventional BESL names for Metal semantics. Vertex inputs named
-/// `vertex_id` and `instance_id` are emitted as entry-point parameters with `[[vertex_id]]` and
-/// `[[instance_id]]` instead of vertex-attribute struct fields. Fragment inputs named
+/// Raster-stage IO uses conventional BESL names for Metal semantics. The implicit vertex values
+/// `vertex_index` and `instance_index` are emitted as entry-point parameters with `[[vertex_id]]`
+/// and `[[instance_id]]` instead of vertex-attribute struct fields. Fragment inputs named
 /// `front_facing` are emitted as a `[[front_facing]]` entry-point parameter. Fragment outputs named
 /// `depth`, `stencil`, and `sample_mask` are emitted with their matching Metal attributes; other
 /// fragment outputs are emitted as color attachments by location. Fragment shaders may also return
@@ -103,6 +103,14 @@ pub(crate) struct ComputeStageContext {
 #[derive(Clone, Debug)]
 pub(crate) struct RasterStageContext {
 	pub(crate) has_resources: bool,
+	pub(crate) has_vertex_index: bool,
+	pub(crate) has_instance_index: bool,
+}
+
+impl RasterStageContext {
+	pub(crate) fn has_vertex_builtins(&self) -> bool {
+		self.has_vertex_index || self.has_instance_index
+	}
 }
 
 /// The `IntrinsicRequirements` struct records the generated helpers and Metal builtins a shader needs.

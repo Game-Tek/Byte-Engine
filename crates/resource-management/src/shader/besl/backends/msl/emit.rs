@@ -31,7 +31,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			if uses_simd_lane_id || self.function_requires_resource_context(function_node, true) {
 				self.emit_compute_hidden_parameters(string, !params.is_empty(), uses_simd_lane_id);
 			}
-		} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false) {
+		} else if self
+			.raster_stage_context
+			.as_ref()
+			.is_some_and(|context| context.has_vertex_builtins())
+			|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false)
+		{
 			self.emit_raster_hidden_parameters(string, !params.is_empty());
 		}
 

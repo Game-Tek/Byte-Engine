@@ -2,7 +2,8 @@
 
 use super::{
 	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler, SamplerReductionMode,
-	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, f16, input_slot, output_slot, reflect_vector,
+	SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState, builtin_instance_index_slot,
+	builtin_vertex_index_slot, f16, input_slot, output_slot, reflect_vector,
 };
 use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_to_besl};
 
@@ -1398,6 +1399,42 @@ fn executable_program_reads_vertex_shader_input_interfaces() {
 		output.read("out_color").expect("Expected output value"),
 		Value::Vec4F([0.1, 0.2, 0.3, 1.0])
 	);
+}
+
+#[test]
+fn executable_program_reads_implicit_vertex_invocation_indices() {
+	let script = r#"
+	out_vertex_index: output<u32, 0>;
+	out_instance_index: output<u32, 1>;
+	main: fn () -> void {
+		out_vertex_index = vertex_index;
+		out_instance_index = instance_index;
+	}
+	"#;
+
+	let executable = compile_test_program(script, None);
+	let mut vertex_index = buffer_for_slot(&executable, builtin_vertex_index_slot());
+	let mut instance_index = buffer_for_slot(&executable, builtin_instance_index_slot());
+	let mut out_vertex_index = interface_buffer_for_output(&executable, 0);
+	let mut out_instance_index = interface_buffer_for_output(&executable, 1);
+	vertex_index
+		.write("vertex_index", Value::U32(17))
+		.expect("Expected vertex index write to succeed");
+	instance_index
+		.write("instance_index", Value::U32(23))
+		.expect("Expected instance index write to succeed");
+
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(builtin_vertex_index_slot(), &mut vertex_index);
+		descriptors.bind_buffer(builtin_instance_index_slot(), &mut instance_index);
+		descriptors.bind_buffer(output_slot(0), &mut out_vertex_index);
+		descriptors.bind_buffer(output_slot(1), &mut out_instance_index);
+		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	}
+
+	assert_eq!(out_vertex_index.read("out_vertex_index"), Ok(Value::U32(17)));
+	assert_eq!(out_instance_index.read("out_instance_index"), Ok(Value::U32(23)));
 }
 
 #[test]

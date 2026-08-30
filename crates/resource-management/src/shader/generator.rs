@@ -204,6 +204,25 @@ pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::No
 	}
 }
 
+/// Reports whether a BESL input is one of the implicit vertex invocation indices.
+pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
+	matches!(name, besl::VERTEX_INDEX_BUILTIN | besl::INSTANCE_INDEX_BUILTIN)
+}
+
+/// Rejects vertex invocation indices outside the vertex stage or with a non-`u32` representation.
+pub(crate) fn validate_vertex_builtin_inputs(stage: &Stages, order: &[besl::NodeReference]) -> Result<(), ()> {
+	for node in order {
+		let node = node.borrow();
+		let besl::Nodes::Input { name, format, .. } = node.node() else {
+			continue;
+		};
+		if is_vertex_builtin_input(name) && (!matches!(stage, Stages::Vertex) || format.borrow().get_name() != Some("u32")) {
+			return Err(());
+		}
+	}
+	Ok(())
+}
+
 /// Returns the reachable non-leaf shader nodes in emission order using the provided allocator for transient graph storage.
 pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 	main_function_node: &besl::NodeReference,

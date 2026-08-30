@@ -30,6 +30,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
 		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
 		let uses_f16_types = Self::uses_f16_types(&order);
 		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
@@ -669,6 +670,9 @@ impl Generator {
 			}
 			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
+				if crate::shader::generator::is_vertex_builtin_input(name) {
+					return;
+				}
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				string.push_str(&format!(
@@ -852,6 +856,21 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		elements: &[besl::NodeReference],
 	) {
 		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
+	}
+	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
+		let source = source.borrow();
+		let besl::Nodes::Input { name: input_name, .. } = source.node() else {
+			return false;
+		};
+		if name != input_name {
+			return false;
+		}
+		match name {
+			besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
+			besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
+			_ => return false,
+		}
+		true
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
 		self.emit_node_string(string, left);

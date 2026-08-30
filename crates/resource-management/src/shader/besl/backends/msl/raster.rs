@@ -37,6 +37,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_vertex_output_struct(string, &nodes.outputs);
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_vertex_index: nodes.inputs.iter().any(
+				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN),
+			),
+			has_instance_index: nodes.inputs.iter().any(
+				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
+			),
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -211,6 +217,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_vertex_index: false,
+			has_instance_index: false,
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -331,17 +339,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("(VertexInput in [[stage_in]]");
 		if inputs
 			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "vertex_id"))
+			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN))
 		{
 			self.emit_separator(string);
-			string.push_str("uint vertex_id [[vertex_id]]");
+			string.push_str("uint vertex_index [[vertex_id]]");
 		}
-		if inputs
-			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "instance_id"))
-		{
+		if inputs.iter().any(
+			|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
+		) {
 			self.emit_separator(string);
-			string.push_str("uint instance_id [[instance_id]]");
+			string.push_str("uint instance_index [[instance_id]]");
 		}
 		if has_resources {
 			self.emit_separator(string);
@@ -356,7 +363,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			string,
 			inputs,
 			"in",
-			&[("vertex_id", "vertex_id"), ("instance_id", "instance_id")],
+			&[
+				(besl::VERTEX_INDEX_BUILTIN, besl::VERTEX_INDEX_BUILTIN),
+				(besl::INSTANCE_INDEX_BUILTIN, besl::INSTANCE_INDEX_BUILTIN),
+			],
 			1,
 		);
 		formatting.push_indentation(string, 1);
@@ -446,7 +456,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
-		matches!(name, "vertex_id" | "instance_id")
+		crate::shader::generator::is_vertex_builtin_input(name)
 	}
 
 	pub(crate) fn is_fragment_builtin_input(name: &str) -> bool {

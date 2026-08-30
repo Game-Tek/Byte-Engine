@@ -18,7 +18,8 @@ pub use error::VmError;
 pub use half::f16;
 use instruction::*;
 pub use layout::{
-	BufferLayout, BufferMemberLayout, DescriptorLayout, ResourceSlot, ValueType, builtin_position_slot, input_slot, output_slot,
+	BufferLayout, BufferMemberLayout, DescriptorLayout, ResourceSlot, ValueType, builtin_instance_index_slot,
+	builtin_position_slot, builtin_vertex_index_slot, input_slot, output_slot,
 };
 use layout::{PUSH_CONSTANT_SLOT, dynamic_resource_slot};
 use program::{ExecutableFunction, ExecutionFrame, ExecutionState};

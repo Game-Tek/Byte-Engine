@@ -240,7 +240,9 @@ function ApiNavigationName({ name, kind }: { name: string; kind: string }) {
 	return (
 		<span className="be-api-navigation-name">
 			<span>{name}</span>
-			<span className="be-api-navigation-kind">{kind}</span>
+			<span className="be-api-navigation-kind" data-kind={kind}>
+				{kind}
+			</span>
 		</span>
 	);
 }

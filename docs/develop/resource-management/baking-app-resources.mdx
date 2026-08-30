@@ -65,7 +65,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   --memory-budget-mib 4096
 ```
 
-BELD pauses new independent work when the budget is full, while active bakes and their dependencies continue until they release memory. One large asset can temporarily exceed the budget. See [Control bake memory](/docs/develop/design/resource-management/beld#control-bake-memory) for sizing guidance and the deadlock-safety reason for using a soft limit.
+BELD pauses new independent work when the budget is full, while active bakes and their dependencies continue until they release memory. One large asset can temporarily exceed the budget. See [Control bake memory](/docs/develop/resource-management/beld#control-bake-memory) for sizing guidance and the deadlock-safety reason for using a soft limit.
 
 Use explicit IDs when a container fragment is required. Quote an ID containing a fragment so the shell preserves it:
 

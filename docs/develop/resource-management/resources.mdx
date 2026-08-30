@@ -1,0 +1,131 @@
+---
+title: Resource storage and loading
+description: Work with Byte Engine's stored resource format and payload-reading APIs.
+icon: PackageCheck
+---
+
+Use this page when you change the resource-storage contracts, ReDB
+implementation, or payload-reading APIs. Read the
+[resource-management reference](/docs/reference/resource-management) first if
+you need the high-level resource model.
+
+Each resource exposed by a backend has two parts:
+
+- metadata, represented by `SerializableResource`
+- binary payload bytes, exposed through a resource reader
+
+The metadata contains the public ID, hashed UID, resource class, decoded and stored binary sizes, content hash, payload encoding, serialized typed model, optional stream descriptions, and queryable properties.
+The binary payload contains the actual bytes consumed by a renderer, audio system, or other runtime system.
+
+## Typed references
+
+`ResourceManager::request<T>().await` returns a typed `Reference<T>`.
+The reference contains the typed resource metadata and a reader for the payload.
+
+For example, a material reference resolves shader references and parameter resources.
+A mesh reference resolves primitive materials and exposes stream descriptions for packed vertex and index data.
+
+## Resource storage backends
+
+A resource storage backend connects resource producers and consumers to stored
+metadata and payloads. The contract defines resource operations without
+prescribing a database, directory layout, or reader backing.
+
+The resource module separates that contract by capability:
+
+- `ReadStorageBackend` lists, reads, and queries resources. A read returns
+  serialized metadata and a reader for the decoded payload.
+- `WriteStorageBackend` clears or deletes resources and provides complete and
+  incremental authoring paths.
+- `StorageBackend` composes both capabilities for a `ResourceManager`.
+- The `Dyn*StorageBackend` traits provide the same boundaries when the
+  implementation is selected at runtime.
+
+Backend implementations decide how to map resource IDs to storage, publish
+metadata and payloads, support queries, and provide reader-owned backing. Code
+that uses the contracts must not assume that a backend uses ReDB, files, memory
+mapping, or any other physical layout.
+
+<Callout type="info" title="Asset storage is a separate boundary">
+	`asset::StorageBackend` resolves and versions authored source assets.
+	`resource::StorageBackend` stores the resources produced from those assets.
+</Callout>
+
+Every model exposes at least a `name` queryable property by default. Specific
+models can add properties as editor and tooling needs grow. A backend can choose
+how it evaluates those queries as long as it preserves the query contract.
+
+## Payload authoring and encoding
+
+The default complete-payload authoring path uses CPU LZ4 compression. It keeps a payload uncompressed when it is smaller than 1 KiB, compression would not save more than 12.5 percent, or the temporary compression output cannot be prepared safely. Set `ProcessedAsset::with_compression(ResourceCompressionPolicy::Disabled)` when one resource must remain uncompressed. A backend can override the CPU compression policy when it needs another transport path.
+
+The resource hash always identifies decoded bytes, so changing the storage encoding does not change resource identity. Each resource stores one `encoding`: `raw`, `cpu-lz4`, or `metal-io-lz4`. CPU and GPU encodings are mutually exclusive by construction. Inspect `encoding`, `size`, and `stored_size` when you need to distinguish the client-facing payload from its physical extent.
+
+Only complete payload store calls apply CPU compression. A `ResourceTransaction` created with `begin_resource` stays uncompressed because its bytes can arrive through partial writes.
+
+## ReDB storage backend
+
+`ReDBStorageBackend` is Byte Engine's persistent resource-storage
+implementation. It stores metadata in `resources.db` and supports two payload
+layouts:
+
+- `files` stores each resource payload in a separate extensionless file named from its resource ID, decoded hash, and encoding. This mode is the default. Read the resource's persisted `encoding` to interpret the file contents.
+- `packed` stores every payload in a reusable range of `resources.pack` and records each resource offset in `resources.db`.
+
+One mode applies to the whole ReDB resource store. The implementation records
+that mode when it creates the store and discovers it when the store is reopened.
+It rejects a conflicting mode instead of mixing payload layouts.
+
+`ResourceStorageSettings` can also select native Metal I/O LZ4 transport for
+compatible textures in file mode. The per-resource CPU policy and this ReDB
+store setting select the final payload encoding; they are not additional
+resource state.
+
+Packed replacements use copy-on-write publication so an interrupted bake cannot replace valid metadata with partial bytes. After publication, the backend reuses the old range when no mapped reader still owns it. Deletion also returns its range. The allocator merges adjacent free ranges, chooses the smallest range that fits, and grows `resources.pack` only when no free range is large enough. When you reopen the store, it reconstructs free ranges from the live offsets in `resources.db`, which also recovers space left by an interrupted bake.
+
+Use one ReDB backend instance for a resource directory while it can be updated.
+Drop read-only ReDB backends and their mapped resource backings before reopening
+the directory for writing.
+
+Repeated rebuilds with changing payload sizes can split free space into many small ranges. The backend warns you when a pack of at least 64 MiB has at least 32 free ranges, at least 25 percent of the file is free, and no single range holds half of that free space. Delete the resource directory and [bake the application resources again](/docs/develop/resource-management/baking-app-resources) when you see this warning.
+
+The ReDB implementation converts resource URLs into stable resource IDs for
+storage lookup. It maintains class and property indexes so BELD and editor tools
+can query resources without scanning and deserializing every entry.
+
+## Streams
+
+Some resources contain multiple logical byte ranges in one payload.
+Meshes are the common example: positions, normals, UVs, triangle indices, meshlet data, and other streams can live in one packed buffer.
+
+`StreamDescription` names those byte ranges. Provide stream read targets when you
+need selected streams instead of the complete payload.
+
+## Loading bytes
+
+The default load path requests backing storage from the reader. A backend can
+provide any reader-owned backing that satisfies that contract. For example, the
+ReDB file layout can provide a mapped file. Use an explicit buffer, boxed buffer,
+or stream target when you need ownership or preallocated memory.
+
+Use the default target when the consumer can borrow the backing storage directly.
+Use explicit targets when the consumer needs a specific allocation, lifetime, or stream layout.
+
+A CPU-compressed resource is always decoded before a client receives it. Load it into either an exact buffer sized to `Reference::size` or reader-owned backing storage. Partial ranges and separate stream targets are unavailable for one compressed block. If you need named ranges, load reader-owned backing storage first, then use the resource's `StreamDescription` values to select ranges from the decoded bytes.
+
+## Rust API
+
+- [`ResourceManager`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/resource_manager/struct.ResourceManager.html)
+- [`Reference`](https://docs.rs/byte-engine-resource-management/latest/resource_management/reference/struct.Reference.html)
+- [`resource::ReadStorageBackend`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/trait.ReadStorageBackend.html)
+- [`resource::WriteStorageBackend`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/trait.WriteStorageBackend.html)
+- [`resource::StorageBackend`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/trait.StorageBackend.html)
+- [`asset::StorageBackend`](https://docs.rs/byte-engine-resource-management/latest/resource_management/asset/storage_backend/trait.StorageBackend.html)
+- [`ReDBStorageBackend`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/redb/struct.ReDBStorageBackend.html)
+- [`ResourceStorageMode`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/redb/enum.ResourceStorageMode.html)
+- [`ResourceStorageSettings`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/storage_backend/redb/struct.ResourceStorageSettings.html)
+- [`StreamDescription`](https://docs.rs/byte-engine-resource-management/latest/resource_management/struct.StreamDescription.html)
+- [`ReadTargetsMut`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/read_target/enum.ReadTargetsMut.html)
+- [`ResourceCompressionPolicy`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourceCompressionPolicy.html)
+- [`ResourcePayloadEncoding`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourcePayloadEncoding.html)
+- [`ResourceGpuCompressionPolicy`](https://docs.rs/byte-engine-resource-management/latest/resource_management/resource/enum.ResourceGpuCompressionPolicy.html)

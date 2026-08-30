@@ -1,0 +1,238 @@
+---
+title: Language
+description: Declare BESL types, values, functions, expressions, and control flow.
+icon: Braces
+---
+
+Use BESL declarations and statements to build the semantic program that Byte
+Engine validates and generates for each shader backend. BESL uses explicit
+types and `//` line comments.
+
+```rust
+// Values and return types are always explicit.
+scale: fn (value: f32, factor: f32) -> f32 {
+	return value * factor;
+}
+```
+
+## Built-in types
+
+These are the built-in value types available to authored BESL:
+
+| Category | Types | Use |
+| --- | --- | --- |
+| Control | `void` | A function that doesn't return a value. |
+| Boolean | `bool` | Conditions and the literals `true` and `false`. |
+| Unsigned integers | `u8`, `u16`, `u32` | Integer data and indices. Most arithmetic intrinsics use `u32`. |
+| Signed integers | `i32` | Signed integer data and arithmetic. |
+| Floating point | `f16`, `f32` | Half- and single-precision values. |
+| Atomic | `atomicu32` | Atomic unsigned storage in a buffer or workgroup value. Access it through atomic intrinsics. |
+| Unsigned vectors | `vec2u16`, `vec4u16`, `vec2u`, `vec3u`, `vec4u` | Packed unsigned values, coordinates, indices, and subgroup masks. |
+| Signed vectors | `vec2i` | Two signed integer values. |
+| Half vectors | `vec2f16`, `vec3f16`, `vec4f16` | Two, three, or four half-precision values. |
+| Float vectors | `vec2f`, `vec3f`, `vec4f` | Two, three, or four single-precision values. |
+| Packed float vector | `packed_vec4f` | Four `f32` values with scalar alignment in stored records. Convert it to `vec4f` before arithmetic. |
+| Matrices | `mat4f`, `mat4x3f` | Four-by-four and four-column-by-three-row single-precision matrices. |
+
+User-declared structs and fixed-size arrays are also types. Resource handle
+types are listed with [descriptors](/docs/reference/besl/interface#descriptors).
+
+## Structs
+
+Declare a struct with `Name: struct`. Members use `name: Type` and a trailing
+comma.
+
+```rust
+Light: struct {
+	position: vec3f,
+	color: vec3f,
+	intensity: f32,
+}
+```
+
+## Arrays
+
+BESL arrays have a fixed element type and count. Write the type as
+`ElementType[COUNT]`. You can use array types for constants, local variables,
+struct members, function parameters, and function return values.
+
+### Declare and construct an array
+
+Call the array type with one value for each element:
+
+```rust
+let indices: u32[3] = u32[3](4, 8, 15);
+```
+
+Declare a module-level constant array in the same way:
+
+```rust
+WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+```
+
+### Read an array element
+
+Index an array with brackets. Use a `u32` value for a dynamic index:
+
+```rust
+let indices: u32[3] = u32[3](4, 8, 15);
+let first: u32 = indices[0];
+
+let weight_index: u32 = 2;
+let selected_weight: f32 = WEIGHTS[weight_index];
+```
+
+The count is part of the array type. BESL doesn't provide an array-length
+intrinsic, so use the declared count as the loop bound:
+
+```rust
+let total: f32 = 0.0;
+for (let i: u32 = 0; i < 3; i = i + 1) {
+	total = total + WEIGHTS[i];
+}
+```
+
+### Write an array element
+
+Assign through an indexed buffer member, workgroup array, task payload, or mesh
+output array. The resource must allow writes.
+
+```rust
+Counters: struct {
+	values: u32[8],
+}
+
+counters: descriptor<Counters, 0, read_write, device>;
+
+main: fn () -> void {
+	let index: u32 = 2;
+	counters.values[index] = 7;
+}
+```
+
+### Pass and return arrays
+
+Function parameters and return values support compact scalar arrays with two
+through four `f32`, `u16`, or `u32` elements. The array type, including its
+count, must match at the call boundary.
+
+```rust
+copy_indices: fn (indices: u32[3]) -> u32[3] {
+	return indices;
+}
+
+main: fn () -> void {
+	let copied: u32[3] = copy_indices(u32[3](4, 8, 15));
+	let middle: u32 = copied[1];
+}
+```
+
+BESL lowers these compact arrays to native vectors on backends that can't pass
+or return arrays directly.
+
+Value arrays such as `u32[3]`, arrays of resource descriptors, and layered
+textures such as `Texture2DArray` are separate concepts. See
+[Descriptors](/docs/reference/besl/interface#descriptors) for resource arrays.
+
+## Constants
+
+Declare a module-level constant when a value is known at compile time:
+
+```rust
+MAX_LIGHTS: const u32 = 64;
+```
+
+## Functions
+
+Declare a function with `name: fn`, typed parameters, and an explicit return
+type:
+
+```rust
+mod_by_16: fn (x: i32) -> i32 {
+	return x % 16;
+}
+```
+
+Standalone shaders require `main`. It becomes the stage entry point after any
+render-model transformation.
+
+```rust
+main: fn () -> void {
+	return;
+}
+```
+
+## Variables and expressions
+
+Declare a typed local variable with `let`:
+
+```rust
+let color: vec4f = vec4f(1.0, 0.0, 1.0, 1.0);
+```
+
+BESL expressions include literals, grouped expressions, function and intrinsic
+calls, constructors, assignments, and member access:
+
+```rust
+let scaled: f32 = (value + bias) * factor;
+output.color = material.color;
+```
+
+Numeric literals contain digits and an optional decimal point. They don't use
+type suffixes or scientific notation. BESL has no unary operators, so write a
+negative value as a subtraction, such as `0.0 - 1.6`.
+
+Construct vectors, matrices, structs, and arrays by calling the type name. Use
+the conversion calls listed under [constructors and casts](/docs/reference/besl/intrinsics#constructors-and-casts)
+when the source and destination types differ.
+
+## Half-precision floats
+
+Use `f16`, `vec2f16`, `vec3f16`, and `vec4f16` when a value can tolerate
+16-bit floating-point precision. Arithmetic between matching half-precision
+values stays half precision.
+
+```rust
+let uv32: vec2f = vec2f(0.25, 0.75);
+let uv16: vec2f16 = vec2f16(uv32);
+let sampled_uv: vec2f = vec2f(uv16);
+let weight16: f16 = f16(0.5);
+let weight32: f32 = f32(weight16);
+```
+
+Texture intrinsics use `vec2f` or `vec3f` coordinates. Convert half-precision
+coordinates at the sampling boundary.
+
+Generated GLSL requires `GL_EXT_shader_explicit_arithmetic_types_float16` when
+half types are used. Choose them only for targets that support native 16-bit
+floating-point arithmetic.
+
+## Control flow
+
+Use `if`, C-style `for`, `return`, and `continue` to control program flow. Use
+`discard` to stop a fragment invocation without producing its normal outputs.
+
+```rust
+main: fn () -> void {
+	for (let i: u32 = 0; i < 4; i = i + 1) {
+		if (i >= 2) {
+			continue;
+		}
+	}
+	return;
+}
+```
+
+BESL doesn't currently have `else`, `break`, `while`, or unary operators.
+
+| Operation | Operators |
+| --- | --- |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` |
+| Shift | `<<`, `>>` |
+| Bitwise | `&`, `|` |
+| Assignment | `=` |
+| Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
+| Logical | `&&`, `||` |
+
+Next, [declare the shader interface](/docs/reference/besl/interface) that connects
+the program to its stage and resources.

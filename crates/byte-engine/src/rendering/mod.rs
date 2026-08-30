@@ -40,8 +40,6 @@ mod pipeline_compilation;
 #[doc(hidden)]
 pub mod pipeline_manager;
 mod pose;
-#[doc(hidden)]
-pub mod world_render_domain;
 
 #[doc(hidden)]
 pub mod renderer;

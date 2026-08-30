@@ -1,5 +1,5 @@
 ---
-title: Input handling
+title: Input
 description: Connect input devices and triggers to application actions.
 icon: Gamepad2
 ---
@@ -91,6 +91,24 @@ That default path installs the standard mouse, keyboard, and gamepad names used 
 ## Value mapping
 
 Bindings can map a trigger value into the action's output type.
+
+Byte Engine doesn't support a general cast between every input value type. The
+following table lists the conversions that action bindings currently support:
+
+| Trigger value | Supported action values | Conversion |
+| --- | --- | --- |
+| Boolean | Boolean, Float, Vector2, Vector3 | A Boolean value passes through unchanged. For a Float action, the binding supplies the scalar value used while the trigger is active. For a Vector2 or Vector3 action, Byte Engine adds the mapped direction from each active Boolean binding, then normalizes the result. |
+| Unicode | Unicode | The character passes through unchanged. |
+| Float | Boolean, Float | `0.0` becomes `false`, and any other value becomes `true`. A Float value passes through unchanged. |
+| Integer | None | Action bindings don't currently convert integer trigger values. |
+| Vector2 | Vector2, Vector3 | A Vector2 value passes through unchanged. A Vector3 action can use `Function::Sphere` to map the two components to a 3D direction and apply the binding's mapped Vector3 transformation. |
+| Vector3 | Vector2, Vector3 | Converting to Vector2 keeps `x` and `y` and drops `z`. A Vector3 value passes through unchanged. |
+| Quaternion | None | Action bindings don't currently convert quaternion trigger values. |
+| RGBA | None | Action bindings don't currently convert color trigger values. |
+
+These rules apply when the input manager resolves device triggers through action
+bindings. A manually triggered action must receive a value whose type already
+matches the action type.
 
 For movement, boolean key triggers can map to direction vectors.
 When multiple movement keys are active, the input resolver combines the active mappings and normalizes the result.

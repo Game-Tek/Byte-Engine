@@ -1,0 +1,59 @@
+---
+title: BESL language reference
+description: Write portable Byte Engine shaders with BESL.
+---
+
+Use the Byte Engine Shader Language (BESL) to write shader source that works with
+the material pipeline, resource reflection, render-model generation, and platform
+shader generation.
+
+BESL uses Rust-inspired syntax, but it is a separate language. Byte Engine parses
+the source, resolves it into a semantic graph, applies render-model
+transformations, and emits code for the active graphics backend.
+
+<Callout type="info" title="Check backend support">
+	Byte Engine generates GLSL, HLSL, and MSL. Most BESL is portable, but task
+	stages, image atomics, subgroup operations, and half precision have specific
+	backend or stage requirements. See [stage and backend support](/docs/reference/besl/interface#stage-and-backend-support).
+</Callout>
+
+## Create a BESL file
+
+A BESL file contains declarations for structs, constants, resource bindings,
+interface inputs and outputs, helper functions, and a `main` function.
+
+```rust
+VertexInput: struct {
+	position: vec3f,
+	normal: vec3f,
+	uv: vec2f,
+}
+
+albedo: descriptor<Texture2D, 0, read>;
+
+uv: input<vec2f, 0>;
+color: output<vec4f, 0>;
+
+main: fn () -> void {
+	let texel: vec4f = sample(albedo, uv);
+	color = texel;
+}
+```
+
+The parser records the source structure. The lexer then resolves names, types,
+members, intrinsics, and references.
+
+## Use this reference
+
+- [Language](/docs/reference/besl/language) covers declarations, values, and control flow.
+- [Interface](/docs/reference/besl/interface) covers stage inputs, outputs, descriptors, shared storage, and stage metadata.
+- [Intrinsics](/docs/reference/besl/intrinsics) lists built-in math, texture, image, atomic, compute, task, and mesh operations.
+- [Compilation and reflection](/docs/reference/besl/compilation) explains the semantic graph, optimization, generated extensions, reflection, and the VM.
+
+## Rust API
+
+- [`besl` crate](https://docs.rs/byte-engine-besl/latest/besl/)
+- [`parse`](https://docs.rs/byte-engine-besl/latest/besl/fn.parse.html)
+- [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
+- [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
+- [`vm` module](https://docs.rs/byte-engine-besl/latest/besl/vm/)

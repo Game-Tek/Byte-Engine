@@ -31,7 +31,7 @@ The caller receives a resource tree that is already connected through typed refe
 
 ## Cache invalidation
 
-The Redb storage backend writes a `.resource-management-version` marker in the resources directory.
+The ReDB storage backend writes a `.resource-management-version` marker in the resources directory.
 That marker is derived from the resource-management code hash.
 When the signature changes, the backend deletes stale resources so old processed data does not silently survive processor changes.
 Release applications open a matching store without writing to it.

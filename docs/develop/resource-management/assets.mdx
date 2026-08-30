@@ -1,21 +1,13 @@
 ---
-title: Assets
-description: Prepare source files for Byte Engine's asset pipeline.
+title: Asset processing
+description: Implement and debug Byte Engine asset handlers and source formats.
 icon: Boxes
 ---
 
-Use assets as the source files for your project. You or your content tools author
-these files; Byte Engine processes them before runtime use.
-
-Common assets include:
-
-- PNG textures
-- glTF or GLB models
-- FBX models
-- WAV and OGG audio
-- LUT files
-- `.bema` material and variant declarations
-- standalone BESL shader source files and BESL files referenced by materials
+Use this page when you add a source format, change an asset handler, or diagnose
+the data that a handler produces. Read the
+[resource-management reference](/docs/reference/resource-management) first if
+you need the distinction between assets and resources.
 
 Asset IDs are written as resource-style paths.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
@@ -136,10 +128,6 @@ FBX animation stacks are baked through the format's pivot, layer, and rotation-o
 - `character.fbx#animation` selects the first animation stack.
 - `character.fbx#animations/0` selects a stack by zero-based index.
 - `character.fbx#animations/Walk` selects a stack by exact name.
-
-The processed result is more explicit than the source asset. A renderer does not
-need to reopen a PNG to find its dimensions or parse glTF again to find vertex
-streams.
 
 ## Rust API
 

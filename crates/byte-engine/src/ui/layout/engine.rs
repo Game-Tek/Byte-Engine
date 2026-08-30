@@ -6,7 +6,7 @@
 /// Create an engine with [`Self::new`] or [`Self::with_context`], mount the root
 /// component with [`Self::mount`], then call [`Self::evaluate`] and
 /// [`Self::render`] for each frame.
-/// See the [UI guide](https://byte-engine.0x44491229.dev/docs/develop/design/ui)
+/// See the [GUI guide](https://byte-engine.0x44491229.dev/docs/develop/ui)
 /// for component, event, focus, and render-pass integration.
 pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,

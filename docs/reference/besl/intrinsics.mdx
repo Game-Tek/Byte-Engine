@@ -1,0 +1,169 @@
+---
+title: Intrinsics
+description: Find BESL intrinsic names, signatures, stage availability, and behavior.
+icon: SquareFunction
+---
+
+Intrinsics are typed built-in calls that Byte Engine lowers to platform code.
+The overloads are intentionally narrow. Use one of the signatures listed here
+instead of assuming that a native shading-language overload is available.
+
+## Shared intrinsics
+
+BESL doesn't restrict the intrinsics in this section to one shader stage. The
+target language and device must still support the operation in the stage where
+you use it.
+
+### Math
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `min` | `min(f16, f16) -> f16`; `min(f32, f32) -> f32` | Returns the smaller argument. |
+| `max` | `max(f16, f16) -> f16`; `max(f32, f32) -> f32`; `max(vec2f, vec2f) -> vec2f`; `max(vec3f, vec3f) -> vec3f` | Returns the component-wise larger argument. |
+| `clamp` | `clamp(f16, f16, f16) -> f16`; `clamp(f32, f32, f32) -> f32`; `clamp(vec3f, vec3f, vec3f) -> vec3f` | Limits the first argument to the inclusive minimum and maximum. |
+| `log2` | `log2(vec3f) -> vec3f` | Returns the component-wise base-2 logarithm. |
+| `pow` | `pow(f16, f16) -> f16`; `pow(f32, f32) -> f32`; `pow(vec3f, vec3f) -> vec3f` | Raises each value to its matching exponent. |
+| `abs` | `abs(f16) -> f16`; `abs(f32) -> f32`; `abs(vec2f16) -> vec2f16`; `abs(vec2f) -> vec2f` | Returns the absolute value. |
+| `sqrt` | `sqrt(f16) -> f16`; `sqrt(f32) -> f32` | Returns the square root. |
+| `exp` | `exp(f32) -> f32`; `exp(vec3f) -> vec3f` | Returns the natural exponential. |
+| `sin` | `sin(f32) -> f32` | Returns the sine of an angle in radians. |
+| `cos` | `cos(f32) -> f32` | Returns the cosine of an angle in radians. |
+| `asin` | `asin(f32) -> f32` | Returns the inverse sine in radians. |
+| `atan2` | `atan2(f32 y, f32 x) -> f32` | Returns the quadrant-aware angle of `y / x` in radians. |
+| `floor` | `floor(f32) -> f32` | Rounds down to the nearest integer-valued float. |
+| `sincos` | `sincos(f32) -> vec2f` | Returns sine in `x` and cosine in `y`. |
+| `tan` | `tan(f32) -> f32` | Returns the tangent of an angle in radians. |
+| `round` | `round(f16) -> f16`; `round(vec2f16) -> vec2f16`; `round(vec2f) -> vec2f` | Rounds to the nearest integer-valued float. |
+| `round_to_i32` | `round_to_i32(vec2f) -> vec2i` | Rounds both components and converts them to signed integers. |
+| `fma` | `fma(f32, f32, f32) -> f32`; `fma(vec2f, vec2f, vec2f) -> vec2f`; `fma(vec3f, vec3f, vec3f) -> vec3f`; `fma(vec4f, vec4f, vec4f) -> vec4f` | Multiplies the first two arguments and adds the third. |
+| `fract` | `fract(f32) -> f32` | Returns the fractional part. |
+| `radians` | `radians(f32) -> f32` | Converts degrees to radians. |
+| `inversesqrt` | `inversesqrt(f32) -> f32` | Returns the reciprocal square root. |
+| `step` | `step(f32 edge, f32 value) -> f32` | Returns `0.0` below the edge and `1.0` otherwise. |
+| `smoothstep` | `smoothstep(f32 edge0, f32 edge1, f32 value) -> f32` | Returns smooth Hermite interpolation between two edges. |
+| `mix` | `mix(f32 left, f32 right, f32 factor) -> f32` | Linearly interpolates between two values. |
+| `dot` | `dot(vec2f, vec2f) -> f32`; `dot(vec3f, vec3f) -> f32`; `dot(vec4f, vec4f) -> f32`; `dot(vec2f16, vec2f16) -> f16`; `dot(vec3f16, vec3f16) -> f16`; `dot(vec4f16, vec4f16) -> f16` | Returns the vector dot product. |
+| `cross` | `cross(vec3f, vec3f) -> vec3f` | Returns the three-dimensional cross product. |
+| `length` | `length(vec3f) -> f32`; `length(vec4f) -> f32`; `length(vec2f16) -> f16`; `length(vec3f16) -> f16`; `length(vec4f16) -> f16` | Returns the vector magnitude. |
+| `normalize` | `normalize(vec3f) -> vec3f`; `normalize(vec4f) -> vec4f`; `normalize(vec2f16) -> vec2f16`; `normalize(vec3f16) -> vec3f16`; `normalize(vec4f16) -> vec4f16` | Returns a unit-length vector in the same direction. |
+| `reflect` | `reflect(vec4f incident, vec4f normal) -> vec4f` | Reflects the incident vector around the normal. |
+
+### Constructors and casts
+
+Call a vector, matrix, struct, or array type to construct a value. The table
+lists the explicit conversion overloads registered as intrinsics.
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `f16` | `f16(f16) -> f16`; `f16(f32) -> f16`; `f16(u32) -> f16`; `f16(i32) -> f16` | Converts a supported scalar to half precision. |
+| `u16` | `u16(u32) -> u16` | Narrows an unsigned integer to 16 bits. |
+| `f32` | `f32(f16) -> f32`; `f32(u32) -> f32`; `f32(i32) -> f32` | Converts a supported scalar to single precision. |
+| `u32` | `u32(u8) -> u32`; `u32(u16) -> u32`; `u32(u32) -> u32`; `u32(i32) -> u32`; `u32(f16) -> u32`; `u32(f32) -> u32` | Converts a supported scalar to a 32-bit unsigned integer. |
+| `vec2f16` | `vec2f16(vec2f) -> vec2f16`; `vec2f16(vec2f16) -> vec2f16` | Converts a two-component float vector to half precision. |
+| `vec3f16` | `vec3f16(vec3f) -> vec3f16`; `vec3f16(vec3f16) -> vec3f16` | Converts a three-component float vector to half precision. |
+| `vec4f16` | `vec4f16(vec4f) -> vec4f16`; `vec4f16(vec4f16) -> vec4f16` | Converts a four-component float vector to half precision. |
+| `vec2f` | `vec2f(vec2f16) -> vec2f` | Converts a two-component half vector to single precision. |
+| `vec3f` | `vec3f(vec3f16) -> vec3f` | Converts a three-component half vector to single precision. |
+| `vec4f` | `vec4f(vec4f16) -> vec4f`; `vec4f(packed_vec4f) -> vec4f` | Converts a four-component half or packed vector to an arithmetic float vector. |
+| `packed_vec4f` | `packed_vec4f(vec4f) -> packed_vec4f` | Converts an arithmetic vector to scalar-aligned storage. |
+
+### Texture operations
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `sample` | `sample(Texture2D, vec2f uv) -> vec4f` | Samples a 2D texture with implicit derivatives. |
+| `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit-LOD path. The two-argument overload uses the default level. |
+| `texture_cube_array_lod` | `texture_cube_array_lod(TextureCubeArray, vec3f direction, u32 cube, f32 lod) -> vec4f` | Samples one cube and mip level from a cube array. |
+| `downsample_min` | `downsample_min(Texture2D, vec2f uv, f32 lod) -> f32` | Returns the minimum scalar value in the downsample footprint. |
+| `downsample_max` | `downsample_max(Texture2D, vec2f uv, f32 lod) -> f32`; `downsample_max(Texture2DArray, vec2f uv, u32 layer, f32 lod) -> f32` | Returns the maximum scalar value in the downsample footprint. |
+| `fetch` | `fetch(Texture2D, vec2u coord) -> vec4f`; `fetch(Texture2DArray, vec2u coord, u32 layer) -> vec4f` | Fetches one texel by integer coordinate. |
+| `fetch_u32` | `fetch_u32(Texture2D, vec2u coord) -> u32` | Fetches one unsigned scalar texel. |
+| `texture_size` | `texture_size(Texture2D) -> vec2u`; `texture_size(Texture2DArray) -> vec2u` | Returns the texture width and height. |
+
+### Storage-image operations
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `image_load` | `image_load(StorageImage, vec2u coord) -> vec4f` | Loads one floating-point texel. |
+| `image_load_u32` | `image_load_u32(StorageImage, vec2u coord) -> u32` | Loads one unsigned scalar texel. |
+| `image_size` | `image_size(StorageImage) -> vec2u` | Returns the image width and height. |
+| `guard_image_bounds` | `guard_image_bounds(StorageImage, vec2u coord) -> void` | Returns from the current function when the coordinate is outside the image. |
+| `write` | `write(StorageImage, vec2u coord, vec4f value) -> void` | Stores one texel. |
+| `image_atomic_or` | `image_atomic_or(StorageImage, vec2u coord, u32 value) -> u32` | Atomically ORs an unsigned texel and returns its previous value. GLSL, HLSL, and the VM support it; MSL doesn't. |
+
+### Buffer and workgroup atomics
+
+Use these calls with an `atomicu32` buffer member or workgroup value.
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `atomic_add` | `atomic_add(atomicu32, u32 increment) -> u32` | Atomically adds the increment and returns the previous value. |
+| `atomic_compare_exchange` | `atomic_compare_exchange(atomicu32, u32 expected, u32 desired) -> u32` | Stores the desired value when the current value equals the expected value, then returns the previous value. |
+| `atomic_load` | `atomic_load(atomicu32) -> u32` | Atomically reads the current value. |
+| `atomic_store` | `atomic_store(atomicu32, u32 value) -> void` | Atomically replaces the current value. |
+
+## Vertex stage
+
+The vertex stage adds no stage-specific intrinsic names. Use the shared
+intrinsics above with the inputs and outputs supplied by the render model.
+
+## Fragment stage
+
+The fragment stage adds derivative information for this intrinsic:
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `fwidth` | `fwidth(f32 value) -> f32` | Returns the sum of the absolute horizontal and vertical derivatives. The VM returns deterministic `0.0` because it doesn't execute neighboring fragment lanes. |
+
+`discard` is a fragment-oriented statement, not an intrinsic. See
+[control flow](/docs/reference/besl/language#control-flow).
+
+## Compute stage
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `thread_id` | `thread_id() -> vec2u` | Returns the global two-dimensional compute invocation coordinate. |
+| `thread_idx` | `thread_idx() -> u32` | Returns the linear invocation index inside the local workgroup. |
+| `threadgroup_position` | `threadgroup_position() -> u32` | Returns the workgroup position. |
+| `workgroup_barrier` | `workgroup_barrier() -> void` | Synchronizes workgroup-shared reads and writes across participating invocations. |
+| `subgroup_lane_index` | `subgroup_lane_index() -> u32` | Returns the lane index in the current subgroup. |
+| `subgroup_ballot` | `subgroup_ballot(bool predicate) -> vec4u` | Returns a bit mask for lanes whose predicate is true. |
+| `subgroup_ballot_any` | `subgroup_ballot_any(vec4u mask) -> bool` | Reports whether the mask contains at least one lane. |
+| `subgroup_ballot_find_lsb` | `subgroup_ballot_find_lsb(vec4u mask) -> u32` | Returns the index of the least-significant set lane. |
+| `subgroup_ballot_count` | `subgroup_ballot_count(vec4u mask) -> u32` | Counts the lanes in a mask. |
+| `subgroup_ballot_and_not` | `subgroup_ballot_and_not(vec4u mask, vec4u removed) -> vec4u` | Removes selected lanes from a mask. |
+| `subgroup_broadcast_u32` | `subgroup_broadcast_u32(u32 value, u32 source_lane) -> u32` | Copies an unsigned value from one lane to every participating lane. |
+| `subgroup_broadcast_f32` | `subgroup_broadcast_f32(f32 value, u32 source_lane) -> f32` | Copies a float value from one lane to every participating lane. |
+
+Subgroup intrinsics require the target's subgroup or wave capability. BESL's
+GLSL, HLSL, and MSL generators validate them for compute stages only.
+
+## Task stage
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `thread_position` | `thread_position() -> u32` | Returns the task invocation's scalar position in the dispatch. |
+| `thread_idx` | `thread_idx() -> u32` | Returns the linear invocation index inside the task workgroup. |
+| `workgroup_barrier` | `workgroup_barrier() -> void` | Synchronizes workgroup-shared reads and writes across task invocations. |
+| `set_task_mesh_output_count` | `set_task_mesh_output_count(u32 count) -> void` | Sets the number of mesh workgroups emitted by the task workgroup. |
+
+The emitted count must not exceed `maximum_mesh_threadgroups` in the shader's
+[stage metadata](/docs/reference/besl/interface#standalone-stage-metadata).
+
+## Mesh stage
+
+| Name | Signature | Explanation |
+| --- | --- | --- |
+| `threadgroup_position` | `threadgroup_position() -> u32` | Returns the mesh workgroup position. |
+| `thread_idx` | `thread_idx() -> u32` | Returns the linear invocation index inside the mesh workgroup. |
+| `set_mesh_output_counts` | `set_mesh_output_counts(u32 vertex_count, u32 primitive_count) -> void` | Sets the number of vertices and primitives emitted by the workgroup. |
+| `set_mesh_vertex_position` | `set_mesh_vertex_position(u32 vertex_index, vec4f position) -> void` | Writes one clip-space vertex position. |
+| `set_mesh_triangle` | `set_mesh_triangle(u32 primitive_index, vec3u triangle) -> void` | Writes the three vertex indices for one triangle. |
+| `set_mesh_primitive_render_target_array_index` | `set_mesh_primitive_render_target_array_index(u32 primitive_index, u32 array_index) -> void` | Selects the render-target array layer for one primitive. |
+
+Vertex and primitive counts must stay within `maximum_vertices` and
+`maximum_primitives` in the shader's
+[stage metadata](/docs/reference/besl/interface#standalone-stage-metadata).
+
+Next, read [compilation and reflection](/docs/reference/besl/compilation) to see
+which parts of the program Byte Engine can optimize, reflect, and execute.

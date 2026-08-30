@@ -1,0 +1,101 @@
+---
+title: Resource management
+description: Understand how Byte Engine turns authored assets into runtime resources.
+icon: Database
+---
+
+Resource management is the boundary between content authoring and runtime use.
+Byte Engine processes source files into typed data that its rendering, audio,
+animation, and other runtime systems can consume without understanding the
+source format.
+
+## Core terms
+
+- **Asset**: A source file for your application, such as an image, model, audio
+  clip, material declaration, or shader source file.
+- **Resource**: Runtime-ready data that Byte Engine produces from an asset. A
+  resource includes the metadata and payload needed by an engine system.
+- **URL**: A reference to an asset or resource. It can be a path relative to the
+  application's `assets` directory or an internet URL. A fragment can select
+  one item produced from a container asset.
+
+An asset can produce one resource, several resources, or a resource with
+dependencies on other resources. For example, a model can produce meshes,
+materials, images, a skeleton, and animation clips.
+
+## Lifecycle
+
+Resource management follows the same boundary whether an application processes
+an asset on demand or prepares it before packaging:
+
+1. A tool or application requests a typed resource ID.
+2. Byte Engine finds an existing resource or asks an asset handler to process
+   the source asset.
+3. The handler converts source-format data into engine-format metadata and a
+   binary payload.
+4. Resource storage publishes the processed result.
+5. The caller receives a typed reference with its dependencies resolved.
+6. The consuming system reads or streams the payload when it needs the data.
+
+This boundary keeps source-format parsing out of runtime systems. A renderer can
+use image dimensions or mesh streams without reopening a PNG or glTF file, and
+an audio system can consume processed samples without knowing how they were
+authored.
+
+## Assets and processing
+
+Assets remain in formats suited to artists, designers, and content tools.
+Common examples include PNG textures, glTF or FBX models, WAV or OGG audio,
+`.bema` material declarations, and BESL shader sources.
+
+An asset handler owns the conversion for one family of source files. Processing
+can decode or normalize content, derive additional data, compile shaders, and
+produce dependencies. Container formats can expose generated resources through
+fragments such as a named animation or skeleton.
+
+The processed result is explicit engine data rather than a cached copy of the
+source file. This makes the runtime contract independent of authoring format and
+lets tools inspect resource metadata without loading the complete payload.
+
+## Resources and references
+
+A stored resource has two conceptual parts:
+
+- **Metadata** identifies and describes the resource. It includes its class,
+  content identity, typed model, dependencies, and information needed to read
+  the payload.
+- **Payload** contains the bytes consumed by the renderer, audio system, or
+  another runtime system.
+
+A typed resource reference connects that metadata to a payload reader. Systems
+can inspect metadata and resolve dependencies before they read, upload, stream,
+decode, or play the payload. Resources with several logical byte ranges can
+describe streams so a consumer can address the data it needs.
+
+Resource storage owns persistence and publication. It can choose a physical
+layout or encoding without changing the resource's decoded identity or the
+typed contract seen by consumers.
+
+## Development and release
+
+Debug applications can process missing or stale assets on demand. This shortens
+the edit-run loop, but the first request can perform asset-processing work.
+
+Release applications use resources prepared before packaging. They do not need
+source assets or processors at runtime, which makes the packaged content
+deterministic and keeps authoring dependencies out of the application.
+
+Both workflows produce the same resource model. The difference is when the
+asset is processed, not what runtime systems consume.
+
+## Work with the current implementation
+
+Use the Develop guides when you need formats, APIs, commands, storage behavior,
+or debugging steps:
+
+- [Asset processing](/docs/develop/resource-management/assets)
+- [Resource storage and loading](/docs/develop/resource-management/resources)
+- [.bema material files](/docs/develop/resource-management/bema)
+- [BELD tool](/docs/develop/resource-management/beld)
+- [Bake application resources](/docs/develop/resource-management/baking-app-resources)
+- [Load resources in debug builds](/docs/develop/resource-management/debug-loading)

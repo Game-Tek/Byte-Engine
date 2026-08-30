@@ -182,7 +182,7 @@ beld --destination resources query Material group=opaque --format json
 ```
 
 For design information, see
-[Asset and resource management](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management).
+[Asset and resource management](https://byte-engine.0x44491229.dev/docs/develop/resource-management).
 
 ## 🧪 Write shaders with BESL
 
@@ -219,13 +219,13 @@ Before you make a large change, read the design documentation for the affected s
 
 - [Actor pattern](https://byte-engine.0x44491229.dev/docs/develop/design/actor-pattern): message-passing system
   boundaries, factories, handles, and listeners.
-- [Input handling](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling): device triggers,
+- [Input](https://byte-engine.0x44491229.dev/docs/develop/input): device triggers,
   seats, actions, value mappings, and tick policies.
 - [Rendering](https://byte-engine.0x44491229.dev/docs/develop/design/rendering): render orchestrators,
   render systems, render domains, and render models.
-- [UI module](https://byte-engine.0x44491229.dev/docs/develop/design/ui): retained async component primitives
+- [GUI](https://byte-engine.0x44491229.dev/docs/develop/ui): retained async component primitives
   and UI render flow.
-- [Resource management](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management): asset
+- [Resource management](https://byte-engine.0x44491229.dev/docs/develop/resource-management): asset
   baking, resource storage, runtime reads, and `beld`.
 
 ## 🧰 Run development checks

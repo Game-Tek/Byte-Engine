@@ -6,13 +6,16 @@ import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
+import { getLayoutTabs } from 'fumadocs-ui/layouts/shared';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import {
 	DocsBody,
 	DocsDescription,
 	DocsPage,
 	DocsTitle,
-} from 'fumadocs-ui/page';
+	MarkdownCopyButton,
+	ViewOptionsPopover,
+} from 'fumadocs-ui/layouts/docs/page';
 import {
 	type RefObject,
 	useLayoutEffect,
@@ -21,12 +24,14 @@ import {
 	useState,
 } from 'react';
 import browserCollections from '@/.source/browser';
+import { getMarkdownUrl } from '@/lib/llm';
 import { baseOptions } from '@/lib/layout.shared';
 import { source } from '@/lib/source';
 
 export type DocsPageData = {
 	tree: object;
 	path: string;
+	url: string;
 };
 
 export const loadDocsPage = createServerFn({
@@ -40,12 +45,18 @@ export const loadDocsPage = createServerFn({
 		return {
 			tree: source.pageTree as object,
 			path: page.path,
+			url: page.url,
 		};
 	});
 
-const clientLoader = browserCollections.docs.createClientLoader({
+type DocsContentProps = {
+	githubUrl: string;
+	markdownUrl: string;
+};
+
+const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps>({
 	id: 'docs',
-	component({ toc, frontmatter, default: MDX }) {
+	component({ toc, frontmatter, default: MDX }, pageActions) {
 		const contentRef = useRef<HTMLDivElement>(null);
 		const visibleToc = useVisibleTableOfContents(toc, contentRef);
 
@@ -54,6 +65,13 @@ const clientLoader = browserCollections.docs.createClientLoader({
 				toc={visibleToc}
 				footer={{ className: 'be-page-navigation' }}
 			>
+				<div className="flex justify-end gap-2">
+					<MarkdownCopyButton markdownUrl={pageActions.markdownUrl} />
+					<ViewOptionsPopover
+						githubUrl={pageActions.githubUrl}
+						markdownUrl={pageActions.markdownUrl}
+					/>
+				</div>
 				<DocsTitle>{frontmatter.title}</DocsTitle>
 				<DocsDescription>{frontmatter.description}</DocsDescription>
 				<DocsBody ref={contentRef}>
@@ -124,14 +142,21 @@ export async function preloadDocsContent(path: string) {
 
 export function DocsPageContent({ data }: { data: DocsPageData }) {
 	const Content = clientLoader.getComponent(data.path);
+	const markdownUrl = getMarkdownUrl(data.url);
+	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/main/docs/${data.path}`;
 	const tree = useMemo(
-		() => transformPageTree(data.tree as PageTree.Folder),
+		() => transformPageTree(data.tree as PageTree.Root),
 		[data.tree],
+	);
+	const tabs = useMemo(
+		() => getLayoutTabs(tree).map(({ $folder: _folder, ...tab }) => tab),
+		[tree],
 	);
 
 	return (
 		<DocsLayout
 			{...baseOptions()}
+			tabs={tabs}
 			sidebar={{
 				footer: (
 					<GithubInfo
@@ -146,12 +171,12 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 			}}
 			tree={tree}
 		>
-			<Content />
+			<Content githubUrl={githubUrl} markdownUrl={markdownUrl} />
 		</DocsLayout>
 	);
 }
 
-function transformPageTree(tree: PageTree.Folder): PageTree.Folder {
+function transformPageTree(tree: PageTree.Root): PageTree.Root {
 	function transformIcon(icon: PageTree.Item['icon']) {
 		if (typeof icon !== 'string') return icon;
 
@@ -173,12 +198,23 @@ function transformPageTree(tree: PageTree.Folder): PageTree.Folder {
 		};
 	}
 
+	function transformFolder(folder: PageTree.Folder): PageTree.Folder {
+		return {
+			...folder,
+			icon: transformIcon(folder.icon),
+			index: folder.index ? transform(folder.index) : undefined,
+			children: folder.children.map((item) => {
+				if (item.type === 'folder') return transformFolder(item);
+				return transform(item);
+			}),
+		};
+	}
+
 	return {
 		...tree,
-		icon: transformIcon(tree.icon),
-		index: tree.index ? transform(tree.index) : undefined,
+		fallback: tree.fallback ? transformPageTree(tree.fallback) : undefined,
 		children: tree.children.map((item) => {
-			if (item.type === 'folder') return transformPageTree(item);
+			if (item.type === 'folder') return transformFolder(item);
 			return transform(item);
 		}),
 	};

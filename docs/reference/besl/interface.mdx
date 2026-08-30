@@ -1,0 +1,181 @@
+---
+title: Interface
+description: Declare BESL stage values, descriptors, shared storage, and stage metadata.
+icon: Cable
+---
+
+Use the shader interface to connect a BESL program to stage inputs and outputs,
+GPU resources, shared memory, and the native pipeline contract.
+
+## Inputs and outputs
+
+Give each stage input and output a location:
+
+```rust
+uv: input<vec2f, 0>;
+color: output<vec4f, 0>;
+```
+
+Locations range from `0` through `255`. Each input location and each output
+location must be unique in its interface.
+
+Add a positive element count when a mesh stage emits per-primitive values:
+
+```rust
+out_instance_index: output<u32, 0, 126>;
+```
+
+## Task payload and workgroup storage
+
+Task and mesh stages can share payload arrays. Task and compute stages can also
+declare storage shared by every invocation in one workgroup:
+
+```rust
+visible_meshlets: task_payload<u32, 32>;
+visible_count: workgroup<atomicu32>;
+scratch: workgroup<f32, 64>;
+```
+
+Omit the count for one shared value. Add a positive count for shared arrays.
+Use `workgroup_barrier()` before reading values written by other invocations.
+
+## Push constants
+
+Use push constants for small uniform values outside normal descriptor bindings:
+
+```rust
+push_constant: push_constant {
+	material_index: u32,
+}
+```
+
+## Descriptors
+
+A descriptor declares a named binding between the shader and one GPU resource.
+Write the resource type first, followed by its flat slot and access mode:
+
+```rust
+name: descriptor<ResourceType, SLOT, ACCESS>;
+```
+
+The complete syntax supports an optional resource count. Buffer descriptors can
+also select their memory class:
+
+```rust
+name: descriptor<ResourceType, SLOT, ACCESS, COUNT>;
+name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS>;
+name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS, COUNT>;
+```
+
+This example declares buffer, texture, texture-array, and storage-image bindings:
+
+```rust
+Frame: struct {
+	view_projection: mat4f,
+}
+
+VertexData: struct {
+	positions: vec3f[1024],
+}
+
+frame: descriptor<Frame, 0, read, constant>;
+vertices: descriptor<VertexData, 1, read, device>;
+albedo: descriptor<Texture2D, 2, read>;
+shadow_maps: descriptor<Texture2DArray, 3, read, 4>;
+output_image: descriptor<StorageImage<rgba16f>, 7, write>;
+```
+
+The descriptor resource type selects the reflected binding kind. BESL supports
+these resource types:
+
+| Resource type | Binding | Use |
+| --- | --- | --- |
+| A previously declared struct, such as `Frame` | Storage buffer | Bind structured data. Declare the struct before the descriptor. |
+| `Texture2D` | Combined 2D texture and sampler | Sample one two-dimensional texture. |
+| `Texture2DArray` | Combined 2D-array texture and sampler | Sample layers from one two-dimensional texture array. |
+| `Texture3D` | Combined 3D texture and sampler | Sample a three-dimensional texture. |
+| `TextureCube` | Combined cube texture and sampler | Sample one cube texture. |
+| `TextureCubeArray` | Combined cube-array texture and sampler | Sample cube textures from an array. |
+| `StorageImage` | Storage image | Load or store an image whose format remains backend-defined. |
+| `StorageImage<FORMAT>` | Typed storage image | Load or store an image with an explicit backend image format, such as `r8`, `r32f`, `r32ui`, or `rgba16f`. |
+
+Set `ACCESS` to `read`, `write`, or `read_write`. The access must include every
+operation the shader performs on the resource.
+
+For a buffer, set `MEMORY_CLASS` to `constant` for small, read-only values shared
+by a dispatch or draw. Use `device` for large buffers, data that varies between
+shader threads, and every writable buffer. If you omit the memory class, a buffer
+uses `device`. Image and texture descriptors cannot declare a memory class.
+
+Set `COUNT` to a positive integer to declare an array of resources. When a
+descriptor has no buffer memory class, the count is the fourth argument. When a
+buffer descriptor declares its memory class, the count is the fifth argument.
+
+Reflection retains the authored name and flat slot for each descriptor reachable
+from `main`.
+
+Storage-buffer counters use `atomicu32` members with `atomic_add`,
+`atomic_compare_exchange`, `atomic_load`, and `atomic_store`. Integer storage
+images can be read as scalars with `image_load_u32`:
+
+```rust
+Counters: struct {
+	values: atomicu32[1024],
+}
+
+counters: descriptor<Counters, 5, read_write, device>;
+index_image: descriptor<StorageImage<r32ui>, 6, read>;
+```
+
+## Standalone stage metadata
+
+Standalone `.besl` assets require an adjacent `.besl.bead` file. Set `stage` to
+`Vertex`, `Fragment`, `Compute`, `Task`, or `Mesh`.
+
+Compute, task, and mesh stages can set `workgroup` with up to three positive
+dimensions. Omitted dimensions default to `1`, and omitting `workgroup` uses
+`[1, 1, 1]`.
+
+```json
+{ "stage": "Compute", "workgroup": [8, 8, 1] }
+```
+
+You can also name the dimensions. This JSON5 form is equivalent to `[8, 8, 1]`:
+
+```json5
+{ stage: "Compute", workgroup: { width: 8, height: 8 } }
+```
+
+Task stages require a positive `maximum_mesh_threadgroups` value:
+
+```json
+{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }
+```
+
+Mesh stages require positive `maximum_vertices` and `maximum_primitives` values:
+
+```json
+{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }
+```
+
+`Vertex` and `Fragment` stages don't accept `workgroup` or mesh limits.
+
+## Stage and backend support
+
+The normal generators support these stage and output-language combinations:
+
+| Stage | GLSL | HLSL | MSL |
+| --- | --- | --- | --- |
+| Vertex | Supported | Supported | Supported |
+| Fragment | Supported | Supported | Supported |
+| Compute | Supported | Supported | Supported |
+| Task | Not supported | Supported as an amplification shader | Supported as an object stage |
+| Mesh | Supported through `GL_EXT_mesh_shader` | Supported | Supported |
+
+The generated language support doesn't guarantee that a device exposes the
+required shader stage or extension. Half-precision and subgroup operations also
+require their target capabilities. BESL validates subgroup intrinsics for
+compute stages only; see [compute-stage intrinsics](/docs/reference/besl/intrinsics#compute-stage).
+
+Next, use [BESL intrinsics](/docs/reference/besl/intrinsics) to read and update
+the values declared by the interface.

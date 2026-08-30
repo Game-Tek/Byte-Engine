@@ -3,7 +3,7 @@
 /// Register each source format with [`Self::add_asset_handler`], then install the
 /// manager on a [`crate::ResourceManager`] for debug loading or call
 /// [`Self::bake`] from an explicit baking workflow.
-/// See the [assets guide](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management/assets)
+/// See the [assets guide](https://byte-engine.0x44491229.dev/docs/develop/resource-management/assets)
 /// for supported source families and processing behavior.
 pub struct AssetManager {
 	state: Arc<AssetManagerState>,
@@ -812,7 +812,7 @@ fn source_id_from_path(root: &std::path::Path, path: &std::path::Path) -> Option
 	Some(id)
 }
 
-const ASSETS_DOCS_PATH: &str = "develop/design/resource-management/assets";
+const ASSETS_DOCS_PATH: &str = "develop/resource-management/assets";
 
 #[cfg(test)]
 

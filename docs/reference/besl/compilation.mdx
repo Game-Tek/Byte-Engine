@@ -1,0 +1,113 @@
+---
+title: Compilation and reflection
+description: Understand BESL linking, generated extensions, optimization, reflection, backends, and VM execution.
+icon: Binary
+---
+
+Byte Engine turns authored BESL into a linked semantic graph before it generates
+platform shader source or executes the program in the VM.
+
+## Follow the compilation path
+
+1. `parse` tokenizes the source and builds a syntax tree.
+2. An optional `ProgramGenerator` transforms that tree to add the renderer's
+   bindings, declarations, helpers, and entry-point contract.
+3. `lex` resolves names, types, members, calls, overloads, and references into a
+   semantic graph. `compile_to_besl` combines parsing and linking and can link
+   the source to a supplied parent scope.
+4. The optimizer removes semantically dead portable code.
+5. Reflection evaluates the reachable graph, and the active generator emits
+   GLSL, HLSL, or MSL. Tests can compile the same graph for VM execution.
+
+Standalone `.besl` assets use this path during baking and take their stage
+settings from the adjacent [`.besl.bead` file](/docs/reference/besl/interface#standalone-stage-metadata).
+
+## Extend a program from Rust
+
+Some graph features are intentionally available only to engine and render-model
+code. They are not syntax you can write in a `.besl` file.
+
+| Generated feature | Rust entry point | Use |
+| --- | --- | --- |
+| Backend-specific code | `ParserNode::glsl`, `ParserNode::hlsl`, `ParserNode::msl`, or `ParserNode::raw_code` | Bridge a feature that portable BESL can't express. Declare every graph input and output. |
+| Specialization value | `ParserNode::specialization` | Add a host-selected typed value. The VM receives values through `SpecializationValues`. |
+| Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
+| Generated struct | `#[derive(BeslStruct)]` or `besl_struct_node!` | Expose a Rust record shape to the BESL parent scope. |
+| Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
+
+Raw nodes declare their dependencies explicitly. For example, renderer code can
+add one GLSL-only expression with named graph inputs and outputs:
+
+```rust
+let node = besl::ParserNode::glsl("native_expression", &["input"], &["output"]);
+```
+
+Keep raw nodes small. Reflection can follow their declared dependencies but
+can't inspect the backend source itself. The VM rejects reachable raw nodes with
+`UnsupportedRawCode`.
+
+## Understand optimization
+
+`optimization::optimize` operates on functions reachable from `main`. It:
+
+- removes unread local declarations when their initializer has no observable
+  effect;
+- removes statements after a `return` or `continue` in the same block; and
+- repeats until removing one local doesn't expose another dead local.
+
+Calls, atomics, image writes, barriers, raw nodes, and assignments outside a
+local value remain intact. The pass is idempotent and reports how many dead
+locals and unreachable statements it removed.
+
+## Understand reflection
+
+The resource-management shader layer reflects descriptors into stable metadata:
+
+- authored name and flat slot;
+- buffer, sampled-texture, or storage-image kind;
+- texture view shape and resource count;
+- storage-buffer stride for the active layout target; and
+- read and write usage.
+
+It rejects distinct bindings that alias one flat slot. Reflection also classifies
+the reachable output as `Opaque`, `NonOpaque`, or `Unknown` for material
+decisions. Raw backend code can make that classification unknown because its
+effects aren't visible to the semantic evaluator.
+
+Express resources and outputs in BESL whenever possible. Reachable declarations
+let Byte Engine validate, reflect, optimize, and test the program consistently.
+
+## Execute BESL in the VM
+
+The VM runs portable BESL semantics on the host. Use it for behavior tests that
+shouldn't depend on one generated shading language.
+
+The VM supports:
+
+- scalar, vector, matrix, struct, array, function, expression, and control-flow
+  semantics;
+- descriptor buffers, sampled textures and samplers, storage images, push
+  constants, and stage input and output layouts;
+- texture mips, explicit LOD, texel fetches, array layers, image operations, and
+  atomics;
+- invocation coordinates, configurable subgroup collectives, workgroup shared
+  storage, and barriers through the workgroup scheduler; and
+- task payloads and output counts plus captured mesh counts, positions,
+  triangles, and render-target array indices.
+
+Compile a linked graph with `ExecutableProgram`, bind its resources through
+`DescriptorBindings`, and call `run_main`, `run_main_with_config`, or
+`run_workgroup`. `ExecutionConfig` sets instruction and call-depth limits,
+invocation coordinates, subgroup size, and task or mesh output limits.
+
+## Rust API
+
+- [`parse`](https://docs.rs/byte-engine-besl/latest/besl/fn.parse.html)
+- [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
+- [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
+- [`optimization` module](https://docs.rs/byte-engine-besl/latest/besl/optimization/)
+- [`BeslStruct`](https://docs.rs/byte-engine-besl/latest/besl/derive.BeslStruct.html)
+- [`vm` module](https://docs.rs/byte-engine-besl/latest/besl/vm/)
+
+Return to the [BESL language reference](/docs/reference/besl) for the normal
+authoring path.

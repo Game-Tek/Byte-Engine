@@ -1,0 +1,5 @@
+{
+	"title": "BESL",
+	"icon": "CodeEditor",
+	"pages": ["language", "interface", "intrinsics", "compilation"]
+}

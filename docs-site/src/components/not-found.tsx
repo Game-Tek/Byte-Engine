@@ -1,9 +1,11 @@
 import { Link } from '@tanstack/react-router';
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
+import { GlassThemeSwitch } from '@/components/glass-theme-switch';
 
 export function NotFound() {
 	return (
 		<HomeLayout
+			slots={{ themeSwitch: GlassThemeSwitch }}
 			nav={{
 				title: 'Tanstack Start',
 			}}

@@ -10,7 +10,7 @@
 //! passed through that runtime; typed action declarations use
 //! [`action::InputValue`] to constrain supported value types.
 //!
-//! See the [input handling guide](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling)
+//! See the [Input guide](https://byte-engine.0x44491229.dev/docs/develop/input)
 //! for the device, trigger, action, and event workflow.
 
 use super::utils::RGBA;

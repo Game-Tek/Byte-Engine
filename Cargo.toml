@@ -27,7 +27,7 @@ unimplemented = "warn"
 all = "deny"
 
 [profile.dev]
-incremental = true
+incremental = false
 lto = "off"
 
 [profile.bench]

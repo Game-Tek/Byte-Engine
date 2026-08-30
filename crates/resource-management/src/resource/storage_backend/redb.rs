@@ -1285,7 +1285,7 @@ const STORAGE_MODE_KEY: &str = "payload-storage-mode";
 const IMAGE_COMPRESSION_KEY: &str = "image-compression";
 const PACKED_RESOURCES_FILE: &str = "resources.pack";
 const STAGED_RESOURCE_FILE_PREFIX: &str = ".resource-write";
-const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
+const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/resource-management/baking-app-resources";
 
 #[cfg(test)]
 mod tests {

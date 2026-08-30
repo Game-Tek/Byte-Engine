@@ -1691,7 +1691,7 @@ use crate::rendering::resource_loading::{NativeTextureUpload, TextureMetadata};
 use crate::rendering::view::View;
 use crate::rendering::{
 	Environment, RenderableMesh, Sink, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
-	mesh, world_render_domain,
+	mesh,
 };
 use crate::resource_management::{self};
 use crate::space::{Orientable as _, Positionable as _};

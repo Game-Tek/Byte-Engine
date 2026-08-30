@@ -1,17 +1,14 @@
-#[doc(hidden)]
 pub mod gpu_vertex_data_manager;
 pub(crate) mod layout;
 pub(crate) mod mesh_dispatch;
 pub mod pipeline_manager;
-#[doc(hidden)]
 pub mod render_pass;
-#[doc(hidden)]
 pub mod resource_manager;
-#[doc(hidden)]
 pub mod scene_manager;
-#[doc(hidden)]
 pub mod shader_generator;
 pub(crate) mod skinning;
+pub mod load;
+
 pub(crate) use layout::*;
 pub use pipeline_manager::{
 	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,

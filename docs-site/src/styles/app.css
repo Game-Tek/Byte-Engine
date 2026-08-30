@@ -88,7 +88,7 @@
 #nd-sidebar [data-theme-toggle] > svg:last-child,
 .dark #nd-sidebar [data-theme-toggle] > svg:first-child {
 	opacity: 0.55;
-	transform: rotate(-25deg) scale(0.86);
+	transform: scale(0.86);
 }
 
 .dark #nd-sidebar [data-theme-toggle] > svg:last-child {

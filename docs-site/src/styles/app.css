@@ -27,6 +27,16 @@
 	margin-top: 0.75rem;
 }
 
+/* Show icons only at the current sidebar root; they return when a nested
+   section becomes the root through the section selector. */
+#nd-sidebar
+	:is(a, button, p)[style*='padding-inline-start']:not(
+		[style*='calc(2 * var(--spacing))']
+	)
+	> span:has(> .be-glass-icon) {
+	display: none;
+}
+
 /* Pair the repository card with a compact vertical theme switch. */
 #nd-sidebar div:has(> .be-github-info) {
 	display: grid;

@@ -1,7 +1,6 @@
 {
 	"title": "Reference",
 	"description": "Understand the concepts and design principles behind Byte Engine's systems.",
-	"icon": "BookOpen",
 	"pagesIndex": "index",
 	"root": true
 }

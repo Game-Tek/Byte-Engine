@@ -1,7 +1,6 @@
 {
 	"title": "Byte Engine",
 	"description": "Use Byte Engine to develop",
-	"icon": "JoystickCross",
 	"pages": ["index", "---Setup---", "setup", "---Build---", "sample-project", "build"],
 	"root": true
 }

@@ -1,6 +1,6 @@
 import { notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
-import type { Node, Root } from 'fumadocs-core/page-tree';
+import type { Folder, Node, Root } from 'fumadocs-core/page-tree';
 import {
 	deserializePageTree,
 	type SerializedPageTree,
@@ -11,7 +11,7 @@ import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
-import type { LayoutTab } from 'fumadocs-ui/layouts/shared';
+import { getLayoutTabs } from 'fumadocs-ui/layouts/shared';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import {
 	DocsBody,
@@ -184,25 +184,44 @@ export async function preloadDocsContent(data: DocsPageData) {
 	}
 }
 
-const sectionRoutes = new Map([
-	['Introduction', '/docs'],
-	['Use', '/docs/use'],
-	['Contribute', '/docs/develop'],
-	['Reference', '/docs/reference'],
-	['API', '/docs/api/latest'],
+const sections = new Map([
+	[
+		'Introduction',
+		{
+			url: '/docs',
+			description: 'Start using Byte Engine.',
+		},
+	],
+	[
+		'Use',
+		{
+			url: '/docs/use',
+			description: 'Use Byte Engine to develop.',
+		},
+	],
+	[
+		'Contribute',
+		{
+			url: '/docs/develop',
+			description: 'Become a Byte Engine developer.',
+		},
+	],
+	[
+		'Reference',
+		{
+			url: '/docs/reference',
+			description:
+				"Understand the concepts and design principles behind Byte Engine's systems.",
+		},
+	],
+	[
+		'API',
+		{
+			url: '/docs/api/latest',
+			description: 'Byte Engine HTTP and Rust API documentation.',
+		},
+	],
 ]);
-
-function addPageUrls(node: Node, urls: Set<string>) {
-	if (node.type === 'page') {
-		urls.add(node.url);
-		return;
-	}
-
-	if (node.type === 'folder') {
-		if (node.index) urls.add(node.index.url);
-		for (const child of node.children) addPageUrls(child, urls);
-	}
-}
 
 function getPageTreeName(name: ReactNode) {
 	if (typeof name === 'string') return name;
@@ -216,33 +235,78 @@ function getPageTreeName(name: ReactNode) {
 	return name.props.dangerouslySetInnerHTML?.__html;
 }
 
-// The sidebar sections are intentionally flattened, so provide the layout tabs
-// explicitly instead of relying on root folder nodes that no longer exist.
-// Fumadocs wraps serialized names in spans, so read the original HTML label.
-function getSectionTabs(tree: Root): LayoutTab[] {
-	const tabs: LayoutTab[] = [];
-	let currentUrls: Set<string> | undefined;
+// Rebuild root folders from the flattened sections so Fumadocs can scope the
+// sidebar and render its native tab selector. Serialized names arrive as spans.
+function getSectionTree(tree: Root): Root {
+	const children: Folder[] = [];
+	let current: Folder | undefined;
 
 	for (const node of tree.children) {
 		if (node.type === 'separator') {
 			const name = getPageTreeName(node.name);
-			const url = name ? sectionRoutes.get(name) : undefined;
-			if (url) {
-				currentUrls = new Set([url]);
-				tabs.push({
-					title: node.name,
+			const section = name ? sections.get(name) : undefined;
+			if (name && section) {
+				current = {
+					type: 'folder',
+					$id: `section:${name}`,
+					name: node.name,
 					icon: node.icon,
-					url,
-					urls: currentUrls,
-				});
+					description: section.description,
+					root: true,
+					index: {
+						type: 'page',
+						name: node.name ?? name,
+						url: section.url,
+					},
+					children: [],
+				};
+				children.push(current);
+				continue;
 			}
-			continue;
 		}
 
-		if (currentUrls) addPageUrls(node, currentUrls);
+		current?.children.push(node);
 	}
 
-	return tabs;
+	for (const folder of children) {
+		const index = folder.children.findIndex(
+			(node) => node.type === 'page' && node.url === folder.index?.url,
+		);
+		if (index < 0) continue;
+
+		const [page] = folder.children.splice(index, 1);
+		if (page.type === 'page') folder.index = page;
+	}
+
+	return {
+		...tree,
+		children,
+	};
+}
+
+function addPageUrls(node: Node, urls: Set<string>) {
+	if (node.type === 'page') {
+		urls.add(node.url);
+		return;
+	}
+
+	if (node.type === 'folder') {
+		if (node.index) urls.add(node.index.url);
+		for (const child of node.children) addPageUrls(child, urls);
+	}
+}
+
+// Use explicit URL sets because Fumadocs' folder matcher does not include the
+// folder index. The root folders still control which sidebar tree is visible.
+function getSectionTabs(tree: Root) {
+	return getLayoutTabs(tree).map(({ $folder, ...tab }) => {
+		const urls = new Set([tab.url]);
+		if ($folder) {
+			for (const child of $folder.children) addPageUrls(child, urls);
+		}
+
+		return { ...tab, urls };
+	});
 }
 
 export function DocsPageContent({ data }: { data: DocsPageData }) {
@@ -250,7 +314,8 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 		() => deserializePageTree(data.tree),
 		[data.tree],
 	);
-	const tabs = useMemo(() => getSectionTabs(tree), [tree]);
+	const sectionTree = useMemo(() => getSectionTree(tree), [tree]);
+	const tabs = useMemo(() => getSectionTabs(sectionTree), [sectionTree]);
 
 	return (
 		<DocsLayout
@@ -268,7 +333,7 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 					/>
 				),
 			}}
-			tree={tree}
+			tree={sectionTree}
 		>
 			{data.kind === 'openapi' ? (
 				<OpenAPIDocsContent data={data} />

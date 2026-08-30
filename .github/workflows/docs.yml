@@ -42,6 +42,12 @@ jobs:
         with:
           bun-version: 1.4.0
 
+      # Vite's executable uses Node even when Bun launches the package script.
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
       - name: Cache Bun packages
         uses: actions/cache@v6
         with:

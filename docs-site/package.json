@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "generate:api": "../scripts/generate-api-docs.sh",
     "start": "node .output/server/index.mjs",
     "postinstall": "fumadocs-mdx"
   },

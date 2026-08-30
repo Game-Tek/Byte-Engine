@@ -156,9 +156,19 @@ pub(crate) fn write_material_texture_indices(
 /// The `RenderEntity` struct preserves an owned renderable payload beside its resident scene instance.
 pub struct RenderEntity {
 	pub(crate) handle: Handle,
+	/// Cached dependency-closure handle used by frame-local admission.
+	pub(crate) availability: AvailabilityHandle,
 	pub(crate) renderable: RenderableMesh,
 	pub(crate) shader_mesh: ShaderMesh,
 	pub(crate) skinning: Option<RenderSkin>,
+}
+
+/// Identifies visibility objects and resources in the shared availability graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum VisibilityAvailability {
+	Renderable(Handle),
+	Material(u32),
+	Texture(u32),
 }
 
 impl RenderEntity {
@@ -191,20 +201,6 @@ pub(crate) struct RenderDescription {
 	pub(crate) name: String,
 	pub(crate) alpha_mode: AlphaMode,
 	pub(crate) texture_indices: Vec<u32>,
-}
-
-/// Collects every renderable that has at least one unavailable primitive dependency.
-pub(crate) fn collect_incomplete_renderables(
-	primitive_materials: impl IntoIterator<Item = (Handle, u32)>,
-	mut material_is_ready: impl FnMut(u32) -> bool,
-	incomplete_renderables: &mut HashSet<Handle>,
-) {
-	incomplete_renderables.clear();
-	for (handle, material_index) in primitive_materials {
-		if !material_is_ready(material_index) {
-			incomplete_renderables.insert(handle);
-		}
-	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

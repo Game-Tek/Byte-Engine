@@ -7,7 +7,7 @@ description = "A composable Rust game engine focused on graphics, input, audio, 
 license.workspace = true
 repository = "https://github.com/Game-Tek/Byte-Engine"
 homepage = "https://github.com/Game-Tek/Byte-Engine"
-documentation = "https://docs.rs/byte-engine"
+documentation = "https://byte-engine.0x44491229.dev/docs/api"
 readme = "../../README.md"
 keywords = ["game-engine", "graphics", "rendering", "ui", "audio"]
 categories = ["game-engines", "graphics", "rendering"]
@@ -32,6 +32,10 @@ harness = false
 
 [[bench]]
 name = "animation_graph"
+harness = false
+
+[[bench]]
+name = "availability_graph"
 harness = false
 
 [[bench]]

@@ -1,6 +1,8 @@
 /target
 /resources
 /coverage
+# Regenerate these pages with scripts/generate-api-docs.sh.
+/docs/api/**/*.md
 *.db
 *.db.*
 *.glb

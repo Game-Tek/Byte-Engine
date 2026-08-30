@@ -10,6 +10,7 @@ pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Outp
 pub mod sync;
 
 pub mod r#async;
+pub mod availability_graph;
 pub mod bit_array;
 pub mod copy_fn;
 pub mod smoothed_value;
@@ -19,6 +20,7 @@ pub mod stale_map;
 use std::ops::Div;
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
+pub use availability_graph::{AvailabilityGraph, AvailabilityGraphError, AvailabilityHandle};
 pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
 pub use gxhash as hash;
 pub use sonic_rs as json;

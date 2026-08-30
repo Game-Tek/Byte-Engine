@@ -157,8 +157,8 @@ pub struct VisibilityPipelineManager {
 	loaded_textures: HashSet<u32>,
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
-	/// Renderable handles whose complete material dependency closure is not resident yet.
-	incomplete_renderables: HashSet<Handle>,
+	/// Eager readiness state for renderables, materials, and their textures.
+	availability: AvailabilityGraph<VisibilityAvailability>,
 	/// Requested environment resource retained until its asynchronous upload completes.
 	environment_resource_id: Option<String>,
 	/// Completed environment residents remain selectable without repeating GPU work.
@@ -663,6 +663,7 @@ mod tests {
 	use maths_rs::{Vec3f, Vec4f};
 	use resource_management::resources::skeleton::SkinBinding;
 	use resource_management::types::AlphaMode;
+	use utils::AvailabilityGraph;
 	use utils::{Extent, hash::HashMap};
 
 	use super::manager::{
@@ -676,7 +677,7 @@ mod tests {
 		LIT_BINDING, LightData, LightingData, MATERIALS_DATA_BINDING, MAX_CONE_SHADOW_POOL_CAPACITY,
 		MAX_POINT_SHADOW_POOL_CAPACITY, MaterialData, POINT_SHADOW_DEFAULT_EXPOSURE_SCALE, POINT_SHADOW_EXPOSURE_THRESHOLD_LUX,
 		POINT_SHADOW_NEAR_M, RenderInfo, SHADOW_MAP_BINDING, SPECULAR_ENVIRONMENT_BINDING, ShaderMesh, ShaderViewData,
-		SkinningPaletteCacheEntry, VisibilityPipelineSettings, collect_incomplete_renderables, cone_light_has_brightness,
+		SkinningPaletteCacheEntry, VisibilityAvailability, VisibilityPipelineSettings, cone_light_has_brightness,
 		cone_shadow_importance, make_cone_shadow_view, make_point_shadow_view, point_light_has_brightness, point_shadow_bounds,
 		point_shadow_importance, resolve_cone_shadow_range, resolve_point_shadow_range, select_shadow_lights,
 		select_shadow_lights_with_intensity_scale, write_material_texture_indices,
@@ -730,50 +731,25 @@ mod tests {
 	#[test]
 	fn renderable_admission_waits_for_every_primitive_dependency() {
 		let mut handles = Factory::new();
-
 		let incomplete = handles.create("incomplete");
-
 		let independent = handles.create("independent");
+		let independent = handles.create("independent");
+		let mut availability = AvailabilityGraph::new();
+		let ready_material = availability.get_or_insert(VisibilityAvailability::Material(0), true);
+		let pending_material = availability.get_or_insert(VisibilityAvailability::Material(1), false);
+		let incomplete = availability.get_or_insert(VisibilityAvailability::Renderable(incomplete), true);
+		let independent = availability.get_or_insert(VisibilityAvailability::Renderable(independent), true);
+		availability.add_dependency(incomplete, ready_material).unwrap();
+		availability.add_dependency(incomplete, pending_material).unwrap();
+		availability.add_dependency(independent, ready_material).unwrap();
 
-		let primitives = [(incomplete, 0), (incomplete, 1), (independent, 0)];
+		assert!(!availability.is_ready(incomplete));
+		assert!(availability.is_ready(independent));
 
-		let mut ready_materials = std::collections::HashSet::from([0u32]);
+		availability.set_available(pending_material, true);
 
-		let mut incomplete_renderables = std::collections::HashSet::new();
-
-		collect_incomplete_renderables(
-			primitives,
-			|material_index| ready_materials.contains(&material_index),
-			&mut incomplete_renderables,
-		);
-
-		assert!(incomplete_renderables.contains(&incomplete));
-		assert!(!incomplete_renderables.contains(&independent));
-
-		let admitted = primitives
-			.iter()
-			.filter(|(handle, _)| !incomplete_renderables.contains(handle))
-			.copied()
-			.collect::<Vec<_>>();
-
-		assert_eq!(admitted, [(independent, 0)]);
-
-		ready_materials.insert(1);
-
-		collect_incomplete_renderables(
-			primitives,
-			|material_index| ready_materials.contains(&material_index),
-			&mut incomplete_renderables,
-		);
-
-		assert!(incomplete_renderables.is_empty());
-		assert_eq!(
-			primitives
-				.iter()
-				.filter(|(handle, _)| !incomplete_renderables.contains(handle))
-				.count(),
-			3
-		);
+		assert!(availability.is_ready(incomplete));
+		assert!(availability.is_ready(independent));
 	}
 
 	/// Creates one compact shadow-capable cone for selection and projection tests.
@@ -1648,7 +1624,7 @@ use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Rc, RwLock};
-use utils::{Box, Extent, RGBA, StableVec};
+use utils::{AvailabilityGraph, AvailabilityHandle, Box, Extent, RGBA, StableVec};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::core::{

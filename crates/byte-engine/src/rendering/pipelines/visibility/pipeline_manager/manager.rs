@@ -192,7 +192,10 @@ impl VisibilityPipelineManager {
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
 			loaded_ies_profiles: HashMap::new(),
-			incomplete_renderables: HashSet::new(),
+			availability: AvailabilityGraph::with_capacity(
+				MAX_INSTANCES + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
+				MAX_INSTANCES + MAX_MATERIALS * MAX_MATERIAL_TEXTURES,
+			),
 			environment_resource_id: None,
 			loaded_environments: HashMap::new(),
 			environment_descriptors_dirty: false,
@@ -291,6 +294,11 @@ impl VisibilityPipelineManager {
 		self.pending_renderables
 			.retain(|pending_renderable| pending_renderable.handle != handle);
 		self.scene.remove_renderable(handle);
+		self.availability
+			.remove(&VisibilityAvailability::Renderable(handle))
+			.expect(
+				"Visibility renderable availability could not be removed. The most likely cause is that another graph node depends on a renderable.",
+			);
 	}
 
 	/// Finishes renderer-specific adoption and publishes only fully usable resources.
@@ -577,6 +585,8 @@ impl VisibilityPipelineManager {
 		{
 			self.rebuild_material_lists();
 		}
+		let texture = self.availability.get_or_insert(VisibilityAvailability::Texture(index), false);
+		self.availability.set_available(texture, true);
 	}
 
 	/// Writes a loaded texture into every descriptor set that can sample bindless material textures.
@@ -645,6 +655,27 @@ impl VisibilityPipelineManager {
 			.iter()
 			.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
 			.collect::<Vec<_>>();
+		let material_availability = self
+			.availability
+			.get_or_insert(VisibilityAvailability::Material(index), false);
+		// Keep the material unavailable while replacing its dependency set so
+		// renderables cannot observe a transiently complete branch.
+		self.availability.set_available(material_availability, false);
+		self.availability.clear_dependencies(material_availability).expect(
+			"Visibility material dependencies could not be replaced. The most likely cause is a stale material availability handle.",
+		);
+		for texture_index in &texture_indices {
+			let texture_availability = self.availability.get_or_insert(
+				VisibilityAvailability::Texture(*texture_index),
+				self.loaded_textures.contains(texture_index),
+			);
+			self.availability
+				.add_dependency(material_availability, texture_availability)
+				.expect(
+					"Visibility material dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.",
+				);
+		}
+		self.availability.set_available(material_availability, pipeline.is_some());
 		log::debug!(
 			"Visibility material adopted: id={}, index={}, has_pipeline={}, alpha_mode={:?}, textures={}",
 			id,
@@ -675,6 +706,8 @@ impl VisibilityPipelineManager {
 			let pipeline = self.pipeline_manager.pipeline(material.pipeline_ref);
 			if material.pipeline != pipeline {
 				material.pipeline = pipeline;
+				self.availability
+					.set_key_available(&VisibilityAvailability::Material(material.index), pipeline.is_some());
 				changed = true;
 			}
 		}
@@ -747,7 +780,6 @@ impl VisibilityPipelineManager {
 	pub(crate) fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
 		self.scene.render_info.clear_active_instances();
 		let loaded_materials = &self.loaded_materials;
-		let loaded_textures = &self.loaded_textures;
 		let render_entities = &self.scene.render_entities;
 		let skinning_poses = &self.scene.skinning_poses;
 		let palette_scratch = &mut self.skinning_palette_scratch;
@@ -758,22 +790,6 @@ impl VisibilityPipelineManager {
 		palette_cache.clear();
 		palette_scratch.clear();
 		dual_quaternion_palette_scratch.clear();
-		collect_incomplete_renderables(
-			render_entities
-				.iter()
-				.map(|render_entity| (render_entity.handle, render_entity.shader_mesh.material_index)),
-			|material_index| {
-				loaded_materials.get(&material_index).is_some_and(|material| {
-					material.pipeline.is_some()
-						&& material
-							.texture_indices
-							.iter()
-							.all(|texture_index| loaded_textures.contains(texture_index))
-				})
-			},
-			&mut self.incomplete_renderables,
-		);
-
 		let mut active_index = 0;
 		let mut skipped_missing_material = 0usize;
 		let mut active_meshlets = 0u32;
@@ -784,7 +800,7 @@ impl VisibilityPipelineManager {
 		for render_entity in render_entities.iter() {
 			// A renderable enters a frame as one object. Never expose the subset whose
 			// materials happened to become resident first.
-			if self.incomplete_renderables.contains(&render_entity.handle) {
+			if !self.availability.is_ready(render_entity.availability) {
 				skipped_missing_material += 1;
 				continue;
 			}
@@ -954,12 +970,24 @@ impl VisibilityPipelineManager {
 			let model = retained_renderable_transform(&self.renderable_transforms, pending_renderable.handle)
 				.get_matrix()
 				.into();
+			let renderable_availability = self
+				.availability
+				.get_or_insert(VisibilityAvailability::Renderable(pending_renderable.handle), true);
 			resolved_renderables += 1;
 			for primitive in &mesh.primitives {
+				let material_availability = self
+					.availability
+					.get_or_insert(VisibilityAvailability::Material(primitive.material_index), false);
+				self.availability
+					.add_dependency(renderable_availability, material_availability)
+					.expect(
+						"Visibility renderable dependency could not be registered. The most likely cause is a cyclic or stale resource relationship.",
+					);
 				added_primitives += 1;
 				added_meshlets += primitive.meshlet_count;
 				self.scene.add_render_entity(RenderEntity {
 					handle: pending_renderable.handle,
+					availability: renderable_availability,
 					renderable: pending_renderable.renderable.clone(),
 					shader_mesh: ShaderMesh {
 						model,

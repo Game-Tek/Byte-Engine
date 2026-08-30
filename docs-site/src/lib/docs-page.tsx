@@ -1,5 +1,6 @@
 import { notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
+import type { Node, Root } from 'fumadocs-core/page-tree';
 import {
 	deserializePageTree,
 	type SerializedPageTree,
@@ -10,7 +11,7 @@ import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
-import { getLayoutTabs } from 'fumadocs-ui/layouts/shared';
+import type { LayoutTab } from 'fumadocs-ui/layouts/shared';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import {
 	DocsBody,
@@ -22,6 +23,8 @@ import {
 } from 'fumadocs-ui/layouts/docs/page';
 import {
 	type RefObject,
+	type ReactNode,
+	isValidElement,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -181,15 +184,73 @@ export async function preloadDocsContent(data: DocsPageData) {
 	}
 }
 
+const sectionRoutes = new Map([
+	['Introduction', '/docs'],
+	['Use', '/docs/use'],
+	['Contribute', '/docs/develop'],
+	['Reference', '/docs/reference'],
+	['API', '/docs/api/latest'],
+]);
+
+function addPageUrls(node: Node, urls: Set<string>) {
+	if (node.type === 'page') {
+		urls.add(node.url);
+		return;
+	}
+
+	if (node.type === 'folder') {
+		if (node.index) urls.add(node.index.url);
+		for (const child of node.children) addPageUrls(child, urls);
+	}
+}
+
+function getPageTreeName(name: ReactNode) {
+	if (typeof name === 'string') return name;
+	if (
+		!isValidElement<{
+			dangerouslySetInnerHTML?: { __html?: string };
+		}>(name)
+	)
+		return;
+
+	return name.props.dangerouslySetInnerHTML?.__html;
+}
+
+// The sidebar sections are intentionally flattened, so provide the layout tabs
+// explicitly instead of relying on root folder nodes that no longer exist.
+// Fumadocs wraps serialized names in spans, so read the original HTML label.
+function getSectionTabs(tree: Root): LayoutTab[] {
+	const tabs: LayoutTab[] = [];
+	let currentUrls: Set<string> | undefined;
+
+	for (const node of tree.children) {
+		if (node.type === 'separator') {
+			const name = getPageTreeName(node.name);
+			const url = name ? sectionRoutes.get(name) : undefined;
+			if (url) {
+				currentUrls = new Set([url]);
+				tabs.push({
+					title: node.name,
+					icon: node.icon,
+					url,
+					urls: currentUrls,
+				});
+			}
+			continue;
+		}
+
+		if (currentUrls) addPageUrls(node, currentUrls);
+	}
+
+	return tabs;
+}
+
 export function DocsPageContent({ data }: { data: DocsPageData }) {
 	const tree = useMemo(
 		() => deserializePageTree(data.tree),
 		[data.tree],
 	);
-	const tabs = useMemo(
-		() => getLayoutTabs(tree).map(({ $folder: _folder, ...tab }) => tab),
-		[tree],
-	);
+	const tabs = useMemo(() => getSectionTabs(tree), [tree]);
 
 	return (
 		<DocsLayout

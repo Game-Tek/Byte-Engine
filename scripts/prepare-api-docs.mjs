@@ -24,6 +24,8 @@ const anchorsByRoute = new Map(
 	pageData.map(({ route, markdown }) => [route, renderedAnchors(markdown)]),
 );
 const globalAnchors = indexGlobalAnchors(anchorsByRoute);
+const crateNames = [...new Set(pageData.map(({ pagePath }) => pagePath.split('/')[0]))]
+	.sort();
 
 for (const data of pageData) {
 	const { page, relativePage, pagePath, route: pageRoute } = data;
@@ -81,6 +83,45 @@ for (const data of pageData) {
 	].join('\n');
 
 	await writeFile(page, frontmatter + markdown);
+}
+
+// Generate the route and navigation files that cargo-docs-md does not provide.
+// Keeping them in staging makes a fresh checkout identical to an incremental build.
+await writeFile(resolve(staging, 'index.mdx'), apiLandingPage(crateNames));
+await writeJson(resolve(staging, 'meta.json'), {
+	title: 'Latest',
+	description: 'API reference for the latest Byte Engine revision.',
+	pages: ['!index', ...crateNames],
+});
+
+for (const crateName of crateNames) {
+	await writeJson(resolve(staging, crateName, 'meta.json'), {
+		title: crateName,
+		description: `Generated API reference for the ${crateName.replaceAll('_', '-')} crate.`,
+		pagesIndex: 'index',
+	});
+}
+
+function apiLandingPage(crateNames) {
+	const crateLinks = crateNames
+		.map((crateName) => `- [\`${crateName}\`](${apiRoutePrefix}/${crateName})`)
+		.join('\n');
+
+	return [
+		'---',
+		'title: Latest Rust API',
+		'description: Browse the API reference for the latest Byte Engine revision.',
+		'---',
+		'',
+		'Choose a crate:',
+		'',
+		crateLinks,
+		'',
+	].join('\n');
+}
+
+async function writeJson(path, value) {
+	await writeFile(path, `${JSON.stringify(value, null, '\t')}\n`);
 }
 
 // cargo-docs-md emits methods and associated items as inline code in a list.

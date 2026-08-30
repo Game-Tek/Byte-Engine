@@ -51,11 +51,12 @@ trap 'rm -rf "$STAGING"' EXIT
 	--no-mdbook \
 	--no-search-index
 
-node "$SCRIPT_DIR/prepare-api-docs.mjs" "$STAGING"
+bun "$SCRIPT_DIR/prepare-api-docs.mjs" "$STAGING"
 
 mkdir -p "$OUTPUT"
-find "$OUTPUT" -type f -name '*.md' -delete
-find "$OUTPUT" -depth -type d ! -path "$OUTPUT" -empty -delete
+# The output is generated and ignored. Clear it completely so removed pages and
+# metadata cannot survive locally and hide clean-checkout failures.
+find "$OUTPUT" -mindepth 1 -delete
 cp -R "$STAGING/." "$OUTPUT/"
 
 printf 'Generated API documentation in %s.\n' "$OUTPUT"

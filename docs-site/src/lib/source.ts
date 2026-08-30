@@ -29,6 +29,7 @@ import {
 import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { docs } from '@/.source/server';
+import { inspectorOpenAPI } from '@/lib/openapi';
 
 type GlassIcon = ComponentType<{
 	'aria-hidden': true;
@@ -76,6 +77,7 @@ const icons = {
 export const source = loader({
 	source: docs.toFumadocsSource(),
 	baseUrl: '/docs',
+	plugins: [inspectorOpenAPI.loaderPlugin()],
 	icon(icon) {
 		if (!icon) {
 			return;

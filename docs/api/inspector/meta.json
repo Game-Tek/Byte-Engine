@@ -1,0 +1,12 @@
+{
+  "pages": [
+    "!index",
+    "inspection",
+    "control",
+    "screenshots"
+  ],
+  "title": "HTTP Inspector API",
+  "description": "Loopback HTTP interface for runtime inspection and control.",
+  "icon": "Bug",
+  "pagesIndex": "index"
+}

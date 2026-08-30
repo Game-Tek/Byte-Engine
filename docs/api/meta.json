@@ -1,8 +1,8 @@
 {
-	"title": "Rust API",
-	"description": "Generated API reference for the byte-engine crate.",
+	"title": "API",
+	"description": "Byte Engine HTTP and Rust API documentation.",
 	"icon": "Braces",
-	"pagesIndex": "[Rust API](/docs/api/latest)",
-	"pages": ["...latest"],
+	"pagesIndex": "[API](/docs/api/latest)",
+	"pages": ["inspector", "...latest"],
 	"root": true
 }

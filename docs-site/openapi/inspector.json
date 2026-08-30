@@ -1,0 +1,564 @@
+{
+	"openapi": "3.2.0",
+	"info": {
+		"title": "Byte Engine HTTP Inspector API",
+		"version": "0.1.0",
+		"description": "Inspect and control a running headed Byte Engine application through its loopback HTTP server. The inspector listens on port 6680 and does not provide authentication. Keep it bound to the loopback interface."
+	},
+	"servers": [
+		{
+			"url": "http://localhost:6680",
+			"description": "Local Byte Engine application"
+		}
+	],
+	"tags": [
+		{
+			"name": "Inspection",
+			"description": "Read runtime entities, message publication ranges, and configuration events.",
+			"x-displayName": "Inspect runtime state"
+		},
+		{
+			"name": "Control",
+			"description": "Send supported runtime messages or request application shutdown.",
+			"x-displayName": "Control the application"
+		},
+		{
+			"name": "Screenshots",
+			"description": "Capture a renderer sink or one render-pass target.",
+			"x-displayName": "Capture screenshots"
+		}
+	],
+	"paths": {
+		"/entities": {
+			"get": {
+				"operationId": "listEntities",
+				"summary": "List entities",
+				"description": "Returns factory-created entities known to the shared message bus. Each result includes the numeric handle used as a message target and every complete Rust type name associated with the entity. Use either `type` or its compatibility alias `class` to filter by one complete Rust type name.",
+				"tags": ["Inspection"],
+				"parameters": [
+					{
+						"name": "type",
+						"in": "query",
+						"description": "Complete Rust type name. Do not send this together with `class`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "byte_engine::rendering::camera::Camera"
+					},
+					{
+						"name": "class",
+						"in": "query",
+						"deprecated": true,
+						"description": "Compatibility alias for `type`. Do not send both parameters.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Current entity catalog, or the matching subset when filtered.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/Entity"
+									}
+								},
+								"example": [
+									{
+										"target": 47,
+										"types": [
+											"byte_engine::rendering::camera::Camera"
+										]
+									}
+								]
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					}
+				}
+			}
+		},
+		"/messages": {
+			"get": {
+				"operationId": "drainMessages",
+				"summary": "Drain message publications",
+				"description": "Returns message publication ranges observed since the previous call. This operation drains the shared inspector cursor. It preserves sequence order within each typed route but does not define ordering between routes. Message payloads remain opaque.",
+				"tags": ["Inspection"],
+				"responses": {
+					"200": {
+						"description": "Publication ranges since the previous drain.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MessageBatch"
+								},
+								"example": {
+									"messages": [
+										{
+											"topic": 3,
+											"scope": "world",
+											"type": "byte_engine::gameplay::transform::TransformationUpdate",
+											"first_sequence": 12,
+											"count": 2
+										}
+									]
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "postMessage",
+				"summary": "Post a message",
+				"description": "Publishes one supported targeted message to the running application. The current protocol accepts only `TransformationUpdate`. The request object must contain exactly `type`, `target`, and `payload`.",
+				"tags": ["Control"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/TransformationUpdateMessage"
+							},
+							"example": {
+								"type": "TransformationUpdate",
+								"target": 47,
+								"payload": {
+									"position": [4.0, 5.0, 6.0],
+									"scale": [1.0, 1.0, 1.0],
+									"orientation": [0.0, 0.0, 0.0, 1.0]
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "The message was accepted and published."
+					},
+					"400": {
+						"description": "The envelope, message type, target, or transform payload is invalid.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/configuration": {
+			"get": {
+				"operationId": "listConfigurationEvents",
+				"summary": "List configuration events",
+				"description": "Returns retained configuration requests with the latest state reported by the system that owns each parameter.",
+				"tags": ["Inspection"],
+				"responses": {
+					"200": {
+						"description": "Current configuration event history.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/ConfigurationEvent"
+									}
+								},
+								"example": [
+									{
+										"id": 1,
+										"parameter": "render.pass.bloom",
+										"requested": "bypassed",
+										"state": {
+											"status": "pending"
+										}
+									}
+								]
+							}
+						}
+					},
+					"500": {
+						"description": "A configuration value could not be serialized.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/screenshots": {
+			"get": {
+				"operationId": "captureScreenshot",
+				"summary": "Capture a screenshot",
+				"description": "Captures the final swapchain image for one renderer sink. To capture a named target immediately after a render pass, provide both `pass` and `target`. The request waits up to five seconds for a graphics frame to complete.",
+				"tags": ["Screenshots"],
+				"parameters": [
+					{
+						"name": "sink",
+						"in": "query",
+						"required": true,
+						"description": "Zero-based renderer sink index.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"example": 0
+					},
+					{
+						"name": "pass",
+						"in": "query",
+						"description": "Exact render-pass name. Requires `target`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "visibility"
+					},
+					{
+						"name": "target",
+						"in": "query",
+						"description": "Exact written target name. Requires `pass`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "color"
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "PNG screenshot from the completed graphics frame.",
+						"headers": {
+							"X-Byte-Engine-Frame": {
+								"description": "Engine frame number that produced the image.",
+								"schema": {
+									"type": "integer",
+									"minimum": 0
+								}
+							},
+							"X-Byte-Engine-Sink": {
+								"description": "Renderer sink index that produced the image.",
+								"schema": {
+									"type": "integer",
+									"minimum": 0
+								}
+							}
+						},
+						"content": {
+							"image/png": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"400": {
+						"$ref": "#/components/responses/BadRequest"
+					},
+					"404": {
+						"description": "The sink, render pass, or written target was not found.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "The sink is unavailable or the pass name is ambiguous.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "The bounded screenshot request queue is full.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Screenshot capture or PNG encoding failed.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"504": {
+						"description": "No graphics frame completed within five seconds.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/": {
+			"delete": {
+				"operationId": "closeApplication",
+				"summary": "Close the application",
+				"description": "Publishes an application close request. The HTTP response confirms publication, not process termination.",
+				"tags": ["Control"],
+				"responses": {
+					"200": {
+						"description": "The close request was published."
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"schemas": {
+			"Entity": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["target", "types"],
+				"properties": {
+					"target": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4294967295,
+						"description": "Stable numeric handle used by targeted inspector messages."
+					},
+					"types": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Complete Rust type names registered for the entity."
+					}
+				}
+			},
+			"MessageBatch": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["messages"],
+				"properties": {
+					"messages": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MessageRange"
+						}
+					}
+				}
+			},
+			"MessageRange": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["topic", "scope", "type", "first_sequence", "count"],
+				"properties": {
+					"topic": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Bus-local typed-route identifier."
+					},
+					"scope": {
+						"type": "string",
+						"description": "Diagnostic name of the route-owning message scope."
+					},
+					"type": {
+						"type": "string",
+						"description": "Complete Rust message type name, including generic arguments."
+					},
+					"first_sequence": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "First zero-based publication sequence in this range."
+					},
+					"count": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Number of consecutive publications in this range."
+					}
+				}
+			},
+			"TransformationUpdateMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "TransformationUpdate",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4294967295,
+						"description": "Entity handle returned by `GET /entities`."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/TransformPayload"
+					}
+				}
+			},
+			"TransformPayload": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["position", "scale", "orientation"],
+				"properties": {
+					"position": {
+						"$ref": "#/components/schemas/Vector3"
+					},
+					"scale": {
+						"$ref": "#/components/schemas/Vector3"
+					},
+					"orientation": {
+						"type": "array",
+						"description": "Finite quaternion components in x, y, z, w order. The quaternion must have non-zero length.",
+						"items": {
+							"type": "number",
+							"format": "float"
+						},
+						"minItems": 4,
+						"maxItems": 4
+					}
+				}
+			},
+			"Vector3": {
+				"type": "array",
+				"description": "Three finite x, y, and z components.",
+				"items": {
+					"type": "number",
+					"format": "float"
+				},
+				"minItems": 3,
+				"maxItems": 3
+			},
+			"ConfigurationEvent": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["id", "parameter", "requested", "state"],
+				"properties": {
+					"id": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"parameter": {
+						"type": "string"
+					},
+					"requested": {
+						"$ref": "#/components/schemas/ConfigurationValue"
+					},
+					"state": {
+						"$ref": "#/components/schemas/ConfigurationState"
+					}
+				}
+			},
+			"ConfigurationValue": {
+				"description": "Boolean, signed integer, floating-point, or text configuration value.",
+				"oneOf": [
+					{
+						"type": "boolean"
+					},
+					{
+						"type": "integer"
+					},
+					{
+						"type": "number"
+					},
+					{
+						"type": "string"
+					}
+				]
+			},
+			"ConfigurationState": {
+				"oneOf": [
+					{
+						"$ref": "#/components/schemas/ConfigurationPending"
+					},
+					{
+						"$ref": "#/components/schemas/ConfigurationSet"
+					},
+					{
+						"$ref": "#/components/schemas/ConfigurationNotSet"
+					}
+				],
+				"discriminator": {
+					"propertyName": "status"
+				}
+			},
+			"ConfigurationPending": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["status"],
+				"properties": {
+					"status": {
+						"const": "pending"
+					}
+				}
+			},
+			"ConfigurationSet": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["status", "value"],
+				"properties": {
+					"status": {
+						"const": "set"
+					},
+					"value": {
+						"$ref": "#/components/schemas/ConfigurationValue"
+					}
+				}
+			},
+			"ConfigurationNotSet": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["status", "reason"],
+				"properties": {
+					"status": {
+						"const": "not-set"
+					},
+					"reason": {
+						"type": "string"
+					}
+				}
+			},
+			"ErrorMessage": {
+				"type": "string",
+				"description": "Plain-language error followed by the most likely cause."
+			}
+		},
+		"responses": {
+			"BadRequest": {
+				"description": "The request parameters are malformed.",
+				"content": {
+					"text/plain": {
+						"schema": {
+							"$ref": "#/components/schemas/ErrorMessage"
+						}
+					}
+				}
+			}
+		}
+	}
+}

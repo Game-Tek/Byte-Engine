@@ -2,6 +2,7 @@ import { notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import type * as PageTree from 'fumadocs-core/page-tree';
 import type { TOCItemType } from 'fumadocs-core/toc';
+import type { OpenAPIPageProps_Preloaded } from 'fumadocs-openapi/ui';
 import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
@@ -24,14 +25,17 @@ import {
 	useState,
 } from 'react';
 import browserCollections from '@/.source/browser';
+import { InspectorOpenAPIPage } from '@/components/inspector-openapi-page';
 import { getMarkdownUrl } from '@/lib/llm';
 import { baseOptions } from '@/lib/layout.shared';
+import { inspectorOpenAPI } from '@/lib/openapi';
 import { source } from '@/lib/source';
 
 export type DocsPageData = {
 	tree: object;
 	path: string;
 	url: string;
+	openapiPreloaded?: OpenAPIPageProps_Preloaded['preloaded'];
 };
 
 export const loadDocsPage = createServerFn({
@@ -41,17 +45,22 @@ export const loadDocsPage = createServerFn({
 	.handler(async ({ data: slugs }) => {
 		const page = source.getPage(slugs);
 		if (!page) throw notFound();
+		const openapi = '_openapi' in page.data
+			? await inspectorOpenAPI.preloadOpenAPIPage(page)
+			: undefined;
 
 		return {
 			tree: source.pageTree as object,
 			path: page.path,
 			url: page.url,
+			openapiPreloaded: openapi?.preloaded,
 		};
 	});
 
 type DocsContentProps = {
 	githubUrl: string;
 	markdownUrl: string;
+	openapiPreloaded?: OpenAPIPageProps_Preloaded['preloaded'];
 };
 
 const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps>({
@@ -82,6 +91,18 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 							Steps,
 							Tab,
 							Tabs,
+							OpenAPIPage: (props) => {
+								if (!pageActions.openapiPreloaded) {
+									throw new Error('OpenAPI page data was not preloaded.');
+								}
+
+								return (
+									<InspectorOpenAPIPage
+										{...props}
+										preloaded={pageActions.openapiPreloaded}
+									/>
+								);
+							},
 						}}
 					/>
 				</DocsBody>
@@ -171,7 +192,11 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 			}}
 			tree={tree}
 		>
-			<Content githubUrl={githubUrl} markdownUrl={markdownUrl} />
+			<Content
+				githubUrl={githubUrl}
+				markdownUrl={markdownUrl}
+				openapiPreloaded={data.openapiPreloaded}
+			/>
 		</DocsLayout>
 	);
 }

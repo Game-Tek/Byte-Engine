@@ -31,6 +31,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// To move an entity, send `POST /messages` with a JSON object containing
 /// `type: "TransformationUpdate"`, its numeric `target` handle, and the complete
 /// transform `payload` documented by [`Inspector::post_message`].
+/// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
 
@@ -65,7 +66,10 @@ impl HttpInspectorServer {
 			(&Method::GET, "/messages") => messages_response(&i),
 			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),
 			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
-				Ok(body) => Response::builder().body(Body::from(body)).unwrap(),
+				Ok(body) => Response::builder()
+					.header("Content-Type", "application/json")
+					.body(Body::from(body))
+					.unwrap(),
 				Err(error) => Response::builder()
 					.status(StatusCode::INTERNAL_SERVER_ERROR)
 					.body(Body::from(format!(
@@ -98,11 +102,17 @@ impl HttpInspectorServer {
 
 /// Serializes the current factory-backed entity catalog.
 fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
-	let entity_type = query
-		.and_then(|query| query.strip_prefix("type=").or_else(|| query.strip_prefix("class=")))
-		.filter(|value| !value.is_empty());
+	let entity_type = match parse_entity_query(query) {
+		Ok(entity_type) => entity_type,
+		Err(()) => {
+			return response(
+				StatusCode::BAD_REQUEST,
+				"Entity query is malformed. The most likely cause is an unknown, duplicate, empty, or invalidly encoded `type` or `class` parameter.",
+			);
+		}
+	};
 	let entities = inspector
-		.entities(entity_type)
+		.entities(entity_type.as_deref())
 		.iter()
 		.map(|entity| {
 			serde_json::json!({
@@ -112,6 +122,26 @@ fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Bod
 		})
 		.collect::<Vec<_>>();
 	json_response(&serde_json::Value::Array(entities))
+}
+
+/// Parses the optional single entity filter accepted by the inspection protocol.
+fn parse_entity_query(query: Option<&str>) -> Result<Option<String>, ()> {
+	let Some(query) = query else {
+		return Ok(None);
+	};
+	if query.contains('&') {
+		return Err(());
+	}
+
+	let (name, value) = query.split_once('=').ok_or(())?;
+	if !matches!(name, "type" | "class") {
+		return Err(());
+	}
+	let value = decode_query_component(value)?;
+	if value.is_empty() {
+		return Err(());
+	}
+	Ok(Some(value))
 }
 
 /// Drains and serializes passive message publications without payloads.
@@ -409,7 +439,9 @@ mod tests {
 			.set_read_timeout(Some(Duration::from_secs(1)))
 			.expect("set inspector response timeout");
 		entities_stream
-			.write_all(b"GET /entities HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.write_all(
+				b"GET /entities?type=alloc%3A%3Astring%3A%3AString HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+			)
 			.expect("request observed entities");
 		let mut entities_response = String::new();
 		entities_stream
@@ -570,6 +602,13 @@ mod tests {
 	}
 
 	#[test]
+	fn entity_query_rejects_multiple_and_malformed_filters() {
+		for query in ["type=String&class=String", "unknown=String", "type=", "type=bad%2G"] {
+			assert_eq!(super::parse_entity_query(Some(query)), Err(()));
+		}
+	}
+
+	#[test]
 	fn screenshot_query_decodes_form_components() {
 		use crate::inspector::screenshot::ScreenshotCapture;
 
@@ -637,6 +676,7 @@ mod tests {
 		stream.read_to_string(&mut response).expect("read inspector response");
 
 		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+		assert!(response.contains("content-type: application/json"));
 		assert!(response.contains("\"parameter\":\"render.pass.bloom\""));
 		assert!(response.contains("\"requested\":\"bypassed\""));
 		assert!(response.contains("\"status\":\"pending\""));

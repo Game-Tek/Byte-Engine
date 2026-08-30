@@ -137,7 +137,10 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 							</svg>
 						</a>
 					)}
-					<MarkdownCopyButton markdownUrl={pageActions.markdownUrl} />
+				<MarkdownCopyButton
+					aria-label="Copy Markdown"
+					markdownUrl={pageActions.markdownUrl}
+				/>
 					<ViewOptionsPopover
 						githubUrl={pageActions.githubUrl}
 						markdownUrl={pageActions.markdownUrl}

@@ -39,6 +39,16 @@
 	cursor: alias;
 }
 
+/* Use the copy cursor for controls that place content or links on the clipboard. */
+:is(
+	button[aria-label^='Copy '],
+	button[aria-label^='Copied '],
+	[role='button'][aria-label^='Copy '],
+	[role='button'][aria-label^='Copied ']
+):not(:disabled):not([aria-disabled='true']) {
+	cursor: copy;
+}
+
 /* Add a subtle brand wash along the bottom edge of the Fumadocs sidebar. */
 #nd-sidebar {
 	background-image: linear-gradient(

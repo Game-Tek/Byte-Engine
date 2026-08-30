@@ -96,12 +96,12 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	#[inline]
 	pub fn create(&self, data: T) -> Handle {
 		let handle = Handle::new();
+		if let Some(observer) = &self.observer {
+			record_observed_entity(observer, handle, &data);
+		}
 		let message = CreateMessage::new(handle, data);
 
 		self.channel.send(message);
-		if let Some(observer) = &self.observer {
-			record_observed_entity::<T>(observer, handle);
-		}
 
 		handle
 	}
@@ -123,12 +123,12 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	/// must retain the original entity identity.
 	#[inline]
 	pub fn derive(&self, handle: Handle, data: T) {
+		if let Some(observer) = &self.observer {
+			record_observed_entity(observer, handle, &data);
+		}
 		let message = CreateMessage::new(handle, data);
 
 		self.channel.send(message);
-		if let Some(observer) = &self.observer {
-			record_observed_entity::<T>(observer, handle);
-		}
 	}
 
 	/// Creates a consumer for creation messages published after registration.
@@ -146,11 +146,11 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	}
 }
 
-/// Keeps the enabled diagnostics path out of ordinary factory publication code.
+/// Records type metadata and selected borrowed values before the factory takes ownership.
 #[cold]
 #[inline(never)]
-fn record_observed_entity<T: 'static>(observer: &MessageObserver, handle: Handle) {
-	observer.observe_entity::<T>(handle);
+fn record_observed_entity<T: 'static>(observer: &MessageObserver, handle: Handle, value: &T) {
+	observer.observe_entity(handle, value);
 }
 
 #[derive(Debug, Clone)]

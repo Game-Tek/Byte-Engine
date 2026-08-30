@@ -181,7 +181,7 @@ use crate::{
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},
-	gameplay::{Transform, anchor::AnchorSystem, transform::TransformationUpdate},
+	gameplay::{Name, Transform, anchor::AnchorSystem, transform::TransformationUpdate},
 	physics::{self, dynabit},
 	rendering::{Camera, UpdatePose},
 };
@@ -197,6 +197,7 @@ mod tests {
 		let mut world = DefaultWorld::new();
 		let mut renderables = world.factory::<RenderableMesh>().listener();
 		let mut bodies = world.factory::<physics::Body>().listener();
+		let mut names = world.factory::<Name>().listener();
 		let mut transforms = world.transforms_channel().listener();
 
 		let handle: Handle = world
@@ -205,11 +206,15 @@ mod tests {
 				physics::BodyTypes::Dynamic,
 				physics::Shapes::Sphere { radius: 1.0 },
 			))
+			.with(Name::new("ball"))
 			.with(Transform::from_position(math::Point::new(1.0, 2.0, 3.0)))
 			.into();
 
 		assert_eq!(renderables.read().expect("renderable creation").handle(), handle);
 		assert_eq!(bodies.read().expect("body creation").handle(), handle);
+		let name = names.read().expect("name creation");
+		assert_eq!(name.handle(), handle);
+		assert_eq!(name.data().as_str(), "ball");
 		assert_eq!(transforms.read().expect("transform creation").handle(), handle);
 	}
 

@@ -4,11 +4,12 @@
 //! [`crate::core::message_bus::MessageBus::observe`]. Publication ranges come
 //! from the bus's existing route counters, so producers do no extra work.
 //! Ranges preserve sequence within one route, not ordering between routes.
-//! Factory hooks retain handles and Rust type names, never message payloads or
-//! created values.
+//! Factory hooks retain handles and Rust type names, never message payloads.
+//! Startup-installed typed collectors may copy selected factory values into
+//! their owning diagnostic subsystem.
 
 use std::{
-	any::{TypeId, type_name},
+	any::{Any, TypeId, type_name},
 	collections::HashMap,
 	fmt,
 	sync::Arc,
@@ -20,6 +21,9 @@ use utils::sync::Mutex;
 use crate::core::{factory::Handle, message_bus::TopicSnapshot};
 
 const INLINE_ENTITY_TYPE_CAPACITY: usize = 4;
+
+type ObserveEntityValue = Box<dyn Fn(Handle, &dyn Any) + Send + Sync + 'static>;
+type ForgetEntityValue = Box<dyn Fn(Handle) + Send + Sync + 'static>;
 
 /// The `MessageObservationError` enum explains why passive observation could not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +124,10 @@ impl MessageObserver {
 		Self {
 			inner: Arc::new(MessageObserverInner {
 				message_cursors: Mutex::new(vec![0; max_topics].into_boxed_slice()),
-				entities: Mutex::new(HashMap::new()),
+				entities: Mutex::new(EntityObservationState {
+					catalog: HashMap::new(),
+					value_collectors: HashMap::new(),
+				}),
 			}),
 		}
 	}
@@ -151,6 +158,7 @@ impl MessageObserver {
 	pub fn entities(&self) -> Vec<ObservedEntity> {
 		let entities = self.inner.entities.lock();
 		let mut snapshot = entities
+			.catalog
 			.iter()
 			.map(|(&handle, types)| ObservedEntity {
 				handle,
@@ -161,29 +169,74 @@ impl MessageObserver {
 		snapshot
 	}
 
-	/// Adds one semantic factory representation without retaining the created value.
-	pub(crate) fn observe_entity<T: 'static>(&self, handle: Handle) {
+	/// Adds one semantic factory representation and forwards its borrowed value to a matching collector.
+	pub(crate) fn observe_entity<T: 'static>(&self, handle: Handle, value: &T) {
 		let entity_type = ObservedEntityType {
 			id: TypeId::of::<T>(),
 			name: type_name::<T>(),
 		};
 		let mut entities = self.inner.entities.lock();
-		let types = entities.entry(handle).or_default();
+		let types = entities.catalog.entry(handle).or_default();
 		if types.iter().all(|existing| existing.id != entity_type.id) {
 			types.push(entity_type);
 		}
+		if let Some(collector) = entities.value_collectors.get(&entity_type.id) {
+			(collector.observe)(handle, value);
+		}
+	}
+
+	/// Registers one startup-time collector for selected factory values and deletions.
+	pub(crate) fn collect_entity_values<T, O, F>(&self, observe: O, forget: F)
+	where
+		T: 'static,
+		O: Fn(Handle, &T) + Send + Sync + 'static,
+		F: Fn(Handle) + Send + Sync + 'static,
+	{
+		let entity_type = TypeId::of::<T>();
+		let collector = EntityValueCollector {
+			observe: Box::new(move |handle, value| {
+				let value = value
+					.downcast_ref::<T>()
+					.expect("An entity value collector must receive its registered Rust type");
+				observe(handle, value);
+			}),
+			forget: Box::new(forget),
+		};
+		let mut entities = self.inner.entities.lock();
+		assert!(
+			!entities.value_collectors.contains_key(&entity_type),
+			"Entity value collection is already registered. The most likely cause is that more than one inspector tried to collect the same component type."
+		);
+		let replaced = entities.value_collectors.insert(entity_type, collector);
+		debug_assert!(replaced.is_none());
 	}
 
 	/// Removes a terminally deleted handle from the current entity catalog.
 	pub(crate) fn forget_entity(&self, handle: Handle) {
-		self.inner.entities.lock().remove(&handle);
+		let mut entities = self.inner.entities.lock();
+		entities.catalog.remove(&handle);
+		for collector in entities.value_collectors.values() {
+			(collector.forget)(handle);
+		}
 	}
 }
 
 /// The `MessageObserverInner` struct owns the storage shared by producers and the inspector.
 struct MessageObserverInner {
 	message_cursors: Mutex<Box<[u64]>>,
-	entities: Mutex<HashMap<Handle, SmallVec<[ObservedEntityType; INLINE_ENTITY_TYPE_CAPACITY]>>>,
+	entities: Mutex<EntityObservationState>,
+}
+
+/// The `EntityObservationState` struct keeps the entity catalog and its startup-installed value collectors under one lock.
+struct EntityObservationState {
+	catalog: HashMap<Handle, SmallVec<[ObservedEntityType; INLINE_ENTITY_TYPE_CAPACITY]>>,
+	value_collectors: HashMap<TypeId, EntityValueCollector>,
+}
+
+/// The `EntityValueCollector` struct forwards one selected component type without retaining general factory values.
+struct EntityValueCollector {
+	observe: ObserveEntityValue,
+	forget: ForgetEntityValue,
 }
 
 #[derive(Clone, Copy)]

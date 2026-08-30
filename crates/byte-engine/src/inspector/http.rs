@@ -24,9 +24,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// Clients use this server to inspect factory-created entities and drain
 /// passive publication ranges. `GET /entities` returns each numeric `target`
-/// and its Rust `types`. `GET /messages` returns the `scope`, complete generic
-/// `type`, `first_sequence`, and `count` for each route that published since
-/// the previous request. Payloads remain opaque.
+/// and its optional `name` plus Rust `types`. Filter entities with an exact
+/// `name`, `type`, or both. `GET /messages` returns the `scope`, complete
+/// generic `type`, `first_sequence`, and `count` for each route that published
+/// since the previous request. Payloads remain opaque.
 ///
 /// `POST /messages` accepts message types registered through
 /// [`Inspector::register_message`]. To move an entity, send a JSON object with
@@ -103,21 +104,22 @@ impl HttpInspectorServer {
 
 /// Serializes the current factory-backed entity catalog.
 fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
-	let entity_type = match parse_entity_query(query) {
-		Ok(entity_type) => entity_type,
+	let query = match parse_entity_query(query) {
+		Ok(query) => query,
 		Err(()) => {
 			return response(
 				StatusCode::BAD_REQUEST,
-				"Entity query is malformed. The most likely cause is an unknown, duplicate, empty, or invalidly encoded `type` or `class` parameter.",
+				"Entity query is malformed. The most likely cause is an unknown, duplicate, empty, or invalidly encoded `type`, `class`, or `name` parameter.",
 			);
 		}
 	};
 	let entities = inspector
-		.entities(entity_type.as_deref())
+		.entities(query.entity_type.as_deref(), query.name.as_deref())
 		.iter()
 		.map(|entity| {
 			serde_json::json!({
 				"target": entity.handle().id(),
+				"name": entity.name(),
 				"types": entity.types(),
 			})
 		})
@@ -125,24 +127,36 @@ fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Bod
 	json_response(&serde_json::Value::Array(entities))
 }
 
-/// Parses the optional single entity filter accepted by the inspection protocol.
-fn parse_entity_query(query: Option<&str>) -> Result<Option<String>, ()> {
-	let Some(query) = query else {
-		return Ok(None);
-	};
-	if query.contains('&') {
-		return Err(());
-	}
+#[derive(Debug, Default, PartialEq, Eq)]
+/// The `EntityQuery` struct contains the exact-match filters accepted by the entity endpoint.
+struct EntityQuery {
+	entity_type: Option<String>,
+	name: Option<String>,
+}
 
-	let (name, value) = query.split_once('=').ok_or(())?;
-	if !matches!(name, "type" | "class") {
-		return Err(());
+/// Parses optional entity filters without accepting unknown or duplicate parameters.
+fn parse_entity_query(query: Option<&str>) -> Result<EntityQuery, ()> {
+	let Some(query) = query else {
+		return Ok(EntityQuery::default());
+	};
+
+	let mut parsed = EntityQuery::default();
+	for parameter in query.split('&') {
+		let (name, value) = parameter.split_once('=').ok_or(())?;
+		let value = decode_query_component(value)?;
+		if value.is_empty() {
+			return Err(());
+		}
+		let slot = match name {
+			"type" | "class" => &mut parsed.entity_type,
+			"name" => &mut parsed.name,
+			_ => return Err(()),
+		};
+		if slot.replace(value).is_some() {
+			return Err(());
+		}
 	}
-	let value = decode_query_component(value)?;
-	if value.is_empty() {
-		return Err(());
-	}
-	Ok(Some(value))
+	Ok(parsed)
 }
 
 /// Drains and serializes passive message publications without payloads.
@@ -369,7 +383,7 @@ mod tests {
 			listener::{DefaultListener, Listener as _},
 			message_bus::MessageBus,
 		},
-		gameplay::TransformationUpdate,
+		gameplay::{Name, TransformationUpdate},
 		inspector::{Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::Screenshot},
 	};
 
@@ -470,6 +484,38 @@ mod tests {
 		assert_eq!(messages["messages"][0]["type"], std::any::type_name::<Option<u32>>());
 		assert_eq!(messages["messages"][0]["first_sequence"], 0);
 		assert_eq!(messages["messages"][0]["count"], 1);
+	}
+
+	#[test]
+	fn entity_endpoint_returns_and_filters_attached_names() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let messages = message_bus.new_scope("named-http-entity-test");
+		let labels = messages.factory::<String>();
+		let names = messages.factory::<Name>();
+		let inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+
+		let named = labels.create("crate-model".to_string());
+		names.derive(named, Name::new("shipping crate"));
+		let _unnamed = labels.create("barrel-model".to_string());
+
+		let response = super::entities_response(&inspector, Some("name=shipping+crate"));
+		assert_eq!(response.status(), oxhttp::model::StatusCode::OK);
+		let entities: serde_json::Value = serde_json::from_reader(response.into_body()).expect("parse named entities");
+		assert_eq!(entities.as_array().expect("entity array").len(), 1);
+		assert_eq!(entities[0]["target"], named.id());
+		assert_eq!(entities[0]["name"], "shipping crate");
+		assert!(
+			entities[0]["types"]
+				.as_array()
+				.expect("entity types")
+				.iter()
+				.any(|entity_type| entity_type == std::any::type_name::<Name>())
+		);
+
+		let response = super::entities_response(&inspector, Some("name=crate"));
+		let entities: serde_json::Value = serde_json::from_reader(response.into_body()).expect("parse exact name filter");
+		assert!(entities.as_array().expect("entity array").is_empty());
 	}
 
 	#[test]
@@ -603,10 +649,27 @@ mod tests {
 	}
 
 	#[test]
-	fn entity_query_rejects_multiple_and_malformed_filters() {
-		for query in ["type=String&class=String", "unknown=String", "type=", "type=bad%2G"] {
+	fn entity_query_rejects_duplicate_and_malformed_filters() {
+		for query in [
+			"type=String&class=String",
+			"name=crate&name=barrel",
+			"unknown=String",
+			"type=",
+			"type=bad%2G",
+		] {
 			assert_eq!(super::parse_entity_query(Some(query)), Err(()));
 		}
+	}
+
+	#[test]
+	fn entity_query_combines_type_and_name_filters() {
+		assert_eq!(
+			super::parse_entity_query(Some("class=alloc%3A%3Astring%3A%3AString&name=shipping+crate")),
+			Ok(super::EntityQuery {
+				entity_type: Some("alloc::string::String".to_string()),
+				name: Some("shipping crate".to_string()),
+			})
+		);
 	}
 
 	#[test]

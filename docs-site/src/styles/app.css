@@ -78,11 +78,34 @@
 	color: hsl(25 86% 44%);
 }
 
+.be-rust-module-name {
+	display: inline-flex;
+	width: 100%;
+	min-width: 0;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+.be-rust-module-kind {
+	flex-shrink: 0;
+	margin-inline-start: auto;
+	color: hsl(25 86% 44%);
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	font-weight: 500;
+	line-height: 1rem;
+	white-space: nowrap;
+}
+
 .dark .be-api-navigation-kind[data-kind='http'] {
 	color: hsl(270 90% 76%);
 }
 
 .dark .be-api-navigation-kind[data-kind='rust'] {
+	color: hsl(28 95% 68%);
+}
+
+.dark .be-rust-module-kind {
 	color: hsl(28 95% 68%);
 }
 

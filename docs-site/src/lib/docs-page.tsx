@@ -247,6 +247,28 @@ function ApiNavigationName({ name, kind }: { name: string; kind: string }) {
 	);
 }
 
+function RustModuleNavigationName({ name }: { name: string }) {
+	return (
+		<span className="be-rust-module-name">
+			<span>{name}</span>
+			<span className="be-rust-module-kind">mod</span>
+		</span>
+	);
+}
+
+// Generated folders under the crate represent Rust modules. Decorate the
+// merged tree so nested modules receive the marker without changing output.
+function decorateRustModuleNavigation(node: Node): Node {
+	if (node.type !== 'folder') return node;
+
+	const name = getPageTreeName(node.name);
+	return {
+		...node,
+		name: name ? <RustModuleNavigationName name={name} /> : node.name,
+		children: node.children.map(decorateRustModuleNavigation),
+	};
+}
+
 // The HTTP reference is virtual and the Rust reference is generated, so add
 // their shared navigation treatment after both sources become one page tree.
 function decorateApiNavigation(node: Node): Node {
@@ -271,6 +293,7 @@ function decorateApiNavigation(node: Node): Node {
 		return {
 			...node,
 			name: <ApiNavigationName name="byte_engine" kind="rust" />,
+			children: node.children.map(decorateRustModuleNavigation),
 			icon: (
 				<IconBox
 					aria-hidden

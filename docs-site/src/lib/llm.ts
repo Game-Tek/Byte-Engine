@@ -4,7 +4,13 @@ import { source } from '@/lib/source';
  * Return a page in the portable Markdown form exposed to agents.
  */
 export async function getLLMText(page: (typeof source)['$inferPage']) {
-	const processed = await page.data.getText('processed');
+	// Virtual OpenAPI pages expose searchable structured text instead of
+	// compiled MDX text.
+	const processed = 'getText' in page.data
+		? await page.data.getText('processed')
+		: page.data.structuredData.contents
+			.map(({ content }) => content)
+			.join('\n\n');
 
 	return `# ${page.data.title} (${page.url})\n\n${processed}`;
 }

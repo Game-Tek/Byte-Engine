@@ -9,7 +9,7 @@ export const Route = createFileRoute('/')({
 	component: Home,
 	loader: async () => {
 		const data = await loadDocsPage({ data: [] });
-		await preloadDocsContent(data.path);
+		await preloadDocsContent(data);
 		return data;
 	},
 });

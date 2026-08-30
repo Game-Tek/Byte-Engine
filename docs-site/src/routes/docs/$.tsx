@@ -16,7 +16,7 @@ export const Route = createFileRoute('/docs/$')({
 
 		const slugs = params._splat?.split('/') ?? [];
 		const data = await loadDocsPage({ data: slugs });
-		await preloadDocsContent(data.path);
+		await preloadDocsContent(data);
 		return data;
 	},
 });

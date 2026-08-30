@@ -4,14 +4,11 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
-    "predev": "npm run generate:inspector-api",
     "dev": "vite dev",
     "build": "npm run generate:api && npm run build:site && npm run check:links",
     "build:site": "vite build",
     "check:links": "node ../scripts/check-doc-links.mjs",
-    "generate:api": "npm run generate:rust-api && npm run generate:inspector-api",
-    "generate:rust-api": "../scripts/generate-api-docs.sh",
-    "generate:inspector-api": "node ./scripts/generate-inspector-api.mjs",
+    "generate:api": "../scripts/generate-api-docs.sh",
     "start": "node .output/server/index.mjs",
     "postinstall": "fumadocs-mdx"
   },

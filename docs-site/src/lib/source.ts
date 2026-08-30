@@ -27,7 +27,6 @@ import {
 	IconWrenchScrewdriver,
 } from 'nucleo-glass';
 import { createElement, type ComponentType } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { docs } from '@/.source/server';
 import { inspectorOpenAPI } from '@/lib/openapi';
 
@@ -75,7 +74,15 @@ const icons = {
 } satisfies Record<string, GlassIcon>;
 
 export const source = loader({
-	source: docs.toFumadocsSource(),
+	source: {
+		docs: docs.toFumadocsSource(),
+		// Keep the OpenAPI schema as the source of truth. Fumadocs creates the
+		// operation pages in memory when the site starts or builds.
+		inspector: await inspectorOpenAPI.staticSource({
+			baseDir: 'api/inspector',
+			meta: true,
+		}),
+	},
 	baseUrl: '/docs',
 	plugins: [inspectorOpenAPI.loaderPlugin()],
 	icon(icon) {
@@ -86,12 +93,10 @@ export const source = loader({
 		if (!(icon in icons)) return;
 
 		const Icon = icons[icon as keyof typeof icons];
-		return renderToStaticMarkup(
-			createElement(Icon, {
-				'aria-hidden': true,
-				className: 'be-glass-icon',
-				uniqueId: `be-${icon.toLowerCase()}-`,
-			}),
-		);
+		return createElement(Icon, {
+			'aria-hidden': true,
+			className: 'be-glass-icon',
+			uniqueId: `be-${icon.toLowerCase()}-`,
+		});
 	},
 });

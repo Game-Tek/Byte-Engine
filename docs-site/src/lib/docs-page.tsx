@@ -1,8 +1,11 @@
 import { notFound } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
-import type * as PageTree from 'fumadocs-core/page-tree';
+import {
+	deserializePageTree,
+	type SerializedPageTree,
+} from 'fumadocs-core/source/client';
 import type { TOCItemType } from 'fumadocs-core/toc';
-import type { OpenAPIPageProps_Preloaded } from 'fumadocs-openapi/ui';
+import type { OpenAPIPageProps_Spec } from 'fumadocs-openapi/ui';
 import { GithubInfo } from 'fumadocs-ui/components/github-info';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
@@ -28,15 +31,30 @@ import browserCollections from '@/.source/browser';
 import { InspectorOpenAPIPage } from '@/components/inspector-openapi-page';
 import { getMarkdownUrl } from '@/lib/llm';
 import { baseOptions } from '@/lib/layout.shared';
-import { inspectorOpenAPI } from '@/lib/openapi';
 import { source } from '@/lib/source';
 
-export type DocsPageData = {
-	tree: object;
+type SharedDocsPageData = {
+	tree: SerializedPageTree;
 	path: string;
 	url: string;
-	openapiPreloaded?: OpenAPIPageProps_Preloaded['preloaded'];
 };
+
+type MdxDocsPageData = SharedDocsPageData & {
+	kind: 'mdx';
+};
+
+type OpenAPITocItem = Omit<TOCItemType, 'title'> & {
+	title: string;
+};
+
+type OpenAPIDocsPageData = SharedDocsPageData & {
+	kind: 'openapi';
+	title: string;
+	toc: OpenAPITocItem[];
+	openapiProps: OpenAPIPageProps_Spec;
+};
+
+export type DocsPageData = MdxDocsPageData | OpenAPIDocsPageData;
 
 export const loadDocsPage = createServerFn({
 	method: 'GET',
@@ -45,22 +63,34 @@ export const loadDocsPage = createServerFn({
 	.handler(async ({ data: slugs }) => {
 		const page = source.getPage(slugs);
 		if (!page) throw notFound();
-		const openapi = '_openapi' in page.data
-			? await inspectorOpenAPI.preloadOpenAPIPage(page)
-			: undefined;
-
-		return {
-			tree: source.pageTree as object,
+		const shared = {
+			tree: await source.serializePageTree(source.pageTree),
 			path: page.path,
 			url: page.url,
-			openapiPreloaded: openapi?.preloaded,
+		};
+
+		if (page.type === 'inspector') {
+			return {
+				...shared,
+				kind: 'openapi' as const,
+				title: page.data.title ?? 'Inspector API',
+				toc: page.data.toc.map(({ title, ...item }) => ({
+					...item,
+					title: typeof title === 'string' ? title : '',
+				})),
+				openapiProps: page.data.getOpenAPIPageProps(),
+			};
+		}
+
+		return {
+			...shared,
+			kind: 'mdx' as const,
 		};
 	});
 
 type DocsContentProps = {
 	githubUrl: string;
 	markdownUrl: string;
-	openapiPreloaded?: OpenAPIPageProps_Preloaded['preloaded'];
 };
 
 const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps>({
@@ -91,18 +121,6 @@ const clientLoader = browserCollections.docs.createClientLoader<DocsContentProps
 							Steps,
 							Tab,
 							Tabs,
-							OpenAPIPage: (props) => {
-								if (!pageActions.openapiPreloaded) {
-									throw new Error('OpenAPI page data was not preloaded.');
-								}
-
-								return (
-									<InspectorOpenAPIPage
-										{...props}
-										preloaded={pageActions.openapiPreloaded}
-									/>
-								);
-							},
 						}}
 					/>
 				</DocsBody>
@@ -157,16 +175,15 @@ function useVisibleTableOfContents(
 	return visibleToc;
 }
 
-export async function preloadDocsContent(path: string) {
-	await clientLoader.preload(path);
+export async function preloadDocsContent(data: DocsPageData) {
+	if (data.kind === 'mdx') {
+		await clientLoader.preload(data.path);
+	}
 }
 
 export function DocsPageContent({ data }: { data: DocsPageData }) {
-	const Content = clientLoader.getComponent(data.path);
-	const markdownUrl = getMarkdownUrl(data.url);
-	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/main/docs/${data.path}`;
 	const tree = useMemo(
-		() => transformPageTree(data.tree as PageTree.Root),
+		() => deserializePageTree(data.tree),
 		[data.tree],
 	);
 	const tabs = useMemo(
@@ -192,55 +209,37 @@ export function DocsPageContent({ data }: { data: DocsPageData }) {
 			}}
 			tree={tree}
 		>
-			<Content
-				githubUrl={githubUrl}
-				markdownUrl={markdownUrl}
-				openapiPreloaded={data.openapiPreloaded}
-			/>
+			{data.kind === 'openapi' ? (
+				<OpenAPIDocsContent data={data} />
+			) : (
+				<MdxDocsContent data={data} />
+			)}
 		</DocsLayout>
 	);
 }
 
-function transformPageTree(tree: PageTree.Root): PageTree.Root {
-	function transformIcon(icon: PageTree.Item['icon']) {
-		if (typeof icon !== 'string') return icon;
+function MdxDocsContent({ data }: { data: MdxDocsPageData }) {
+	const Content = clientLoader.getComponent(data.path);
+	const markdownUrl = getMarkdownUrl(data.url);
+	const githubUrl = `https://github.com/Game-Tek/Byte-Engine/blob/main/docs/${data.path}`;
 
-		return (
-			<span
-				dangerouslySetInnerHTML={{
-					__html: icon,
-				}}
-			/>
-		);
-	}
+	return <Content githubUrl={githubUrl} markdownUrl={markdownUrl} />;
+}
 
-	function transform<T extends PageTree.Item | PageTree.Separator>(item: T) {
-		if (typeof item.icon !== 'string') return item;
+function OpenAPIDocsContent({ data }: { data: OpenAPIDocsPageData }) {
+	const contentRef = useRef<HTMLDivElement>(null);
+	const visibleToc = useVisibleTableOfContents(data.toc, contentRef);
 
-		return {
-			...item,
-			icon: transformIcon(item.icon),
-		};
-	}
-
-	function transformFolder(folder: PageTree.Folder): PageTree.Folder {
-		return {
-			...folder,
-			icon: transformIcon(folder.icon),
-			index: folder.index ? transform(folder.index) : undefined,
-			children: folder.children.map((item) => {
-				if (item.type === 'folder') return transformFolder(item);
-				return transform(item);
-			}),
-		};
-	}
-
-	return {
-		...tree,
-		fallback: tree.fallback ? transformPageTree(tree.fallback) : undefined,
-		children: tree.children.map((item) => {
-			if (item.type === 'folder') return transformFolder(item);
-			return transform(item);
-		}),
-	};
+	return (
+		<DocsPage
+			full
+			toc={visibleToc}
+			footer={{ className: 'be-page-navigation' }}
+		>
+			<DocsTitle>{data.title}</DocsTitle>
+			<DocsBody ref={contentRef}>
+				<InspectorOpenAPIPage {...data.openapiProps} />
+			</DocsBody>
+		</DocsPage>
+	);
 }

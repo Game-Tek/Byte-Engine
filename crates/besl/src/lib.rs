@@ -4,7 +4,7 @@
 //! linked [`NodeReference`] to the resource-management shader generator or use
 //! [`vm`] when tests need to execute BESL semantics directly.
 //!
-//! See the [BESL language reference](https://byte-engine.0x44491229.dev/docs/reference/besl)
+//! See the [BESL language reference](/docs/reference/besl)
 //! for syntax, interfaces, stages, sidecar settings, and supported operations.
 
 pub mod lexer;

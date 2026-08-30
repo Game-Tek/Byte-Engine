@@ -217,13 +217,13 @@ platform-generator paths. For language details, see the
 
 Before you make a large change, read the design documentation for the affected system:
 
-- [Actor pattern](https://byte-engine.0x44491229.dev/docs/develop/design/actor-pattern): message-passing system
+- [Actor pattern](https://byte-engine.0x44491229.dev/docs/develop/core/actor-pattern): message-passing system
   boundaries, factories, handles, and listeners.
-- [Input](https://byte-engine.0x44491229.dev/docs/develop/input): device triggers,
+- [Input](https://byte-engine.0x44491229.dev/docs/reference/input): device triggers,
   seats, actions, value mappings, and tick policies.
-- [Rendering](https://byte-engine.0x44491229.dev/docs/develop/design/rendering): render orchestrators,
+- [Rendering](https://byte-engine.0x44491229.dev/docs/develop/core/rendering): render orchestrators,
   render systems, render domains, and render models.
-- [GUI](https://byte-engine.0x44491229.dev/docs/develop/ui): retained async component primitives
+- [GUI](https://byte-engine.0x44491229.dev/docs/develop/gui): retained async component primitives
   and UI render flow.
 - [Resource management](https://byte-engine.0x44491229.dev/docs/develop/resource-management): asset
   baking, resource storage, runtime reads, and `beld`.
@@ -263,7 +263,7 @@ Publishing-specific verification and crate order are documented in
 
 ## 🔗 Documentation and links
 
-- API documentation: <https://docs.rs/byte-engine>
+- API documentation: <https://byte-engine.0x44491229.dev/docs/api/latest/byte_engine>
 - Repository: <https://github.com/Game-Tek/Byte-Engine>
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 - Publishing notes: [`PUBLISHING.md`](PUBLISHING.md)

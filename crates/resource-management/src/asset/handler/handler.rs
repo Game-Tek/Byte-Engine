@@ -1,6 +1,6 @@
 /// The `AssetHandler` trait provides source-format extensions for asset baking.
 ///
-/// See the [assets guide](https://byte-engine.0x44491229.dev/docs/develop/resource-management/assets)
+/// See the [assets guide](/docs/develop/resource-management/assets)
 /// before implementing a new source-format handler.
 pub trait AssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool;

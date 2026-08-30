@@ -9,9 +9,7 @@
 //! Use [`pipelines::simple`] for debugging or prototypes. The
 //! [`pipelines::visibility`] pipeline is the primary material and lighting path.
 //!
-//! See the [rendering guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering)
-//! for the relationships between render orchestrators, systems, domains, and models.
-//! Follow the [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
+//! Follow the [physically based lighting reference](/docs/reference/lighting)
 //! to create and submit scene lights with lux, candela, lumens, or nits.
 
 use ::utils::Extent;

@@ -180,7 +180,7 @@ fn active_boolean_mappings<'a>(
 fn unsupported_conversion<T>() -> Option<T> {
 	log::error!(
 		"Input action conversion is not implemented for this value combination. The most likely cause is that a trigger mapping produces a value that the action output type cannot accept. See {}.",
-		crate::online_docs_url("develop/input")
+		crate::online_docs_url("reference/input")
 	);
 	None
 }

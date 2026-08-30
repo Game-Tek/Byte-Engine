@@ -132,8 +132,8 @@ fn asset_request_error(id: &str, error: &LoadMessages, asset_manager: &AssetMana
 /// File-system paths are relative to the assets directory.
 /// After construction, optionally install an asset manager in debug builds,
 /// then obtain typed resources through [`Self::request`].
-/// See [debug asset loading](https://byte-engine.0x44491229.dev/docs/develop/resource-management/debug-loading)
-/// and [resource loading](https://byte-engine.0x44491229.dev/docs/develop/resource-management/resources)
+/// See [debug asset loading](/docs/develop/resource-management/debug-loading)
+/// and [resource loading](/docs/develop/resource-management/resources)
 /// for the development and release workflows.
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]

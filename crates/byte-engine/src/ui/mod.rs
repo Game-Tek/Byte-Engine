@@ -6,7 +6,7 @@
 //! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
 //! integrating UI into a graphics application.
 //!
-//! See the [GUI guide](https://byte-engine.0x44491229.dev/docs/develop/ui)
+//! See the [GUI guide](/docs/develop/gui)
 //! for component, layout, event, focus, and rendering guidance.
 
 use crate::core::Entity;

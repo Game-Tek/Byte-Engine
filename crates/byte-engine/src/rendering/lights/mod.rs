@@ -10,7 +10,7 @@
 //! Transform positions and photometric reference distances use meters. The renderer resolves authored
 //! units on the CPU and sends scene-referred RGB lux or candela to the GPU.
 //!
-//! Follow the [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
+//! Follow the [physically based lighting reference](/docs/reference/lighting)
 //! to choose units and submit a light to the active world.
 
 use crate::core::Entity;

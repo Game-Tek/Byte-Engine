@@ -37,7 +37,7 @@ impl From<(f32, f32, f32)> for LightColor {
 /// The `PhotometricIntensity` enum provides physical light quantities with enough context for analytic lights.
 ///
 /// You can use every variant with every light shape. See the
-/// [physically based lighting guide](https://byte-engine.0x44491229.dev/docs/use/lighting)
+/// [physically based lighting reference](/docs/reference/lighting)
 /// to choose the quantity and its reference values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PhotometricIntensity {

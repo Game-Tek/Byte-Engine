@@ -10,7 +10,7 @@ readonly REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly JSON_TARGET="$REPOSITORY_ROOT/target/api-docs-json"
 readonly TOOL_ROOT="$REPOSITORY_ROOT/target/api-docs-tools"
 readonly GENERATOR="$TOOL_ROOT/bin/cargo-docs-md"
-readonly OUTPUT="$REPOSITORY_ROOT/docs/api"
+readonly OUTPUT="$REPOSITORY_ROOT/docs/api/latest"
 
 if ! rustup run "$TOOLCHAIN" rustc --version >/dev/null 2>&1; then
 	printf 'Missing Rust toolchain %s. Install it with `rustup toolchain install %s`.\n' \
@@ -42,11 +42,14 @@ readonly STAGING="$(mktemp -d "$JSON_TARGET/markdown.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 
 "$GENERATOR" docs-md \
-	--path "$JSON_TARGET/doc/byte_engine.json" \
+	--dir "$JSON_TARGET/doc" \
 	--output "$STAGING" \
+	--primary-crate byte_engine \
 	--exclude-private \
 	--full-method-docs \
-	--source-locations
+	--source-locations \
+	--no-mdbook \
+	--no-search-index
 
 node "$SCRIPT_DIR/prepare-api-docs.mjs" "$STAGING"
 

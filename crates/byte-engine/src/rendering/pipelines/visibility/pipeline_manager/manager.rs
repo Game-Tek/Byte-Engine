@@ -573,8 +573,9 @@ impl VisibilityPipelineManager {
 			.any(|(_, light, _)| ies_profile_resource_id(light) == Some(key.as_str()))
 		{
 			warn!(
-				"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See https://byte-engine.0x44491229.dev/docs/use/lighting#use-an-ies-profile",
-				key
+				"Visibility IES profile is invalid: {}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See {}",
+				key,
+				crate::online_docs_url("reference/lighting#use-an-ies-profile")
 			);
 		}
 		if self.loaded_textures.insert(index)

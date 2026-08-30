@@ -15,7 +15,7 @@
 //! default_setup(&mut application);
 //! ```
 //!
-//! Start with the [getting started guide](https://byte-engine.0x44491229.dev/docs/get-started)
+//! Start with the [getting started guide](/docs/get-started)
 //! for installation, project setup, and the first application workflow.
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, trait_alias, unsize)]
@@ -78,13 +78,13 @@ extern crate utils as engine_utils;
 pub use math;
 pub use time::MediaTime;
 
-const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+pub(crate) const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
 	Some(url) => url,
 	None => "https://byte-engine.0x44491229.dev/docs",
 };
 
 /// Builds a link to one online documentation page.
-fn online_docs_url(path: &str) -> String {
+pub(crate) fn online_docs_url(path: &str) -> String {
 	format!(
 		"{}/{}",
 		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),

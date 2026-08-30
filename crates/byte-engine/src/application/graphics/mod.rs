@@ -8,7 +8,7 @@
 //! renderer, and application factories. General startup defaults and external
 //! adapters are kept behind the setup functions re-exported from this module.
 //!
-//! Follow the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+//! Follow the [sample project guide](/docs/use/sample-project)
 //! for the complete application setup sequence.
 
 // Bound ready work while the temporary Compio runtime still shares the application thread.
@@ -42,7 +42,7 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 /// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 ///
-/// See the [sample project guide](https://byte-engine.0x44491229.dev/docs/use/sample-project)
+/// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
 pub struct GraphicsApplication {
 	application: BaseApplication,
@@ -315,7 +315,7 @@ impl GraphicsApplication {
 					} else if !new_devices.is_empty() {
 						log::warn!(
 							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
-							crate::online_docs_url("develop/input")
+							crate::online_docs_url("reference/input")
 						);
 					}
 

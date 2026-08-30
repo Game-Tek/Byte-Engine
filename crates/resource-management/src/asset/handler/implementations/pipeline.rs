@@ -11,8 +11,9 @@ impl AssetHandler for PipelineAssetHandler {
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 		let (source, _, format) = context.resolve(id).await.inspect_err(|_| {
 			context.error(format_args!(
-				"Pipeline asset '{}' could not be loaded. The most likely cause is that the application's assets/byte-engine link does not expose the engine asset directory. See https://byte-engine.0x44491229.dev/docs/develop/resource-management/baking-app-resources.",
-				id.as_ref()
+				"Pipeline asset '{}' could not be loaded. The most likely cause is that the application's assets/byte-engine link does not expose the engine asset directory. See {}.",
+				id.as_ref(),
+				crate::online_docs_url("develop/resource-management/baking-app-resources")
 			));
 		})?;
 

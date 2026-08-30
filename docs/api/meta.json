@@ -2,6 +2,7 @@
 	"title": "Rust API",
 	"description": "Generated API reference for the byte-engine crate.",
 	"icon": "Braces",
-	"pagesIndex": "index",
+	"pagesIndex": "[Rust API](/docs/api/latest)",
+	"pages": ["...latest"],
 	"root": true
 }

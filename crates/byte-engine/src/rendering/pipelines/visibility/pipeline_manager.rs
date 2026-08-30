@@ -121,8 +121,6 @@ impl VisibilityPipelineSettings {
 /// texture I/O, shader-table updates, dependency closure, and sink-local draw
 /// preparation. Its resource-manager client owns request and transfer state.
 ///
-/// See the [visibility render-model guide](https://byte-engine.0x44491229.dev/docs/develop/design/rendering/render-models/visibility)
-/// for its frame stages, resource ownership, and material evaluation path.
 pub struct VisibilityPipelineManager {
 	/// Canonical CPU material metadata retained across every frame sequence.
 	materials_data: std::boxed::Box<[MaterialData; MAX_MATERIALS]>,

@@ -24,7 +24,7 @@ const MANUAL_ACTION_DEVICE: DeviceHandle = DeviceHandle(u32::MAX);
 /// After registration, subscribe through [`Self::event_channel`], queue physical
 /// values with [`Self::record_trigger_value_for_device`], and call
 /// [`Self::update`] once per application tick.
-/// See the [Input guide](https://byte-engine.0x44491229.dev/docs/develop/input)
+/// See [Input](/docs/reference/input)
 /// for the complete registration and evaluation flow.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,

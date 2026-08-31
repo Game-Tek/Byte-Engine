@@ -5,30 +5,22 @@ use serde_json::Value;
 
 use super::DefaultInspector;
 use super::shape::describe_json_shape;
-use crate::core::{channel::Channel, factory::Handle, message_bus::MessageRouteError, targeted_message::TargetedMessage};
+use crate::core::{channel::Channel, factory::Handle, targeted_message::TargetedMessage};
 
 type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String> + Send + Sync + 'static>;
 
 /// The `RegisteredMessageType` struct describes one message type accepted by an inspector protocol adapter.
 ///
-/// Use [`Self::payload_shape`] to build controls for the JSON `payload`, then
+/// Use `payload_shape` to build controls for the JSON `payload`, then
 /// send the completed value through [`crate::inspector::Inspector::post_message`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct RegisteredMessageType<'a> {
-	message_type: &'static str,
-	payload_shape: &'a Value,
-}
-
-impl<'a> RegisteredMessageType<'a> {
-	/// Returns the stable name used in the message envelope's `type` field.
-	pub fn message_type(&self) -> &'static str {
-		self.message_type
-	}
-
-	/// Returns the cached JSON-oriented shape of the message envelope's `payload` field.
-	pub fn payload_shape(&self) -> &'a Value {
-		self.payload_shape
-	}
+	/// The stable name used in the message envelope's `type` field.
+	#[serde(rename = "type")]
+	pub message_type: &'static str,
+	/// The cached JSON-oriented shape of the message envelope's `payload` field.
+	#[serde(rename = "payload")]
+	pub payload_shape: &'a Value,
 }
 
 /// The `SerializableMessage` struct provides one source of truth for posting and describing an accepted protocol message.
@@ -66,7 +58,11 @@ impl DefaultInspector {
 		let channel = self
 			.messages
 			.try_channel::<M>()
-			.map_err(|error| registration_error(message_type, &error))?;
+			.map_err(|error| {
+				format!(
+					"Inspector message could not be registered. The most likely cause is that the typed route for '{message_type}' is unavailable: {error}"
+				)
+			})?;
 		let payload_shape = describe_json_shape(M::Payload::SHAPE);
 		self.serializable_messages.insert(
 			message_type,
@@ -96,7 +92,7 @@ impl DefaultInspector {
 		Ok(())
 	}
 
-	/// Borrows the registered protocol message types in stable name order.
+	/// Borrows registered protocol message types in stable name order.
 	pub(super) fn registered_message_types(&self) -> Vec<RegisteredMessageType<'_>> {
 		let mut types = self
 			.serializable_messages
@@ -106,7 +102,7 @@ impl DefaultInspector {
 				payload_shape: &message.payload_shape,
 			})
 			.collect::<Vec<_>>();
-		types.sort_unstable_by_key(RegisteredMessageType::message_type);
+		types.sort_unstable_by_key(|message| message.message_type);
 		types
 	}
 
@@ -121,12 +117,6 @@ impl DefaultInspector {
 			})
 			.and_then(|message| (message.poster)(target, payload))
 	}
-}
-
-fn registration_error(message_type: &str, error: &MessageRouteError) -> String {
-	format!(
-		"Inspector message could not be registered. The most likely cause is that the typed route for '{message_type}' is unavailable: {error}"
-	)
 }
 
 #[cfg(test)]
@@ -146,7 +136,7 @@ mod tests {
 			message_observer::MessageObserver,
 		},
 		gameplay::TransformationUpdate,
-		inspector::Inspector as _,
+		inspector::{DefaultInspector, Inspector},
 	};
 
 	/// Creates an inspector whose transform route already has a listener.
@@ -191,9 +181,7 @@ mod tests {
 	#[test]
 	fn transformation_update_posts_the_selected_target_and_complete_payload() {
 		let (inspector, mut transforms) = test_inspector();
-		let factory = Factory::new();
-		let _factory_listener = factory.listener();
-		let target = factory.create(());
+		let target = Factory::new().create(());
 
 		inspector
 			.post_message(
@@ -250,22 +238,20 @@ mod tests {
 		let types = inspector.message_types();
 
 		assert_eq!(
-			types.iter().map(RegisteredMessageType::message_type).collect::<Vec<_>>(),
+			types.iter().map(|message| message.message_type).collect::<Vec<_>>(),
 			[DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE]
 		);
 		assert!(
 			types
 				.iter()
-				.all(|message| message.payload_shape() == &json!({ "type": "null" }))
+				.all(|message| message.payload_shape == &json!({ "type": "null" }))
 		);
 	}
 
 	#[test]
 	fn unsupported_message_types_do_not_publish_to_the_transform_route() {
 		let (inspector, mut transforms) = test_inspector();
-		let factory = Factory::new();
-		let _factory_listener = factory.listener();
-		let target = factory.create(());
+		let target = Factory::new().create(());
 
 		let error = inspector
 			.post_message("DeleteMessage", target, &Value::Null)
@@ -276,45 +262,29 @@ mod tests {
 	}
 
 	#[test]
-	fn incomplete_transform_payloads_do_not_publish() {
-		let (inspector, mut transforms) = test_inspector();
-		let factory = Factory::new();
-		let _factory_listener = factory.listener();
-		let target = factory.create(());
-
-		let error = inspector
-			.post_message(
-				TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-				target,
-				&serde_json::json!({
-					"position": [1.0, 2.0, 3.0]
-				}),
-			)
-			.expect_err("incomplete transform payload");
-
-		assert!(error.contains("payload does not match its reflected shape"));
-		assert!(transforms.read().is_none());
-	}
-
-	#[test]
-	fn invalid_transform_orientations_do_not_publish() {
+	fn malformed_transform_payloads_do_not_publish() {
 		let (inspector, mut transforms) = test_inspector();
 		let target = Factory::new().create(());
-
-		let error = inspector
-			.post_message(
-				TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-				target,
-				&serde_json::json!({
+		for (payload, expected_error) in [
+			(
+				json!({ "position": [1.0, 2.0, 3.0] }),
+				"payload does not match its reflected shape",
+			),
+			(
+				json!({
 					"position": [1.0, 2.0, 3.0],
 					"scale": [1.0, 1.0, 1.0],
 					"orientation": [0.0, 0.0, 0.0, 0.0]
 				}),
-			)
-			.expect_err("invalid transform orientation");
-
-		assert!(error.contains("zero-length quaternion"));
-		assert!(transforms.read().is_none());
+				"zero-length quaternion",
+			),
+		] {
+			let error = inspector
+				.post_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, target, &payload)
+				.expect_err("reject malformed transform payload");
+			assert!(error.contains(expected_error));
+			assert!(transforms.read().is_none());
+		}
 	}
 
 	/// The `ReflectedPayload` struct provides an arbitrary reflected test payload.
@@ -354,9 +324,9 @@ mod tests {
 			.expect("register reflected test message");
 		let types = inspector.message_types();
 		assert_eq!(types.len(), 1);
-		assert_eq!(types[0].message_type(), "ReflectedTestMessage");
+		assert_eq!(types[0].message_type, "ReflectedTestMessage");
 		assert_eq!(
-			types[0].payload_shape(),
+			types[0].payload_shape,
 			&json!({
 				"type": "object",
 				"fields": [

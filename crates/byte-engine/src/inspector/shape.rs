@@ -86,16 +86,10 @@ fn describe_rust_type(shape: &'static Shape, active: &mut Vec<&'static Shape>) -
 		Type::Pointer(facet::PointerType::Reference(reference) | facet::PointerType::Raw(reference)) => {
 			describe_shape(reference.target(), active)
 		}
-		Type::Pointer(_) => describe_inner_or_unknown(shape, active),
-		_ => describe_inner_or_unknown(shape, active),
+		_ => shape
+			.inner
+			.map_or_else(|| unknown_shape(shape), |inner| describe_shape(inner, active)),
 	}
-}
-
-/// Uses the contained shape only when no concrete Facet container or Rust type described the value.
-fn describe_inner_or_unknown(shape: &'static Shape, active: &mut Vec<&'static Shape>) -> Value {
-	shape
-		.inner
-		.map_or_else(|| unknown_shape(shape), |inner| describe_shape(inner, active))
 }
 
 /// Describes the JSON scalar category and retains the Rust width for editor validation.
@@ -105,20 +99,19 @@ fn describe_scalar(scalar: ScalarType, shape: &'static Shape) -> Value {
 		ScalarType::Bool => return json!({ "type": "boolean" }),
 		ScalarType::Char => ("string", Some("char")),
 		ScalarType::Str | ScalarType::String | ScalarType::CowStr => ("string", None),
-		ScalarType::F32 => ("number", Some("f32")),
-		ScalarType::F64 => ("number", Some("f64")),
-		ScalarType::U8 => ("integer", Some("u8")),
-		ScalarType::U16 => ("integer", Some("u16")),
-		ScalarType::U32 => ("integer", Some("u32")),
-		ScalarType::U64 => ("integer", Some("u64")),
-		ScalarType::U128 => ("integer", Some("u128")),
-		ScalarType::USize => ("integer", Some("usize")),
-		ScalarType::I8 => ("integer", Some("i8")),
-		ScalarType::I16 => ("integer", Some("i16")),
-		ScalarType::I32 => ("integer", Some("i32")),
-		ScalarType::I64 => ("integer", Some("i64")),
-		ScalarType::I128 => ("integer", Some("i128")),
-		ScalarType::ISize => ("integer", Some("isize")),
+		ScalarType::F32 | ScalarType::F64 => ("number", Some(shape.type_identifier)),
+		ScalarType::U8
+		| ScalarType::U16
+		| ScalarType::U32
+		| ScalarType::U64
+		| ScalarType::U128
+		| ScalarType::USize
+		| ScalarType::I8
+		| ScalarType::I16
+		| ScalarType::I32
+		| ScalarType::I64
+		| ScalarType::I128
+		| ScalarType::ISize => ("integer", Some(shape.type_identifier)),
 		ScalarType::ConstTypeId => ("string", Some("type-id")),
 		_ => return unknown_shape(shape),
 	};
@@ -197,14 +190,11 @@ fn describe_field_shape(field: &Field, active: &mut Vec<&'static Shape>) -> Valu
 
 /// Describes enum variants and the tagging representation used by Facet JSON.
 fn describe_enum(shape: &'static Shape, enumeration: facet::EnumType, active: &mut Vec<&'static Shape>) -> Value {
-	let representation = if shape.is_untagged() {
-		"untagged"
-	} else {
-		match (shape.tag, shape.content) {
-			(Some(_), Some(_)) => "adjacent",
-			(Some(_), None) => "internal",
-			(None, _) => "external",
-		}
+	let representation = match (shape.is_untagged(), shape.tag, shape.content) {
+		(true, ..) => "untagged",
+		(false, Some(_), Some(_)) => "adjacent",
+		(false, Some(_), None) => "internal",
+		(false, None, _) => "external",
 	};
 	let variants = enumeration
 		.variants

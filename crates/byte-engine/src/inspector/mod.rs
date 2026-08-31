@@ -3,14 +3,14 @@
 //! The [`Inspector`] trait exposes factory-created handles, attached [`Name`]
 //! values, application controls, screenshots, and passive message publication
 //! headers without choosing a transport. Other application values and
-//! published payloads remain opaque. Protocol adapters should depend on this
-//! trait rather than reaching into application subsystems directly.
+//! published payloads remain opaque.
 
 use std::{collections::HashMap, sync::Arc};
 
 use facet::Facet;
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 use serde_json::Value;
 use utils::sync::Mutex;
 
@@ -63,20 +63,10 @@ pub trait Inspectable: Send + Sync {
 
 /// The `Inspector` trait defines the transport-neutral controls and diagnostics exposed to external engine tooling.
 ///
-/// Protocol adapters call these operations to serve clients without depending
-/// on the engine's concrete inspection backend. Register supported messages on
-/// a concrete implementation before sharing it as `dyn Inspector`, then pass
-/// the same handle to each transport that should expose it.
+/// Register supported messages on a concrete implementation before sharing it
+/// as `dyn Inspector`, then pass the same handle to each protocol transport.
 pub trait Inspector: Send + Sync {
 	/// Registers one reflected targeted message for protocol posting.
-	///
-	/// `message_type` becomes the stable protocol `type`, and the reflected shape
-	/// of `M::Payload` defines its JSON payload. This setup operation requires a
-	/// concrete inspector; transports use [`Self::message_types`] and
-	/// [`Self::post_message`] after registration is complete. Messages whose
-	/// [`TargetedMessage::ENDS_TARGET_LIFECYCLE`] value is `true` also retire the
-	/// target from entity diagnostics after publication. Reflected unit payloads
-	/// use JSON `null`.
 	fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
 	where
 		Self: Sized,
@@ -90,21 +80,12 @@ pub trait Inspector: Send + Sync {
 	fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity>;
 
 	/// Drains passive publication headers and resolves their route metadata.
-	///
-	/// Payloads remain opaque because general engine messages do not require a
-	/// serialization or reflection contract. Each result preserves sequence
-	/// within its route but does not claim ordering between routes.
-	fn drain_messages(&self) -> InspectedMessageBatch;
+	fn drain_messages(&self) -> Vec<InspectedMessage>;
 
-	/// Returns the registered protocol message types and their JSON payload shapes.
-	///
-	/// Results are sorted by protocol name so editor clients receive stable output.
+	/// Returns registered protocol message types in stable name order.
 	fn message_types(&self) -> Vec<RegisteredMessageType<'_>>;
 
-	/// Publishes one registered targeted world message from its protocol name and reflected JSON payload.
-	///
-	/// Call [`Self::register_message`] on the concrete implementation before
-	/// accepting posts through a transport.
+	/// Publishes one registered targeted world message from its reflected JSON payload.
 	fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String>;
 
 	/// Queues one screenshot request and returns its one-shot response.
@@ -116,53 +97,20 @@ pub trait Inspector: Send + Sync {
 }
 
 /// The `InspectedMessage` struct resolves one passive publication to its scope and Rust message type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InspectedMessage {
-	topic_id: usize,
-	scope: Arc<str>,
-	message_type: &'static str,
-	first_sequence: u64,
-	count: u64,
-}
-
-impl InspectedMessage {
-	/// Returns the stable bus-local route identifier.
-	pub fn topic_id(&self) -> usize {
-		self.topic_id
-	}
-
-	/// Returns the diagnostic name of the route's owning scope.
-	pub fn scope(&self) -> &str {
-		&self.scope
-	}
-
-	/// Returns the complete Rust type name, including generic arguments.
-	pub fn message_type(&self) -> &'static str {
-		self.message_type
-	}
-
-	/// Returns the first zero-based publication sequence in this range.
-	pub fn first_sequence(&self) -> u64 {
-		self.first_sequence
-	}
-
-	/// Returns the number of consecutive publications in this range.
-	pub fn count(&self) -> u64 {
-		self.count
-	}
-}
-
-/// The `InspectedMessageBatch` struct carries resolved publication ranges since the prior drain.
-#[derive(Debug, PartialEq, Eq)]
-pub struct InspectedMessageBatch {
-	messages: Vec<InspectedMessage>,
-}
-
-impl InspectedMessageBatch {
-	/// Returns one range for each route that published since the prior drain.
-	pub fn messages(&self) -> &[InspectedMessage] {
-		&self.messages
-	}
+	/// The stable bus-local route identifier.
+	#[serde(rename = "topic")]
+	pub topic_id: usize,
+	/// The diagnostic name of the route's owning scope.
+	pub scope: Arc<str>,
+	/// The complete Rust type name, including generic arguments.
+	#[serde(rename = "type")]
+	pub message_type: &'static str,
+	/// The first zero-based publication sequence in this range.
+	pub first_sequence: u64,
+	/// The number of consecutive publications in this range.
+	pub count: u64,
 }
 
 /// The `InspectedEntity` struct describes one current entity and its optional human-readable name.
@@ -170,6 +118,16 @@ impl InspectedMessageBatch {
 pub struct InspectedEntity {
 	entity: ObservedEntity,
 	name: Option<Name>,
+}
+
+impl Serialize for InspectedEntity {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut entity = serializer.serialize_struct("InspectedEntity", 3)?;
+		entity.serialize_field("target", &self.handle().id())?;
+		entity.serialize_field("name", &self.name())?;
+		entity.serialize_field("types", self.types())?;
+		entity.end()
+	}
 }
 
 impl InspectedEntity {
@@ -189,7 +147,7 @@ impl InspectedEntity {
 	}
 }
 
-/// The `DefaultInspector` struct owns the engine controls and passive runtime diagnostics shared by protocol adapters.
+/// The `DefaultInspector` struct owns engine controls and runtime diagnostics shared by protocol adapters.
 pub struct DefaultInspector {
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
@@ -265,9 +223,9 @@ impl Inspector for DefaultInspector {
 	}
 
 	fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
-		let entities = self.message_observer.entities();
 		let names = self.entity_names.lock();
-		entities
+		self.message_observer
+			.entities()
 			.into_iter()
 			.filter_map(|entity| {
 				if entity_type.is_some_and(|entity_type| !entity.types().contains(&entity_type)) {
@@ -285,7 +243,7 @@ impl Inspector for DefaultInspector {
 			.collect()
 	}
 
-	fn drain_messages(&self) -> InspectedMessageBatch {
+	fn drain_messages(&self) -> Vec<InspectedMessage> {
 		let topic_snapshots = self.message_bus.topics();
 		let batch = self.message_observer.drain_messages(&topic_snapshots);
 		let mut topics = vec![None; self.message_bus.config().max_topics];
@@ -293,7 +251,7 @@ impl Inspector for DefaultInspector {
 			let topic_id = topic.topic_id;
 			topics[topic_id] = Some(topic);
 		}
-		let messages = batch
+		batch
 			.messages()
 			.iter()
 			.map(|observation| {
@@ -308,9 +266,7 @@ impl Inspector for DefaultInspector {
 					count: observation.count(),
 				}
 			})
-			.collect();
-
-		InspectedMessageBatch { messages }
+			.collect()
 	}
 
 	fn message_types(&self) -> Vec<RegisteredMessageType<'_>> {

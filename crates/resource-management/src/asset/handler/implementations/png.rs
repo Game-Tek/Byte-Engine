@@ -73,17 +73,34 @@ impl Default for PNGAssetHandler {
 	}
 }
 
-/// Determines the image gamma from PNG metadata before falling back to the asset semantic.
+/// Determines the image gamma from its semantic and the transfer functions the engine can represent.
 fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::processor::implementations::image::Semantic) -> Gamma {
-	info.source_gamma
-		.map(|g| {
-			if g.into_scaled() == 45455 {
-				Gamma::SRGB
-			} else {
-				Gamma::Linear
-			}
-		})
-		.unwrap_or(gamma_from_semantic(semantic))
+	let semantic_gamma = gamma_from_semantic(semantic);
+
+	// Color-profile metadata is frequently attached to every exported PNG. Data textures must keep their numeric samples
+	// linear even when an editor added an sRGB chunk during export.
+	if semantic_gamma == Gamma::Linear {
+		return Gamma::Linear;
+	}
+
+	png_metadata_gamma(info).unwrap_or(semantic_gamma)
+}
+
+/// Maps PNG color metadata only when it is close to one of the engine's supported transfer functions.
+fn png_metadata_gamma(info: &png::Info<'_>) -> Option<Gamma> {
+	if info.srgb.is_some() {
+		return Some(Gamma::SRGB);
+	}
+
+	let gamma = info.gama_chunk?.into_scaled();
+
+	// PNG encoders use nearby rounded gAMA values for sRGB. Values outside these narrow neighborhoods describe a
+	// transfer function the engine cannot represent and must not be mislabeled as linear.
+	match gamma {
+		40_000..=50_000 => Some(Gamma::SRGB),
+		95_000..=105_000 => Some(Gamma::Linear),
+		_ => None,
+	}
 }
 
 /// Maps PNG decoder output into the source layout normalized by the common image processor.
@@ -117,8 +134,15 @@ mod tests {
 		types::{Formats, Gamma},
 	};
 
-	/// Encodes a small RGBA8 albedo image so the PNG decoder sees real 8-bit color data.
-	fn generated_rgba8_albedo_png() -> Vec<u8> {
+	#[derive(Clone, Copy)]
+	enum GammaMetadata {
+		Unspecified,
+		Srgb,
+		Gamma(u32),
+	}
+
+	/// Encodes a small RGBA8 image with the requested authored gamma metadata.
+	fn generated_rgba8_png(metadata: GammaMetadata) -> Vec<u8> {
 		let mut png = Vec::new();
 
 		{
@@ -127,6 +151,12 @@ mod tests {
 			encoder.set_color(png::ColorType::Rgba);
 
 			encoder.set_depth(png::BitDepth::Eight);
+
+			match metadata {
+				GammaMetadata::Unspecified => {}
+				GammaMetadata::Srgb => encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual),
+				GammaMetadata::Gamma(gamma) => encoder.set_source_gamma(png::ScaledFloat::from_scaled(gamma)),
+			}
 
 			let mut writer = encoder.write_header().expect("generated PNG header should encode");
 
@@ -139,39 +169,73 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn asset_manager_bakes_generated_rgba8_albedo_png() {
+	async fn standalone_png_infers_gamma_from_semantics_and_supported_metadata() {
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		let cases = [
+			(
+				"textures/default.png",
+				GammaMetadata::Unspecified,
+				Gamma::SRGB,
+				Formats::RGBA8SRGB,
+			),
+			(
+				"textures/authored-srgb.png",
+				GammaMetadata::Srgb,
+				Gamma::SRGB,
+				Formats::RGBA8SRGB,
+			),
+			(
+				"textures/approximate-srgb.png",
+				GammaMetadata::Gamma(45_000),
+				Gamma::SRGB,
+				Formats::RGBA8SRGB,
+			),
+			(
+				"textures/authored-linear.png",
+				GammaMetadata::Gamma(100_000),
+				Gamma::Linear,
+				Formats::RGBA8,
+			),
+			(
+				"textures/unsupported-gamma.png",
+				GammaMetadata::Gamma(70_000),
+				Gamma::SRGB,
+				Formats::RGBA8SRGB,
+			),
+			(
+				"textures/default-albedo.png",
+				GammaMetadata::Unspecified,
+				Gamma::SRGB,
+				Formats::BC7SRGB,
+			),
+			(
+				"textures/albedo.png",
+				GammaMetadata::Gamma(100_000),
+				Gamma::Linear,
+				Formats::BC7,
+			),
+			("textures/normal.png", GammaMetadata::Srgb, Gamma::Linear, Formats::BC5),
+		];
 
-		asset_storage_backend.add_file("generated_albedo.png", &generated_rgba8_albedo_png());
+		for (id, metadata, ..) in cases {
+			asset_storage_backend.add_file(id, &generated_rgba8_png(metadata));
+		}
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
-		asset_manager
-			.bake("generated_albedo.png")
-			.await
-			.expect("generated 8-bit PNG should bake");
+		for (id, _, expected_gamma, expected_format) in cases {
+			asset_manager.bake(id).await.expect("generated 8-bit PNG should bake");
 
-		let resource = resource_storage_backend
-			.get_resource(ResourceId::new("generated_albedo.png"))
-			.expect("baked PNG resource should be stored");
+			let resource = resource_storage_backend
+				.get_resource(ResourceId::new(id))
+				.expect("baked PNG resource should be stored");
+			let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
 
-		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
-
-		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(image.gamma, Gamma::SRGB);
-		assert_eq!(image.format, Formats::BC7SRGB);
-		assert_eq!(
-			resource_storage_backend
-				.get_resource_data_by_name(ResourceId::new("generated_albedo.png"))
-				.expect("baked PNG data should be stored")
-				.len(),
-			16
-		);
+			assert_eq!((image.gamma, image.format), (expected_gamma, expected_format), "asset: {id}");
+		}
 	}
 
 	/// Encodes a small RGB16 normal map so the PNG decoder sees real 16-bit file data.
@@ -222,6 +286,7 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 0]);
+		assert_eq!(image.gamma, Gamma::Linear);
 		assert_eq!(image.format, Formats::BC5);
 		assert_eq!(
 			resource_storage_backend

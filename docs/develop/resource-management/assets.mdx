@@ -64,6 +64,8 @@ The trace is an in-memory development tool: release builds do not expose it, and
 Asset processing turns source data into engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
+Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
+For color textures, supported sRGB or linear PNG metadata overrides the filename default; an unsupported transfer function falls back to the inferred semantic.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
 

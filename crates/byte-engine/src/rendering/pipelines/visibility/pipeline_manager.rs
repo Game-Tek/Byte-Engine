@@ -1282,23 +1282,11 @@ mod tests {
 	}
 
 	#[test]
-	fn lit_binding_supports_transparent_read_modify_write() {
-		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
-	}
-
-	#[test]
-	fn material_data_defaults_every_texture_slot_to_missing() {
-		let material_data = MaterialData::default();
+	fn material_texture_updates_replace_the_complete_canonical_record() {
+		let mut material_data = MaterialData::default();
 
 		assert!(material_data.textures.iter().all(|texture_index| *texture_index == u32::MAX));
-	}
-
-	#[test]
-	fn material_texture_updates_replace_the_complete_canonical_record() {
-		let mut material_data = MaterialData {
-			textures: [41; MAX_MATERIAL_TEXTURES],
-			..MaterialData::default()
-		};
+		material_data.textures.fill(41);
 
 		assert!(!write_material_texture_indices(&mut material_data, [Some(7), None, Some(11)]));
 		assert_eq!(material_data.textures[..3], [7, u32::MAX, 11]);

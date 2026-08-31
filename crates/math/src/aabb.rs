@@ -67,22 +67,18 @@ mod tests {
 	use crate::{Point, Vector, WorldSpace};
 
 	#[test]
-	fn constructor_orders_corners_and_preserves_extents() {
+	fn constructors_order_corners_and_preserve_center_and_extents() {
 		let aabb: AABB<WorldSpace> = AABB::new(Point::new(3.0, -2.0, 4.0), Point::new(-1.0, 6.0, 2.0));
 
 		assert_eq!(aabb.min(), Point::new(-1.0, -2.0, 2.0));
 		assert_eq!(aabb.max(), Point::new(3.0, 6.0, 4.0));
 		assert_eq!(aabb.half_extents(), Vector::new(2.0, 4.0, 1.0));
-	}
-
-	#[test]
-	fn center_constructor_round_trips_center_and_half_extents() {
 		let center = Point::new(-3.0, 4.0, 9.0);
 		let half_extents = Vector::new(2.0, 5.0, 1.5);
-		let aabb: AABB<WorldSpace> = AABB::from_center_and_half_extents(center, half_extents);
+		let centered: AABB<WorldSpace> = AABB::from_center_and_half_extents(center, half_extents);
 
-		assert_eq!(aabb.center(), center);
-		assert_eq!(aabb.half_extents(), half_extents);
+		assert_eq!(centered.center(), center);
+		assert_eq!(centered.half_extents(), half_extents);
 	}
 
 	#[test]

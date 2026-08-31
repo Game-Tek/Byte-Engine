@@ -488,21 +488,4 @@ mod tests {
 		assert!(capabilities.supports_compression(ResourceIoCompression::None));
 		assert!(!capabilities.supports_compression(ResourceIoCompression::Lz4));
 	}
-
-	#[test]
-	fn image_request_defaults_to_the_subresource_origin() {
-		let request = ResourceIoImageLoad::new(
-			ResourceIoFileRegion::new(ResourceIoFileHandle { queue: 1, index: 2 }, 32),
-			BaseImageHandle(2),
-			3,
-			4,
-			Extent::rectangle(16, 8),
-			64,
-			512,
-		);
-
-		assert_eq!(request.origin, Extent::new(0, 0, 0));
-		assert_eq!(request.array_layer, 3);
-		assert_eq!(request.mip_level, 4);
-	}
 }

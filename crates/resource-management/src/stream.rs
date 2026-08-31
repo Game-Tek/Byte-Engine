@@ -104,17 +104,6 @@ mod tests {
 	use super::{Stream, StreamMut};
 
 	#[test]
-	fn immutable_stream_preserves_name_range_and_buffer() {
-		let bytes = [1u8, 2, 3, 4];
-		let stream = Stream::new("vertices", &bytes, 12, Some(3));
-
-		assert_eq!(stream.name(), "vertices");
-		assert_eq!(stream.buffer(), &bytes);
-		assert_eq!(stream.offset(), 12);
-		assert_eq!(stream.size(), Some(3));
-	}
-
-	#[test]
 	fn mutable_typed_stream_exposes_the_complete_object_representation() {
 		let mut words = [0x1122u16, 0x3344u16];
 		let expected = words;

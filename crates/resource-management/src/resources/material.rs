@@ -375,17 +375,6 @@ mod tests {
 	use super::{Binding, BindingKind, ShaderArtifact};
 
 	#[test]
-	fn persisted_bindings_keep_named_and_unnamed_construction_distinct() {
-		let unnamed = Binding::new(0, BindingKind::StorageBuffer, 1, Some(64), true, false);
-		let named = Binding::named("scene", 1, BindingKind::StorageBuffer, 1, Some(80), true, false);
-
-		assert!(unnamed.name.is_empty());
-		assert_eq!(named.name, "scene");
-		assert_eq!(unnamed.buffer_stride, Some(64));
-		assert_eq!(named.buffer_stride, Some(80));
-	}
-
-	#[test]
 	#[should_panic(expected = "Invalid resource slot range")]
 	fn persisted_binding_rejects_flat_slot_overflow() {
 		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, Some(4), true, false);

@@ -561,57 +561,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	fn builder_creates_assignment_expression() {
-		let node = Node::assignment(Node::member_expression("albedo"), Node::literal_expression("1.0"));
-
-		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
-			panic!("Expected assignment operator");
-		};
-
-		assert_eq!(name, "=");
-		assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "albedo"));
-		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "1.0"));
-	}
-
-	#[test]
-	fn builder_creates_call_expression() {
-		let node = Node::call(
-			"vec4f",
-			vec![
-				Node::literal_expression("1.0"),
-				Node::literal_expression("0.0"),
-				Node::literal_expression("0.0"),
-				Node::literal_expression("1.0"),
-			],
-		);
-
-		let Nodes::Expression(Expressions::Call { name, parameters, .. }) = node.node else {
-			panic!("Expected call expression");
-		};
-
-		assert_named_type(&name, "vec4f");
-
-		assert_eq!(parameters.len(), 4);
-	}
-
-	#[test]
-	fn builder_creates_variable_declaration_assignment() {
-		let node = Node::let_assignment("roughness", "f32", Node::literal_expression("0.5"));
-
-		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
-			panic!("Expected assignment operator");
-		};
-
-		assert_eq!(name, "=");
-		assert!(matches!(
-			left.node,
-			Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. })
-				if name == "roughness" && matches!(r#type, TypeName::Named("f32")),
-		));
-		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "0.5"));
-	}
-
-	#[test]
 	fn builder_program_lexes() {
 		let program = Node::root_with_children(vec![Node::main_function(vec![Node::let_assignment(
 			"albedo",

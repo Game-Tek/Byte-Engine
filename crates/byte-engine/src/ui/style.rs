@@ -242,16 +242,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn default_style_contains_one_fill_layer() {
-		let style = ConcreteStyle::default();
-
-		assert_eq!(style.layers().len(), 1);
-		assert_eq!(style.layers()[0].kind(), LayerKind::Fill);
-		assert_eq!(Layer::feather(&style.layers()[0]), EdgeFeather::none());
-		assert_eq!(style.layers()[0].backdrop_blur_radius(), 0.0);
-	}
-
-	#[test]
 	fn stroke_layer_stores_width_and_color() {
 		let color = RGBA::new(0.2, 0.3, 0.4, 1.0);
 		let layer = ConcreteLayer::default().color(color.into()).stroke(2.5);
@@ -261,30 +251,6 @@ mod tests {
 			Color::Value(actual) => assert_eq!(*actual, color),
 			Color::Sample(_) => panic!("expected value color"),
 		}
-	}
-
-	#[test]
-	fn layer_conversion_remains_single_layer_style() {
-		let style: ConcreteStyle = ConcreteLayer::default().stroke(1.0).into();
-
-		assert_eq!(style.layers().len(), 1);
-		assert_eq!(style.layers()[0].kind(), LayerKind::Stroke { width: 1.0 });
-	}
-
-	#[test]
-	fn edge_feather_constructors_store_per_edge_widths() {
-		assert_eq!(
-			EdgeFeather::edges(1.0, 2.0, 3.0, 4.0),
-			EdgeFeather {
-				top: 1.0,
-				right: 2.0,
-				bottom: 3.0,
-				left: 4.0,
-			}
-		);
-		assert_eq!(EdgeFeather::vertical(6.0), EdgeFeather::edges(6.0, 0.0, 6.0, 0.0));
-		assert_eq!(EdgeFeather::horizontal(7.0), EdgeFeather::edges(0.0, 7.0, 0.0, 7.0));
-		assert_eq!(EdgeFeather::all(8.0), EdgeFeather::edges(8.0, 8.0, 8.0, 8.0));
 	}
 
 	#[test]

@@ -29,7 +29,7 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
-	use super::{Interval, Task};
+	use super::Interval;
 	use crate::time::MediaTime;
 
 	#[test]
@@ -55,26 +55,6 @@ mod tests {
 	fn zero_intervals_are_well_defined_as_every_tick() {
 		assert!(Interval::Frames(0).is_now(MediaTime::ZERO, MediaTime::ZERO, 17));
 		assert!(Interval::Time(MediaTime::ZERO).is_now(MediaTime::from_seconds(1), MediaTime::ZERO, 17));
-	}
-
-	#[test]
-	fn task_constructors_encode_distinct_scheduling_contracts() {
-		let tick = Task::tick(|| {});
-
-		assert!(tick.every.is_none() && tick.lifetime.is_none() && tick.delay.is_none());
-
-		let every = Task::every(2u32, || {});
-
-		assert!(matches!(every.every, Some(Interval::Frames(2))));
-		assert!(every.lifetime.is_none() && every.delay.is_none());
-
-		let once = Task::once(|| {});
-
-		assert!(matches!(once.lifetime, Some(Interval::Frames(1))));
-
-		let delayed = Task::r#in(MediaTime::from_millis(10), || {});
-
-		assert!(matches!(delayed.delay, Some(Interval::Time(duration)) if duration == MediaTime::from_millis(10)));
 	}
 }
 

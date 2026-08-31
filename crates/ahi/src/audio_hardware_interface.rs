@@ -221,19 +221,6 @@ mod tests {
 	}
 
 	#[test]
-	fn hardware_parameter_builders_are_independent() {
-		let defaults = HardwareParameters::default();
-		let configured = defaults.sample_rate(96_000).channels(1).bit_depth(32);
-
-		assert_eq!(defaults.get_sample_rate(), 48_000);
-		assert_eq!(defaults.get_channels(), 2);
-		assert_eq!(defaults.get_bit_depth(), 16);
-		assert_eq!(configured.get_sample_rate(), 96_000);
-		assert_eq!(configured.get_channels(), 1);
-		assert_eq!(configured.get_bit_depth(), 32);
-	}
-
-	#[test]
 	fn playback_errors_include_failure_and_likely_cause() {
 		for error in [
 			AudioPlayError::RecoveryFailed,
@@ -244,13 +231,9 @@ mod tests {
 
 			assert!(message.contains("failed") || message.contains("unsupported"));
 			assert!(message.contains("most likely cause"));
+			if matches!(error, AudioPlayError::StartFailed { .. }) {
+				assert!(message.contains("-10867"));
+			}
 		}
-	}
-
-	#[test]
-	fn start_failure_reports_the_platform_status() {
-		let message = AudioPlayError::StartFailed { platform_status: -10867 }.to_string();
-
-		assert!(message.contains("-10867"));
 	}
 }

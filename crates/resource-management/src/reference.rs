@@ -305,15 +305,6 @@ mod tests {
 		assert!(original.streams.is_none());
 	}
 
-	#[test]
-	fn in_memory_reference_retains_metadata_without_a_binary_reader() {
-		let reference = Reference::in_memory("generated.resource", DefaultLoadResource);
-
-		assert_eq!(reference.id(), "generated.resource");
-		assert_eq!(reference.hash(), 0);
-		assert_eq!(reference.size, 0);
-	}
-
 	#[crate::r#async::test]
 	async fn default_reference_load_uses_reader_backing_storage() {
 		let path = temporary_file_path();

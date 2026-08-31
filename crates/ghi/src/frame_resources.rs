@@ -257,7 +257,7 @@ mod tests {
 	}
 
 	#[test]
-	fn nth_handle_returns_first_resource_for_frame_zero() {
+	fn nth_handle_follows_the_frame_chain_and_reuses_its_last_resource() {
 		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::new();
 		let (master, first) = resources.add("frame 0");
 		let (_, second) = resources.add("frame 1");
@@ -265,14 +265,6 @@ mod tests {
 
 		assert_eq!(resources.get_nth(master, 0), Some(&"frame 0"));
 		assert_eq!(resources.get_nth(master, 1), Some(&"frame 1"));
-	}
-
-	#[test]
-	fn nth_handle_reuses_last_resource_when_chain_is_shorter_than_frames() {
-		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::new();
-		let (master, _) = resources.add("single");
-
-		assert_eq!(resources.get_nth(master, 0), Some(&"single"));
-		assert_eq!(resources.get_nth(master, 3), Some(&"single"));
+		assert_eq!(resources.get_nth(master, 3), Some(&"frame 1"));
 	}
 }

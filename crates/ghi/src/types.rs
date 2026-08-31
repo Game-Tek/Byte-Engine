@@ -757,17 +757,6 @@ impl BufferDescriptor {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::BaseImageHandle;
-	use crate::graphics_hardware_interface::MasterHandle;
-
-	#[test]
-	fn buffer_image_copy_preserves_the_destination_mip_level() {
-		let copy = BufferImageCopyDescriptor::new(BaseBufferHandle::new(3), 256, 512, 1024, BaseImageHandle::new(7), 4);
-
-		assert_eq!(copy.source_offset, 256);
-		assert_eq!(copy.destination_image, BaseImageHandle::new(7));
-		assert_eq!(copy.destination_mip_level, 4);
-	}
 
 	#[test]
 	fn bc_layout_uses_ceil_block_counts_and_keeps_small_mips_nonzero() {

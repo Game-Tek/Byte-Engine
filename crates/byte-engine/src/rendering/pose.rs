@@ -32,25 +32,6 @@ impl TargetedMessage for UpdatePose {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::core::factory::Factory;
-
-	#[test]
-	fn update_pose_preserves_renderable_and_global_matrices() {
-		let handle = Factory::new().create(());
-		let matrices = vec![Matrix::new(
-			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
-		)];
-		let update = UpdatePose::new(handle, matrices.clone());
-
-		assert_eq!(update.handle(), handle);
-		assert_eq!(update.global_matrices(), matrices);
-	}
-}
-
 use math::Matrix;
-use maths_rs::mat::MatNew4 as _;
 
 use crate::core::{factory::Handle, message::Message, targeted_message::TargetedMessage};

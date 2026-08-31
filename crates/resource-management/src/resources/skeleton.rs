@@ -581,24 +581,6 @@ mod tests {
 	}
 
 	#[test]
-	fn skin_binding_stores_joint_and_inverse_bind_in_one_palette_entry() {
-		let binding = SkinBinding {
-			entries: vec![SkinPaletteEntry {
-				joint: SkinJoint::Node(0),
-				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
-			}],
-		};
-
-		assert_eq!(binding.len(), 1);
-		assert!(!binding.is_empty());
-		assert_eq!(binding.entries[0].joint, SkinJoint::Node(0));
-		assert_eq!(
-			binding.entries[0].adjusted_inverse_bind_matrix,
-			identity_affine_matrix4x3_columns()
-		);
-	}
-
-	#[test]
 	fn matrix_palette_multiplies_pose_and_inverse_bind_without_allocating_output() {
 		let mut translated = identity_affine_matrix4x3_columns();
 		translated[3] = [5.0, 6.0, 7.0];

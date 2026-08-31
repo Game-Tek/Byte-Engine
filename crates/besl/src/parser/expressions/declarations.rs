@@ -31,45 +31,7 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 		_ => e,
 	})?;
 
-	fn atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
-		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
-
-		if let Some((i, e)) = max_precedence_item {
-			match e {
-				Atoms::Operator { name } => {
-					let left = atoms_to_node(&atoms[..i]);
-					let right = atoms_to_node(&atoms[i + 1..]);
-					Node {
-						node: Nodes::Expression(Expressions::Operator {
-							name,
-							left: Box::new(left),
-							right: Box::new(right),
-						}),
-					}
-				}
-				Atoms::FunctionCall { name, parameters } => {
-					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
-					Node {
-						node: Nodes::Expression(Expressions::Call {
-							name: name.clone(),
-							parameters,
-						}),
-					}
-				}
-				Atoms::Literal { value } => Node {
-					node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
-				},
-				Atoms::Member { name } => Node {
-					node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
-				},
-				_ => panic!("Unexpected atom in const expression"),
-			}
-		} else {
-			panic!("No atoms in const expression");
-		}
-	}
-
-	let value = atoms_to_node(&expressions);
+	let value = expression_atoms_to_node(&expressions);
 
 	Ok((Node::constant_with_type(name, r#type, value), iterator))
 }
@@ -95,6 +57,18 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 			name
 		))
 	})?;
+	let runtime_array = if iterator.clone().next().copied() == Some("[") {
+		iterator.next();
+		iterator.next_str("]").map_err(|_| {
+			syntax_error(format!(
+				"Expected ] after the runtime array marker in descriptor {}. The most likely cause is that the descriptor resource used a fixed count inside `[]`.",
+				name
+			))
+		})?;
+		true
+	} else {
+		false
+	};
 	let format = if iterator.clone().next().copied() == Some("<") {
 		iterator.next();
 		let format = iterator.next_identifier().map_err(|_| {
@@ -225,6 +199,11 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 	} else {
 		(None, None)
 	};
+	if runtime_array && count.is_some() {
+		return Err(syntax_error(format!(
+			"Runtime buffer descriptor {name} cannot declare a resource count. The most likely cause is that a runtime element array was combined with descriptor-array syntax."
+		)));
+	}
 
 	iterator.next_str(">").map_err(|_| {
 		syntax_error(format!(
@@ -244,6 +223,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 			node: Nodes::Descriptor {
 				name,
 				resource_type,
+				runtime_array,
 				format,
 				slot,
 				read,
@@ -497,67 +477,107 @@ pub(crate) fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -
 	Ok((make_scope("MACRO", vec![]), iter))
 }
 
+/// Parses one named struct and requires comma-delimited fields.
 pub(crate) fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	iterator.next_str("struct")?;
-	iterator.next_str("{").map_err(|e| match e {
-		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find {{ after struct {} declaration.", name),
-		},
-		_ => e,
-	})?;
+	let invalid = || ParsingFailReasons::BadSyntax {
+		message: format!("Invalid struct {name}. The most likely cause is a missing `name: type` field, comma, or closing }}."),
+	};
+	iterator.next_str("{").map_err(|_| invalid())?;
 
-	let mut fields = vec![];
-
-	while let Some(&v) = iterator.next() {
-		if v == "}" {
+	let mut fields = Vec::new();
+	let mut needs_comma = false;
+	let mut closed = false;
+	while let Some(&token) = iterator.next() {
+		if token == "}" {
+			closed = true;
 			break;
-		} else if v == "," {
+		}
+		if needs_comma {
+			if token != "," {
+				return Err(invalid());
+			}
+			needs_comma = false;
 			continue;
 		}
+		if token == "," {
+			return Err(invalid());
+		}
 
-		iterator.next_str(":").map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected to find : after name for member {} in struct {}", v, name),
-			},
-			_ => e,
-		})?;
-
-		let type_name = iterator.next_identifier().map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected to find a type name after : for member {} in struct {}", v, name),
-			},
-			_ => e,
-		})?;
-
-		// See if is array type
-		let type_name = if iterator.clone().peekable().peek().map(|v| v.as_ref()) == Some("[") {
+		iterator.next_str(":").map_err(|_| invalid())?;
+		let type_name = iterator.next_identifier().map_err(|_| invalid())?;
+		let type_name = if iterator.clone().next().copied() == Some("[") {
 			iterator.next();
 			let count = iterator
 				.next()
-				.and_then(|v| v.parse::<u32>().ok())
-				.ok_or(ParsingFailReasons::BadSyntax {
-					message: format!("Expected to find a number after [ for member {} in struct {}", v, name),
-				})?;
-			iterator.next().unwrap();
-			format!("{}[{}]", type_name, count)
+				.and_then(|value| value.parse::<u32>().ok())
+				.ok_or_else(&invalid)?;
+			iterator.next_str("]").map_err(|_| invalid())?;
+			format!("{type_name}[{count}]")
 		} else {
 			type_name.to_string()
 		};
-
-		fields.push(make_member(v, &type_name));
+		fields.push(make_member(token, &type_name));
+		needs_comma = true;
+	}
+	if !closed {
+		return Err(invalid());
 	}
 
-	let node = Node::r#struct(name, fields);
-
-	Ok((node, iterator))
+	Ok((Node::r#struct(name, fields), iterator))
 }
+
+fn parse_record_type<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	role: RecordRole,
+) -> Result<(Vec<TypeField<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	let invalid = || ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Invalid anonymous {role} type. The most likely cause is a missing `name: type` field, comma, or closing }}."
+		),
+	};
+	iterator.next_str("{").map_err(|_| invalid())?;
+	let mut fields = Vec::new();
+	loop {
+		if iterator.clone().next().copied() == Some("}") {
+			iterator.next();
+			return Ok((fields, iterator));
+		}
+		let name = iterator.next_identifier().map_err(|_| invalid())?;
+		iterator.next_str(":").map_err(|_| invalid())?;
+		let base_type = iterator.next_identifier().map_err(|_| invalid())?;
+		let (type_name, next) = parse_type_name(iterator, base_type)?;
+		iterator = next;
+		fields.push(TypeField { name, type_name });
+		match iterator.clone().next().copied() {
+			Some(",") => {
+				iterator.next();
+			}
+			Some("}") => {}
+			_ => return Err(invalid()),
+		}
+	}
+}
+
+/// Parses named, fixed-array, and anonymous record types without flattening their structure.
 pub(crate) fn parse_type_name<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	base_type: &'a str,
 ) -> Result<(TypeName<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
-	let mut type_name = TypeName::Named(base_type);
+	let role = match base_type {
+		"interface" => Some(RecordRole::Interface),
+		"output" => Some(RecordRole::Output),
+		_ => None,
+	};
+	let mut type_name = if let Some(role) = role.filter(|_| iterator.clone().next().copied() == Some("{")) {
+		let (fields, next) = parse_record_type(iterator, role)?;
+		iterator = next;
+		TypeName::Record { role, fields }
+	} else {
+		TypeName::Named(base_type)
+	};
 
 	while iterator.clone().peekable().peek().map(|token| token.as_ref()) == Some("[") {
 		iterator.next_str("[")?;

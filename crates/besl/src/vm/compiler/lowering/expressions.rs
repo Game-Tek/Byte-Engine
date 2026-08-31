@@ -141,7 +141,7 @@ impl<'a> Compiler<'a> {
 						let layout = match r#type {
 							BindingTypes::CombinedImageSampler { .. } => DescriptorLayout::Texture,
 							BindingTypes::Image { .. } => DescriptorLayout::Image,
-							BindingTypes::Buffer { .. } => {
+							BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. } => {
 								return Err(VmError::TypeMismatch {
 									expected: expected_type.name().to_string(),
 									found: "buffer".to_string(),

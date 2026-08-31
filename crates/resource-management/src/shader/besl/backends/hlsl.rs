@@ -1,5 +1,6 @@
 use std::{cell::RefCell, fmt::Write as _};
 
+use super::{ResourceAccessorKind, resource_accessor, runtime_buffer_element};
 use crate::shader::generator::{
 	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 	emit_comma_separated_nodes, ordered_shader_nodes,
@@ -87,6 +88,60 @@ mod tests {
 
 		// Check main function
 		assert_string_contains!(shader, "void besl_main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn runtime_buffer_and_texture_array_layer_use_native_hlsl_resources() {
+		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
+			.expect("Expected runtime-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected runtime-array fragment HLSL generation");
+
+		assert_string_contains!(shader, "StructuredBuffer<Instance> instances : register(t1, space0);");
+		assert_string_contains!(shader, "Texture2DArray<float4> sprites : register(t0, space0);");
+		assert_string_contains!(shader, "Instance instance=instances[");
+		assert_string_contains!(shader, "sprites.Sample(sprites_sampler, float3(");
+		assert_string_contains!(shader, "float(instance.sprite_id)");
+	}
+
+	#[test]
+	fn sampled_descriptor_array_keeps_descriptor_indexing_in_hlsl() {
+		let root = besl::compile_to_besl(
+			"textures: descriptor<Texture2D, 3, read, 4>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
+			None,
+		)
+		.expect("Expected sampled descriptor-array source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected sampled descriptor-array HLSL generation");
+
+		assert_string_contains!(shader, "Texture2D<float4> textures[4] : register(t3, space0);");
+		assert_string_contains!(shader, "SamplerState textures_sampler[4] : register(s3, space0);");
+		assert_string_contains!(shader, "textures[2].Sample(textures_sampler[2], float2(0.0,0.0))");
+	}
+
+	#[test]
+	fn structural_position_uses_sv_position_without_colliding_with_a_local() {
+		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
+			.expect("Expected structural position source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected structural position HLSL generation");
+
+		assert_string_contains!(shader, "out float4 _besl_interface_position : SV_Position");
+		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "_besl_interface_position=position;");
+		assert!(!shader.contains("_besl_interface_position : TEXCOORD"));
 	}
 
 	#[test]

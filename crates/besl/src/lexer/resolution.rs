@@ -60,7 +60,28 @@ pub(super) fn resolve_descriptor_type(
 	chain: &[NodeReference],
 	resource_type: &str,
 	format: Option<&str>,
+	runtime_array: bool,
 ) -> Result<BindingTypes, LexError> {
+	if runtime_array {
+		if format.is_some() {
+			return Err(LexError::Undefined {
+				message: Some(
+					"Runtime buffer arrays cannot declare an image format. The most likely cause is that [] was attached to a formatted storage image."
+						.to_string(),
+				),
+			});
+		}
+		let element = resolve_type(chain, resource_type)?;
+		if !matches!(element.borrow().node(), Nodes::Struct { fields, .. } if !fields.is_empty()) {
+			return Err(LexError::Undefined {
+				message: Some(format!(
+					"Runtime buffer element `{resource_type}` has no storable buffer representation. The most likely cause is that [] was attached to a scalar, empty, or resource-handle type."
+				)),
+			});
+		}
+		return Ok(BindingTypes::BufferArray { element });
+	}
+
 	if format.is_some() && resource_type != "StorageImage" {
 		return Err(LexError::Undefined {
 			message: Some(format!(
@@ -137,6 +158,9 @@ pub(super) fn append_type_name(name: &mut String, type_name: &parser::TypeName) 
 			append_type_name(name, element);
 			let _ = write!(name, "[{count}]");
 		}
+		parser::TypeName::Record { role, .. } => {
+			let _ = write!(name, "{role}");
+		}
 	}
 }
 
@@ -150,6 +174,11 @@ pub(super) fn resolve_type_name(chain: &[NodeReference], type_name: &parser::Typ
 			})?;
 			resolve_array_type(chain, element, count)
 		}
+		parser::TypeName::Record { role, .. } => Err(LexError::Undefined {
+			message: Some(format!(
+				"Anonymous {role} types are valid only on main. The most likely cause is that a structural stage type was used as an ordinary value type."
+			)),
+		}),
 	}
 }
 pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
@@ -274,6 +303,10 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 			r#type: BindingTypes::Buffer { members },
 			..
 		} => find_in_descendants(members, child_name, mode),
+		Nodes::Binding {
+			r#type: BindingTypes::BufferArray { element },
+			..
+		} => find_descendant(element, child_name, mode),
 		Nodes::Input { format, .. }
 		| Nodes::Output { format, .. }
 		| Nodes::TaskPayload { format, .. }
@@ -511,7 +544,14 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(source),
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
-			if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
+			if let Some(element) = runtime_buffer_array_element(left) {
+				Some(element)
+			} else if is_array_texture_reference(left) {
+				// The binding stores its native texture shape rather than a linked `Texture2D`
+				// handle. Leaving this contextual layer view unknown keeps overload matching
+				// permissive without allocating a second built-in registry.
+				None
+			} else if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
 				infer_member_type(left)
 			} else {
 				infer_expression_type(right)
@@ -520,6 +560,46 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
+		_ => None,
+	}
+}
+
+/// Returns the runtime-array element type selected by an indexed binding expression.
+fn runtime_buffer_array_element(expression: &NodeReference) -> Option<NodeReference> {
+	let source = expression_source(expression)?;
+	let borrowed = source.borrow();
+	match borrowed.node() {
+		Nodes::Binding {
+			r#type: BindingTypes::BufferArray { element },
+			..
+		} => Some(element.clone()),
+		_ => None,
+	}
+}
+
+/// Reports whether indexing this expression selects one layer of a layered 2D texture.
+pub(super) fn is_array_texture_reference(expression: &NodeReference) -> bool {
+	let Some(source) = expression_source(expression) else {
+		return false;
+	};
+	let borrowed = source.borrow();
+	matches!(
+		borrowed.node(),
+		Nodes::Binding {
+			r#type: BindingTypes::CombinedImageSampler { format },
+			count: None,
+			..
+		} if format == "ArrayTexture2D"
+	)
+}
+
+/// Peels direct member wrappers to the declaration that supplies their value.
+fn expression_source(expression: &NodeReference) -> Option<NodeReference> {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Binding { .. } => Some(expression.clone()),
+		Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => expression_source(&elements[0]),
 		_ => None,
 	}
 }

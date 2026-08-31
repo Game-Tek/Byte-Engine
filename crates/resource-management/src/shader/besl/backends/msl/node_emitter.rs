@@ -156,7 +156,12 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		false
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
-		if self.accessor_returns_packed_mat4x3(left, right) {
+		if runtime_buffer_element(left).is_some() {
+			self.emit_node_string(string, left);
+			string.push('[');
+			self.emit_node_string(string, right);
+			string.push(']');
+		} else if self.accessor_returns_packed_mat4x3(left, right) {
 			string.push_str("_besl_load_mat4x3(");
 			self.emit_accessor_expression_raw(string, left, right);
 			string.push(')');

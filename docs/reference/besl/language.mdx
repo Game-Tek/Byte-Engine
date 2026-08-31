@@ -39,8 +39,8 @@ types are listed with [descriptors](/docs/reference/besl/interface#descriptors).
 
 ## Structs
 
-Declare a struct with `Name: struct`. Members use `name: Type` and a trailing
-comma.
+Declare a struct with `Name: struct`. Write each member as `name: Type` and
+separate members with commas. You can add a trailing comma.
 
 ```rust
 Light: struct {
@@ -133,6 +133,9 @@ or return arrays directly.
 Value arrays such as `u32[3]`, arrays of resource descriptors, and layered
 textures such as `Texture2DArray` are separate concepts. See
 [Descriptors](/docs/reference/besl/interface#descriptors) for resource arrays.
+Empty brackets are valid only in a descriptor resource type, such as
+`descriptor<Instance[], 1, read>`, where they declare runtime-sized buffer
+contents.
 
 ## Constants
 
@@ -162,6 +165,20 @@ main: fn () -> void {
 }
 ```
 
+Raster entry points can use contextual record types. Use `interface` for values
+that cross a stage boundary and `output` for final fragment attachments:
+
+```rust
+main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
+	let color: vec4f = vec4f(pipeline_input.uv.x, pipeline_input.uv.y, 0.0, 1.0);
+	return { color };
+}
+```
+
+Anonymous `interface` and `output` types are valid only in `main` parameters and
+its return type. Separate their fields with commas. You can add a trailing
+comma, but you can't use semicolons as field separators.
+
 ## Variables and expressions
 
 Declare a typed local variable with `let`:
@@ -171,12 +188,18 @@ let color: vec4f = vec4f(1.0, 0.0, 1.0, 1.0);
 ```
 
 BESL expressions include literals, grouped expressions, function and intrinsic
-calls, constructors, assignments, and member access:
+calls, constructors, assignments, member access, and contextual record values:
 
 ```rust
 let scaled: f32 = (value + bias) * factor;
 output.color = material.color;
+return { color, instance_index: input.instance_index };
 ```
+
+In a record value, `color` is shorthand for `color: color`. Separate fields with
+commas; a trailing comma is optional. A record returned from `main` must provide
+every declared field exactly once. Return it directly from the top-level entry
+body so the compiler can finalize the native stage output on every backend.
 
 Numeric literals contain digits and an optional decimal point. They don't use
 type suffixes or scientific notation. BESL has no unary operators, so write a

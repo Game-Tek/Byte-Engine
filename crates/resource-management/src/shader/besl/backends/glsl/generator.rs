@@ -1,6 +1,10 @@
 use std::cell::RefCell;
 
-use super::{super::is_two, analysis::Generator, header};
+use super::{
+	super::{ResourceAccessorKind, is_two, resource_accessor},
+	analysis::Generator,
+	header,
+};
 use crate::shader::generator::{NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, ordered_shader_nodes};
 impl Generator {
 	/// Generates a GLSL shader from a BESL AST.
@@ -137,6 +141,33 @@ impl Generator {
 		string.push(')');
 	}
 
+	// Emits ordinary 2D samples, descriptor-array samples, and one selected 2D-array layer.
+	fn emit_sample(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
+		string.push_str("texture(");
+		let accessor = resource_accessor(&arguments[0]);
+		if let Some((kind, resource, index)) = &accessor {
+			self.emit_node_string(string, resource);
+			if *kind == ResourceAccessorKind::DescriptorArray {
+				string.push_str("[nonuniformEXT(");
+				self.emit_node_string(string, index);
+				string.push_str(")]");
+			}
+		} else {
+			self.emit_node_string(string, &arguments[0]);
+		}
+		string.push_str(if self.minified { "," } else { ", " });
+		if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, layer)) = accessor {
+			string.push_str("vec3(");
+			self.emit_node_string(string, &arguments[1]);
+			string.push_str(if self.minified { ",float(" } else { ", float(" });
+			self.emit_node_string(string, &layer);
+			string.push_str("))");
+		} else {
+			self.emit_node_string(string, &arguments[1]);
+		}
+		string.push(')');
+	}
+
 	// Emits texture intrinsic lowerings, including the special cases that bypass intrinsic bodies.
 	fn emit_texture_intrinsic_call(
 		&mut self,
@@ -146,17 +177,7 @@ impl Generator {
 		has_body: bool,
 	) -> bool {
 		match name {
-			"sample" => {
-				string.push_str("texture(");
-				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-				self.emit_node_string(string, &arguments[1]);
-				string.push(')');
-			}
+			"sample" => self.emit_sample(string, arguments),
 			"sample_texture_2d_array_grad" => {
 				self.emit_texture_2d_array_grad_sample(
 					string,
@@ -697,6 +718,9 @@ impl Generator {
 				format,
 				count,
 			} => {
+				if count.is_none() && self.current_stage_interpolates_outputs && besl::is_position_output(name) {
+					return;
+				}
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				if let Some(count) = count {
@@ -754,7 +778,7 @@ impl Generator {
 				..
 			} => {
 				let binding_type = match r#type {
-					besl::BindingTypes::Buffer { .. } => "buffer",
+					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => "buffer",
 					besl::BindingTypes::Image { format, .. } => match format.as_str() {
 						"r8ui" | "r16ui" | "r32ui" => "uniform uimage2D",
 						_ => "uniform image2D",
@@ -772,7 +796,7 @@ impl Generator {
 				string.push_str(&format!("layout(set=0,binding={slot}"));
 
 				match r#type {
-					besl::BindingTypes::Buffer { .. } => {
+					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::BufferArray { .. } => {
 						string.push_str(",scalar");
 					}
 					besl::BindingTypes::Image { format } => {
@@ -785,7 +809,9 @@ impl Generator {
 				}
 
 				match r#type {
-					besl::BindingTypes::Buffer { .. } | besl::BindingTypes::Image { .. } => {
+					besl::BindingTypes::Buffer { .. }
+					| besl::BindingTypes::BufferArray { .. }
+					| besl::BindingTypes::Image { .. } => {
 						string.push_str(&format!(
 							") {}{} ",
 							if *read && !*write {
@@ -803,20 +829,32 @@ impl Generator {
 					}
 				}
 
-				if let besl::BindingTypes::Buffer { members } = r#type {
-					string.push_str(&format!("_{}{{", name));
-
-					for member in members.iter() {
-						self.emit_node_string(string, member);
-						self.emit_statement_end(string);
+				match r#type {
+					besl::BindingTypes::Buffer { members } => {
+						string.push_str(&format!("_{}{{", name));
+						for member in members {
+							self.emit_node_string(string, member);
+							self.emit_statement_end(string);
+						}
+						string.push('}');
+						string.push_str(name);
 					}
-
-					string.push('}');
+					besl::BindingTypes::BufferArray { element } => {
+						string.push_str(&format!("_{}{{", name));
+						Self::emit_type_name(string, element.borrow().get_name().unwrap());
+						string.push(' ');
+						string.push_str(name);
+						string.push_str("[];");
+						string.push('}');
+					}
+					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {
+						string.push_str(name);
+					}
 				}
 
-				string.push_str(name);
-
-				if let Some(count) = count {
+				if !matches!(r#type, besl::BindingTypes::BufferArray { .. })
+					&& let Some(count) = count
+				{
 					string.push('[');
 					string.push_str(count.to_string().as_str());
 					string.push(']');
@@ -863,15 +901,19 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		let source = source.borrow();
-		let besl::Nodes::Input { name: input_name, .. } = source.node() else {
-			return false;
-		};
-		if name != input_name {
-			return false;
-		}
-		match name {
-			besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
-			besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
+		match source.node() {
+			besl::Nodes::Input { name: input_name, .. } if name == input_name => match name {
+				besl::VERTEX_INDEX_BUILTIN => string.push_str("uint(gl_VertexIndex)"),
+				besl::INSTANCE_INDEX_BUILTIN => string.push_str("uint(gl_InstanceIndex)"),
+				_ => return false,
+			},
+			besl::Nodes::Output {
+				name: output_name,
+				count: None,
+				..
+			} if self.current_stage_interpolates_outputs && name == output_name && besl::is_position_output(name) => {
+				string.push_str("gl_Position");
+			}
 			_ => return false,
 		}
 		true

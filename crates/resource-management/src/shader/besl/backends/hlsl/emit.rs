@@ -246,12 +246,16 @@ impl Generator {
 			string.push_str(type_name);
 			string.push(' ');
 			string.push_str(name);
-			string.push_str(if self.current_stage == HlslStage::Fragment {
+			string.push_str(if self.current_stage == HlslStage::Vertex && besl::is_position_output(name) {
+				" : SV_Position"
+			} else if self.current_stage == HlslStage::Fragment {
 				" : SV_Target"
 			} else {
 				" : TEXCOORD"
 			});
-			string.push_str(&location.to_string());
+			if !(self.current_stage == HlslStage::Vertex && besl::is_position_output(name)) {
+				string.push_str(&location.to_string());
+			}
 			has_previous_parameter = true;
 		}
 	}
@@ -320,11 +324,38 @@ impl Generator {
 
 		match name.as_str() {
 			"sample" => {
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str(".Sample(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, ");
-				self.emit_node_string(string, &arguments[1]);
+				if let Some((kind, resource, index)) = resource_accessor(&arguments[0]) {
+					self.emit_node_string(string, &resource);
+					if kind == ResourceAccessorKind::DescriptorArray {
+						string.push('[');
+						self.emit_node_string(string, &index);
+						string.push(']');
+					}
+					string.push_str(".Sample(");
+					self.emit_node_string(string, &resource);
+					string.push_str("_sampler");
+					if kind == ResourceAccessorKind::DescriptorArray {
+						string.push('[');
+						self.emit_node_string(string, &index);
+						string.push(']');
+					}
+					string.push_str(", ");
+					if kind == ResourceAccessorKind::Texture2DArrayLayer {
+						string.push_str("float3(");
+						self.emit_node_string(string, &arguments[1]);
+						string.push_str(", float(");
+						self.emit_node_string(string, &index);
+						string.push_str("))");
+					} else {
+						self.emit_node_string(string, &arguments[1]);
+					}
+				} else {
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str(".Sample(");
+					self.emit_node_string(string, &arguments[0]);
+					string.push_str("_sampler, ");
+					self.emit_node_string(string, &arguments[1]);
+				}
 				string.push(')');
 				return;
 			}

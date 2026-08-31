@@ -116,6 +116,41 @@ fn reflected_storage_buffer_stride(members: &[besl::NodeReference]) -> Result<u3
 	reflected_storage_buffer_stride_for_target(members, StorageLayoutTarget::current())
 }
 
+/// Reflects the stride of one element in a runtime-sized storage buffer.
+fn reflected_runtime_storage_buffer_stride(element: &besl::NodeReference) -> Result<u32, String> {
+	reflected_runtime_storage_buffer_stride_for_target(element, StorageLayoutTarget::current())
+}
+
+/// Reflects a runtime-sized buffer element using the selected backend's native struct layout.
+pub(super) fn reflected_runtime_storage_buffer_stride_for_target(
+	element: &besl::NodeReference,
+	target: StorageLayoutTarget,
+) -> Result<u32, String> {
+	let fields = {
+		let element = element.borrow();
+		match element.node() {
+			besl::Nodes::Struct { fields, .. } if !fields.is_empty() => Some(fields.clone()),
+			_ => None,
+		}
+	};
+	let layout = if let Some(fields) = fields {
+		reflected_storage_members_layout(&fields, target, true, &mut HashSet::new())?
+	} else {
+		reflected_storage_type_layout(element, target, false, &mut HashSet::new())?
+	};
+	let size = checked_align_up(layout.size, layout.alignment)?;
+	if size == 0 {
+		return Err(
+			"Zero storage-buffer stride. The most likely cause is that the runtime array element has no storage representation."
+				.to_string(),
+		);
+	}
+	u32::try_from(size).map_err(|_| {
+		"Storage-buffer stride exceeds u32. The most likely cause is that a runtime array element is excessively large."
+			.to_string()
+	})
+}
+
 /// Reflects one storage-buffer element using the selected backend's emitted layout.
 pub(super) fn reflected_storage_buffer_stride_for_target(
 	members: &[besl::NodeReference],
@@ -538,6 +573,16 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 			let (kind, buffer_stride) = match r#type {
 				besl::BindingTypes::Buffer { members } => {
 					let stride = match reflected_storage_buffer_stride(members) {
+						Ok(stride) => stride,
+						Err(error) => {
+							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));
+							return;
+						}
+					};
+					(BindingKind::StorageBuffer, Some(stride))
+				}
+				besl::BindingTypes::BufferArray { element } => {
+					let stride = match reflected_runtime_storage_buffer_stride(element) {
 						Ok(stride) => stride,
 						Err(error) => {
 							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));

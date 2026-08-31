@@ -1,6 +1,7 @@
 //! BESL analysis and lowering into executable VM instructions.
 
 mod ast;
+mod entry;
 mod lowering;
 mod resolution;
 
@@ -16,7 +17,6 @@ use resolution::*;
 
 #[cfg(test)]
 use crate::parser;
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -139,6 +139,133 @@ mod tests {
 				r#type: BindingTypes::Image { format },
 				..
 			} if format == "unknown"
+		));
+	}
+
+	#[test]
+	fn structural_sprite_entry_points_lower_to_the_flat_semantic_abi() {
+		let vertex = crate::compile_to_besl(
+			r#"
+				main: fn (input: StageInput) -> interface { uv: vec2f, instance_index: u32 } {
+					let uv: vec2f = vec2f(
+						1.0 - f32(input.vertex_index & 1),
+						f32(input.vertex_index >> 1),
+					);
+
+					return { uv, instance_index: input.instance_index };
+				}
+			"#,
+			None,
+		)
+		.expect("structural sprite vertex should link");
+		let fragment = crate::compile_to_besl(
+			r#"
+				Instance: struct {
+					position: vec3f,
+					sprite_id: u32,
+				}
+
+				sprites: descriptor<Texture2DArray, 0, read>;
+				instances: descriptor<Instance[], 1, read>;
+
+				main: fn (input: StageInput, pipeline_input: interface { instance_index: u32, uv: vec2f }) -> output { color: vec4f } {
+					let instance: Instance = instances[pipeline_input.instance_index];
+					let color: vec4f = sample(sprites[instance.sprite_id], pipeline_input.uv);
+
+					return { color };
+				}
+			"#,
+			None,
+		)
+		.expect("structural sprite fragment should link");
+
+		fn io_location(root: &NodeReference, name: &str) -> u8 {
+			let node = root.borrow().get_child(name).expect("structural field should exist");
+			match node.borrow().node() {
+				Nodes::Input { location, .. } | Nodes::Output { location, .. } => *location,
+				_ => panic!("structural field should be stage I/O"),
+			}
+		}
+
+		assert_eq!(io_location(&vertex, "_besl_interface_instance_index"), 0);
+		assert_eq!(io_location(&vertex, "_besl_interface_uv"), 1);
+		assert_eq!(io_location(&fragment, "_besl_interface_instance_index"), 0);
+		assert_eq!(io_location(&fragment, "_besl_interface_uv"), 1);
+		assert!(matches!(
+			fragment
+				.borrow()
+				.get_child("instances")
+				.expect("runtime buffer descriptor should exist")
+				.borrow()
+				.node(),
+			Nodes::Binding {
+				r#type: BindingTypes::BufferArray { element },
+				..
+			} if element.borrow().get_name() == Some("Instance")
+		));
+		assert_eq!(io_location(&fragment, "_besl_output_color"), 0);
+	}
+
+	#[test]
+	fn structural_entry_rejects_invalid_record_shapes() {
+		for (source, expected) in [
+			(
+				r#"main: fn () -> output { color: vec4f, depth: f32 } {
+					let color: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
+					return { color };
+				}"#,
+				"every declared field",
+			),
+			(
+				r#"main: fn (input: interface { position: vec4f }) -> output { color: vec4f } {
+					return { color: input.position };
+				}"#,
+				"cannot be an interface parameter",
+			),
+		] {
+			let error = crate::compile_to_besl(source, None).expect_err("invalid structural entry should fail while linking");
+			assert!(matches!(
+				error,
+				crate::CompilationError::Lex(LexError::Undefined { message: Some(message) })
+					if message.contains(expected)
+			));
+		}
+	}
+
+	#[test]
+	fn runtime_buffer_arrays_reject_resource_handle_elements() {
+		for resource_type in [
+			"void",
+			"Texture2D",
+			"Texture2DArray",
+			"Texture3D",
+			"TextureCube",
+			"TextureCubeArray",
+			"StorageImage",
+		] {
+			let source = format!("values: descriptor<{resource_type}[], 0, read>; main: fn () -> void {{ values; }}");
+			assert!(
+				crate::compile_to_besl(&source, None).is_err(),
+				"{resource_type} should not become a runtime buffer element"
+			);
+		}
+	}
+
+	#[test]
+	fn texture_2d_array_layer_indices_must_be_u32() {
+		let source = r#"
+			sprites: descriptor<Texture2DArray, 0, read>;
+			main: fn () -> void {
+				let color: vec4f = sample(sprites[1.0], vec2f(0.0, 0.0));
+				color;
+			}
+		"#;
+
+		let error = crate::compile_to_besl(source, None).expect_err("f32 layer index should fail while linking");
+		assert!(matches!(
+			error,
+			crate::CompilationError::Lex(LexError::Undefined { message: Some(message) })
+				if message.contains("layer index must be u32")
 		));
 	}
 

@@ -32,13 +32,26 @@ impl<'a> Compiler<'a> {
 			"sample" => {
 				require_argument_count(arguments, 2)?;
 
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
 				let register = self.allocate_register();
+				let (slot, layer) = if let Some((slot, layer)) =
+					self.resolve_array_texture_layer_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?
+				{
+					(
+						slot,
+						Some(self.compile_value_expression(&layer, &ValueType::U32, descriptor_layouts)?),
+					)
+				} else {
+					(
+						self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?,
+						None,
+					)
+				};
 				self.instructions.push(Instruction::SampleTexture {
 					register,
 					slot,
 					uv,
+					layer,
 					lod: None,
 					reduction_mode: None,
 				});
@@ -66,13 +79,13 @@ impl<'a> Compiler<'a> {
 					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
 					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32, descriptor_layouts)?;
 					let sample_register = self.allocate_register();
-					self.instructions.push(Instruction::SampleTextureArray {
+					self.instructions.push(Instruction::SampleTexture {
 						register: sample_register,
 						slot,
 						uv,
-						layer,
-						lod,
-						reduction_mode: SamplerReductionMode::Max,
+						layer: Some(layer),
+						lod: Some(lod),
+						reduction_mode: Some(SamplerReductionMode::Max),
 					});
 					let register = self.allocate_register();
 					self.instructions.push(Instruction::Extract {
@@ -103,6 +116,7 @@ impl<'a> Compiler<'a> {
 						register: sample_register,
 						slot,
 						uv: coord,
+						layer: None,
 						lod,
 						reduction_mode: match name.as_str() {
 							"downsample_min" => Some(SamplerReductionMode::Min),

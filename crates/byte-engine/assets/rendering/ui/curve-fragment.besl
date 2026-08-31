@@ -1,17 +1,28 @@
-in_pixel_position: input<vec2f, 0>;
-in_segment_from: input<vec2f, 1>;
-in_segment_to: input<vec2f, 2>;
-in_color: input<vec4f, 3>;
-in_half_width: input<f32, 4>;
-out_color_attachment: output<vec4f, 0>;
-main: fn() -> void {
-	let segment: vec2f = in_segment_to - in_segment_from;
+main: fn(pipeline_input: interface {
+	pixel_position: vec2f,
+	segment_from: vec2f,
+	segment_to: vec2f,
+	color: vec4f,
+	half_width: f32,
+	feather_mask_position: vec2f,
+	feather_mask_size: vec2f,
+	feather_mask_edges: vec4f,
+	feather_mask_corner: vec2f,
+}) -> output { color_attachment: vec4f } {
+	let segment: vec2f = pipeline_input.segment_to - pipeline_input.segment_from;
 	let segment_length: f32 = sqrt(max(dot(segment, segment), 0.0001));
 	let tangent: vec2f = segment / segment_length;
 	let normal: vec2f = vec2f(0.0 - tangent.y, tangent.x);
-	let relative_position: vec2f = in_pixel_position - (in_segment_from + in_segment_to) * 0.5;
-	let strip_distance: vec2f = abs(vec2f(dot(relative_position, tangent), dot(relative_position, normal))) - vec2f(segment_length * 0.5, in_half_width);
+	let relative_position: vec2f = pipeline_input.pixel_position - (pipeline_input.segment_from + pipeline_input.segment_to) * 0.5;
+	let strip_distance: vec2f = abs(vec2f(dot(relative_position, tangent), dot(relative_position, normal))) - vec2f(segment_length * 0.5, pipeline_input.half_width);
 	let signed_distance: f32 = length(vec4f(max(strip_distance, vec2f(0.0, 0.0)).x, max(strip_distance, vec2f(0.0, 0.0)).y, 0.0, 0.0)) + min(max(strip_distance.x, strip_distance.y), 0.0);
 	let coverage: f32 = 1.0 - smoothstep(0.0 - max(fwidth(signed_distance), 1.0), max(fwidth(signed_distance), 1.0), signed_distance);
-	out_color_attachment = vec4f(in_color.x, in_color.y, in_color.z, in_color.w * coverage);
+	let color_attachment: vec4f = vec4f(
+		pipeline_input.color.x,
+		pipeline_input.color.y,
+		pipeline_input.color.z,
+		pipeline_input.color.w * coverage,
+	);
+
+	return { color_attachment };
 }

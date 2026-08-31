@@ -197,6 +197,12 @@ pub(super) fn collect_material_expression_features(
 				collect_material_reconstruction_features(element, features);
 			}
 		}
+		besl::parser::Expressions::RecordLiteral { fields } => {
+			// Entry records are transparent to material feature discovery; only their values can use generated helpers.
+			for field in fields {
+				collect_material_reconstruction_features(&field.value, features);
+			}
+		}
 		besl::parser::Expressions::Operator { name, left, right } => {
 			if *name == "="
 				&& matches!(
@@ -357,6 +363,11 @@ pub(super) fn narrow_material_property_assignment_expression(expression: &mut be
 				narrow_material_property_assignments(parameter);
 			}
 		}
+		besl::parser::Expressions::RecordLiteral { fields } => {
+			for field in fields {
+				narrow_material_property_assignments(&mut field.value);
+			}
+		}
 		besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {
 			narrow_material_property_assignments(left);
 			narrow_material_property_assignments(right);
@@ -456,6 +467,11 @@ pub(super) fn add_material_sample_context_to_expression(
 		besl::parser::Expressions::Expression(elements) => {
 			for element in elements {
 				add_material_sample_context(element, texture_slots);
+			}
+		}
+		besl::parser::Expressions::RecordLiteral { fields } => {
+			for field in fields {
+				add_material_sample_context(&mut field.value, texture_slots);
 			}
 		}
 		besl::parser::Expressions::Accessor { left, right } | besl::parser::Expressions::Operator { left, right, .. } => {

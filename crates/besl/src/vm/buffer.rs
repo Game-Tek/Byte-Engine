@@ -17,12 +17,46 @@ impl Buffer {
 		}
 	}
 
+	/// Allocates contiguous storage for `element_count` instances of one runtime buffer element layout.
+	///
+	/// Next, initialize fields with [`Self::write_array_member`] before binding the buffer.
+	pub fn new_array(layout: BufferLayout, element_count: usize) -> Result<Self, VmError> {
+		let byte_count = layout
+			.size()
+			.checked_mul(element_count)
+			.ok_or_else(|| VmError::UnsupportedBufferLayout {
+				message: "Runtime-sized buffer storage is too large. The most likely cause is element-count overflow."
+					.to_string(),
+			})?;
+		Ok(Self {
+			layout,
+			data: vec![0; byte_count],
+		})
+	}
+
 	pub fn layout(&self) -> &BufferLayout {
 		&self.layout
 	}
 
 	pub fn bytes(&self) -> &[u8] {
 		&self.data
+	}
+
+	/// Writes one named member in a runtime-sized buffer element.
+	pub fn write_array_member(&mut self, index: usize, member_name: &str, value: Value) -> Result<(), VmError> {
+		let (offset, value_type) = {
+			let member = self.member_layout(member_name)?;
+			if member.count() != 1 {
+				return Err(VmError::UnsupportedBufferLayout {
+					message: format!("Array member `{member_name}` requires a nested element index"),
+				});
+			}
+			(
+				self.array_element_offset(index)? + member.offset(),
+				member.value_type().clone(),
+			)
+		};
+		self.write_value(offset, &value_type, &value)
 	}
 
 	/// Reads a VM value from the buffer layout by member name.
@@ -275,5 +309,13 @@ impl Buffer {
 		self.layout.member(member_name).ok_or_else(|| VmError::UnknownBufferMember {
 			member: member_name.to_string(),
 		})
+	}
+
+	fn array_element_offset(&self, index: usize) -> Result<usize, VmError> {
+		let count = self.data.len().checked_div(self.layout.size()).unwrap_or(0);
+		if index >= count {
+			return Err(VmError::BufferArrayIndexOutOfBounds { index, count });
+		}
+		Ok(self.layout.size() * index)
 	}
 }

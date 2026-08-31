@@ -294,6 +294,9 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 						build_graph_impl(node.clone(), member.clone(), graph, expanded, active, allocator.clone());
 					}
 				}
+				besl::BindingTypes::BufferArray { element } => {
+					build_graph_impl(node.clone(), element.clone(), graph, expanded, active, allocator);
+				}
 				besl::BindingTypes::Image { .. } => {}
 				besl::BindingTypes::CombinedImageSampler { .. } => {}
 			},

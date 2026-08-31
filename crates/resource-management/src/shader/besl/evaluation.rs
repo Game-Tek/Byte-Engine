@@ -9,7 +9,8 @@ pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
 pub(crate) use reflection::{BindingRecord, collect_bindings};
 #[cfg(test)]
 use reflection::{
-	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_storage_buffer_stride_for_target,
+	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout,
+	reflected_runtime_storage_buffer_stride_for_target, reflected_storage_buffer_stride_for_target,
 	reflected_storage_type_layout,
 };
 
@@ -145,6 +146,60 @@ mod tests {
 		};
 
 		assert_eq!(strides, expected);
+	}
+
+	#[test]
+	fn runtime_storage_buffer_reflects_its_element_stride() {
+		let mut root = besl::Node::root();
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f");
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		let instance = root.add_child(
+			besl::Node::r#struct(
+				"Instance",
+				vec![
+					besl::Node::member("position", vec3f).into(),
+					besl::Node::member("sprite_id", u32_type).into(),
+				],
+			)
+			.into(),
+		);
+
+		assert_eq!(
+			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::Hlsl),
+			Ok(16)
+		);
+		assert_eq!(
+			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::Msl),
+			Ok(32)
+		);
+		assert_eq!(
+			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::GlslScalar),
+			Ok(16)
+		);
+
+		root.add_child(
+			besl::Node::binding(
+				"instances",
+				besl::BindingTypes::BufferArray { element: instance },
+				1,
+				true,
+				false,
+			)
+			.into(),
+		);
+		let program = besl::compile_to_besl("main: fn () -> void { return; }", Some(root))
+			.expect("Expected runtime storage-buffer reflection fixture to link");
+		let bindings = ProgramEvaluation::from_program(&program)
+			.expect("Expected runtime storage-buffer reflection")
+			.into_bindings();
+
+		assert_eq!(bindings.len(), 1);
+		assert_eq!(bindings[0].kind, BindingKind::StorageBuffer);
+		assert_eq!(bindings[0].count, 1);
+		assert_eq!(
+			bindings[0].buffer_stride,
+			Some(if cfg!(target_vendor = "apple") { 32 } else { 16 })
+		);
 	}
 
 	#[test]

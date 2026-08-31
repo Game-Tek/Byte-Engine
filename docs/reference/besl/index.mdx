@@ -20,28 +20,35 @@ transformations, and emits code for the active graphics backend.
 ## Create a BESL file
 
 A BESL file contains declarations for structs, constants, resource bindings,
-interface inputs and outputs, helper functions, and a `main` function.
+helper functions, and a `main` function. Raster entry points declare their
+stage interface in the parameters and return type.
 
 ```rust
-VertexInput: struct {
+Instance: struct {
 	position: vec3f,
-	normal: vec3f,
-	uv: vec2f,
+	sprite_id: u32,
 }
 
-albedo: descriptor<Texture2D, 0, read>;
+sprites: descriptor<Texture2DArray, 0, read>;
+instances: descriptor<Instance[], 1, read>;
 
-uv: input<vec2f, 0>;
-color: output<vec4f, 0>;
+main: fn (
+	input: StageInput,
+	pipeline_input: interface { instance_index: u32, uv: vec2f },
+) -> output { color: vec4f } {
+	let instance: Instance = instances[pipeline_input.instance_index];
+	let color: vec4f = sample(sprites[instance.sprite_id], pipeline_input.uv);
 
-main: fn () -> void {
-	let texel: vec4f = sample(albedo, uv);
-	color = texel;
+	return { color };
 }
 ```
 
 The parser records the source structure. The lexer then resolves names, types,
 members, intrinsics, and references.
+
+Separate fields in structs, `interface` and `output` types, and returned records
+with commas. You can add a trailing comma. Semicolons still end declarations
+and statements, but they aren't valid field separators.
 
 ## Use this reference
 

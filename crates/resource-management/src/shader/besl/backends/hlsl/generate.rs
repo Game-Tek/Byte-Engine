@@ -556,6 +556,17 @@ impl Generator {
 							string.push('\n');
 						}
 					}
+					besl::BindingTypes::BufferArray { element } => {
+						string.push_str(buffer_type);
+						string.push('<');
+						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						string.push_str("> ");
+						string.push_str(name);
+						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
+						if !self.minified {
+							string.push('\n');
+						}
+					}
 					besl::BindingTypes::Image { format } => {
 						// UAV (unordered access view) for images
 						let texture_type = match format.as_str() {
@@ -611,6 +622,11 @@ impl Generator {
 						string.push_str("SamplerState ");
 						string.push_str(name);
 						string.push_str("_sampler");
+						if let Some(count) = count {
+							string.push('[');
+							string.push_str(count.to_string().as_str());
+							string.push(']');
+						}
 						string.push_str(&format!(" : register(s{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');

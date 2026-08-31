@@ -7,7 +7,8 @@ pub(super) struct ResolvedBufferAccess {
 	pub(super) slot: ResourceSlot,
 	pub(super) offset: usize,
 	pub(super) stride: usize,
-	pub(super) count: usize,
+	/// `None` defers bounds to the byte length of the buffer bound at execution time.
+	pub(super) count: Option<usize>,
 	pub(super) index_expression: Option<NodeReference>,
 	pub(super) value_type: ValueType,
 }
@@ -17,7 +18,7 @@ pub(super) struct LoweredBufferAccess {
 	pub(super) slot: ResourceSlot,
 	pub(super) offset: usize,
 	pub(super) stride: usize,
-	pub(super) count: usize,
+	pub(super) count: Option<usize>,
 	pub(super) index: Option<usize>,
 	pub(super) value_type: ValueType,
 }
@@ -489,6 +490,24 @@ pub(super) fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferL
 		members: compiled_members,
 		size: offset,
 	})
+}
+
+/// Compiles the host-visible layout of one runtime-sized storage-buffer element.
+pub(super) fn compile_buffer_array_layout(element: &NodeReference) -> Result<(BufferLayout, ValueType), VmError> {
+	let unsupported = || VmError::UnsupportedBufferLayout {
+		message: "Unsupported runtime buffer element. The most likely cause is that its type isn't a non-empty struct."
+			.to_string(),
+	};
+	let element_ref = element.borrow();
+	let Nodes::Struct { fields, .. } = element_ref.node() else {
+		return Err(unsupported());
+	};
+	let layout = compile_buffer_layout(fields)?;
+	if layout.size() == 0 {
+		return Err(unsupported());
+	}
+	drop(element_ref);
+	Ok((layout, resolve_value_type(element)?))
 }
 
 pub(super) fn compile_member_layouts(

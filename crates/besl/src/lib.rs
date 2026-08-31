@@ -34,6 +34,17 @@ pub const VERTEX_INDEX_BUILTIN: &str = "vertex_index";
 /// interface input. Each graphics backend supplies its native instance system value.
 pub const INSTANCE_INDEX_BUILTIN: &str = "instance_index";
 
+/// Names the collision-free semantic output used for a structural vertex `position` field.
+pub const STRUCTURAL_POSITION_OUTPUT: &str = "_besl_interface_position";
+
+/// Reports whether an emitted output name carries the native vertex position.
+///
+/// Structural entry points use a reserved symbol so `return { position }` can read a local
+/// named `position`. The legacy flat interface spelling remains valid during shader migration.
+pub fn is_position_output(name: &str) -> bool {
+	matches!(name, "position" | STRUCTURAL_POSITION_OUTPUT)
+}
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

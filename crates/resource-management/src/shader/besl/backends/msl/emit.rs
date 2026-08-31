@@ -391,6 +391,18 @@ impl<A: Allocator + Clone> Generator<A> {
 							string.push('\n');
 						}
 					}
+					besl::BindingTypes::BufferArray { element } => {
+						let address_space = buffer_address_space(*memory_class, *write);
+						string.push_str(address_space);
+						string.push(' ');
+						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						string.push_str("* ");
+						string.push_str(name);
+						string.push_str(&format!(" [[buffer({index})]];"));
+						if !self.minified {
+							string.push('\n');
+						}
+					}
 					besl::BindingTypes::Image { format } => {
 						let element_type = match format.as_str() {
 							"r8ui" | "r16ui" | "r32ui" => "uint",

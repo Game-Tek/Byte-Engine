@@ -63,6 +63,64 @@ mod tests {
 	}
 
 	#[test]
+	fn runtime_buffer_and_texture_array_layer_use_native_glsl_resources() {
+		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
+			.expect("Expected runtime-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected runtime-array fragment GLSL generation");
+
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=1,scalar) readonly buffer _instances{Instance instances[];};"
+		);
+		assert_string_contains!(shader, "layout(set=0,binding=0) uniform sampler2DArray sprites;");
+		assert_string_contains!(shader, "Instance instance=instances[");
+		assert_string_contains!(shader, "texture(sprites,vec3(");
+		assert_string_contains!(shader, "float(instance.sprite_id)");
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-runtime-array-texture-layer")
+			.expect("Expected runtime-array fragment GLSL to compile to SPIR-V");
+	}
+
+	#[test]
+	fn sampled_descriptor_array_keeps_descriptor_indexing_in_glsl() {
+		let root = besl::compile_to_besl(
+			"textures: descriptor<Texture2D, 3, read, 4>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
+			None,
+		)
+		.expect("Expected sampled descriptor-array source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected sampled descriptor-array GLSL generation");
+
+		assert_string_contains!(shader, "uniform sampler2D textures[4];");
+		assert_string_contains!(shader, "texture(textures[nonuniformEXT(2)],vec2(0.0,0.0))");
+	}
+
+	#[test]
+	fn structural_position_uses_gl_position_without_colliding_with_a_local() {
+		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
+			.expect("Expected structural position source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected structural position GLSL generation");
+
+		assert_string_contains!(shader, "vec4 position=vec4(float(uint(gl_VertexIndex)),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "gl_Position=position;");
+		assert!(!shader.contains("out vec4 _besl_interface_position"));
+	}
+
+	#[test]
 	fn compute_subgroup_intrinsics_require_and_lower_to_glsl_subgroup_operations() {
 		let root = besl::compile_to_besl(
 			r#"

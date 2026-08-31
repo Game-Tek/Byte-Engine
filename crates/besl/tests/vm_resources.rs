@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use besl::vm::{
-	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, VmError, builtin_position_slot, input_slot,
-	output_slot,
+	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, SamplerReductionMode, Texture, Value, VmError,
+	builtin_position_slot, input_slot, output_slot,
 };
 use besl::{BindingTypes, Node, compile_to_besl};
 
@@ -27,6 +27,40 @@ fn real_resource_slots_do_not_alias_virtual_interface_slots() {
 	// Input and output slot 3 deliberately share one numeric real-resource counterpart.
 
 	assert_eq!(slots.len(), 5);
+}
+
+#[test]
+fn structural_position_return_uses_the_builtin_position_slot_without_shadowing_its_local() {
+	let program = compile_to_besl(
+		r#"
+		main: fn () -> interface { position: vec4f } {
+			let position: vec4f = vec4f(1.0, 2.0, 3.0, 1.0);
+			return { position };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected structural vertex source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected structural vertex source to compile");
+	let mut position = Buffer::new(
+		executable
+			.builtin_position_layout()
+			.expect("Expected VM position output")
+			.clone(),
+	);
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(builtin_position_slot(), &mut position);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected structural vertex execution");
+
+	assert_eq!(
+		position
+			.read(besl::STRUCTURAL_POSITION_OUTPUT)
+			.expect("Expected structural position value"),
+		Value::Vec4F([1.0, 2.0, 3.0, 1.0])
+	);
 }
 
 #[test]
@@ -149,6 +183,94 @@ fn resource_using_dynamic_handle_number_remains_a_real_resource() {
 		result.read("color").expect("Expected sampled color"),
 		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
 	);
+}
+
+#[test]
+fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() {
+	let program = compile_to_besl(
+		r#"
+		Instance: struct { position: vec3f, sprite_id: u32 }
+		sprites: descriptor<Texture2DArray, 0, read>;
+		instances: descriptor<Instance[], 1, read>;
+		main: fn () -> output { color: vec4f } {
+			let color: vec4f = sample(sprites[instances[1].sprite_id], vec2f(0.5, 0.5));
+			return { color };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected runtime buffer and layered texture source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected runtime buffer and layered texture compilation");
+
+	let instances_slot = ResourceSlot::new(1);
+	let mut instances = Buffer::new_array(
+		executable
+			.buffer_layout(instances_slot)
+			.expect("Expected runtime buffer element layout")
+			.clone(),
+		2,
+	)
+	.expect("Expected two runtime buffer elements");
+	instances
+		.write_array_member(1, "sprite_id", Value::U32(1))
+		.expect("Expected layer selection write");
+
+	let mut sprites = Texture::new_3d(2, 2, 2).expect("Expected two texture-array layers");
+	for (coord, red) in [([0, 0, 1], 1.0), ([1, 0, 1], 3.0), ([0, 1, 1], 5.0), ([1, 1, 1], 7.0)] {
+		sprites
+			.write_3d(coord, [red, 0.0, 0.0, 1.0])
+			.expect("Expected layered texel write");
+	}
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected color output").clone());
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture_with_sampler(ResourceSlot::new(0), &mut sprites, Sampler::new(SamplerReductionMode::Max));
+	descriptors.bind_buffer(instances_slot, &mut instances);
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected runtime array layer sampling");
+
+	assert_eq!(
+		output.read("_besl_output_color").expect("Expected sampled color"),
+		Value::Vec4F([7.0, 0.0, 0.0, 1.0])
+	);
+}
+
+#[test]
+fn runtime_buffer_bounds_follow_the_bound_byte_length() {
+	let program = compile_to_besl(
+		r#"
+		Instance: struct { sprite_id: u32 }
+		instances: descriptor<Instance[], 0, read>;
+		main: fn () -> output { value: u32 } {
+			let value: u32 = instances[2].sprite_id;
+			return { value };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected runtime buffer source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected runtime buffer compilation");
+	let instances_slot = ResourceSlot::new(0);
+	let mut instances = Buffer::new_array(
+		executable
+			.buffer_layout(instances_slot)
+			.expect("Expected runtime buffer layout")
+			.clone(),
+		2,
+	)
+	.expect("Expected two runtime buffer elements");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+	let error = {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(instances_slot, &mut instances);
+		descriptors.bind_buffer(output_slot(0), &mut output);
+		executable
+			.run_main(&mut descriptors)
+			.expect_err("Expected bound byte-length validation")
+	};
+
+	assert_eq!(error, VmError::BufferArrayIndexOutOfBounds { index: 2, count: 2 });
 }
 
 #[test]

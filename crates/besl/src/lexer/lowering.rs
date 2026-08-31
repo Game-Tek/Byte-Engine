@@ -310,15 +310,16 @@ pub(super) fn lex_parsed_node(
 			name,
 			resource_type,
 			format,
+			runtime_array,
 			slot,
 			read,
 			write,
 			memory_class,
 			count,
 		} => {
-			let r#type = resolve_descriptor_type(&chain, resource_type, *format)?;
+			let r#type = resolve_descriptor_type(&chain, resource_type, *format, *runtime_array)?;
 			let memory_class = match &r#type {
-				BindingTypes::Buffer { .. } => match *memory_class {
+				BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. } => match *memory_class {
 					Some("constant") => BufferMemoryClass::Constant,
 					Some("device") => BufferMemoryClass::Device,
 					Some(class) => {
@@ -340,7 +341,10 @@ pub(super) fn lex_parsed_node(
 				_ => BufferMemoryClass::Constant,
 			};
 
-			if *write && matches!(&r#type, BindingTypes::Buffer { .. }) && memory_class == BufferMemoryClass::Constant {
+			if *write
+				&& matches!(&r#type, BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. })
+				&& memory_class == BufferMemoryClass::Constant
+			{
 				return Err(LexError::Undefined {
 					message: Some(format!(
 						"Writable buffer descriptor {name} uses constant memory. The most likely cause is that a writable buffer needs the device memory class."
@@ -420,6 +424,17 @@ pub(super) fn lex_parsed_node(
 
 						lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?
 					};
+					if super::resolution::is_array_texture_reference(&left)
+						&& !super::resolution::infer_expression_type(&right)
+							.is_some_and(|r#type| r#type.borrow().get_name() == Some("u32"))
+					{
+						return Err(LexError::Undefined {
+							message: Some(
+								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type."
+									.to_string(),
+							),
+						});
+					}
 
 					Node::expression(Expressions::Accessor { left, right })
 				}
@@ -430,6 +445,14 @@ pub(super) fn lex_parsed_node(
 				parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
 					value: value.to_string(),
 				}),
+				parser::Expressions::RecordLiteral { .. } => {
+					return Err(LexError::Undefined {
+						message: Some(
+							"Record literals are valid only as structural main return values. The most likely cause is that a record value escaped entry-point normalization."
+								.to_string(),
+						),
+					});
+				}
 				parser::Expressions::Expression(elements) => Node {
 					node: Nodes::Expression(Expressions::Expression {
 						elements: elements

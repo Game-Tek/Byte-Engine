@@ -13,36 +13,41 @@ in_feather_mask_edges: input<vec4f, 11>;
 in_feather_mask_corner: input<vec2f, 12>;
 in_blur_resolution_mix: input<f32, 13>;
 
-position: output<vec4f, 0>;
-out_color: output<vec4f, 0>;
-out_pixel_position: output<vec2f, 1>;
-out_local_position: output<vec2f, 2>;
-out_rect_size: output<vec2f, 3>;
-out_corner_radius: output<f32, 4>;
-out_corner_exponent: output<f32, 5>;
-out_layer_kind: output<f32, 6>;
-out_stroke_width: output<f32, 7>;
-out_feather_mask_position: output<vec2f, 8>;
-out_feather_mask_size: output<vec2f, 9>;
-out_feather_mask_edges: output<vec4f, 10>;
-out_feather_mask_corner: output<vec2f, 11>;
-out_screen_uv: output<vec2f, 12>;
-out_blur_resolution_mix: output<f32, 13>;
+main: fn () -> interface {
+	position: vec4f,
+	color: vec4f,
+	pixel_position: vec2f,
+	local_position: vec2f,
+	rect_size: vec2f,
+	corner_radius: f32,
+	corner_exponent: f32,
+	layer_kind: f32,
+	stroke_width: f32,
+	feather_mask_position: vec2f,
+	feather_mask_size: vec2f,
+	feather_mask_edges: vec4f,
+	feather_mask_corner: vec2f,
+	screen_uv: vec2f,
+	blur_resolution_mix: f32,
+} {
+	let position: vec4f = vec4f(in_position.x, in_position.y, 0.0, 1.0);
+	let screen_uv: vec2f = vec2f(in_position.x * 0.5 + 0.5, 0.5 - in_position.y * 0.5);
 
-main: fn () -> void {
-	position = vec4f(in_position.x, in_position.y, 0.0, 1.0);
-	out_color = in_color;
-	out_pixel_position = in_pixel_position;
-	out_local_position = in_local_position;
-	out_rect_size = in_rect_size;
-	out_corner_radius = in_corner_radius;
-	out_corner_exponent = in_corner_exponent;
-	out_layer_kind = in_layer_kind;
-	out_stroke_width = in_stroke_width;
-	out_feather_mask_position = in_feather_mask_position;
-	out_feather_mask_size = in_feather_mask_size;
-	out_feather_mask_edges = in_feather_mask_edges;
-	out_feather_mask_corner = in_feather_mask_corner;
-	out_screen_uv = vec2f(in_position.x * 0.5 + 0.5, 0.5 - in_position.y * 0.5);
-	out_blur_resolution_mix = in_blur_resolution_mix;
+	return {
+		position,
+		color: in_color,
+		pixel_position: in_pixel_position,
+		local_position: in_local_position,
+		rect_size: in_rect_size,
+		corner_radius: in_corner_radius,
+		corner_exponent: in_corner_exponent,
+		layer_kind: in_layer_kind,
+		stroke_width: in_stroke_width,
+		feather_mask_position: in_feather_mask_position,
+		feather_mask_size: in_feather_mask_size,
+		feather_mask_edges: in_feather_mask_edges,
+		feather_mask_corner: in_feather_mask_corner,
+		screen_uv,
+		blur_resolution_mix: in_blur_resolution_mix,
+	};
 }

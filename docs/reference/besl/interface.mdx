@@ -7,43 +7,69 @@ icon: Cable
 Use the shader interface to connect a BESL program to stage inputs and outputs,
 GPU resources, shared memory, and the native pipeline contract.
 
-## Inputs and outputs
+## Raster entry points
 
-Give each stage input and output a location:
+Declare values that cross a raster stage boundary with an anonymous
+`interface` type. A vertex shader returns its interface. A fragment shader
+receives the matching interface as a parameter:
 
 ```rust
-uv: input<vec2f, 0>;
-color: output<vec4f, 0>;
+in_position: input<vec2f, 0>;
+
+main: fn (input: StageInput) -> interface { position: vec4f, uv: vec2f, instance_index: u32 } {
+	let position: vec4f = vec4f(in_position.x, in_position.y, 0.0, 1.0);
+	let uv: vec2f = in_position * 0.5 + vec2f(0.5, 0.5);
+
+	return { position, uv, instance_index: input.instance_index };
+}
 ```
 
-Locations range from `0` through `255`. Each input location and each output
-location must be unique in its interface.
+```rust
+main: fn (
+	pipeline_input: interface { instance_index: u32, uv: vec2f },
+) -> output { color: vec4f } {
+	let color: vec4f = vec4f(pipeline_input.uv.x, pipeline_input.uv.y, 0.0, 1.0);
+	return { color };
+}
+```
 
-Add a positive element count when a mesh stage emits per-primitive values:
+Use the same interface field names and types in adjacent stages. Their source
+order doesn't need to match. BESL sorts the field names to assign stable native
+locations, so the two examples agree even though they list `uv` and
+`instance_index` differently. Integer fields use flat interpolation. A vertex
+`position: vec4f` field is the native clip-space position, doesn't consume a
+varying location, and isn't a fragment input.
+
+An `output` record describes final fragment attachments. Declaration order sets
+the color attachment locations, starting at `0`.
+
+Keep explicit top-level `input<TYPE, LOCATION>` declarations for vertex-buffer
+attributes. Task payloads and mutable mesh output arrays also keep their
+dedicated declarations:
 
 ```rust
 out_instance_index: output<u32, 0, 126>;
 ```
 
-## Vertex invocation indices
+Locations range from `0` through `255`. Don't repeat a location within one
+explicit input or output list.
 
-Vertex shaders can read `vertex_index` and `instance_index` directly. Both are
-implicit `u32` values, so don't declare them as interface inputs or assign
-locations to them:
+## Stage input values
+
+Add a `StageInput` parameter when a vertex shader needs its invocation indices.
+Read `input.vertex_index` or `input.instance_index`; both values are `u32` and
+don't consume vertex-attribute locations:
 
 ```rust
-position: output<vec4f, 0>;
-
-main: fn () -> void {
-	let vertex: u32 = vertex_index;
-	let instance: u32 = instance_index;
-	// Use the indices to load vertex and per-instance data.
+main: fn (input: StageInput) -> interface { instance_index: u32 } {
+	let vertex: u32 = input.vertex_index;
+	return { instance_index: input.instance_index };
 }
 ```
 
 BESL maps both indices to the matching system values on each backend:
 
-| BESL | Vulkan GLSL | HLSL | MSL |
+| `StageInput` field | Vulkan GLSL | HLSL | MSL |
 | --- | --- | --- | --- |
 | `vertex_index` | `gl_VertexIndex` | `SV_VertexID` | `[[vertex_id]]` |
 | `instance_index` | `gl_InstanceIndex` | `SV_InstanceID` | `[[instance_id]]` |
@@ -85,12 +111,13 @@ name: descriptor<ResourceType, SLOT, ACCESS>;
 ```
 
 The complete syntax supports an optional resource count. Buffer descriptors can
-also select their memory class:
+also select their memory class or expose runtime-sized element storage:
 
 ```rust
 name: descriptor<ResourceType, SLOT, ACCESS, COUNT>;
 name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS>;
 name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS, COUNT>;
+name: descriptor<ElementType[], SLOT, ACCESS>;
 ```
 
 This example declares buffer, texture, texture-array, and storage-image bindings:
@@ -100,14 +127,15 @@ Frame: struct {
 	view_projection: mat4f,
 }
 
-VertexData: struct {
-	positions: vec3f[1024],
+Vertex: struct {
+	position: vec3f,
 }
 
 frame: descriptor<Frame, 0, read, constant>;
-vertices: descriptor<VertexData, 1, read, device>;
+vertices: descriptor<Vertex[], 1, read>;
 albedo: descriptor<Texture2D, 2, read>;
-shadow_maps: descriptor<Texture2DArray, 3, read, 4>;
+shadow_maps: descriptor<Texture2DArray, 3, read>;
+gbuffers: descriptor<Texture2D, 4, read, 4>;
 output_image: descriptor<StorageImage<rgba16f>, 7, write>;
 ```
 
@@ -117,6 +145,7 @@ these resource types:
 | Resource type | Binding | Use |
 | --- | --- | --- |
 | A previously declared struct, such as `Frame` | Storage buffer | Bind structured data. Declare the struct before the descriptor. |
+| An element type followed by `[]`, such as `Instance[]` | Runtime-sized storage buffer | Bind a contiguous sequence and index it directly. |
 | `Texture2D` | Combined 2D texture and sampler | Sample one two-dimensional texture. |
 | `Texture2DArray` | Combined 2D-array texture and sampler | Sample layers from one two-dimensional texture array. |
 | `Texture3D` | Combined 3D texture and sampler | Sample a three-dimensional texture. |
@@ -136,6 +165,42 @@ uses `device`. Image and texture descriptors cannot declare a memory class.
 Set `COUNT` to a positive integer to declare an array of resources. When a
 descriptor has no buffer memory class, the count is the fourth argument. When a
 buffer descriptor declares its memory class, the count is the fifth argument.
+
+Write `ElementType[]` to bind one storage buffer whose element count comes from
+the bound resource. Index it directly in a function, without a wrapper struct:
+
+```rust
+Instance: struct {
+	position: vec3f,
+	sprite_id: u32,
+}
+
+instances: descriptor<Instance[], 1, read>;
+
+main: fn (pipeline_input: interface { instance_index: u32 }) -> void {
+	let instance: Instance = instances[pipeline_input.instance_index];
+	instance;
+}
+```
+
+`ElementType[]` describes the contents of one buffer. It doesn't declare an
+array of descriptors. Reflection reports one storage-buffer binding and the
+element stride.
+
+`Texture2DArray` also describes one resource: a layered two-dimensional
+texture. Indexing it selects a layer from that resource before sampling:
+
+```rust
+sprites: descriptor<Texture2DArray, 0, read>;
+
+main: fn (pipeline_input: interface { sprite_id: u32, uv: vec2f }) -> output { color: vec4f } {
+	let color: vec4f = sample(sprites[pipeline_input.sprite_id], pipeline_input.uv);
+	return { color };
+}
+```
+
+Use `descriptor<Texture2D, SLOT, read, COUNT>` when you need `COUNT`
+independent 2D texture descriptors instead.
 
 Reflection retains the authored name and flat slot for each descriptor reachable
 from `main`.

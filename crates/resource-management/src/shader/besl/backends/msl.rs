@@ -7,6 +7,8 @@ use std::{
 
 pub use Generator as MSLTranspiler;
 
+use super::{ResourceAccessorKind, resource_accessor, runtime_buffer_element};
+
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
 pub const MSL_ENTRY_POINT: &str = "besl_main";
 
@@ -107,6 +109,53 @@ mod tests {
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-fixed-slot-array")
 			.await
 			.expect("Expected sparse fixed-slot MSL argument IDs to compile natively");
+	}
+
+	#[compio::test]
+	async fn runtime_buffer_and_texture_array_layer_use_native_msl_resources() {
+		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
+			.expect("Expected runtime-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected runtime-array fragment MSL generation");
+
+		assert_string_contains!(shader, "const device Instance* instances [[id(2)]];");
+		assert_string_contains!(shader, "texture2d_array<float> sprites [[id(0)]];");
+		assert_string_contains!(shader, "Instance instance=resources.instances[");
+		assert_string_contains!(shader, "resources.sprites.sample(resources.sprites_sampler, ");
+		assert_string_contains!(shader, ", instance.sprite_id)");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-runtime-array-texture-layer")
+			.await
+			.expect("Expected runtime-array fragment MSL to compile natively");
+	}
+
+	#[compio::test]
+	async fn structural_position_uses_metal_position_without_colliding_with_a_local() {
+		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
+			.expect("Expected structural position source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected structural position MSL generation");
+
+		assert_string_contains!(
+			shader,
+			"struct VertexOutput{float4 position [[position]];float2 _besl_interface_uv"
+		);
+		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "out.position=_besl_interface_position;");
+		assert!(!shader.contains("_besl_interface_position [[user("));
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-structural-position")
+			.await
+			.expect("Expected structural position MSL to compile natively");
 	}
 
 	#[test]

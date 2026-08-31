@@ -34,6 +34,17 @@ impl Generator {
 					flattened_element_type,
 				})
 			}
+			besl::Nodes::Binding {
+				name,
+				r#type: besl::BindingTypes::BufferArray { .. },
+				write,
+				..
+			} => Some(HlslBufferBindingSource {
+				name: name.to_string(),
+				write: *write,
+				flattened_member: None,
+				flattened_element_type: None,
+			}),
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::hlsl_buffer_binding_source(source),
 			_ => None,
 		}
@@ -210,6 +221,9 @@ impl Generator {
 	}
 
 	pub(crate) fn accessor_type_name(left: &besl::NodeReference) -> Option<String> {
+		if let Some(element) = runtime_buffer_element(left) {
+			return element.borrow().get_name().map(str::to_string);
+		}
 		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left)
 			&& let Some(binding) = Self::hlsl_buffer_binding_source(&source)
 		{

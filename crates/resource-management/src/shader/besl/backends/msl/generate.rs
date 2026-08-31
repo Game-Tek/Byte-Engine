@@ -83,10 +83,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		let program_borrow = program.borrow();
 		match program_borrow.node() {
 			besl::Nodes::Binding { r#type, .. } => {
-				if let besl::BindingTypes::Buffer { members } = r#type {
-					for member in members {
-						Self::append_storage_type_declarations(member, order);
+				match r#type {
+					besl::BindingTypes::Buffer { members } => {
+						for member in members {
+							Self::append_storage_type_declarations(member, order);
+						}
 					}
+					besl::BindingTypes::BufferArray { element } => {
+						Self::append_storage_type_declarations(element, order);
+					}
+					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
 				}
 				if !order.contains(program) {
 					order.push(program.clone());
@@ -197,15 +203,24 @@ impl<A: Allocator + Clone> Generator<A> {
 		let mut visited_structs = Vec::new();
 		for node in order {
 			let node = node.borrow();
-			let besl::Nodes::Binding {
-				r#type: besl::BindingTypes::Buffer { members },
-				..
-			} = node.node()
-			else {
+			let besl::Nodes::Binding { r#type, .. } = node.node() else {
 				continue;
 			};
-			for member in members {
-				self.collect_packed_mat4x3_member(member, &mut visited_structs);
+			match r#type {
+				besl::BindingTypes::Buffer { members } => {
+					for member in members {
+						self.collect_packed_mat4x3_member(member, &mut visited_structs);
+					}
+				}
+				besl::BindingTypes::BufferArray { element } => {
+					let element = element.borrow();
+					if let besl::Nodes::Struct { fields, .. } = element.node() {
+						for field in fields {
+							self.collect_packed_mat4x3_member(field, &mut visited_structs);
+						}
+					}
+				}
+				besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
 			}
 		}
 	}
@@ -293,6 +308,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
 				match source.borrow().node() {
+					besl::Nodes::Binding {
+						name: binding_name,
+						r#type: besl::BindingTypes::BufferArray { element },
+						..
+					} if binding_name == name => return Some(element.clone()),
 					besl::Nodes::Member { r#type, .. } => return Some(r#type.clone()),
 					besl::Nodes::Parameter { .. } | besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
 						return Self::logical_node_type(source);

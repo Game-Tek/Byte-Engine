@@ -8,11 +8,10 @@ mod expressions;
 mod iterator;
 
 pub(crate) use declarations::parse;
-pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, TypeName};
+pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName};
 #[cfg(test)]
 use expressions::*;
 pub use iterator::ProgramState;
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -138,6 +137,10 @@ mod tests {
 		assert!(*read);
 		assert!(!*write);
 		assert_eq!(*count, None);
+		assert!(!matches!(
+			root["source"].node(),
+			Nodes::Descriptor { runtime_array: true, .. }
+		));
 		assert!(matches!(
 			root["result"].node(),
 			Nodes::Descriptor {
@@ -172,6 +175,39 @@ mod tests {
 			Nodes::Descriptor { resource_type: "Texture2DArray", slot: 20, count: Some(count), .. }
 				if count.get() == 16
 		));
+	}
+
+	#[test]
+	fn parse_runtime_array_descriptor() {
+		let tokens =
+			tokenize("instances: descriptor<Instance[], 1, read>;").expect("runtime-array descriptor source should tokenize");
+		let root = parse(&tokens).expect("runtime-array descriptor source should parse");
+
+		assert!(matches!(
+			root["instances"].node(),
+			Nodes::Descriptor {
+				resource_type: "Instance",
+				runtime_array: true,
+				count: None,
+				..
+			}
+		));
+	}
+
+	#[test]
+	fn runtime_array_descriptor_rejects_fixed_element_or_resource_counts() {
+		for source in [
+			"instances: descriptor<Instance[4], 1, read>;",
+			"instances: descriptor<Instance[], 1, read, 4>;",
+			"instances: descriptor<Instance[], 1, read, device, 4>;",
+		] {
+			let tokens = tokenize(source).expect("invalid runtime-array descriptor source should tokenize");
+
+			assert!(
+				parse(&tokens).is_err(),
+				"invalid runtime-array descriptor should be rejected: {source}"
+			);
+		}
 	}
 
 	#[test]
@@ -268,6 +304,64 @@ mod tests {
 
 	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
 		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
+	}
+
+	#[test]
+	fn parse_structural_entry_types_and_record_values() {
+		let tokens = tokenize(
+			"main: fn (input: StageInput, pipeline_input: interface { uv: vec2f, }) -> output { color: vec4f, } { return { color, }; }",
+		)
+		.expect("trailing-comma record source should tokenize");
+		let root = parse(&tokens).expect("trailing-comma record source should parse");
+		let Nodes::Function {
+			params,
+			return_type,
+			statements,
+			..
+		} = root["main"].node()
+		else {
+			panic!("expected main function");
+		};
+
+		assert!(matches!(
+			params[1].node(),
+			Nodes::Parameter {
+				r#type: TypeName::Record {
+					role: RecordRole::Interface,
+					fields,
+				},
+				..
+			} if fields.len() == 1 && fields[0].name == "uv"
+		));
+		assert!(matches!(
+			return_type,
+			TypeName::Record {
+				role: RecordRole::Output,
+				fields,
+			} if fields.len() == 1 && fields[0].name == "color"
+		));
+		assert!(matches!(
+			statements[0].node(),
+			Nodes::Expression(Expressions::Return { value: Some(value) })
+				if matches!(value.node(), Nodes::Expression(Expressions::RecordLiteral { fields }) if fields.len() == 1 && fields[0].name == "color")
+		));
+	}
+
+	#[test]
+	fn record_and_struct_fields_require_comma_separators() {
+		for source in [
+			"main: fn (input: interface { uv: vec2f; }) -> void {}",
+			"main: fn () -> output { color: vec4f; } { return { color: vec4f(1.0); }; }",
+			"Instance: struct { position: vec3f; }",
+			"Instance: struct { position: vec3f sprite_id: u32 }",
+		] {
+			let tokens = tokenize(source).expect("invalid field separator source should tokenize");
+
+			assert!(
+				parse(&tokens).is_err(),
+				"non-comma field separators should be rejected: {source}"
+			);
+		}
 	}
 
 	fn print_tree(node: &Node) {

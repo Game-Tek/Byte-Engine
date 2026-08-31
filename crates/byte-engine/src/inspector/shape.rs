@@ -218,3 +218,97 @@ fn describe_enum(shape: &'static Shape, enumeration: facet::EnumType, active: &m
 fn unknown_shape(shape: &Shape) -> Value {
 	json!({ "type": "unknown", "name": shape.to_string() })
 }
+
+#[cfg(test)]
+mod tests {
+	use std::collections::HashMap;
+
+	use facet::Facet;
+	use serde_json::json;
+
+	use super::describe_json_shape;
+
+	#[derive(Facet)]
+	#[facet(deny_unknown_fields)]
+	struct Settings {
+		name: String,
+		retries: Option<u32>,
+	}
+
+	#[derive(Facet)]
+	#[repr(u8)]
+	enum Command {
+		Stop,
+		Move { x: f32, y: f32 },
+		Rename(String),
+	}
+
+	#[test]
+	fn struct_description_distinguishes_required_and_optional_fields() {
+		assert_eq!(
+			describe_json_shape(Settings::SHAPE),
+			json!({
+				"type": "object",
+				"fields": [
+					{
+						"name": "name",
+						"required": true,
+						"flattened": false,
+						"shape": { "type": "string" }
+					},
+					{
+						"name": "retries",
+						"required": false,
+						"flattened": false,
+						"shape": {
+							"type": "optional",
+							"shape": { "type": "integer", "format": "u32" }
+						}
+					}
+				],
+				"additional_fields": false
+			})
+		);
+	}
+
+	#[test]
+	fn enum_description_preserves_variant_payload_shapes() {
+		let descriptor = describe_json_shape(Command::SHAPE);
+
+		assert_eq!(descriptor["type"], "enum");
+		assert_eq!(descriptor["representation"], "external");
+		assert_eq!(
+			descriptor["variants"][0],
+			json!({ "name": "Stop", "shape": { "type": "null" } })
+		);
+		assert_eq!(descriptor["variants"][1]["name"], "Move");
+		assert_eq!(descriptor["variants"][1]["shape"]["type"], "object");
+		assert_eq!(
+			descriptor["variants"][2],
+			json!({
+				"name": "Rename",
+				"shape": { "type": "string" }
+			})
+		);
+	}
+
+	#[test]
+	fn collection_descriptions_retain_key_value_and_fixed_length_contracts() {
+		assert_eq!(
+			describe_json_shape(<HashMap<String, bool>>::SHAPE),
+			json!({
+				"type": "map",
+				"keys": { "type": "string" },
+				"values": { "type": "boolean" }
+			})
+		);
+		assert_eq!(
+			describe_json_shape(<[u16; 3]>::SHAPE),
+			json!({
+				"type": "array",
+				"items": { "type": "integer", "format": "u16" },
+				"length": 3
+			})
+		);
+	}
+}

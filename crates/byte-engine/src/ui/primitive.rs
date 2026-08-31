@@ -209,3 +209,39 @@ impl Primitive for Primitives {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::Shapes;
+	use crate::ui::{
+		flow::{Location, Size},
+		layout::Sizing,
+	};
+
+	#[test]
+	fn triangle_bounds_follow_extreme_vertices_independently_of_origin() {
+		let triangle = Shapes::Triangle {
+			vertices: [Location::new(7.0, -3.0), Location::new(-2.0, 4.0), Location::new(3.0, 11.0)],
+		};
+
+		assert_eq!(triangle.bbox(Size::new(100.0, 100.0)), Size::new(9.0, 14.0));
+	}
+
+	#[test]
+	fn box_bounds_resolve_relative_and_absolute_axes_against_available_space() {
+		let rectangle = Shapes::Box {
+			half: (Sizing::Relative(3, 4), Sizing::pixels(24.0)),
+			radius: 8.0,
+			exponent: 2.0,
+		};
+
+		assert_eq!(rectangle.bbox(Size::new(200.0, 80.0)), Size::new(150.0, 24.0));
+	}
+
+	#[test]
+	fn circle_bounds_use_the_diameter_on_both_axes() {
+		let circle = Shapes::Circle { radius: 6.5 };
+
+		assert_eq!(circle.bbox(Size::new(1.0, 1.0)), Size::new(13.0, 13.0));
+	}
+}

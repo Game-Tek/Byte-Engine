@@ -74,4 +74,25 @@ mod tests {
 		assert_eq!(aabb.max(), Point::new(3.0, 6.0, 4.0));
 		assert_eq!(aabb.half_extents(), Vector::new(2.0, 4.0, 1.0));
 	}
+
+	#[test]
+	fn center_constructor_round_trips_center_and_half_extents() {
+		let center = Point::new(-3.0, 4.0, 9.0);
+		let half_extents = Vector::new(2.0, 5.0, 1.5);
+		let aabb: AABB<WorldSpace> = AABB::from_center_and_half_extents(center, half_extents);
+
+		assert_eq!(aabb.center(), center);
+		assert_eq!(aabb.half_extents(), half_extents);
+	}
+
+	#[test]
+	fn containment_includes_faces_and_rejects_each_outside_axis() {
+		let aabb: AABB<WorldSpace> = AABB::new(Point::new(-1.0, -2.0, -3.0), Point::new(4.0, 5.0, 6.0));
+
+		assert!(aabb.contains_point(Point::new(-1.0, 5.0, 6.0)));
+		assert!(aabb.contains_point(Point::new(4.0, -2.0, -3.0)));
+		assert!(!aabb.contains_point(Point::new(-1.01, 0.0, 0.0)));
+		assert!(!aabb.contains_point(Point::new(0.0, 5.01, 0.0)));
+		assert!(!aabb.contains_point(Point::new(0.0, 0.0, 6.01)));
+	}
 }

@@ -27,6 +27,7 @@ impl Device {
 		if is_open {
 			let result = unsafe { command_list.Close() };
 			if result.is_err() {
+				self.drain_debug_messages();
 				panic!(
 					"Failed to close a DX12 command list. The most likely cause is that command list recording failed or the command list was already closed."
 				);

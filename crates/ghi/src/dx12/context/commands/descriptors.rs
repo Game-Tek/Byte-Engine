@@ -23,12 +23,11 @@ impl Device {
 		else {
 			return;
 		};
-		let Some(layout) = self
-			.pipelines
-			.get(pipeline_handle.0 as usize)
-			.and_then(|pipeline| self.pipeline_layouts.get(pipeline.layout.0 as usize))
-			.cloned()
-		else {
+		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+			return;
+		};
+		let pipeline_kind = pipeline.kind;
+		let Some(layout) = self.pipeline_layouts.get(pipeline.layout.0 as usize).cloned() else {
 			return;
 		};
 
@@ -91,7 +90,7 @@ impl Device {
 						self.transition_tracked_buffer_into(
 							handle,
 							&resource,
-							Self::descriptor_buffer_state(resource_descriptor),
+							Self::descriptor_buffer_state(resource_descriptor, pipeline_kind),
 							&mut barriers,
 						);
 					}
@@ -108,7 +107,7 @@ impl Device {
 						self.transition_tracked_image_into(
 							handle,
 							&resource,
-							Self::descriptor_image_state(resource_descriptor),
+							Self::descriptor_image_state(resource_descriptor, pipeline_kind),
 							&mut barriers,
 						);
 					}
@@ -125,7 +124,7 @@ impl Device {
 						self.transition_tracked_image_into(
 							image.into(),
 							&resource,
-							Self::descriptor_image_state(resource_descriptor),
+							Self::descriptor_image_state(resource_descriptor, pipeline_kind),
 							&mut barriers,
 						);
 					}

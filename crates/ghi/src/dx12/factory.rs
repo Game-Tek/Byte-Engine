@@ -92,10 +92,15 @@ impl Default for Factory {
 
 impl crate::device::Device for Factory {
 	type Context = crate::dx12::Device;
+	type Allocator = std::alloc::Global;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
+
+	fn allocator(&self) -> &Self::Allocator {
+		&std::alloc::Global
+	}
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {

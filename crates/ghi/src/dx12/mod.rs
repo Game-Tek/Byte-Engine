@@ -2639,6 +2639,89 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn compute_queue_accepts_sampled_image_descriptor_transitions() {
+		let features = crate::device::Features::new().validation(true).mesh_shading(false);
+		let Ok(mut instance) = Instance::new(features) else {
+			return;
+		};
+		let mut queue_handle = None;
+		let Ok(mut device) = instance.create_device(
+			features,
+			&mut [(
+				crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE | crate::WorkloadTypes::TRANSFER),
+				&mut queue_handle,
+			)],
+		) else {
+			return;
+		};
+		let queue_handle = queue_handle.expect("DX12 compute queue creation must return its GHI handle.");
+		let source_slot = crate::ResourceSlot::new(0);
+		let output_slot = crate::ResourceSlot::new(1);
+		let resources = [
+			crate::ShaderResourceDescriptor::single(
+				source_slot,
+				crate::ResourceKind::CombinedImageSampler,
+				crate::AccessPolicies::READ,
+			),
+			crate::ShaderResourceDescriptor::single(
+				output_slot,
+				crate::ResourceKind::StorageImage,
+				crate::AccessPolicies::WRITE,
+			),
+		];
+		let shader = device
+			.create_shader(
+				Some("compute queue sampled image"),
+				crate::shader::Sources::HLSL {
+					source: r#"
+Texture2D<float4> source_image : register(t0, space0);
+SamplerState source_sampler : register(s0, space0);
+RWTexture2D<float4> output_image : register(u1, space0);
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+	output_image[id.xy] = source_image.SampleLevel(source_sampler, float2(0.5, 0.5), 0.0);
+}
+"#,
+					entry_point: "main",
+				},
+				crate::ShaderTypes::Compute,
+				resources,
+			)
+			.expect("Failed to compile the DX12 compute-queue sampled-image shader.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let source = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let output = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let sampler = device.build_sampler(crate::sampler::Builder::new());
+		let set = device.create_descriptor_set(Some("compute queue sampled image"));
+		device.write(&[
+			crate::DescriptorWrite::combined_image_sampler(set, source_slot, source, sampler, crate::Layouts::Read),
+			crate::DescriptorWrite::image(set, output_slot, output, crate::Layouts::General),
+		]);
+		let synchronizer = device.create_synchronizer(Some("compute queue sampled image"), false);
+		let command_buffer = device.create_command_buffer(Some("compute queue sampled image"), queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording
+			.bind_compute_pipeline(pipeline)
+			.bind_descriptor_sets(&[set])
+			.dispatch(crate::DispatchExtent::new(
+				::utils::Extent::rectangle(1, 1),
+				::utils::Extent::rectangle(1, 1),
+			));
+		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert!(!device.has_errors());
+	}
+
+	#[test]
 	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
 		use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
 
@@ -3912,6 +3995,7 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 			8,
 			1,
 		);
+		drop(recording);
 
 		assert_eq!(device.trace_rays_record_count(), 1);
 	}

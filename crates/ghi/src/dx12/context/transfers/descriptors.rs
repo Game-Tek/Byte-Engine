@@ -85,21 +85,37 @@ impl Device {
 		Some(self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize))
 	}
 
-	pub(crate) fn descriptor_image_state(descriptor: ShaderResourceDescriptor) -> D3D12_RESOURCE_STATES {
-		if descriptor.kind() == ResourceKind::StorageImage {
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-		} else {
+	/// Selects shader-resource states that are legal for the active pipeline's command-list class.
+	fn descriptor_read_state(pipeline_kind: PipelineKind) -> D3D12_RESOURCE_STATES {
+		if matches!(pipeline_kind, PipelineKind::Raster) {
 			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+		} else {
+			// Compute command lists reject PIXEL_SHADER_RESOURCE even when it is combined with NON_PIXEL_SHADER_RESOURCE.
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
 		}
 	}
 
-	pub(crate) fn descriptor_buffer_state(descriptor: ShaderResourceDescriptor) -> D3D12_RESOURCE_STATES {
+	pub(crate) fn descriptor_image_state(
+		descriptor: ShaderResourceDescriptor,
+		pipeline_kind: PipelineKind,
+	) -> D3D12_RESOURCE_STATES {
+		if descriptor.kind() == ResourceKind::StorageImage {
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+		} else {
+			Self::descriptor_read_state(pipeline_kind)
+		}
+	}
+
+	pub(crate) fn descriptor_buffer_state(
+		descriptor: ShaderResourceDescriptor,
+		pipeline_kind: PipelineKind,
+	) -> D3D12_RESOURCE_STATES {
 		match descriptor.kind() {
 			ResourceKind::UniformBuffer => D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 			ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
 			}
-			_ => D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+			_ => Self::descriptor_read_state(pipeline_kind),
 		}
 	}
 

@@ -4,9 +4,38 @@ use facet::{Facet, ScalarType};
 use serde_json::Value;
 
 use super::Inspector;
+use super::shape::describe_json_shape;
 use crate::core::{channel::Channel, factory::Handle, message_bus::MessageRouteError, targeted_message::TargetedMessage};
 
-pub(super) type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String> + Send + Sync + 'static>;
+type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String> + Send + Sync + 'static>;
+
+/// The `RegisteredMessageType` struct describes one message type accepted by an inspector protocol adapter.
+///
+/// Use [`Self::payload_shape`] to build controls for the JSON `payload`, then
+/// send the completed value through [`Inspector::post_message`].
+#[derive(Clone, Copy, Debug)]
+pub struct RegisteredMessageType<'a> {
+	message_type: &'static str,
+	payload_shape: &'a Value,
+}
+
+impl<'a> RegisteredMessageType<'a> {
+	/// Returns the stable name used in the message envelope's `type` field.
+	pub fn message_type(&self) -> &'static str {
+		self.message_type
+	}
+
+	/// Returns the cached JSON-oriented shape of the message envelope's `payload` field.
+	pub fn payload_shape(&self) -> &'a Value {
+		self.payload_shape
+	}
+}
+
+/// The `SerializableMessage` struct provides one source of truth for posting and describing an accepted protocol message.
+pub(super) struct SerializableMessage {
+	poster: SerializableMessagePoster,
+	payload_shape: Value,
+}
 
 /// The stable inspection-protocol name for a transform replacement message.
 pub const TRANSFORMATION_UPDATE_MESSAGE_TYPE: &str = "TransformationUpdate";
@@ -45,29 +74,49 @@ impl Inspector {
 			.messages
 			.try_channel::<M>()
 			.map_err(|error| registration_error(message_type, &error))?;
+		let payload_shape = describe_json_shape(M::Payload::SHAPE);
 		self.serializable_messages.insert(
 			message_type,
-			Box::new(move |target, payload| {
-				if matches!(M::Payload::SHAPE.scalar_type(), Some(ScalarType::Unit)) && !payload.is_null() {
-					return Err(format!(
-						"Inspector message payload is invalid. The most likely cause is that '{message_type}' requires JSON null for its reflected unit shape."
-					));
-				}
-				let json = payload.to_string();
-				let payload = facet_json::from_str::<M::Payload>(&json).map_err(|error| {
-					format!(
-						"Inspector message payload is invalid. The most likely cause is that '{message_type}' payload does not match its reflected shape: {error}"
-					)
-				})?;
-				channel.send(M::from_handle_and_payload(target, payload));
-				// Terminal posts use the same diagnostic lifecycle as DefaultWorld::delete.
-				if M::ENDS_TARGET_LIFECYCLE {
-					channel.forget_entity(target);
-				}
-				Ok(())
-			}),
+			SerializableMessage {
+				poster: Box::new(move |target, payload| {
+					if matches!(M::Payload::SHAPE.scalar_type(), Some(ScalarType::Unit)) && !payload.is_null() {
+						return Err(format!(
+							"Inspector message payload is invalid. The most likely cause is that '{message_type}' requires JSON null for its reflected unit shape."
+						));
+					}
+					let json = payload.to_string();
+					let payload = facet_json::from_str::<M::Payload>(&json).map_err(|error| {
+						format!(
+							"Inspector message payload is invalid. The most likely cause is that '{message_type}' payload does not match its reflected shape: {error}"
+						)
+					})?;
+					channel.send(M::from_handle_and_payload(target, payload));
+					// Terminal posts use the same diagnostic lifecycle as DefaultWorld::delete.
+					if M::ENDS_TARGET_LIFECYCLE {
+						channel.forget_entity(target);
+					}
+					Ok(())
+				}),
+				payload_shape,
+			},
 		);
 		Ok(())
+	}
+
+	/// Returns the registered protocol message types and their JSON payload shapes.
+	///
+	/// Results are sorted by protocol name so editor clients receive stable output.
+	pub fn message_types(&self) -> Vec<RegisteredMessageType<'_>> {
+		let mut types = self
+			.serializable_messages
+			.iter()
+			.map(|(&message_type, message)| RegisteredMessageType {
+				message_type,
+				payload_shape: &message.payload_shape,
+			})
+			.collect::<Vec<_>>();
+		types.sort_unstable_by_key(RegisteredMessageType::message_type);
+		types
 	}
 
 	/// Publishes one registered targeted world message from its protocol name and reflected JSON payload.
@@ -80,7 +129,8 @@ impl Inspector {
 				format!(
 				"Inspector message type is unsupported. The most likely cause is that '{message_type}' is not registered for inspector posting."
 				)
-			})?(target, payload)
+			})
+			.and_then(|message| (message.poster)(target, payload))
 	}
 }
 
@@ -93,6 +143,7 @@ fn registration_error(message_type: &str, error: &MessageRouteError) -> String {
 #[cfg(test)]
 mod tests {
 	use math::{Orientation, Point, Scale};
+	use serde_json::json;
 
 	use super::*;
 	use crate::{
@@ -199,6 +250,22 @@ mod tests {
 	}
 
 	#[test]
+	fn registered_unit_messages_report_sorted_null_payload_shapes() {
+		let (inspector, _deletions, _entities, _observer) = deletion_inspector();
+		let types = inspector.message_types();
+
+		assert_eq!(
+			types.iter().map(RegisteredMessageType::message_type).collect::<Vec<_>>(),
+			[DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE]
+		);
+		assert!(
+			types
+				.iter()
+				.all(|message| message.payload_shape() == &json!({ "type": "null" }))
+		);
+	}
+
+	#[test]
 	fn unsupported_message_types_do_not_publish_to_the_transform_route() {
 		let (inspector, mut transforms) = test_inspector();
 		let factory = Factory::new();
@@ -290,6 +357,30 @@ mod tests {
 		inspector
 			.register_message::<ReflectedTestMessage>("ReflectedTestMessage")
 			.expect("register reflected test message");
+		let types = inspector.message_types();
+		assert_eq!(types.len(), 1);
+		assert_eq!(types[0].message_type(), "ReflectedTestMessage");
+		assert_eq!(
+			types[0].payload_shape(),
+			&json!({
+				"type": "object",
+				"fields": [
+					{
+						"name": "name",
+						"required": true,
+						"flattened": false,
+						"shape": { "type": "string" }
+					},
+					{
+						"name": "weight",
+						"required": true,
+						"flattened": false,
+						"shape": { "type": "integer", "format": "u32" }
+					}
+				],
+				"additional_fields": false
+			})
+		);
 		let target = Factory::new().create(());
 
 		inspector

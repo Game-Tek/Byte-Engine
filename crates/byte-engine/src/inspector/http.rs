@@ -27,7 +27,9 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// and its optional `name` plus Rust `types`. Filter entities with an exact
 /// `name`, `type`, or both. `GET /messages` returns the `scope`, complete
 /// generic `type`, `first_sequence`, and `count` for each route that published
-/// since the previous request. Payloads remain opaque.
+/// since the previous request. Payloads remain opaque. `GET /messages/types`
+/// returns each registered protocol `type` and the reflected shape of its JSON
+/// `payload` so editor clients can build controls before posting a message.
 ///
 /// `POST /messages` accepts message types registered through
 /// [`Inspector::register_message`]. To move an entity, send a JSON object with
@@ -65,9 +67,10 @@ impl HttpInspectorServer {
 	fn spawn(inspector: EntityHandle<Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
 		let i = inspector.clone();
 
-		let mut server = Server::new(move |mut request| match (request.method(), request.uri().path()) {
+		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
 			(&Method::GET, "/screenshots") => screenshot_response(&i, request.uri().query()),
 			(&Method::GET, "/messages") => messages_response(&i),
+			(&Method::GET, "/messages/types") => message_types_response(&i),
 			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),
 			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
 				Ok(body) => Response::builder()
@@ -178,6 +181,21 @@ fn messages_response(inspector: &Inspector) -> Response<Body> {
 		})
 		.collect::<Vec<_>>();
 	json_response(&serde_json::json!({ "messages": messages }))
+}
+
+/// Serializes the protocol message types accepted by the posting endpoint.
+fn message_types_response(inspector: &Inspector) -> Response<Body> {
+	let types = inspector
+		.message_types()
+		.iter()
+		.map(|message| {
+			serde_json::json!({
+				"type": message.message_type(),
+				"payload": message.payload_shape(),
+			})
+		})
+		.collect::<Vec<_>>();
+	json_response(&serde_json::json!({ "types": types }))
 }
 
 fn json_response(value: &serde_json::Value) -> Response<Body> {
@@ -434,6 +452,58 @@ mod tests {
 
 		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
 		assert!(response.ends_with("[]"), "unexpected response: {response}");
+	}
+
+	#[test]
+	fn server_reports_registered_message_payload_shapes_over_http() {
+		let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
+		let address = reservation.local_addr().expect("read inspector test address");
+		drop(reservation);
+
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
+		let mut stream = TcpStream::connect(address).expect("connect to inspector message type endpoint");
+		stream
+			.set_read_timeout(Some(Duration::from_secs(1)))
+			.expect("set inspector response timeout");
+		stream
+			.write_all(b"GET /messages/types HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+			.expect("request registered inspector message types");
+
+		let mut response = String::new();
+		stream.read_to_string(&mut response).expect("read inspector response");
+		assert!(response.starts_with("HTTP/1.1 200"), "unexpected response: {response}");
+		assert!(response.contains("content-type: application/json"));
+		let body = response.split_once("\r\n\r\n").expect("message type response body").1;
+		let body: serde_json::Value = serde_json::from_str(body).expect("parse message type response");
+
+		assert_eq!(body["types"].as_array().expect("registered message types").len(), 1);
+		assert_eq!(body["types"][0]["type"], TRANSFORMATION_UPDATE_MESSAGE_TYPE);
+		assert_eq!(body["types"][0]["payload"]["type"], "object");
+		assert_eq!(body["types"][0]["payload"]["additional_fields"], false);
+		assert_eq!(
+			body["types"][0]["payload"]["fields"],
+			serde_json::json!([
+				{
+					"name": "position",
+					"required": true,
+					"flattened": false,
+					"shape": { "type": "array", "items": { "type": "number", "format": "f32" }, "length": 3 }
+				},
+				{
+					"name": "scale",
+					"required": true,
+					"flattened": false,
+					"shape": { "type": "array", "items": { "type": "number", "format": "f32" }, "length": 3 }
+				},
+				{
+					"name": "orientation",
+					"required": true,
+					"flattened": false,
+					"shape": { "type": "array", "items": { "type": "number", "format": "f32" }, "length": 4 }
+				}
+			])
+		);
 	}
 
 	#[test]

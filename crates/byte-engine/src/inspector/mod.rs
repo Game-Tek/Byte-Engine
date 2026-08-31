@@ -28,10 +28,11 @@ use crate::{
 #[doc(hidden)]
 pub mod http;
 mod message;
-use message::SerializableMessagePoster;
-pub use message::{DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
+use message::SerializableMessage;
+pub use message::{DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
+mod shape;
 
 /// The [`Inspectable`] trait defines the read and mutation surface exposed to
 /// external engine tooling.
@@ -132,7 +133,7 @@ pub struct Inspector {
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
 	messages: MessageScope,
-	serializable_messages: HashMap<&'static str, SerializableMessagePoster>,
+	serializable_messages: HashMap<&'static str, SerializableMessage>,
 	message_bus: MessageBus,
 	message_observer: MessageObserver,
 	entity_names: Arc<Mutex<HashMap<Handle, Name>>>,

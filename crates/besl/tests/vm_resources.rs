@@ -190,8 +190,8 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 	let program = compile_to_besl(
 		r#"
 		Instance: struct { position: vec3f, sprite_id: u32 }
-		sprites: descriptor<Texture2DArray, 0, read>;
-		instances: descriptor<Instance[], 1, read>;
+		sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+		instances: descriptor<{ type: Instance[], binding: 1, access: read }>;
 		main: fn () -> output { color: vec4f } {
 			let color: vec4f = sample(sprites[instances[1].sprite_id], vec2f(0.5, 0.5));
 			return { color };
@@ -241,7 +241,7 @@ fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 	let program = compile_to_besl(
 		r#"
 		Instance: struct { sprite_id: u32 }
-		instances: descriptor<Instance[], 0, read>;
+		instances: descriptor<{ type: Instance[], binding: 0, access: read }>;
 		main: fn () -> output { value: u32 } {
 			let value: u32 = instances[2].sprite_id;
 			return { value };

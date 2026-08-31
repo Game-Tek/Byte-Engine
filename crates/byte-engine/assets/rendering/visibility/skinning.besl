@@ -36,13 +36,13 @@ SkinnedVertices: struct {
 	values: SkinnedVertex[262144],
 }
 
-source_positions: descriptor<SourcePositions, 0, read, device>;
-source_normals: descriptor<SourceNormals, 1, read, device>;
-source_joints: descriptor<SourceJoints, 2, read, device>;
-source_weights: descriptor<SourceWeights, 3, read, device>;
-matrix_palette: descriptor<MatrixPalette, 4, read, device>;
-skinned_vertices: descriptor<SkinnedVertices, 5, write, device>;
-dual_quaternion_palette: descriptor<DualQuaternionPalette, 6, read, device>;
+source_positions: descriptor<{ type: SourcePositions, binding: 0, access: read, memory: device }>;
+source_normals: descriptor<{ type: SourceNormals, binding: 1, access: read, memory: device }>;
+source_joints: descriptor<{ type: SourceJoints, binding: 2, access: read, memory: device }>;
+source_weights: descriptor<{ type: SourceWeights, binding: 3, access: read, memory: device }>;
+matrix_palette: descriptor<{ type: MatrixPalette, binding: 4, access: read, memory: device }>;
+skinned_vertices: descriptor<{ type: SkinnedVertices, binding: 5, access: write, memory: device }>;
+dual_quaternion_palette: descriptor<{ type: DualQuaternionPalette, binding: 6, access: read, memory: device }>;
 
 push_constant: push_constant {
 	source_vertex_base: u32,

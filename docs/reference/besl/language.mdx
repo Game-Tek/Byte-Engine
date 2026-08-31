@@ -102,7 +102,12 @@ Counters: struct {
 	values: u32[8],
 }
 
-counters: descriptor<Counters, 0, read_write, device>;
+counters: descriptor<{
+	type: Counters,
+	binding: 0,
+	access: read_write,
+	memory: device,
+}>;
 
 main: fn () -> void {
 	let index: u32 = 2;
@@ -134,7 +139,7 @@ Value arrays such as `u32[3]`, arrays of resource descriptors, and layered
 textures such as `Texture2DArray` are separate concepts. See
 [Descriptors](/docs/reference/besl/interface#descriptors) for resource arrays.
 Empty brackets are valid only in a descriptor resource type, such as
-`descriptor<Instance[], 1, read>`, where they declare runtime-sized buffer
+`descriptor<{ type: Instance[], binding: 1, access: read }>`, where they declare runtime-sized buffer
 contents.
 
 ## Constants

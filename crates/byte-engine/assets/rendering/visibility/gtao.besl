@@ -33,10 +33,10 @@ SampleAddress: struct {
 	key: u32,
 }
 
-gtao_view: descriptor<FastGTAOView, 0, read, constant>;
-gtao_parameters: descriptor<GTAOParameters, 1, read, constant>;
-depth_pyramid: descriptor<Texture2D, 1033, read>;
-ao_output: descriptor<StorageImage<r8>, 1034, write>;
+gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
+gtao_parameters: descriptor<{ type: GTAOParameters, binding: 1, access: read, memory: constant }>;
+depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
 
 GTAO_BIAS: const f32 = 0.05;
 GTAO_STRENGTH: const f32 = 1.0;

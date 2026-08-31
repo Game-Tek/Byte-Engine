@@ -1036,8 +1036,8 @@ mod tests {
 	fn shader_interface_reflection_preserves_descriptor_names_and_shapes() {
 		let source = r#"
 			Data: struct { value: u32, }
-			data: descriptor<Data, 2, read_write>;
-			textures: descriptor<Texture2DArray, 5, read, 4>;
+			data: descriptor<{ type: Data, binding: 2, access: read_write }>;
+			textures: descriptor<{ type: Texture2DArray, binding: 5, access: read, count: 4 }>;
 			main: fn () -> void {
 				data;
 				textures;
@@ -1069,8 +1069,8 @@ mod tests {
 	fn shader_interface_reflection_preserves_visibility_atomic_and_integer_image_access() {
 		let source = r#"
 			Counters: struct { values: atomicu32[1024], }
-			counters: descriptor<Counters, 1033, read_write>;
-			index_image: descriptor<StorageImage<r32ui>, 1040, read>;
+			counters: descriptor<{ type: Counters, binding: 1033, access: read_write }>;
+			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
 			main: fn () -> void {
 				let coord: vec2u = thread_id();
 				let index: u32 = image_load_u32(index_image, coord);

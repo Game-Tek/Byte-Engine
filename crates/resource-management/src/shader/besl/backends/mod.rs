@@ -7,8 +7,8 @@ pub mod spirv;
 #[cfg(test)]
 const RUNTIME_ARRAY_FRAGMENT: &str = r#"
 	Instance: struct { position: vec3f, sprite_id: u32 }
-	sprites: descriptor<Texture2DArray, 0, read>;
-	instances: descriptor<Instance[], 1, read>;
+	sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+	instances: descriptor<{ type: Instance[], binding: 1, access: read }>;
 	main: fn (input: StageInput, pipeline_input: interface { instance_index: u32, uv: vec2f }) -> output { color: vec4f } {
 		let instance: Instance = instances[pipeline_input.instance_index];
 		let color: vec4f = sample(sprites[instance.sprite_id], pipeline_input.uv);

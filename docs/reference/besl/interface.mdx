@@ -104,20 +104,31 @@ push_constant: push_constant {
 ## Descriptors
 
 A descriptor declares a named binding between the shader and one GPU resource.
-Write the resource type first, followed by its flat slot and access mode:
+Declare its required properties inside the descriptor object:
 
 ```rust
-name: descriptor<ResourceType, SLOT, ACCESS>;
+name: descriptor<{
+	type: ResourceType,
+	binding: BINDING,
+	access: ACCESS,
+}>;
 ```
 
-The complete syntax supports an optional resource count. Buffer descriptors can
-also select their memory class or expose runtime-sized element storage:
+`type`, `binding`, and `access` are required. You can write the properties in
+any order, and you can add a trailing comma. Use `memory` for a buffer memory
+class and `count` for a fixed array of independent resources:
 
 ```rust
-name: descriptor<ResourceType, SLOT, ACCESS, COUNT>;
-name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS>;
-name: descriptor<BufferStruct, SLOT, ACCESS, MEMORY_CLASS, COUNT>;
-name: descriptor<ElementType[], SLOT, ACCESS>;
+name: descriptor<{ type: ResourceType, binding: BINDING, access: ACCESS, count: COUNT }>;
+name: descriptor<{ type: BufferStruct, binding: BINDING, access: ACCESS, memory: MEMORY_CLASS }>;
+name: descriptor<{
+	type: BufferStruct,
+	binding: BINDING,
+	access: ACCESS,
+	memory: MEMORY_CLASS,
+	count: COUNT,
+}>;
+name: descriptor<{ type: ElementType[], binding: BINDING, access: ACCESS }>;
 ```
 
 This example declares buffer, texture, texture-array, and storage-image bindings:
@@ -131,12 +142,12 @@ Vertex: struct {
 	position: vec3f,
 }
 
-frame: descriptor<Frame, 0, read, constant>;
-vertices: descriptor<Vertex[], 1, read>;
-albedo: descriptor<Texture2D, 2, read>;
-shadow_maps: descriptor<Texture2DArray, 3, read>;
-gbuffers: descriptor<Texture2D, 4, read, 4>;
-output_image: descriptor<StorageImage<rgba16f>, 7, write>;
+frame: descriptor<{ type: Frame, binding: 0, access: read, memory: constant }>;
+vertices: descriptor<{ type: Vertex[], binding: 1, access: read }>;
+albedo: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+shadow_maps: descriptor<{ type: Texture2DArray, binding: 3, access: read }>;
+gbuffers: descriptor<{ type: Texture2D, binding: 4, access: read, count: 4 }>;
+output_image: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write }>;
 ```
 
 The descriptor resource type selects the reflected binding kind. BESL supports
@@ -154,17 +165,15 @@ these resource types:
 | `StorageImage` | Storage image | Load or store an image whose format remains backend-defined. |
 | `StorageImage<FORMAT>` | Typed storage image | Load or store an image with an explicit backend image format, such as `r8`, `r32f`, `r32ui`, or `rgba16f`. |
 
-Set `ACCESS` to `read`, `write`, or `read_write`. The access must include every
+Set `access` to `read`, `write`, or `read_write`. The access must include every
 operation the shader performs on the resource.
 
-For a buffer, set `MEMORY_CLASS` to `constant` for small, read-only values shared
+For a buffer, set `memory` to `constant` for small, read-only values shared
 by a dispatch or draw. Use `device` for large buffers, data that varies between
 shader threads, and every writable buffer. If you omit the memory class, a buffer
 uses `device`. Image and texture descriptors cannot declare a memory class.
 
-Set `COUNT` to a positive integer to declare an array of resources. When a
-descriptor has no buffer memory class, the count is the fourth argument. When a
-buffer descriptor declares its memory class, the count is the fifth argument.
+Set `count` to a positive integer to declare an array of independent resources.
 
 Write `ElementType[]` to bind one storage buffer whose element count comes from
 the bound resource. Index it directly in a function, without a wrapper struct:
@@ -175,7 +184,7 @@ Instance: struct {
 	sprite_id: u32,
 }
 
-instances: descriptor<Instance[], 1, read>;
+instances: descriptor<{ type: Instance[], binding: 1, access: read }>;
 
 main: fn (pipeline_input: interface { instance_index: u32 }) -> void {
 	let instance: Instance = instances[pipeline_input.instance_index];
@@ -191,7 +200,7 @@ element stride.
 texture. Indexing it selects a layer from that resource before sampling:
 
 ```rust
-sprites: descriptor<Texture2DArray, 0, read>;
+sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
 
 main: fn (pipeline_input: interface { sprite_id: u32, uv: vec2f }) -> output { color: vec4f } {
 	let color: vec4f = sample(sprites[pipeline_input.sprite_id], pipeline_input.uv);
@@ -199,7 +208,7 @@ main: fn (pipeline_input: interface { sprite_id: u32, uv: vec2f }) -> output { c
 }
 ```
 
-Use `descriptor<Texture2D, SLOT, read, COUNT>` when you need `COUNT`
+Use `descriptor<{ type: Texture2D, binding: BINDING, access: read, count: COUNT }>` when you need `COUNT`
 independent 2D texture descriptors instead.
 
 Reflection retains the authored name and flat slot for each descriptor reachable
@@ -214,8 +223,8 @@ Counters: struct {
 	values: atomicu32[1024],
 }
 
-counters: descriptor<Counters, 5, read_write, device>;
-index_image: descriptor<StorageImage<r32ui>, 6, read>;
+counters: descriptor<{ type: Counters, binding: 5, access: read_write, memory: device }>;
+index_image: descriptor<{ type: StorageImage<r32ui>, binding: 6, access: read }>;
 ```
 
 ## Standalone stage metadata

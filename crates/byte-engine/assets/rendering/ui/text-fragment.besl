@@ -1,4 +1,4 @@
-text_overlay: descriptor<Texture2D, 0, read>;
+text_overlay: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 
 main: fn(pipeline_input: interface { uv: vec2f }) -> output { color_attachment: vec4f } {
 	let color_attachment: vec4f = sample(text_overlay, pipeline_input.uv);

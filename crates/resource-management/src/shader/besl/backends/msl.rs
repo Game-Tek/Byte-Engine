@@ -161,7 +161,7 @@ mod tests {
 	#[test]
 	fn full_program_resource_abi_retains_unreachable_declared_bindings() {
 		let program = besl::compile_to_besl(
-			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<Unused, 3, read, constant>; Used: struct { value: u32, } used: descriptor<Used, 9, write, device>; main: fn () -> void { used.value = 7; }",
+			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 3, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 9, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
 			None,
 		)
 		.expect("Expected full-program resource ABI fixture to link");
@@ -461,7 +461,7 @@ mod tests {
 	#[compio::test]
 	async fn texture_lod_qualifies_metal_level_helper() {
 		let source = r#"
-			depth_texture: descriptor<Texture2D, 0, read>;
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 			sample_depth: fn (uv: vec2f, level: u32) -> f32 {
 				return texture_lod(depth_texture, uv, f32(level)).x;
 			}
@@ -486,7 +486,7 @@ mod tests {
 	#[compio::test]
 	async fn sample_intrinsic_lowers_to_a_texture_sample_call() {
 		let source = r#"
-			image_texture: descriptor<Texture2D, 0, read>;
+			image_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 			in_uv: input<vec2f, 0>;
 			out_color_attachment: output<vec4f, 0>;
 			main: fn() -> void {
@@ -513,8 +513,8 @@ mod tests {
 	#[compio::test]
 	async fn conservative_downsampling_defaults_to_native_sampler_reduction_and_keeps_a_gather_fallback() {
 		let source = r#"
-			depth_texture: descriptor<Texture2D, 0, read>;
-			array_depth_texture: descriptor<Texture2DArray, 1, read>;
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
 			main: fn () -> void {
 				let minimum: f32 = downsample_min(depth_texture, vec2f(0.5, 0.5), 0.0);
 				let maximum: f32 = downsample_max(depth_texture, vec2f(0.5, 0.5), 0.0);
@@ -570,9 +570,9 @@ mod tests {
 			DispatchValues: struct { value: u32, }
 			Vertices: struct { values: u32[1024], }
 			Counters: struct { values: u32[1024], }
-			dispatch_values: descriptor<DispatchValues, 0, read, constant>;
-			vertices: descriptor<Vertices, 1, read, device>;
-			counters: descriptor<Counters, 2, read_write, device>;
+			dispatch_values: descriptor<{ type: DispatchValues, binding: 0, access: read, memory: constant }>;
+			vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
+			counters: descriptor<{ type: Counters, binding: 2, access: read_write, memory: device }>;
 			main: fn () -> void {
 				let index: u32 = thread_id().x;
 				counters.values[index] = vertices.values[index] + dispatch_values.value;
@@ -792,7 +792,7 @@ mod tests {
 		Meshlets: struct {
 			values: u32[32],
 		}
-		meshlets: descriptor<Meshlets, 8, read>;
+		meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
 		visible_meshlets: task_payload<u32, 32>;
 		visible_count: workgroup<atomicu32>;
 		push_constant: push_constant {
@@ -1019,7 +1019,7 @@ mod tests {
 					values: Transform[2],
 					direct: mat4x3f[2],
 				}
-				transforms: descriptor<Transforms, 0, read_write, device>;
+				transforms: descriptor<{ type: Transforms, binding: 0, access: read_write, memory: device }>;
 
 				main: fn() -> void {
 					let model: mat4x3f = transforms.values[0].model;
@@ -2060,8 +2060,8 @@ struct PrimitiveOutput {
 			Counters: struct {
 				values: atomicu32[8],
 			}
-			counters: descriptor<Counters, 2, read_write>;
-			index_image: descriptor<StorageImage<r32ui>, 4, read>;
+			counters: descriptor<{ type: Counters, binding: 2, access: read_write }>;
+			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
 			shared_keys: workgroup<atomicu32, 8>;
 			push_constant: push_constant {
 				base: u32,

@@ -193,7 +193,7 @@ shader generation.
 The syntax is Rust-inspired, but BESL is not Rust:
 
 ```rust
-albedo: descriptor<Texture2D, 0, read>;
+albedo: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 
 main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
     let color: vec4f = sample(albedo, pipeline_input.uv);

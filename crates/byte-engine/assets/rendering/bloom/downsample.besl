@@ -3,9 +3,9 @@ BloomParameters: struct {
 	blur_data: vec4f[1],
 }
 
-source_texture: descriptor<Texture2D, 0, read>;
-result_texture: descriptor<StorageImage<rgba16f>, 1, write>;
-bloom_parameters: descriptor<BloomParameters, 2, read, constant>;
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 
 main: fn() -> void {
 	let coord: vec2u = thread_id();

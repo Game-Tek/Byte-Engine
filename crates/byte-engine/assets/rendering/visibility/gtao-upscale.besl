@@ -10,11 +10,11 @@ FastGTAOView: struct {
 	depth_unproject_denominator_offset: f32,
 }
 
-gtao_view: descriptor<FastGTAOView, 0, read, constant>;
-visibility_depth: descriptor<Texture2D, 1033, read>;
-ao_source: descriptor<Texture2D, 1034, read>;
-ao_output: descriptor<StorageImage<r8>, 1035, write>;
-low_resolution_depth: descriptor<Texture2D, 1036, read>;
+gtao_view: descriptor<{ type: FastGTAOView, binding: 0, access: read, memory: constant }>;
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
+low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
 
 shared_linear_depth: workgroup<f32, 60>;
 shared_ao: workgroup<f32, 60>;

@@ -43,12 +43,12 @@ mod tests {
 				value: u32,
 				weight: f32,
 			}
-			data: descriptor<Data, 2, read_write, device>;
-			texture: descriptor<Texture2D, 5, read>;
-			texture_array: descriptor<Texture2DArray, 7, read, 16>;
-			volume: descriptor<Texture3D, 30, read>;
-			result: descriptor<StorageImage<rgba16f>, 31, write>;
-			unformatted_result: descriptor<StorageImage, 32, write>;
+			data: descriptor<{ type: Data, binding: 2, access: read_write, memory: device }>;
+			texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
+			texture_array: descriptor<{ type: Texture2DArray, binding: 7, access: read, count: 16 }>;
+			volume: descriptor<{ type: Texture3D, binding: 30, access: read }>;
+			result: descriptor<{ type: StorageImage<rgba16f>, binding: 31, access: write }>;
+			unformatted_result: descriptor<{ type: StorageImage, binding: 32, access: write }>;
 			main: fn () -> void {
 				data.value = data.value;
 			}
@@ -165,8 +165,8 @@ mod tests {
 					sprite_id: u32,
 				}
 
-				sprites: descriptor<Texture2DArray, 0, read>;
-				instances: descriptor<Instance[], 1, read>;
+				sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+				instances: descriptor<{ type: Instance[], binding: 1, access: read }>;
 
 				main: fn (input: StageInput, pipeline_input: interface { instance_index: u32, uv: vec2f }) -> output { color: vec4f } {
 					let instance: Instance = instances[pipeline_input.instance_index];
@@ -243,7 +243,9 @@ mod tests {
 			"TextureCubeArray",
 			"StorageImage",
 		] {
-			let source = format!("values: descriptor<{resource_type}[], 0, read>; main: fn () -> void {{ values; }}");
+			let source = format!(
+				"values: descriptor<{{ type: {resource_type}[], binding: 0, access: read }}>; main: fn () -> void {{ values; }}"
+			);
 			assert!(
 				crate::compile_to_besl(&source, None).is_err(),
 				"{resource_type} should not become a runtime buffer element"
@@ -254,7 +256,7 @@ mod tests {
 	#[test]
 	fn texture_2d_array_layer_indices_must_be_u32() {
 		let source = r#"
-			sprites: descriptor<Texture2DArray, 0, read>;
+			sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
 			main: fn () -> void {
 				let color: vec4f = sample(sprites[1.0], vec2f(0.0, 0.0));
 				color;
@@ -273,7 +275,7 @@ mod tests {
 	fn source_descriptor_rejects_writable_constant_buffers() {
 		let source = r#"
 			Counters: struct { values: u32[8], }
-			counters: descriptor<Counters, 0, write, constant>;
+			counters: descriptor<{ type: Counters, binding: 0, access: write, memory: constant }>;
 			main: fn () -> void { counters.values[0] = 1; }
 		"#;
 
@@ -289,7 +291,7 @@ mod tests {
 			Counters: struct {
 				values: atomicu32[8],
 			}
-			counters: descriptor<Counters, 3, read_write>;
+			counters: descriptor<{ type: Counters, binding: 3, access: read_write }>;
 			push_constant: push_constant {
 				index: u32,
 			}
@@ -380,7 +382,8 @@ mod tests {
 
 	#[test]
 	fn source_buffer_descriptor_requires_a_declared_type() {
-		let tokens = tokenizer::tokenize("data: descriptor<Missing, 0, read>;").expect("descriptor should tokenize");
+		let tokens = tokenizer::tokenize("data: descriptor<{ type: Missing, binding: 0, access: read }>;")
+			.expect("descriptor should tokenize");
 		let parsed = parser::parse(&tokens).expect("descriptor should parse");
 
 		assert_eq!(

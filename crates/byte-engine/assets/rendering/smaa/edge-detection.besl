@@ -1,7 +1,7 @@
 // Spatial SMAA 1x luma edge detection ported from the reference implementation.
 // See LICENSE.txt beside this shader for the original authors and license.
-source: descriptor<Texture2D, 0, read>;
-edges: descriptor<StorageImage<r8>, 1, write>;
+source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+edges: descriptor<{ type: StorageImage<r8>, binding: 1, access: write }>;
 
 // These values match the official SMAA 1x Ultra preset.
 SMAA_EDGE_THRESHOLD: const f32 = 0.05;

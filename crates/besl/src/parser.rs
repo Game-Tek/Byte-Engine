@@ -107,14 +107,14 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_resource_descriptors_with_flat_slots_access_and_count() {
+	fn parse_resource_descriptors_with_named_properties() {
 		let tokens = tokenize(
 			r#"
-				source: descriptor<Texture2D, 3, read>;
-				result: descriptor<StorageImage<rgba16f>, 7, write, 4>;
-				unformatted_result: descriptor<StorageImage, 8, write>;
-				data: descriptor<Data, 11, read_write>;
-				textures: descriptor<Texture2DArray, 20, read, 16>;
+				source: descriptor<{ access: read, type: Texture2D, binding: 3, }>;
+				result: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write, count: 4 }>;
+				unformatted_result: descriptor<{ type: StorageImage, binding: 8, access: write }>;
+				data: descriptor<{ type: Data, binding: 11, access: read_write }>;
+				textures: descriptor<{ type: Texture2DArray, binding: 20, access: read, count: 16 }>;
 			"#,
 		)
 		.expect("descriptor source should tokenize");
@@ -179,8 +179,8 @@ mod tests {
 
 	#[test]
 	fn parse_runtime_array_descriptor() {
-		let tokens =
-			tokenize("instances: descriptor<Instance[], 1, read>;").expect("runtime-array descriptor source should tokenize");
+		let tokens = tokenize("instances: descriptor<{ type: Instance[], binding: 1, access: read }>;")
+			.expect("runtime-array descriptor source should tokenize");
 		let root = parse(&tokens).expect("runtime-array descriptor source should parse");
 
 		assert!(matches!(
@@ -197,9 +197,9 @@ mod tests {
 	#[test]
 	fn runtime_array_descriptor_rejects_fixed_element_or_resource_counts() {
 		for source in [
-			"instances: descriptor<Instance[4], 1, read>;",
-			"instances: descriptor<Instance[], 1, read, 4>;",
-			"instances: descriptor<Instance[], 1, read, device, 4>;",
+			"instances: descriptor<{ type: Instance[4], binding: 1, access: read }>;",
+			"instances: descriptor<{ type: Instance[], binding: 1, access: read, count: 4 }>;",
+			"instances: descriptor<{ type: Instance[], binding: 1, access: read, memory: device, count: 4 }>;",
 		] {
 			let tokens = tokenize(source).expect("invalid runtime-array descriptor source should tokenize");
 
@@ -211,12 +211,12 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_buffer_memory_classes_after_descriptor_access() {
+	fn parse_buffer_memory_classes_and_descriptor_counts() {
 		let tokens = tokenize(
 			r#"
-				view: descriptor<View, 0, read, constant>;
-				vertices: descriptor<Vertices, 1, read, device>;
-				counters: descriptor<Counters, 2, read_write, device, 4>;
+				view: descriptor<{ type: View, binding: 0, access: read, memory: constant }>;
+				vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
+				counters: descriptor<{ count: 4, memory: device, access: read_write, binding: 2, type: Counters }>;
 			"#,
 		)
 		.expect("buffer memory class source should tokenize");
@@ -275,11 +275,23 @@ mod tests {
 	}
 
 	#[test]
-	fn descriptor_rejects_invalid_access_count_and_arguments() {
+	fn descriptor_rejects_invalid_properties() {
 		for source in [
-			"texture: descriptor<Texture2D, 0, execute>;",
-			"textures: descriptor<Texture2D, 0, read, 0>;",
-			"texture: descriptor<Texture2D>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: execute }>;",
+			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 0 }>;",
+			"texture: descriptor<{ binding: 0, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0 }>;",
+			"texture: descriptor<{ type: Texture2D, binding: first, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, count: many }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, memory: shared }>;",
+			"texture: descriptor<{ type: Texture2D, type: Texture3D, binding: 0, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, binding: 1, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, access: write }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, memory: device, memory: constant }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, count: 1, count: 2 }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, group: 1 }>;",
+			"texture: descriptor<{ type: Texture2D; binding: 0; access: read }>;",
 		] {
 			let tokens = tokenize(source).expect("descriptor source should tokenize");
 
@@ -290,8 +302,8 @@ mod tests {
 	#[test]
 	fn descriptor_rejects_formats_on_non_storage_image_resources() {
 		for source in [
-			"texture: descriptor<Texture2D<rgba16f>, 0, read>;",
-			"data: descriptor<Data<rgba16f>, 0, read>;",
+			"texture: descriptor<{ type: Texture2D<rgba16f>, binding: 0, access: read }>;",
+			"data: descriptor<{ type: Data<rgba16f>, binding: 0, access: read }>;",
 		] {
 			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
 

@@ -10,8 +10,8 @@ Instances: struct {
 	transforms: mat4x3f[1024],
 }
 
-cameras: descriptor<Cameras, 0, read, constant>;
-instances: descriptor<Instances, 1, read, device>;
+cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
+instances: descriptor<{ type: Instances, binding: 1, access: read, memory: device }>;
 
 in_position: input<vec3f, 0>;
 

@@ -1,6 +1,6 @@
-depth: descriptor<Texture2D, 0, read>;
-source: descriptor<Texture2D, 1, read>;
-result: descriptor<StorageImage, 2, write>;
+depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+source: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 
 main: fn () -> void {
 	let coord: vec2u = thread_id();
@@ -117,4 +117,3 @@ main: fn () -> void {
 
 	write(result, coord, vec4f(color.x, color.x, color.x, 1.0));
 }
-

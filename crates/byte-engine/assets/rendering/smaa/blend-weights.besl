@@ -1,10 +1,10 @@
 // Spatial SMAA 1x weight calculation and neighborhood resolve ported from the reference implementation.
 // See LICENSE.txt beside this shader for the original authors and license.
-source: descriptor<Texture2D, 0, read>;
-edges: descriptor<Texture2D, 1, read>;
-area_texture: descriptor<Texture2D, 2, read>;
-search_texture: descriptor<Texture2D, 3, read>;
-result: descriptor<StorageImage, 4, write>;
+source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+edges: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+area_texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+search_texture: descriptor<{ type: Texture2D, binding: 3, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 4, access: write }>;
 
 // These values match the official SMAA 1x Ultra preset and lookup textures.
 SMAA_MAX_SEARCH_STEPS: const u32 = 32;

@@ -1,5 +1,5 @@
-full_blurred_texture: descriptor<Texture2D, 0, read>;
-half_blurred_texture: descriptor<Texture2D, 1, read>;
+full_blurred_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+half_blurred_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 
 // Reconstructs the half-resolution lattice with Arm's positive eight-read
 // tent. Bilinear filtering turns the half-texel diagonal reads into the dense

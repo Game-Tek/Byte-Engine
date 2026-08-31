@@ -90,7 +90,7 @@ mod tests {
 	#[test]
 	fn sampled_descriptor_array_keeps_descriptor_indexing_in_glsl() {
 		let root = besl::compile_to_besl(
-			"textures: descriptor<Texture2D, 3, read, 4>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
+			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
 			None,
 		)
 		.expect("Expected sampled descriptor-array source to link");
@@ -154,7 +154,7 @@ mod tests {
 	#[test]
 	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
 		let root = besl::compile_to_besl(
-			"image: descriptor<StorageImage<rgba16f>, 4, write>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",
 			None,
 		)
 		.expect("Expected formatted storage image descriptor to compile");
@@ -171,7 +171,7 @@ mod tests {
 	#[test]
 	fn source_unformatted_storage_image_descriptor_omits_glsl_format() {
 		let root = besl::compile_to_besl(
-			"image: descriptor<StorageImage, 5, write>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage, binding: 5, access: write }>; main: fn () -> void { image; }",
 			None,
 		)
 		.expect("Expected unformatted storage image descriptor to compile");

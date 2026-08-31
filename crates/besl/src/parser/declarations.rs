@@ -640,7 +640,7 @@ pub enum Nodes<'a> {
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroUsize>,
 	},
-	/// A flat resource descriptor declared directly in BESL source.
+	/// A named resource descriptor declared directly in BESL source.
 	Descriptor {
 		name: &'a str,
 		resource_type: &'a str,

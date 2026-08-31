@@ -2397,7 +2397,7 @@ fn authored_mesh_shader_reads_bound_task_payload_elements() {
 		Result: struct {
 			meshlet_index: u32,
 		}
-		result: descriptor<Result, 40, read_write>;
+		result: descriptor<{ type: Result, binding: 40, access: read_write }>;
 		visible_meshlets: task_payload<u32, 32>;
 
 		main: fn () -> void {
@@ -2604,7 +2604,7 @@ fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 			floats: f32[64],
 			lane_indices: u32[64],
 		}
-		result: descriptor<Result, 43, read_write>;
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
 
 		main: fn () -> void {
 			let lane: u32 = thread_idx();
@@ -2740,7 +2740,7 @@ fn compute_workgroup_array_shares_values_across_a_barrier() {
 		Result: struct {
 			values: u32[2],
 		}
-		result: descriptor<Result, 41, read_write>;
+		result: descriptor<{ type: Result, binding: 41, access: read_write }>;
 		scratch: workgroup<u32, 2>;
 
 		main: fn () -> void {
@@ -2785,7 +2785,7 @@ fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
 			previous: u32[2],
 			observed: u32[2],
 		}
-		result: descriptor<Result, 42, read_write>;
+		result: descriptor<{ type: Result, binding: 42, access: read_write }>;
 		shared_value: workgroup<atomicu32>;
 
 		main: fn () -> void {

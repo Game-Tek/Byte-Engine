@@ -1,4 +1,4 @@
-	MaterialCount: struct {
+MaterialCount: struct {
 	material_count: atomicu32[1024],
 }
 
@@ -14,10 +14,10 @@ MaterialEvaluationDispatches: struct {
 	material_evaluation_dispatches: vec3u[1024],
 }
 
-material_count_buffer: descriptor<MaterialCount, 1033, read_write>;
-material_offset_buffer: descriptor<MaterialOffset, 1034, read_write>;
-material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write>;
-material_evaluation_dispatches: descriptor<MaterialEvaluationDispatches, 1036, read_write>;
+material_count_buffer: descriptor<{ type: MaterialCount, binding: 1033, access: read_write }>;
+material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access: read_write }>;
+material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write }>;
+material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write }>;
 
 main: fn () -> void {
 	let coord: vec2u = thread_id();

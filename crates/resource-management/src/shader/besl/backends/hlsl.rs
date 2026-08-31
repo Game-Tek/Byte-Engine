@@ -112,7 +112,7 @@ mod tests {
 	#[test]
 	fn sampled_descriptor_array_keeps_descriptor_indexing_in_hlsl() {
 		let root = besl::compile_to_besl(
-			"textures: descriptor<Texture2D, 3, read, 4>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
+			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
 			None,
 		)
 		.expect("Expected sampled descriptor-array source to link");

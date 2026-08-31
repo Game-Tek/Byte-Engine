@@ -1,4 +1,4 @@
-image_texture: descriptor<Texture2D, 0, read>;
+image_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 
 main: fn(pipeline_input: interface { uv: vec2f, opacity: f32 }) -> output { color_attachment: vec4f } {
 	let color: vec4f = sample(image_texture, pipeline_input.uv);

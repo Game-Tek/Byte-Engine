@@ -29,8 +29,8 @@ Instance: struct {
 	sprite_id: u32,
 }
 
-sprites: descriptor<Texture2DArray, 0, read>;
-instances: descriptor<Instance[], 1, read>;
+sprites: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+instances: descriptor<{ type: Instance[], binding: 1, access: read }>;
 
 main: fn (
 	input: StageInput,

@@ -7,8 +7,8 @@ SkyParameters: struct {
 	misc: vec4f,
 }
 
-transmittance_lut: descriptor<StorageImage<rgba16f>, 0, write>;
-parameters: descriptor<SkyParameters, 1, read, constant>;
+transmittance_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: write }>;
+parameters: descriptor<{ type: SkyParameters, binding: 1, access: read, memory: constant }>;
 
 sample_distribution: fn (value: f32) -> f32 {
 	let clamped: f32 = clamp(value, 0.0, 1.0);

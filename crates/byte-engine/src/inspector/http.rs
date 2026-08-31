@@ -11,10 +11,7 @@ use oxhttp::{
 
 use crate::{
 	core::{EntityHandle, factory::Handle},
-	inspector::{
-		Inspector,
-		screenshot::{ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
-	},
+	inspector::{Inspector, ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
 };
 
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -37,18 +34,21 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// reflected [`Transform`](crate::gameplay::Transform) payload. To remove an
 /// entity, send `type: "Delete"` or `type: "Destroy"` with its target and a
 /// reflected unit payload represented by JSON `null`.
+///
+/// The server retains only an [`Inspector`] trait object. Pass the same inspector
+/// handle to another transport when clients need a second protocol surface.
 /// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
 
-	_inspector: EntityHandle<Inspector>,
+	_inspector: EntityHandle<dyn Inspector>,
 }
 
 impl HttpInspectorServer {
-	/// Starts the inspector on the loopback interface at port 6680.
+	/// Starts the HTTP inspector transport on the loopback interface at port 6680.
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
-	pub fn new(inspector: EntityHandle<Inspector>) -> Self {
+	pub fn new(inspector: EntityHandle<dyn Inspector>) -> Self {
 		Self::spawn(
 			inspector,
 			[
@@ -64,14 +64,14 @@ impl HttpInspectorServer {
 	}
 
 	/// Starts the inspector on each requested socket address.
-	fn spawn(inspector: EntityHandle<Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
+	fn spawn(inspector: EntityHandle<dyn Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
 		let i = inspector.clone();
 
 		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
-			(&Method::GET, "/screenshots") => screenshot_response(&i, request.uri().query()),
-			(&Method::GET, "/messages") => messages_response(&i),
-			(&Method::GET, "/messages/types") => message_types_response(&i),
-			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),
+			(&Method::GET, "/screenshots") => screenshot_response(&*i, request.uri().query()),
+			(&Method::GET, "/messages") => messages_response(&*i),
+			(&Method::GET, "/messages/types") => message_types_response(&*i),
+			(&Method::POST, "/messages") => message_response(&*i, request.body_mut()),
 			(&Method::GET, "/configuration") => match serde_json::to_string(&i.configuration_events()) {
 				Ok(body) => Response::builder()
 					.header("Content-Type", "application/json")
@@ -84,7 +84,7 @@ impl HttpInspectorServer {
 					)))
 					.unwrap(),
 			},
-			(&Method::GET, "/entities") => entities_response(&i, request.uri().query()),
+			(&Method::GET, "/entities") => entities_response(&*i, request.uri().query()),
 			(&Method::DELETE, "/") => {
 				i.close_application();
 				Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap()
@@ -108,7 +108,7 @@ impl HttpInspectorServer {
 }
 
 /// Serializes the current factory-backed entity catalog.
-fn entities_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
+fn entities_response(inspector: &dyn Inspector, query: Option<&str>) -> Response<Body> {
 	let query = match parse_entity_query(query) {
 		Ok(query) => query,
 		Err(()) => {
@@ -165,7 +165,7 @@ fn parse_entity_query(query: Option<&str>) -> Result<EntityQuery, ()> {
 }
 
 /// Drains and serializes passive message publications without payloads.
-fn messages_response(inspector: &Inspector) -> Response<Body> {
+fn messages_response(inspector: &dyn Inspector) -> Response<Body> {
 	let batch = inspector.drain_messages();
 	let messages = batch
 		.messages()
@@ -184,7 +184,7 @@ fn messages_response(inspector: &Inspector) -> Response<Body> {
 }
 
 /// Serializes the protocol message types accepted by the posting endpoint.
-fn message_types_response(inspector: &Inspector) -> Response<Body> {
+fn message_types_response(inspector: &dyn Inspector) -> Response<Body> {
 	let types = inspector
 		.message_types()
 		.iter()
@@ -207,7 +207,7 @@ fn json_response(value: &serde_json::Value) -> Response<Body> {
 }
 
 /// Parses and posts one complete message envelope from the HTTP request body.
-fn message_response(inspector: &Inspector, body: &mut Body) -> Response<Body> {
+fn message_response(inspector: &dyn Inspector, body: &mut Body) -> Response<Body> {
 	let request: serde_json::Value = match serde_json::from_reader(body) {
 		Ok(request) => request,
 		Err(error) => {
@@ -261,7 +261,7 @@ fn parse_message_request(request: &serde_json::Value) -> Result<(&str, Handle, &
 const INVALID_MESSAGE_REQUEST: &str = "Inspector message request is invalid. The most likely cause is that it must contain only a non-empty string `type`, an unsigned 32-bit `target`, and a `payload`.";
 
 /// Handles one screenshot request after HTTP routing has selected the endpoint.
-fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<Body> {
+fn screenshot_response(inspector: &dyn Inspector, query: Option<&str>) -> Response<Body> {
 	let (sink, capture) = match parse_screenshot_query(query) {
 		Ok(request) => request,
 		Err(()) => {
@@ -271,7 +271,7 @@ fn screenshot_response(inspector: &Inspector, query: Option<&str>) -> Response<B
 			);
 		}
 	};
-	let response_receiver = match inspector.screenshots().request(sink, capture) {
+	let response_receiver = match inspector.request_screenshot(sink, capture) {
 		Ok(receiver) => receiver,
 		Err(ScreenshotSubmitError::QueueFull) => {
 			return response(
@@ -405,14 +405,14 @@ mod tests {
 			message_bus::MessageBus,
 		},
 		gameplay::{Name, TransformationUpdate},
-		inspector::{DESTROY_MESSAGE_TYPE, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::Screenshot},
+		inspector::{DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, Screenshot, TRANSFORMATION_UPDATE_MESSAGE_TYPE},
 	};
 
 	/// Creates an inspector with live future-only control and transform listeners.
 	fn test_inspector(
 		configuration: Configuration,
 	) -> (
-		EntityHandle<Inspector>,
+		EntityHandle<DefaultInspector>,
 		DefaultListener<Events>,
 		DefaultListener<TransformationUpdate>,
 	) {
@@ -422,7 +422,7 @@ mod tests {
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transform_listener = messages.channel().listener();
-		let mut inspector = Inspector::new(events, configuration, messages);
+		let mut inspector = DefaultInspector::new(events, configuration, messages);
 		inspector
 			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
 			.expect("register reflected transformation update");
@@ -519,7 +519,7 @@ mod tests {
 		let generic_messages = messages.channel::<Option<u32>>();
 		let _generic_listener = generic_messages.listener();
 		generic_messages.send(Some(7));
-		let inspector = EntityHandle::from(Inspector::new(DefaultChannel::new(), Configuration::new(), messages));
+		let inspector = EntityHandle::from(DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages));
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 
 		let mut entities_stream = TcpStream::connect(address).expect("connect to inspector entity endpoint");
@@ -566,7 +566,7 @@ mod tests {
 		let messages = message_bus.new_scope("named-http-entity-test");
 		let labels = messages.factory::<String>();
 		let names = messages.factory::<Name>();
-		let inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 
 		let named = labels.create("crate-model".to_string());
 		names.derive(named, Name::new("shipping crate"));
@@ -621,7 +621,7 @@ mod tests {
 		drop(reservation);
 
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let screenshots = inspector.screenshots();
+		let screenshots = inspector.screenshot_broker();
 		let _server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
 		let responder = std::thread::spawn(move || {
 			let request = (0..100)
@@ -666,7 +666,7 @@ mod tests {
 	#[test]
 	fn server_rejects_missing_screenshot_sink() {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let response = super::screenshot_response(&inspector, None);
+		let response = super::screenshot_response(&*inspector, None);
 		assert_eq!(response.status(), oxhttp::model::StatusCode::BAD_REQUEST);
 	}
 
@@ -714,7 +714,7 @@ mod tests {
 		let messages = message_bus.new_scope("http-destroy-test-world");
 		let mut deletions = messages.channel::<DeleteMessage>().listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		inspector
 			.register_message::<DeleteMessage>(DESTROY_MESSAGE_TYPE)
 			.expect("register reflected destroy message");

@@ -1,8 +1,8 @@
 //! Screenshot request coordination and PNG encoding.
 //!
-//! HTTP workers submit bounded requests through [`ScreenshotBroker`]. The graphics
-//! application drains those requests, captures the selected sinks, and completes
-//! each request exactly once.
+//! Protocol transports submit bounded requests through [`ScreenshotBroker`].
+//! The graphics application drains those requests, captures the selected sinks,
+//! and completes each request exactly once.
 
 use std::{
 	io::Write as _,
@@ -16,7 +16,7 @@ use flate2::{Compression, write::ZlibEncoder};
 
 const SCREENSHOT_QUEUE_CAPACITY: usize = 8;
 
-/// The `ScreenshotBroker` struct bounds screenshot work shared between HTTP and graphics threads.
+/// The `ScreenshotBroker` struct bounds screenshot work shared between protocol and graphics threads.
 pub struct ScreenshotBroker {
 	requests: SyncSender<ScreenshotRequest>,
 	receiver: Mutex<Receiver<ScreenshotRequest>>,
@@ -37,11 +37,7 @@ impl ScreenshotBroker {
 	}
 
 	/// Submits one capture and returns its one-shot response receiver.
-	pub fn request(
-		&self,
-		sink: usize,
-		capture: ScreenshotCapture,
-	) -> Result<Receiver<ScreenshotResult>, ScreenshotSubmitError> {
+	pub fn request(&self, sink: usize, capture: ScreenshotCapture) -> Result<ScreenshotResponse, ScreenshotSubmitError> {
 		let (respond, response) = mpsc::sync_channel(1);
 		match self.requests.try_send(ScreenshotRequest { sink, capture, respond }) {
 			Ok(()) => Ok(response),
@@ -82,7 +78,7 @@ pub struct ScreenshotRequest {
 }
 
 impl ScreenshotRequest {
-	/// Completes this request. A disconnected HTTP client discards the result.
+	/// Completes this request. A disconnected transport client discards the result.
 	pub(crate) fn complete(self, result: ScreenshotResult) {
 		let _ = self.respond.try_send(result);
 	}
@@ -105,7 +101,11 @@ pub enum ScreenshotError {
 	Internal(String),
 }
 
+/// The result produced after the graphics application handles one screenshot request.
 pub type ScreenshotResult = Result<Screenshot, ScreenshotError>;
+
+/// The response returned to a transport after it queues one screenshot request.
+pub type ScreenshotResponse = Receiver<ScreenshotResult>;
 
 /// Errors reported before a screenshot request enters the graphics queue.
 #[derive(Debug)]

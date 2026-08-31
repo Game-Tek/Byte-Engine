@@ -161,7 +161,8 @@ impl Application for GraphicsApplication {
 		let renderer_transforms_listener = world.transforms_channel().listener();
 
 		// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
-		let mut inspector = Inspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
+		let mut inspector =
+			DefaultInspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
 		inspector
 			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
 			.unwrap_or_else(|error| panic!("{error}"));
@@ -171,7 +172,8 @@ impl Application for GraphicsApplication {
 				.unwrap_or_else(|error| panic!("{error}"));
 		}
 		let inspector = EntityHandle::from(inspector);
-		let screenshot_broker = inspector.screenshots();
+		let screenshot_broker = inspector.screenshot_broker();
+		let inspector: EntityHandle<dyn Inspector> = inspector;
 		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let window_factory = messages.factory();
@@ -780,7 +782,8 @@ use crate::{
 	ghi::command_buffer::CommandBufferRecording as _,
 	input::{Action, input_trigger},
 	inspector::{
-		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, http::HttpInspectorServer,
+		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+		http::HttpInspectorServer,
 	},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{

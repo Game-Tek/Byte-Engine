@@ -3,7 +3,7 @@
 use facet::{Facet, ScalarType};
 use serde_json::Value;
 
-use super::Inspector;
+use super::DefaultInspector;
 use super::shape::describe_json_shape;
 use crate::core::{channel::Channel, factory::Handle, message_bus::MessageRouteError, targeted_message::TargetedMessage};
 
@@ -12,7 +12,7 @@ type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String
 /// The `RegisteredMessageType` struct describes one message type accepted by an inspector protocol adapter.
 ///
 /// Use [`Self::payload_shape`] to build controls for the JSON `payload`, then
-/// send the completed value through [`Inspector::post_message`].
+/// send the completed value through [`crate::inspector::Inspector::post_message`].
 #[derive(Clone, Copy, Debug)]
 pub struct RegisteredMessageType<'a> {
 	message_type: &'static str,
@@ -44,16 +44,9 @@ pub const DELETE_MESSAGE_TYPE: &str = "Delete";
 /// The alternate inspection-protocol name for a terminal entity deletion.
 pub const DESTROY_MESSAGE_TYPE: &str = "Destroy";
 
-impl Inspector {
-	/// Registers one reflected targeted message for protocol posting.
-	///
-	/// `message_type` becomes the stable protocol `type`, and the reflected shape
-	/// of `M::Payload` defines its JSON payload. Register every supported message
-	/// before sharing the inspector with a protocol server. Messages whose
-	/// [`TargetedMessage::ENDS_TARGET_LIFECYCLE`] value is `true` also retire the
-	/// target from entity diagnostics after publication. Reflected unit payloads
-	/// use JSON `null`.
-	pub fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
+impl DefaultInspector {
+	/// Adds one reflected targeted message to the transport-neutral registry.
+	pub(super) fn register_reflected_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
 		M::Payload: Facet<'static>,
@@ -103,10 +96,8 @@ impl Inspector {
 		Ok(())
 	}
 
-	/// Returns the registered protocol message types and their JSON payload shapes.
-	///
-	/// Results are sorted by protocol name so editor clients receive stable output.
-	pub fn message_types(&self) -> Vec<RegisteredMessageType<'_>> {
+	/// Borrows the registered protocol message types in stable name order.
+	pub(super) fn registered_message_types(&self) -> Vec<RegisteredMessageType<'_>> {
 		let mut types = self
 			.serializable_messages
 			.iter()
@@ -119,10 +110,8 @@ impl Inspector {
 		types
 	}
 
-	/// Publishes one registered targeted world message from its protocol name and reflected JSON payload.
-	///
-	/// Call [`Self::register_message`] for the message type before accepting posts.
-	pub fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String> {
+	/// Publishes one registered message after a transport has parsed its envelope.
+	pub(super) fn post_registered_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String> {
 		self.serializable_messages
 			.get(message_type)
 			.ok_or_else(|| {
@@ -157,17 +146,18 @@ mod tests {
 			message_observer::MessageObserver,
 		},
 		gameplay::TransformationUpdate,
+		inspector::Inspector as _,
 	};
 
 	/// Creates an inspector whose transform route already has a listener.
-	fn test_inspector() -> (Inspector, crate::core::listener::DefaultListener<TransformationUpdate>) {
+	fn test_inspector() -> (DefaultInspector, crate::core::listener::DefaultListener<TransformationUpdate>) {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("inspector-test-world");
 		let transforms = messages.channel();
 		let listener = transforms.listener();
 
-		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		inspector
 			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
 			.expect("register reflected transformation update");
@@ -176,14 +166,19 @@ mod tests {
 	}
 
 	/// Creates an inspector with both terminal protocol names on the canonical deletion route.
-	fn deletion_inspector() -> (Inspector, DefaultListener<DeleteMessage>, Factory<String>, MessageObserver) {
+	fn deletion_inspector() -> (
+		DefaultInspector,
+		DefaultListener<DeleteMessage>,
+		Factory<String>,
+		MessageObserver,
+	) {
 		let message_bus = MessageBus::default();
 		let observer = message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("deletion-inspector-test-world");
 		let deletions = messages.channel::<DeleteMessage>();
 		let listener = deletions.listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 			inspector
 				.register_message::<DeleteMessage>(message_type)
@@ -353,7 +348,7 @@ mod tests {
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("reflected-message-test-world");
 		let mut listener = messages.channel::<ReflectedTestMessage>().listener();
-		let mut inspector = Inspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		inspector
 			.register_message::<ReflectedTestMessage>("ReflectedTestMessage")
 			.expect("register reflected test message");

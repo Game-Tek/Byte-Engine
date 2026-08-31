@@ -409,7 +409,6 @@ use crate::{
 };
 
 #[cfg(all(test, debug_assertions))]
-
 mod tests {
 
 	use std::sync::atomic::{AtomicUsize, Ordering};

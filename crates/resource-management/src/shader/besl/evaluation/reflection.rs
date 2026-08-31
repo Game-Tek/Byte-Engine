@@ -450,6 +450,8 @@ pub(crate) fn collect_bindings<T: BindingRecord>(node: &besl::NodeReference) -> 
 	Ok(bindings)
 }
 
+// This is the exhaustive BESL-node traversal contract for reflection; splitting it would duplicate child-edge rules.
+#[allow(clippy::too_many_lines)]
 fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeReference, state: &mut BindingCollectionState) {
 	if state.error.is_some() || !state.visited.insert(node.clone()) {
 		return;

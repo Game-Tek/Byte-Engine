@@ -4,6 +4,8 @@ use super::resolution::*;
 use super::*;
 use crate::parser;
 
+// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) fn lex_parsed_node(
 	chain: Vec<NodeReference>,
 	parser_node: &parser::Node,

@@ -1,5 +1,4 @@
 #[derive(Debug)]
-
 struct ParsedLut {
 	description: LutDescription,
 	entries: Vec<[f32; 3]>,
@@ -7,7 +6,6 @@ struct ParsedLut {
 
 /// The `LUTAssetHandler` struct bakes `.lut` and `.cube` lookup-table assets into LUT resources.
 #[derive(Default)]
-
 pub struct LUTAssetHandler {}
 
 impl LUTAssetHandler {
@@ -231,7 +229,6 @@ fn parse_entry_tokens(first: &str, mut tokens: std::str::SplitWhitespace<'_>, li
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use crate::{

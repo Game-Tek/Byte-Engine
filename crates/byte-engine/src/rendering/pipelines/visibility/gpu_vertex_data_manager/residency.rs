@@ -70,6 +70,8 @@ impl GPUVertexDataManager {
 	}
 
 	/// Records a prepared mesh into visibility GPU storage without performing resource I/O.
+	// Keep capacity reservation and every transfer copy in one commit path so partial residency is never published.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn write_prepared_gpu_mesh_data_and_return_mesh_object(
 		&mut self,
 		c: &mut ghi::implementation::CommandBufferRecording<'_>,

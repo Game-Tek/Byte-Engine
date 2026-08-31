@@ -143,7 +143,6 @@ impl AssetHandler for EXRAssetHandler {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::io::Cursor;

@@ -150,15 +150,12 @@ mod tests {
 	#[test]
 	fn storage_layout_target_matches_the_compiled_backend() {
 		#[cfg(target_vendor = "apple")]
-
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Msl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
-
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Hlsl);
 
 		#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
-
 		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::GlslScalar);
 	}
 

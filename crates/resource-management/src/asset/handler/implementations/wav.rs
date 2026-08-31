@@ -1,6 +1,5 @@
 /// The `WAVAssetHandler` struct exists to load WAV audio assets into engine audio resources.
 #[derive(Default)]
-
 pub struct WAVAssetHandler {}
 
 impl WAVAssetHandler {
@@ -170,7 +169,6 @@ impl AssetHandler for WAVAssetHandler {
 }
 
 #[cfg(test)]
-
 mod tests {
 	use super::wav_bit_depth;
 	use crate::{

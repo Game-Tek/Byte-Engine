@@ -131,6 +131,7 @@ mod tests {
 	fn mapping_transfers_address_and_size_without_borrowing() {
 		let mut bytes = [0u8; 8];
 		let pointer = bytes.as_mut_ptr();
+		// SAFETY: The stack array remains alive and exclusively borrowed until the mapping is consumed below.
 		let mapping = unsafe { Mapping::from_raw_parts(pointer, bytes.len()) };
 
 		assert_eq!(mapping.byte_count(), bytes.len());

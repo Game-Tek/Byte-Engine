@@ -172,6 +172,8 @@ pub enum VmError {
 }
 
 impl std::fmt::Display for VmError {
+	// Keep every error variant's complete user-facing diagnostic in the exhaustive Display match.
+	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			VmError::MissingMainFunction => {

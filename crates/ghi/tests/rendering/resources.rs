@@ -19,15 +19,7 @@ pub(super) fn multiframe_rendering(device: &mut impl ghi::context::Context, queu
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
@@ -131,15 +123,7 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
@@ -245,15 +229,7 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
@@ -354,17 +330,24 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 			pixel_count * std::mem::size_of::<RGBAu8>(),
 			"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
 		);
-		let pixels = unsafe {
-			// RGBA8 readback stores one tightly packed RGBAu8 value per pixel.
-			std::slice::from_raw_parts(image_data.as_ptr() as *const RGBAu8, pixel_count)
-		};
+		let pixels = image_data
+			.chunks_exact(4)
+			.map(|pixel| RGBAu8 {
+				r: pixel[0],
+				g: pixel[1],
+				b: pixel[2],
+				a: pixel[3],
+			})
+			.collect::<Vec<_>>();
 
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
-		check_triangle(pixels, extent);
+		check_triangle(&pixels, extent);
 	}
 }
 
+// The rendering scenario shares one resource setup across all dynamic-data frame transitions.
+#[allow(clippy::too_many_lines)]
 pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests that the render system can perform rendering with multiple frames in flight.
 	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -380,15 +363,7 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
@@ -611,9 +586,9 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 					let frame = execution.frame().unwrap();
 
 					let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-					let pixels =
-						unsafe { std::slice::from_raw_parts_mut(texture_slice.as_mut_ptr() as *mut RGBAu8, pixel_count) };
-					pixels.fill(expected_color);
+					for pixel in texture_slice.chunks_exact_mut(4).take(pixel_count) {
+						pixel.copy_from_slice(&[expected_color.r, expected_color.g, expected_color.b, expected_color.a]);
+					}
 					frame.sync_texture(upload_image.into());
 
 					execution.record(command_buffer_handle, |command_buffer_recording| {
@@ -644,6 +619,8 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 	}
 }
 
+// The rendering scenario validates one resource set across its complete multi-frame lifetime.
+#[allow(clippy::too_many_lines)]
 pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests frame-local image creation, previous-frame bindings, and sequence wraparound.
 
@@ -913,6 +890,8 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 	assert!(!device.has_errors());
 }
 
+// The rendering scenario keeps descriptor creation, mutation, binding, and validation in one contiguous contract.
+#[allow(clippy::too_many_lines)]
 pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	let signal = device.create_synchronizer(None, true);
 
@@ -925,15 +904,7 @@ pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_han
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let vertex_shader_code = "
 		#version 450 core

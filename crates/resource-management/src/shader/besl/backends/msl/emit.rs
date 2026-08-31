@@ -206,6 +206,8 @@ impl<A: Allocator + Clone> Generator<A> {
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
+	// Keep the exhaustive node-to-MSL mapping together so adding a BESL node requires handling its backend contract here.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);

@@ -1,5 +1,17 @@
 use super::*;
 
+/// Views initialized f32 test data as the byte-oriented mesh upload API expects.
+pub(super) fn f32_bytes(values: &[f32]) -> &[u8] {
+	// SAFETY: f32 has no padding, and the returned view is bounded by the live source slice.
+	unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
+}
+
+/// Views initialized u16 test data as the byte-oriented mesh upload API expects.
+pub(super) fn u16_bytes(values: &[u16]) -> &[u8] {
+	// SAFETY: u16 has no padding, and the returned view is bounded by the live source slice.
+	unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
+}
+
 pub(super) fn compile_shaders() -> (CompiledShaderSource, CompiledShaderSource) {
 	let vertex_shader_code = "
 		#version 450

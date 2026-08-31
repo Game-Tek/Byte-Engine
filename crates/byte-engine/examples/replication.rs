@@ -25,6 +25,7 @@ fn main() {
 	let replicable_factory = Factory::new();
 	replicable_factory.create(Object {
 		position: Point::new(0.5, 0.5, 0.5),
+		payload: Commands::Spawn as u8,
 	});
 	update();
 	update();
@@ -52,6 +53,7 @@ enum Commands {
 #[derive(Clone)]
 struct Object {
 	position: Point,
+	payload: u8,
 }
 
 impl Positionable for Object {
@@ -65,6 +67,6 @@ impl Positionable for Object {
 
 impl Replicable for Object {
 	fn payload(&self) -> &u8 {
-		todo!()
+		&self.payload
 	}
 }

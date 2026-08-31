@@ -86,6 +86,8 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 }
 
 /// Builds a dependency graph using the provided allocator for graph and traversal storage.
+// Keep the recursive walker local to the entry point so its allocator and cycle-state invariants cannot diverge.
+#[allow(clippy::too_many_lines)]
 pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeReference, allocator: A) -> Graph<A> {
 	let mut graph = Graph::new_in(allocator.clone());
 	let mut expanded = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
@@ -138,6 +140,8 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 		_ => panic!("Root node must be a function node."),
 	}
 
+	// This match is the exhaustive shader-node dependency-edge contract.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	fn build_graph_impl<A: Allocator + Clone>(
 		parent: besl::NodeReference,
 		node: besl::NodeReference,

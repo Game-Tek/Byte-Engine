@@ -326,7 +326,6 @@ pub(crate) fn validate_affine_matrix(matrix: &maths_rs::Mat4f, context: &'static
 }
 
 #[derive(Debug, PartialEq, Eq)]
-
 pub(crate) enum GltfSkeletalImportError {
 	MultipleNodeParents,
 	CyclicNodeHierarchy,
@@ -653,7 +652,6 @@ pub(crate) fn validate_animation_times(times: &[f32]) -> Result<(), GltfSkeletal
 }
 
 #[derive(Clone, Copy)]
-
 pub(crate) enum GltfVector3Semantic {
 	Translation,
 	Scale,

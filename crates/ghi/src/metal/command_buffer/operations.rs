@@ -1,5 +1,93 @@
 use super::*;
 
+impl CommandBufferRecording<'_> {
+	/// Resolves one public transfer source to the retained Metal texture and synchronization use recorded by a copy.
+	fn resolve_transfer_texture_source(
+		&self,
+		source: graphics_hardware_interface::ImageOrSwapchain,
+	) -> Result<
+		(
+			synchronization::MetalResourceUse,
+			Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+			crate::Formats,
+			Extent,
+			u32,
+			crate::Uses,
+		),
+		crate::TextureTransferError,
+	> {
+		Ok(match source {
+			ImageOrSwapchain::Image(image) => {
+				if self.device.images.get_single(image).is_none() {
+					return Err(crate::TextureTransferError::InvalidSource);
+				}
+				let handle = self.get_internal_image_handle(image);
+				let source = self.device.images.resource(handle);
+				(
+					synchronization::MetalResourceUse::image(
+						handle,
+						Some(0),
+						None,
+						mtl::MTLStages::Blit,
+						crate::AccessPolicies::READ,
+					),
+					source.texture.clone(),
+					source.format,
+					source.extent,
+					source.array_layers,
+					source.uses,
+				)
+			}
+			ImageOrSwapchain::Swapchain(swapchain) => {
+				let swapchain_resource = self
+					.device
+					.swapchains
+					.get(swapchain.0 as usize)
+					.ok_or(crate::TextureTransferError::InvalidSource)?;
+				if !swapchain_resource.uses.contains(crate::Uses::TransferSource) {
+					return Err(crate::TextureTransferError::MissingTransferSource);
+				}
+				if let Some(proxy) = swapchain_resource.images[self.sequence_index as usize] {
+					let source = self.device.images.resource(proxy);
+					(
+						synchronization::MetalResourceUse::image(
+							proxy,
+							Some(0),
+							None,
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::READ,
+						),
+						source.texture.clone(),
+						source.format,
+						source.extent,
+						source.array_layers,
+						swapchain_resource.uses,
+					)
+				} else {
+					let drawable = self
+						.drawables
+						.iter()
+						.find(|(handle, _)| *handle == swapchain)
+						.map(|(_, drawable)| drawable.texture())
+						.ok_or(crate::TextureTransferError::InvalidSource)?;
+					(
+						synchronization::MetalResourceUse::drawable(
+							drawable.as_ref(),
+							mtl::MTLStages::Blit,
+							crate::AccessPolicies::READ,
+						),
+						drawable,
+						crate::Formats::BGRAu8,
+						swapchain_resource.extent,
+						1,
+						swapchain_resource.uses,
+					)
+				}
+			}
+		})
+	}
+}
+
 impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	fn frame_key(&self) -> graphics_hardware_interface::FrameKey {
 		self.frame_key.expect(
@@ -61,6 +149,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		for (i, (attachment, image, format, array_layers)) in
 			attachments.iter().filter(|(_, _, format, _)| !format.is_depth()).enumerate()
 		{
+			// SAFETY: `i` enumerates the validated non-depth attachment list and stays within Metal's attachment array.
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
 			self.command_buffer.retain_texture(image.clone());
 			let texture_view = attachment_texture_view(image, *format, *array_layers, attachment.layer);
@@ -227,6 +316,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				mtl::MTLStages::Blit,
 				crate::AccessPolicies::WRITE,
 			)]);
+			// SAFETY: The whole destination buffer range is valid and tracked for an exclusive transfer write.
 			unsafe {
 				transfer_encoder.fillBuffer_range_value(buffer.as_ref(), NSRange::new(0, size), 0);
 			}
@@ -266,6 +356,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					crate::AccessPolicies::WRITE,
 				),
 			]);
+			// SAFETY: Source and destination ranges were bounds-checked above and reference distinct transfer regions.
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 					source.as_ref(),
@@ -384,6 +475,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			for slice in 0..destination.array_layers as usize {
 				let source_offset = copy.source_offset + slice * copy.source_bytes_per_image;
 
+				// SAFETY: The source layout and destination subresource were validated before recording this copy.
 				unsafe {
 					transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 						source.buffer.as_ref(),
@@ -405,75 +497,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let (source_use, source_texture, format, extent, array_layers, uses) = match source {
-			ImageOrSwapchain::Image(image) => {
-				if self.device.images.get_single(image).is_none() {
-					return Err(crate::TextureTransferError::InvalidSource);
-				}
-				let handle = self.get_internal_image_handle(image);
-				let source = self.device.images.resource(handle);
-				(
-					synchronization::MetalResourceUse::image(
-						handle,
-						Some(0),
-						None,
-						mtl::MTLStages::Blit,
-						crate::AccessPolicies::READ,
-					),
-					source.texture.clone(),
-					source.format,
-					source.extent,
-					source.array_layers,
-					source.uses,
-				)
-			}
-			ImageOrSwapchain::Swapchain(swapchain) => {
-				let swapchain_resource = self
-					.device
-					.swapchains
-					.get(swapchain.0 as usize)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				if !swapchain_resource.uses.contains(crate::Uses::TransferSource) {
-					return Err(crate::TextureTransferError::MissingTransferSource);
-				}
-				if let Some(proxy) = swapchain_resource.images[self.sequence_index as usize] {
-					let source = self.device.images.resource(proxy);
-					(
-						synchronization::MetalResourceUse::image(
-							proxy,
-							Some(0),
-							None,
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::READ,
-						),
-						source.texture.clone(),
-						source.format,
-						source.extent,
-						source.array_layers,
-						swapchain_resource.uses,
-					)
-				} else {
-					let drawable = self
-						.drawables
-						.iter()
-						.find(|(handle, _)| *handle == swapchain)
-						.map(|(_, drawable)| drawable.texture())
-						.ok_or(crate::TextureTransferError::InvalidSource)?;
-					(
-						synchronization::MetalResourceUse::drawable(
-							drawable.as_ref(),
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::READ,
-						),
-						drawable,
-						crate::Formats::BGRAu8,
-						swapchain_resource.extent,
-						1,
-						swapchain_resource.uses,
-					)
-				}
-			}
-		};
+		let (source_use, source_texture, format, extent, array_layers, uses) = self.resolve_transfer_texture_source(source)?;
 		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
 		let bytes_per_row = layout.bytes_per_row;
 		let row_count = layout.row_count;
@@ -506,6 +530,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		source_size.depth = 1;
 		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 		for slice in 0..array_layers as usize {
+			// SAFETY: The source subresource and readback buffer layout cover this array slice.
 			unsafe {
 				transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
 					source_texture.as_ref(),
@@ -559,6 +584,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		// The upload buffer snapshots caller memory now; the tracked blit performs the GPU-visible write in command order.
+		// SAFETY: `data` is a live initialized slice and the byte view preserves its exact extent.
 		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), std::mem::size_of_val(data)) };
 		self.command_buffer.retain_texture(texture.clone());
 		let transfer_encoder = self.prepare_transfer().clone();
@@ -616,6 +642,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			),
 		]);
 
+		// SAFETY: Both textures are retained, format-compatible, and tracked for opposing copy accesses.
 		unsafe {
 			transfer_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
 		}
@@ -783,6 +810,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 			self.resize_push_constants_for_layout(pipeline_layout_handle);
 		}
 
+		// SAFETY: The destination range is bounds-checked above and `data` is an initialized nonoverlapping value.
 		unsafe {
 			std::ptr::copy_nonoverlapping(
 				&data as *const T as *const u8,
@@ -830,6 +858,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 			.as_ref()
 			.expect("No active render pass. The most likely cause is that draw_mesh was called outside start_render_pass.");
 
+		// SAFETY: Mesh metadata provides a live retained index buffer and a bounds-checked index range.
 		unsafe {
 			encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferLength(
 				mtl::MTLPrimitiveType::Triangle,
@@ -850,6 +879,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let resource_uses = self.bound_vertex_resource_uses();
 		self.prepare_render_draw(resource_uses);
 		self.flush_render_push_constants();
+		// SAFETY: An active render encoder exists and the validated vertex range belongs to the bound pipeline.
 		unsafe {
 			self.active_render_encoder
 				.as_ref()
@@ -926,6 +956,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.prepare_render_draw(resource_uses);
 		self.flush_render_push_constants();
 
+		// SAFETY: An active render encoder exists and the index-buffer address and draw ranges were validated above.
 		unsafe {
 			self.active_render_encoder
 				.as_ref()
@@ -1048,6 +1079,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		let pipeline = &self.device.pipelines[bound_pipeline.0 as usize];
 		let threadgroup_extent = pipeline.compute_threadgroup_size.unwrap_or(Extent::line(128));
 
+		// SAFETY: The indirect buffer address is retained, aligned, and valid for one Metal dispatch argument record.
 		unsafe {
 			self.ensure_compute_encoder()
 				.dispatchThreadgroupsWithIndirectBuffer_threadsPerThreadgroup(

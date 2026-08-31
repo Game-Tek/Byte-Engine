@@ -8,7 +8,6 @@ pub use scope::{VisibilityShaderGenerator, VisibilityShaderScope};
 pub(super) use sources::*;
 
 #[cfg(test)]
-
 mod tests {
 
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};

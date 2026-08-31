@@ -66,6 +66,8 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	// This table-like test intentionally keeps every format mapping visible in one contiguous specification.
+	#[allow(clippy::cognitive_complexity)]
 	fn test_formats_encoding() {
 		// Test floating point formats
 
@@ -129,6 +131,8 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	// This constructor matrix is linear specification coverage; splitting it would obscure the cross-variant contract.
+	#[allow(clippy::cognitive_complexity)]
 	fn descriptor_write_constructors_preserve_set_slot_array_and_frame_semantics() {
 		let set = DescriptorSetHandle(1);
 		let slot = crate::shader::ResourceSlot::new(9);
@@ -224,6 +228,8 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	// This table-like test intentionally keeps every bit-width class visible together.
+	#[allow(clippy::cognitive_complexity)]
 	fn test_formats_channel_bit_size() {
 		// Test 8-bit formats
 
@@ -262,6 +268,8 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	// This table-like test intentionally keeps every channel-layout class visible together.
+	#[allow(clippy::cognitive_complexity)]
 	fn test_formats_channel_layout() {
 		// Test single channel formats
 
@@ -311,6 +319,8 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	// This table-like test intentionally keeps every storage-size class visible together.
+	#[allow(clippy::cognitive_complexity)]
 	fn test_formats_size() {
 		// Test single channel formats
 

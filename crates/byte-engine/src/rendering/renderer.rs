@@ -34,6 +34,13 @@ mod tests {
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 
+	/// Creates an opaque nonzero image handle for render-target bookkeeping tests.
+	fn image_handle(value: u64) -> ghi::BaseImageHandle {
+		assert_ne!(value, 0);
+		// SAFETY: Test values are nonzero and `BaseImageHandle` is the transparent opaque handle representation used by GHI.
+		unsafe { std::mem::transmute(value) }
+	}
+
 	struct NamedRenderPass(&'static str);
 
 	impl RenderPass for NamedRenderPass {
@@ -62,7 +69,7 @@ mod tests {
 
 	#[test]
 	fn captures_keep_request_order_at_a_prepared_pass_entry() {
-		let image: ghi::BaseImageHandle = unsafe { std::mem::transmute(7_u64) };
+		let image: ghi::BaseImageHandle = image_handle(7);
 		let target = ghi::ImageOrSwapchain::Image(image);
 		let captures = [
 			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
@@ -167,7 +174,7 @@ mod tests {
 	#[test]
 	fn test_insert_and_get() {
 		let mut rt = RenderTargets::new();
-		let image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let image = image_handle(1);
 		let format = ghi::Formats::RGBA8UNORM;
 		let index = rt.insert("test".to_string(), 0, image, format);
 
@@ -181,9 +188,9 @@ mod tests {
 	#[test]
 	fn test_insert_multiple() {
 		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let image1 = image_handle(1);
 		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let image2 = image_handle(2);
 		let format2 = ghi::Formats::Depth32;
 
 		rt.insert("color".to_string(), 0, image1, format1);
@@ -196,19 +203,14 @@ mod tests {
 	#[test]
 	fn test_get_attachment_infos() {
 		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let image1 = image_handle(1);
 		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let image2 = image_handle(2);
 		let format2 = ghi::Formats::Depth32;
 
 		rt.insert("color".to_string(), 0, image1, format1);
 		rt.insert("depth".to_string(), 0, image2, format2);
-		rt.insert(
-			"other".to_string(),
-			1,
-			unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(3) },
-			ghi::Formats::RGBA16UNORM,
-		);
+		rt.insert("other".to_string(), 1, image_handle(3), ghi::Formats::RGBA16UNORM);
 
 		let attachments = rt.get_attachment_infos(0);
 
@@ -230,8 +232,8 @@ mod tests {
 	#[test]
 	fn test_alias_overrides_previous_mapping() {
 		let mut rt = RenderTargets::new();
-		let first_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let second_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let first_image = image_handle(1);
+		let second_image = image_handle(2);
 
 		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
 		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
@@ -246,8 +248,8 @@ mod tests {
 	#[test]
 	fn test_insert_same_name_for_different_sinks() {
 		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let image1 = image_handle(1);
+		let image2 = image_handle(2);
 
 		rt.insert("main".to_string(), 0, image1, ghi::Formats::RGBA16UNORM);
 		rt.insert("main".to_string(), 1, image2, ghi::Formats::RGBA16UNORM);

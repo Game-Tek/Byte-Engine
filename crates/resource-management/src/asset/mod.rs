@@ -98,7 +98,6 @@ pub(crate) fn sanitize_material_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-
 mod container_default_resource_tests {
 
 	use super::{ContainerDefaultResource, container_default_resource};

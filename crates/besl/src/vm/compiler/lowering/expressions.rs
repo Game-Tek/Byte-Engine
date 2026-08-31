@@ -2,6 +2,8 @@ use super::*;
 
 impl<'a> Compiler<'a> {
 	/// Compiles a scalar BESL expression into one register-producing VM instruction sequence.
+	// Expression lowering is an exhaustive AST dispatcher; branch-local validation remains next to emitted instructions.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(super) fn compile_value_expression(
 		&mut self,
 		expression: &NodeReference,

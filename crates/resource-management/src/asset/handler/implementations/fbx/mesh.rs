@@ -2,7 +2,6 @@ use super::*;
 
 /// The `VertexAttributeMask` struct keeps fixed semantic availability reusable across FBX mesh-import loops.
 #[derive(Clone, Copy, Debug, Default)]
-
 pub(crate) struct VertexAttributeMask(u8);
 
 impl VertexAttributeMask {
@@ -762,7 +761,6 @@ pub(crate) fn import_fbx_material_corners<'a>(
 
 /// The `TriangulatedFaceAppendResult` enum records whether a source face produced triangles or was malformed.
 #[derive(Clone, Copy, PartialEq, Eq)]
-
 pub(crate) enum TriangulatedFaceAppendResult {
 	Appended,
 	CulledDegenerate,
@@ -770,7 +768,6 @@ pub(crate) enum TriangulatedFaceAppendResult {
 
 /// The `FbxCulledPolygonCounts` struct accumulates concise import diagnostics without logging once per malformed face.
 #[derive(Default)]
-
 pub(crate) struct FbxCulledPolygonCounts {
 	triangles: usize,
 	quads: usize,

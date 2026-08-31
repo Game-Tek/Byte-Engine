@@ -26,6 +26,7 @@ impl Context {
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> super::super::CommandBufferRecording<'a> {
+		// SAFETY: Detached recordings create and drain the pool on their owning thread.
 		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let (queue_handle, command_buffer_name) = {

@@ -292,6 +292,8 @@ impl<C: 'static> Engine<C> {
 	/// Builds render data from an evaluated UI snapshot.
 	///
 	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
+	// Keep the single tree walk contiguous because it propagates clip, opacity, transform, depth, and layer masks together.
+	#[allow(clippy::too_many_lines)]
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut curve_elements = Vec::new();
@@ -526,12 +528,6 @@ impl Render {
 }
 
 pub(crate) struct VirtualViewport;
-
-impl ElementHandle for VirtualViewport {
-	fn id(&self) -> Id {
-		unimplemented!()
-	}
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiEvent {
@@ -1642,6 +1638,8 @@ mod tests {
 	}
 
 	#[test]
+	// The retained-modal fixture intentionally nests async component declarations to exercise stable structural IDs.
+	#[allow(clippy::excessive_nesting)]
 	fn reopening_awaited_modal_reuses_stable_ids() {
 		let frame_allocator = bumpalo::Bump::new();
 		let ids = Arc::new(StdMutex::new(Vec::new()));

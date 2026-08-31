@@ -296,6 +296,8 @@ impl Generator {
 		}
 	}
 
+	// Keep the intrinsic table contiguous because each arm defines one exact HLSL lowering contract.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,

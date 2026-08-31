@@ -243,7 +243,7 @@ impl StagingLease {
 	#[allow(unsafe_code)]
 	pub fn bytes_mut(&mut self) -> &mut [u8] {
 		let region = self.region.as_mut().expect("Live staging leases retain their mapped region.");
-		// The allocation worker only creates disjoint region tokens, and a lease
+		// SAFETY: The allocation worker only creates disjoint region tokens, and a lease
 		// provides mutable access through one exclusive `&mut self` at a time.
 		unsafe { std::slice::from_raw_parts_mut(region.address as *mut u8, region.byte_count) }
 	}

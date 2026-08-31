@@ -90,6 +90,8 @@ impl Entity for UiRenderPass {}
 
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
+	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
+	#[allow(clippy::too_many_lines)]
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		// Backdrop blur samples partially rendered UI, so keep a sampleable working image even when the graph output is the swapchain.
@@ -446,6 +448,8 @@ impl RenderPass for UiRenderPass {
 		"ui"
 	}
 
+	// Keep ordered UI batch recording in one function so clears, blur barriers, and depth order cannot diverge.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -1596,6 +1600,8 @@ mod tests {
 	}
 
 	#[test]
+	// The footprint assertion intentionally visits every downsampled texel and its full tent support.
+	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_half_region_contains_every_tent_sample_on_fixed_lattice() {
 		let tent_offsets = [
 			[-1.0, 0.0],
@@ -1647,6 +1653,8 @@ mod tests {
 
 	/// Verifies every adaptive path executes the production shaders over representative UI signals.
 	#[test]
+	// The sweep keeps all radius, scale, and sampled-color assertions in one production-chain regression.
+	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);

@@ -42,6 +42,7 @@ impl<'a> Frame<'a> {
 		queue_handle: graphics_hardware_interface::QueueHandle,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
+		// SAFETY: The pool is created and drained on the execution thread that owns this frame scope.
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
@@ -129,12 +130,14 @@ impl Frame<'_> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
+		// SAFETY: Typed handles preserve the allocation type and the frame owns exclusive access to its sequence resource.
 		unsafe { &mut *(self.frame_buffer_pointer(buffer_handle.into()) as *mut T) }
 	}
 
 	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
 		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
+		// SAFETY: `frame_texture_staging_parts` returns the live exclusive staging allocation and its exact size.
 		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
 	}
 
@@ -235,6 +238,36 @@ impl Frame<'_> {
 		self.execute_finished_batch(command_buffers, present_keys, synchronizer);
 	}
 
+	/// Removes the drawables acquired for this submission while preserving a missing drawable as an explicit skipped present.
+	fn take_present_drawables(
+		&mut self,
+		present_keys: &[graphics_hardware_interface::PresentKey],
+	) -> SmallVec<
+		[(
+			graphics_hardware_interface::PresentKey,
+			Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+		); 4],
+	> {
+		present_keys
+			.iter()
+			.map(|&present_key| {
+				let drawable = self
+					.drawables
+					.iter()
+					.position(|(swapchain, _)| *swapchain == present_key.swapchain)
+					.map(|index| self.drawables.swap_remove(index).1);
+				(present_key, drawable)
+			})
+			.collect()
+	}
+
+	/// Returns whether presentation needs a proxy-texture resolve before drawable submission.
+	fn uses_proxy_swapchain(&self, present_keys: &[graphics_hardware_interface::PresentKey]) -> bool {
+		present_keys
+			.iter()
+			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy)
+	}
+
 	/// Finishes and submits all frame command buffers through one Metal 4 queue commit.
 	pub(crate) fn execute_finished_batch<'command>(
 		&mut self,
@@ -242,20 +275,7 @@ impl Frame<'_> {
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let mut present_drawables = SmallVec::<
-			[(
-				graphics_hardware_interface::PresentKey,
-				Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
-			); 4],
-		>::new();
-		for &present_key in present_keys {
-			let drawable = self
-				.drawables
-				.iter()
-				.position(|(swapchain, _)| *swapchain == present_key.swapchain)
-				.map(|index| self.drawables.swap_remove(index).1);
-			present_drawables.push((present_key, drawable));
-		}
+		let present_drawables = self.take_present_drawables(present_keys);
 
 		let mut native_commands = SmallVec::<[queue::NativeCommand; 4]>::new();
 		let mut submitted_readbacks = SmallVec::<[graphics_hardware_interface::TextureCopyHandle; 8]>::new();
@@ -276,10 +296,7 @@ impl Frame<'_> {
 			submitted_readbacks.extend(texture_readbacks);
 		}
 
-		let uses_proxy = present_keys
-			.iter()
-			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy);
-		if uses_proxy {
+		if self.uses_proxy_swapchain(present_keys) {
 			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
 			let mut resolve_command = self.device.queues[self.queue_handle.0 as usize]
 				.acquire_native_command(Some("Present Resolve"), self.device.settings.debug_labels);
@@ -329,6 +346,7 @@ impl Frame<'_> {
 				);
 				barrier.encode_compute(copy_encoder.as_ref());
 
+				// SAFETY: Source and drawable textures are retained and validated for the proxy resolve copy.
 				unsafe {
 					copy_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
 				}
@@ -414,6 +432,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
 		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
+		// SAFETY: `frame_texture_staging_parts` returns the live exclusive staging allocation and its exact size.
 		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
 	}
 

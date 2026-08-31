@@ -1,6 +1,8 @@
 use super::common::*;
 use super::*;
 
+// The rendering scenario deliberately keeps acceleration-structure creation, binding, dispatch, and validation contiguous.
+#[allow(clippy::too_many_lines)]
 pub(super) fn ray_tracing(renderer: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests that the render system can perform rendering with multiple frames in flight.
 	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.

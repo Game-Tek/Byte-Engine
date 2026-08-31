@@ -108,7 +108,6 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-
 struct BESLShaderSettings {
 	stage: ShaderTypes,
 	workgroup_size: Option<(u32, u32, u32)>,
@@ -602,7 +601,6 @@ fn shader_compilation_error_message(id: &str, error: &str) -> String {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::sync::Arc;

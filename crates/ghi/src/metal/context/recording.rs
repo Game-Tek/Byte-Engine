@@ -184,6 +184,7 @@ impl Context {
 		if let Some(previous) = previous {
 			let previous_buffer = self.buffers.resource(previous);
 			let copy_size = previous_buffer.size.min(buffer.size);
+			// SAFETY: Both mapped buffers remain alive and `copy_size` is bounded by the smaller allocation.
 			unsafe {
 				std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
 			}

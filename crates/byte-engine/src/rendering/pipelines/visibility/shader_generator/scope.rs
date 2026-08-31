@@ -44,6 +44,8 @@ impl VisibilityShaderScope {
 		Self::new_with_params(true, true, true, true, true, true, true, true)
 	}
 
+	// Keep the declarative Visibility scope in one builder so every resource flag maps to one reviewable BESL declaration.
+	#[allow(clippy::too_many_lines)]
 	pub fn new_with_params<'a>(
 		material_count_read: bool,
 		material_count_write: bool,

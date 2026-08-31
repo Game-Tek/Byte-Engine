@@ -75,6 +75,8 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 }
 
 /// Parses a flat resource descriptor and preserves its source type name for semantic resolution.
+// Descriptor grammar validation is one ordered parse transaction; splitting it would duplicate iterator-state handling.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
@@ -255,6 +257,8 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 }
 
 /// Parses stage-interface storage declared directly in BESL source.
+// Stage-interface grammar validation is one ordered parse transaction over a shared iterator.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 ) -> FeatureParserResult<'i, 'a> {

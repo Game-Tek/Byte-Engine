@@ -4,8 +4,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
-	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSEventMask,
-	NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSCursor, NSEvent,
+	NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
 	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -45,8 +45,10 @@ define_class!(
 	#[ivars = WindowDelegateIvars]
 	struct WindowDelegate;
 
+	// SAFETY: `WindowDelegate` inherits from NSObject and uses objc2's generated object layout and lifecycle.
 	unsafe impl NSObjectProtocol for WindowDelegate {}
 
+	// SAFETY: Every exported selector has the signature required by NSWindowDelegate and runs on the main thread.
 	unsafe impl NSWindowDelegate for WindowDelegate {
 		#[unsafe(method(windowWillClose:))]
 		fn window_will_close(&self, _notification: &NSNotification) {
@@ -82,8 +84,10 @@ define_class!(
 	#[ivars = ApplicationDelegateIvars]
 	struct ApplicationDelegate;
 
+	// SAFETY: `ApplicationDelegate` inherits from NSObject and uses objc2's generated object layout and lifecycle.
 	unsafe impl NSObjectProtocol for ApplicationDelegate {}
 
+	// SAFETY: Every exported selector has the signature required by NSApplicationDelegate and runs on the main thread.
 	unsafe impl NSApplicationDelegate for ApplicationDelegate {
 		#[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
 		fn application_should_handle_reopen(&self, _sender: &NSApplication, has_visible_windows: bool) -> bool {
@@ -104,6 +108,7 @@ define_class!(
 impl WindowDelegate {
 	fn new(mtm: MainThreadMarker) -> Retained<Self> {
 		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars::default());
+		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
 
@@ -132,6 +137,7 @@ impl WindowDelegate {
 impl ApplicationDelegate {
 	fn new(mtm: MainThreadMarker, window: Retained<NSWindow>) -> Retained<Self> {
 		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { window });
+		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
 
@@ -179,8 +185,70 @@ fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NS
 	)
 }
 
+/// Appends relative and normalized absolute motion from one AppKit mouse event.
+fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, events: &mut Vec<Events>) {
+	events.push(Events::MouseMove {
+		seat: Seat::stub(),
+		dx: event.deltaX() as f32,
+		dy: event.deltaY() as f32,
+		time,
+	});
+	let Some(content_view) = window.contentView() else {
+		return;
+	};
+	let Some((x, y)) = normalize_mouse_position(event.locationInWindow(), content_view.frame()) else {
+		return;
+	};
+	events.push(Events::MousePosition {
+		seat: Seat::stub(),
+		x,
+		y,
+		time,
+	});
+}
+
+/// Appends the physical key and any text produced by one AppKit keyboard event.
+fn append_key_event(event: &NSEvent, events: &mut Vec<Events>) {
+	let pressed = event.r#type() == NSEventType::KeyDown;
+	if let Some(key) = keycode_to_key(event.keyCode()) {
+		events.push(Events::Key {
+			seat: Seat::stub(),
+			pressed,
+			key,
+		});
+	}
+	if !pressed || !accepts_text_input(event.modifierFlags()) {
+		return;
+	}
+	let Some(characters) = event.characters() else {
+		return;
+	};
+	for character in characters.to_string().chars().filter(|character| !character.is_control()) {
+		events.push(Events::Character {
+			seat: Seat::stub(),
+			character,
+		});
+	}
+}
+
+/// Appends a modifier transition when AppKit reports a changed modifier bit.
+fn append_modifier_event(modifier_state: &mut ModifierState, event: &NSEvent, events: &mut Vec<Events>) {
+	let Some(key) = modifier_keycode_to_key(event.keyCode()) else {
+		return;
+	};
+	let Some(pressed) = modifier_state.update(key, event.modifierFlags()) else {
+		return;
+	};
+	events.push(Events::Key {
+		seat: Seat::stub(),
+		pressed,
+		key,
+	});
+}
+
 impl WindowLike for Window {
 	fn try_new(name: &str, extent: utils::Extent, _: &str, features: Features) -> Result<Self, String> {
+		// SAFETY: Window construction is confined to the main thread and the pool is drained before returning.
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
 		let mtm = MainThreadMarker::new()
@@ -202,6 +270,7 @@ impl WindowLike for Window {
 				NSWindowStyleMask::empty()
 			};
 
+		// SAFETY: The frame, style mask, and backing mode form a valid designated NSWindow initializer call on the main thread.
 		let window = unsafe {
 			let window = NSWindow::alloc(mtm);
 			NSWindow::initWithContentRect_styleMask_backing_defer(window, frame, style, NSBackingStoreType::Buffered, false)
@@ -248,12 +317,16 @@ impl WindowLike for Window {
 		})
 	}
 
-	fn show_cursor(&mut self, _show: bool) {
-		todo!()
+	fn show_cursor(&mut self, show: bool) {
+		if show {
+			NSCursor::unhide();
+		} else {
+			NSCursor::hide();
+		}
 	}
 
 	fn confine_cursor(&mut self, _confine: bool) {
-		todo!()
+		// AppKit has no window-scoped cursor confinement primitive. Relative-input support owns confinement when it is added.
 	}
 
 	fn poll(&mut self) -> impl Iterator<Item = Events> {
@@ -275,6 +348,7 @@ impl WindowLike for Window {
 		while let Some(event) = self.window.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
 			None,
+			// SAFETY: NSDefaultRunLoopMode is an immutable process-lifetime Foundation constant.
 			unsafe { NSDefaultRunLoopMode },
 			true,
 		) {
@@ -285,28 +359,7 @@ impl WindowLike for Window {
 				| NSEventType::LeftMouseDragged
 				| NSEventType::RightMouseDragged
 				| NSEventType::OtherMouseDragged => {
-					let dx = event.deltaX() as f32;
-					let dy = event.deltaY() as f32;
-
-					events.push(Events::MouseMove {
-						seat: Seat::stub(),
-						dx,
-						dy,
-						time,
-					});
-
-					let point = event.locationInWindow();
-
-					if let Some(content_view) = self.window.contentView() {
-						if let Some((x, y)) = normalize_mouse_position(point, content_view.frame()) {
-							events.push(Events::MousePosition {
-								seat: Seat::stub(),
-								x,
-								y,
-								time,
-							});
-						}
-					}
+					append_mouse_motion(&self.window, &event, time, &mut events);
 				}
 				NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
 					let pressed = event.r#type() == NSEventType::LeftMouseDown;
@@ -349,37 +402,10 @@ impl WindowLike for Window {
 					}
 				}
 				NSEventType::KeyDown | NSEventType::KeyUp => {
-					let pressed = event.r#type() == NSEventType::KeyDown;
-
-					if let Some(key) = keycode_to_key(event.keyCode()) {
-						events.push(Events::Key {
-							seat: Seat::stub(),
-							pressed,
-							key,
-						});
-					}
-
-					if pressed && accepts_text_input(event.modifierFlags()) {
-						if let Some(characters) = event.characters() {
-							for character in characters.to_string().chars().filter(|character| !character.is_control()) {
-								events.push(Events::Character {
-									seat: Seat::stub(),
-									character,
-								});
-							}
-						}
-					}
+					append_key_event(&event, &mut events);
 				}
 				NSEventType::FlagsChanged => {
-					if let Some(key) = modifier_keycode_to_key(event.keyCode()) {
-						if let Some(pressed) = self.modifier_state.update(key, event.modifierFlags()) {
-							events.push(Events::Key {
-								seat: Seat::stub(),
-								pressed,
-								key,
-							});
-						}
-					}
+					append_modifier_event(&mut self.modifier_state, &event, &mut events);
 				}
 				NSEventType::AppKitDefined => {}
 				_ => {}

@@ -144,6 +144,8 @@ impl Node {
 	}
 
 	/// Creates the single root node that owns a program's other nodes.
+	// Keep the built-in registry contiguous so overload ordering and shared type handles remain auditable together.
+	#[allow(clippy::too_many_lines)]
 	pub fn root() -> Node {
 		let void = primitive_type("void");
 		let bool_t = primitive_type("bool");
@@ -1228,6 +1230,8 @@ impl Nodes {
 }
 
 impl std::fmt::Debug for Node {
+	// Every node variant is formatted here so Debug output stays exhaustive when the AST grows.
+	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
 			Nodes::Null => {

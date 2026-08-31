@@ -24,7 +24,6 @@ use shadow::*;
 
 /// The `SkinningPaletteCacheEntry` struct shares one uploaded binding palette across a renderable's primitives.
 #[derive(Clone, Copy)]
-
 struct SkinningPaletteCacheEntry {
 	handle: Handle,
 	binding: *const SkinBinding,
@@ -34,7 +33,6 @@ struct SkinningPaletteCacheEntry {
 
 /// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
 #[derive(Clone, Copy)]
-
 struct EnvironmentTexture {
 	diffuse_image: ghi::BaseImageHandle,
 	specular_image: ghi::BaseImageHandle,
@@ -55,7 +53,6 @@ struct PendingTextureIo {
 
 /// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-
 pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
@@ -195,6 +192,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.resource_manager.record_frame_uploads(frame, recording);
 	}
 
+	// Keep per-frame visibility pass preparation ordered around shared scene buffers and shadow allocations.
+	#[allow(clippy::too_many_lines)]
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -379,6 +378,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		Some(commands)
 	}
 
+	// Keep the sink's target graph and pass wiring together so aliases and descriptor inputs stay consistent.
+	#[allow(clippy::too_many_lines)]
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		log::debug!("Visibility sink created: sink_id={}", sink_id);
 
@@ -652,7 +653,6 @@ impl PipelineManager for VisibilityPipelineManager {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::sync::Arc;

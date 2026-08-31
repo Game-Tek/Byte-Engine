@@ -22,7 +22,6 @@ pub trait DynAssetHandler: Send + Sync {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-
 pub enum LoadErrors {
 	AssetDoesNotExist,
 	FailedToProcess,
@@ -150,7 +149,6 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 
 /// The `BakeContext` struct provides format handlers with the shared facilities used during one asset bake.
 #[derive(Clone, Copy)]
-
 pub struct BakeContext<'a> {
 	asset_manager: &'a AssetManagerState,
 	resource_storage_backend: &'a dyn resource::DynStorageBackend,
@@ -199,7 +197,6 @@ impl<'a> BakeContext<'a> {
 		}
 
 		#[cfg(not(debug_assertions))]
-
 		log::info!("{message}");
 	}
 
@@ -215,7 +212,6 @@ impl<'a> BakeContext<'a> {
 		}
 
 		#[cfg(not(debug_assertions))]
-
 		log::warn!("{message}");
 	}
 
@@ -235,7 +231,6 @@ impl<'a> BakeContext<'a> {
 		}
 
 		#[cfg(not(debug_assertions))]
-
 		log::error!("{message}");
 	}
 

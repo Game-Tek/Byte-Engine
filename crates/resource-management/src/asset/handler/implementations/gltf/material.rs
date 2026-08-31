@@ -179,7 +179,6 @@ pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gl
 
 /// The `GltfTextureDependency` struct records a glTF image required by a generated material variant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-
 pub(crate) struct GltfTextureDependency {
 	pub(crate) image_index: u32,
 	pub(crate) semantic: Semantic,

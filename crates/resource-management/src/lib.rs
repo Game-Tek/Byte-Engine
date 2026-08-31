@@ -144,7 +144,6 @@ where
 
 /// The `ProcessedAsset` struct carries a handler's baked metadata and binary data to resource storage.
 #[derive(Debug, Clone)]
-
 pub struct ProcessedAsset {
 	/// The stable, public resource ID.
 	id: String,
@@ -440,7 +439,6 @@ impl<M: Model> From<SerializableResource> for ReferenceModel<M> {
 
 /// The `LoadResults` enum identifies failures that can occur while loading a resource.
 #[derive(Debug)]
-
 pub enum LoadResults {
 	/// No resource could be resolved for the given path.
 	ResourceNotFound,
@@ -462,7 +460,6 @@ pub trait Description: Any + Send + Sync {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	/// The path to the asset fixtures used by tests.

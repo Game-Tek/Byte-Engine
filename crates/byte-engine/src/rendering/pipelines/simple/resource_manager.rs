@@ -128,18 +128,16 @@ impl ResourcePreparer<SimpleMeshResource> for SimpleMeshPreparer {
 	/// Generated geometry is converted directly. Baked geometry is validated
 	/// against Simple's static `vec3f`/`u16` contract before its required streams
 	/// are loaded into staging.
-	fn prepare(&mut self, request: MeshSource) -> impl Future<Output = Result<PreparedSimpleMesh, SimpleMeshError>> + '_ {
-		async move {
-			match request {
-				MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), self.staging.clone()).await,
-				MeshSource::Resource(id) => {
-					let resource = self
-						.resources
-						.request::<ResourceMesh>(id)
-						.await
-						.map_err(|reason| SimpleMeshError::ResourceRequest { id, reason })?;
-					prepare_resource_mesh(resource, self.staging.clone()).await
-				}
+	async fn prepare(&mut self, request: MeshSource) -> Result<PreparedSimpleMesh, SimpleMeshError> {
+		match request {
+			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), self.staging.clone()).await,
+			MeshSource::Resource(id) => {
+				let resource = self
+					.resources
+					.request::<ResourceMesh>(id)
+					.await
+					.map_err(|reason| SimpleMeshError::ResourceRequest { id, reason })?;
+				prepare_resource_mesh(resource, self.staging.clone()).await
 			}
 		}
 	}

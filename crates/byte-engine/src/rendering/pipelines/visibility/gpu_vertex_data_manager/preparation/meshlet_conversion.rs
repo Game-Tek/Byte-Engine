@@ -1,6 +1,8 @@
 use super::*;
 
 /// Converts validated resource metadata and loaded meshlet bytes into transfer-ready primitive records.
+// Keep primitive and meshlet range validation together because both advance the same aggregate cursors.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_prepared_resource_primitives(
 	mesh: &Mesh,
 	meshlet_bytes: &[u8],

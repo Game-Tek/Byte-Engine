@@ -573,7 +573,6 @@ impl CommonShaderScope {
 }
 
 #[cfg(test)]
-
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
 

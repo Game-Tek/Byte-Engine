@@ -28,7 +28,7 @@ pub(crate) enum ResourceRequest {
 	Environment { id: String },
 }
 
-pub fn spawn(
+fn spawn(
 	resource_manager: EntityHandle<ResourceManager>,
 	resource_factory: ghi::implementation::Factory,
 ) -> (LoadClient, LoadServer) {

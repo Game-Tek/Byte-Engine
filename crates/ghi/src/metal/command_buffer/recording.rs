@@ -38,13 +38,10 @@ impl PushUploadArena<'_> {
 		let offset = push_upload_offset(page.cursor, bytes.len(), page.buffer.length()).expect(
 			"Metal push upload range does not fit. The most likely cause is that the newly allocated page is smaller than the push-constant state.",
 		);
-		unsafe {
-			std::ptr::copy_nonoverlapping(
-				bytes.as_ptr(),
-				page.buffer.contents().as_ptr().cast::<u8>().add(offset),
-				bytes.len(),
-			);
-		}
+		// SAFETY: `offset` was computed against this page's capacity and leaves `bytes.len()` writable bytes.
+		let destination = unsafe { page.buffer.contents().as_ptr().cast::<u8>().add(offset) };
+		// SAFETY: Caller bytes and the freshly allocated upload page do not overlap.
+		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
 		page.cursor = offset + bytes.len();
 		page.buffer.gpuAddress().checked_add(offset as u64).expect(
 			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
@@ -59,6 +56,7 @@ impl<'a> CommandBufferRecording<'a> {
 			.staging
 			.map(|staging_handle| self.device.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		// SAFETY: Typed handles preserve the allocation's type and this recording holds exclusive device access.
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
@@ -95,6 +93,7 @@ impl<'a> CommandBufferRecording<'a> {
 			),
 		]);
 
+		// SAFETY: Both retained buffers expose `destination_size` bytes and are tracked for nonoverlapping transfer accesses.
 		unsafe {
 			transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 				staging_buffer.as_ref(),
@@ -404,6 +403,7 @@ impl<'a> CommandBufferRecording<'a> {
 			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
 		);
 		let table = self.argument_table(stage);
+		// SAFETY: `binding` is checked against the fixed table size and `address` names a retained buffer.
 		unsafe {
 			table.setAddress_atIndex(address, binding as _);
 		}

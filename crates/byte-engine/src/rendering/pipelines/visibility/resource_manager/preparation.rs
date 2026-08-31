@@ -467,17 +467,15 @@ impl VisibilityResourcePreparer {
 
 impl crate::rendering::resource_loading::ResourcePreparer<VisibilityRenderResource> for VisibilityResourcePreparer {
 	/// Prepares one logical Visibility resource without assigning renderer-owned storage.
-	fn prepare(
+	async fn prepare(
 		&mut self,
 		request: VisibilityResourceRequest,
-	) -> impl std::future::Future<Output = Result<VisibilityPreparedResource, VisibilityResourceError>> + '_ {
-		async move {
-			match request {
-				VisibilityResourceRequest::Mesh { key, source } => self.prepare_mesh(key, source).await,
-				VisibilityResourceRequest::Material { id } => self.prepare_material(id).await,
-				VisibilityResourceRequest::Image { key } => self.prepare_image(key).await,
-				VisibilityResourceRequest::Environment { id } => self.prepare_environment_resource(id).await,
-			}
+	) -> Result<VisibilityPreparedResource, VisibilityResourceError> {
+		match request {
+			VisibilityResourceRequest::Mesh { key, source } => self.prepare_mesh(key, source).await,
+			VisibilityResourceRequest::Material { id } => self.prepare_material(id).await,
+			VisibilityResourceRequest::Image { key } => self.prepare_image(key).await,
+			VisibilityResourceRequest::Environment { id } => self.prepare_environment_resource(id).await,
 		}
 	}
 }

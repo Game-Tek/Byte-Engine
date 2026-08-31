@@ -62,6 +62,8 @@ pub(crate) fn prepared_mesh_counts_match(expected: PreparedGpuMeshCounts, actual
 	false
 }
 /// Rejects meshlet references that would address vertices or triangle lanes outside their primitive-local ranges.
+// Keep all cross-stream bounds checks together so each primitive is validated against one coherent snapshot.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn validate_loaded_mesh_indices(
 	primitives: &[LoadedPrimitiveValidation],
 	loaded: &resource_management::resource::ReadTargets<'_>,

@@ -150,6 +150,7 @@ impl MeshProcessorSession {
 		}
 		orient_triangle_indices_in_place(&mut self.scratch.indices, self.triangle_front_face_winding);
 		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
+		let mut primitive_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
 
 		self.scratch.position_bytes.clear();
 		self.scratch.position_bytes.reserve(position_count.saturating_mul(12));
@@ -165,70 +166,6 @@ impl MeshProcessorSession {
 			MESHLET_MAX_TRIANGLES,
 			MESHLET_CONE_WEIGHT,
 		);
-
-		let vertex_skin = primitive.vertex_skin().map_err(MeshPrimitiveProcessingError::Source)?;
-		validate_primitive_metadata(
-			primitive_index,
-			primitive.transform_node(),
-			primitive.skin(),
-			vertex_skin.is_some(),
-			&self.vertex_layout,
-			self.skeleton_nodes,
-			&self.skins,
-		)
-		.map_err(MeshPrimitiveProcessingError::Processing)?;
-
-		let mut primitive_streams = Vec::with_capacity(self.vertex_layout.len() + 4);
-		primitive_streams.push(append_f32_slice(
-			&mut self.blocks,
-			Streams::Vertices(VertexSemantics::Position),
-			&self.scratch.positions,
-		));
-		append_optional_f32(
-			&mut primitive_streams,
-			&mut self.blocks,
-			VertexSemantics::Normal,
-			position_count,
-			primitive.normals().map_err(MeshPrimitiveProcessingError::Source)?,
-		)?;
-		append_optional_f32(
-			&mut primitive_streams,
-			&mut self.blocks,
-			VertexSemantics::Tangent,
-			position_count,
-			primitive.tangents().map_err(MeshPrimitiveProcessingError::Source)?,
-		)?;
-		append_optional_f32(
-			&mut primitive_streams,
-			&mut self.blocks,
-			VertexSemantics::BiTangent,
-			position_count,
-			primitive.bitangents().map_err(MeshPrimitiveProcessingError::Source)?,
-		)?;
-		append_optional_f32(
-			&mut primitive_streams,
-			&mut self.blocks,
-			VertexSemantics::UV,
-			position_count,
-			primitive.uvs().map_err(MeshPrimitiveProcessingError::Source)?,
-		)?;
-		append_optional_f32(
-			&mut primitive_streams,
-			&mut self.blocks,
-			VertexSemantics::Color,
-			position_count,
-			primitive.colors().map_err(MeshPrimitiveProcessingError::Source)?,
-		)?;
-		if let Some(vertex_skin) = vertex_skin {
-			append_vertex_skin(
-				&mut primitive_streams,
-				&mut self.blocks,
-				primitive_index,
-				position_count,
-				vertex_skin,
-				&self.skins[primitive.skin().expect("validated skinned primitive") as usize],
-			)?;
-		}
 
 		primitive_streams.push(append_generated_stream(
 			&mut self.blocks,
@@ -276,6 +213,80 @@ impl MeshProcessorSession {
 			vertex_count: position_count as u32,
 		});
 		Ok(())
+	}
+
+	/// Validates and appends the authored vertex streams for one primitive.
+	fn append_primitive_vertex_streams<P: MeshPrimitiveSource>(
+		&mut self,
+		primitive: &P,
+		primitive_index: usize,
+		position_count: usize,
+	) -> Result<Vec<Stream>, MeshPrimitiveProcessingError<P::Error>> {
+		let vertex_skin = primitive.vertex_skin().map_err(MeshPrimitiveProcessingError::Source)?;
+		validate_primitive_metadata(
+			primitive_index,
+			primitive.transform_node(),
+			primitive.skin(),
+			vertex_skin.is_some(),
+			&self.vertex_layout,
+			self.skeleton_nodes,
+			&self.skins,
+		)
+		.map_err(MeshPrimitiveProcessingError::Processing)?;
+
+		let mut streams = Vec::with_capacity(self.vertex_layout.len() + 4);
+		streams.push(append_f32_slice(
+			&mut self.blocks,
+			Streams::Vertices(VertexSemantics::Position),
+			&self.scratch.positions,
+		));
+		append_optional_f32(
+			&mut streams,
+			&mut self.blocks,
+			VertexSemantics::Normal,
+			position_count,
+			primitive.normals().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut streams,
+			&mut self.blocks,
+			VertexSemantics::Tangent,
+			position_count,
+			primitive.tangents().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut streams,
+			&mut self.blocks,
+			VertexSemantics::BiTangent,
+			position_count,
+			primitive.bitangents().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut streams,
+			&mut self.blocks,
+			VertexSemantics::UV,
+			position_count,
+			primitive.uvs().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		append_optional_f32(
+			&mut streams,
+			&mut self.blocks,
+			VertexSemantics::Color,
+			position_count,
+			primitive.colors().map_err(MeshPrimitiveProcessingError::Source)?,
+		)?;
+		if let Some(vertex_skin) = vertex_skin {
+			append_vertex_skin(
+				&mut streams,
+				&mut self.blocks,
+				primitive_index,
+				position_count,
+				vertex_skin,
+				&self.skins[primitive.skin().expect("validated skinned primitive") as usize],
+			)?;
+		}
+
+		Ok(streams)
 	}
 
 	/// Returns the exact number of bytes that [`Self::finish_into`] will write.

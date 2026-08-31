@@ -123,14 +123,12 @@ impl AssetManager {
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn source_directory_accessible(&self, path: &std::path::Path) -> Option<bool> {
 		self.state.storage_backend.directory_accessible(path)
 	}
 
 	/// Returns whether this manager writes to the same shared store as a resource manager.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn uses_resource_storage(&self, storage: &Arc<dyn DynResourceStorageBackend>) -> bool {
 		Arc::ptr_eq(&self.state.resource_storage_backend, storage)
 	}
@@ -139,7 +137,6 @@ impl AssetManager {
 	///
 	/// Next, call [`ResourceTrace::items`] with a requested resource ID.
 	#[cfg(debug_assertions)]
-
 	pub fn resource_trace(&self) -> &ResourceTrace {
 		&self.state.resource_trace
 	}
@@ -210,14 +207,12 @@ impl AssetManager {
 
 	/// Adds a requested root resource to the development dependency index.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn track_resource(&self, resource: &crate::SerializableResource) {
 		self.state.track_resource(resource);
 	}
 
 	/// Starts recursive debounced watching when the source backend exposes a local root.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn start_watching(&self, updates: Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>) {
 		let Some(root) = self.state.storage_backend.watch_root() else {
 			return;
@@ -308,7 +303,6 @@ impl Drop for InFlightBakeCleanup {
 }
 
 #[cfg(debug_assertions)]
-
 struct HotReloadState {
 	watcher: Option<
 		notify_debouncer_full::Debouncer<
@@ -324,7 +318,6 @@ struct HotReloadState {
 }
 
 #[cfg(debug_assertions)]
-
 impl Default for HotReloadState {
 	fn default() -> Self {
 		Self {
@@ -340,7 +333,6 @@ impl Default for HotReloadState {
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
-
 pub enum LoadMessages {
 	/// The asset was not found in the storage backend.
 	NoAsset,
@@ -361,7 +353,6 @@ pub enum LoadMessages {
 impl AssetManagerState {
 	/// Replaces one root resource's entries in the inverse source dependency index.
 	#[cfg(debug_assertions)]
-
 	fn track_resource(&self, resource: &crate::SerializableResource) {
 		let mut hot_reload = self.hot_reload.lock();
 
@@ -396,7 +387,6 @@ impl AssetManagerState {
 
 	/// Schedules one rebake for every tracked root affected by a debounced source batch.
 	#[cfg(debug_assertions)]
-
 	fn reload_sources(self: &Arc<Self>, sources: std::collections::HashSet<String>) {
 		let roots = {
 			let mut hot_reload = self.hot_reload.lock();
@@ -438,7 +428,6 @@ impl AssetManagerState {
 
 	/// Rebakes one affected root and publishes it only after replacement storage succeeds.
 	#[cfg(debug_assertions)]
-
 	async fn reload_resource(self: Arc<Self>, id: String) {
 		let stale = match self.resource_storage_backend.read(ResourceId::new(&id)).await {
 			Some((resource, _)) => self.resource_is_stale(&resource).await,
@@ -582,7 +571,6 @@ impl AssetManagerState {
 
 	/// Copies the latest in-memory trace into development resource storage for external tools.
 	#[cfg(debug_assertions)]
-
 	fn persist_resource_trace(&self, id: ResourceId<'_>) {
 		if let Err(error) = self
 			.resource_storage_backend
@@ -800,7 +788,6 @@ impl AssetManagerState {
 
 /// Converts a watcher path, including BEAD sidecars, into its source asset ID.
 #[cfg(debug_assertions)]
-
 fn source_id_from_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
 	let relative = path.strip_prefix(root).ok()?;
 
@@ -816,7 +803,6 @@ fn source_id_from_path(root: &std::path::Path, path: &std::path::Path) -> Option
 const ASSETS_DOCS_PATH: &str = "develop/resource-management/assets";
 
 #[cfg(test)]
-
 pub mod tests {
 
 	use std::{
@@ -839,7 +825,6 @@ pub mod tests {
 	};
 
 	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-
 	struct TestResource {}
 
 	impl Model for TestResource {
@@ -1539,7 +1524,6 @@ pub mod tests {
 		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
 
 		#[cfg(debug_assertions)]
-
 		assert_eq!(
 			asset_manager.resource_trace().items("example.unknown")[0].level(),
 			ResourceTraceLevel::Error

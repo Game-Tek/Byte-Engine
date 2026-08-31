@@ -1,3 +1,5 @@
+use crate::{CommandBufferHandle, FrameKey, PresentKey, SynchronizerHandle};
+
 /// The `Queue` trait provides the queue-level entry points needed to build and submit graphics work.
 pub trait Queue {
 	type Frame<'a>: crate::frame::Frame<'a>;
@@ -134,5 +136,3 @@ mod tests {
 		assert_eq!(completed_frame.sequence_index, 0);
 	}
 }
-
-use crate::{CommandBufferHandle, FrameKey, PresentKey, SynchronizerHandle};

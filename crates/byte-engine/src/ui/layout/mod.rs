@@ -179,6 +179,8 @@ impl LayoutGraph {
 /// and sizes.
 ///
 /// `relations` describes parent-child element relationships.
+// Keep size resolution and parent-child placement in one ordered layout pass.
+#[allow(clippy::too_many_lines)]
 fn layout_elements<'a>(
 	elements: impl AsRef<[IdedElement]>,
 	relation_map: &[(Id, Id)],

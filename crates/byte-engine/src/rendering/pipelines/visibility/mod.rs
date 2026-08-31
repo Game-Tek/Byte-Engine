@@ -840,6 +840,8 @@ mod tests {
 	}
 
 	/// Reduces one positive-linear-depth image while ignoring zero-valued background texels.
+	// This test reference intentionally mirrors the shader's complete two-dimensional reduction footprint.
+	#[allow(clippy::excessive_nesting)]
 	fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) -> (Vec<[f32; 4]>, u32, u32) {
 		let reduced_width = width.div_ceil(2).max(1);
 		let reduced_height = height.div_ceil(2).max(1);

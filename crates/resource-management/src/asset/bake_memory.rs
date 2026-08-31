@@ -168,6 +168,9 @@ impl Drop for BakeAllocator {
 }
 
 #[allow(unsafe_code)]
+// SAFETY: Every allocation is owned by `arena`, and the forwarded operations preserve the
+// caller-provided `Allocator` layouts and pointer provenance. The scope only observes retained
+// byte counts; it never reads, moves, or frees individual allocations.
 unsafe impl Allocator for BakeAllocator {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
 		let allocation = Allocator::allocate(&&self.arena, layout)?;
@@ -176,16 +179,21 @@ unsafe impl Allocator for BakeAllocator {
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+		// SAFETY: The caller guarantees that `ptr` and `layout` identify a live allocation from this allocator.
 		unsafe { Allocator::deallocate(&&self.arena, ptr, layout) };
 	}
 
 	unsafe fn grow(&self, ptr: NonNull<u8>, old: Layout, new: Layout) -> Result<NonNull<[u8]>, AllocError> {
+		// SAFETY: The caller guarantees that `ptr` and `old` identify a live allocation from this allocator,
+		// and the arena allocator enforces the requirements of `new`.
 		let allocation = unsafe { Allocator::grow(&&self.arena, ptr, old, new) }?;
 		self.record_retained_bytes();
 		Ok(allocation)
 	}
 
 	unsafe fn shrink(&self, ptr: NonNull<u8>, old: Layout, new: Layout) -> Result<NonNull<[u8]>, AllocError> {
+		// SAFETY: The caller guarantees that `ptr` and `old` identify a live allocation from this allocator,
+		// and the arena allocator enforces the requirements of `new`.
 		let allocation = unsafe { Allocator::shrink(&&self.arena, ptr, old, new) }?;
 		self.record_retained_bytes();
 		Ok(allocation)

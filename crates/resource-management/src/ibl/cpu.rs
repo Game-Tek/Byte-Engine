@@ -372,41 +372,7 @@ pub(super) fn build_source_mips<'a>(
 		let source = mips.last().expect("the source pyramid always contains its base level");
 		let destination_width = (source.width / 2).max(1);
 		let destination_height = (source.height / 2).max(1);
-		let pixel_count = (destination_width as usize)
-			.checked_mul(destination_height as usize)
-			.ok_or(IBLBakeError::DimensionsTooLarge)?;
-		let mut destination = Vec::new_in(allocator);
-		destination
-			.try_reserve_exact(pixel_count)
-			.map_err(|_| IBLBakeError::AllocationFailed)?;
-
-		for y in 0..destination_height {
-			let source_y_begin = y as u64 * source.height as u64 / destination_height as u64;
-			let source_y_end = ((y + 1) as u64 * source.height as u64 / destination_height as u64).max(source_y_begin + 1);
-			for x in 0..destination_width {
-				let source_x_begin = x as u64 * source.width as u64 / destination_width as u64;
-				let source_x_end = ((x + 1) as u64 * source.width as u64 / destination_width as u64).max(source_x_begin + 1);
-				let mut sum = [0.0_f64; 3];
-				let mut total_weight = 0.0_f64;
-
-				for source_y in source_y_begin..source_y_end {
-					let weight = lat_long_row_solid_angle(source.width, source.height, source_y as u32) as f64;
-					for source_x in source_x_begin..source_x_end {
-						let radiance = source.pixels[source_y as usize * source.width as usize + source_x as usize];
-						for channel in 0..3 {
-							sum[channel] += radiance[channel] as f64 * weight;
-						}
-						total_weight += weight;
-					}
-				}
-
-				destination.push([
-					(sum[0] / total_weight) as f32,
-					(sum[1] / total_weight) as f32,
-					(sum[2] / total_weight) as f32,
-				]);
-			}
-		}
+		let destination = downsample_source_mip(source, destination_width, destination_height, allocator)?;
 
 		mips.push(SourceMIP {
 			width: destination_width,
@@ -416,6 +382,63 @@ pub(super) fn build_source_mips<'a>(
 	}
 
 	Ok(mips)
+}
+
+/// Downsamples one area-preserving source level without nesting allocation and integration concerns.
+fn downsample_source_mip<'a>(
+	source: &SourceMIP<'_>,
+	destination_width: u32,
+	destination_height: u32,
+	allocator: &'a dyn Allocator,
+) -> Result<Vec<Radiance, &'a dyn Allocator>, IBLBakeError> {
+	let pixel_count = (destination_width as usize)
+		.checked_mul(destination_height as usize)
+		.ok_or(IBLBakeError::DimensionsTooLarge)?;
+	let mut destination = Vec::new_in(allocator);
+	destination
+		.try_reserve_exact(pixel_count)
+		.map_err(|_| IBLBakeError::AllocationFailed)?;
+
+	for y in 0..destination_height {
+		for x in 0..destination_width {
+			destination.push(downsample_source_pixel(
+				source,
+				[x, y],
+				[destination_width, destination_height],
+			));
+		}
+	}
+
+	Ok(destination)
+}
+
+/// Integrates the solid-angle-weighted source texels covered by one destination texel.
+fn downsample_source_pixel(source: &SourceMIP<'_>, destination: [u32; 2], destination_extent: [u32; 2]) -> Radiance {
+	let source_x_begin = destination[0] as u64 * source.width as u64 / destination_extent[0] as u64;
+	let source_x_end =
+		((destination[0] + 1) as u64 * source.width as u64 / destination_extent[0] as u64).max(source_x_begin + 1);
+	let source_y_begin = destination[1] as u64 * source.height as u64 / destination_extent[1] as u64;
+	let source_y_end =
+		((destination[1] + 1) as u64 * source.height as u64 / destination_extent[1] as u64).max(source_y_begin + 1);
+	let mut sum = [0.0_f64; 3];
+	let mut total_weight = 0.0_f64;
+
+	for source_y in source_y_begin..source_y_end {
+		let weight = lat_long_row_solid_angle(source.width, source.height, source_y as u32) as f64;
+		for source_x in source_x_begin..source_x_end {
+			let radiance = source.pixels[source_y as usize * source.width as usize + source_x as usize];
+			for channel in 0..3 {
+				sum[channel] += radiance[channel] as f64 * weight;
+			}
+			total_weight += weight;
+		}
+	}
+
+	[
+		(sum[0] / total_weight) as f32,
+		(sum[1] / total_weight) as f32,
+		(sum[2] / total_weight) as f32,
+	]
 }
 
 fn image_byte_size(width: u32, height: u32) -> Result<usize, IBLBakeError> {
@@ -872,6 +895,8 @@ mod tests {
 	}
 
 	/// Estimates the same split-sum prefilter integral with a configurable sample count for quality comparisons.
+	// Keep the reference estimator structurally parallel to the production integral so the comparison stays meaningful.
+	#[allow(clippy::cognitive_complexity)]
 	fn estimate_specular(
 		source_mips: &[super::SourceMIP<'_>],
 		normal: [f32; 3],
@@ -923,6 +948,8 @@ mod tests {
 	}
 
 	#[test]
+	// Keep all emitted IBL stream ranges in one deterministic end-to-end assertion.
+	#[allow(clippy::cognitive_complexity)]
 	fn constant_environment_stays_constant_in_every_ibl_stream() {
 		let color = [4.0, 0.5, 2.0];
 		let source = constant_source(4, 2, color);

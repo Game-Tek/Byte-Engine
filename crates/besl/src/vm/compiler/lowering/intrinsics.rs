@@ -1,6 +1,8 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
+	// Intrinsic names form one exhaustive VM dispatch table whose arms document the portable instruction semantics.
+	#[allow(clippy::too_many_lines)]
 	pub(super) fn compile_intrinsic_call_expression(
 		&mut self,
 		intrinsic: &NodeReference,

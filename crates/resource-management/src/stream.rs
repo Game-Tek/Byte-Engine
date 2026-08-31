@@ -59,6 +59,8 @@ pub struct StreamMut<'a> {
 
 impl<'a> StreamMut<'a> {
 	pub fn new<T: Copy>(name: &'a str, buffer: &'a mut [T]) -> Self {
+		// SAFETY: `u8` has alignment one, the byte slice covers exactly the initialized `T` slice,
+		// and the mutable borrow prevents either view from being used through another reference.
 		let buffer = unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, std::mem::size_of_val(buffer)) };
 		StreamMut {
 			buffer,

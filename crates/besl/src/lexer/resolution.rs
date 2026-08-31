@@ -397,8 +397,8 @@ pub(super) fn find_in_expression(expression: &Expressions, child_name: &str, mod
 
 /// The `IntrinsicInstantiation` struct keeps one intrinsic expansion separate from its caller's scope.
 struct IntrinsicInstantiation {
-	arguments: HashMap<NodeReference, NodeReference>,
-	locals: HashMap<NodeReference, IntrinsicLocal>,
+	arguments: HashMap<usize, NodeReference>,
+	locals: HashMap<usize, IntrinsicLocal>,
 }
 
 /// The `IntrinsicLocal` struct preserves one renamed intrinsic-local declaration and its emitted name.
@@ -449,7 +449,7 @@ pub(super) fn build_intrinsic(
 		})
 		.into();
 		local_replacements.insert(
-			declaration,
+			declaration.identity(),
 			IntrinsicLocal {
 				declaration: replacement,
 				name,
@@ -460,7 +460,7 @@ pub(super) fn build_intrinsic(
 	let instantiation = IntrinsicInstantiation {
 		arguments: definition_parameters
 			.into_iter()
-			.cloned()
+			.map(|parameter| parameter.identity())
 			.zip(parameters.iter().cloned())
 			.collect(),
 		locals: local_replacements,
@@ -799,14 +799,14 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 	let argument = {
 		let node = node.borrow();
 		match node.node() {
-			Nodes::Expression(Expressions::Member { source, .. }) => instantiation.arguments.get(source).cloned(),
+			Nodes::Expression(Expressions::Member { source, .. }) => instantiation.arguments.get(&source.identity()).cloned(),
 			_ => None,
 		}
 	};
 	if let Some(argument) = argument {
 		return argument;
 	}
-	if let Some(local) = instantiation.locals.get(node) {
+	if let Some(local) = instantiation.locals.get(&node.identity()) {
 		return local.declaration.clone();
 	}
 
@@ -907,7 +907,7 @@ fn instantiate_intrinsic_expression(expression: &Expressions, instantiation: &In
 			body: instantiate_intrinsic_node(body, instantiation),
 		},
 		Expressions::Member { source, name } => {
-			if let Some(local) = instantiation.locals.get(source) {
+			if let Some(local) = instantiation.locals.get(&source.identity()) {
 				Expressions::Member {
 					source: local.declaration.clone(),
 					name: local.name.clone(),

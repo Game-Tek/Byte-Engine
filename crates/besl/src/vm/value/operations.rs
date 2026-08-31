@@ -551,6 +551,8 @@ pub(crate) fn apply_reflect(incident: &Value, normal: &Value) -> Result<Value, V
 	}
 }
 
+// The exhaustive value-shape match keeps scalar and vector unary semantics visibly aligned.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -> Result<Value, VmError> {
 	match operator {
 		ScalarUnaryOperator::FromF16ToF32 => {

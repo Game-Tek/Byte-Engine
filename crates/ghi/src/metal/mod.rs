@@ -498,6 +498,8 @@ mod flat_binding_tests {
 
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
 	#[test]
+	// This integration test keeps the complete bindless retention seam in one setup and assertion flow.
+	#[allow(clippy::too_many_lines)]
 	fn retained_material_resources_after_bindless_array_reach_metal() {
 		use objc2_metal::MTLComputePipelineState as _;
 
@@ -782,6 +784,8 @@ mod flat_binding_tests {
 
 	/// Verifies frame-local storage mip views remain valid after argument-buffer materialization.
 	#[test]
+	// Alternating both frame sequences is one contiguous residency contract and shares a single resource setup.
+	#[allow(clippy::too_many_lines)]
 	fn dynamic_storage_mips_survive_alternating_frame_sequences() {
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},

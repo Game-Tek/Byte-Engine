@@ -405,7 +405,7 @@ mod tests {
 		let body_factory = Factory::<Body>::new();
 		let delete_channel = DefaultChannel::new();
 		let mut world = World::new(body_factory.listener(), delete_channel.listener());
-		let mut transforms = DefaultChannel::new();
+		let transforms = DefaultChannel::new();
 		let mut transforms_rx = transforms.listener();
 		let handle = body_factory.create(Body::new(BodyTypes::Static, Shapes::sphere(1.0)));
 		let expected = Transform::new(
@@ -436,7 +436,7 @@ mod tests {
 		let expected_scale = body.scale;
 		let handle = body.handle;
 		world.bodies.push(body);
-		let mut transforms = DefaultChannel::new();
+		let transforms = DefaultChannel::new();
 		let mut transforms_rx = transforms.listener();
 
 		world.update_bodies(MediaTime::ZERO, &transforms);

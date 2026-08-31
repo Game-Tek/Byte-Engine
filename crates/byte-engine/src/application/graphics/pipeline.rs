@@ -36,7 +36,7 @@ pub fn setup_simple_render_pipeline(
 				.name("Simple Async Upload Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostOnly),
 		);
-	// The application-owned worker keeps this exclusive mapping alive until
+	// SAFETY: The application-owned worker keeps this exclusive mapping alive until
 	// shutdown, while submitted staging leases stay retained by the upload queue.
 	#[allow(unsafe_code)]
 	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
@@ -138,6 +138,8 @@ pub fn setup_simple_render_pipeline(
 /// Next, create an [`Environment`] through
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
 /// specular reflections.
+// Keep the cross-layer setup sequence contiguous so listeners, workers, mappings, and renderer ownership remain ordered.
+#[allow(clippy::too_many_lines)]
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
@@ -194,7 +196,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			// backends from inserting a second full-buffer staging copy.
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
-	// The arena becomes the only CPU owner of this fixed mapping. Application
+	// SAFETY: The arena becomes the only CPU owner of this fixed mapping. Application
 	// shutdown joins its worker before the renderer drops the backing GHI context.
 	#[allow(unsafe_code)]
 	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };

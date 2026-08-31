@@ -583,6 +583,8 @@ main: fn () -> void {
 	}
 
 	#[test]
+	// This AST identity test keeps both same-named buffer scopes in one contiguous assertion tree.
+	#[allow(clippy::cognitive_complexity)]
 	fn lex_same_named_buffer_members_resolve_to_member_declarations() {
 		let script = r#"
 		main: fn () -> void {
@@ -787,6 +789,8 @@ main: fn () -> void {
 	// TODO: test function with body with missing close brace
 
 	#[test]
+	// This syntax-tree assertion intentionally mirrors the nested intrinsic AST it validates.
+	#[allow(clippy::excessive_nesting)]
 	fn lex_intrinsic() {
 		let source = "
 main: fn () -> void {

@@ -631,6 +631,8 @@ main: fn () -> void {
 	}
 
 	#[test]
+	// This syntax-tree assertion intentionally mirrors the nested accessor AST it validates.
+	#[allow(clippy::excessive_nesting)]
 	fn parse_accessor() {
 		let source = "
 main: fn () -> void {
@@ -778,6 +780,8 @@ main: fn () -> void {
 	}
 
 	#[test]
+	// This syntax-tree assertion intentionally mirrors the nested assignment and accessor AST it validates.
+	#[allow(clippy::excessive_nesting)]
 	fn test_parse_accessor_and_assignment() {
 		let source = "
 main: fn () -> void {

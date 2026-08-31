@@ -2,6 +2,8 @@
 
 use super::*;
 
+// Keep rectangle batching, clipping, and capacity accounting in one geometry pass.
+#[allow(clippy::too_many_lines)]
 pub(super) fn build_ui_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
@@ -205,6 +207,8 @@ pub(super) fn build_ui_geometry<'a>(
 	geometry
 }
 
+// Keep blur region selection and its matching composite geometry in one pass.
+#[allow(clippy::too_many_lines)]
 pub(super) fn build_ui_blur_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,

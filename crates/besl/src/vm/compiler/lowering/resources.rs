@@ -299,7 +299,7 @@ impl<'a> Compiler<'a> {
 					},
 					BufferLayout {
 						members: vec![BufferMemberLayout {
-							name: output_name.clone(),
+							name: output_name,
 							offset: 0,
 							value_type: value_type.clone(),
 							count,
@@ -394,7 +394,7 @@ impl<'a> Compiler<'a> {
 					slot,
 					BufferLayout {
 						members: vec![BufferMemberLayout {
-							name: input_name.clone(),
+							name: input_name,
 							offset: 0,
 							value_type: value_type.clone(),
 							count: 1,

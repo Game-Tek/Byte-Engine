@@ -290,10 +290,10 @@ pub(super) fn collect_function_references(node: &NodeReference, seen: &mut HashS
 			_ => (None, Vec::new()),
 		}
 	};
-	if let Some(function) = called_function {
-		if matches!(function.borrow().node(), Nodes::Function { .. }) {
-			collect_reachable_function(&function, seen, functions);
-		}
+	if let Some(function) = called_function
+		&& matches!(function.borrow().node(), Nodes::Function { .. })
+	{
+		collect_reachable_function(&function, seen, functions);
 	}
 	for child in children {
 		collect_function_references(&child, seen, functions);
@@ -636,7 +636,7 @@ pub(super) fn extract_binding_reference(expression: &NodeReference) -> Result<No
 			let source = source.clone();
 			drop(borrowed);
 
-			let result = match source.borrow().node() {
+			match source.borrow().node() {
 				Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(source.clone()),
 				Nodes::Expression(Expressions::Member { .. }) => extract_binding_reference(&source),
 				_ => Err(VmError::UnsupportedExpression {
@@ -645,9 +645,7 @@ pub(super) fn extract_binding_reference(expression: &NodeReference) -> Result<No
 						describe_node(source.borrow().node())
 					),
 				}),
-			};
-
-			result
+			}
 		}
 		node => Err(VmError::UnsupportedExpression {
 			message: format!(

@@ -93,7 +93,7 @@ mod tests {
 		});
 
 		assert_eq!(graph.nodes.len(), 3);
-		let mut factory = AudioGraphFactory::new();
+		let factory = AudioGraphFactory::new();
 
 		factory.create(&mut graph);
 
@@ -187,7 +187,7 @@ mod tests {
 			]),
 			0.25,
 		);
-		let mut factory = AudioGraphFactory::new();
+		let factory = AudioGraphFactory::new();
 		let mut listener = factory.listener();
 
 		let first_handle = factory.create(&mut graph);
@@ -350,7 +350,7 @@ mod tests {
 		let expected_first = graph.compile().expect("valid graph").resource_id;
 
 		assert_eq!(graph.compile().expect("valid graph").resource_id, expected_first);
-		let mut factory = AudioGraphFactory::new();
+		let factory = AudioGraphFactory::new();
 		let mut listener = factory.listener();
 
 		factory.create(&mut graph);
@@ -447,7 +447,7 @@ mod tests {
 		});
 
 		assert_eq!(graph.nodes.len(), 4);
-		let mut factory = AudioGraphFactory::new();
+		let factory = AudioGraphFactory::new();
 
 		factory.create(&mut graph);
 

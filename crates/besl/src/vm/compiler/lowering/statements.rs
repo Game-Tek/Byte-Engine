@@ -7,7 +7,8 @@ impl<'a> Compiler<'a> {
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
-		let result = match borrowed.node() {
+
+		match borrowed.node() {
 			Nodes::Conditional { condition, statements } => {
 				let condition = condition.clone();
 				let statements = statements.clone();
@@ -89,9 +90,7 @@ impl<'a> Compiler<'a> {
 			node => Err(VmError::UnsupportedStatement {
 				message: format!("Unsupported statement node: {}", describe_node(node)),
 			}),
-		};
-
-		result
+		}
 	}
 
 	pub(super) fn compile_conditional(

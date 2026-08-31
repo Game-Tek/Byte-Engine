@@ -443,24 +443,24 @@ pub(crate) fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a st
 		})?
 		.to_string();
 
-	if let Some(&&n) = iterator.clone().peekable().peek() {
-		if n == "<" {
-			if r#type == "descriptor" {
-				return Err(ParsingFailReasons::BadSyntax {
-					message: format!(
-						"Invalid descriptor declaration for {name}. The most likely cause is that required slot or access arguments are missing."
-					),
-				});
-			}
-			iterator.next();
-			r#type.push('<');
-			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
-				message: format!("Expected to find type while parsing generic argument for member {}", name),
-			})?;
-			r#type.push_str(next.as_ref());
-			iterator.next();
-			r#type.push('>');
+	if let Some(&&n) = iterator.clone().peekable().peek()
+		&& n == "<"
+	{
+		if r#type == "descriptor" {
+			return Err(ParsingFailReasons::BadSyntax {
+				message: format!(
+					"Invalid descriptor declaration for {name}. The most likely cause is that required slot or access arguments are missing."
+				),
+			});
 		}
+		iterator.next();
+		r#type.push('<');
+		let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find type while parsing generic argument for member {}", name),
+		})?;
+		r#type.push_str(next.as_ref());
+		iterator.next();
+		r#type.push('>');
 	}
 
 	let node = Node::member(name, &r#type);

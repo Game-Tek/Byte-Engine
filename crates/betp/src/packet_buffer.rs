@@ -51,11 +51,11 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 
 		// If the buffer is full, replace the first unreliable packet.
 		for i in 0..N {
-			if let Some(p) = self.buffer[i] {
-				if !p.reliable {
-					self.buffer[i] = Some(BufferedPacket::new(packet, connection_id, reliable));
-					return;
-				}
+			if let Some(p) = self.buffer[i]
+				&& !p.reliable
+			{
+				self.buffer[i] = Some(BufferedPacket::new(packet, connection_id, reliable));
+				return;
 			}
 		}
 
@@ -84,11 +84,11 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 	/// Removes the packet with the given sequence number.
 	pub fn remove(&mut self, sequence: u16) {
 		for i in 0..N {
-			if let Some(packet) = self.buffer[i] {
-				if packet.packet.connection_status.sequence == sequence {
-					self.buffer[i] = None;
-					break;
-				}
+			if let Some(packet) = self.buffer[i]
+				&& packet.packet.connection_status.sequence == sequence
+			{
+				self.buffer[i] = None;
+				break;
 			}
 		}
 	}

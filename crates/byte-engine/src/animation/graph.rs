@@ -246,10 +246,10 @@ impl AnimationGraph {
 		let completion = source_state
 			.completion_target()
 			.expect("transition state completion was checked above");
-		if requested != completion {
-			if let Some(transition) = self.state(completion).select_anytime_transition(requested) {
-				return Some(transition);
-			}
+		if requested != completion
+			&& let Some(transition) = self.state(completion).select_anytime_transition(requested)
+		{
+			return Some(transition);
 		}
 
 		source_finished.then_some((completion, MediaTime::ZERO))

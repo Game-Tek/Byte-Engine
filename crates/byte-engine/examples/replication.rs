@@ -22,7 +22,7 @@ fn main() {
 		server.update(Instant::now()).unwrap();
 	};
 
-	let mut replicable_factory = Factory::new();
+	let replicable_factory = Factory::new();
 	replicable_factory.create(Object {
 		position: Point::new(0.5, 0.5, 0.5),
 	});

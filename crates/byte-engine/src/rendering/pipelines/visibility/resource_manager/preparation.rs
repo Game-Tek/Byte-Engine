@@ -180,7 +180,7 @@ impl VisibilityResourcePreparer {
 			);
 			return Err(VisibilityResourceError::new(failure_key));
 		}
-		if material.shaders().first().is_none() {
+		if material.shaders().is_empty() {
 			log::error!(
 				"Visibility material shader is missing for {}. The most likely cause is that the material was baked without a compute shader.",
 				id

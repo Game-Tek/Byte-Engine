@@ -282,9 +282,7 @@ impl LanePool {
 			}
 		}
 
-		if let Err(payload) = submission_result {
-			return Err(payload);
-		}
+		submission_result?;
 		if let Some(payload) = job_panic {
 			return Err(payload);
 		}

@@ -23,10 +23,9 @@ pub(super) fn evaluate_opacity(main_function_node: &besl::NodeReference) -> Opac
 				if let besl::Nodes::Parameter {
 					name: parameter_name, ..
 				} = param_borrow.node()
+					&& parameter_name == "output"
 				{
-					if parameter_name == "output" {
-						local_output_symbols.insert(param.clone());
-					}
+					local_output_symbols.insert(param.clone());
 				}
 			}
 

@@ -228,12 +228,12 @@ fn validate_skin_metadata(
 			return invalid_mesh_skeletal_metadata(format!("skin {skin_index} exceeds the u16 palette limit"));
 		}
 		for (joint_index, entry) in skin.entries.iter().enumerate() {
-			if let SkinJoint::Node(node) = entry.joint {
-				if node as usize >= skeleton_nodes {
-					return invalid_mesh_skeletal_metadata(format!(
-						"skin {skin_index} joint {joint_index} targets node {node} outside a {skeleton_nodes}-node skeleton"
-					));
-				}
+			if let SkinJoint::Node(node) = entry.joint
+				&& node as usize >= skeleton_nodes
+			{
+				return invalid_mesh_skeletal_metadata(format!(
+					"skin {skin_index} joint {joint_index} targets node {node} outside a {skeleton_nodes}-node skeleton"
+				));
 			}
 			if !entry
 				.adjusted_inverse_bind_matrix

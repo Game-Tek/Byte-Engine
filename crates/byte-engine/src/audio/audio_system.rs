@@ -606,7 +606,7 @@ pub mod benchmarks {
 				AudioGraphBenchmark::PitchShiftUp => (48_000, render_plan([AudioProcessor::PitchShift(1.5)])),
 				AudioGraphBenchmark::PitchShiftDown => (48_000, render_plan([AudioProcessor::PitchShift(0.5)])),
 			};
-			let mut factory = Factory::new();
+			let factory = Factory::new();
 			let mut listener = factory.listener();
 			let handle = factory.create(());
 			let _ = listener.read();
@@ -764,7 +764,7 @@ mod tests {
 		playback_rate: PlaybackRate,
 		processors: impl IntoIterator<Item = AudioProcessor>,
 	) -> AudioGraphPlayer {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let mut listener = factory.listener();
 		let handle = factory.create(());
 		let _ = listener.read();

@@ -247,7 +247,7 @@ mod tests {
 
 	#[test]
 	fn transformation_update_preserves_handle_and_payload() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let handle = factory.create("entity");
 		let transform = Transform::from_position(Point::new(7.0, 8.0, 9.0));
 		let channel = DefaultChannel::new();
@@ -262,7 +262,7 @@ mod tests {
 
 	#[test]
 	fn transformation_update_payload_has_a_reflected_json_shape() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let handle = factory.create("entity");
 		let update = TransformationUpdate::new(
 			handle,

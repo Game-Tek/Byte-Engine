@@ -1350,7 +1350,7 @@ mod tests {
 		let channel = bus.new_scope("application").channel::<u64>();
 		let mut listener = channel.listener();
 		channel.send(1);
-		let publisher = channel.clone();
+		let publisher = channel;
 		let blocked = std::thread::spawn(move || publisher.send(2));
 		let deadline = Instant::now() + Duration::from_secs(1);
 

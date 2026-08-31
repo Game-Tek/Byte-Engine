@@ -179,50 +179,50 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					};
 					Some((member.clone(), index.clone()))
 				};
-				if let Some((member, index)) = indexed_target {
-					if let Some((binding_name, _, write, element_type, flattened)) = Self::hlsl_buffer_member_target(&member) {
-						if write && flattened && matches!(element_type.as_deref(), Some("u8" | "u16")) {
-							let (elements_per_word, bits_per_element, element_mask) = if element_type.as_deref() == Some("u8") {
-								(4u32, 8u32, "0xffu")
-							} else {
-								(2u32, 16u32, "0xffffu")
-							};
-							let temporary_id = self.packed_write_counter;
-							self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
+				if let Some((member, index)) = indexed_target
+					&& let Some((binding_name, _, write, element_type, flattened)) = Self::hlsl_buffer_member_target(&member)
+					&& write && flattened
+					&& matches!(element_type.as_deref(), Some("u8" | "u16"))
+				{
+					let (elements_per_word, bits_per_element, element_mask) = if element_type.as_deref() == Some("u8") {
+						(4u32, 8u32, "0xffu")
+					} else {
+						(2u32, 16u32, "0xffffu")
+					};
+					let temporary_id = self.packed_write_counter;
+					self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
 								"Packed narrow-buffer write count overflowed. The most likely cause is an invalid shader with billions of assignment nodes.",
 							);
-							let index_name = format!("besl_packed_index_{temporary_id}");
-							let value_name = format!("besl_packed_value_{temporary_id}");
+					let index_name = format!("besl_packed_index_{temporary_id}");
+					let value_name = format!("besl_packed_value_{temporary_id}");
 
-							// Adjacent logical narrow elements share one DX12 word. Clear
-							// and set only this lane so concurrent writes preserve neighbors.
-							// Evaluate both source expressions before changing the shared word.
-							string.push_str("uint ");
-							string.push_str(&index_name);
-							string.push('=');
-							self.emit_node_string(string, &index);
-							string.push_str(";uint ");
-							string.push_str(&value_name);
-							string.push_str("=(uint(");
-							self.emit_node_string(string, right);
-							string.push_str(")&");
-							string.push_str(element_mask);
-							string.push_str(");InterlockedAnd(");
-							self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
-							string.push_str(",~(");
-							string.push_str(element_mask);
-							string.push_str("<<((");
-							string.push_str(&index_name);
-							let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u)));InterlockedOr(");
-							self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
-							string.push(',');
-							string.push_str(&value_name);
-							string.push_str("<<((");
-							string.push_str(&index_name);
-							let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u))");
-							return true;
-						}
-					}
+					// Adjacent logical narrow elements share one DX12 word. Clear
+					// and set only this lane so concurrent writes preserve neighbors.
+					// Evaluate both source expressions before changing the shared word.
+					string.push_str("uint ");
+					string.push_str(&index_name);
+					string.push('=');
+					self.emit_node_string(string, &index);
+					string.push_str(";uint ");
+					string.push_str(&value_name);
+					string.push_str("=(uint(");
+					self.emit_node_string(string, right);
+					string.push_str(")&");
+					string.push_str(element_mask);
+					string.push_str(");InterlockedAnd(");
+					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
+					string.push_str(",~(");
+					string.push_str(element_mask);
+					string.push_str("<<((");
+					string.push_str(&index_name);
+					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u)));InterlockedOr(");
+					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
+					string.push(',');
+					string.push_str(&value_name);
+					string.push_str("<<((");
+					string.push_str(&index_name);
+					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u))");
+					return true;
 				}
 			}
 
@@ -294,20 +294,19 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		);
-		if right_is_member {
-			if let Some((binding_name, field_name, _, _, flattened)) = Self::hlsl_buffer_member_target(left) {
-				if field_name != binding_name {
-					// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
-					string.push_str(&binding_name);
-					if !flattened {
-						string.push_str("[0].");
-						string.push_str(&field_name);
-					}
-					string.push('.');
-					self.emit_node_string(string, right);
-					return;
-				}
+		if right_is_member
+			&& let Some((binding_name, field_name, _, _, flattened)) = Self::hlsl_buffer_member_target(left)
+			&& field_name != binding_name
+		{
+			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
+			string.push_str(&binding_name);
+			if !flattened {
+				string.push_str("[0].");
+				string.push_str(&field_name);
 			}
+			string.push('.');
+			self.emit_node_string(string, right);
+			return;
 		}
 
 		if let Some(field_name) = Self::hlsl_mesh_output_target(left) {

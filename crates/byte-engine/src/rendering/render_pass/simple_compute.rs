@@ -198,10 +198,10 @@ impl Pass {
 		use ghi::context::ContextCreate as _;
 
 		let revision = self.pipeline_manager.revision(self.pipeline);
-		if self.revision == revision {
-			if let Some(ready) = self.ready {
-				return Some(ready);
-			}
+		if self.revision == revision
+			&& let Some(ready) = self.ready
+		{
+			return Some(ready);
 		}
 		if self.revision != revision {
 			self.ready = None;

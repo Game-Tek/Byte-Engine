@@ -133,7 +133,7 @@ impl MetalResourceUse {
 			MetalResourceKey::Buffer(handle),
 			MetalResourceRegion::Buffer {
 				start: offset,
-				end: offset.checked_add(size).unwrap_or(usize::MAX),
+				end: offset.saturating_add(size),
 			},
 			stages,
 			access,

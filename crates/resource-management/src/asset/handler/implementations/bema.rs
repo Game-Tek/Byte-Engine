@@ -85,10 +85,10 @@ impl AssetHandler for BEMAAssetHandler {
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
 		use utils::r#async::StreamExt as _;
 
-		if let Some(dt) = context.resource_type(url) {
-			if dt != "bema" {
-				return Err(LoadErrors::UnsupportedType);
-			}
+		if let Some(dt) = context.resource_type(url)
+			&& dt != "bema"
+		{
+			return Err(LoadErrors::UnsupportedType);
 		}
 
 		let (data, _, at) = context.resolve(url).await?;
@@ -169,7 +169,7 @@ impl AssetHandler for BEMAAssetHandler {
 
 					ParameterModel {
 						name,
-						r#type: data_type.clone(),
+						r#type: data_type,
 						value,
 					}
 				})

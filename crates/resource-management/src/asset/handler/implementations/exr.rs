@@ -105,10 +105,10 @@ impl AssetHandler for EXRAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(data_type) = context.resource_type(url) {
-			if !self.can_handle(data_type) {
-				return Err(LoadErrors::UnsupportedType);
-			}
+		if let Some(data_type) = context.resource_type(url)
+			&& !self.can_handle(data_type)
+		{
+			return Err(LoadErrors::UnsupportedType);
 		}
 
 		let (source, _, data_type) = context.resolve(url).await?;

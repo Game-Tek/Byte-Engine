@@ -297,7 +297,7 @@ mod tests {
 	};
 
 	fn test_handle() -> Handle {
-		let mut factory = Factory::<()>::new();
+		let factory = Factory::<()>::new();
 		factory.create(())
 	}
 
@@ -402,7 +402,7 @@ mod tests {
 
 	#[test]
 	fn transformation_update_after_creation_sets_all_spatial_state() {
-		let mut body_factory = Factory::<Body>::new();
+		let body_factory = Factory::<Body>::new();
 		let delete_channel = DefaultChannel::new();
 		let mut world = World::new(body_factory.listener(), delete_channel.listener());
 		let mut transforms = DefaultChannel::new();
@@ -418,7 +418,7 @@ mod tests {
 		world.update(
 			Time::new(MediaTime::ZERO, MediaTime::ZERO),
 			&mut transforms_rx,
-			&mut transforms,
+			&transforms,
 			&mut bumpalo::Bump::new(),
 		);
 
@@ -439,7 +439,7 @@ mod tests {
 		let mut transforms = DefaultChannel::new();
 		let mut transforms_rx = transforms.listener();
 
-		world.update_bodies(MediaTime::ZERO, &mut transforms);
+		world.update_bodies(MediaTime::ZERO, &transforms);
 
 		let update = transforms_rx.read().expect("dynamic body transform update");
 		assert_eq!(update.handle(), handle);

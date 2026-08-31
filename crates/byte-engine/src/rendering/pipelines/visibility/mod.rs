@@ -1,5 +1,6 @@
 pub mod gpu_vertex_data_manager;
 pub(crate) mod layout;
+pub mod load;
 pub(crate) mod mesh_dispatch;
 pub mod pipeline_manager;
 pub mod render_pass;
@@ -7,7 +8,6 @@ pub mod resource_manager;
 pub mod scene_manager;
 pub mod shader_generator;
 pub(crate) mod skinning;
-pub mod load;
 
 pub(crate) use layout::*;
 pub use pipeline_manager::{

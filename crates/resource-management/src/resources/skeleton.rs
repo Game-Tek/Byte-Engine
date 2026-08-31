@@ -96,14 +96,14 @@ impl SkinBinding {
 		}
 		// Check every pose index first so a bad binding cannot leave a partially updated GPU upload buffer.
 		for (palette_index, entry) in self.entries.iter().enumerate() {
-			if let SkinJoint::Node(node) = entry.joint {
-				if node as usize >= global_pose.len() {
-					return Err(SkinPaletteError::NodeOutOfRange {
-						palette_index,
-						node,
-						pose_len: global_pose.len(),
-					});
-				}
+			if let SkinJoint::Node(node) = entry.joint
+				&& node as usize >= global_pose.len()
+			{
+				return Err(SkinPaletteError::NodeOutOfRange {
+					palette_index,
+					node,
+					pose_len: global_pose.len(),
+				});
 			}
 		}
 
@@ -210,10 +210,10 @@ impl SkeletonPoseMap {
 		let mut direct_target_by_source = target_by_source.clone();
 		let mut final_source_by_target = vec![None; target.nodes.len()];
 		for (source, target) in target_by_source.iter().enumerate() {
-			if let Some(target) = target {
-				if let Some(previous) = final_source_by_target[*target].replace(source) {
-					direct_target_by_source[previous] = None;
-				}
+			if let Some(target) = target
+				&& let Some(previous) = final_source_by_target[*target].replace(source)
+			{
+				direct_target_by_source[previous] = None;
 			}
 		}
 		let mut target_rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();

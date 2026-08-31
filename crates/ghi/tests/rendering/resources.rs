@@ -361,7 +361,7 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
-		check_triangle(&pixels, extent);
+		check_triangle(pixels, extent);
 	}
 }
 

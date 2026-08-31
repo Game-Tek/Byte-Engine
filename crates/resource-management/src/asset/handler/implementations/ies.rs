@@ -44,10 +44,10 @@ impl AssetHandler for IESAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(resource_type) = context.resource_type(url) {
-			if !self.can_handle(resource_type) {
-				return Err(LoadErrors::UnsupportedType);
-			}
+		if let Some(resource_type) = context.resource_type(url)
+			&& !self.can_handle(resource_type)
+		{
+			return Err(LoadErrors::UnsupportedType);
 		}
 
 		let (source, _, resource_type) = context.resolve(url).await?;
@@ -346,10 +346,10 @@ fn find_tilt_directive(source: &str) -> Result<(&str, &str), IesError> {
 	for line in source.split_inclusive('\n') {
 		let trimmed = line.trim();
 
-		if let Some((name, value)) = trimmed.split_once('=') {
-			if name.trim().eq_ignore_ascii_case("TILT") {
-				return Ok((value.trim(), &source[consumed + line.len()..]));
-			}
+		if let Some((name, value)) = trimmed.split_once('=')
+			&& name.trim().eq_ignore_ascii_case("TILT")
+		{
+			return Ok((value.trim(), &source[consumed + line.len()..]));
 		}
 
 		consumed += line.len();

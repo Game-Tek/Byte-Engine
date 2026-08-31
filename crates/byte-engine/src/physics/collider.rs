@@ -274,7 +274,7 @@ pub fn build_tetrahedron(
 	if distance_from_line(a, b, c) <= f32::EPSILON {
 		return None;
 	}
-	let d = find_point_furthest_from_triangle(vertices.clone(), a, b, c)?;
+	let d = find_point_furthest_from_triangle(vertices, a, b, c)?;
 	let distance = signed_distance_from_triangle(a, b, c, d);
 	if distance.abs() <= f32::EPSILON {
 		return None;

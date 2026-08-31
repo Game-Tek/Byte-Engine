@@ -770,7 +770,7 @@ impl ExecutableProgram {
 			}
 			Instruction::StoreLocal { local, register } => {
 				let value = read_register(registers, *register)?;
-				locals[*local] = Some(value.clone());
+				locals[*local] = Some(value);
 			}
 			Instruction::ThreadIdx { register } => registers[*register] = Some(Value::U32(config.thread_idx())),
 			Instruction::ThreadPosition { register } => {

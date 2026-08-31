@@ -327,7 +327,7 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"texture_lod",
-				vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
+				vec![("texture", texture_3d), ("uv", vec3f32.clone())],
 				vec4f32.clone(),
 			),
 			builtin_intrinsic(
@@ -483,7 +483,7 @@ impl Node {
 			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
 			builtin_intrinsic("round", vec![("value", f16_t.clone())], f16_t.clone()),
 			builtin_intrinsic("round", vec![("value", vec2f16.clone())], vec2f16.clone()),
-			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32.clone()),
+			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32),
 			builtin_intrinsic(
 				"fma",
 				vec![
@@ -538,14 +538,14 @@ impl Node {
 			builtin_intrinsic("vec3f16", vec![("value", vec3f16.clone())], vec3f16.clone()),
 			builtin_intrinsic("vec4f16", vec![("value", vec4f32.clone())], vec4f16.clone()),
 			builtin_intrinsic("vec4f16", vec![("value", vec4f16.clone())], vec4f16.clone()),
-			builtin_intrinsic("vec2f", vec![("value", vec2f16.clone())], vec2f32.clone()),
-			builtin_intrinsic("vec3f", vec![("value", vec3f16.clone())], vec3f32.clone()),
-			builtin_intrinsic("vec4f", vec![("value", vec4f16.clone())], vec4f32.clone()),
+			builtin_intrinsic("vec2f", vec![("value", vec2f16)], vec2f32),
+			builtin_intrinsic("vec3f", vec![("value", vec3f16)], vec3f32),
+			builtin_intrinsic("vec4f", vec![("value", vec4f16)], vec4f32.clone()),
 			builtin_intrinsic("packed_vec4f", vec![("value", vec4f32.clone())], packed_vec4f32.clone()),
 			builtin_intrinsic("vec4f", vec![("value", packed_vec4f32)], vec4f32.clone()),
 			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u8_t)], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u16_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", i32_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f16_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
@@ -565,13 +565,13 @@ impl Node {
 			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
 			builtin_intrinsic("thread_position", vec![], u32_t.clone()),
 			builtin_intrinsic("subgroup_ballot", vec![("predicate", bool_t.clone())], vec4u32.clone()),
-			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t.clone()),
+			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t),
 			builtin_intrinsic("subgroup_ballot_find_lsb", vec![("mask", vec4u32.clone())], u32_t.clone()),
 			builtin_intrinsic("subgroup_ballot_count", vec![("mask", vec4u32.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"subgroup_ballot_and_not",
 				vec![("mask", vec4u32.clone()), ("removed", vec4u32.clone())],
-				vec4u32.clone(),
+				vec4u32,
 			),
 			builtin_intrinsic(
 				"subgroup_broadcast_u32",
@@ -581,7 +581,7 @@ impl Node {
 			builtin_intrinsic(
 				"subgroup_broadcast_f32",
 				vec![("value", f32_t.clone()), ("source_lane", u32_t.clone())],
-				f32_t.clone(),
+				f32_t,
 			),
 			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
 			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
@@ -598,7 +598,7 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"set_mesh_triangle",
-				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
+				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32)],
 				void.clone(),
 			),
 			builtin_intrinsic(
@@ -646,21 +646,13 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"write",
-				vec![
-					("image", texture_2d.clone()),
-					("coord", vec2u32.clone()),
-					("value", vec4f32.clone()),
-				],
-				void.clone(),
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone()), ("value", vec4f32)],
+				void,
 			),
 			builtin_intrinsic(
 				"image_atomic_or",
-				vec![
-					("image", texture_2d.clone()),
-					("coord", vec2u32.clone()),
-					("value", u32_t.clone()),
-				],
-				u32_t.clone(),
+				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],
+				u32_t,
 			),
 		];
 

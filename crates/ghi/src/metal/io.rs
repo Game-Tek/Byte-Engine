@@ -638,7 +638,6 @@ mod tests {
 }
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;

@@ -275,7 +275,7 @@ impl PipelineManager for VisibilityPipelineManager {
 						manager::ies_intensity_scale_for_profile(light.ies_profile(), loaded_ies_profiles);
 
 					views_data_buffer[CONE_SHADOW_VIEW_OFFSET + layer] = Self::make_shader_view_data(make_cone_shadow_view(
-						*light,
+						light,
 						transform,
 						CONE_SHADOW_DEFAULT_EXPOSURE_SCALE,
 						intensity_scale_candela,
@@ -291,7 +291,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					for face in 0..POINT_SHADOW_FACE_COUNT {
 						views_data_buffer[POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT + face] =
 							Self::make_shader_view_data(make_point_shadow_view(
-								*light,
+								light,
 								transform,
 								face,
 								POINT_SHADOW_DEFAULT_EXPOSURE_SCALE,
@@ -696,7 +696,7 @@ mod tests {
 
 	#[test]
 	fn early_renderable_transform_is_available_when_mesh_becomes_resident() {
-		let mut handles = Factory::new();
+		let handles = Factory::new();
 		let handle = handles.create(());
 		let transform = Transform::from_position(Point::new(4.0, 5.0, 6.0));
 		let mut retained_transforms = HashMap::default();
@@ -711,7 +711,7 @@ mod tests {
 
 	#[test]
 	fn renderable_transform_upsert_replaces_the_value_used_at_residency() {
-		let mut handles = Factory::new();
+		let handles = Factory::new();
 		let handle = handles.create(());
 		let first = Transform::from_position(Point::new(1.0, 2.0, 3.0));
 		let replacement = Transform::from_position(Point::new(7.0, 8.0, 9.0));
@@ -728,7 +728,7 @@ mod tests {
 
 	#[test]
 	fn renderable_admission_waits_for_every_primitive_dependency() {
-		let mut handles = Factory::new();
+		let handles = Factory::new();
 		let incomplete = handles.create("incomplete");
 		let independent = handles.create("independent");
 		let independent = handles.create("independent");
@@ -1178,9 +1178,7 @@ mod tests {
 
 		assert_eq!(near, POINT_SHADOW_NEAR_M);
 		assert_eq!(far, automatic_far);
-		assert!(
-			point_shadow_importance(&light.clone().with_shadow_far(20.0), &transform, 1.0, &sink(Point::origin())).is_none()
-		);
+		assert!(point_shadow_importance(&light.with_shadow_far(20.0), &transform, 1.0, &sink(Point::origin())).is_none());
 		assert!(
 			point_shadow_importance(
 				&point(100.0).with_shadow_far(20.0),
@@ -1443,7 +1441,7 @@ mod tests {
 	/// Ensures interleaved handles keep their palettes instance-local.
 	#[test]
 	fn noncontiguous_primitives_reuse_their_frame_skinning_palette() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 
 		let first_handle = factory.create(());
 

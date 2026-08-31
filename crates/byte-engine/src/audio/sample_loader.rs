@@ -353,7 +353,7 @@ mod tests {
 		let (completion_sender, completions) = kanal::bounded_async(4);
 		let completion_sender = completion_sender.to_sync();
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let mut listener = factory.listener();
 		let handle = factory.create(());
 		let _ = listener.read();
@@ -410,7 +410,7 @@ mod tests {
 		let (completion_sender, completions) = kanal::bounded_async(4);
 		let completion_sender = completion_sender.to_sync();
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let handle = factory.create(());
 
 		assert!(client.queue(handle, sample("deleted.wav").compile().expect("expected test value"), 0));
@@ -438,7 +438,7 @@ mod tests {
 		let command_receiver = command_receiver.to_sync();
 		let (completion_sender, completions) = kanal::bounded_async(4);
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let handle = factory.create(());
 
 		assert!(client.queue(
@@ -474,7 +474,7 @@ mod tests {
 		let command_receiver = command_receiver.to_sync();
 		let (completion_sender, completions) = kanal::bounded_async(4);
 		let mut client = loader_client(commands.to_sync(), completions.to_sync());
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let handle = factory.create(());
 
 		assert!(client.queue(handle, sample("racing.wav").compile().expect("expected test value"), 0));

@@ -296,10 +296,10 @@ impl InputManager {
 			self.action_values
 				.insert((seat_handle, MANUAL_ACTION_DEVICE, action_handle), value);
 
-			if let Some(action) = self.actions.get(action_handle.0 as usize) {
-				if let Some(handle) = action.handle {
-					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
-				}
+			if let Some(action) = self.actions.get(action_handle.0 as usize)
+				&& let Some(handle) = action.handle
+			{
+				self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 			}
 		}
 

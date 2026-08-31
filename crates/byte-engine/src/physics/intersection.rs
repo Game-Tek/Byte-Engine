@@ -145,7 +145,7 @@ mod tests {
 	}
 
 	fn body(position: math::Point, linear_velocity: Vector) -> PhysicsBody {
-		let mut factory = Factory::<()>::new();
+		let factory = Factory::<()>::new();
 		PhysicsBody {
 			body_type: BodyTypes::Dynamic,
 			collision_shape: Shapes::Sphere { radius: 0.5 },

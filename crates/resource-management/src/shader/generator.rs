@@ -904,9 +904,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	/// Builds a buffer access that verifies packed four-component u16 vectors remain intrinsic backend types.
@@ -928,8 +926,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec4u16 shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds the 52-byte meshlet record used to verify explicit packed-float storage across backends.
@@ -975,8 +973,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed meshlet shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
@@ -998,8 +996,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2u16 array shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds a flattened vec2f16 array binding used to verify native-width backend storage strides.
@@ -1021,8 +1019,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2f16 array shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
@@ -1048,8 +1046,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected mixed vec4u16 shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds mixed f16 storage members used to verify native backend type and packing mappings.
@@ -1102,8 +1100,8 @@ pub mod tests {
 		);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected f16 storage shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
@@ -1118,8 +1116,8 @@ pub mod tests {
 		]);
 
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed stage I/O shader to compile");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-		main
+
+		RefCell::borrow(&root).get_child("main").expect("Expected main function")
 	}
 
 	pub fn same_named_buffer_member_access() -> besl::NodeReference {
@@ -1157,9 +1155,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	pub fn specializations() -> besl::NodeReference {
@@ -1177,9 +1173,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	pub fn input() -> besl::NodeReference {
@@ -1197,9 +1191,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	pub fn output() -> besl::NodeReference {
@@ -1217,9 +1209,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	pub fn fragment_program() -> besl::NodeReference {
@@ -1252,9 +1242,7 @@ pub mod tests {
 
 		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
 
-		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&main_function_node).get_child("main").unwrap()
 	}
 
 	pub fn structure() -> besl::NodeReference {
@@ -1273,9 +1261,7 @@ pub mod tests {
 
 		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
 
-		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&main_function_node).get_child("main").unwrap()
 	}
 
 	pub fn push_constant() -> besl::NodeReference {
@@ -1288,13 +1274,11 @@ pub mod tests {
 		let mut root_node = besl::Node::root();
 
 		let u32_t = root_node.get_child("u32").unwrap();
-		root_node.add_child(besl::Node::push_constant(vec![besl::Node::member("material_id", u32_t.clone()).into()]).into());
+		root_node.add_child(besl::Node::push_constant(vec![besl::Node::member("material_id", u32_t).into()]).into());
 
 		let program_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
 
-		let main = RefCell::borrow(&program_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&program_node).get_child("main").unwrap()
 	}
 
 	pub fn intrinsic() -> besl::NodeReference {
@@ -1323,9 +1307,7 @@ pub mod tests {
 
 		let root = besl::lex(root).unwrap();
 
-		let main = RefCell::borrow(&root).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&root).get_child("main").unwrap()
 	}
 
 	pub fn const_variable() -> besl::NodeReference {
@@ -1339,9 +1321,7 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, None).unwrap();
 
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
-
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 
 	pub fn return_value() -> besl::NodeReference {
@@ -1352,9 +1332,8 @@ pub mod tests {
 		"#;
 
 		let script_node = besl::compile_to_besl(&script, None).unwrap();
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
-		main
+		RefCell::borrow(&script_node).get_child("main").unwrap()
 	}
 }
 

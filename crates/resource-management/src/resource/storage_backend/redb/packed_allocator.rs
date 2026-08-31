@@ -184,19 +184,19 @@ impl PackedAllocatorState {
 		let mut offset = range.offset;
 		let mut size = range.size;
 
-		if let Some((&previous_offset, &previous_size)) = self.free_slots.range(..offset).next_back() {
-			if previous_offset.checked_add(previous_size) == Some(offset) {
-				self.free_slots.remove(&previous_offset);
-				offset = previous_offset;
-				size += previous_size;
-			}
+		if let Some((&previous_offset, &previous_size)) = self.free_slots.range(..offset).next_back()
+			&& previous_offset.checked_add(previous_size) == Some(offset)
+		{
+			self.free_slots.remove(&previous_offset);
+			offset = previous_offset;
+			size += previous_size;
 		}
 
-		if let Some((&next_offset, &next_size)) = self.free_slots.range(offset..).next() {
-			if offset.checked_add(size) == Some(next_offset) {
-				self.free_slots.remove(&next_offset);
-				size += next_size;
-			}
+		if let Some((&next_offset, &next_size)) = self.free_slots.range(offset..).next()
+			&& offset.checked_add(size) == Some(next_offset)
+		{
+			self.free_slots.remove(&next_offset);
+			size += next_size;
 		}
 
 		self.free_slots.insert(offset, size);
@@ -311,15 +311,15 @@ fn reconstruct_state(pack_path: &Path, high_water: u64, live_ranges: Vec<PackedR
 			return Err(invalid_layout_message(pack_path));
 		}
 
-		if let Some((&previous_offset, previous)) = allocations.range(..=range.offset).next_back() {
-			if previous_offset + previous.size > range.offset {
-				return Err(invalid_layout_message(pack_path));
-			}
+		if let Some((&previous_offset, previous)) = allocations.range(..=range.offset).next_back()
+			&& previous_offset + previous.size > range.offset
+		{
+			return Err(invalid_layout_message(pack_path));
 		}
-		if let Some((&next_offset, _)) = allocations.range(range.offset..).next() {
-			if end > next_offset {
-				return Err(invalid_layout_message(pack_path));
-			}
+		if let Some((&next_offset, _)) = allocations.range(range.offset..).next()
+			&& end > next_offset
+		{
+			return Err(invalid_layout_message(pack_path));
 		}
 
 		allocations.insert(

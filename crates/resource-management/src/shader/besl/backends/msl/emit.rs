@@ -114,46 +114,46 @@ impl<A: Allocator + Clone> Generator<A> {
 		let mut i = 0;
 
 		while i < statements.len() {
-			if self.mesh_stage_context.is_some() {
-				if let Some((field, index, value)) = self.mesh_primitive_write_parts(&statements[i]) {
-					let mut index_string = String::new();
-					self.emit_node_string(&mut index_string, &index);
-					let mut writes = vec![(field, value)];
-					let mut next = i + 1;
+			if self.mesh_stage_context.is_some()
+				&& let Some((field, index, value)) = self.mesh_primitive_write_parts(&statements[i])
+			{
+				let mut index_string = String::new();
+				self.emit_node_string(&mut index_string, &index);
+				let mut writes = vec![(field, value)];
+				let mut next = i + 1;
 
-					while next < statements.len() {
-						let Some((field, next_index, value)) = self.mesh_primitive_write_parts(&statements[next]) else {
-							break;
-						};
-						let mut next_index_string = String::new();
-						self.emit_node_string(&mut next_index_string, &next_index);
-						if next_index_string != index_string || writes.iter().any(|(written, _)| written == &field) {
-							break;
-						}
-						writes.push((field, value));
-						next += 1;
+				while next < statements.len() {
+					let Some((field, next_index, value)) = self.mesh_primitive_write_parts(&statements[next]) else {
+						break;
+					};
+					let mut next_index_string = String::new();
+					self.emit_node_string(&mut next_index_string, &next_index);
+					if next_index_string != index_string || writes.iter().any(|(written, _)| written == &field) {
+						break;
 					}
-					// Metal requires designated initializers to follow the PrimitiveOutput declaration order.
-					writes.sort_by_key(|(field, _)| self.mesh_primitive_field_order(field));
-
-					formatting.push_indentation(string, indent);
-					string.push_str("out_mesh.set_primitive(");
-					self.emit_node_string(string, &index);
-					string.push_str(", PrimitiveOutput{");
-					for (write_index, (field, value)) in writes.iter().enumerate() {
-						if write_index > 0 {
-							string.push_str(", ");
-						}
-						string.push('.');
-						string.push_str(field);
-						string.push_str(" = ");
-						self.emit_node_string(string, value);
-					}
-					string.push_str("})");
-					formatting.push_statement_end(string);
-					i = next;
-					continue;
+					writes.push((field, value));
+					next += 1;
 				}
+				// Metal requires designated initializers to follow the PrimitiveOutput declaration order.
+				writes.sort_by_key(|(field, _)| self.mesh_primitive_field_order(field));
+
+				formatting.push_indentation(string, indent);
+				string.push_str("out_mesh.set_primitive(");
+				self.emit_node_string(string, &index);
+				string.push_str(", PrimitiveOutput{");
+				for (write_index, (field, value)) in writes.iter().enumerate() {
+					if write_index > 0 {
+						string.push_str(", ");
+					}
+					string.push('.');
+					string.push_str(field);
+					string.push_str(" = ");
+					self.emit_node_string(string, value);
+				}
+				string.push_str("})");
+				formatting.push_statement_end(string);
+				i = next;
+				continue;
 			}
 
 			emit_statement_block(string, formatting, &statements[i..i + 1], indent, |string, statement| {

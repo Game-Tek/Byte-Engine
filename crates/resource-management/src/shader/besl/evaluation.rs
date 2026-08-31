@@ -414,7 +414,7 @@ mod tests {
 				"View",
 				vec![
 					besl::Node::member("view", mat4x3f.clone()).into(),
-					besl::Node::member("view_projection", mat4f.clone()).into(),
+					besl::Node::member("view_projection", mat4f).into(),
 					besl::Node::member("inverse_view", mat4x3f).into(),
 					besl::Node::member("fov", vec2f.clone()).into(),
 					besl::Node::member("near", f32_type.clone()).into(),

@@ -194,7 +194,7 @@ mod tests {
 
 	#[test]
 	fn renderable_body_and_transform_creation_share_a_handle() {
-		let mut world = DefaultWorld::new();
+		let world = DefaultWorld::new();
 		let mut renderables = world.factory::<RenderableMesh>().listener();
 		let mut bodies = world.factory::<physics::Body>().listener();
 		let mut names = world.factory::<Name>().listener();
@@ -220,7 +220,7 @@ mod tests {
 
 	#[test]
 	fn camera_and_transform_creation_share_a_handle() {
-		let mut world = DefaultWorld::new();
+		let world = DefaultWorld::new();
 		let mut cameras = world.factory::<Camera>().listener();
 		let mut transforms = world.transforms_channel().listener();
 
@@ -234,7 +234,7 @@ mod tests {
 
 	#[test]
 	fn light_and_transform_creation_share_a_handle() {
-		let mut world = DefaultWorld::new();
+		let world = DefaultWorld::new();
 		let mut lights = world.factory::<PointLight>().listener();
 		let mut transforms = world.transforms_channel().listener();
 		let light = PointLight::new(
@@ -259,7 +259,7 @@ mod tests {
 
 	#[test]
 	fn camera_set_publishes_an_upsert_under_the_existing_handle() {
-		let mut world = DefaultWorld::new();
+		let world = DefaultWorld::new();
 		let mut cameras = world.factory::<Camera>().listener();
 		let handle: Handle = world.create(Camera::new()).into();
 		let _ = cameras.read().expect("camera creation");
@@ -277,7 +277,7 @@ mod tests {
 		#[derive(Clone, Debug, PartialEq, Eq)]
 		struct Sprite(&'static str);
 
-		let mut world = DefaultWorld::new();
+		let world = DefaultWorld::new();
 		let mut sprites = world.factory::<Sprite>().listener();
 		let mut transforms = world.transforms_channel().listener();
 

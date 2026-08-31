@@ -146,7 +146,8 @@ impl Context {
 		let gpu_address = buffer.gpuAddress();
 		let staging = staging.map(|staging| {
 			let mut creator = self.buffers.creator();
-			let handle = creator.add(buffer::Buffer {
+
+			creator.add(buffer::Buffer {
 				name: name.as_ref().map(|name| format!("{name}_staging")),
 				staging: None,
 				buffer: staging,
@@ -155,8 +156,7 @@ impl Context {
 				pointer,
 				uses: resource_uses,
 				access: crate::DeviceAccesses::HostToDevice,
-			});
-			handle
+			})
 		});
 
 		buffer::Buffer {

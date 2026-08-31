@@ -377,7 +377,7 @@ fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffe
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type.clone()).into()],
+				members: vec![Node::member("value", vec3f_type).into()],
 			},
 			2,
 			true,
@@ -776,7 +776,7 @@ fn executable_program_calls_function_and_returns_vec3f() {
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type.clone()).into()],
+				members: vec![Node::member("value", vec3f_type).into()],
 			},
 			6,
 			true,
@@ -1705,7 +1705,7 @@ fn executable_program_evaluates_cross_intrinsics() {
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type.clone()).into()],
+				members: vec![Node::member("value", vec3f_type).into()],
 			},
 			18,
 			true,
@@ -1769,7 +1769,7 @@ fn executable_program_evaluates_normalize_intrinsics() {
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type.clone()).into()],
+				members: vec![Node::member("value", vec3f_type).into()],
 			},
 			20,
 			true,
@@ -1892,7 +1892,7 @@ fn executable_program_evaluates_reflect_intrinsics() {
 							})
 							.into(),
 							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.clone(),
+								function: vec3f_type,
 								parameters: vec![
 									Node::expression(Expressions::Literal {
 										value: "0.0".to_string(),

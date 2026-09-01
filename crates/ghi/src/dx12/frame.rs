@@ -136,7 +136,7 @@ impl Frame<'_> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a mut self, buffer_handle: DynamicBufferHandle<T>) -> &'a mut T {
+	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		self.device
 			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}

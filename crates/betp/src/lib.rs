@@ -26,6 +26,8 @@
 
 #![allow(incomplete_features)]
 #![allow(clippy::items_after_test_module)]
+// Protocol state transitions stay explicit so packet validation order remains auditable.
+#![allow(clippy::cognitive_complexity, clippy::excessive_nesting, clippy::too_many_lines)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 
 pub mod client;

@@ -1,11 +1,11 @@
 use super::*;
 
 impl Device {
-	pub(crate) fn dynamic_buffer_slice_mut<'a, T: Copy>(
-		&'a mut self,
+	pub(crate) fn dynamic_buffer_slice_mut<T: Copy>(
+		&mut self,
 		buffer_handle: DynamicBufferHandle<T>,
 		sequence_index: u8,
-	) -> &'a mut T {
+	) -> &mut T {
 		let handle = buffer_handle.into();
 		let Some((data, _)) = self.buffer_storage_parts_mut_for_sequence(handle, sequence_index) else {
 			panic!("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");

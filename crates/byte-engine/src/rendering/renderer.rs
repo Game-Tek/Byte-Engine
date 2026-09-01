@@ -26,7 +26,11 @@ use crate::{
 };
 
 #[cfg(test)]
-#[allow(unsafe_code)]
+#[allow(
+	unsafe_code,
+	clippy::undocumented_unsafe_blocks,
+	reason = "Renderer tests manufacture opaque GHI handles without exposing a production constructor."
+)]
 mod tests {
 	use utils::{Box, hash::HashMapExt as _};
 

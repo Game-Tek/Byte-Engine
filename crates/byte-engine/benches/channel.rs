@@ -1,5 +1,8 @@
 //! Run with `cargo bench -p byte-engine --bench channel --no-default-features`.
 
+// Contention benchmarks keep producer and consumer loops inline so the measured coordination pattern stays visible.
+#![allow(clippy::excessive_nesting)]
+
 use std::{
 	sync::{
 		Arc, Barrier,

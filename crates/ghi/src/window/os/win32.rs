@@ -138,7 +138,6 @@ impl WindowLike for Window {
 			state: State {
 				use_raw_mouse,
 				use_raw_keyboard,
-				..State::default()
 			},
 		})
 	}
@@ -276,29 +275,31 @@ fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-	let window_data = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut WindowData;
-	let window_data = unsafe {
-		let Some(r) = window_data.as_mut() else {
-			return DefWindowProcA(hwnd, msg, wparam, lparam);
+	unsafe {
+		let window_data = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut WindowData;
+		let window_data = {
+			let Some(r) = window_data.as_mut() else {
+				return DefWindowProcA(hwnd, msg, wparam, lparam);
+			};
+
+			r
 		};
 
-		r
-	};
-
-	if window_data.window.hwnd.0 != hwnd.0 {
-		// Check if the window handle is the same as the one we are handling messages for
-		return DefWindowProcA(hwnd, msg, wparam, lparam);
-	}
-
-	if let Some((event, result)) = handle_event(hwnd, msg, wparam, lparam, window_data) {
-		if let Some(event) = event {
-			window_data.payload = Some(event);
+		if window_data.window.hwnd.0 != hwnd.0 {
+			// Check if the window handle is the same as the one we are handling messages for
+			return DefWindowProcA(hwnd, msg, wparam, lparam);
 		}
 
-		return result;
-	}
+		if let Some((event, result)) = handle_event(hwnd, msg, wparam, lparam, window_data) {
+			if let Some(event) = event {
+				window_data.payload = Some(event);
+			}
 
-	DefWindowProcA(hwnd, msg, wparam, lparam)
+			return result;
+		}
+
+		DefWindowProcA(hwnd, msg, wparam, lparam)
+	}
 }
 
 // Handles windows messages/events.
@@ -381,9 +382,7 @@ fn handle_event(
 			let x = (lparam.0 & 0xFFFF) as i16 as f32;
 			let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
 
-			let Some((x, y)) = normalize_client_position(hwnd, x, y) else {
-				return None;
-			};
+			let (x, y) = normalize_client_position(hwnd, x, y)?;
 
 			return Some((
 				Some(Events::MousePosition {
@@ -401,9 +400,9 @@ fn handle_event(
 
 			let res = unsafe {
 				GetRawInputData(
-					HRAWINPUT(std::mem::transmute(lparam)),
+					HRAWINPUT(lparam.0 as *mut std::ffi::c_void),
 					RID_INPUT,
-					Some(std::mem::transmute(&mut raw_input)),
+					Some(raw_input.as_mut_ptr().cast()),
 					&mut raw_input_size,
 					std::mem::size_of::<RAWINPUTHEADER>() as u32,
 				)
@@ -420,9 +419,7 @@ fn handle_event(
 				let mouse_data = unsafe { &raw_input.data.mouse };
 
 				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
-					let Some((width, height)) = client_extent(hwnd) else {
-						return None;
-					};
+					let (width, height) = client_extent(hwnd)?;
 
 					return Some((
 						Some(Events::MouseMove {
@@ -434,9 +431,7 @@ fn handle_event(
 						LRESULT(0),
 					));
 				} else if (mouse_data.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == MOUSE_MOVE_ABSOLUTE.0 {
-					let Some((x, y)) = cursor_position_in_window(hwnd) else {
-						return None;
-					};
+					let (x, y) = cursor_position_in_window(hwnd)?;
 
 					return Some((
 						Some(Events::MousePosition {
@@ -489,9 +484,7 @@ fn handle_event(
 				return None;
 			}
 
-			let Some(key) = wparam_to_key(wparam) else {
-				return None;
-			};
+			let key = wparam_to_key(wparam)?;
 
 			return Some((
 				Some(Events::Key {
@@ -507,9 +500,7 @@ fn handle_event(
 				return None;
 			}
 
-			let Some(key) = wparam_to_key(wparam) else {
-				return None;
-			};
+			let key = wparam_to_key(wparam)?;
 
 			return Some((
 				Some(Events::Key {

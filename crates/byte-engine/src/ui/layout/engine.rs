@@ -527,7 +527,8 @@ impl Render {
 	}
 }
 
-pub(crate) struct VirtualViewport;
+/// The `VirtualViewport` struct reserves a stable identity for a virtual UI output region.
+pub(crate) struct VirtualViewport(Id);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiEvent {

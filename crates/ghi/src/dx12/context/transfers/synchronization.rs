@@ -7,8 +7,10 @@ impl Device {
 		before: D3D12_RESOURCE_STATES,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let barrier = Self::transition_resource_barrier(resource, before, after);
-		Self::submit_resource_barriers(command_list, &[barrier]);
+		unsafe {
+			let barrier = Self::transition_resource_barrier(resource, before, after);
+			Self::submit_resource_barriers(command_list, &[barrier]);
+		}
 	}
 
 	/// Creates a transition barrier so callers can submit independent resource transitions together.
@@ -36,14 +38,18 @@ impl Device {
 		command_list: &ID3D12GraphicsCommandList,
 		barriers: &[D3D12_RESOURCE_BARRIER],
 	) {
-		if !barriers.is_empty() {
-			command_list.ResourceBarrier(barriers);
+		unsafe {
+			if !barriers.is_empty() {
+				command_list.ResourceBarrier(barriers);
+			}
 		}
 	}
 
 	pub(crate) unsafe fn unordered_access_barrier(command_list: &ID3D12GraphicsCommandList, resource: &ID3D12Resource) {
-		let barrier = Self::unordered_access_resource_barrier(resource);
-		Self::submit_resource_barriers(command_list, &[barrier]);
+		unsafe {
+			let barrier = Self::unordered_access_resource_barrier(resource);
+			Self::submit_resource_barriers(command_list, &[barrier]);
+		}
 	}
 
 	/// Creates a resource-specific UAV barrier for a caller-owned synchronization batch.
@@ -60,16 +66,18 @@ impl Device {
 	}
 
 	pub(crate) unsafe fn unordered_access_barrier_all(command_list: &ID3D12GraphicsCommandList) {
-		let barrier = D3D12_RESOURCE_BARRIER {
-			Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
-			Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-			Anonymous: D3D12_RESOURCE_BARRIER_0 {
-				UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
-					pResource: std::mem::ManuallyDrop::new(None),
-				}),
-			},
-		};
-		command_list.ResourceBarrier(&[barrier]);
+		unsafe {
+			let barrier = D3D12_RESOURCE_BARRIER {
+				Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+				Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+				Anonymous: D3D12_RESOURCE_BARRIER_0 {
+					UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+						pResource: std::mem::ManuallyDrop::new(None),
+					}),
+				},
+			};
+			command_list.ResourceBarrier(&[barrier]);
+		}
 	}
 
 	/// Uses native resource identity so dynamic frame allocations keep independent state histories.
@@ -117,9 +125,11 @@ impl Device {
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
-		self.transition_tracked_buffer_into(_buffer, resource, after, &mut barriers);
-		Self::submit_resource_barriers(command_list, &barriers);
+		unsafe {
+			let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+			self.transition_tracked_buffer_into(_buffer, resource, after, &mut barriers);
+			Self::submit_resource_barriers(command_list, &barriers);
+		}
 	}
 
 	/// Appends a tracked buffer transition to a caller-owned synchronization batch.
@@ -163,9 +173,11 @@ impl Device {
 		resource: &ID3D12Resource,
 		after: D3D12_RESOURCE_STATES,
 	) {
-		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
-		self.transition_tracked_image_into(_image, resource, after, &mut barriers);
-		Self::submit_resource_barriers(command_list, &barriers);
+		unsafe {
+			let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+			self.transition_tracked_image_into(_image, resource, after, &mut barriers);
+			Self::submit_resource_barriers(command_list, &barriers);
+		}
 	}
 
 	/// Appends a tracked image transition to a caller-owned synchronization batch.
@@ -190,7 +202,7 @@ impl Device {
 	}
 
 	pub(crate) fn align_up(value: usize, alignment: usize) -> usize {
-		(value + alignment - 1) / alignment * alignment
+		value.div_ceil(alignment) * alignment
 	}
 
 	pub(crate) fn buffer_range_for_sequence(

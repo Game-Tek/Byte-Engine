@@ -17,11 +17,6 @@ impl Device {
 			.queues
 			.iter()
 			.find(|queue| queue.workloads.intersects(WorkloadTypes::RASTER))
-			.or_else(|| {
-				self.queues
-					.iter()
-					.find(|queue| queue.queue_type == D3D12_COMMAND_LIST_TYPE_DIRECT)
-			})
 			.or_else(|| self.queues.first())
 			.expect("Failed to create a DXGI swapchain. The most likely cause is that no graphics queue was created.");
 
@@ -342,9 +337,7 @@ impl Device {
 	}
 
 	pub(crate) fn begin_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle, sequence_index: u8) {
-		// Resetting an unsubmitted command list discards its uploads. Preserve their staging requests for the new recording.
-		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
-		self.rollback_command_buffer_resource_states(command_buffer_handle);
+		self.discard_command_buffer_recording(command_buffer_handle);
 		if let Some((synchronizer_handle, previous_sequence_index)) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -383,15 +376,6 @@ impl Device {
 			arena.used = 0;
 		}
 		command_buffer.is_open = true;
-		// Resetting an unsubmitted command list discards its copies, so release pending staging and fail those handles.
-		let abandoned = self
-			.texture_readbacks
-			.entries()
-			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
-			.collect::<SmallVec<[_; 4]>>();
-		for handle in abandoned {
-			self.texture_readbacks.abandon_recorded(handle);
-		}
 		self.begin_command_buffer_state_transaction(command_buffer_handle);
 	}
 

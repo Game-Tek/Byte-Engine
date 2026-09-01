@@ -27,7 +27,11 @@ impl Device {
 			return;
 		};
 		let pipeline_kind = pipeline.kind;
-		let Some(layout) = self.pipeline_layouts.get(pipeline.layout.0 as usize).cloned() else {
+		let Some(layout) = self
+			.pipeline_layouts
+			.get(pipeline.layout.0 as usize)
+			.map(|layout| layout.key.clone())
+		else {
 			return;
 		};
 
@@ -241,7 +245,7 @@ impl Device {
 		sequence_index: u8,
 	) {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
-		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize].key;
 		let sequence_sets = sets
 			.iter()
 			.map(|&set| self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set))
@@ -354,17 +358,19 @@ impl Device {
 			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
 		}
 		self.descriptor_heap_bind_count += 1;
-		let Some(Some(_root_signature)) = self.pipeline_root_signatures.get(layout_handle.0 as usize) else {
-			panic!(
-				"Failed to bind DX12 descriptor tables because the pipeline layout has no native root signature. The most likely cause is that root signature creation failed while the pipeline kept descriptor table metadata."
-			);
-		};
-		let Some(root_tables) = self.pipeline_root_tables.get(layout_handle.0 as usize).cloned() else {
+		let Some((resource_table_root, sampler_table_root)) = self
+			.pipeline_layouts
+			.get(layout_handle.0 as usize)
+			.map(|layout| (layout.resource_table_root, layout.sampler_table_root))
+		else {
 			return;
 		};
 		let mut table_binds = 0;
-		for table in root_tables {
-			let heap = if table.sampler_heap {
+		for (root_parameter_index, sampler_heap) in [(resource_table_root, false), (sampler_table_root, true)] {
+			let Some(root_parameter_index) = root_parameter_index else {
+				continue;
+			};
+			let heap = if sampler_heap {
 				materialization.sampler_heap.as_ref()
 			} else {
 				materialization.cbv_srv_uav_heap.as_ref()
@@ -372,7 +378,7 @@ impl Device {
 			let Some(heap) = heap else {
 				continue;
 			};
-			let heap_type = if table.sampler_heap {
+			let heap_type = if sampler_heap {
 				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
 			} else {
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
@@ -381,19 +387,19 @@ impl Device {
 			unsafe {
 				match pipeline_kind {
 					PipelineKind::Compute | PipelineKind::RayTracing => {
-						command_list.SetComputeRootDescriptorTable(table.root_parameter_index, handle)
+						command_list.SetComputeRootDescriptorTable(root_parameter_index, handle)
 					}
-					PipelineKind::Raster => command_list.SetGraphicsRootDescriptorTable(table.root_parameter_index, handle),
+					PipelineKind::Raster => command_list.SetGraphicsRootDescriptorTable(root_parameter_index, handle),
 				}
 			}
 			table_binds += 1;
 			#[cfg(test)]
 			{
 				self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
-					root_parameter_index: table.root_parameter_index,
+					root_parameter_index,
 					set_index: 0,
 					binding_index: 0,
-					sampler_heap: table.sampler_heap,
+					sampler_heap,
 					heap_slot: 0,
 				});
 			}
@@ -418,10 +424,17 @@ impl Device {
 		let Some(pipeline_handle) = pipeline_handle else {
 			return;
 		};
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some((pipeline_kind, layout_handle)) = self
+			.pipelines
+			.get(pipeline_handle.0 as usize)
+			.map(|pipeline| (pipeline.kind, pipeline.layout))
+		else {
 			return;
 		};
-		let Some(constants) = self.pipeline_root_constants.get(pipeline.layout.0 as usize) else {
+		let Some(layout) = self.pipeline_layouts.get(layout_handle.0 as usize) else {
+			return;
+		};
+		let Some(root_parameter_index) = layout.push_constant_root else {
 			return;
 		};
 
@@ -438,28 +451,29 @@ impl Device {
 		let end = offset.checked_add(byte_count).expect(
 			"Invalid DX12 push-constant write range. The most likely cause is that the offset and data size overflow the root-constant range.",
 		);
-		let range = constants
-			.iter()
-			.find(|range| offset >= range.offset && end <= range.offset.saturating_add(range.size))
-			.copied()
-			.expect(
-				"Invalid DX12 push-constant write range. The most likely cause is that no active pipeline range contains the requested bytes.",
-			);
+		assert!(
+			layout
+				.key
+				.push_constant_ranges
+				.iter()
+				.any(|range| offset >= range.offset && end <= range.offset.saturating_add(range.size)),
+			"Invalid DX12 push-constant write range. The most likely cause is that no active pipeline range contains the requested bytes.",
+		);
 
 		let destination_offset = offset / 4;
 		let word_count = byte_count / 4;
-		let compute_root = matches!(pipeline.kind, PipelineKind::Compute | PipelineKind::RayTracing);
+		let compute_root = matches!(pipeline_kind, PipelineKind::Compute | PipelineKind::RayTracing);
 		unsafe {
 			if compute_root {
 				command_list.SetComputeRoot32BitConstants(
-					range.root_parameter_index,
+					root_parameter_index,
 					word_count,
 					bytes.as_ptr().cast(),
 					destination_offset,
 				);
 			} else {
 				command_list.SetGraphicsRoot32BitConstants(
-					range.root_parameter_index,
+					root_parameter_index,
 					word_count,
 					bytes.as_ptr().cast(),
 					destination_offset,
@@ -470,7 +484,7 @@ impl Device {
 		#[cfg(test)]
 		{
 			self.push_constant_write_records.push(PushConstantWriteRecord {
-				root_parameter_index: range.root_parameter_index,
+				root_parameter_index,
 				offset,
 				size: bytes.len() as u32,
 				compute_root,

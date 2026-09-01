@@ -2,10 +2,17 @@ use super::super::*;
 
 impl Device {
 	pub fn create_command_buffer(&mut self, _name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle {
-		let queue = &self.queues[queue_handle.0 as usize];
-		let allocator = unsafe { self.device.CreateCommandAllocator(queue.queue_type) }.ok();
+		assert!(
+			(queue_handle.0 as usize) < self.queues.len(),
+			"Invalid DX12 queue handle. The most likely cause is that the command buffer references a queue from another device."
+		);
+		let allocator = unsafe { self.device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }.ok();
 		let command_list: Option<ID3D12GraphicsCommandList7> = if let Some(allocator) = allocator.as_ref() {
-			unsafe { self.device.CreateCommandList(0, queue.queue_type, allocator, None) }.ok()
+			unsafe {
+				self.device
+					.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, None)
+			}
+			.ok()
 		} else {
 			None
 		};

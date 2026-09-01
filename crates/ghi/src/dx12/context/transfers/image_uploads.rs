@@ -33,8 +33,13 @@ impl Device {
 			copy.source_bytes_per_image
 		};
 		let depth = extent.depth().max(1) as usize;
-		let source_bytes =
-			self.buffer_range_for_sequence(copy.source_buffer, copy.source_offset, image_stride * depth, sequence_index);
+		let Some((source_data, source_len)) =
+			self.buffer_range_parts_for_sequence(copy.source_buffer, copy.source_offset, image_stride * depth, sequence_index)
+		else {
+			return;
+		};
+		// The range resolver validates these bytes, and image staging updates do not move buffer storage.
+		let source_bytes = unsafe { std::slice::from_raw_parts(source_data, source_len) };
 		let Some(destination) = self.image_data_mut_for_sequence(copy.destination_image, sequence_index) else {
 			return;
 		};
@@ -98,12 +103,16 @@ impl Device {
 		};
 		let array_layers = image.array_layers.max(1) as usize;
 		let mip_levels = image.mip_levels;
-		let source_bytes = self.buffer_range_for_sequence(
+		let Some((source_data, source_len)) = self.buffer_range_parts_for_sequence(
 			copy.source_buffer,
 			copy.source_offset,
 			source_image_pitch * extent.depth().max(1) as usize * array_layers,
 			sequence_index,
-		);
+		) else {
+			return;
+		};
+		// Upload recording reads this validated range before any operation can replace its buffer storage.
+		let source_bytes = unsafe { std::slice::from_raw_parts(source_data, source_len) };
 		for layer in 0..array_layers {
 			let start = layer * source_image_pitch;
 			let end = start + source_image_pitch;
@@ -175,33 +184,45 @@ impl Device {
 		image_filter: Option<crate::BaseImageHandle>,
 		sequence_filter: Option<u8>,
 	) {
-		let pending = std::mem::take(&mut self.pending_texture_syncs);
-		for (image_handle, sequence_index) in pending {
+		// Visit only entries that were pending when the flush started. Failed uploads move to the
+		// end for a later recording, and the same allocation remains available for future frames.
+		let mut pending = std::mem::take(&mut self.pending_texture_syncs);
+		let mut remaining = pending.len();
+		let mut index = 0;
+		while remaining > 0 {
+			let (image_handle, sequence_index) = pending[index];
+			remaining -= 1;
 			let image_mismatch = image_filter.is_some_and(|filter| filter != image_handle);
 			let sequence_mismatch = sequence_filter.is_some_and(|filter| filter != sequence_index);
 			if image_mismatch || sequence_mismatch {
-				self.pending_texture_syncs.push((image_handle, sequence_index));
+				index += 1;
 				continue;
 			}
+
+			pending.swap_remove(index);
 			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index) {
 				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
 					command_buffer.recorded_texture_syncs.push((image_handle, sequence_index));
 				}
 			} else {
-				self.queue_texture_sync_for_sequence(image_handle, sequence_index);
+				pending.push((image_handle, sequence_index));
 			}
 		}
+		self.pending_texture_syncs = pending;
 	}
 
 	/// Restores texture uploads whose command list was reset or abandoned before submission.
 	pub(crate) fn requeue_recorded_texture_syncs_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let recorded = self
+		let mut recorded = self
 			.command_buffers
 			.get_mut(command_buffer_handle.0 as usize)
 			.map(|command_buffer| std::mem::take(&mut command_buffer.recorded_texture_syncs))
 			.unwrap_or_default();
-		for (image_handle, sequence_index) in recorded {
+		for (image_handle, sequence_index) in recorded.drain(..) {
 			self.queue_texture_sync_for_sequence(image_handle, sequence_index);
+		}
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			command_buffer.recorded_texture_syncs = recorded;
 		}
 	}
 

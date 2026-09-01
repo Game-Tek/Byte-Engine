@@ -14,10 +14,15 @@ impl Device {
 			}
 			ImageOrSwapchain::Swapchain(swapchain_handle) => {
 				let resource = self.swapchain_backbuffer_resource(swapchain_handle, sequence_index)?;
-				self.present_transitions
-					.entry(command_buffer_handle)
-					.or_default()
-					.push(resource.clone());
+				let resource_key = Self::native_resource_key(&resource);
+				let present_resources = self.present_transitions.entry(command_buffer_handle).or_default();
+				// Multiple render passes can target one backbuffer, but it needs only one terminal PRESENT transition.
+				if present_resources
+					.iter()
+					.all(|scheduled| Self::native_resource_key(scheduled) != resource_key)
+				{
+					present_resources.push(resource.clone());
+				}
 				Some((None, resource, true))
 			}
 		}

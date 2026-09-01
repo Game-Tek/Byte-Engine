@@ -31,9 +31,9 @@ impl Device {
 		}
 
 		let root_signature = self
-			.pipeline_root_signatures
+			.pipeline_layouts
 			.get(layout.0 as usize)
-			.and_then(|root_signature| root_signature.clone())?;
+			.map(|layout| layout.root_signature.clone())?;
 		let vertex_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Vertex)?;
 		let fragment_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Fragment)?;
 		if vertex_shader.is_empty() || fragment_shader.is_empty() {
@@ -177,17 +177,10 @@ impl Device {
 		layout: PipelineLayoutHandle,
 		builder: &pipelines::raster::Builder,
 	) -> Option<ID3D12PipelineState> {
-		if !self.supports_native_mesh_shaders() {
-			self.log_debug_message(
-				"Skipping DX12 mesh pipeline creation because native mesh shaders are not supported by this device.",
-			);
-			return None;
-		}
-
 		let root_signature = self
-			.pipeline_root_signatures
+			.pipeline_layouts
 			.get(layout.0 as usize)
-			.and_then(|root_signature| root_signature.clone())?;
+			.map(|layout| layout.root_signature.clone())?;
 		let has_task_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Task));
 		let task_shader = if has_task_shader {
 			self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Task)?
@@ -344,9 +337,7 @@ impl Device {
 			SizeInBytes: std::mem::size_of::<MeshPipelineStateStream>(),
 			pPipelineStateSubobjectStream: (&mut stream as *mut MeshPipelineStateStream).cast(),
 		};
-		let device = self.device.cast::<ID3D12Device2>().ok()?;
-
-		match unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&desc) } {
+		match unsafe { self.device.CreatePipelineState::<ID3D12PipelineState>(&desc) } {
 			Ok(pipeline_state) => {
 				self.graphics_pipeline_state_last_error = None;
 				Some(pipeline_state)
@@ -482,9 +473,9 @@ impl Device {
 		shader_parameter: pipelines::ShaderParameter,
 	) -> Option<ID3D12PipelineState> {
 		let root_signature = self
-			.pipeline_root_signatures
+			.pipeline_layouts
 			.get(layout.0 as usize)
-			.and_then(|root_signature| root_signature.clone())?;
+			.map(|layout| layout.root_signature.clone())?;
 		let shader = self.shaders.get(shader_parameter.handle.0 as usize)?;
 		let dxil = if !shader_parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
@@ -567,13 +558,10 @@ impl Device {
 		}) {
 			return (None, HashMap::default());
 		}
-		let Ok(device) = self.device.cast::<ID3D12Device5>() else {
-			return (None, HashMap::default());
-		};
 		let Some(root_signature) = self
-			.pipeline_root_signatures
+			.pipeline_layouts
 			.get(layout.0 as usize)
-			.and_then(|root_signature| root_signature.clone())
+			.map(|layout| layout.root_signature.clone())
 		else {
 			return (None, HashMap::default());
 		};
@@ -708,7 +696,7 @@ impl Device {
 			NumSubobjects: subobjects.len() as u32,
 			pSubobjects: subobjects.as_ptr(),
 		};
-		let state_object = unsafe { device.CreateStateObject::<ID3D12StateObject>(&desc) };
+		let state_object = unsafe { self.device.CreateStateObject::<ID3D12StateObject>(&desc) };
 		// State-object creation synchronously consumes every subobject. Release the temporary root-signature clone afterward.
 		unsafe { std::mem::ManuallyDrop::drop(&mut global_root_signature.pGlobalRootSignature) };
 		let state_object = match state_object {

@@ -16,10 +16,6 @@ impl Device {
 			.ok_or(crate::TextureTransferError::UnsupportedFormat(image.format))
 	}
 
-	pub(crate) fn abandon_texture_readback(&mut self, handle: TextureCopyHandle) {
-		self.texture_readbacks.abandon_recorded(handle);
-	}
-
 	pub(crate) fn record_image_readback(&mut self, command_buffer_handle: CommandBufferHandle, image_handle: ImageHandle) {
 		let _ = self.record_image_readback_internal(command_buffer_handle, image_handle, false, 0);
 	}

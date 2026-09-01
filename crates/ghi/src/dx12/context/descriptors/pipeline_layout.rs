@@ -114,14 +114,11 @@ impl Device {
 			.collect()
 	}
 
-	/// Creates a compact root signature with one resource table, one sampler table, and one push-constant block.
-	pub(crate) fn create_root_signature(
-		&self,
-		layout: &PipelineLayout,
-	) -> (Option<ID3D12RootSignature>, Vec<RootDescriptorTable>, Vec<RootConstantRange>) {
-		let mut resource_ranges = Vec::new();
-		let mut sampler_ranges = Vec::new();
-		for resource in &layout.resources {
+	/// Creates one complete native layout with a root signature and its root-parameter indices.
+	pub(crate) fn create_native_pipeline_layout(&self, key: PipelineLayout) -> Option<NativePipelineLayout> {
+		let mut resource_ranges = SmallVec::<[D3D12_DESCRIPTOR_RANGE1; 16]>::new();
+		let mut sampler_ranges = SmallVec::<[D3D12_DESCRIPTOR_RANGE1; 16]>::new();
+		for resource in &key.resources {
 			if let (Some(range_type), Some(offset)) = (
 				Self::descriptor_range_type(resource.descriptor, false),
 				resource.cbv_srv_uav_offset,
@@ -132,7 +129,7 @@ impl Device {
 					BaseShaderRegister: resource.descriptor.slot().index(),
 					RegisterSpace: 0,
 					// Command buffers own copied descriptors and may sequence GPU writes through a table.
-					// Volatile descriptors and data preserve that workflow under root-signature 1.1.
+					// Volatile descriptors and data preserve that workflow in the versioned root signature.
 					Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
 					OffsetInDescriptorsFromTableStart: offset,
 				});
@@ -152,8 +149,9 @@ impl Device {
 			}
 		}
 
-		let mut parameters = Vec::with_capacity(3);
-		let mut tables = Vec::with_capacity(2);
+		let mut parameters = SmallVec::<[D3D12_ROOT_PARAMETER1; 3]>::new();
+		let mut resource_table_root = None;
+		let mut sampler_table_root = None;
 		if !resource_ranges.is_empty() {
 			let root_parameter_index = parameters.len() as u32;
 			parameters.push(D3D12_ROOT_PARAMETER1 {
@@ -166,10 +164,7 @@ impl Device {
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
 			});
-			tables.push(RootDescriptorTable {
-				root_parameter_index,
-				sampler_heap: false,
-			});
+			resource_table_root = Some(root_parameter_index);
 		}
 		if !sampler_ranges.is_empty() {
 			let root_parameter_index = parameters.len() as u32;
@@ -183,28 +178,26 @@ impl Device {
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
 			});
-			tables.push(RootDescriptorTable {
-				root_parameter_index,
-				sampler_heap: true,
-			});
+			sampler_table_root = Some(root_parameter_index);
 		}
 
-		let mut constants = Vec::new();
-		let push_constant_size = layout
+		let push_constant_size = key
 			.push_constant_ranges
 			.iter()
 			.map(|range| range.offset.saturating_add(range.size))
 			.max()
 			.unwrap_or(0);
 		let push_constant_dword_count = push_constant_size.div_ceil(4);
+		let descriptor_table_count = u32::from(resource_table_root.is_some()) + u32::from(sampler_table_root.is_some());
 
 		assert!(
-			push_constant_dword_count.saturating_add(tables.len() as u32) <= 64,
+			push_constant_dword_count.saturating_add(descriptor_table_count) <= 64,
 			"DX12 root signature exceeds 64 DWORDs. The most likely cause is that push constants leave insufficient space for the descriptor tables."
 		);
+		let mut push_constant_root = None;
 		if push_constant_size != 0 {
 			assert!(
-				layout.resources.iter().all(|resource| {
+				key.resources.iter().all(|resource| {
 					resource.descriptor.kind() != ResourceKind::UniformBuffer || resource.descriptor.slot().index() != 0
 				}),
 				"Conflicting DX12 root register. The most likely cause is that push constants and a uniform buffer both use b0, space0.",
@@ -221,11 +214,7 @@ impl Device {
 				},
 				ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
 			});
-			constants.extend(layout.push_constant_ranges.iter().map(|range| RootConstantRange {
-				root_parameter_index,
-				offset: range.offset,
-				size: range.size,
-			}));
+			push_constant_root = Some(root_parameter_index);
 		}
 
 		let desc = D3D12_ROOT_SIGNATURE_DESC2 {
@@ -245,40 +234,50 @@ impl Device {
 		};
 		let mut blob = None;
 		let mut error_blob = None;
-		let Ok(device_configuration) = self.device.cast::<ID3D12DeviceConfiguration>() else {
-			self.log_dx12_error(
-				"Failed to access DX12 device configuration. The most likely cause is that the active Agility SDK does not support device-scoped root-signature serialization.",
-			);
-			return (None, tables, constants);
+		let serialization_result = unsafe {
+			self.device_configuration
+				.SerializeVersionedRootSignature(&versioned_desc, &mut blob, Some(&mut error_blob))
 		};
-		if unsafe { device_configuration.SerializeVersionedRootSignature(&versioned_desc, &mut blob, Some(&mut error_blob)) }
-			.is_err()
-		{
-			if let Some(error_blob) = error_blob {
+		if let Err(error) = serialization_result {
+			let details = if let Some(error_blob) = error_blob {
 				let message = unsafe {
 					std::slice::from_raw_parts(error_blob.GetBufferPointer().cast::<u8>(), error_blob.GetBufferSize())
 				};
-				self.log_dx12_error(format!(
-					"Failed to serialize DX12 root signature: {}",
-					String::from_utf8_lossy(message)
-				));
-			}
-			return (None, tables, constants);
+				String::from_utf8_lossy(message).into_owned()
+			} else {
+				"DX12 returned no serialization diagnostics.".to_string()
+			};
+			self.log_dx12_error(format!(
+				"Failed to serialize DX12 root signature. The most likely cause is an invalid root parameter or an incompatible Agility SDK runtime. Error: {error:?}. {details}"
+			));
+			return None;
 		}
 		let Some(blob) = blob else {
-			return (None, tables, constants);
+			self.log_dx12_error(
+				"DX12 root-signature serialization returned no data. The most likely cause is an incompatible Agility SDK runtime.",
+			);
+			return None;
 		};
 		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) };
-		let root_signature = unsafe { self.device.CreateRootSignature(0, bytes) };
-		if let Err(error) = &root_signature {
-			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-			self.log_dx12_error(format!(
-				"Failed to create DX12 root signature with {} parameters and {} descriptor tables: {error:?}; device removed reason: {removed_reason:?}",
-				parameters.len(),
-				tables.len(),
-			));
-		}
-		(root_signature.ok(), tables, constants)
+		let root_signature = match unsafe { self.device.CreateRootSignature(0, bytes) } {
+			Ok(root_signature) => root_signature,
+			Err(error) => {
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create DX12 root signature. The most likely cause is an invalid serialized layout or a removed device. Parameters: {}, descriptor tables: {descriptor_table_count}, error: {error:?}, device removed reason: {removed_reason:?}",
+					parameters.len(),
+				));
+				return None;
+			}
+		};
+
+		Some(NativePipelineLayout {
+			key,
+			root_signature,
+			resource_table_root,
+			sampler_table_root,
+			push_constant_root,
+		})
 	}
 
 	pub(crate) fn get_or_create_pipeline_layout(
@@ -287,7 +286,7 @@ impl Device {
 		push_constant_ranges: &[PushConstantRange],
 	) -> PipelineLayoutHandle {
 		let resources = self.build_pipeline_resources(shaders);
-		let layout = PipelineLayout {
+		let key = PipelineLayout {
 			cbv_srv_uav_descriptor_count: resources
 				.iter()
 				.filter_map(|resource| resource.cbv_srv_uav_offset.map(|offset| offset + resource.descriptor.count()))
@@ -302,17 +301,17 @@ impl Device {
 			push_constant_ranges: push_constant_ranges.to_vec(),
 		};
 
-		if let Some(handle) = self.pipeline_layout_indices.get(&layout) {
+		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
 			return *handle;
 		}
 
-		self.pipeline_layouts.push(layout.clone());
-		let handle = PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
-		let (root_signature, root_tables, root_constants) = self.create_root_signature(&layout);
-		self.pipeline_root_signatures.push(root_signature);
-		self.pipeline_root_tables.push(root_tables);
-		self.pipeline_root_constants.push(root_constants);
-		self.pipeline_layout_indices.insert(layout, handle);
+		// Build every native object before publishing the handle so a failed root signature cannot misalign layout state.
+		let native_layout = self.create_native_pipeline_layout(key.clone()).expect(
+			"Failed to create DX12 pipeline layout. The most likely cause is an invalid root signature or a removed device.",
+		);
+		let handle = PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
+		self.pipeline_layouts.push(native_layout);
+		self.pipeline_layout_indices.insert(key, handle);
 		handle
 	}
 }

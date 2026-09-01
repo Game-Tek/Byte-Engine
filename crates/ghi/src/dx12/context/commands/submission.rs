@@ -165,6 +165,7 @@ impl Device {
 		}
 	}
 
+	/// Transitions every backbuffer used by one recording into PRESENT through one native barrier batch.
 	pub(crate) fn transition_present_resources(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -173,10 +174,16 @@ impl Device {
 		let Some(resources) = self.present_transitions.remove(&command_buffer_handle) else {
 			return;
 		};
+		let mut barriers = EnhancedBarrierBatch::default();
+		let mut transition_count = 0;
 		for resource in resources {
-			self.transition_swapchain_texture(command_list, &resource, TextureBarrierState::PRESENT);
+			transition_count +=
+				usize::from(self.transition_swapchain_texture_into(&resource, TextureBarrierState::PRESENT, &mut barriers));
+		}
+		if transition_count != 0 {
+			Self::submit_resource_barriers(command_list, &barriers);
 			self.mark_command_buffer_work(command_buffer_handle);
-			self.swapchain_present_transition_count += 1;
+			self.swapchain_present_transition_count += transition_count;
 		}
 	}
 

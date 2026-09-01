@@ -43,30 +43,6 @@ impl Device {
 			.map(|pipeline| pipeline.ray_tracing_shader_identifiers.len())
 	}
 
-	pub(crate) fn supports_native_ray_tracing(&self) -> bool {
-		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
-		let result = unsafe {
-			self.device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS5,
-				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS5).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS5>() as u32,
-			)
-		};
-		result.is_ok() && options.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED
-	}
-
-	pub(crate) fn supports_native_mesh_shaders(&self) -> bool {
-		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
-		let result = unsafe {
-			self.device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS7,
-				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS7).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS7>() as u32,
-			)
-		};
-		result.is_ok() && options.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED
-	}
-
 	pub(crate) fn compute_dispatch_encode_count(&self) -> usize {
 		self.compute_dispatch_encode_count
 	}

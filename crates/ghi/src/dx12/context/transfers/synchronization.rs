@@ -1,6 +1,14 @@
 use super::*;
 
 impl Device {
+	/// Discards every unsubmitted side effect owned by one command-buffer recording.
+	pub(crate) fn discard_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
+		self.abandon_texture_readbacks_for_command_buffer(command_buffer_handle);
+		// A discarded recording never executes its uploads, so make their staging data available to the next recording.
+		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
+		self.rollback_command_buffer_resource_states(command_buffer_handle);
+	}
+
 	/// Starts recording speculative resource states for one command buffer.
 	pub(crate) fn begin_command_buffer_state_transaction(&mut self, command_buffer_handle: CommandBufferHandle) {
 		debug_assert!(
@@ -137,27 +145,16 @@ impl Device {
 		resource: &ID3D12Resource,
 		after: TextureBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
-	) {
+	) -> bool {
 		let key = Self::native_resource_key(resource);
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::PRESENT);
 		if before == after {
-			return;
+			return false;
 		}
 		barriers.push_texture(Self::texture_barrier(resource, before, after));
 		self.remember_image_state(key);
 		self.image_states.insert(key, after);
-	}
-
-	/// Records one tracked swapchain texture transition immediately.
-	pub(crate) fn transition_swapchain_texture(
-		&mut self,
-		command_list: &ID3D12GraphicsCommandList7,
-		resource: &ID3D12Resource,
-		after: TextureBarrierState,
-	) {
-		let mut barriers = EnhancedBarrierBatch::default();
-		self.transition_swapchain_texture_into(resource, after, &mut barriers);
-		barriers.submit(command_list);
+		true
 	}
 
 	/// Submits one native call for a group of barriers that share a synchronization boundary.
@@ -328,26 +325,24 @@ impl Device {
 		value.div_ceil(alignment) * alignment
 	}
 
-	pub(crate) fn buffer_range_for_sequence(
+	/// Resolves a validated range in stable CPU-side buffer storage without copying its bytes.
+	pub(crate) fn buffer_range_parts_for_sequence(
 		&self,
 		buffer_handle: BaseBufferHandle,
 		offset: usize,
 		size: usize,
 		sequence_index: u8,
-	) -> Vec<u8> {
-		let Some((data, buffer_size)) = self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index) else {
-			return Vec::new();
-		};
+	) -> Option<(*const u8, usize)> {
+		let (data, buffer_size) = self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index)?;
 		let end = offset.saturating_add(size);
 		if end > buffer_size {
 			panic!(
 				"Failed to read DX12 buffer data. The most likely cause is that the requested range is outside the buffer allocation."
 			);
 		}
-		if size == 0 {
-			return Vec::new();
-		}
 
-		unsafe { std::slice::from_raw_parts(data.add(offset), size).to_vec() }
+		// Buffer storage remains stable while the caller records the copy. Returning its address avoids
+		// allocating and duplicating the whole upload range before DX12 copies it into an upload heap.
+		Some((unsafe { data.add(offset) }, size))
 	}
 }

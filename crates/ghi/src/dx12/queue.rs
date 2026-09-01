@@ -7,6 +7,38 @@ pub struct Queue<'a> {
 	pub(crate) queue_handle: QueueHandle,
 }
 
+impl Execution<'_> {
+	/// Completes one queue execution after the recording closure releases its command-buffer borrows.
+	fn finish(mut self, synchronizer: SynchronizerHandle, sequence_index: Option<u8>, present_keys: &[PresentKey]) {
+		let Some(frame) = self.frame.as_mut() else {
+			debug_assert!(
+				self.command_buffers.is_empty(),
+				"A frameless DX12 execution cannot contain frame command buffers."
+			);
+			return;
+		};
+		let device = frame.device_mut();
+		if self.command_buffers.is_empty() {
+			if let Some(sequence_index) = sequence_index {
+				device.complete_synchronizer_for_sequence_from_cpu(synchronizer, sequence_index);
+			}
+			return;
+		}
+
+		// Keep the handles in the execution until every submission succeeds so unwinding still discards
+		// unsubmitted state in reverse recording order.
+		for &command_buffer in &self.command_buffers {
+			if !device.submit_command_buffer(command_buffer, synchronizer) {
+				device.discard_command_buffer_recording(command_buffer);
+			}
+		}
+		for &present_key in present_keys {
+			device.present_swapchain(present_key);
+		}
+		self.command_buffers.clear();
+	}
+}
+
 impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 	type Frame = super::Frame<'a>;
 
@@ -78,7 +110,6 @@ impl crate::queue::Queue for Queue<'_> {
 	) where
 		P: AsRef<[PresentKey]>,
 	{
-		let mut device_pointer = std::ptr::NonNull::from(&mut *self.device);
 		for &wait_synchronizer in _wait_for {
 			self.device.wait_for_synchronizer(wait_synchronizer);
 		}
@@ -98,36 +129,6 @@ impl crate::queue::Queue for Queue<'_> {
 			command_buffers: smallvec::SmallVec::new(),
 		};
 		let present_keys = execute(&mut execution);
-		let should_complete_empty_frame = execution.frame.is_some() && execution.command_buffers.is_empty();
-		let command_buffers = std::mem::take(&mut execution.command_buffers);
-		drop(execution);
-		if command_buffers.is_empty() {
-			if should_complete_empty_frame {
-				if let Some(sequence_index) = frame_sequence_index {
-					unsafe {
-						device_pointer
-							.as_mut()
-							.complete_synchronizer_for_sequence_from_cpu(_synchronizer, sequence_index);
-					}
-				}
-			}
-			return;
-		}
-		for command_buffer in command_buffers {
-			let submitted = unsafe { device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer) };
-			if !submitted {
-				unsafe {
-					let device = device_pointer.as_mut();
-					device.abandon_texture_readbacks_for_command_buffer(command_buffer);
-					device.requeue_recorded_texture_syncs_for_command_buffer(command_buffer);
-					device.rollback_command_buffer_resource_states(command_buffer);
-				}
-			}
-		}
-		for present_key in present_keys.as_ref() {
-			unsafe {
-				device_pointer.as_mut().present_swapchain(*present_key);
-			}
-		}
+		execution.finish(_synchronizer, frame_sequence_index, present_keys.as_ref());
 	}
 }

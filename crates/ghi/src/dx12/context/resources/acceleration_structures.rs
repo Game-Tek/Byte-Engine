@@ -149,8 +149,8 @@ impl Device {
 		};
 
 		let mut resource: Option<ID3D12Resource> = None;
-		let result = self.device.cast::<ID3D12Device10>().and_then(|device| unsafe {
-			device.CreateCommittedResource3(
+		let result = unsafe {
+			self.device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
@@ -160,7 +160,7 @@ impl Device {
 				None,
 				&mut resource,
 			)
-		});
+		};
 		if result.is_ok() {
 			return (resource, true);
 		}
@@ -206,12 +206,9 @@ impl Device {
 		&self,
 		inputs: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
 	) -> Option<usize> {
-		let Ok(device) = self.device.cast::<ID3D12Device5>() else {
-			return None;
-		};
 		let mut info = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
 		unsafe {
-			device.GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &mut info);
+			self.device.GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &mut info);
 		}
 		(info.ResultDataMaxSizeInBytes > 0).then(|| Self::align_up(info.ResultDataMaxSizeInBytes as usize, 256).max(256))
 	}

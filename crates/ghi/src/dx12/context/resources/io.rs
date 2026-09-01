@@ -4,7 +4,7 @@ use super::super::*;
 
 impl Device {
 	/// Returns the native device used to create DirectStorage queues and completion fences.
-	pub(crate) fn resource_io_native_device(&self) -> &ID3D12Device {
+	pub(crate) fn resource_io_native_device(&self) -> &ID3D12Device10 {
 		&self.device
 	}
 

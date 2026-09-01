@@ -1081,13 +1081,9 @@ StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 	#[cfg(target_os = "windows")]
 	#[test]
 	fn loaded_dxc_meets_the_shader_model_6_9_runtime_contract() {
-		use windows::Win32::Graphics::Direct3D::Dxc::{CLSID_DxcCompiler, DxcCreateInstance, IDxcCompiler3};
-
-		// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
-		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }
-			.expect("Expected the app-local DirectX Shader Compiler runtime to load");
-		let identity = Device::dxc_identity(&compiler)
-			.expect("Expected the loaded DirectX Shader Compiler to satisfy the Shader Model 6.9 contract");
+		let compiler = DxcCompiler::load()
+			.expect("Expected the app-local DirectX Shader Compiler to satisfy the Shader Model 6.9 contract");
+		let identity = compiler.identity();
 
 		assert!(identity.starts_with("dxc-"));
 		assert!(identity.contains("-flags-"));
@@ -1290,10 +1286,6 @@ void main() {
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 
-		assert_eq!(
-			device.pipeline_layout_has_root_signature(device.pipelines[pipeline.0 as usize].layout),
-			Some(true)
-		);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		recording
@@ -2059,16 +2051,12 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
-		if device.supports_native_mesh_shaders() {
-			assert_eq!(
-				device.pipeline_has_native_state(pipeline),
-				Some(true),
-				"last graphics PSO error: {:?}",
-				device.graphics_pipeline_state_last_error()
-			);
-		} else {
-			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
-		}
+		assert_eq!(
+			device.pipeline_has_native_state(pipeline),
+			Some(true),
+			"last graphics PSO error: {:?}",
+			device.graphics_pipeline_state_last_error()
+		);
 	}
 
 	#[test]
@@ -2156,16 +2144,12 @@ void main(
 			device.create_raster_pipeline(crate::pipelines::raster::Builder::new(&[], &[], &shaders, &render_targets));
 
 		assert_eq!(device.graphics_pipeline_state_create_attempt_count(), 1);
-		if device.supports_native_mesh_shaders() {
-			assert_eq!(
-				device.pipeline_has_native_state(pipeline),
-				Some(true),
-				"last graphics PSO error: {:?}",
-				device.graphics_pipeline_state_last_error()
-			);
-		} else {
-			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
-		}
+		assert_eq!(
+			device.pipeline_has_native_state(pipeline),
+			Some(true),
+			"last graphics PSO error: {:?}",
+			device.graphics_pipeline_state_last_error()
+		);
 	}
 
 	#[test]
@@ -2230,14 +2214,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		recording.dispatch_meshes(1, 2, 3);
 		drop(recording);
 
-		if device.supports_native_mesh_shaders() {
-			assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
-			assert_eq!(device.pipeline_state_bind_count(), 1);
-			assert_eq!(device.mesh_dispatch_encode_count(), 1);
-		} else {
-			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
-			assert_eq!(device.mesh_dispatch_encode_count(), 0);
-		}
+		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
+		assert_eq!(device.pipeline_state_bind_count(), 1);
+		assert_eq!(device.mesh_dispatch_encode_count(), 1);
 	}
 
 	#[test]
@@ -2282,18 +2261,13 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		recording.dispatch_meshes(1, 1, 1);
 		drop(recording);
 
-		if device.supports_native_mesh_shaders() {
-			assert_eq!(
-				device.pipeline_has_native_state(pipeline),
-				Some(true),
-				"last graphics PSO error: {:?}",
-				device.graphics_pipeline_state_last_error()
-			);
-			assert_eq!(device.mesh_dispatch_encode_count(), 1);
-		} else {
-			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
-			assert_eq!(device.mesh_dispatch_encode_count(), 0);
-		}
+		assert_eq!(
+			device.pipeline_has_native_state(pipeline),
+			Some(true),
+			"last graphics PSO error: {:?}",
+			device.graphics_pipeline_state_last_error()
+		);
+		assert_eq!(device.mesh_dispatch_encode_count(), 1);
 	}
 
 	#[test]
@@ -4130,12 +4104,8 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 		));
 
 		assert_eq!(device.ray_tracing_state_object_create_attempt_count(), 1);
-		if device.supports_native_ray_tracing() {
-			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(true));
-			assert_eq!(device.ray_tracing_shader_identifier_count(pipeline), Some(3));
-		} else {
-			assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(false));
-		}
+		assert_eq!(device.pipeline_has_ray_tracing_state_object(pipeline), Some(true));
+		assert_eq!(device.ray_tracing_shader_identifier_count(pipeline), Some(3));
 	}
 
 	#[test]

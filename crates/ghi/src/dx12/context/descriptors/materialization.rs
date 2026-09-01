@@ -59,7 +59,7 @@ impl Device {
 			}
 		}
 
-		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.clone();
+		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.key.clone();
 		let cbv_srv_uav_heap = (layout.cbv_srv_uav_descriptor_count != 0)
 			.then(|| {
 				self.create_shader_visible_descriptor_heap(

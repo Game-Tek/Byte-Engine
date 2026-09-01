@@ -26,7 +26,7 @@ impl Device {
 	#[cfg(test)]
 	pub(crate) fn pipeline_descriptor_counts(&self, pipeline: PipelineHandle) -> Option<(u32, u32)> {
 		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
-		let layout = self.pipeline_layouts.get(pipeline.layout.0 as usize)?;
+		let layout = &self.pipeline_layouts.get(pipeline.layout.0 as usize)?.key;
 		Some((layout.cbv_srv_uav_descriptor_count, layout.sampler_descriptor_count))
 	}
 
@@ -39,7 +39,7 @@ impl Device {
 		sampler_heap: bool,
 	) -> Option<u32> {
 		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
-		let layout = self.pipeline_layouts.get(pipeline.layout.0 as usize)?;
+		let layout = &self.pipeline_layouts.get(pipeline.layout.0 as usize)?.key;
 		let resource = layout.resources.iter().find(|resource| resource.descriptor.slot() == slot)?;
 		if array_element >= resource.descriptor.count() {
 			return None;
@@ -60,16 +60,11 @@ impl Device {
 	) -> Option<ShaderResourceDescriptor> {
 		let pipeline = self.pipelines.get(pipeline.0 as usize)?;
 		self.pipeline_layouts[pipeline.layout.0 as usize]
+			.key
 			.resources
 			.iter()
 			.find(|resource| resource.descriptor.slot() == slot)
 			.map(|resource| resource.descriptor)
-	}
-
-	pub(crate) fn pipeline_layout_has_root_signature(&self, pipeline_layout: PipelineLayoutHandle) -> Option<bool> {
-		self.pipeline_root_signatures
-			.get(pipeline_layout.0 as usize)
-			.map(|root_signature| root_signature.is_some())
 	}
 
 	pub(crate) fn root_signature_bind_count(&self) -> usize {

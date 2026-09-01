@@ -17,9 +17,9 @@ impl Device {
 			return;
 		};
 		let Some(root_signature) = self
-			.pipeline_root_signatures
+			.pipeline_layouts
 			.get(pipeline.layout.0 as usize)
-			.and_then(|root_signature| root_signature.clone())
+			.map(|layout| layout.root_signature.clone())
 		else {
 			return;
 		};

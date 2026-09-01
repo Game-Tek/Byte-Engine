@@ -266,13 +266,10 @@ impl Device {
 			SamplerFeedbackMipRegion: Default::default(),
 		};
 
-		let Ok(device) = self.device.cast::<ID3D12Device10>() else {
-			return (None, std::ptr::null_mut(), heap_kind);
-		};
 		let mut resource: Option<ID3D12Resource> = None;
 		let result = unsafe {
 			// Enhanced-barrier buffer creation requires UNDEFINED regardless of the heap type.
-			device.CreateCommittedResource3(
+			self.device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
@@ -351,12 +348,9 @@ impl Device {
 			Flags: flags,
 			SamplerFeedbackMipRegion: Default::default(),
 		};
-		let Ok(device) = self.device.cast::<ID3D12Device10>() else {
-			return None;
-		};
 		let mut resource = None;
 		let result = unsafe {
-			device.CreateCommittedResource3(
+			self.device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,

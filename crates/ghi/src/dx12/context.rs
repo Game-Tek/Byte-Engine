@@ -1,6 +1,11 @@
 /// The `Device` struct exists to own DX12 GPU resources for the shared GHI device API.
 pub struct Device {
-	device: ID3D12Device,
+	// Initialization requests the interface needed by every modern resource path, so later operations do not branch on it.
+	device: ID3D12Device10,
+	// Independent devices serialize root signatures through their device-scoped configuration interface.
+	device_configuration: ID3D12DeviceConfiguration,
+	// Reuse one validated compiler and cache identity for every runtime HLSL compilation.
+	dxc_compiler: DxcCompiler,
 	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
 	descriptor_handle_increment_sizes: [u32; 4],
 	settings: Features,
@@ -19,10 +24,7 @@ pub struct Device {
 	samplers: Vec<Sampler>,
 	descriptor_sets: Vec<DescriptorSet>,
 	descriptor_materializations: HashMap<DescriptorMaterializationKey, DescriptorMaterialization>,
-	pipeline_layouts: Vec<PipelineLayout>,
-	pipeline_root_signatures: Vec<Option<ID3D12RootSignature>>,
-	pipeline_root_tables: Vec<Vec<RootDescriptorTable>>,
-	pipeline_root_constants: Vec<Vec<RootConstantRange>>,
+	pipeline_layouts: Vec<NativePipelineLayout>,
 	pipeline_layout_indices: HashMap<PipelineLayout, PipelineLayoutHandle>,
 	pub(crate) pipelines: Vec<Pipeline>,
 	indirect_dispatch_signature: Option<ID3D12CommandSignature>,
@@ -125,21 +127,25 @@ const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 #[derive(Clone)]
 pub(crate) struct StoredQueue {
 	queue: ID3D12CommandQueue,
-	queue_type: D3D12_COMMAND_LIST_TYPE,
 	workloads: WorkloadTypes,
 }
 
-pub(crate) fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result<D3D12_COMMAND_LIST_TYPE, &'static str> {
+/// Validates that a queue workload can use the backend's unified DIRECT command-list path.
+pub(crate) fn validate_d3d12_workloads(requested: WorkloadTypes) -> Result<(), &'static str> {
 	if requested.is_empty() {
-		return Err("Invalid workload type");
+		return Err("Invalid DX12 workload selection. The most likely cause is that the queue was created without a workload.");
 	}
 
 	if requested.intersects(WorkloadTypes::VIDEO) {
-		return Err("D3D12 video queues are not exposed through this backend command-buffer path.");
+		return Err(
+			"DX12 video workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose video queues.",
+		);
 	}
 
 	if requested.intersects(WorkloadTypes::IO) {
-		return Err("D3D12 IO queues are not exposed through this backend command-buffer path.");
+		return Err(
+			"DX12 IO workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose IO queues.",
+		);
 	}
 
 	if requested
@@ -147,10 +153,12 @@ pub(crate) fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result
 	{
 		// Enhanced layouts persist across submissions, but this backend has no producer-side queue handoff.
 		// DIRECT lists can legally consume layouts left by raster, compute, and transfer work.
-		return Ok(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		return Ok(());
 	}
 
-	Err("Invalid workload type")
+	Err(
+		"Invalid DX12 workload selection. The most likely cause is that the queue requests no raster, ray-tracing, transfer, or compute work.",
+	)
 }
 
 /// The `CommandBuffer` struct owns reusable native recording state for one shared command-buffer handle.
@@ -602,6 +610,7 @@ struct PipelineResource {
 	sampler_offset: Option<u32>,
 }
 
+/// The `PipelineLayout` struct identifies one logical DX12 binding interface for layout interning.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PipelineLayout {
 	resources: Vec<PipelineResource>,
@@ -610,17 +619,13 @@ struct PipelineLayout {
 	push_constant_ranges: Vec<PushConstantRange>,
 }
 
-#[derive(Clone)]
-struct RootDescriptorTable {
-	root_parameter_index: u32,
-	sampler_heap: bool,
-}
-
-#[derive(Clone, Copy)]
-struct RootConstantRange {
-	root_parameter_index: u32,
-	offset: u32,
-	size: u32,
+/// The `NativePipelineLayout` struct owns one complete native binding layout for pipeline creation and command encoding.
+struct NativePipelineLayout {
+	key: PipelineLayout,
+	root_signature: ID3D12RootSignature,
+	resource_table_root: Option<u32>,
+	sampler_table_root: Option<u32>,
+	push_constant_root: Option<u32>,
 }
 
 #[cfg(test)]
@@ -707,6 +712,32 @@ struct HlslSource {
 	entry_point: String,
 }
 
+/// The `DxcCompiler` struct keeps the validated compiler and cache identity available to runtime HLSL compilation.
+#[derive(Clone)]
+pub(crate) struct DxcCompiler {
+	native: IDxcCompiler3,
+	identity: Arc<str>,
+}
+
+impl DxcCompiler {
+	/// Loads DXC and validates the version that every runtime HLSL compilation will use.
+	pub(crate) fn load() -> Result<Self, String> {
+		// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
+		let native = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
+			format!(
+				"Failed to create the DirectX Shader Compiler. The most likely cause is that dxcompiler.dll is missing or incompatible. Error: {error:?}"
+			)
+		})?;
+		let identity = Device::dxc_identity(&native)?.into();
+		Ok(Self { native, identity })
+	}
+
+	/// Returns the stable compiler identity used to partition the DXIL cache.
+	pub(crate) fn identity(&self) -> &str {
+		&self.identity
+	}
+}
+
 struct Mesh {
 	vertex_count: u32,
 	index_count: u32,
@@ -769,9 +800,7 @@ impl Drop for Execution<'_> {
 		// Recordings update state in order, so abandon them in reverse to restore the committed state.
 		for &command_buffer in self.command_buffers.iter().rev() {
 			let device = frame.device_mut();
-			device.abandon_texture_readbacks_for_command_buffer(command_buffer);
-			device.requeue_recorded_texture_syncs_for_command_buffer(command_buffer);
-			device.rollback_command_buffer_resource_states(command_buffer);
+			device.discard_command_buffer_recording(command_buffer);
 		}
 	}
 }
@@ -810,6 +839,8 @@ impl crate::device::Device for Device {
 	fn create_context(&self) -> Result<Self::Context, &'static str> {
 		Ok(Device::from_native_parts(
 			self.device.clone(),
+			self.device_configuration.clone(),
+			self.dxc_compiler.clone(),
 			self.settings,
 			self.info_queue.clone(),
 			self.debug_log_function,
@@ -1076,7 +1107,10 @@ impl crate::context::Context for Device {
 use std::{
 	alloc::{self, Layout},
 	cell::Cell,
-	sync::atomic::{AtomicU64, Ordering},
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
 };
 
 use ::utils::Extent;
@@ -1094,8 +1128,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE, D3D12_BUFFER_UAV_FLAG_RAW,
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
-	D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC,
-	D3D12_COMMAND_QUEUE_FLAGS, D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+	D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS,
+	D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_GREATER_EQUAL,
 	D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
 	D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK,
 	D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCIL_DESC,
@@ -1106,10 +1140,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
 	D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D,
 	D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE, D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY,
-	D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE, D3D12_FEATURE_D3D12_OPTIONS1, D3D12_FEATURE_D3D12_OPTIONS4,
-	D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7, D3D12_FEATURE_D3D12_OPTIONS12,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS1, D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_FEATURE_DATA_SHADER_MODEL,
+	D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE, D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS12,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_FEATURE_DATA_SHADER_MODEL,
 	D3D12_FEATURE_SHADER_MODEL, D3D12_FENCE_FLAGS, D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC,
 	D3D12_FILTER_MAXIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MINIMUM_ANISOTROPIC,
 	D3D12_GLOBAL_ROOT_SIGNATURE, D3D12_GPU_BASED_VALIDATION_FLAGS_NONE, D3D12_GPU_DESCRIPTOR_HANDLE,
@@ -1119,8 +1151,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
 	D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
 	D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
-	D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION,
-	D3D12_MESSAGE_SEVERITY_ERROR, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_STREAM_DESC,
+	D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR,
+	D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_STREAM_DESC,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
@@ -1136,9 +1168,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE, D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC,
 	D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS, D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
 	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
-	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RAYTRACING_TIER_NOT_SUPPORTED, D3D12_RENDER_TARGET_BLEND_DESC,
-	D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_DIMENSION_BUFFER,
-	D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RENDER_TARGET_VIEW_DESC,
+	D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_FLAGS, D3D12_ROOT_CONSTANTS,
 	D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
 	D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY, D3D12_RTV_DIMENSION_TEXTURE2D,
@@ -1160,9 +1192,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D, D3D12_UNORDERED_ACCESS_VIEW_DESC,
 	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator,
 	ID3D12CommandList, ID3D12CommandQueue, ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap,
-	ID3D12Device, ID3D12Device2, ID3D12Device5, ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList4,
-	ID3D12GraphicsCommandList6, ID3D12InfoQueue, ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
-	ID3D12SDKConfiguration1, ID3D12StateObject, ID3D12StateObjectProperties,
+	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList6, ID3D12InfoQueue,
+	ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1, ID3D12StateObject,
+	ID3D12StateObjectProperties,
 };
 use windows::Win32::Graphics::Direct3D12::{
 	D3D_ROOT_SIGNATURE_VERSION_1_2, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,

@@ -11,8 +11,6 @@ struct ModernDx12Capabilities {
 	enhanced_barriers: bool,
 	root_signature_1_2: bool,
 	native_16_bit_shader_ops: bool,
-	wave_ops: bool,
-	int64_shader_ops: bool,
 	typed_resource_int64_atomics: bool,
 	group_shared_int64_atomics: bool,
 	descriptor_heap_int64_atomics: bool,
@@ -20,17 +18,17 @@ struct ModernDx12Capabilities {
 
 impl Device {
 	const NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE: &str = "DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.";
-	const WAVE_OPS_UNAVAILABLE: &str = "DX12 wave operations are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12 WaveOps support required by Material Count.";
 	const SHADER_MODEL_6_9_UNAVAILABLE: &str =
 		"DX12 Shader Model 6.9 is unavailable. The most likely cause is an outdated DirectX runtime, GPU driver, or GPU.";
 	const ENHANCED_BARRIERS_UNAVAILABLE: &str = "DX12 enhanced barriers are unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU does not report D3D12_OPTIONS12::EnhancedBarriersSupported.";
 	const ROOT_SIGNATURE_1_2_UNAVAILABLE: &str = "DX12 root signature version 1.2 is unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU reports an older D3D12 root signature version.";
-	const INT64_SHADER_OPS_UNAVAILABLE: &str = "DX12 64-bit integer shader operations are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12_OPTIONS1::Int64ShaderOps.";
 	const TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 typed-resource and groupshared 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report both required D3D12_OPTIONS9 atomic capabilities.";
 	const DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 descriptor-heap 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12_OPTIONS11::AtomicInt64OnDescriptorHeapResourceSupported.";
 	const AGILITY_SDK_UNAVAILABLE: &str = "Failed to activate DirectX 12 Agility SDK 1.619.5. The most likely cause is that the Microsoft.Direct3D.D3D12 1.619.5 app-local payload is missing from '.\\D3D12\\' or BYTE_ENGINE_D3D12_SDK_PATH, or Windows does not meet the Agility SDK minimum version. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
 	const AGILITY_SDK_PATH_INVALID: &str = "Invalid DirectX 12 Agility SDK path. The most likely cause is that BYTE_ENGINE_D3D12_SDK_PATH is empty, is not valid Unicode, or contains an embedded NUL byte.";
 	const AGILITY_DEBUG_LAYER_UNAVAILABLE: &str = "Failed to configure the DirectX 12 Agility SDK debug layer. The most likely cause is that D3D12SDKLayers.dll from Microsoft.Direct3D.D3D12 1.619.5 is missing from the app-local SDK directory. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
+	const DEVICE_CONFIGURATION_UNAVAILABLE: &str = "Failed to acquire the DX12 independent-device configuration. The most likely cause is that the loaded Agility SDK does not expose device-scoped root-signature serialization.";
+	const DXC_UNAVAILABLE: &str = "Failed to initialize DirectX Shader Compiler 1.9.2607.13. The most likely cause is that dxcompiler.dll is missing, cannot be loaded, or predates retail Shader Model 6.9 commit 5402. See https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2607.";
 	const AGILITY_SDK_VERSION: u32 = 619;
 	const DEFAULT_AGILITY_SDK_PATH: &str = ".\\D3D12\\";
 	const AGILITY_SDK_PATH_ENVIRONMENT_VARIABLE: &str = "BYTE_ENGINE_D3D12_SDK_PATH";
@@ -42,13 +40,16 @@ impl Device {
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let device_factory = Self::create_agility_device_factory(settings)?;
 		let adapter: Option<&IUnknown> = None;
-		let mut device: Option<ID3D12Device> = None;
+		let mut device: Option<ID3D12Device10> = None;
 		unsafe { device_factory.CreateDevice(adapter, D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
-			"Failed to create a DX12 feature level 12_2 device. The most likely cause is that the selected GPU lacks feature level 12_2 or an incompatible process-global D3D12 device already exists."
+			"Failed to create a DX12 feature level 12_2 ID3D12Device10. The most likely cause is that the selected GPU lacks feature level 12_2 or the loaded Agility SDK does not expose the required modern device interface."
 		})?;
 		let device = device.ok_or(
 			"Failed to acquire a D3D12 device. The most likely cause is that the independent device factory returned no device instance.",
 		)?;
+		let device_configuration = device
+			.cast::<ID3D12DeviceConfiguration>()
+			.map_err(|_| Self::DEVICE_CONFIGURATION_UNAVAILABLE)?;
 		let capabilities = Self::query_modern_dx12_capabilities(&device);
 		Self::require_modern_dx12_capabilities(capabilities)?;
 		let info_queue = if settings.validation {
@@ -59,18 +60,18 @@ impl Device {
 		let debug_log_function = settings.debug_log_function.unwrap_or(|message| {
 			println!("{}", message);
 		});
+		let dxc_compiler = DxcCompiler::load().map_err(|reason| {
+			debug_log_function(&reason);
+			Self::DXC_UNAVAILABLE
+		})?;
 
 		let mut queue_storage = Vec::with_capacity(queues.len());
 
 		for (selection, handle) in queues.iter_mut() {
-			let queue_type = select_d3d12_command_list_type(selection.r#type)?;
-			debug_assert_eq!(
-				queue_type, D3D12_COMMAND_LIST_TYPE_DIRECT,
-				"DX12 graphics workloads must use DIRECT command lists until the backend records explicit enhanced-layout queue handoffs."
-			);
+			validate_d3d12_workloads(selection.r#type)?;
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {
-				Type: queue_type,
+				Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
 				Priority: 0,
 				Flags: D3D12_COMMAND_QUEUE_FLAGS(0),
 				NodeMask: 0,
@@ -82,7 +83,6 @@ impl Device {
 			let index = queue_storage.len() as u64;
 			queue_storage.push(StoredQueue {
 				queue,
-				queue_type,
 				workloads: selection.r#type,
 			});
 			**handle = Some(QueueHandle(index));
@@ -90,6 +90,8 @@ impl Device {
 
 		Ok(Self::from_native_parts(
 			device,
+			device_configuration,
+			dxc_compiler,
 			settings,
 			info_queue,
 			debug_log_function,
@@ -153,7 +155,7 @@ impl Device {
 	}
 
 	/// Queries the shader, synchronization, root-signature, and atomic capabilities required by the DX12 backend.
-	fn query_modern_dx12_capabilities(device: &ID3D12Device) -> ModernDx12Capabilities {
+	fn query_modern_dx12_capabilities(device: &ID3D12Device10) -> ModernDx12Capabilities {
 		let mut root_signature = d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE {
 			HighestVersion: d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2,
 		};
@@ -165,15 +167,8 @@ impl Device {
 			)
 		};
 
-		let mut options1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
-		let options1_result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS1,
-				(&mut options1 as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS1>() as u32,
-			)
-		};
-
+		// FL12_2 already guarantees wave operations, 64-bit shader operations, mesh shaders, and DXR 1.1.
+		// Query only the capabilities that strengthen that feature-level contract.
 		let mut options4 = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
 		let options4_result = unsafe {
 			device.CheckFeatureSupport(
@@ -207,11 +202,6 @@ impl Device {
 			root_signature_1_2: root_signature_result.is_ok()
 				&& root_signature.HighestVersion.0 >= d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2.0,
 			native_16_bit_shader_ops: options4_result.is_ok() && options4.Native16BitShaderOpsSupported.as_bool(),
-			wave_ops: options1_result.is_ok()
-				&& options1.WaveOps.as_bool()
-				&& options1.WaveLaneCountMin > 0
-				&& options1.WaveLaneCountMax <= 128,
-			int64_shader_ops: options1_result.is_ok() && options1.Int64ShaderOps.as_bool(),
 			typed_resource_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnTypedResourceSupported.as_bool(),
 			group_shared_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnGroupSharedSupported.as_bool(),
 			descriptor_heap_int64_atomics: options11_result.is_ok()
@@ -233,12 +223,6 @@ impl Device {
 		if !capabilities.native_16_bit_shader_ops {
 			return Err(Self::NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE);
 		}
-		if !capabilities.wave_ops {
-			return Err(Self::WAVE_OPS_UNAVAILABLE);
-		}
-		if !capabilities.int64_shader_ops {
-			return Err(Self::INT64_SHADER_OPS_UNAVAILABLE);
-		}
 		if !capabilities.typed_resource_int64_atomics || !capabilities.group_shared_int64_atomics {
 			return Err(Self::TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE);
 		}
@@ -249,7 +233,7 @@ impl Device {
 	}
 
 	/// Checks that the runtime and driver expose the shader model used by every DXC compilation path.
-	fn query_shader_model_6_9_support(device: &ID3D12Device) -> bool {
+	fn query_shader_model_6_9_support(device: &ID3D12Device10) -> bool {
 		let mut shader_model = D3D12_FEATURE_DATA_SHADER_MODEL {
 			HighestShaderModel: d3d12::D3D_SHADER_MODEL_6_9,
 		};
@@ -264,7 +248,7 @@ impl Device {
 	}
 
 	/// Checks the enhanced-barrier capability before queues can accept work under the modern DX12 contract.
-	fn query_enhanced_barriers_support(device: &ID3D12Device) -> bool {
+	fn query_enhanced_barriers_support(device: &ID3D12Device10) -> bool {
 		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
 		let result = unsafe {
 			device.CheckFeatureSupport(
@@ -278,7 +262,9 @@ impl Device {
 
 	/// Creates an empty DX12 context over an already-selected native device and queues.
 	pub(crate) fn from_native_parts(
-		device: ID3D12Device,
+		device: ID3D12Device10,
+		device_configuration: ID3D12DeviceConfiguration,
+		dxc_compiler: DxcCompiler,
 		settings: Features,
 		info_queue: Option<ID3D12InfoQueue>,
 		debug_log_function: fn(&str),
@@ -292,6 +278,8 @@ impl Device {
 		];
 		Self {
 			device,
+			device_configuration,
+			dxc_compiler,
 			descriptor_handle_increment_sizes,
 			settings,
 			info_queue,
@@ -310,9 +298,6 @@ impl Device {
 			descriptor_sets: Vec::new(),
 			descriptor_materializations: HashMap::default(),
 			pipeline_layouts: Vec::new(),
-			pipeline_root_signatures: Vec::new(),
-			pipeline_root_tables: Vec::new(),
-			pipeline_root_constants: Vec::new(),
 			pipeline_layout_indices: HashMap::default(),
 			pipelines: Vec::new(),
 			indirect_dispatch_signature: None,
@@ -682,17 +667,8 @@ impl Device {
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
-		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
-			self.log_hlsl_compile_error(
-				source,
-				entry_point,
-				target,
-				&format!("Failed to create DXC compiler: {error:?}"),
-			);
-		})?;
-		let dxc_identity = Self::dxc_identity(&compiler).map_err(|reason| {
-			self.log_hlsl_compile_error(source, entry_point, target, &reason);
-		})?;
+		let compiler = &self.dxc_compiler.native;
+		let dxc_identity = self.dxc_compiler.identity();
 		let source_buffer = DxcBuffer {
 			Ptr: source.as_ptr().cast(),
 			Size: source.len(),
@@ -701,7 +677,7 @@ impl Device {
 		let mut argument_storage = Vec::with_capacity(13 + specialization_map.len() * 2);
 		let debug_artifacts_enabled = self.hlsl_debug_artifacts_enabled();
 		let dxil_cache_path = (!debug_artifacts_enabled)
-			.then(|| Self::hlsl_dxil_cache_path(&dxc_identity, source, entry_point, target, specialization_map))
+			.then(|| Self::hlsl_dxil_cache_path(dxc_identity, source, entry_point, target, specialization_map))
 			.flatten();
 		if let Some(cache_path) = &dxil_cache_path {
 			if let Ok(bytecode) = std::fs::read(cache_path) {

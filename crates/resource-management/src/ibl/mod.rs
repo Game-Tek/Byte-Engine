@@ -8,8 +8,8 @@ mod gpu_shaders;
 
 /// The `IBLGenerator` struct provides reusable CPU or GPU image-based lighting generation for decoded HDR images.
 ///
-/// Pass this generator to an image asset handler after choosing the desired GPU setup. GPU generation automatically falls
-/// back to the CPU implementation when an individual bake fails.
+/// Pass this generator to an environment-map asset handler after choosing the desired GPU setup. GPU generation
+/// automatically falls back to the CPU implementation when an individual bake fails.
 pub struct IBLGenerator {
 	#[cfg(feature = "gpu-ibl")]
 	gpu_client: Option<gpu::GPUIBLClient>,

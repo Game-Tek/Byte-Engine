@@ -3,7 +3,8 @@ use resource_management::resources::mips::gpu::MaterialMipGenerator;
 use resource_management::{
 	asset::{
 		StorageBackend, handler::implementations::bema::BEMAAssetHandler,
-		handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::exr::EXRAssetHandler,
+		handler::implementations::besl::BESLShaderAssetHandler,
+		handler::implementations::environment::EnvironmentMapAssetHandler, handler::implementations::exr::EXRAssetHandler,
 		handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
 		handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
 		handler::implementations::ogg::OGGAssetHandler, handler::implementations::pipeline::PipelineAssetHandler,
@@ -35,7 +36,9 @@ where
 	#[cfg(test)]
 	let ibl_generator = IBLGenerator::new();
 
-	asset_manager.add_asset_handler(EXRAssetHandler::new(ibl_generator));
+	asset_manager.add_asset_handler(EXRAssetHandler::new());
+
+	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl_generator));
 
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 
@@ -119,7 +122,14 @@ mod tests {
 
 	struct EmptyAssetStorage;
 
-	impl StorageBackend for EmptyAssetStorage {}
+	impl StorageBackend for EmptyAssetStorage {
+		async fn resolve_raw<'a>(
+			&'a self,
+			_url: ResourceId<'a>,
+		) -> Result<resource_management::asset::AssetStorageBytes<'a>, ()> {
+			Err(())
+		}
+	}
 
 	#[test]
 	fn default_asset_manager_registers_shader_and_pipeline_handlers() {
@@ -133,6 +143,8 @@ mod tests {
 
 		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
 		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
+		assert!(asset_manager.supports("lighting/studio.environment.bead"));
+		assert!(asset_manager.supports("lighting/studio.exr"));
 		assert!(asset_manager.supports("lights/office.ies"));
 		assert!(!asset_manager.should_discover("byte-engine/render-passes/resolve.besl", false));
 		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));

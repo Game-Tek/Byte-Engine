@@ -163,7 +163,7 @@ impl CubemapIBLLayout {
 		)
 	}
 
-	/// Allocates final storage once and preserves the decoded EXR as the root stream.
+	/// Allocates final storage once and preserves the decoded source image as the root stream.
 	pub(super) fn allocate_data<'a>(
 		self,
 		source_rgba16f: &[u8],
@@ -201,11 +201,12 @@ pub enum IBLBakeError {
 impl fmt::Display for IBLBakeError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::ZeroDimensions => formatter
-				.write_str("Invalid environment dimensions. The most likely cause is an EXR layer with zero width or height."),
+			Self::ZeroDimensions => formatter.write_str(
+				"Invalid environment dimensions. The most likely cause is a source image with zero width or height.",
+			),
 			Self::BufferSizeMismatch { expected, got } => write!(
 				formatter,
-				"Invalid environment buffer size: expected {expected}, got {got}. The most likely cause is mismatched EXR dimensions and RGBA16F pixels."
+				"Invalid environment buffer size: expected {expected}, got {got}. The most likely cause is mismatched source-image dimensions and RGBA16F pixels."
 			),
 			Self::DimensionsTooLarge => formatter.write_str(
 				"Environment dimensions are too large. The most likely cause is integer overflow while laying out IBL subresources.",
@@ -219,7 +220,7 @@ impl fmt::Display for IBLBakeError {
 
 impl Error for IBLBakeError {}
 
-/// Bakes normalized diffuse irradiance and eight GGX-prefiltered specular levels beside an EXR base image.
+/// Bakes normalized diffuse irradiance and eight GGX-prefiltered specular levels beside a latitude-longitude base image.
 pub fn bake_image_ibl_lat_long_in<'a>(
 	source_extent: Extent,
 	source_rgba16f: &[u8],
@@ -1014,7 +1015,7 @@ mod tests {
 	}
 
 	#[test]
-	fn specular_cap_does_not_change_the_parent_exr_image() {
+	fn specular_cap_does_not_change_the_parent_source_image() {
 		let source = constant_source(1025, 1, [2.0, 3.0, 4.0]);
 		let baked = bake_image_ibl_in(Extent::rectangle(1025, 1), &source, &Global).unwrap();
 		let root = &baked.streams[0];

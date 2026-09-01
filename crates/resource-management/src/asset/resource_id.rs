@@ -1,4 +1,4 @@
-//! Parse resource IDs into a base path, file extension, and optional fragment.
+//! Parse resource IDs into a base path, physical extension, logical asset type, and optional fragment.
 //!
 //! A fragment identifies a subresource in a container asset. For example,
 //! `meshes/Box.gltf#texture` has the base `meshes/Box.gltf`, the extension
@@ -58,6 +58,29 @@ impl<'a> ResourceId<'a> {
 		let url = split.next().unwrap();
 		let path = std::path::Path::new(url);
 		path.extension().and_then(|extension| extension.to_str()).unwrap_or_default()
+	}
+
+	/// Returns the source type used to select an asset handler.
+	///
+	/// Standalone `.environment.bead` declarations use their compound suffix.
+	/// Other assets, including ordinary BEAD sidecars, use their physical file extension.
+	pub fn get_asset_type(&self) -> &'a str {
+		let Some(base) = get_base(self.full) else {
+			return "";
+		};
+		let extension = self.get_extension();
+		const ENVIRONMENT_SUFFIX: &str = "environment.bead";
+		let suffix_start = base.len().saturating_sub(ENVIRONMENT_SUFFIX.len());
+		let has_suffix_boundary = suffix_start == 0
+			|| base
+				.as_bytes()
+				.get(suffix_start.saturating_sub(1))
+				.is_some_and(|separator| matches!(separator, b'.' | b'/' | b'\\'));
+
+		base.get(suffix_start..)
+			.filter(|suffix| suffix.eq_ignore_ascii_case(ENVIRONMENT_SUFFIX))
+			.filter(|_| has_suffix_boundary)
+			.unwrap_or(extension)
 	}
 
 	pub fn get_fragment(&self) -> Option<ResourceIdFragment<'a>> {
@@ -125,6 +148,23 @@ pub mod tests {
 	#[test]
 	fn extensionless_resource_ids_report_an_empty_format_without_panicking() {
 		assert_eq!(super::ResourceId::new("buffers/skeleton").get_extension(), "");
+		assert_eq!(super::ResourceId::new("").get_asset_type(), "");
+		assert_eq!(super::ResourceId::new("#fragment").get_asset_type(), "");
+	}
+
+	#[test]
+	fn environment_bead_assets_report_their_logical_asset_type() {
+		let environment = ResourceId::new("lighting/studio.environment.bead#preview");
+		let sidecar = ResourceId::new("lighting/studio.exr.bead");
+
+		assert_eq!(environment.get_extension(), "bead");
+		assert_eq!(environment.get_asset_type(), "environment.bead");
+		assert_eq!(sidecar.get_asset_type(), "bead");
+		assert_eq!(ResourceId::new("lighting/studio.exr").get_asset_type(), "exr");
+		assert_eq!(ResourceId::new("environment.bead").get_asset_type(), "environment.bead");
+		assert_eq!(ResourceId::new("not-an-environment.bead").get_asset_type(), "bead");
+		assert_eq!(ResourceId::new("lighting/.bead").get_asset_type(), "");
+		assert_eq!(ResourceId::new("lighting.v2/studio.bead").get_asset_type(), "bead");
 	}
 
 	#[test]

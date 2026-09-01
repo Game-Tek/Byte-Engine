@@ -90,7 +90,7 @@ pub struct OwnedBakedImageIBL {
 
 /// The `GPUIBLClient` struct serializes environment-map requests onto a dedicated GHI context thread.
 ///
-/// Install this client on an EXR asset handler. The handler can then run on the asset manager's shared worker pool
+/// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
 /// without moving or concurrently accessing the backend context.
 pub struct GPUIBLClient {
 	sender: SyncSender<GPUIBLWorkerMessage>,

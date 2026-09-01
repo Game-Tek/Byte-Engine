@@ -302,14 +302,16 @@ impl VisibilityResourcePreparer {
 	) -> Result<PreparedEnvironment, ()> {
 		let mut reference: Reference<ResourceImage> = resource_manager.request(&id).await.map_err(|_| {
 				log::error!(
-					"Visibility environment request failed for {}. The most likely cause is that the image resource is missing or the asset database is not loaded.",
-					id
+					"Visibility environment request failed for {}. The most likely cause is that the `.environment.bead` resource is missing or the asset database is not loaded. See {}.",
+					id,
+					crate::online_docs_url("develop/resource-management/assets#environment-maps")
 			);
 		})?;
 		let ibl = reference.resource().ibl.clone().ok_or_else(|| {
 			log::error!(
-				"Visibility environment IBL data is missing for {}. The most likely cause is that the EXR was baked before IBL generation was enabled.",
-				id
+				"Visibility environment maps are missing for {}. The most likely cause is that the selected resource is a plain image instead of a standalone `.environment.bead` asset. Select an environment-map asset and rebake it. See {}.",
+				id,
+				crate::online_docs_url("develop/resource-management/assets#environment-maps")
 			);
 		})?;
 

@@ -33,7 +33,7 @@ pub trait ReadStorageBackend: Sync + Send {
 	///
 	/// Asset handlers use this value to skip unsupported sources before loading them.
 	fn get_type<'a>(&'a self, url: ResourceId<'a>) -> Option<&'a str> {
-		Some(url.get_extension())
+		Some(url.get_asset_type())
 	}
 
 	fn exists<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = bool> + 'a {

@@ -1,4 +1,4 @@
-/// The `AssetHandler` trait provides source-format extensions for asset baking.
+/// The `AssetHandler` trait provides source types for asset baking.
 ///
 /// See the [assets guide](/docs/develop/resource-management/assets)
 /// before implementing a new source-format handler.
@@ -84,10 +84,35 @@ impl<'a> TrackingStorageBackend<'a> {
 		let mut dependencies = self.dependencies.lock();
 
 		if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-			*existing = dependency;
+			// A sidecar-aware read is the stronger dependency when one bake uses the same file through both paths.
+			if !existing.version().tracks_sidecar() || dependency.version().tracks_sidecar() {
+				*existing = dependency;
+			}
 		} else {
 			dependencies.push(dependency);
 		}
+	}
+
+	/// Records a completed read only when its versions match on both sides of the operation.
+	fn finish_tracked_read<T>(
+		&self,
+		url: ResourceId<'_>,
+		before: AssetVersion,
+		after: AssetVersion,
+		resolved: T,
+	) -> Result<T, ()> {
+		if before != after {
+			log::warn!(
+				"Asset changed while it was being read. The most likely cause is that '{}' was saved during the bake; retry the request.",
+				url.as_ref()
+			);
+
+			return Err(());
+		}
+
+		self.record(url, after);
+
+		Ok(resolved)
 	}
 
 	/// Resolves one source and rejects a result if its filesystem identity changed during the read.
@@ -106,18 +131,27 @@ impl<'a> TrackingStorageBackend<'a> {
 
 			let after = self.inner.version(url).await?;
 
-			if before != after {
-				log::warn!(
-					"Asset changed while it was being read. The most likely cause is that '{}' was saved during the bake; retry the request.",
-					url.as_ref()
-				);
+			self.finish_tracked_read(url, before, after, resolved)
+		})
+	}
 
-				return Err(());
-			}
+	/// Resolves one exact source file and verifies only that file remained stable during the read.
+	fn resolve_raw_tracked<'b>(
+		&'b self,
+		url: ResourceId<'b>,
+		allocator: Option<&'b dyn Allocator>,
+	) -> crate::r#async::BoxedFuture<'b, Result<AssetStorageBytes<'b>, ()>> {
+		crate::r#async::future(async move {
+			let before = self.inner.raw_version(url).await?;
 
-			self.record(url, after);
+			let resolved = match allocator {
+				Some(allocator) => self.inner.resolve_raw_in(url, allocator).await?,
+				None => self.inner.resolve_raw(url).await?,
+			};
 
-			Ok(resolved)
+			let after = self.inner.raw_version(url).await?;
+
+			self.finish_tracked_read(url, before, after, resolved)
 		})
 	}
 }
@@ -142,8 +176,27 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		self.resolve_tracked(url, Some(allocator))
 	}
 
+	fn resolve_raw<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+	) -> impl std::future::Future<Output = Result<AssetStorageBytes<'a>, ()>> + 'a {
+		self.resolve_raw_tracked(url, None)
+	}
+
+	fn resolve_raw_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> impl std::future::Future<Output = Result<AssetStorageBytes<'a>, ()>> + 'a {
+		self.resolve_raw_tracked(url, Some(allocator))
+	}
+
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
 		self.inner.version(url)
+	}
+
+	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
+		self.inner.raw_version(url)
 	}
 }
 
@@ -246,6 +299,14 @@ impl<'a> BakeContext<'a> {
 	) -> Result<(AssetStorageBytes<'b>, Option<BEADType>, String), LoadErrors> {
 		self.asset_storage_backend
 			.resolve_in(id, self.allocator)
+			.await
+			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
+	}
+
+	/// Resolves one exact source file without reading or tracking an adjacent BEAD sidecar.
+	pub async fn resolve_raw<'b>(&'b self, id: ResourceId<'b>) -> Result<AssetStorageBytes<'b>, LoadErrors> {
+		self.asset_storage_backend
+			.resolve_raw_in(id, self.allocator)
 			.await
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}

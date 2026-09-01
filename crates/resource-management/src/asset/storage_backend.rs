@@ -29,9 +29,10 @@ impl AssetSource {
 
 /// The `StorageBackend` trait provides source resolution and cheap version checks for asset baking.
 pub trait StorageBackend: Send + Sync {
-	/// Enumerates source assets when the backend exposes a discoverable namespace.
+	/// Enumerates source assets when the backend exposes a discoverable asset namespace.
 	///
-	/// Pass the result to [`crate::asset::manager::AssetManager::should_discover`] before baking it.
+	/// Pass the result to [`crate::asset::manager::AssetManager::should_discover`] so registered handlers select bakeable
+	/// sources.
 	fn discover(&self) -> impl Future<Output = Result<Vec<AssetSource>, String>> {
 		async {
 			Err(
@@ -65,17 +66,56 @@ pub trait StorageBackend: Send + Sync {
 		read_asset_from_source(url, None, allocator)
 	}
 
+	/// Resolves the exact source file without reading an adjacent BEAD sidecar.
+	///
+	/// Implement this method against the backend's own namespace. Environment-map manifests use it for referenced image
+	/// data that must not inherit the image's standalone asset sidecar.
+	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = RawResolveResult<'a>> + 'a;
+
+	/// Resolves the exact source file with the provided allocator and without reading an adjacent BEAD sidecar.
+	fn resolve_raw_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> impl Future<Output = RawResolveResult<'a>> + 'a {
+		async move {
+			let source = self.resolve_raw(url).await?;
+			let mut allocated = Vec::new_in(allocator);
+
+			allocated.try_reserve_exact(source.len()).map_err(|_| ())?;
+			allocated.extend_from_slice(&source);
+
+			Ok(AssetStorageBytes::Allocated(allocated.into_boxed_slice()))
+		}
+	}
+
 	/// Returns the source version used to decide whether an existing baked resource is still fresh.
 	///
 	/// Backends with native metadata should override this method to avoid reading source bytes.
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		async move {
 			let (source, sidecar, _) = self.resolve(url).await?;
-			AssetVersion::from_resolved(&source, sidecar.as_ref())
+
+			if url.get_extension().eq_ignore_ascii_case("bead") {
+				Ok(AssetVersion::from_raw_content(&source))
+			} else {
+				AssetVersion::from_resolved(&source, sidecar.as_ref())
+			}
+		}
+	}
+
+	/// Returns the exact source-file version without tracking an adjacent BEAD sidecar.
+	///
+	/// Backends with native metadata should override this method to avoid reading source bytes.
+	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
+		async move {
+			let source = self.resolve_raw(url).await?;
+			Ok(AssetVersion::from_raw_content(&source))
 		}
 	}
 }
 
+/// The `DynStorageBackend` trait provides object-safe asset source resolution and version checks.
 pub trait DynStorageBackend: Send + Sync {
 	fn discover(&self) -> BoxedFuture<'_, Result<Vec<AssetSource>, String>>;
 	#[cfg(debug_assertions)]
@@ -83,7 +123,11 @@ pub trait DynStorageBackend: Send + Sync {
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
+	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, RawResolveResult<'a>>;
+	fn resolve_raw_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator)
+	-> BoxedFuture<'a, RawResolveResult<'a>>;
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
+	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
@@ -108,8 +152,24 @@ impl<T: StorageBackend> DynStorageBackend for T {
 		Box::pin(self.resolve_in(url, allocator))
 	}
 
+	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, RawResolveResult<'a>> {
+		Box::pin(self.resolve_raw(url))
+	}
+
+	fn resolve_raw_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> BoxedFuture<'a, RawResolveResult<'a>> {
+		Box::pin(self.resolve_raw_in(url, allocator))
+	}
+
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
 		Box::pin(self.version(url))
+	}
+
+	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
+		Box::pin(self.raw_version(url))
 	}
 }
 
@@ -188,7 +248,7 @@ impl AssetFileVersion {
 	}
 }
 
-/// The `AssetVersion` struct identifies the source and optional BEAD sidecar used to bake one asset.
+/// The `AssetVersion` struct identifies exact source state and whether an adjacent BEAD sidecar participated in baking.
 ///
 /// Return this value from [`StorageBackend::version`] when a custom backend can provide cheaper identity metadata.
 #[derive(
@@ -196,7 +256,16 @@ impl AssetFileVersion {
 )]
 pub struct AssetVersion {
 	source: AssetFileVersion,
-	sidecar: Option<AssetFileVersion>,
+	sidecar: AssetSidecarVersion,
+}
+
+/// Records whether the resolved operation consumed an adjacent BEAD sidecar.
+#[derive(
+	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+enum AssetSidecarVersion {
+	Ignored,
+	Tracked(Option<AssetFileVersion>),
 }
 
 impl AssetVersion {
@@ -204,7 +273,15 @@ impl AssetVersion {
 	pub fn from_metadata(source: &AssetMetadata, sidecar: Option<&AssetMetadata>) -> Self {
 		Self {
 			source: AssetFileVersion::from_metadata(source),
-			sidecar: sidecar.map(AssetFileVersion::from_metadata),
+			sidecar: AssetSidecarVersion::Tracked(sidecar.map(AssetFileVersion::from_metadata)),
+		}
+	}
+
+	/// Creates a version from local metadata for an exact-file read that ignores adjacent BEAD sidecars.
+	pub fn from_raw_metadata(source: &AssetMetadata) -> Self {
+		Self {
+			source: AssetFileVersion::from_metadata(source),
+			sidecar: AssetSidecarVersion::Ignored,
 		}
 	}
 
@@ -212,7 +289,15 @@ impl AssetVersion {
 	pub fn from_content(source: &[u8], sidecar: Option<&[u8]>) -> Self {
 		Self {
 			source: AssetFileVersion::from_bytes(source),
-			sidecar: sidecar.map(AssetFileVersion::from_bytes),
+			sidecar: AssetSidecarVersion::Tracked(sidecar.map(AssetFileVersion::from_bytes)),
+		}
+	}
+
+	/// Creates a content-backed version for an exact-file read that ignores adjacent BEAD sidecars.
+	pub fn from_raw_content(source: &[u8]) -> Self {
+		Self {
+			source: AssetFileVersion::from_bytes(source),
+			sidecar: AssetSidecarVersion::Ignored,
 		}
 	}
 
@@ -221,6 +306,11 @@ impl AssetVersion {
 		let sidecar = sidecar.map(serde_json::to_vec).transpose().map_err(|_| ())?;
 
 		Ok(Self::from_content(source, sidecar.as_deref()))
+	}
+
+	/// Returns whether freshness checks must include the adjacent BEAD sidecar.
+	pub(crate) fn tracks_sidecar(&self) -> bool {
+		matches!(self.sidecar, AssetSidecarVersion::Tracked(_))
 	}
 }
 
@@ -254,6 +344,7 @@ impl AssetDependency {
 }
 
 type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
+type RawResolveResult<'a> = Result<AssetStorageBytes<'a>, ()>;
 
 /// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
@@ -316,6 +407,18 @@ impl StorageBackend for FileStorageBackend {
 		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
 
+	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = RawResolveResult<'a>> + 'a {
+		future(read_raw_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
+	}
+
+	fn resolve_raw_in<'a>(
+		&'a self,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> impl Future<Output = RawResolveResult<'a>> + 'a {
+		future(read_raw_asset_from_source(url, Some(&self.base_path), allocator))
+	}
+
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		future(async move {
 			let source_path = self.base_path.join(url.get_base().as_ref());
@@ -323,13 +426,31 @@ impl StorageBackend for FileStorageBackend {
 
 			let source = AsyncFile::open(source_path).await.map_err(|_| ())?;
 			let source = source.metadata().await.map_err(|_| ())?;
-			let sidecar = match AsyncFile::open(sidecar_path).await {
-				Ok(file) => Some(file.metadata().await.map_err(|_| ())?),
-				Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-				Err(_) => return Err(()),
+			let sidecar = if url.get_extension().eq_ignore_ascii_case("bead") {
+				None
+			} else {
+				match AsyncFile::open(sidecar_path).await {
+					Ok(file) => Some(file.metadata().await.map_err(|_| ())?),
+					Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+					Err(_) => return Err(()),
+				}
 			};
 
-			Ok(AssetVersion::from_metadata(&source, sidecar.as_ref()))
+			if url.get_extension().eq_ignore_ascii_case("bead") {
+				Ok(AssetVersion::from_raw_metadata(&source))
+			} else {
+				Ok(AssetVersion::from_metadata(&source, sidecar.as_ref()))
+			}
+		})
+	}
+
+	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
+		future(async move {
+			let source_path = self.base_path.join(url.get_base().as_ref());
+			let source = AsyncFile::open(source_path).await.map_err(|_| ())?;
+			let source = source.metadata().await.map_err(|_| ())?;
+
+			Ok(AssetVersion::from_raw_metadata(&source))
 		})
 	}
 }
@@ -411,12 +532,7 @@ fn discover_file_sources_in(
 			continue;
 		}
 
-		if !is_file
-			|| path
-				.extension()
-				.and_then(|extension| extension.to_str())
-				.is_some_and(|extension| extension.eq_ignore_ascii_case("bead"))
-		{
+		if !is_file {
 			continue;
 		}
 
@@ -430,7 +546,15 @@ fn discover_file_sources_in(
 			);
 			continue;
 		};
-		let has_sidecar = path.with_added_extension("bead").is_file();
+		let resource_id = ResourceId::new(&id);
+
+		if resource_id.get_extension().eq_ignore_ascii_case("bead") && resource_id.get_asset_type().eq_ignore_ascii_case("bead")
+		{
+			continue;
+		}
+
+		let has_sidecar =
+			!resource_id.get_extension().eq_ignore_ascii_case("bead") && path.with_added_extension("bead").is_file();
 
 		sources.push(AssetSource::new(id, has_sidecar));
 	}
@@ -466,7 +590,7 @@ fn move_bytes_in<'a>(bytes: impl AsRef<[u8]>, allocator: &'a dyn Allocator) -> A
 #[cfg(test)]
 pub mod tests {
 	use std::{
-		alloc::Allocator,
+		alloc::{Allocator, Global},
 		collections::HashMap,
 		fs::{self, FileTimes, OpenOptions},
 		io::Write,
@@ -474,7 +598,10 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{AssetSource, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend, parse_json};
+	use super::{
+		AssetSidecarVersion, AssetSource, AssetStorageBytes, FileStorageBackend, RawResolveResult, ResolveResult,
+		StorageBackend, parse_json,
+	};
 	use crate::{
 		asset::ResourceId,
 		r#async::{BoxedFuture, read},
@@ -484,6 +611,15 @@ pub mod tests {
 	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
 	#[derive(Clone)]
 	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
+
+	/// The `VirtualRawStorageBackend` struct proves allocator-aware raw reads stay within a custom backend namespace.
+	struct VirtualRawStorageBackend;
+
+	impl StorageBackend for VirtualRawStorageBackend {
+		async fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> RawResolveResult<'a> {
+			Ok(AssetStorageBytes::Owned(url.as_ref().as_bytes().into()))
+		}
+	}
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
@@ -499,15 +635,36 @@ pub mod tests {
 		}
 	}
 
+	#[crate::r#async::test]
+	async fn allocator_aware_raw_reads_use_the_custom_backend_namespace() {
+		let backend = VirtualRawStorageBackend;
+		let bytes = backend
+			.resolve_raw_in(ResourceId::new("not-on-disk.environment-source"), &Global)
+			.await
+			.expect("the custom raw source must resolve without consulting the process filesystem");
+
+		assert_eq!(bytes.as_slice(), b"not-on-disk.environment-source");
+		assert!(matches!(bytes, AssetStorageBytes::Allocated(_)));
+	}
+
 	impl StorageBackend for TestStorageBackend {
 		fn discover(&self) -> impl std::future::Future<Output = Result<Vec<super::AssetSource>, String>> {
 			let files = self.0.lock().unwrap();
 			let sources = files
 				.keys()
-				.filter(|id| !id.ends_with(".bead"))
-				.map(|id| {
+				.filter_map(|id| {
+					let resource_id = ResourceId::new(id);
+
+					if resource_id.get_extension().eq_ignore_ascii_case("bead")
+						&& resource_id.get_asset_type().eq_ignore_ascii_case("bead")
+					{
+						return None;
+					}
+
 					let sidecar = std::path::Path::new(id).with_added_extension("bead");
-					super::AssetSource::new(id.clone(), files.contains_key(sidecar.to_str().unwrap()))
+					let has_sidecar = !resource_id.get_extension().eq_ignore_ascii_case("bead")
+						&& files.contains_key(sidecar.to_str().unwrap());
+					Some(super::AssetSource::new(id.clone(), has_sidecar))
 				})
 				.collect();
 
@@ -518,15 +675,19 @@ pub mod tests {
 			Box::pin(async move {
 				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
 				if let Some(data) = mocked_data {
-					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
+						None
+					} else {
+						let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+						self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
+					};
 					let spec = if let Some(spec_data) = spec_data {
 						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
 						Some(parse_json(spec).or(Err(()))?)
 					} else {
 						None
 					};
-					return Ok((AssetStorageBytes::Owned(data), spec, url.get_extension().to_string()));
+					return Ok((AssetStorageBytes::Owned(data), spec, url.get_asset_type().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -535,14 +696,19 @@ pub mod tests {
 				let path = path.join(url.get_base().as_ref());
 
 				// Check if the file name exitst in our map
-				let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-
-				let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+				let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
+					None
+				} else {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
+				};
 
 				// If case file needs to be looked for in the fs use the real path
 				let spec_path = path.with_added_extension("bead");
 
-				let spec = if let Some(data) = spec_data {
+				let spec = if url.get_extension().eq_ignore_ascii_case("bead") {
+					None
+				} else if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
 					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
@@ -562,11 +728,7 @@ pub mod tests {
 					}
 				};
 
-				let format = path
-					.extension()
-					.and_then(|extension| extension.to_str())
-					.unwrap_or_default()
-					.to_string();
+				let format = url.get_asset_type().to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
@@ -582,15 +744,19 @@ pub mod tests {
 			Box::pin(async move {
 				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
 				if let Some(data) = mocked_data {
-					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
+						None
+					} else {
+						let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+						self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
+					};
 					let spec = if let Some(spec_data) = spec_data {
 						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
 						Some(parse_json(spec).or(Err(()))?)
 					} else {
 						None
 					};
-					return Ok((super::move_bytes_in(data, allocator), spec, url.get_extension().to_string()));
+					return Ok((super::move_bytes_in(data, allocator), spec, url.get_asset_type().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -599,14 +765,19 @@ pub mod tests {
 				let path = path.join(url.get_base().as_ref());
 
 				// Check if the file name exists in our map.
-				let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-
-				let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+				let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
+					None
+				} else {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
+				};
 
 				// If the file needs to be looked for in the fs use the real path.
 				let spec_path = path.with_added_extension("bead");
 
-				let spec = if let Some(data) = spec_data {
+				let spec = if url.get_extension().eq_ignore_ascii_case("bead") {
+					None
+				} else if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
 					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
@@ -626,15 +797,26 @@ pub mod tests {
 					}
 				};
 
-				let format = path
-					.extension()
-					.and_then(|extension| extension.to_str())
-					.unwrap_or_default()
-					.to_string();
+				let format = url.get_asset_type().to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
 				Ok((super::move_bytes_in(source_bytes, allocator), spec, format))
+			})
+		}
+
+		fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = RawResolveResult<'a>> + 'a {
+			Box::pin(async move {
+				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
+
+				if let Some(data) = mocked_data {
+					return Ok(AssetStorageBytes::Owned(data));
+				}
+
+				let path = std::path::Path::new(ASSETS_PATH).join(url.get_base().as_ref());
+				let source_bytes = read(&path).await.or(Err(()))?;
+
+				Ok(AssetStorageBytes::Owned(source_bytes.into_boxed_slice()))
 			})
 		}
 	}
@@ -651,9 +833,11 @@ pub mod tests {
 	async fn file_storage_backend_discovers_nested_sources_and_sidecar_presence() {
 		let directory = temporary_asset_directory();
 		fs::create_dir_all(directory.join("nested")).unwrap();
+		fs::create_dir_all(directory.join("lighting")).unwrap();
 		fs::write(directory.join("root.test"), []).unwrap();
 		fs::write(directory.join("nested/source.bin"), []).unwrap();
 		fs::write(directory.join("nested/source.bin.bead"), b"{}").unwrap();
+		fs::write(directory.join("lighting/studio.environment.bead"), b"{}").unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
 		let mut sources = storage_backend.discover().await.unwrap();
@@ -662,6 +846,7 @@ pub mod tests {
 		assert_eq!(
 			sources,
 			[
+				AssetSource::new("lighting/studio.environment.bead".to_string(), false),
 				AssetSource::new("nested/source.bin".to_string(), true),
 				AssetSource::new("root.test".to_string(), false),
 			]
@@ -714,6 +899,33 @@ pub mod tests {
 	}
 
 	#[crate::r#async::test]
+	async fn file_storage_backend_resolves_compound_bead_types_without_a_second_sidecar() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(&directory).unwrap();
+		fs::write(directory.join("studio.environment.bead"), b"environment").unwrap();
+		fs::write(directory.join("studio.environment.bead.bead"), b"{ ignored: true }").unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let (bytes, spec, asset_type) = storage_backend
+			.resolve(ResourceId::new("studio.environment.bead"))
+			.await
+			.expect("the compound BEAD declaration should resolve");
+
+		assert_eq!(bytes.as_slice(), b"environment");
+		assert!(spec.is_none());
+		assert_eq!(asset_type, "environment.bead");
+
+		let version = storage_backend
+			.version(ResourceId::new("studio.environment.bead"))
+			.await
+			.expect("the compound BEAD declaration should have source metadata");
+
+		assert_eq!(version.sidecar, AssetSidecarVersion::Ignored);
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[crate::r#async::test]
 	async fn file_asset_versions_cover_size_modification_time_and_sidecar_presence() {
 		let directory = temporary_asset_directory();
 		fs::create_dir_all(&directory).unwrap();
@@ -727,7 +939,7 @@ pub mod tests {
 			.expect("source metadata should be available");
 
 		assert_eq!(first.source.size, 4);
-		assert!(first.sidecar.is_none());
+		assert_eq!(first.sidecar, AssetSidecarVersion::Tracked(None));
 
 		let mut source = OpenOptions::new().write(true).truncate(true).open(&source_path).unwrap();
 		source.write_all(b"size").unwrap();
@@ -747,9 +959,29 @@ pub mod tests {
 			.await
 			.expect("sidecar metadata should be available");
 
-		assert!(with_sidecar.sidecar.is_some());
+		assert!(matches!(with_sidecar.sidecar, AssetSidecarVersion::Tracked(Some(_))));
 
 		fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn raw_versions_ignore_sidecar_changes_while_full_versions_track_them() {
+		let storage_backend = TestStorageBackend::new();
+		storage_backend.add_file("source.exr", b"source");
+		storage_backend.add_file("source.exr.bead", b"{ exposure: 1 }");
+
+		let raw_before = storage_backend.raw_version(ResourceId::new("source.exr")).await.unwrap();
+		let full_before = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+
+		storage_backend.add_file("source.exr.bead", b"{ exposure: 2 }");
+
+		let raw_after = storage_backend.raw_version(ResourceId::new("source.exr")).await.unwrap();
+		let full_after = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+
+		assert_eq!(raw_before, raw_after);
+		assert_ne!(full_before, full_after);
+		assert!(!raw_after.tracks_sidecar());
+		assert!(full_after.tracks_sidecar());
 	}
 }
 
@@ -764,7 +996,7 @@ use std::{
 
 use gxhash::GxHasher;
 
-use super::{BEADType, ResourceId, parse_json, read_asset_from_source};
+use super::{BEADType, ResourceId, parse_json, read_asset_from_source, read_raw_asset_from_source};
 use crate::{
 	r#async::{BoxedFuture, File as AsyncFile, future},
 	resource::reader::MappedFileBacking,

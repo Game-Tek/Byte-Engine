@@ -56,7 +56,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" \
   bake
 ```
 
-With no IDs, BELD recursively discovers all supported source assets, including linked engine shaders, environment maps, meshes, materials, and audio. Unknown files and `.bead` sidecars are skipped. A standalone `.besl` file is discovered only when its adjacent `.besl.bead` exists; this keeps material-internal BESL sources out of the standalone shader pass. Explicitly requesting a `.besl` file without its sidecar fails the bake.
+With no IDs, BELD recursively discovers all supported source assets, including linked engine shaders, standalone `.environment.bead` assets, images, meshes, materials, and audio. Unknown files and BEAD sidecars are skipped; `.environment.bead` files are standalone assets rather than sidecars. A standalone `.besl` file is discovered only when its adjacent `.besl.bead` exists; this keeps material-internal BESL sources out of the standalone shader pass. Explicitly requesting a `.besl` file without its sidecar fails the bake.
 
 BELD gives concurrent bake work a soft memory budget equal to half of the system memory available when the command starts. Override the budget in MiB when a CI runner or shared workstation needs more headroom:
 

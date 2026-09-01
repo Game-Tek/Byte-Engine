@@ -1,7 +1,10 @@
+mod decode;
 mod source;
 
-use source::{CanonicalImageData, append_canonical_image_in, canonicalize_image_in};
+pub(crate) use decode::decode_rgba16f_in;
+pub(crate) use source::{CanonicalImageData, canonicalize_rgba16f_in};
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
+use source::{append_canonical_image_in, canonicalize_image_in};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {

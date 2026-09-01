@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/environment.bead.schema.json",
+  "title": "Byte Engine environment-map asset",
+  "description": "A standalone environment-map asset generated from a high-precision 2:1 latitude-longitude source image.",
+  "type": "object",
+  "required": ["source"],
+  "properties": {
+    "$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The normalized asset-root-relative ID of a full-sphere, 2:1 latitude-longitude image with at least 16-bit integer or floating-point precision.",
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!\\.{1,2}(?:/|$))(?!.*(?:/\\.{1,2})(?:/|$))(?!.*//)(?!.*\/$)[^\\\\#]+$"
+    }
+  },
+  "additionalProperties": false
+}

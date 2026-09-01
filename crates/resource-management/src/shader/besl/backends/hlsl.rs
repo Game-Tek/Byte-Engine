@@ -886,7 +886,7 @@ mod tests {
 			})
 			.into(),
 		]);
-		let atomic_store = root.add_child(besl::Node::intrinsic("atomic_store", Vec::new(), void_type.clone()).into());
+		let atomic_store = root.add_child(besl::Node::intrinsic("atomic_store", Vec::new(), void_type).into());
 		atomic_store.borrow_mut().add_children(vec![
 			besl::Node::new(besl::Nodes::Parameter {
 				name: "value".to_string(),
@@ -1291,7 +1291,7 @@ mod tests {
 			.into(),
 		]);
 
-		let texture_lod = root.add_child(besl::Node::intrinsic("texture_lod", Vec::new(), vec4f.clone()).into());
+		let texture_lod = root.add_child(besl::Node::intrinsic("texture_lod", Vec::new(), vec4f).into());
 		texture_lod.borrow_mut().add_children(vec![
 			besl::Node::new(besl::Nodes::Parameter {
 				name: "texture".to_string(),

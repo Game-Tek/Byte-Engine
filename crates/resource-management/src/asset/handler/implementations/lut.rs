@@ -97,10 +97,10 @@ impl AssetHandler for LUTAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url) {
-			if !self.can_handle(dt) {
-				return Err(LoadErrors::UnsupportedType);
-			}
+		if let Some(dt) = context.resource_type(url)
+			&& !self.can_handle(dt)
+		{
+			return Err(LoadErrors::UnsupportedType);
 		}
 
 		let (data, _, dt) = context.resolve(url).await?;

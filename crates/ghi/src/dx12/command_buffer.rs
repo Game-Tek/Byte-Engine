@@ -132,14 +132,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		AttachmentInformation::render_pass_layer_count(attachments);
 		let sequence_index = self.sequence_index();
 		self.active_extent = Some(extent);
-		self.active_render_target = attachments.iter().find_map(|attachment| match attachment.target {
-			ImageOrSwapchain::Image(image) => Some(image),
-			ImageOrSwapchain::Swapchain(swapchain) => Some(
-				self.device
-					.get_swapchain_image_for_sequence(swapchain, crate::Uses::RenderTarget, sequence_index)
-					.0
-					.into(),
-			),
+		self.active_render_target = attachments.first().map(|attachment| match attachment.target {
+			ImageOrSwapchain::Image(image) => image,
+			ImageOrSwapchain::Swapchain(swapchain) => self
+				.device
+				.get_swapchain_image_for_sequence(swapchain, crate::Uses::RenderTarget, sequence_index)
+				.0
+				.into(),
 		});
 
 		self.device
@@ -318,7 +317,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		let size = std::mem::size_of::<T>();
 
 		assert!(
-			offset % 4 == 0 && size % 4 == 0,
+			offset.is_multiple_of(4) && size.is_multiple_of(4),
 			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
 		);
 		let end = offset.checked_add(size).expect(

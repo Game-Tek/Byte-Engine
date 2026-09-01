@@ -148,11 +148,9 @@ pub struct ShaderMatrix(pub [f32; 16]);
 pub struct AffineShaderMatrix(pub [f32; 12]);
 
 impl From<Matrix> for ShaderMatrix {
-	fn from(mut value: Matrix) -> Self {
+	fn from(value: Matrix) -> Self {
 		#[cfg(target_os = "macos")]
-		{
-			value = value.transpose();
-		}
+		let value = value.transpose();
 
 		Self([
 			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],

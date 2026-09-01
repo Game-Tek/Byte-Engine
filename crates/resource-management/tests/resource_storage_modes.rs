@@ -4,8 +4,8 @@ use resource_management::{
 	Model, ProcessedAsset,
 	asset::ResourceId,
 	resource::{
-		ReDBStorageBackend, ReadStorageBackend as _, ReadTargetsMut, ResourceCompressionPolicy, ResourcePayloadEncoding,
-		ResourceStorageMode, WriteStorageBackend as _,
+		ReDBStorageBackend, ReadStorageBackend as _, ResourceCompressionPolicy, ResourcePayloadEncoding, ResourceStorageMode,
+		WriteStorageBackend as _,
 	},
 };
 

@@ -15,6 +15,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 	use windows::core::PCWSTR;
 
 	let target = dxil_target_profile(stage, source)?;
+	// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
 	let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
 		format!(
 			"Failed to create DXC while baking HLSL shader '{name}'. The most likely cause is that the DirectX Shader Compiler runtime is unavailable. Error: {error:?}"
@@ -42,6 +43,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 		.iter()
 		.map(|argument| PCWSTR(argument.as_ptr()))
 		.collect::<Vec<_>>();
+	// SAFETY: The source buffer and null-terminated argument storage remain alive for the duration of the synchronous compile call.
 	let result = unsafe {
 		compiler.Compile::<Option<&IDxcIncludeHandler>, IDxcResult>(&source_buffer, Some(arguments.as_slice()), None)
 	}
@@ -50,6 +52,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 			"Failed to invoke DXC while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'. Error: {error:?}"
 		)
 	})?;
+	// SAFETY: The result is a live DXC result interface returned by the completed compile call.
 	let status = unsafe { result.GetStatus() }.map_err(|error| {
 		format!(
 			"Failed to read DXC status while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'. Error: {error:?}"
@@ -63,6 +66,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 	}
 
 	let mut object = None;
+	// SAFETY: object is a valid output slot and remains alive for the duration of this COM call.
 	unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_OBJECT, std::ptr::null_mut(), &mut object) }.map_err(|error| {
 		format!(
 			"Failed to read DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'. Error: {error:?}"
@@ -73,7 +77,12 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 			"DXC returned no DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
 		)
 	})?;
-	let bytecode = unsafe { std::slice::from_raw_parts(object.GetBufferPointer().cast::<u8>(), object.GetBufferSize()) };
+	// SAFETY: The blob owns this pointer and keeps it valid until object is dropped.
+	let bytecode_pointer = unsafe { object.GetBufferPointer() }.cast::<u8>();
+	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
+	let bytecode_size = unsafe { object.GetBufferSize() };
+	// SAFETY: The pointer and size come from the same live blob allocation.
+	let bytecode = unsafe { std::slice::from_raw_parts(bytecode_pointer, bytecode_size) };
 	if bytecode.is_empty() {
 		return Err(format!(
 			"DXC returned empty DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
@@ -142,6 +151,7 @@ fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult
 	use windows::Win32::Graphics::Direct3D::Dxc::{DXC_OUT_ERRORS, IDxcBlob};
 
 	let mut errors = None;
+	// SAFETY: errors is a valid output slot and result remains alive for this COM call.
 	if unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_ERRORS, std::ptr::null_mut(), &mut errors) }.is_err() {
 		return "DXC compilation failed and error output could not be read.".to_string();
 	}
@@ -149,7 +159,12 @@ fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult
 	let Some(errors) = errors else {
 		return "DXC compilation failed with no error output.".to_string();
 	};
-	let bytes = unsafe { std::slice::from_raw_parts(errors.GetBufferPointer().cast::<u8>(), errors.GetBufferSize()) };
+	// SAFETY: The blob owns this pointer and keeps it valid until errors is dropped.
+	let error_pointer = unsafe { errors.GetBufferPointer() }.cast::<u8>();
+	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
+	let error_size = unsafe { errors.GetBufferSize() };
+	// SAFETY: The pointer and size come from the same live blob allocation.
+	let bytes = unsafe { std::slice::from_raw_parts(error_pointer, error_size) };
 	let message = String::from_utf8_lossy(bytes).trim().to_string();
 	if message.is_empty() {
 		"DXC compilation failed with empty error output.".to_string()

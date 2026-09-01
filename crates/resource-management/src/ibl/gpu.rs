@@ -166,7 +166,7 @@ impl GPUIBLClient {
 				while let Ok(message) = receiver.recv() {
 					match message {
 						GPUIBLWorkerMessage::Bake(request) => {
-							// The submitting asset worker blocks on this response, so its borrowed source remains valid.
+							// SAFETY: The submitting asset worker blocks on this response, so its borrowed source remains valid.
 							let source = unsafe { std::slice::from_raw_parts(request.source, request.source_len) };
 							let result = processor.bake_image_ibl(request.source_extent, source);
 							if response_sender.send(result).is_err() {

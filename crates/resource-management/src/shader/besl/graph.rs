@@ -132,7 +132,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				&mut graph,
 				&mut expanded,
 				&mut active,
-				allocator.clone(),
+				allocator,
 			);
 		}
 		_ => panic!("Root node must be a function node."),
@@ -184,7 +184,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active, allocator.clone());
 				}
 
-				build_graph_impl(node.clone(), return_type.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), return_type.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Conditional { condition, statements } => {
 				build_graph_impl(node.clone(), condition.clone(), graph, expanded, active, allocator.clone());
@@ -218,10 +218,10 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				}
 			}
 			besl::Nodes::Specialization { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Member { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Raw { input, output, .. } => {
 				for reference in input {
@@ -233,13 +233,13 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				}
 			}
 			besl::Nodes::Parameter { r#type, .. } => {
-				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Expression(expression) => {
 				match expression {
 					besl::Expressions::Operator { left, right, .. } => {
 						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
-						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator);
 					}
 					besl::Expressions::FunctionCall {
 						parameters, function, ..
@@ -261,26 +261,26 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 						}
 					}
 					besl::Expressions::Macro { body, .. } => {
-						build_graph_impl(node.clone(), body.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), body.clone(), graph, expanded, active, allocator);
 					}
 					besl::Expressions::Member { source, .. } => {
-						build_graph_impl(node.clone(), source.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), source.clone(), graph, expanded, active, allocator);
 					}
 					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator);
 					}
 					besl::Expressions::Literal { .. } => {
 						// build_graph_inner(node.clone(), value.clone(), graph);
 					}
 					besl::Expressions::Return { value } => {
 						if let Some(value) = value {
-							build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator.clone());
+							build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
 						}
 					}
 					besl::Expressions::Continue | besl::Expressions::Discard => {}
 					besl::Expressions::Accessor { left, right } => {
 						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
-						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator);
 					}
 				}
 			}
@@ -297,7 +297,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 			| besl::Nodes::Output { format, .. }
 			| besl::Nodes::TaskPayload { format, .. }
 			| besl::Nodes::Workgroup { format, .. } => {
-				build_graph_impl(node.clone(), format.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), format.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
@@ -305,11 +305,11 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				}
 			}
 			besl::Nodes::Literal { value, .. } => {
-				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Const { r#type, value, .. } => {
 				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());
-				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator.clone());
+				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
 			}
 		}
 

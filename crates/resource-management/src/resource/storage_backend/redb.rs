@@ -582,10 +582,10 @@ impl ReDBStorageBackend {
 				continue;
 			}
 
-			if let Some(cursor) = cursor {
-				if key <= cursor {
-					continue;
-				}
+			if let Some(cursor) = cursor
+				&& key <= cursor
+			{
+				continue;
 			}
 
 			let resource_key = entry.1.value();
@@ -653,10 +653,10 @@ impl ReadStorageBackend for ReDBStorageBackend {
 				});
 			}
 
-			if let Some(cursor) = &query.cursor {
-				if cursor.token.is_empty() {
-					return Err(QueryError::InvalidCursor);
-				}
+			if let Some(cursor) = &query.cursor
+				&& cursor.token.is_empty()
+			{
+				return Err(QueryError::InvalidCursor);
 			}
 
 			let page = self.query_index(&query)?;

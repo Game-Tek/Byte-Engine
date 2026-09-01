@@ -326,7 +326,7 @@ impl VisibilityPipelineManager {
 						self.loaded_meshes.len(),
 						self.pending_renderables.len(),
 					);
-					self.loaded_meshes.insert(key.clone(), mesh);
+					self.loaded_meshes.insert(key, mesh);
 					self.resolve_pending_renderables_for_mesh(&key);
 				}
 				VisibilityResourceCompletion::MaterialReady {

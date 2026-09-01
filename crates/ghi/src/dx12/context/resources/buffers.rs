@@ -49,6 +49,10 @@ impl Device {
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
+	///
+	/// # Safety
+	///
+	/// The caller must keep the buffer alive and prevent concurrent access for the lifetime of the returned mapping.
 	pub unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
 		let buffer = self
 			.buffer(buffer_handle.into())

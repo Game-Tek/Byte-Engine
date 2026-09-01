@@ -290,7 +290,7 @@ impl AudioSampleLease {
 	/// lease.
 	#[allow(unsafe_code)]
 	pub(crate) fn samples(&self) -> &[f32] {
-		// The pool keeps this region stable until the audio worker returns the
+		// SAFETY: The pool keeps this region stable until the audio worker returns the
 		// lease ID. Test leases retain the same allocation in `owned_samples`.
 		unsafe { std::slice::from_raw_parts(self.samples.as_ptr(), self.layout.scalar_count) }
 	}
@@ -299,11 +299,12 @@ impl AudioSampleLease {
 	#[allow(unsafe_code)]
 	pub(crate) fn mono_frame(&self, frame: usize) -> f32 {
 		let index = frame * usize::from(self.layout.channel_count);
-		// The pool retains this complete region until the lease ID returns.
+		// SAFETY: The pool retains this complete region until the lease ID returns, and frame is within the retained layout.
 		let current = unsafe { *self.samples.as_ptr().add(index) };
 		if self.layout.channel_count == 1 {
 			current
 		} else {
+			// SAFETY: A stereo layout retains a second scalar for every in-range frame.
 			let right = unsafe { *self.samples.as_ptr().add(index + 1) };
 			(current + right) * 0.5
 		}
@@ -311,7 +312,7 @@ impl AudioSampleLease {
 }
 
 #[allow(unsafe_code)]
-// The immutable allocation remains pool-owned until the audio thread returns
+// SAFETY: The immutable allocation remains pool-owned until the audio thread returns
 // this lease ID. Moving the pointer between the loader and audio thread is safe.
 unsafe impl Send for AudioSampleLease {}
 

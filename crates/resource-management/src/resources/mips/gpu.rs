@@ -97,7 +97,7 @@ impl GPUMipClient {
 				while let Ok(message) = receiver.recv() {
 					match message {
 						WorkerMessage::Generate(request) => {
-							// The caller waits synchronously, so its immutable base-level borrow remains valid.
+							// SAFETY: The caller waits synchronously, so its immutable base-level borrow remains valid.
 							let source = unsafe { std::slice::from_raw_parts(request.data, request.len) };
 							if response_sender
 								.send(processor.generate(request.width, request.height, request.srgb, source))

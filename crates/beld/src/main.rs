@@ -2,9 +2,9 @@ fn main() -> Result<(), i32> {
 	let _ = simple_logger::SimpleLogger::new().env().init();
 
 	let color = parse_color_choice(std::env::args());
-	let matches = CLI::command().color(color).get_matches();
+	let matches = Cli::command().color(color).get_matches();
 
-	let cli = CLI::from_arg_matches(&matches).map_err(|error| {
+	let cli = Cli::from_arg_matches(&matches).map_err(|error| {
 		let _ = error.print();
 		2
 	})?;
@@ -20,7 +20,7 @@ fn main() -> Result<(), i32> {
 }
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
-async fn run(cli: CLI) -> Result<(), i32> {
+async fn run(cli: Cli) -> Result<(), i32> {
 	let source_path = cli.source;
 	let destination_path = cli.destination;
 	let storage_mode = cli.storage_mode.map(Into::into);
@@ -112,7 +112,7 @@ const CLAP_STYLING: Styles = Styles::styled()
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, color = clap::ColorChoice::Auto, styles = CLAP_STYLING)]
-struct CLI {
+struct Cli {
 	/// The path to the source assets directory.
 	/// Example: `beld --source assets`
 	#[arg(short, long, default_value = "assets")]

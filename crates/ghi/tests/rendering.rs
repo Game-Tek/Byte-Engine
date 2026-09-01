@@ -1,9 +1,18 @@
 //! Exercises rendering through the active native GHI backend.
 
+// Native rendering scenarios keep complete setup, submission, and readback workflows together.
+#![allow(
+	clippy::cognitive_complexity,
+	clippy::excessive_nesting,
+	clippy::multiple_unsafe_ops_per_block,
+	clippy::too_many_lines,
+	clippy::undocumented_unsafe_blocks
+)]
+
 use ghi::implementation::{Context as BackendContext, Instance};
 use ghi::{
-	BufferDescriptor, BufferStridedRange, ChannelBitSize, ChannelLayout, DataTypes, DeviceAccesses, Encodings, FilteringModes,
-	Formats, Layouts, QueueHandle, SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses, Window,
+	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, QueueHandle,
+	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses, Window,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,

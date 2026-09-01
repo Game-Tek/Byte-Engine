@@ -98,7 +98,7 @@ mod tests {
 
 	#[test]
 	fn camera_attachment_preserves_the_factory_identity_across_clones() {
-		let mut factory = Factory::new();
+		let factory = Factory::new();
 		let camera = factory.create(Camera::new());
 		let mut window = Window::new("View", Extent::rectangle(800, 600));
 

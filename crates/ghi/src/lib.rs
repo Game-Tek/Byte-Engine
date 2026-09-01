@@ -11,12 +11,17 @@
 #![allow(
 	clippy::module_inception,
 	clippy::collapsible_if,
+	clippy::cognitive_complexity,
+	clippy::excessive_nesting,
 	clippy::needless_range_loop,
 	clippy::new_without_default,
+	clippy::multiple_unsafe_ops_per_block,
 	clippy::result_unit_err,
 	clippy::tabs_in_doc_comments,
 	clippy::too_many_arguments,
+	clippy::too_many_lines,
 	clippy::type_complexity,
+	clippy::undocumented_unsafe_blocks,
 	clippy::unnecessary_literal_unwrap
 )]
 #![feature(allocator_api)]

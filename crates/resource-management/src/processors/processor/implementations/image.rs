@@ -306,7 +306,7 @@ fn produce_image_in<A: Allocator + Clone>(
 	} else {
 		let encoded_size = encoded_mip_level_size(output_format, extent).ok_or(LoadErrors::FailedToProcess)?;
 		let mut data = Vec::with_capacity_in(encoded_size, allocator.clone());
-		append_encoded_level(output_format, extent, intermediate, &mut data, allocator.clone());
+		append_encoded_level(output_format, extent, intermediate, &mut data, allocator);
 		let data = data.into_boxed_slice();
 
 		let streams = Some(vec![StreamDescription::new("mip[0]", data.len(), 0)]);
@@ -410,7 +410,7 @@ fn append_encoded_level<A: Allocator + Clone>(
 			// RgSurface<2> expects tightly packed RG pairs (2 bytes per pixel),
 			// not interleaved RGBA. Convert the RGBA8 intermediate to RG8
 			// before compression to avoid reading B/A as the second pixel's R/G.
-			let (rg_data, width, height) = rga_to_rg_surface_in(data, extent, allocator.clone());
+			let (rg_data, width, height) = rga_to_rg_surface_in(data, extent, allocator);
 
 			let rg_surface = intel_tex_2::RgSurface {
 				data: &rg_data,
@@ -433,7 +433,7 @@ fn append_encoded_level<A: Allocator + Clone>(
 			output.extend_from_slice(&compressed);
 		}
 		Formats::BC7 | Formats::BC7SRGB => {
-			let (data, width, height) = rgba8_bc_compression_surface_in(extent, data, allocator.clone());
+			let (data, width, height) = rgba8_bc_compression_surface_in(extent, data, allocator);
 			let data = data.as_slice();
 
 			let expected_surface_bytes = width as usize * height as usize * 4;

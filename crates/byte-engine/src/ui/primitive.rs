@@ -67,7 +67,17 @@ impl Shapes {
 	pub fn bbox(&self, available_space: Size) -> Size {
 		match self {
 			Self::Box { half, .. } => Size::new(half.0.calculate(available_space.x()), half.1.calculate(available_space.y())),
-			_ => todo!(),
+			Self::Circle { radius } => {
+				let diameter = radius.max(0.0) * 2.0;
+				Size::new(diameter, diameter)
+			}
+			Self::Triangle { vertices } => {
+				let min_x = vertices.iter().map(Location::x).fold(f32::INFINITY, f32::min);
+				let max_x = vertices.iter().map(Location::x).fold(f32::NEG_INFINITY, f32::max);
+				let min_y = vertices.iter().map(Location::y).fold(f32::INFINITY, f32::min);
+				let max_y = vertices.iter().map(Location::y).fold(f32::NEG_INFINITY, f32::max);
+				Size::new(max_x - min_x, max_y - min_y)
+			}
 		}
 	}
 

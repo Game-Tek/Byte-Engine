@@ -454,15 +454,16 @@ impl AssetManagerState {
 			Ok(())
 		};
 
-		if stale && result.is_ok() {
-			if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
-				self.track_resource(&resource);
+		if stale
+			&& result.is_ok()
+			&& let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await
+		{
+			self.track_resource(&resource);
 
-				let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
+			let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
 
-				if let Some(updates) = self.hot_reload.lock().updates.clone() {
-					updates.send(update);
-				}
+			if let Some(updates) = self.hot_reload.lock().updates.clone() {
+				updates.send(update);
 			}
 		}
 

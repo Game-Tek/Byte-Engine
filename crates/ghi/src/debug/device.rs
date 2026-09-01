@@ -86,11 +86,11 @@ impl Device {
 	}
 
 	pub fn build_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
-		todo!()
+		panic!("Cannot build a debug GHI buffer. The debug backend does not allocate buffer storage.")
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
-		todo!()
+		panic!("Cannot build a dynamic debug GHI buffer. The debug backend does not allocate buffer storage.")
 	}
 
 	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> crate::DynamicImageHandle {
@@ -102,11 +102,11 @@ impl Device {
 	}
 
 	pub fn get_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
-		todo!("Handle true allocations");
+		panic!("Cannot read a debug GHI buffer. The debug backend does not allocate buffer storage.")
 	}
 
 	pub fn get_mut_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
-		todo!("Handle true allocations");
+		panic!("Cannot write a debug GHI buffer. The debug backend does not allocate buffer storage.")
 	}
 
 	pub fn get_texture_slice_mut(&mut self, _texture_handle: ImageHandle) -> &mut [u8] {

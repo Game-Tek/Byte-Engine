@@ -134,10 +134,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		Self::validate_reachable_binding_layout(order, self.allocator.clone())?;
 		self.collect_packed_mat4x3_members(order);
-		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
-			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
-				return Ok(source);
-			}
+		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment)
+			&& let Some(source) = Self::find_full_source_passthrough(main_function_node)
+		{
+			return Ok(source);
 		}
 
 		let fallback_helper_capacity = if self.downsample_strategy == DownsampleStrategy::ShaderGather
@@ -461,8 +461,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		let besl::Nodes::Function { return_type, .. } = node.node() else {
 			return None;
 		};
-		let return_type_name = return_type.borrow().get_name().map(str::to_string);
-		return_type_name
+
+		return_type.borrow().get_name().map(str::to_string)
 	}
 
 	pub(crate) fn has_non_void_return(function_node: &besl::NodeReference) -> bool {

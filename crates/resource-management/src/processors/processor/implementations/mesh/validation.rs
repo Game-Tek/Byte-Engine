@@ -254,15 +254,15 @@ pub(super) fn validate_skin_binding(
 		});
 	}
 	for (joint_index, entry) in skin.entries.iter().enumerate() {
-		if let SkinJoint::Node(node) = entry.joint {
-			if node as usize >= node_count {
-				return Err(MeshProcessingError::SkinJointOutOfRange {
-					skin: skin_index,
-					joint: joint_index,
-					node,
-					nodes: node_count,
-				});
-			}
+		if let SkinJoint::Node(node) = entry.joint
+			&& node as usize >= node_count
+		{
+			return Err(MeshProcessingError::SkinJointOutOfRange {
+				skin: skin_index,
+				joint: joint_index,
+				node,
+				nodes: node_count,
+			});
 		}
 		if !entry
 			.adjusted_inverse_bind_matrix

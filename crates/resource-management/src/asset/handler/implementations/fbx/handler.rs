@@ -176,10 +176,10 @@ impl AssetHandler for FBXAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(resource_type) = context.resource_type(url) {
-			if !self.can_handle(resource_type) {
-				return Err(LoadErrors::UnsupportedType);
-			}
+		if let Some(resource_type) = context.resource_type(url)
+			&& !self.can_handle(resource_type)
+		{
+			return Err(LoadErrors::UnsupportedType);
 		}
 
 		let allocator = context.allocator();

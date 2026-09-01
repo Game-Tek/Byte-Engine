@@ -210,22 +210,22 @@ impl Generator {
 	}
 
 	pub(crate) fn accessor_type_name(left: &besl::NodeReference) -> Option<String> {
-		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left) {
-			if let Some(binding) = Self::hlsl_buffer_binding_source(&source) {
-				let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
-				let member_type = if flattened {
-					binding.flattened_element_type
-				} else {
-					Self::hlsl_buffer_member_type(&source, &name)
-				}?;
-				// The first index on an array member selects its declared element.
-				// Only a later index into that element selects a matrix column or vector component.
-				return if Self::hlsl_buffer_member_is_array(left) {
-					Some(member_type)
-				} else {
-					Some(Self::indexed_value_type_name(&member_type).to_string())
-				};
-			}
+		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left)
+			&& let Some(binding) = Self::hlsl_buffer_binding_source(&source)
+		{
+			let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
+			let member_type = if flattened {
+				binding.flattened_element_type
+			} else {
+				Self::hlsl_buffer_member_type(&source, &name)
+			}?;
+			// The first index on an array member selects its declared element.
+			// Only a later index into that element selects a matrix column or vector component.
+			return if Self::hlsl_buffer_member_is_array(left) {
+				Some(member_type)
+			} else {
+				Some(Self::indexed_value_type_name(&member_type).to_string())
+			};
 		}
 
 		// Local and parameter references do not carry buffer metadata. Their

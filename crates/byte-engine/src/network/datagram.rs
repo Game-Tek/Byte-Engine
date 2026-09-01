@@ -226,10 +226,11 @@ impl ClientDatagramPipeline {
 		};
 		encode_packets(packets, outbound)?;
 
-		if !was_connected && self.session.is_connected() {
-			if let Some(id) = self.connection_id {
-				return Ok(DatagramOutcome::Connected { id });
-			}
+		if !was_connected
+			&& self.session.is_connected()
+			&& let Some(id) = self.connection_id
+		{
+			return Ok(DatagramOutcome::Connected { id });
 		}
 
 		Ok(DatagramOutcome::Handled)
@@ -368,10 +369,10 @@ impl ServerDatagramPipeline {
 		};
 		encode_packets(packets, outbound)?;
 
-		if let Some(id) = connection_id {
-			if !self.session.is_connected() {
-				return Ok(DatagramOutcome::Disconnected { id });
-			}
+		if let Some(id) = connection_id
+			&& !self.session.is_connected()
+		{
+			return Ok(DatagramOutcome::Disconnected { id });
 		}
 
 		Ok(DatagramOutcome::Handled)

@@ -25,7 +25,7 @@ pub(super) fn lex_parsed_node(
 		parser::Nodes::Struct { name, fields } => {
 			if let Some(n) = get_reference(&chain, name) {
 				// If the type already exists, return it.
-				return Ok(n.clone());
+				return Ok(n);
 			}
 
 			let this: NodeReference = Node::r#struct(name, Vec::new()).into();
@@ -61,23 +61,21 @@ pub(super) fn lex_parsed_node(
 				})?;
 
 				let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
-					let x = Node::internal_new(Node {
+					Node::internal_new(Node {
 						node: Nodes::Struct {
 							name: format!("{}*", stripped),
 							template: Some(outer_type.clone()),
 							fields: Vec::new(),
 							types: Vec::new(),
 						},
-					});
-
-					x
+					})
 				} else {
 					resolve_type(&chain, inner_type_name)?
 				};
 
 				if let Some(n) = get_reference(&chain, r#type) {
 					// If the specialized generic type already exists, return it.
-					return Ok(n.clone());
+					return Ok(n);
 				}
 
 				let children = Vec::new();
@@ -85,7 +83,7 @@ pub(super) fn lex_parsed_node(
 				let this = Node {
 					node: Nodes::Struct {
 						name: r#type.to_string(),
-						template: Some(outer_type.clone()),
+						template: Some(outer_type),
 						fields: children,
 						types: vec![inner_type],
 					},

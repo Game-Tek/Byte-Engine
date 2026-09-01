@@ -148,8 +148,7 @@ impl Device {
 			return;
 		};
 		let extent = image.extent;
-		let source_bytes =
-			unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<RGBAu8>()) };
+		let source_bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) };
 		if self.record_image_upload(
 			command_buffer_handle,
 			&command_list,

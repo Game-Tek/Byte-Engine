@@ -315,9 +315,7 @@ impl Device {
 		mip_levels: u32,
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
 	) -> Option<ID3D12Resource> {
-		let Some(dxgi_format) = Self::dxgi_resource_format(format, uses) else {
-			return None;
-		};
+		let dxgi_format = Self::dxgi_resource_format(format, uses)?;
 		if extent.width() == 0 || extent.height() == 0 {
 			return None;
 		}

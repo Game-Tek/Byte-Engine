@@ -7,6 +7,14 @@
 //! See the [BESL language reference](/docs/reference/besl)
 //! for syntax, interfaces, stages, sidecar settings, and supported operations.
 
+// Parser and VM workflows are intentionally explicit; keep heuristic style lints quiet until those pipelines are redesigned.
+#![allow(
+	clippy::cognitive_complexity,
+	clippy::excessive_nesting,
+	clippy::mutable_key_type,
+	clippy::too_many_lines
+)]
+
 pub mod lexer;
 pub mod optimization;
 pub mod parser;

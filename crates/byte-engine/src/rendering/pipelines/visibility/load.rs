@@ -1,9 +1,7 @@
 //! This module implements loading of resources for the Visibility pipeline.
 
 /// The requesting counter part of the loading couple.
-struct LoadClient {
-
-}
+struct LoadClient {}
 
 /// The serving/worker part of the loading couple.
 struct LoadServer {
@@ -14,18 +12,10 @@ struct LoadServer {
 impl LoadServer {
 	async fn load(&self, request: ResourceRequest) {
 		match request {
-			ResourceRequest::Mesh { key, source } => {
-
-			}
-			ResourceRequest::Material { id } => {
-
-			}
-			ResourceRequest::Image { key } => {
-
-			}
-			ResourceRequest::Environment { id } => {
-
-			}
+			ResourceRequest::Mesh { key, source } => {}
+			ResourceRequest::Material { id } => {}
+			ResourceRequest::Image { key } => {}
+			ResourceRequest::Environment { id } => {}
 		}
 	}
 }
@@ -38,14 +28,21 @@ pub(crate) enum ResourceRequest {
 	Environment { id: String },
 }
 
-pub fn spawn(resource_manager: EntityHandle<ResourceManager>, resource_factory: ghi::implementation::Factory) -> (LoadClient, LoadServer) {
+fn spawn(
+	resource_manager: EntityHandle<ResourceManager>,
+	resource_factory: ghi::implementation::Factory,
+) -> (LoadClient, LoadServer) {
 	let server = LoadServer {
 		resource_manager,
 		resource_factory,
 	};
 
-	(LoadClient {  }, server)
+	(LoadClient {}, server)
 }
 
-use crate::{core::EntityHandle, rendering::renderable::mesh::{MeshKey, MeshSource}};
 use resource_management::ResourceManager;
+
+use crate::{
+	core::EntityHandle,
+	rendering::renderable::mesh::{MeshKey, MeshSource},
+};

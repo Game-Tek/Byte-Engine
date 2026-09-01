@@ -224,14 +224,12 @@ impl<C: 'static> Engine<C> {
 
 	fn route_input_events(&mut self, snapshot: &mut Snapshot<'_>) {
 		while let Some(click) = self.clicks.pop() {
-			if click {
-				if let Some(target) = snapshot.click(self.cursor_position) {
-					self.runtime.borrow_mut().push_event(UiEvent {
-						target,
-						kind: Events::Actuated,
-						delta: None,
-					});
-				}
+			if click && let Some(target) = snapshot.click(self.cursor_position) {
+				self.runtime.borrow_mut().push_event(UiEvent {
+					target,
+					kind: Events::Actuated,
+					delta: None,
+				});
 			}
 		}
 
@@ -527,11 +525,12 @@ impl Render {
 	}
 }
 
-pub(crate) struct VirtualViewport;
+/// The `VirtualViewport` struct reserves a stable identity for a virtual UI output region.
+pub(crate) struct VirtualViewport(Id);
 
 impl ElementHandle for VirtualViewport {
 	fn id(&self) -> Id {
-		unimplemented!()
+		self.0
 	}
 }
 

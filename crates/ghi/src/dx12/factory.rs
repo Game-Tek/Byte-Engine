@@ -1,4 +1,5 @@
 /// The `Factory` struct builds detached DX12 resources before they have public GHI handles.
+#[derive(Default)]
 pub struct Factory {
 	pub(crate) shaders: Vec<Shader>,
 }
@@ -83,12 +84,6 @@ pub type Image = FactoryImage;
 
 /// The `Sampler` type alias preserves the detached sampler name used by backend-specific factory paths.
 pub type Sampler = FactorySampler;
-
-impl Default for Factory {
-	fn default() -> Self {
-		Self { shaders: Vec::new() }
-	}
-}
 
 impl crate::device::Device for Factory {
 	type Context = crate::dx12::Device;

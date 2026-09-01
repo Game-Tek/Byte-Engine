@@ -332,7 +332,7 @@ mod tests {
 
 	#[test]
 	fn transform_updates_write_each_registered_primitive_without_retaining_transform_state() {
-		let mut renderable_factory = Factory::new();
+		let renderable_factory = Factory::new();
 		let handle = renderable_factory.create(());
 		let other_handle = renderable_factory.create(());
 		let mut render_entities = StableVec::new();

@@ -62,7 +62,7 @@ impl HttpInspectorServer {
 	fn spawn(inspector: EntityHandle<Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
 		let i = inspector.clone();
 
-		let mut server = Server::new(move |mut request| match (request.method(), request.uri().path()) {
+		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
 			(&Method::GET, "/screenshots") => screenshot_response(&i, request.uri().query()),
 			(&Method::GET, "/messages") => messages_response(&i),
 			(&Method::POST, "/messages") => message_response(&i, request.body_mut()),

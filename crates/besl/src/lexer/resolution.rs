@@ -160,16 +160,14 @@ pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<Node
 			Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
 			_ => None,
 		};
-		if let Some(source) = source {
-			if let Nodes::Binding {
+		if let Some(source) = source
+			&& let Nodes::Binding {
 				r#type: BindingTypes::Buffer { members },
 				..
 			} = source.borrow().node()
-			{
-				if let Some(member) = find_named_child(members, name) {
-					return Ok(member);
-				}
-			}
+			&& let Some(member) = find_named_child(members, name)
+		{
+			return Ok(member);
 		}
 	}
 	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })

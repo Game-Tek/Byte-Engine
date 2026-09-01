@@ -3,6 +3,9 @@
 //! Call one of the command functions, such as [`bake`] or [`list`], from an
 //! [`Executor`] runtime.
 
+// Command integration tests keep complete CLI workflows together for readability.
+#![allow(clippy::too_many_lines)]
+
 mod commands;
 mod utils;
 

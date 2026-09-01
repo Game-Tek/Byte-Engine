@@ -302,39 +302,39 @@ impl GraphicsApplication {
 					.map_err(|error| log::warn!("{}", error))
 					.ok();
 			}
-			if self.tick_count > 0 {
-				if let Some(gamepad_system) = &mut self.gamepad_system {
-					let (new_devices, events) = gamepad_system.poll();
+			if self.tick_count > 0
+				&& let Some(gamepad_system) = &mut self.gamepad_system
+			{
+				let (new_devices, events) = gamepad_system.poll();
 
-					if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
-						for (path, kind, device) in new_devices {
-							// Each physical HID device gets its own input-system device so actions can
-							// preserve player/device identity instead of collapsing into one gamepad.
-							let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
-							gamepad_system.add_device(path, kind, device, device_handle);
-						}
-					} else if !new_devices.is_empty() {
-						log::warn!(
-							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
-							crate::online_docs_url("reference/input")
-						);
+				if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
+					for (path, kind, device) in new_devices {
+						// Each physical HID device gets its own input-system device so actions can
+						// preserve player/device identity instead of collapsing into one gamepad.
+						let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
+						gamepad_system.add_device(path, kind, device, device_handle);
 					}
+				} else if !new_devices.is_empty() {
+					log::warn!(
+						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
+						crate::online_docs_url("reference/input")
+					);
+				}
 
-					for event in events {
-						log::debug!(
-							target: "byte_engine::input::events",
-							"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
-							event.device_handle(),
-							event.trigger(),
-							event.value()
-						);
-						self.input_system.record_trigger_value_for_device(
-							input::SeatHandle::stub(),
-							event.device_handle(),
-							event.trigger(),
-							event.value(),
-						);
-					}
+				for event in events {
+					log::debug!(
+						target: "byte_engine::input::events",
+						"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+						event.device_handle(),
+						event.trigger(),
+						event.value()
+					);
+					self.input_system.record_trigger_value_for_device(
+						input::SeatHandle::stub(),
+						event.device_handle(),
+						event.trigger(),
+						event.value(),
+					);
 				}
 			}
 		}
@@ -420,10 +420,10 @@ impl GraphicsApplication {
 				self.ttff = MediaTime::from_std(self.start_time.elapsed());
 			}
 
-			if let Some(kill_after) = self.kill_after {
-				if self.tick_count >= kill_after {
-					close = true;
-				}
+			if let Some(kill_after) = self.kill_after
+				&& self.tick_count >= kill_after
+			{
+				close = true;
 			}
 
 			{

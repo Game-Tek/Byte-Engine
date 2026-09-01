@@ -5,6 +5,12 @@
 //! a queue through [`ResourceIoContext`], open source files on that queue, then
 //! submit batches of [`ResourceIoRequest`] values.
 
+use std::path::Path;
+
+use utils::Extent;
+
+use crate::{BaseBufferHandle, BaseImageHandle};
+
 bitflags::bitflags! {
 	/// Identifies the compression containers a resource-I/O backend can decode.
 	#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -500,9 +506,3 @@ mod tests {
 		assert_eq!(request.mip_level, 4);
 	}
 }
-
-use std::path::Path;
-
-use utils::Extent;
-
-use crate::{BaseBufferHandle, BaseImageHandle};

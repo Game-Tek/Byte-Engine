@@ -434,7 +434,7 @@ impl Device {
 		};
 
 		assert!(
-			offset % 4 == 0 && bytes.len() % 4 == 0,
+			offset.is_multiple_of(4) && bytes.len().is_multiple_of(4),
 			"Invalid DX12 push-constant write alignment. The most likely cause is that the offset or data size is not a multiple of four bytes."
 		);
 		if bytes.is_empty() {

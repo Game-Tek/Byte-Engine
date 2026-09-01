@@ -13,7 +13,7 @@ impl<'a> Frame<'a> {
 	}
 
 	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
-		todo!("Handle true allocations");
+		panic!("Cannot write a dynamic debug GHI buffer. The debug backend does not allocate buffer storage.")
 	}
 
 	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {}

@@ -112,10 +112,10 @@ impl Snapshot<'_> {
 				continue;
 			}
 
-			if let Some(cursor_id) = current_cursor {
-				if self.is_cursor_related(cursor_id, candidate_id) {
-					continue;
-				}
+			if let Some(cursor_id) = current_cursor
+				&& self.is_cursor_related(cursor_id, candidate_id)
+			{
+				continue;
 			}
 
 			let candidate = NavigationFrame::from_element(element);

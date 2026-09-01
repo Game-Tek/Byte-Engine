@@ -7,7 +7,6 @@ struct OpenFile {
 
 /// The `ResourceIoQueue` struct owns a Metal I/O command queue and its opened source files.
 pub struct ResourceIoQueue {
-	id: u64,
 	device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn mtl::MTLIOCommandQueue>>,
 	files: Vec<OpenFile>,
@@ -17,15 +16,12 @@ pub struct ResourceIoQueue {
 /// The `ResourceIoTicket` struct retains one submitted Metal I/O batch until callers finish observing it.
 pub struct ResourceIoTicket {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLIOCommandBuffer>>,
+	cancellation_requested: AtomicBool,
 }
 
 impl ResourceIoQueue {
 	/// Creates the native queue used by later file batches.
-	fn new(
-		context: &mut context::Context,
-		id: u64,
-		descriptor: ResourceIoQueueDescriptor<'_>,
-	) -> Result<Self, ResourceIoError> {
+	fn new(context: &mut context::Context, descriptor: ResourceIoQueueDescriptor<'_>) -> Result<Self, ResourceIoError> {
 		let native_descriptor = MTLIOCommandQueueDescriptor::new();
 		native_descriptor.setPriority(match descriptor.priority {
 			ResourceIoPriority::High => MTLIOPriority::High,
@@ -54,7 +50,6 @@ impl ResourceIoQueue {
 		}
 
 		Ok(Self {
-			id,
 			device,
 			queue,
 			files: Vec::new(),
@@ -63,9 +58,6 @@ impl ResourceIoQueue {
 	}
 
 	fn file(&self, region: ResourceIoFileRegion) -> Result<&OpenFile, ResourceIoError> {
-		if region.file.queue != self.id {
-			return Err(ResourceIoError::InvalidFileHandle);
-		}
 		let index = usize::try_from(region.file.index).map_err(|_| ResourceIoError::InvalidFileHandle)?;
 		self.files.get(index).ok_or(ResourceIoError::InvalidFileHandle)
 	}
@@ -195,10 +187,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 
 		let handle_index = self.files.len() as u64;
 		self.files.push(OpenFile { handle });
-		Ok(ResourceIoFileHandle {
-			queue: self.id,
-			index: handle_index,
-		})
+		Ok(ResourceIoFileHandle { index: handle_index })
 	}
 
 	/// Submits one independently completing Metal I/O command buffer.
@@ -210,9 +199,6 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 	) -> Result<Self::Ticket, ResourceIoError> {
 		if requests.is_empty() {
 			return Err(ResourceIoError::EmptyBatch);
-		}
-		if !std::ptr::eq(&*self.device, &*context.device) {
-			return Err(ResourceIoError::InvalidContext);
 		}
 		let command_buffer = self.queue.commandBuffer();
 		if self.debug_labels {
@@ -232,7 +218,10 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 
 		command_buffer.commit();
 
-		Ok(ResourceIoTicket { command_buffer })
+		Ok(ResourceIoTicket {
+			command_buffer,
+			cancellation_requested: AtomicBool::new(false),
+		})
 	}
 }
 
@@ -240,6 +229,7 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 	fn status(&self) -> ResourceIoStatus {
 		match self.command_buffer.status() {
 			MTLIOStatus::Pending => ResourceIoStatus::Pending,
+			MTLIOStatus::Complete if self.cancellation_requested.load(Ordering::Acquire) => ResourceIoStatus::Cancelled,
 			MTLIOStatus::Complete => ResourceIoStatus::Complete,
 			MTLIOStatus::Cancelled => ResourceIoStatus::Cancelled,
 			MTLIOStatus::Error => ResourceIoStatus::Failed,
@@ -266,6 +256,10 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 	}
 
 	fn cancel(&self) -> Result<(), ResourceIoError> {
+		if !matches!(self.command_buffer.status(), MTLIOStatus::Pending) {
+			return Ok(());
+		}
+		self.cancellation_requested.store(true, Ordering::Release);
 		self.command_buffer.tryCancel();
 		Ok(())
 	}
@@ -274,33 +268,38 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 impl ResourceIoContext for context::Context {
 	type ResourceIoQueue = ResourceIoQueue;
 
+	/// Computes the compact source layout accepted by a Metal I/O texture request.
+	fn resource_io_image_source_layout(
+		&self,
+		format: crate::Formats,
+		extent: utils::Extent,
+	) -> Result<ResourceIoImageSourceLayout, ResourceIoError> {
+		let width = extent.width();
+		let height = extent.height().max(1);
+		let depth = extent.depth().max(1);
+		if width == 0 {
+			return Err(ResourceIoError::InvalidImageLayout);
+		}
+		let (bytes_per_row, _, bytes_per_image) = format.compact_copy_layout(width, height);
+		let total_bytes = bytes_per_image
+			.checked_mul(depth as usize)
+			.ok_or(ResourceIoError::InvalidImageLayout)?;
+		if bytes_per_row == 0 || bytes_per_image == 0 || total_bytes == 0 {
+			return Err(ResourceIoError::InvalidImageLayout);
+		}
+		Ok(ResourceIoImageSourceLayout {
+			bytes_per_row,
+			bytes_per_image,
+			total_bytes,
+		})
+	}
+
 	fn create_resource_io_queue(
 		&mut self,
 		descriptor: ResourceIoQueueDescriptor<'_>,
 	) -> Result<Self::ResourceIoQueue, ResourceIoError> {
-		let id = self.next_resource_io_queue_id;
-		self.next_resource_io_queue_id = id.checked_add(1).ok_or_else(|| {
-			ResourceIoError::QueueCreation(
-				"Metal resource I/O queue identity space is exhausted. The most likely cause is that this context created more queues than a 64-bit identity can represent."
-					.to_string(),
-			)
-		})?;
-		ResourceIoQueue::new(self, id, descriptor)
+		ResourceIoQueue::new(self, descriptor)
 	}
-}
-
-/// Rejects physical range metadata that cannot describe a nonempty stored block.
-fn validate_source_range(request: usize, source: ResourceIoFileRegion) -> Result<(), ResourceIoError> {
-	if source.stored_range.is_some_and(|range| {
-		range.size == 0
-			|| u64::try_from(range.size)
-				.ok()
-				.and_then(|size| range.offset.checked_add(size))
-				.is_none()
-	}) {
-		return Err(ResourceIoError::InvalidSourceRange { request });
-	}
-	Ok(())
 }
 
 /// Maps portable compression names to Metal compression-container methods.
@@ -472,36 +471,6 @@ mod tests {
 	}
 
 	#[test]
-	fn submission_rejects_a_file_opened_by_another_queue() {
-		const BYTES: &[u8; 4] = &[1, 2, 3, 4];
-		let path = temporary_path("wrong-queue");
-		fs::write(&path, BYTES).expect("wrong-queue resource-I/O test file");
-		let mut context = test_context();
-		let destination = context.build_buffer::<[u8; BYTES.len()]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostOnly),
-		);
-		let mut source_queue = context
-			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
-			.expect("source Metal I/O queue");
-		let file = source_queue
-			.open_file(ResourceIoFileDescriptor::new(&path))
-			.expect("source Metal I/O file");
-		let mut other_queue = context
-			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
-			.expect("other Metal I/O queue");
-		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
-
-		assert!(matches!(
-			other_queue.submit(&context, Some("Wrong Queue Load"), &[request]),
-			Err(ResourceIoError::InvalidFileHandle)
-		));
-
-		drop(other_queue);
-		drop(source_queue);
-		fs::remove_file(path).expect("remove wrong-queue resource-I/O test file");
-	}
-
-	#[test]
 	fn lz4_file_load_decompresses_into_a_context_buffer() {
 		const BYTES: &[u8; 32] = b"metal-io-native-lz4-decode-data!";
 		let path = temporary_path("lz4-buffer");
@@ -638,7 +607,7 @@ mod tests {
 }
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -652,6 +621,6 @@ use super::{context, mtl};
 use crate::io::{
 	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
 	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
-	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoPriority, ResourceIoQueueDescriptor, ResourceIoQueueType,
-	ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus,
+	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority, ResourceIoQueueDescriptor,
+	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
 };

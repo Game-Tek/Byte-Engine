@@ -167,9 +167,27 @@ Cargo writes the binary to `target/release/`.
 	</Tab>
 	<Tab>
 
-## Build for Windows
+## Build and bundle for Windows
 
-Create an optimized application executable from your project directory:
+Bundle the release executable, baked `resources/` directory, and DirectStorage
+runtime together. Byte Engine loads DirectStorage at runtime, so a successful
+Cargo build doesn't prove that the final application directory contains the
+required DLLs.
+
+### 1. Bake your application resources
+
+[Install BELD](/docs/develop/resource-management/install-beld), then bake the
+resources for the Windows target from your application directory:
+
+```powershell
+beld --source "$PWD\assets" --destination "$PWD\resources" bake
+beld --destination "$PWD\resources" list
+```
+
+Keep `resources/` outside Cargo's `target/` directory. Cargo owns `target/` and
+might remove it when you run `cargo clean`.
+
+### 2. Build the release executable
 
 ```powershell
 cargo build --release
@@ -177,9 +195,125 @@ cargo build --release
 
 Cargo writes the executable to `target\release\`.
 
-<Callout type="info" title="Windows packaging guide not available">
-	The documentation doesn't yet cover packaging the release executable and
-	baked resources for Windows.
+### 3. Get the supported DirectStorage runtime
+
+Download
+[Microsoft.Direct3D.DirectStorage 1.3.0](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0)
+from Microsoft. Byte Engine targets the stable 1.3 runtime. Don't substitute a
+1.4 preview runtime without updating the GHI integration and rerunning its
+native DX12 tests.
+
+You can install the package into a local staging directory with the NuGet CLI:
+
+```powershell
+nuget install Microsoft.Direct3D.DirectStorage `
+  -Version 1.3.0 `
+  -OutputDirectory .packages `
+  -ExcludeVersion
+```
+
+The runtime is redistributable under Microsoft's terms, not Byte Engine's MIT
+license. Review and comply with the package's `LICENSE.txt` before you
+distribute it. `LICENSE-CODE.txt` covers the SDK headers and metadata; it isn't
+the license for the runtime DLLs.
+
+### 4. Select the matching runtime architecture
+
+Copy both DLLs from the directory that matches the executable's Rust target:
+
+| Rust target | DirectStorage package directory |
+| --- | --- |
+| `x86_64-pc-windows-msvc` | `native\bin\x64` |
+| `aarch64-pc-windows-msvc` | `native\bin\ARM64` |
+| `i686-pc-windows-msvc` | `native\bin\x86` |
+
+Always copy `dstorage.dll` and `dstoragecore.dll` from the same package version
+and architecture. The `.lib` files, headers, and WinMD metadata aren't needed
+at runtime.
+
+### 5. Stage the application directory
+
+This example stages an x64 application named `my-application`:
+
+```powershell
+$applicationName = "my-application"
+$bundleDirectory = Join-Path $PWD "dist\$applicationName"
+$directStorageDirectory = Join-Path $PWD `
+  ".packages\Microsoft.Direct3D.DirectStorage\native\bin\x64"
+
+New-Item -ItemType Directory -Force -Path $bundleDirectory | Out-Null
+Copy-Item -LiteralPath "target\release\$applicationName.exe" `
+  -Destination $bundleDirectory -Force
+Copy-Item -LiteralPath "resources" `
+  -Destination $bundleDirectory -Recurse -Force
+Copy-Item -LiteralPath "$directStorageDirectory\dstorage.dll" `
+  -Destination $bundleDirectory -Force
+Copy-Item -LiteralPath "$directStorageDirectory\dstoragecore.dll" `
+  -Destination $bundleDirectory -Force
+```
+
+The resulting files must keep this layout, whether you distribute a ZIP,
+installer, or MSIX package:
+
+```text
+my-application/
+  my-application.exe
+  dstorage.dll
+  dstoragecore.dll
+  resources/
+    resources.db
+    ... baked payload files ...
+```
+
+Keep both DirectStorage DLLs beside the executable. Don't place them inside
+`resources/`, install them into a Windows system directory, or rely on a
+developer machine's `PATH`.
+
+### 6. Verify the completed bundle
+
+Check the staged files, then run the application from that directory:
+
+```powershell
+$requiredBundleFiles = @(
+  "$bundleDirectory\$applicationName.exe",
+  "$bundleDirectory\dstorage.dll",
+  "$bundleDirectory\dstoragecore.dll",
+  "$bundleDirectory\resources\resources.db"
+)
+
+$missingBundleFiles = $requiredBundleFiles |
+  Where-Object { -not (Test-Path -LiteralPath $_) }
+
+if ($missingBundleFiles.Count -ne 0) {
+  throw "The Windows bundle is missing: $($missingBundleFiles -join ', ')"
+}
+
+& "$bundleDirectory\$applicationName.exe"
+```
+
+Test the bundle on a clean Windows machine or VM that doesn't have the
+DirectStorage SDK installed. Exercise a file-to-buffer or file-to-image load;
+application startup alone might not create a DirectStorage queue. Missing or
+incompatible runtime DLLs produce a resource-I/O queue creation error with a
+link to the supported package.
+
+<Callout type="info" title="Run the native DX12 resource-I/O tests">
+	Cargo doesn't copy the DirectStorage runtime beside test executables. Add the
+	matching package directory to `PATH` for the test process, then restore the
+	previous value:
+
+```powershell
+$directStorageDirectory = Resolve-Path `
+  ".packages\Microsoft.Direct3D.DirectStorage\native\bin\x64"
+$savedProcessPath = $env:PATH
+
+try {
+  $env:PATH = "$directStorageDirectory;$savedProcessPath"
+  cargo nextest run -p byte-engine-ghi dx12::io::tests
+} finally {
+  $env:PATH = $savedProcessPath
+}
+```
 </Callout>
 
 	</Tab>

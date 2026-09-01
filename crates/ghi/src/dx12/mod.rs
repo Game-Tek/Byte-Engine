@@ -4,6 +4,7 @@ pub mod device;
 pub mod factory;
 pub mod frame;
 pub mod instance;
+mod io;
 pub mod queue;
 
 pub use self::command_buffer::*;
@@ -11,6 +12,8 @@ pub use self::context::*;
 pub use self::factory::*;
 pub use self::frame::*;
 pub use self::instance::*;
+pub(crate) use self::io::write_compressed_file;
+pub use self::io::{ResourceIoQueue, ResourceIoTicket};
 pub use self::queue::*;
 mod utils;
 

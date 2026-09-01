@@ -267,6 +267,24 @@ struct BufferCopyInfo {
 	size: usize,
 }
 
+/// The `ResourceIoBufferDestination` struct carries a static DX12 buffer into a DirectStorage request.
+pub(crate) struct ResourceIoBufferDestination {
+	pub(crate) resource: ID3D12Resource,
+	pub(crate) size: usize,
+	pub(crate) common_state: bool,
+	pub(crate) direct_storage_compatible: bool,
+}
+
+/// The `ResourceIoImageDestination` struct carries a static DX12 image into a DirectStorage request.
+pub(crate) struct ResourceIoImageDestination {
+	pub(crate) resource: ID3D12Resource,
+	pub(crate) extent: Extent,
+	pub(crate) format: Formats,
+	pub(crate) array_layers: u32,
+	pub(crate) mip_levels: u32,
+	pub(crate) common_state: bool,
+}
+
 /// The `TextureReadbackData` struct owns one completed DX12 texture-transfer result.
 struct TextureReadbackData {
 	bytes: Vec<u8>,

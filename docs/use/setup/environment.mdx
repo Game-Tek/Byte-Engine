@@ -150,6 +150,15 @@ Install the Visual Studio Build Tools with the MSVC C++ toolchain and Windows
 SDK before building on Windows. Byte Engine's Windows backends use Win32,
 Direct3D 12, DXGI, and DXC APIs from the Windows SDK.
 
+<Callout type="info" title="Bundle DirectStorage with the application">
+	The DirectStorage runtime is an app-local redistributable, not a system-wide
+	development prerequisite. You can compile without copying its DLLs into the
+	Windows SDK. Before you run native resource-I/O tests or distribute an
+	application, follow the
+	[Windows bundle steps](/docs/use/build#build-and-bundle-for-windows) to stage
+	the matching runtime beside the executable.
+</Callout>
+
 ### Enable AVX2 on x64
 
 On x64 Windows, enable AVX2 explicitly instead of using `target-cpu=native`.

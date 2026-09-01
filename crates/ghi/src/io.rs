@@ -1,9 +1,9 @@
-//! Load file regions into GPU resources through backend-native storage queues.
+//! Load file regions into GPU resources through dedicated storage queues.
 //!
-//! Resource I/O is separate from graphics command queues because APIs such as
-//! Metal I/O and DirectStorage use dedicated queue and file-handle types. Create
-//! a queue through [`ResourceIoContext`], open source files on that queue, then
-//! submit batches of [`ResourceIoRequest`] values.
+//! Resource I/O is separate from graphics command queues and uses its own queue
+//! and file-handle types. Create a queue through [`ResourceIoContext`], open
+//! source files on that queue, then submit batches of [`ResourceIoRequest`]
+//! values.
 
 use std::path::Path;
 
@@ -92,7 +92,12 @@ pub fn write_compressed_file(path: &Path, compression: ResourceIoCompression, de
 		crate::metal::write_compressed_file(path, compression, decoded)
 	}
 
-	#[cfg(not(target_os = "macos"))]
+	#[cfg(target_os = "windows")]
+	{
+		crate::dx12::write_compressed_file(path, compression, decoded)
+	}
+
+	#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 	{
 		let _ = (path, decoded);
 		Err(ResourceIoError::UnsupportedCompression(compression))
@@ -109,6 +114,9 @@ pub enum ResourceIoPriority {
 }
 
 /// Selects whether independent resource-I/O commands may execute concurrently.
+///
+/// Implementations return [`ResourceIoError::QueueCreation`] when they cannot
+/// provide the selected scheduling mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ResourceIoQueueType {
 	#[default]
@@ -168,6 +176,7 @@ impl<'a> ResourceIoQueueDescriptor<'a> {
 		self
 	}
 
+	/// Selects whether the backend may execute independent requests concurrently.
 	pub fn queue_type(mut self, queue_type: ResourceIoQueueType) -> Self {
 		self.queue_type = queue_type;
 		self
@@ -224,7 +233,6 @@ impl<'a> ResourceIoFileDescriptor<'a> {
 /// The `ResourceIoFileHandle` struct identifies a file opened on one resource-I/O queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceIoFileHandle {
-	pub(crate) queue: u64,
 	pub(crate) index: u64,
 }
 
@@ -289,6 +297,9 @@ impl ResourceIoBufferLoad {
 }
 
 /// The `ResourceIoImageLoad` struct describes one file-to-image-subresource request.
+///
+/// Set the source pitches to the layout returned by
+/// [`ResourceIoContext::resource_io_image_source_layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceIoImageLoad {
 	pub(crate) source: ResourceIoFileRegion,
@@ -330,6 +341,23 @@ impl ResourceIoImageLoad {
 	}
 }
 
+/// The `ResourceIoImageSourceLayout` struct describes a backend-ready file layout for one image region.
+///
+/// Use these values to bake the source block and to create the next
+/// [`ResourceIoImageLoad`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceIoImageSourceLayout {
+	/// Number of bytes from the start of one source row to the next.
+	pub bytes_per_row: usize,
+	/// Number of bytes from the start of one source depth slice to the next.
+	pub bytes_per_image: usize,
+	/// Total decoded bytes represented by this source region.
+	///
+	/// An implementation can omit padding after the final row, so this value can
+	/// be smaller than `bytes_per_image` for a two-dimensional region.
+	pub total_bytes: usize,
+}
+
 /// Describes one independently schedulable file-to-resource operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceIoRequest {
@@ -354,6 +382,9 @@ impl From<ResourceIoImageLoad> for ResourceIoRequest {
 pub enum ResourceIoStatus {
 	Pending,
 	Complete,
+	/// The caller requested cancellation before the batch became terminal.
+	///
+	/// Native writes might still have completed because cancellation is best effort.
 	Cancelled,
 	Failed,
 }
@@ -365,11 +396,12 @@ pub enum ResourceIoError {
 	UnsupportedCompression(ResourceIoCompression),
 	InvalidPath,
 	InvalidFileHandle,
-	InvalidContext,
 	InvalidBufferHandle,
 	InvalidImageHandle,
 	InvalidSourceRange { request: usize },
 	InvalidDestinationRange { request: usize },
+	InvalidDestinationState { request: usize },
+	InvalidImageLayout,
 	QueueCreation(String),
 	FileOpen(String),
 	Execution(String),
@@ -392,9 +424,6 @@ impl std::fmt::Display for ResourceIoError {
 			Self::InvalidFileHandle => formatter.write_str(
 				"Resource I/O file handle is invalid. The most likely cause is that the handle belongs to another queue or has not been opened.",
 			),
-			Self::InvalidContext => formatter.write_str(
-				"Resource I/O context is invalid. The most likely cause is that the destination context belongs to another graphics device.",
-			),
 			Self::InvalidBufferHandle => formatter.write_str(
 				"Resource I/O buffer handle is invalid. The most likely cause is that the buffer belongs to another graphics context.",
 			),
@@ -408,6 +437,13 @@ impl std::fmt::Display for ResourceIoError {
 			Self::InvalidDestinationRange { request } => write!(
 				formatter,
 				"Resource I/O request {request} has an invalid destination range. The most likely cause is that the destination resource is smaller than the requested write."
+			),
+			Self::InvalidDestinationState { request } => write!(
+				formatter,
+				"Resource I/O request {request} has an invalid destination state. The most likely cause is that the destination is not static device memory in the state required by the native storage API."
+			),
+			Self::InvalidImageLayout => formatter.write_str(
+				"Resource I/O image layout is invalid. The most likely cause is a zero-sized region, an unsupported format, or a region too large for the native storage API.",
 			),
 			Self::QueueCreation(message) => write!(
 				formatter,
@@ -431,28 +467,36 @@ impl std::fmt::Display for ResourceIoError {
 impl std::error::Error for ResourceIoError {}
 
 /// The `ResourceIoTicket` trait provides completion and cancellation access to one submitted batch.
+///
+/// Keep a ticket until it reaches a terminal state. Dropping a pending ticket
+/// may wait for the batch to finish.
 pub trait ResourceIoTicket {
-	/// Returns the latest nonblocking state reported by the native queue.
+	/// Returns the latest nonblocking portable state for this batch.
 	fn status(&self) -> ResourceIoStatus;
 
 	/// Waits for all requests in this batch and returns its execution result.
 	fn wait(&self) -> Result<(), ResourceIoError>;
 
-	/// Requests best-effort cancellation without waiting for the native queue.
+	/// Marks this batch abandoned and requests best-effort cancellation without waiting.
+	///
+	/// Operations that already started can finish writing their destinations.
 	fn cancel(&self) -> Result<(), ResourceIoError>;
 }
 
-/// The `ResourceIoQueue` trait provides file registration and batched native loading.
+/// The `ResourceIoQueue` trait provides file registration and batched resource loading.
 pub trait ResourceIoQueue {
 	type Ticket: ResourceIoTicket;
 	type Context: ?Sized;
 
 	fn capabilities(&self) -> ResourceIoCapabilities;
 
-	/// Opens a file using the same native device that owns this queue's destinations.
+	/// Opens a file for requests submitted through this queue.
 	fn open_file(&mut self, descriptor: ResourceIoFileDescriptor<'_>) -> Result<ResourceIoFileHandle, ResourceIoError>;
 
 	/// Encodes and commits one independently completing request batch against resources borrowed from `context`.
+	///
+	/// Synchronize earlier GPU work before submission and keep each destination
+	/// unused until the returned ticket becomes terminal.
 	fn submit(
 		&mut self,
 		context: &Self::Context,
@@ -465,11 +509,35 @@ pub trait ResourceIoQueue {
 pub trait ResourceIoContext {
 	type ResourceIoQueue: ResourceIoQueue<Context = Self>;
 
+	/// Returns the source pitches and byte count required for one image region.
+	///
+	/// Bake the source bytes using this layout, then pass its pitches to
+	/// [`ResourceIoImageLoad::new`].
+	fn resource_io_image_source_layout(
+		&self,
+		format: crate::Formats,
+		extent: Extent,
+	) -> Result<ResourceIoImageSourceLayout, ResourceIoError>;
+
 	/// Creates a persistent queue that can populate resources owned by this context.
 	fn create_resource_io_queue(
 		&mut self,
 		descriptor: ResourceIoQueueDescriptor<'_>,
 	) -> Result<Self::ResourceIoQueue, ResourceIoError>;
+}
+
+/// Rejects physical range metadata that cannot describe a nonempty stored block.
+pub(crate) fn validate_source_range(request: usize, source: ResourceIoFileRegion) -> Result<(), ResourceIoError> {
+	if source.stored_range.is_some_and(|range| {
+		range.size == 0
+			|| u64::try_from(range.size)
+				.ok()
+				.and_then(|size| range.offset.checked_add(size))
+				.is_none()
+	}) {
+		return Err(ResourceIoError::InvalidSourceRange { request });
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -492,7 +560,7 @@ mod tests {
 	#[test]
 	fn image_request_defaults_to_the_subresource_origin() {
 		let request = ResourceIoImageLoad::new(
-			ResourceIoFileRegion::new(ResourceIoFileHandle { queue: 1, index: 2 }, 32),
+			ResourceIoFileRegion::new(ResourceIoFileHandle { index: 2 }, 32),
 			BaseImageHandle(2),
 			3,
 			4,

@@ -309,7 +309,9 @@ dependencies = [
  "bitflags 2.13.0",
  "block2",
  "byte-engine-utils",
+ "direct-storage",
  "dispatch2",
+ "libloading",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -872,6 +874,17 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+
+[[package]]
+name = "direct-storage"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "899e196dc5fab0cf2c9ec0fcaeca7693d2e85ca51c6b67f5d2363d13093e8a98"
+dependencies = [
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-link 0.2.1",
+]
 
 [[package]]
 name = "dispatch2"

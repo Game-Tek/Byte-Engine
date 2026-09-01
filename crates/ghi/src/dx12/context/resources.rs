@@ -10,6 +10,8 @@ mod commands;
 mod descriptors;
 #[path = "resources/images.rs"]
 mod images;
+#[path = "resources/io.rs"]
+mod io;
 #[path = "resources/pipelines.rs"]
 mod pipelines;
 #[path = "resources/staging.rs"]

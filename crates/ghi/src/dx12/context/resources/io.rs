@@ -24,8 +24,8 @@ impl Device {
 			.buffer_states
 			.get(&Self::native_resource_key(&resource))
 			.copied()
-			.unwrap_or_else(|| Self::initial_buffer_resource_state(buffer.heap_kind))
-			== D3D12_RESOURCE_STATE_COMMON;
+			.unwrap_or_else(|| Self::initial_buffer_barrier_state(buffer.heap_kind))
+			== BufferBarrierState::COMMON;
 
 		Some(ResourceIoBufferDestination {
 			resource,
@@ -50,8 +50,8 @@ impl Device {
 			.image_states
 			.get(&Self::native_resource_key(&resource))
 			.copied()
-			.unwrap_or(D3D12_RESOURCE_STATE_COMMON)
-			== D3D12_RESOURCE_STATE_COMMON;
+			.unwrap_or(TextureBarrierState::COMMON)
+			== TextureBarrierState::COMMON;
 
 		Some(ResourceIoImageDestination {
 			resource,

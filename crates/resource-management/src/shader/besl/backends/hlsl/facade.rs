@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Write as _};
+use std::{cell::RefCell, collections::HashMap, fmt::Write as _};
 
 use super::*;
 use crate::shader::generator::{
@@ -26,6 +26,8 @@ pub struct Generator {
 	pub(crate) raster_outputs: Vec<besl::NodeReference>,
 	pub(crate) user_struct_constructors: Vec<besl::NodeReference>,
 	pub(crate) packed_write_counter: u32,
+	pub(crate) atomic_temporary_counter: u32,
+	pub(crate) atomic_temporaries: HashMap<besl::NodeReference, String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,8 @@ impl Generator {
 			raster_outputs: Vec::new(),
 			user_struct_constructors: Vec::new(),
 			packed_write_counter: 0,
+			atomic_temporary_counter: 0,
+			atomic_temporaries: HashMap::new(),
 		}
 	}
 

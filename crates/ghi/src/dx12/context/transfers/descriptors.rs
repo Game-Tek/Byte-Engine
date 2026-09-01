@@ -85,37 +85,39 @@ impl Device {
 		Some(self.frame_index_with_offset(sequence_index as usize, Some(retained.frame_offset), self.frames as usize))
 	}
 
-	/// Selects shader-resource states that are legal for the active pipeline's command-list class.
-	fn descriptor_read_state(pipeline_kind: PipelineKind) -> D3D12_RESOURCE_STATES {
-		if matches!(pipeline_kind, PipelineKind::Raster) {
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-		} else {
-			// Compute command lists reject PIXEL_SHADER_RESOURCE even when it is combined with NON_PIXEL_SHADER_RESOURCE.
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+	/// Selects the shader synchronization scope for the active pipeline and command-list class.
+	fn descriptor_sync(pipeline_kind: PipelineKind) -> D3D12_BARRIER_SYNC {
+		match pipeline_kind {
+			PipelineKind::Raster => D3D12_BARRIER_SYNC_ALL_SHADING,
+			PipelineKind::Compute => D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+			// DispatchRays shader resources use the shading scope; RAYTRACING only accepts acceleration-structure reads.
+			PipelineKind::RayTracing => D3D12_BARRIER_SYNC_ALL_SHADING,
 		}
 	}
 
 	pub(crate) fn descriptor_image_state(
 		descriptor: ShaderResourceDescriptor,
 		pipeline_kind: PipelineKind,
-	) -> D3D12_RESOURCE_STATES {
+	) -> TextureBarrierState {
+		let sync = Self::descriptor_sync(pipeline_kind);
 		if descriptor.kind() == ResourceKind::StorageImage {
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+			TextureBarrierState::unordered_access(sync)
 		} else {
-			Self::descriptor_read_state(pipeline_kind)
+			TextureBarrierState::shader_resource(sync)
 		}
 	}
 
 	pub(crate) fn descriptor_buffer_state(
 		descriptor: ShaderResourceDescriptor,
 		pipeline_kind: PipelineKind,
-	) -> D3D12_RESOURCE_STATES {
+	) -> BufferBarrierState {
+		let sync = Self::descriptor_sync(pipeline_kind);
 		match descriptor.kind() {
-			ResourceKind::UniformBuffer => D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+			ResourceKind::UniformBuffer => BufferBarrierState::constant_buffer(sync),
 			ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+				BufferBarrierState::unordered_access(sync)
 			}
-			_ => Self::descriptor_read_state(pipeline_kind),
+			_ => BufferBarrierState::shader_resource(sync),
 		}
 	}
 
@@ -267,6 +269,17 @@ impl Device {
 			}
 			ResourceKind::StorageBuffer => {
 				let stride = descriptor.buffer_element_stride().max(1);
+				let Ok(native_size) = usize::try_from(unsafe { resource.GetDesc() }.Width) else {
+					return;
+				};
+				let stride_usize = stride as usize;
+				let element_count = buffer_size.div_ceil(stride_usize).min(native_size / stride_usize);
+				let Ok(element_count) = u32::try_from(element_count) else {
+					return;
+				};
+				if element_count == 0 {
+					return;
+				}
 				if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
 					let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
 						Format: DXGI_FORMAT_UNKNOWN,
@@ -274,7 +287,7 @@ impl Device {
 						Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
 							Buffer: D3D12_BUFFER_UAV {
 								FirstElement: 0,
-								NumElements: (buffer_size / stride as usize).max(1) as u32,
+								NumElements: element_count,
 								StructureByteStride: stride,
 								CounterOffsetInBytes: 0,
 								Flags: D3D12_BUFFER_UAV_FLAG_NONE,
@@ -302,7 +315,7 @@ impl Device {
 						Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 							Buffer: D3D12_BUFFER_SRV {
 								FirstElement: 0,
-								NumElements: (buffer_size / stride as usize).max(1) as u32,
+								NumElements: element_count,
 								StructureByteStride: stride,
 								Flags: D3D12_BUFFER_SRV_FLAG_NONE,
 							},

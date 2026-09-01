@@ -26,7 +26,7 @@ These are the built-in value types available to authored BESL:
 | Unsigned integers | `u8`, `u16`, `u32` | Integer data and indices. Most arithmetic intrinsics use `u32`. |
 | Signed integers | `i32` | Signed integer data and arithmetic. |
 | Floating point | `f16`, `f32` | Half- and single-precision values. |
-| Atomic | `atomicu32` | Atomic unsigned storage in a buffer or workgroup value. Access it through atomic intrinsics. |
+| Atomic integers | `atomicu32`, `atomici32` | Atomic unsigned or signed storage in a buffer or workgroup value. Access it through atomic intrinsics. |
 | Unsigned vectors | `vec2u16`, `vec4u16`, `vec2u`, `vec3u`, `vec4u` | Packed unsigned values, coordinates, indices, and subgroup masks. |
 | Signed vectors | `vec2i` | Two signed integer values. |
 | Half vectors | `vec2f16`, `vec3f16`, `vec4f16` | Two, three, or four half-precision values. |
@@ -233,7 +233,9 @@ coordinates at the sampling boundary.
 
 Generated GLSL requires `GL_EXT_shader_explicit_arithmetic_types_float16` when
 half types are used. Choose them only for targets that support native 16-bit
-floating-point arithmetic.
+floating-point arithmetic. The DX12 backend requires native 16-bit operations
+and compiles every HLSL stage as Shader Model 6.9, so `f16` stays a native half
+instead of widening to `f32`.
 
 ## Control flow
 

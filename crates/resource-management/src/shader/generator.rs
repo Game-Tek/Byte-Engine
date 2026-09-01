@@ -334,7 +334,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "ArrayTexture2D"
 			| "VertexOutput"
 			| "PrimitiveOutput"
-	) || supports_atomic_u32 && name == "atomicu32"
+	) || supports_atomic_u32 && matches!(name, "atomicu32" | "atomici32")
 }
 
 /// Returns the vector that carries a short scalar array through backends that cannot return native arrays.

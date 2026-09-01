@@ -126,11 +126,14 @@ impl Device {
 				Self::descriptor_range_type(resource.descriptor, false),
 				resource.cbv_srv_uav_offset,
 			) {
-				resource_ranges.push(D3D12_DESCRIPTOR_RANGE {
+				resource_ranges.push(D3D12_DESCRIPTOR_RANGE1 {
 					RangeType: range_type,
 					NumDescriptors: resource.descriptor.count(),
 					BaseShaderRegister: resource.descriptor.slot().index(),
 					RegisterSpace: 0,
+					// Command buffers own copied descriptors and may sequence GPU writes through a table.
+					// Volatile descriptors and data preserve that workflow under root-signature 1.1.
+					Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
 					OffsetInDescriptorsFromTableStart: offset,
 				});
 			}
@@ -138,11 +141,12 @@ impl Device {
 				Self::descriptor_range_type(resource.descriptor, true),
 				resource.sampler_offset,
 			) {
-				sampler_ranges.push(D3D12_DESCRIPTOR_RANGE {
+				sampler_ranges.push(D3D12_DESCRIPTOR_RANGE1 {
 					RangeType: range_type,
 					NumDescriptors: resource.descriptor.count(),
 					BaseShaderRegister: resource.descriptor.slot().index(),
 					RegisterSpace: 0,
+					Flags: D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,
 					OffsetInDescriptorsFromTableStart: offset,
 				});
 			}
@@ -152,10 +156,10 @@ impl Device {
 		let mut tables = Vec::with_capacity(2);
 		if !resource_ranges.is_empty() {
 			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER {
+			parameters.push(D3D12_ROOT_PARAMETER1 {
 				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-				Anonymous: D3D12_ROOT_PARAMETER_0 {
-					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+				Anonymous: D3D12_ROOT_PARAMETER1_0 {
+					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
 						NumDescriptorRanges: resource_ranges.len() as u32,
 						pDescriptorRanges: resource_ranges.as_ptr(),
 					},
@@ -169,10 +173,10 @@ impl Device {
 		}
 		if !sampler_ranges.is_empty() {
 			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER {
+			parameters.push(D3D12_ROOT_PARAMETER1 {
 				ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-				Anonymous: D3D12_ROOT_PARAMETER_0 {
-					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+				Anonymous: D3D12_ROOT_PARAMETER1_0 {
+					DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
 						NumDescriptorRanges: sampler_ranges.len() as u32,
 						pDescriptorRanges: sampler_ranges.as_ptr(),
 					},
@@ -206,9 +210,9 @@ impl Device {
 				"Conflicting DX12 root register. The most likely cause is that push constants and a uniform buffer both use b0, space0.",
 			);
 			let root_parameter_index = parameters.len() as u32;
-			parameters.push(D3D12_ROOT_PARAMETER {
+			parameters.push(D3D12_ROOT_PARAMETER1 {
 				ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-				Anonymous: D3D12_ROOT_PARAMETER_0 {
+				Anonymous: D3D12_ROOT_PARAMETER1_0 {
 					Constants: D3D12_ROOT_CONSTANTS {
 						ShaderRegister: 0,
 						RegisterSpace: 0,
@@ -224,7 +228,7 @@ impl Device {
 			}));
 		}
 
-		let desc = D3D12_ROOT_SIGNATURE_DESC {
+		let desc = D3D12_ROOT_SIGNATURE_DESC2 {
 			NumParameters: parameters.len() as u32,
 			pParameters: if parameters.is_empty() {
 				std::ptr::null()
@@ -235,9 +239,19 @@ impl Device {
 			pStaticSamplers: std::ptr::null(),
 			Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
 		};
+		let versioned_desc = D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+			Version: D3D_ROOT_SIGNATURE_VERSION_1_2,
+			Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 { Desc_1_2: desc },
+		};
 		let mut blob = None;
 		let mut error_blob = None;
-		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, Some(&mut error_blob)) }
+		let Ok(device_configuration) = self.device.cast::<ID3D12DeviceConfiguration>() else {
+			self.log_dx12_error(
+				"Failed to access DX12 device configuration. The most likely cause is that the active Agility SDK does not support device-scoped root-signature serialization.",
+			);
+			return (None, tables, constants);
+		};
+		if unsafe { device_configuration.SerializeVersionedRootSignature(&versioned_desc, &mut blob, Some(&mut error_blob)) }
 			.is_err()
 		{
 			if let Some(error_blob) = error_blob {

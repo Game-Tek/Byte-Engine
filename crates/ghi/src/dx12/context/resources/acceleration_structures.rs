@@ -133,7 +133,7 @@ impl Device {
 			CreationNodeMask: 1,
 			VisibleNodeMask: 1,
 		};
-		let resource_desc = D3D12_RESOURCE_DESC {
+		let resource_desc = D3D12_RESOURCE_DESC1 {
 			Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
 			Alignment: 0,
 			Width: size.max(1) as u64,
@@ -143,21 +143,24 @@ impl Device {
 			Format: DXGI_FORMAT_UNKNOWN,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-			// DX12 acceleration structures are built through UAV writes, so the backing buffer must allow UAV access.
-			Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			// Enhanced barriers identify AS storage with a resource flag while DXR still requires UAV-capable memory.
+			Flags: D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			SamplerFeedbackMipRegion: Default::default(),
 		};
 
 		let mut resource: Option<ID3D12Resource> = None;
-		let result = unsafe {
-			self.device.CreateCommittedResource(
+		let result = self.device.cast::<ID3D12Device10>().and_then(|device| unsafe {
+			device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
-				D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+				D3D12_BARRIER_LAYOUT_UNDEFINED,
+				None,
+				None::<&ID3D12ProtectedResourceSession>,
 				None,
 				&mut resource,
 			)
-		};
+		});
 		if result.is_ok() {
 			return (resource, true);
 		}
@@ -416,26 +419,22 @@ impl Device {
 			return;
 		};
 
-		unsafe {
-			self.transition_tracked_buffer(
-				&command_list,
-				build.scratch_buffer.buffer,
-				&scratch_resource,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			);
-		}
+		self.transition_tracked_buffer(
+			&command_list,
+			build.scratch_buffer.buffer,
+			&scratch_resource,
+			BufferBarrierState::ACCELERATION_STRUCTURE_SCRATCH,
+		);
 		self.mark_command_buffer_work(command_buffer_handle);
 		match build.description {
 			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, .. } => {
 				if let Some(instance_resource) = self.buffer_resource_for_sequence(instances_buffer, sequence_index) {
-					unsafe {
-						self.transition_tracked_buffer(
-							&command_list,
-							instances_buffer,
-							&instance_resource,
-							D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-						);
-					}
+					self.transition_tracked_buffer(
+						&command_list,
+						instances_buffer,
+						&instance_resource,
+						BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
+					);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 			}
@@ -470,7 +469,7 @@ impl Device {
 	pub(crate) fn encode_top_level_acceleration_structure_build(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
@@ -525,11 +524,11 @@ impl Device {
 			SourceAccelerationStructureData: 0,
 			ScratchAccelerationStructureData: scratch,
 		};
+		self.transition_acceleration_structure_for_build(command_list, &destination_resource);
 		unsafe {
 			command_list4.BuildRaytracingAccelerationStructure(&desc, None);
-			// DXR builds write through UAVs. The barrier makes the built TLAS visible to DispatchRays.
-			Self::unordered_access_barrier_all(command_list);
 		}
+		self.complete_acceleration_structure_build(command_list, &destination_resource);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.uav_barrier_count += 1;
 		self.native_top_level_acceleration_structure_build_encode_count += 1;
@@ -588,11 +587,11 @@ impl Device {
 			SourceAccelerationStructureData: 0,
 			ScratchAccelerationStructureData: scratch,
 		};
+		self.transition_acceleration_structure_for_build(&command_list, &destination_resource);
 		unsafe {
 			command_list4.BuildRaytracingAccelerationStructure(&desc, None);
-			// DXR builds write through UAVs. The barrier makes the built BLAS visible to later TLAS builds.
-			Self::unordered_access_barrier_all(&command_list);
 		}
+		self.complete_acceleration_structure_build(&command_list, &destination_resource);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.uav_barrier_count += 1;
 		self.native_bottom_level_acceleration_structure_build_encode_count += 1;
@@ -601,7 +600,7 @@ impl Device {
 	pub(crate) fn bottom_level_geometry_desc(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 		description: &crate::rt::BottomLevelAccelerationStructureBuildDescriptions,
 		sequence_index: u8,
 	) -> Option<D3D12_RAYTRACING_GEOMETRY_DESC> {
@@ -696,7 +695,7 @@ impl Device {
 	pub(crate) fn acceleration_structure_build_input_resource(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
@@ -704,14 +703,12 @@ impl Device {
 		let source = self.buffer_resource_for_sequence(buffer_handle, sequence_index)?;
 		let heap_kind = self.buffer_heap_kind_for_sequence(buffer_handle, sequence_index)?;
 		if heap_kind == BufferHeapKind::Default {
-			unsafe {
-				self.transition_tracked_buffer(
-					command_list,
-					buffer_handle,
-					&source,
-					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-				);
-			}
+			self.transition_tracked_buffer(
+				command_list,
+				buffer_handle,
+				&source,
+				BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
+			);
 			return Some(source);
 		}
 
@@ -719,16 +716,16 @@ impl Device {
 		let (Some(staged), ..) = self.create_buffer_resource(size, DeviceAccesses::DeviceOnly) else {
 			return Some(source);
 		};
+		self.transition_tracked_buffer(command_list, buffer_handle, &staged, BufferBarrierState::COPY_DESTINATION);
 		unsafe {
-			self.transition_tracked_buffer(command_list, buffer_handle, &staged, D3D12_RESOURCE_STATE_COPY_DEST);
 			command_list.CopyBufferRegion(&staged, 0, &source, 0, size as u64);
-			self.transition_tracked_buffer(
-				command_list,
-				buffer_handle,
-				&staged,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			);
 		}
+		self.transition_tracked_buffer(
+			command_list,
+			buffer_handle,
+			&staged,
+			BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
+		);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.buffer_copy_count += 1;
 		self.retain_command_buffer_upload_resource(command_buffer_handle, staged.clone());
@@ -751,28 +748,24 @@ impl Device {
 		let Some(scratch_resource) = self.buffer_resource_for_sequence(build.scratch_buffer.buffer, sequence_index) else {
 			return false;
 		};
-		unsafe {
-			self.transition_tracked_buffer(
-				&command_list,
-				build.scratch_buffer.buffer,
-				&scratch_resource,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			);
-		}
+		self.transition_tracked_buffer(
+			&command_list,
+			build.scratch_buffer.buffer,
+			&scratch_resource,
+			BufferBarrierState::ACCELERATION_STRUCTURE_SCRATCH,
+		);
 		self.mark_command_buffer_work(command_buffer_handle);
 
 		let mut transition_input = |buffer_handle: BaseBufferHandle| {
 			let Some(resource) = self.buffer_resource_for_sequence(buffer_handle, sequence_index) else {
 				return false;
 			};
-			unsafe {
-				self.transition_tracked_buffer(
-					&command_list,
-					buffer_handle,
-					&resource,
-					D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-				);
-			}
+			self.transition_tracked_buffer(
+				&command_list,
+				buffer_handle,
+				&resource,
+				BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
+			);
 			true
 		};
 

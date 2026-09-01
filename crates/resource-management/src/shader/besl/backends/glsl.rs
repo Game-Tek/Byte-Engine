@@ -43,6 +43,70 @@ mod tests {
 	}
 
 	#[test]
+	fn modern_half_and_integer_atomics_lower_to_portable_glsl() {
+		let source = r#"
+			Counters: struct { buffer_value: atomicu32, }
+			counters: descriptor<{ type: Counters, binding: 7, access: read_write }>;
+			unsigned_value: workgroup<atomicu32>;
+			signed_value: workgroup<atomici32>;
+			main: fn () -> void {
+				let signed_one: i32 = 1;
+				atomic_store(unsigned_value, 1);
+				atomic_load(counters.buffer_value);
+				atomic_load(unsigned_value);
+				atomic_exchange(unsigned_value, 2);
+				atomic_add(unsigned_value, 1);
+				atomic_sub(unsigned_value, 1);
+				atomic_min(unsigned_value, 1);
+				atomic_max(unsigned_value, 2);
+				atomic_and(unsigned_value, 3);
+				atomic_or(unsigned_value, 4);
+				atomic_xor(unsigned_value, 5);
+				atomic_compare_exchange(unsigned_value, 1, 2);
+				atomic_store(signed_value, signed_one);
+				atomic_min(signed_value, signed_one);
+				let zero: f16 = f16(0.0);
+				let one: f16 = f16(1.0);
+				let fused: f16 = fma(one, one, one);
+				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
+				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
+					atomic_store(unsigned_value, 0);
+				}
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected modern GLSL source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected modern GLSL source generation");
+
+		assert_string_contains!(shader, "shared uint32_t unsigned_value;");
+		assert_string_contains!(shader, "shared int32_t signed_value;");
+		assert_string_contains!(shader, "atomicAdd(counters.buffer_value,0u)");
+		for operation in [
+			"atomicExchange(",
+			"atomicAdd(",
+			"atomicMin(",
+			"atomicMax(",
+			"atomicAnd(",
+			"atomicOr(",
+			"atomicXor(",
+			"atomicCompSwap(",
+		] {
+			assert_string_contains!(shader, operation);
+		}
+		assert_string_contains!(shader, "atomicAdd(unsigned_value,-(");
+		assert_string_contains!(shader, "float16_t fused=fma(");
+		assert_string_contains!(shader, "f16vec3 fused_vector=fma(");
+		for predicate in ["isnan(", "isinf(", "_besl_is_finite(", "_besl_is_normal("] {
+			assert_string_contains!(shader, predicate);
+		}
+	}
+
+	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();
 

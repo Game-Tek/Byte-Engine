@@ -624,6 +624,9 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests frame-local image creation, previous-frame bindings, and sequence wraparound.
 
+	// Use three sequences so frame 2 observes a fresh resource and frame 3 verifies the wrap back to frame 0.
+	device.set_frames_in_flight(3);
+
 	// TODO: test multiframe resources for combined image samplers
 	let compute_shader_string = "
 		#version 450

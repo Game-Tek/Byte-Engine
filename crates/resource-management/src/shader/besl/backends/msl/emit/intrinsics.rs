@@ -222,6 +222,17 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
+				string.push_str(match name.as_str() {
+					"is_nan" => "isnan(",
+					"is_infinite" => "isinf(",
+					"is_finite" => "isfinite(",
+					"is_normal" => "isnormal(",
+					_ => unreachable!("Expected a floating-point classification intrinsic"),
+				});
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"sincos" => {
 				string.push_str("_besl_sincos(");
 				self.emit_node_string(string, &arguments[0]);
@@ -272,8 +283,19 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
-			"atomic_add" => {
-				string.push_str("atomic_fetch_add_explicit(&");
+			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
+			| "atomic_xor" => {
+				string.push_str(match name.as_str() {
+					"atomic_exchange" => "atomic_exchange_explicit(&",
+					"atomic_add" => "atomic_fetch_add_explicit(&",
+					"atomic_sub" => "atomic_fetch_sub_explicit(&",
+					"atomic_min" => "atomic_fetch_min_explicit(&",
+					"atomic_max" => "atomic_fetch_max_explicit(&",
+					"atomic_and" => "atomic_fetch_and_explicit(&",
+					"atomic_or" => "atomic_fetch_or_explicit(&",
+					"atomic_xor" => "atomic_fetch_xor_explicit(&",
+					_ => unreachable!("Expected an atomic read-modify-write intrinsic"),
+				});
 				self.emit_node_string(string, &arguments[0]);
 				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);

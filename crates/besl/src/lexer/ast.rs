@@ -238,8 +238,9 @@ impl Node {
 		let texture_cube_array = primitive_type("TextureCubeArray");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
 		let atomic_u32 = primitive_type("atomicu32");
+		let atomic_i32 = primitive_type("atomici32");
 
-		let builtins = vec![
+		let mut builtins = vec![
 			void.clone(),
 			bool_t.clone(),
 			u8_t.clone(),
@@ -269,6 +270,7 @@ impl Node {
 			texture_cube_array.clone(),
 			array_texture_2d.clone(),
 			atomic_u32.clone(),
+			atomic_i32.clone(),
 			// Vertex invocation indices are implicit BESL values. Their placeholder locations are
 			// never exposed as vertex attributes; backends and the VM map them to dedicated built-ins.
 			Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 1).into(),
@@ -476,6 +478,14 @@ impl Node {
 			builtin_intrinsic("abs", vec![("value", f16_t.clone())], f16_t.clone()),
 			builtin_intrinsic("abs", vec![("value", vec2f16.clone())], vec2f16.clone()),
 			builtin_intrinsic("sqrt", vec![("value", f16_t.clone())], f16_t.clone()),
+			builtin_intrinsic("is_nan", vec![("value", f16_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_nan", vec![("value", f32_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_infinite", vec![("value", f16_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_infinite", vec![("value", f32_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_finite", vec![("value", f16_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_finite", vec![("value", f32_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_normal", vec![("value", f16_t.clone())], bool_t.clone()),
+			builtin_intrinsic("is_normal", vec![("value", f32_t.clone())], bool_t.clone()),
 			builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
 			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
@@ -525,6 +535,42 @@ impl Node {
 				],
 				vec4f32.clone(),
 			),
+			builtin_intrinsic(
+				"fma",
+				vec![
+					("multiplicand", f16_t.clone()),
+					("multiplier", f16_t.clone()),
+					("addend", f16_t.clone()),
+				],
+				f16_t.clone(),
+			),
+			builtin_intrinsic(
+				"fma",
+				vec![
+					("multiplicand", vec2f16.clone()),
+					("multiplier", vec2f16.clone()),
+					("addend", vec2f16.clone()),
+				],
+				vec2f16.clone(),
+			),
+			builtin_intrinsic(
+				"fma",
+				vec![
+					("multiplicand", vec3f16.clone()),
+					("multiplier", vec3f16.clone()),
+					("addend", vec3f16.clone()),
+				],
+				vec3f16.clone(),
+			),
+			builtin_intrinsic(
+				"fma",
+				vec![
+					("multiplicand", vec4f16.clone()),
+					("multiplier", vec4f16.clone()),
+					("addend", vec4f16.clone()),
+				],
+				vec4f16.clone(),
+			),
 			builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
@@ -551,7 +597,7 @@ impl Node {
 			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u8_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u16_t)], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", i32_t)], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", i32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f16_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
 			builtin_intrinsic(
@@ -621,26 +667,6 @@ impl Node {
 				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
 				u32_t.clone(),
 			),
-			builtin_intrinsic(
-				"atomic_add",
-				vec![("value", atomic_u32.clone()), ("increment", u32_t.clone())],
-				u32_t.clone(),
-			),
-			builtin_intrinsic(
-				"atomic_compare_exchange",
-				vec![
-					("value", atomic_u32.clone()),
-					("expected", u32_t.clone()),
-					("desired", u32_t.clone()),
-				],
-				u32_t.clone(),
-			),
-			builtin_intrinsic("atomic_load", vec![("value", atomic_u32.clone())], u32_t.clone()),
-			builtin_intrinsic(
-				"atomic_store",
-				vec![("value", atomic_u32), ("stored", u32_t.clone())],
-				void.clone(),
-			),
 			builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone()),
 			builtin_intrinsic("texture_size", vec![("texture", array_texture_2d)], vec2u32.clone()),
 			builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone()),
@@ -652,14 +678,16 @@ impl Node {
 			builtin_intrinsic(
 				"write",
 				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone()), ("value", vec4f32)],
-				void,
+				void.clone(),
 			),
 			builtin_intrinsic(
 				"image_atomic_or",
 				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t.clone())],
-				u32_t,
+				u32_t.clone(),
 			),
 		];
+		builtins.extend(atomic_intrinsics(atomic_u32, u32_t, void.clone()));
+		builtins.extend(atomic_intrinsics(atomic_i32, i32_t, void));
 
 		let mut root = Node::scope("root".to_string());
 		root.add_children(builtins);
@@ -1541,6 +1569,43 @@ fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#retur
 	}
 
 	intrinsic
+}
+
+/// Builds the relaxed scalar atomic surface for one signed or unsigned 32-bit type.
+fn atomic_intrinsics(atomic: NodeReference, scalar: NodeReference, void: NodeReference) -> Vec<NodeReference> {
+	let binary = |name: &str, operand_name: &str| {
+		builtin_intrinsic(
+			name,
+			vec![("value", atomic.clone()), (operand_name, scalar.clone())],
+			scalar.clone(),
+		)
+	};
+
+	vec![
+		builtin_intrinsic("atomic_load", vec![("value", atomic.clone())], scalar.clone()),
+		builtin_intrinsic(
+			"atomic_store",
+			vec![("value", atomic.clone()), ("stored", scalar.clone())],
+			void,
+		),
+		binary("atomic_exchange", "stored"),
+		builtin_intrinsic(
+			"atomic_compare_exchange",
+			vec![
+				("value", atomic.clone()),
+				("expected", scalar.clone()),
+				("desired", scalar.clone()),
+			],
+			scalar.clone(),
+		),
+		binary("atomic_add", "increment"),
+		binary("atomic_sub", "decrement"),
+		binary("atomic_min", "candidate"),
+		binary("atomic_max", "candidate"),
+		binary("atomic_and", "mask"),
+		binary("atomic_or", "mask"),
+		binary("atomic_xor", "mask"),
+	]
 }
 
 fn primitive_type(name: &str) -> NodeReference {

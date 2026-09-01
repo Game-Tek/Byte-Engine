@@ -74,6 +74,11 @@ pub(super) enum Instruction {
 		operator: ScalarUnaryOperator,
 		value: usize,
 	},
+	FloatPredicate {
+		register: usize,
+		predicate: FloatPredicate,
+		value: usize,
+	},
 	RoundToVec2I {
 		register: usize,
 		value: usize,
@@ -165,11 +170,13 @@ pub(super) enum Instruction {
 		value_type: ValueType,
 		value: usize,
 	},
-	AtomicAddWorkgroup {
+	AtomicWorkgroup {
 		register: usize,
+		operation: AtomicOperation,
 		name: String,
 		index: Option<usize>,
 		count: usize,
+		value_type: ValueType,
 		value: usize,
 	},
 	AtomicCompareExchangeWorkgroup {
@@ -177,6 +184,7 @@ pub(super) enum Instruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
+		value_type: ValueType,
 		expected: usize,
 		desired: usize,
 	},
@@ -300,13 +308,15 @@ pub(super) enum Instruction {
 		value_type: ValueType,
 		register: usize,
 	},
-	AtomicAddBuffer {
+	AtomicBuffer {
 		register: usize,
+		operation: AtomicOperation,
 		slot: ResourceSlot,
 		offset: usize,
 		stride: usize,
 		count: Option<usize>,
 		index: Option<usize>,
+		value_type: ValueType,
 		value: usize,
 	},
 	AtomicCompareExchangeBuffer {
@@ -316,6 +326,7 @@ pub(super) enum Instruction {
 		stride: usize,
 		count: Option<usize>,
 		index: Option<usize>,
+		value_type: ValueType,
 		expected: usize,
 		desired: usize,
 	},
@@ -352,6 +363,28 @@ pub(super) enum ComparisonOperator {
 	GreaterThan,
 	LessThanOrEqual,
 	GreaterThanOrEqual,
+}
+
+/// The `AtomicOperation` enum identifies one relaxed read-modify-write operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AtomicOperation {
+	Exchange,
+	Add,
+	Subtract,
+	Min,
+	Max,
+	And,
+	Or,
+	Xor,
+}
+
+/// The `FloatPredicate` enum identifies one IEEE floating-point classification query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FloatPredicate {
+	Nan,
+	Infinite,
+	Finite,
+	Normal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

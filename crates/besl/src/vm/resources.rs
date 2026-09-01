@@ -256,41 +256,15 @@ impl WorkgroupState {
 		Ok(())
 	}
 
-	/// Applies wrapping atomic-u32 addition to one shared scalar or array element.
-	pub(super) fn atomic_add_u32(&mut self, name: &str, index: usize, count: usize, value: u32) -> Result<u32, VmError> {
-		if index >= count {
-			return Err(VmError::WorkgroupIndexOutOfBounds {
-				name: name.to_string(),
-				index,
-				count,
-			});
-		}
-		let stored = self
-			.values
-			.get_mut(name)
-			.filter(|values| values.len() == count)
-			.and_then(|values| values[index].as_mut())
-			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
-		let Value::U32(previous) = stored else {
-			return Err(VmError::TypeMismatch {
-				expected: ValueType::U32.name().to_string(),
-				found: stored.value_type().name().to_string(),
-			});
-		};
-		let previous = *previous;
-		*stored = Value::U32(previous.wrapping_add(value));
-		Ok(previous)
-	}
-
-	/// Replaces one shared u32 only when it still matches the expected value.
-	pub(super) fn atomic_compare_exchange_u32(
+	/// Applies one relaxed integer read-modify-write operation to a shared scalar or array element.
+	pub(super) fn atomic_apply(
 		&mut self,
 		name: &str,
 		index: usize,
 		count: usize,
-		expected: u32,
-		desired: u32,
-	) -> Result<u32, VmError> {
+		operation: AtomicOperation,
+		value: &Value,
+	) -> Result<Value, VmError> {
 		if index >= count {
 			return Err(VmError::WorkgroupIndexOutOfBounds {
 				name: name.to_string(),
@@ -304,15 +278,42 @@ impl WorkgroupState {
 			.filter(|values| values.len() == count)
 			.and_then(|values| values[index].as_mut())
 			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
-		let Value::U32(previous) = stored else {
-			return Err(VmError::TypeMismatch {
-				expected: ValueType::U32.name().to_string(),
-				found: stored.value_type().name().to_string(),
+		let previous = stored.clone();
+		*stored = apply_atomic_operation(operation, &previous, value)?;
+		Ok(previous)
+	}
+
+	/// Replaces one shared integer only when it still matches the expected value.
+	pub(super) fn atomic_compare_exchange(
+		&mut self,
+		name: &str,
+		index: usize,
+		count: usize,
+		expected: &Value,
+		desired: &Value,
+	) -> Result<Value, VmError> {
+		if index >= count {
+			return Err(VmError::WorkgroupIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count,
 			});
-		};
-		let previous = *previous;
-		if previous == expected {
-			*stored = Value::U32(desired);
+		}
+		let stored = self
+			.values
+			.get_mut(name)
+			.filter(|values| values.len() == count)
+			.and_then(|values| values[index].as_mut())
+			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
+		if stored.value_type() != expected.value_type() || stored.value_type() != desired.value_type() {
+			return Err(VmError::TypeMismatch {
+				expected: stored.value_type().name().to_string(),
+				found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
+			});
+		}
+		let previous = stored.clone();
+		if previous == *expected {
+			*stored = desired.clone();
 		}
 		Ok(previous)
 	}

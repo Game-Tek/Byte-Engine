@@ -24,13 +24,21 @@ pub struct CommandBufferRecording<'a> {
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
 	texture_readbacks: SmallVec<[TextureCopyHandle; 4]>,
+	queued_for_submission: bool,
 }
 
 impl Drop for CommandBufferRecording<'_> {
 	fn drop(&mut self) {
-		for handle in self.texture_readbacks.drain(..) {
-			self.device.abandon_texture_readback(handle);
+		if !self.queued_for_submission {
+			for handle in self.texture_readbacks.drain(..) {
+				self.device.abandon_texture_readback(handle);
+			}
+			// A dropped recording never executes its uploads, so make their staging data available to the next recording.
+			self.device
+				.requeue_recorded_texture_syncs_for_command_buffer(self.command_buffer);
+			self.device.rollback_command_buffer_resource_states(self.command_buffer);
 		}
+		self.device.finish_command_buffer_state_transaction(self.command_buffer);
 	}
 }
 
@@ -52,6 +60,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_extent: None,
 			push_constants: Vec::new(),
 			texture_readbacks: SmallVec::new(),
+			queued_for_submission: false,
 		}
 	}
 
@@ -94,7 +103,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Transfers readback ownership to the queue path that will submit this command buffer.
 	pub(crate) fn finish_for_submission(&mut self) {
-		let _ = std::mem::take(&mut self.texture_readbacks);
+		self.queued_for_submission = true;
+		self.device.finish_command_buffer_recording(self.command_buffer);
 	}
 }
 
@@ -217,8 +227,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn execute(mut self, synchronizer: SynchronizerHandle) {
-		if self.device.submit_command_buffer(self.command_buffer, synchronizer) {
-			let _ = std::mem::take(&mut self.texture_readbacks);
+		self.finish_for_submission();
+		if !self.device.submit_command_buffer(self.command_buffer, synchronizer) {
+			self.queued_for_submission = false;
 		}
 	}
 }

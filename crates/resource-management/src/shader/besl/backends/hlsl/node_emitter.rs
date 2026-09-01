@@ -35,6 +35,17 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push('\n');
 		}
 	}
+	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
+		let formatting = ShaderFormatting::new(self.minified);
+		for statement in statements {
+			self.atomic_temporaries.clear();
+			self.emit_hlsl_atomic_temporaries(string, statement, indent);
+			formatting.push_indentation(string, indent);
+			self.emit_node_string(string, statement);
+			formatting.push_statement_end(string);
+		}
+		self.atomic_temporaries.clear();
+	}
 	fn emit_function_extra_parameters(
 		&mut self,
 		string: &mut String,
@@ -195,11 +206,16 @@ impl crate::shader::generator::NodeEmitter for Generator {
 							);
 					let index_name = format!("besl_packed_index_{temporary_id}");
 					let value_name = format!("besl_packed_value_{temporary_id}");
+					let shift_name = format!("besl_packed_shift_{temporary_id}");
+					let mask_name = format!("besl_packed_mask_{temporary_id}");
+					let expected_name = format!("besl_packed_expected_{temporary_id}");
+					let desired_name = format!("besl_packed_desired_{temporary_id}");
+					let observed_name = format!("besl_packed_observed_{temporary_id}");
 
-					// Adjacent logical narrow elements share one DX12 word. Clear
-					// and set only this lane so concurrent writes preserve neighbors.
-					// Evaluate both source expressions before changing the shared word.
-					string.push_str("uint ");
+					// Adjacent logical narrow elements share one DX12 word. Replace the
+					// selected lane with one compare-exchange loop so another lane cannot
+					// change between separate clear and set operations.
+					string.push_str("{uint ");
 					string.push_str(&index_name);
 					string.push('=');
 					self.emit_node_string(string, &index);
@@ -209,19 +225,51 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					self.emit_node_string(string, right);
 					string.push_str(")&");
 					string.push_str(element_mask);
-					string.push_str(");InterlockedAnd(");
-					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
-					string.push_str(",~(");
-					string.push_str(element_mask);
-					string.push_str("<<((");
+					string.push_str(");uint ");
+					string.push_str(&shift_name);
+					string.push_str("=(");
 					string.push_str(&index_name);
-					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u)));InterlockedOr(");
+					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u;uint ");
+					string.push_str(&mask_name);
+					string.push('=');
+					string.push_str(element_mask);
+					string.push_str("<<");
+					string.push_str(&shift_name);
+					string.push_str(";uint ");
+					string.push_str(&expected_name);
+					string.push_str(";InterlockedOr(");
+					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
+					string.push_str(",0u,");
+					string.push_str(&expected_name);
+					string.push_str(");for(;;){uint ");
+					string.push_str(&desired_name);
+					string.push_str("=(");
+					string.push_str(&expected_name);
+					string.push_str("&~");
+					string.push_str(&mask_name);
+					string.push_str(")|(");
+					string.push_str(&value_name);
+					string.push_str("<<");
+					string.push_str(&shift_name);
+					string.push_str(");uint ");
+					string.push_str(&observed_name);
+					string.push_str(";InterlockedCompareExchange(");
 					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
 					string.push(',');
-					string.push_str(&value_name);
-					string.push_str("<<((");
-					string.push_str(&index_name);
-					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u))");
+					string.push_str(&expected_name);
+					string.push(',');
+					string.push_str(&desired_name);
+					string.push(',');
+					string.push_str(&observed_name);
+					string.push_str(");if(");
+					string.push_str(&observed_name);
+					string.push_str("==");
+					string.push_str(&expected_name);
+					string.push_str("){break;}");
+					string.push_str(&expected_name);
+					string.push('=');
+					string.push_str(&observed_name);
+					string.push_str(";}}");
 					return true;
 				}
 			}

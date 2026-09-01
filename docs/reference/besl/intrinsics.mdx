@@ -25,6 +25,10 @@ you use it.
 | `pow` | `pow(f16, f16) -> f16`; `pow(f32, f32) -> f32`; `pow(vec3f, vec3f) -> vec3f` | Raises each value to its matching exponent. |
 | `abs` | `abs(f16) -> f16`; `abs(f32) -> f32`; `abs(vec2f16) -> vec2f16`; `abs(vec2f) -> vec2f` | Returns the absolute value. |
 | `sqrt` | `sqrt(f16) -> f16`; `sqrt(f32) -> f32` | Returns the square root. |
+| `is_nan` | `is_nan(f16) -> bool`; `is_nan(f32) -> bool` | Reports whether the value is a NaN. |
+| `is_infinite` | `is_infinite(f16) -> bool`; `is_infinite(f32) -> bool` | Reports whether the value is positive or negative infinity. |
+| `is_finite` | `is_finite(f16) -> bool`; `is_finite(f32) -> bool` | Reports whether the value is neither a NaN nor an infinity. |
+| `is_normal` | `is_normal(f16) -> bool`; `is_normal(f32) -> bool` | Reports whether the value is a normal, nonzero floating-point value. |
 | `exp` | `exp(f32) -> f32`; `exp(vec3f) -> vec3f` | Returns the natural exponential. |
 | `sin` | `sin(f32) -> f32` | Returns the sine of an angle in radians. |
 | `cos` | `cos(f32) -> f32` | Returns the cosine of an angle in radians. |
@@ -35,7 +39,7 @@ you use it.
 | `tan` | `tan(f32) -> f32` | Returns the tangent of an angle in radians. |
 | `round` | `round(f16) -> f16`; `round(vec2f16) -> vec2f16`; `round(vec2f) -> vec2f` | Rounds to the nearest integer-valued float. |
 | `round_to_i32` | `round_to_i32(vec2f) -> vec2i` | Rounds both components and converts them to signed integers. |
-| `fma` | `fma(f32, f32, f32) -> f32`; `fma(vec2f, vec2f, vec2f) -> vec2f`; `fma(vec3f, vec3f, vec3f) -> vec3f`; `fma(vec4f, vec4f, vec4f) -> vec4f` | Multiplies the first two arguments and adds the third. |
+| `fma` | `fma(f16, f16, f16) -> f16`; `fma(vec2f16, vec2f16, vec2f16) -> vec2f16`; `fma(vec3f16, vec3f16, vec3f16) -> vec3f16`; `fma(vec4f16, vec4f16, vec4f16) -> vec4f16`; matching `f32` and `vec2f` through `vec4f` overloads | Multiplies the first two arguments and adds the third. The `f16` overloads round the exact result once to half precision. The `f32` overloads follow the target's multiply-add rules, which may fuse or split the operations. |
 | `fract` | `fract(f32) -> f32` | Returns the fractional part. |
 | `radians` | `radians(f32) -> f32` | Converts degrees to radians. |
 | `inversesqrt` | `inversesqrt(f32) -> f32` | Returns the reciprocal square root. |
@@ -93,14 +97,34 @@ lists the explicit conversion overloads registered as intrinsics.
 
 ### Buffer and workgroup atomics
 
-Use these calls with an `atomicu32` buffer member or workgroup value.
+Use these calls with an `atomicu32` or `atomici32` buffer member or workgroup
+value. In the signatures below, `A` and `T` are either
+`(atomicu32, u32)` or `(atomici32, i32)`.
+
+These operations guarantee one atomic access or read-modify-write. Their memory
+ordering is relaxed, so an atomic call isn't a memory fence for nearby ordinary
+loads and stores. Use `workgroup_barrier` when workgroup invocations must make
+other shared data visible before they continue.
+
+When you target HLSL, don't put a value-returning atomic in a `for` condition,
+the `for` update expression, or either side of `&&` or `||`. The HLSL generator
+rejects these contexts because lowering an Interlocked out parameter to a
+temporary could change when the atomic runs. Move the atomic to a statement and
+use its returned value in the control-flow expression.
 
 | Name | Signature | Explanation |
 | --- | --- | --- |
-| `atomic_add` | `atomic_add(atomicu32, u32 increment) -> u32` | Atomically adds the increment and returns the previous value. |
-| `atomic_compare_exchange` | `atomic_compare_exchange(atomicu32, u32 expected, u32 desired) -> u32` | Stores the desired value when the current value equals the expected value, then returns the previous value. |
-| `atomic_load` | `atomic_load(atomicu32) -> u32` | Atomically reads the current value. |
-| `atomic_store` | `atomic_store(atomicu32, u32 value) -> void` | Atomically replaces the current value. |
+| `atomic_load` | `atomic_load(A) -> T` | Atomically reads the current value. A buffer target must come from a `read_write` descriptor because portable backends implement the load with a writable atomic operation. |
+| `atomic_store` | `atomic_store(A, T value) -> void` | Atomically replaces the current value. |
+| `atomic_exchange` | `atomic_exchange(A, T value) -> T` | Atomically replaces the value and returns the previous value. |
+| `atomic_compare_exchange` | `atomic_compare_exchange(A, T expected, T desired) -> T` | Stores the desired value when the current value equals the expected value, then returns the previous value. |
+| `atomic_add` | `atomic_add(A, T increment) -> T` | Atomically adds the increment and returns the previous value. |
+| `atomic_sub` | `atomic_sub(A, T decrement) -> T` | Atomically subtracts the decrement with integer wrapping and returns the previous value. |
+| `atomic_min` | `atomic_min(A, T candidate) -> T` | Atomically stores the smaller value and returns the previous value. Signed atomics use signed ordering. |
+| `atomic_max` | `atomic_max(A, T candidate) -> T` | Atomically stores the larger value and returns the previous value. Signed atomics use signed ordering. |
+| `atomic_and` | `atomic_and(A, T mask) -> T` | Atomically applies bitwise AND and returns the previous value. |
+| `atomic_or` | `atomic_or(A, T mask) -> T` | Atomically applies bitwise OR and returns the previous value. |
+| `atomic_xor` | `atomic_xor(A, T mask) -> T` | Atomically applies bitwise XOR and returns the previous value. |
 
 ## Vertex stage
 

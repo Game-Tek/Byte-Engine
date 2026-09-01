@@ -66,6 +66,190 @@ mod tests {
 	}
 
 	#[test]
+	fn modern_half_and_integer_atomics_lower_to_shader_model_6_9_hlsl() {
+		let source = r#"
+			unsigned_value: workgroup<atomicu32>;
+			signed_value: workgroup<atomici32>;
+			main: fn () -> void {
+				let signed_one: i32 = 1;
+				let signed_two: i32 = 2;
+				atomic_store(unsigned_value, 1);
+				atomic_load(unsigned_value);
+				atomic_exchange(unsigned_value, 2);
+				atomic_add(unsigned_value, 1);
+				atomic_sub(unsigned_value, 1);
+				atomic_min(unsigned_value, 1);
+				atomic_max(unsigned_value, 2);
+				atomic_and(unsigned_value, 3);
+				atomic_or(unsigned_value, 4);
+				atomic_xor(unsigned_value, 5);
+				atomic_compare_exchange(unsigned_value, 1, 2);
+				atomic_store(signed_value, signed_one);
+				atomic_min(signed_value, signed_one);
+				atomic_max(signed_value, signed_two);
+				let narrowed: u16 = u16(7);
+				let zero: f16 = f16(0.0);
+				let one: f16 = f16(1.0);
+				let fused: f16 = fma(one, one, one);
+				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
+				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
+					atomic_store(unsigned_value, u32(narrowed));
+				}
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected modern HLSL source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected modern HLSL source generation");
+
+		assert_string_contains!(shader, "// Shader Model 6.9");
+		assert_string_contains!(shader, "groupshared uint32_t unsigned_value;");
+		assert_string_contains!(shader, "groupshared int32_t signed_value;");
+		for operation in [
+			"InterlockedExchange(",
+			"InterlockedAdd(",
+			"InterlockedMin(",
+			"InterlockedMax(",
+			"InterlockedAnd(",
+			"InterlockedOr(",
+			"InterlockedXor(",
+			"InterlockedCompareExchange(",
+		] {
+			assert_string_contains!(shader, operation);
+		}
+		assert_string_contains!(shader, "InterlockedAdd(unsigned_value,-(");
+		assert_string_contains!(shader, "uint16_t narrowed=uint16_t(7);");
+		assert_string_contains!(shader, "float16_t fused=_besl_fma_f16(");
+		assert_string_contains!(shader, "float16_t3 fused_vector=_besl_fma_f16(");
+		assert_string_contains!(shader, "precise float residual =");
+		assert_string_does_not_contain!(shader, "double");
+		assert_string_does_not_contain!(shader, "mad(");
+		for predicate in ["isnan(", "isinf(", "isfinite(", "isnormal("] {
+			assert_string_contains!(shader, predicate);
+		}
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"modern-half-atomic-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected modern half and atomic HLSL to compile to DXIL");
+	}
+
+	#[test]
+	fn atomic_value_calls_in_order_sensitive_hlsl_contexts_are_rejected() {
+		for source in [
+			r#"
+				counter: workgroup<atomicu32>;
+				main: fn () -> void {
+					for (let index: u32 = 0; atomic_load(counter) < 4; index = index + 1) {}
+				}
+			"#,
+			r#"
+				counter: workgroup<atomicu32>;
+				main: fn () -> void {
+					if (thread_idx() == 0 && atomic_load(counter) == 0) { return; }
+				}
+			"#,
+		] {
+			let root = besl::compile_to_besl(source, None).expect("Expected order-sensitive atomic source to link");
+			let result = Generator::new().generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			);
+			assert!(
+				result.is_err(),
+				"HLSL generation must reject atomics where statement lifting would change evaluation order"
+			);
+		}
+	}
+
+	#[test]
+	fn atomic_store_in_hlsl_for_loop_headers_is_rejected() {
+		for (header, source) in [
+			(
+				"initializer",
+				r#"
+					counter: workgroup<atomicu32>;
+					main: fn () -> void {
+						for (atomic_store(counter, 0); true; thread_idx()) {}
+					}
+				"#,
+			),
+			(
+				"condition",
+				r#"
+					counter: workgroup<atomicu32>;
+					main: fn () -> void {
+						for (let index: u32 = 0; atomic_store(counter, 0); index = index + 1) {}
+					}
+				"#,
+			),
+			(
+				"update",
+				r#"
+					counter: workgroup<atomicu32>;
+					main: fn () -> void {
+						for (let index: u32 = 0; index < 1; atomic_store(counter, index)) {}
+					}
+				"#,
+			),
+		] {
+			let root = besl::compile_to_besl(source, None)
+				.unwrap_or_else(|error| panic!("Expected atomic_store {header} source to link: {error:?}"));
+			let result = Generator::new().generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			);
+			assert!(
+				result.is_err(),
+				"HLSL generation must reject atomic_store in a for-loop {header}"
+			);
+		}
+	}
+
+	#[test]
+	fn signed_atomic_sub_uses_wrapping_unsigned_bit_arithmetic() {
+		let source = r#"
+			signed_value: workgroup<atomici32>;
+			main: fn () -> void {
+				let minimum: i32 = 0 - 2147483647 - 1;
+				let previous: i32 = atomic_sub(signed_value, minimum);
+				previous;
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected signed atomic subtraction source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected signed atomic subtraction HLSL generation");
+
+		assert_string_contains!(
+			shader,
+			"InterlockedAdd(signed_value,asint(0u-asuint(minimum)),besl_atomic_previous_0);"
+		);
+		assert_string_does_not_contain!(shader, "InterlockedAdd(signed_value,-(");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"signed-atomic-sub-wrapping-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected signed atomic subtraction HLSL to compile to DXIL");
+	}
+
+	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();
 
@@ -276,8 +460,8 @@ mod tests {
 			.expect("Expected vector access shader source to generate HLSL");
 		assert_string_contains!(shader, "float component=vector.x;");
 		assert_string_contains!(shader, "float indexed_component=vector[1];");
-		assert_string_contains!(shader, "uint joint_component=joints.x;");
-		assert_string_contains!(shader, "uint indexed_joint=joints[1];");
+		assert_string_contains!(shader, "uint16_t joint_component=joints.x;");
+		assert_string_contains!(shader, "uint16_t indexed_joint=joints[1];");
 		assert_string_does_not_contain!(shader, "vector[x]");
 		assert_string_does_not_contain!(shader, "joints[x]");
 
@@ -566,7 +750,8 @@ mod tests {
 		assert_string_contains!(shader, "groupshared uint32_t visible_count;");
 		assert_string_contains!(shader, "[numthreads(32, 1, 1)]");
 		assert_string_contains!(shader, "groupshared ObjectPayload payload;");
-		assert_string_contains!(shader, "besl_mesh_output_count = visible_count;");
+		assert_string_contains!(shader, "InterlockedOr(visible_count,0,besl_atomic_previous_");
+		assert_string_contains!(shader, "besl_mesh_output_count = besl_atomic_previous_");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
 
 		#[cfg(target_os = "windows")]
@@ -999,7 +1184,7 @@ mod tests {
 		assert_string_contains!(shader, "float4 projected=(mul(inverse_projection, clip_space));");
 		assert_string_contains!(shader, "uint32_t item_index=item_data[0].counter_index;");
 		assert_string_contains!(shader, "output_image[coord] = float4(1.0,1.0,1.0,1.0);");
-		assert_string_contains!(shader, "counter_buffer[item_index] = 2;");
+		assert_string_contains!(shader, "InterlockedExchange(counter_buffer[item_index],2,besl_atomic_stored_");
 		assert_string_does_not_contain!(shader, "fract(");
 		assert_string_does_not_contain!(shader, "item_data : register(u0");
 		assert_string_does_not_contain!(shader, "item_data.items");
@@ -1174,10 +1359,11 @@ mod tests {
 		assert_string_contains!(shader, "shorts[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
 		assert_string_contains!(shader, "uint besl_packed_index_");
 		assert_string_contains!(shader, "uint besl_packed_value_");
-		assert_string_contains!(shader, "InterlockedAnd(bytes[besl_packed_index_");
 		assert_string_contains!(shader, "InterlockedOr(bytes[besl_packed_index_");
-		assert_string_contains!(shader, "InterlockedAnd(shorts[besl_packed_index_");
+		assert_string_contains!(shader, "InterlockedCompareExchange(bytes[besl_packed_index_");
 		assert_string_contains!(shader, "InterlockedOr(shorts[besl_packed_index_");
+		assert_string_contains!(shader, "InterlockedCompareExchange(shorts[besl_packed_index_");
+		assert_string_contains!(shader, "for(;;){uint besl_packed_desired_");
 		assert_eq!(
 			shader.matches("=next_index();").count(),
 			1,
@@ -1186,10 +1372,10 @@ mod tests {
 		let value_position = shader
 			.find("uint besl_packed_value_")
 			.expect("Expected packed value temporary");
-		let clear_position = shader.find("InterlockedAnd(bytes").expect("Expected packed byte clear");
+		let read_position = shader.find("InterlockedOr(bytes").expect("Expected packed byte read");
 		assert!(
-			value_position < clear_position,
-			"Packed writes must evaluate a self-reading right-hand side before clearing its destination lane."
+			value_position < read_position,
+			"Packed writes must evaluate a self-reading right-hand side before reading and replacing its destination word."
 		);
 
 		#[cfg(target_os = "windows")]
@@ -1221,11 +1407,12 @@ mod tests {
 			.expect("Expected compare-exchange source to lower to HLSL");
 		assert_string_contains!(
 			shader,
-			"uint32_t previous;InterlockedCompareExchange(shared_keys[group_thread_index], 4294967295, 7, previous);"
+			"InterlockedCompareExchange(shared_keys[group_thread_index],4294967295,7,besl_atomic_previous_0);"
 		);
+		assert_string_contains!(shader, "uint32_t previous=besl_atomic_previous_0;");
 		assert_string_contains!(
 			shader,
-			"{ uint _besl_atomic_previous; InterlockedCompareExchange(shared_keys[group_thread_index], 7, 9, _besl_atomic_previous); }"
+			"InterlockedCompareExchange(shared_keys[group_thread_index],7,9,besl_atomic_previous_1);"
 		);
 	}
 
@@ -1321,10 +1508,13 @@ mod tests {
 		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
 		assert_string_contains!(shader, "uint32_t counter_index=item_data[item_index].counter_index;");
-		assert_string_contains!(shader, "InterlockedAdd(counter_buffer[counter_index], 1);");
 		assert_string_contains!(
 			shader,
-			"uint32_t previous_count;InterlockedAdd(counter_buffer[counter_index], 1, previous_count);"
+			"InterlockedAdd(counter_buffer[counter_index],1,besl_atomic_previous_0);"
+		);
+		assert_string_contains!(
+			shader,
+			"InterlockedAdd(counter_buffer[counter_index],1,besl_atomic_previous_1);uint32_t previous_count=besl_atomic_previous_1;"
 		);
 		assert_string_does_not_contain!(shader, "item_data.items");
 		assert_string_does_not_contain!(shader, "counter_buffer.count");

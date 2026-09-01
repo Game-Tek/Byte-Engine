@@ -48,7 +48,11 @@ impl Generator {
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
+		if order.iter().any(Self::has_unsupported_hlsl_atomic_context) {
+			return Err(());
+		}
 		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		let uses_fma = order.iter().any(|node| Self::uses_intrinsic(node, "fma"));
 		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
 			return Err(());
 		}
@@ -60,6 +64,8 @@ impl Generator {
 		self.raster_inputs.clear();
 		self.raster_outputs.clear();
 		self.packed_write_counter = 0;
+		self.atomic_temporary_counter = 0;
+		self.atomic_temporaries.clear();
 		for node in &order {
 			match node.borrow().node() {
 				besl::Nodes::TaskPayload { .. } => self.task_payloads.push(node.clone()),
@@ -75,8 +81,11 @@ impl Generator {
 			self.emit_node_string(&mut string, node);
 		}
 		string.clear();
+		self.packed_write_counter = 0;
+		self.atomic_temporary_counter = 0;
+		self.atomic_temporaries.clear();
 
-		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics);
+		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics, uses_fma);
 		if self.current_stage == HlslStage::Task {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			if !self.minified {
@@ -247,10 +256,11 @@ impl Generator {
 			"f16" => "float16_t",
 			"f32" => "float",
 			"u8" => "uint",
-			"u16" => "uint",
+			"u16" => "uint16_t",
 			"u32" => "uint32_t",
 			"atomicu32" => "uint32_t",
 			"i32" => "int32_t",
+			"atomici32" => "int32_t",
 			"Texture2D" => "Texture2D",
 			"Texture3D" => "Texture3D",
 			"TextureCube" => "TextureCube<float4>",
@@ -325,6 +335,11 @@ impl Generator {
 	// Keep the exhaustive node-to-HLSL mapping together so adding a BESL node requires handling its backend contract here.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
+		if let Some(temporary) = self.atomic_temporaries.get(this_node) {
+			string.push_str(temporary);
+			return;
+		}
+
 		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
 
@@ -350,11 +365,6 @@ impl Generator {
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => self.emit_hlsl_struct_node(string, this_node, name, fields, template),
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment && self.emit_atomic_add_assignment(string, left, right) => {}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment
-					&& self.emit_atomic_compare_exchange_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
@@ -512,7 +522,12 @@ impl Generator {
 						if let Some((member_name, element_type)) = Self::hlsl_flattened_array_member(members) {
 							string.push_str(buffer_type);
 							string.push('<');
-							string.push_str(Self::translate_type(&element_type));
+							// Narrow arrays share 32-bit words so their lane writes can use InterlockedCompareExchange.
+							string.push_str(if matches!(element_type.as_str(), "u8" | "u16") {
+								"uint"
+							} else {
+								Self::translate_type(&element_type)
+							});
 							string.push_str("> ");
 							string.push_str(name);
 							if let Some(count) = count {
@@ -653,9 +668,10 @@ impl Generator {
 		hlsl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
 		uses_subgroup_intrinsics: bool,
+		uses_fma: bool,
 	) {
-		// HLSL doesn't use #version, but we can add shader model target as a comment
-		hlsl_block.push_str("// Shader Model 6.0+\n");
+		// Generated HLSL uses the engine's modern-only DXIL contract.
+		hlsl_block.push_str("// Shader Model 6.9\n");
 
 		// Shader type as comment (user preference: Option B)
 		match compilation_settings.stage {
@@ -666,9 +682,7 @@ impl Generator {
 			Stages::Mesh { .. } => hlsl_block.push_str("// #pragma shader_stage(mesh)\n"),
 		}
 
-		// Feature requirements (Option A & C: skip most, add specific where applicable)
-		// HLSL SM 6.0+ has most features built-in, so we mainly document what's expected
-		hlsl_block.push_str("// Requires: 16-bit types, explicit arithmetic types\n");
+		hlsl_block.push_str("// Requires: native 16-bit, wave, and 64-bit integer shader operations\n");
 
 		match compilation_settings.stage {
 			Stages::Compute { .. } => {
@@ -701,6 +715,20 @@ impl Generator {
 				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
 			);
 		}
+		if uses_fma {
+			Self::emit_fma_helpers(hlsl_block);
+		}
+	}
+
+	/// Emits the helpers that preserve BESL's one-rounding FMA contract.
+	fn emit_fma_helpers(hlsl_block: &mut String) {
+		hlsl_block.push_str(
+			"// A binary16 product is exact in binary32. TwoSum recovers the addition residual so a binary32 midpoint can be rounded on the exact side.\n\
+float16_t _besl_fma_f16(float16_t first, float16_t second, float16_t third) { precise float product = float(first) * float(second); precise float addend = float(third); precise float sum = product + addend; if (!isfinite(sum)) { return float16_t(sum); } precise float virtual_addend = sum - product; precise float residual = (product - (sum - virtual_addend)) + (addend - virtual_addend); uint rounded_bits = f32tof16(sum) & 0xffffu; float rounded = f16tof32(rounded_bits); if (residual == 0.0 || rounded == sum) { return float16_t(rounded); } bool rounded_below = rounded < sum; bool negative = (rounded_bits & 0x8000u) != 0u; uint adjacent_bits = rounded_bits + (rounded_below != negative ? 1u : 0xffffffffu); float adjacent = f16tof32(adjacent_bits); float midpoint = !isfinite(rounded) || !isfinite(adjacent) ? (sum < 0.0 ? -65520.0 : 65520.0) : rounded + (adjacent - rounded) * 0.5; if (sum != midpoint) { return float16_t(rounded); } bool rounded_follows_residual = (residual > 0.0 && rounded > sum) || (residual < 0.0 && rounded < sum); return float16_t(rounded_follows_residual ? rounded : adjacent); }\n\
+float16_t2 _besl_fma_f16(float16_t2 first, float16_t2 second, float16_t2 third) { return float16_t2(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y)); }\n\
+float16_t3 _besl_fma_f16(float16_t3 first, float16_t3 second, float16_t3 third) { return float16_t3(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y), _besl_fma_f16(first.z, second.z, third.z)); }\n\
+float16_t4 _besl_fma_f16(float16_t4 first, float16_t4 second, float16_t4 third) { return float16_t4(_besl_fma_f16(first.x, second.x, third.x), _besl_fma_f16(first.y, second.y, third.y), _besl_fma_f16(first.z, second.z, third.z), _besl_fma_f16(first.w, second.w, third.w)); }\n",
+		);
 	}
 
 	/// Emits the 32-bit word containing one packed logical narrow-buffer element.

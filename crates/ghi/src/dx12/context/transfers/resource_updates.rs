@@ -45,6 +45,7 @@ impl Device {
 		image.extent = extent;
 		image.resource = resource.clone();
 		image.data = utils::texture_copy_size(image.format, extent).map(|size| vec![0u8; size]);
+		let initializes_frame_resources = image.frame_data.is_some();
 		if let Some(frame_data) = image.frame_data.as_mut() {
 			let data = image.data.clone().unwrap_or_default();
 			*frame_data = vec![data; self.frames as usize];
@@ -53,6 +54,12 @@ impl Device {
 			*frame_resources = vec![None; self.frames as usize];
 			if let Some(first_resource) = resource {
 				frame_resources[0] = Some(first_resource);
+			}
+		}
+		if initializes_frame_resources {
+			// Resized committed textures have undefined contents. Restore every dynamic sequence from its zeroed staging image.
+			for sequence_index in 0..self.frames {
+				self.queue_texture_sync_for_sequence(image_handle.0, sequence_index);
 			}
 		}
 		self.invalidate_descriptor_materializations();

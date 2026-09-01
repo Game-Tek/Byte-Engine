@@ -169,10 +169,10 @@ Cargo writes the binary to `target/release/`.
 
 ## Build and bundle for Windows
 
-Bundle the release executable, baked `resources/` directory, and DirectStorage
-runtime together. Byte Engine loads DirectStorage at runtime, so a successful
-Cargo build doesn't prove that the final application directory contains the
-required DLLs.
+Bundle the release executable, baked `resources/` directory, Agility SDK, DXC,
+and DirectStorage runtimes together. Byte Engine loads these DirectX components
+at runtime, so a successful Cargo build doesn't prove that the final application
+directory contains the required DLLs.
 
 ### 1. Bake your application resources
 
@@ -195,41 +195,53 @@ cargo build --release
 
 Cargo writes the executable to `target\release\`.
 
-### 3. Get the supported DirectStorage runtime
+### 3. Get the supported DirectX runtimes
 
-Download
-[Microsoft.Direct3D.DirectStorage 1.3.0](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0)
-from Microsoft. Byte Engine targets the stable 1.3 runtime. Don't substitute a
-1.4 preview runtime without updating the GHI integration and rerunning its
-native DX12 tests.
-
-You can install the package into a local staging directory with the NuGet CLI:
+Install Byte Engine's pinned retail runtime set into a local staging directory
+with the NuGet CLI:
 
 ```powershell
+nuget install Microsoft.Direct3D.D3D12 `
+  -Version 1.619.5 `
+  -OutputDirectory .packages `
+  -ExcludeVersion
+nuget install Microsoft.Direct3D.DXC `
+  -Version 1.9.2607.13 `
+  -OutputDirectory .packages `
+  -ExcludeVersion
 nuget install Microsoft.Direct3D.DirectStorage `
   -Version 1.3.0 `
   -OutputDirectory .packages `
   -ExcludeVersion
 ```
 
-The runtime is redistributable under Microsoft's terms, not Byte Engine's MIT
-license. Review and comply with the package's `LICENSE.txt` before you
-distribute it. `LICENSE-CODE.txt` covers the SDK headers and metadata; it isn't
-the license for the runtime DLLs.
+The [Agility SDK 1.619.5 package](https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.619.5)
+provides the retail runtime for Shader Model 6.9 and Enhanced Barriers. The
+[DXC 1.9.2607.13 package](https://www.nuget.org/packages/Microsoft.Direct3D.DXC/1.9.2607.13)
+provides the matching retail shader compiler. Byte Engine also targets the
+stable [DirectStorage 1.3.0 package](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0).
+Don't substitute a preview Agility SDK, preview DXC, or DirectStorage runtime
+without updating the GHI contract and rerunning its native DX12 tests.
+
+These runtimes are redistributable under Microsoft's terms, not Byte Engine's
+MIT license. Review and comply with the license files in every package before
+you distribute it. The Agility SDK provides `LICENSE.txt`; DXC provides
+`LICENSE-MS.txt`, `LICENSE-LLVM.txt`, and `LICENCE-MIT.txt`. In the Agility SDK,
+`LICENSE-CODE.txt` covers SDK headers and metadata; it isn't the license for the
+runtime DLLs.
 
 ### 4. Select the matching runtime architecture
 
-Copy both DLLs from the directory that matches the executable's Rust target:
+Select each package directory that matches the executable's Rust target:
 
-| Rust target | DirectStorage package directory |
-| --- | --- |
-| `x86_64-pc-windows-msvc` | `native\bin\x64` |
-| `aarch64-pc-windows-msvc` | `native\bin\ARM64` |
-| `i686-pc-windows-msvc` | `native\bin\x86` |
+| Rust target | Agility SDK | DXC | DirectStorage |
+| --- | --- | --- | --- |
+| `x86_64-pc-windows-msvc` | `build\native\bin\x64` | `build\native\bin\x64` | `native\bin\x64` |
+| `aarch64-pc-windows-msvc` | `build\native\bin\arm64` | `build\native\bin\arm64` | `native\bin\ARM64` |
+| `i686-pc-windows-msvc` | `build\native\bin\win32` | `build\native\bin\x86` | `native\bin\x86` |
 
-Always copy `dstorage.dll` and `dstoragecore.dll` from the same package version
-and architecture. The `.lib` files, headers, and WinMD metadata aren't needed
-at runtime.
+Always use one architecture for every runtime and the executable. The `.lib`
+files, headers, and WinMD metadata aren't needed at runtime.
 
 ### 5. Stage the application directory
 
@@ -238,14 +250,29 @@ This example stages an x64 application named `my-application`:
 ```powershell
 $applicationName = "my-application"
 $bundleDirectory = Join-Path $PWD "dist\$applicationName"
+$agilityDirectory = Join-Path $PWD `
+  ".packages\Microsoft.Direct3D.D3D12\build\native\bin\x64"
+$dxcDirectory = Join-Path $PWD `
+  ".packages\Microsoft.Direct3D.DXC\build\native\bin\x64"
 $directStorageDirectory = Join-Path $PWD `
   ".packages\Microsoft.Direct3D.DirectStorage\native\bin\x64"
+$agilityBundleDirectory = Join-Path $bundleDirectory "D3D12"
 
 New-Item -ItemType Directory -Force -Path $bundleDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $agilityBundleDirectory | Out-Null
 Copy-Item -LiteralPath "target\release\$applicationName.exe" `
   -Destination $bundleDirectory -Force
 Copy-Item -LiteralPath "resources" `
   -Destination $bundleDirectory -Recurse -Force
+Copy-Item -LiteralPath "$agilityDirectory\D3D12Core.dll" `
+  -Destination $agilityBundleDirectory -Force
+# Include the matching debug layer only in development and test bundles that enable validation.
+Copy-Item -LiteralPath "$agilityDirectory\d3d12SDKLayers.dll" `
+  -Destination $agilityBundleDirectory -Force
+Copy-Item -LiteralPath "$dxcDirectory\dxcompiler.dll" `
+  -Destination $bundleDirectory -Force
+Copy-Item -LiteralPath "$dxcDirectory\dxil.dll" `
+  -Destination $bundleDirectory -Force
 Copy-Item -LiteralPath "$directStorageDirectory\dstorage.dll" `
   -Destination $bundleDirectory -Force
 Copy-Item -LiteralPath "$directStorageDirectory\dstoragecore.dll" `
@@ -258,16 +285,24 @@ installer, or MSIX package:
 ```text
 my-application/
   my-application.exe
+  dxcompiler.dll
+  dxil.dll
   dstorage.dll
   dstoragecore.dll
+  D3D12/
+    D3D12Core.dll
+    d3d12SDKLayers.dll  # Development and test validation only
   resources/
     resources.db
     ... baked payload files ...
 ```
 
-Keep both DirectStorage DLLs beside the executable. Don't place them inside
-`resources/`, install them into a Windows system directory, or rely on a
-developer machine's `PATH`.
+Keep DXC and DirectStorage beside the executable, and keep `D3D12Core.dll` in
+the `D3D12` child directory. The engine requests that exact directory through
+the retail independent-device API. Keep the matching `d3d12SDKLayers.dll` there
+while testing with validation, but remove it from production installers as
+Microsoft recommends. Don't place runtime DLLs inside `resources/`, install
+them into a Windows system directory, or rely on a developer machine's `PATH`.
 
 ### 6. Verify the completed bundle
 
@@ -276,8 +311,11 @@ Check the staged files, then run the application from that directory:
 ```powershell
 $requiredBundleFiles = @(
   "$bundleDirectory\$applicationName.exe",
+  "$bundleDirectory\dxcompiler.dll",
+  "$bundleDirectory\dxil.dll",
   "$bundleDirectory\dstorage.dll",
   "$bundleDirectory\dstoragecore.dll",
+  "$bundleDirectory\D3D12\D3D12Core.dll",
   "$bundleDirectory\resources\resources.db"
 )
 
@@ -291,27 +329,34 @@ if ($missingBundleFiles.Count -ne 0) {
 & "$bundleDirectory\$applicationName.exe"
 ```
 
-Test the bundle on a clean Windows machine or VM that doesn't have the
-DirectStorage SDK installed. Exercise a file-to-buffer or file-to-image load;
-application startup alone might not create a DirectStorage queue. Missing or
-incompatible runtime DLLs produce a resource-I/O queue creation error with a
-link to the supported package.
+Test the bundle on a clean Windows machine or VM that doesn't have these SDKs
+installed. Startup verifies the Agility SDK, Shader Model 6.9, native 16-bit and
+64-bit shader operations, wave operations, and Enhanced Barriers. Also exercise
+a file-to-buffer or file-to-image load because startup might not create a
+DirectStorage queue.
 
-<Callout type="info" title="Run the native DX12 resource-I/O tests">
-	Cargo doesn't copy the DirectStorage runtime beside test executables. Add the
-	matching package directory to `PATH` for the test process, then restore the
-	previous value:
+<Callout type="info" title="Run the native DX12 tests">
+	Cargo doesn't copy app-local runtimes beside hashed test executables. Point
+	the engine at the Agility SDK directory, add DXC and DirectStorage to `PATH`
+	for the test process, then restore the previous values:
 
 ```powershell
+$agilityDirectory = Resolve-Path `
+  ".packages\Microsoft.Direct3D.D3D12\build\native\bin\x64"
+$dxcDirectory = Resolve-Path `
+  ".packages\Microsoft.Direct3D.DXC\build\native\bin\x64"
 $directStorageDirectory = Resolve-Path `
   ".packages\Microsoft.Direct3D.DirectStorage\native\bin\x64"
 $savedProcessPath = $env:PATH
+$savedAgilityPath = $env:BYTE_ENGINE_D3D12_SDK_PATH
 
 try {
-  $env:PATH = "$directStorageDirectory;$savedProcessPath"
-  cargo nextest run -p byte-engine-ghi dx12::io::tests
+	$env:BYTE_ENGINE_D3D12_SDK_PATH = "$agilityDirectory\"
+	$env:PATH = "$dxcDirectory;$directStorageDirectory;$savedProcessPath"
+	cargo nextest run -p byte-engine-ghi dx12
 } finally {
-  $env:PATH = $savedProcessPath
+	$env:PATH = $savedProcessPath
+	$env:BYTE_ENGINE_D3D12_SDK_PATH = $savedAgilityPath
 }
 ```
 </Callout>

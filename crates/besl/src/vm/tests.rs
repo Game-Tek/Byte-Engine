@@ -1794,6 +1794,8 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 	main: fn () -> void {
 		buff.direction = normalize(vec3f16(3.0, 4.0, 0.0));
 		buff.alignment = dot(buff.direction, vec3f16(0.0, 1.0, 0.0));
+		buff.fused = fma(f16(2.0), f16(3.0), f16(1.0));
+		buff.fused_vector = fma(vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0), vec3f16(1.0, 2.0, 3.0));
 	}
 	"#;
 
@@ -1805,8 +1807,10 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 			"buff",
 			BindingTypes::Buffer {
 				members: vec![
-					Node::member("direction", vec3f16_type).into(),
-					Node::member("alignment", f16_type).into(),
+					Node::member("direction", vec3f16_type.clone()).into(),
+					Node::member("alignment", f16_type.clone()).into(),
+					Node::member("fused", f16_type).into(),
+					Node::member("fused_vector", vec3f16_type).into(),
 				],
 			},
 			21,
@@ -1828,6 +1832,70 @@ fn executable_program_evaluates_f16_vector_intrinsics() {
 	assert_eq!(
 		buffer.read_f16("alignment").expect("Expected f16 alignment"),
 		f16::from_f32(0.8)
+	);
+	assert_eq!(buffer.read_f16("fused").expect("Expected scalar f16 FMA"), f16::from_f32(7.0));
+	assert_eq!(
+		buffer.read("fused_vector").expect("Expected vector f16 FMA"),
+		Value::Vec3F16([f16::from_f32(7.0), f16::from_f32(14.0), f16::from_f32(23.0)])
+	);
+}
+
+/// Verifies half FMA rounds the exact product and sum directly to binary16.
+#[test]
+fn executable_program_avoids_intermediate_f32_rounding_in_f16_fma() {
+	let executable = compile_test_program(
+		r#"
+		FmaCase: struct {
+			first: f16,
+			second: f16,
+			third: f16,
+			result: f16,
+			first_vector: vec4f16,
+			second_vector: vec4f16,
+			third_vector: vec4f16,
+			result_vector: vec4f16,
+		}
+		fma_case: descriptor<{ type: FmaCase, binding: 50, access: read_write }>;
+
+		main: fn () -> void {
+			fma_case.result = fma(fma_case.first, fma_case.second, fma_case.third);
+			fma_case.result_vector = fma(fma_case.first_vector, fma_case.second_vector, fma_case.third_vector);
+		}
+		"#,
+		None,
+	);
+	let slot = ResourceSlot::new(50);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	buffer
+		.write("first", Value::F16(f16::from_bits(0x852b)))
+		.expect("Expected first half input to fit the buffer");
+	buffer
+		.write("second", Value::F16(f16::from_bits(0x7603)))
+		.expect("Expected second half input to fit the buffer");
+	buffer
+		.write("third", Value::F16(f16::from_bits(0x87f1)))
+		.expect("Expected third half input to fit the buffer");
+	buffer
+		.write("first_vector", Value::Vec4F16([f16::from_bits(0x852b); 4]))
+		.expect("Expected first half vector to fit the buffer");
+	buffer
+		.write("second_vector", Value::Vec4F16([f16::from_bits(0x7603); 4]))
+		.expect("Expected second half vector to fit the buffer");
+	buffer
+		.write("third_vector", Value::Vec4F16([f16::from_bits(0x87f1); 4]))
+		.expect("Expected third half vector to fit the buffer");
+
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(
+		buffer.read_f16("result").expect("Expected half FMA result").to_bits(),
+		0xbfc5,
+		"FMA must round once to binary16 instead of first rounding to binary32"
+	);
+	assert_eq!(
+		buffer.read("result_vector").expect("Expected half FMA vector"),
+		Value::Vec4F16([f16::from_bits(0xbfc5); 4]),
+		"Every vector FMA component must round once to binary16"
 	);
 }
 
@@ -2833,6 +2901,216 @@ fn atomic_compare_exchange_returns_previous_value_on_success_and_failure() {
 		result.read_indexed("observed", 1).expect("Expected lane one observation"),
 		Value::U32(9)
 	);
+}
+
+#[test]
+fn relaxed_integer_atomics_return_previous_values_for_signed_and_unsigned_storage() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			unsigned_previous: u32[10],
+			signed_previous: i32[10],
+			unsigned_final: u32,
+			signed_final: i32,
+		}
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+		shared_unsigned: workgroup<atomicu32>;
+		shared_signed: workgroup<atomici32>;
+
+		main: fn () -> void {
+			let negative_ten: i32 = 0 - 10;
+			let negative_five: i32 = 0 - 5;
+			let negative_two: i32 = 0 - 2;
+			let negative_nine: i32 = 0 - 9;
+			let signed_three: i32 = 3;
+			let signed_four: i32 = 4;
+			let signed_seven: i32 = 7;
+			let signed_eight: i32 = 8;
+			let signed_fifteen: i32 = 15;
+			let signed_twenty: i32 = 20;
+			atomic_store(shared_unsigned, 10);
+			result.unsigned_previous[0] = atomic_load(shared_unsigned);
+			result.unsigned_previous[1] = atomic_exchange(shared_unsigned, 20);
+			result.unsigned_previous[2] = atomic_add(shared_unsigned, 5);
+			result.unsigned_previous[3] = atomic_sub(shared_unsigned, 3);
+			result.unsigned_previous[4] = atomic_min(shared_unsigned, 30);
+			result.unsigned_previous[5] = atomic_max(shared_unsigned, 40);
+			result.unsigned_previous[6] = atomic_and(shared_unsigned, 15);
+			result.unsigned_previous[7] = atomic_or(shared_unsigned, 3);
+			result.unsigned_previous[8] = atomic_xor(shared_unsigned, 1);
+			result.unsigned_previous[9] = atomic_compare_exchange(shared_unsigned, 10, 77);
+			result.unsigned_final = atomic_load(shared_unsigned);
+
+			atomic_store(shared_signed, negative_ten);
+			result.signed_previous[0] = atomic_load(shared_signed);
+			result.signed_previous[1] = atomic_exchange(shared_signed, signed_twenty);
+			result.signed_previous[2] = atomic_add(shared_signed, negative_five);
+			result.signed_previous[3] = atomic_sub(shared_signed, signed_three);
+			result.signed_previous[4] = atomic_min(shared_signed, negative_two);
+			result.signed_previous[5] = atomic_max(shared_signed, signed_four);
+			result.signed_previous[6] = atomic_and(shared_signed, signed_seven);
+			result.signed_previous[7] = atomic_or(shared_signed, signed_eight);
+			result.signed_previous[8] = atomic_xor(shared_signed, signed_three);
+			result.signed_previous[9] = atomic_compare_exchange(shared_signed, signed_fifteen, negative_nine);
+			result.signed_final = atomic_load(shared_signed);
+		}
+		"#,
+		None,
+	);
+	let slot = ResourceSlot::new(43);
+	let mut result = buffer_for_slot(&executable, slot);
+	let mut workgroup = WorkgroupState::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot, &mut result);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable
+			.run_workgroup(&mut descriptors, &[ExecutionConfig::new(512)])
+			.expect("Relaxed integer atomic execution should succeed");
+	}
+
+	let expected_unsigned = [10, 10, 20, 25, 22, 22, 40, 8, 11, 10];
+	for (index, expected) in expected_unsigned.into_iter().enumerate() {
+		assert_eq!(
+			result
+				.read_indexed("unsigned_previous", index)
+				.expect("Expected unsigned previous value"),
+			Value::U32(expected)
+		);
+	}
+	let expected_signed = [-10, -10, 20, 15, 12, -2, 4, 4, 12, 15];
+	for (index, expected) in expected_signed.into_iter().enumerate() {
+		assert_eq!(
+			result
+				.read_indexed("signed_previous", index)
+				.expect("Expected signed previous value"),
+			Value::I32(expected)
+		);
+	}
+	assert_eq!(result.read("unsigned_final").unwrap(), Value::U32(77));
+	assert_eq!(result.read("signed_final").unwrap(), Value::I32(-9));
+}
+
+#[test]
+fn relaxed_integer_atomics_update_signed_and_unsigned_buffer_members() {
+	let executable = compile_test_program(
+		r#"
+		State: struct {
+			unsigned_value: atomicu32,
+			signed_value: atomici32,
+			unsigned_previous: u32[9],
+			signed_previous: i32[9],
+		}
+		state: descriptor<{ type: State, binding: 45, access: read_write }>;
+		main: fn () -> void {
+			let negative_ten: i32 = 0 - 10;
+			let negative_five: i32 = 0 - 5;
+			let negative_two: i32 = 0 - 2;
+			let signed_three: i32 = 3;
+			let signed_four: i32 = 4;
+			let signed_seven: i32 = 7;
+			let signed_eight: i32 = 8;
+			let signed_fifteen: i32 = 15;
+			let signed_twenty: i32 = 20;
+
+			atomic_store(state.unsigned_value, 10);
+			state.unsigned_previous[0] = atomic_exchange(state.unsigned_value, 20);
+			state.unsigned_previous[1] = atomic_add(state.unsigned_value, 5);
+			state.unsigned_previous[2] = atomic_sub(state.unsigned_value, 3);
+			state.unsigned_previous[3] = atomic_min(state.unsigned_value, 30);
+			state.unsigned_previous[4] = atomic_max(state.unsigned_value, 40);
+			state.unsigned_previous[5] = atomic_and(state.unsigned_value, 15);
+			state.unsigned_previous[6] = atomic_or(state.unsigned_value, 3);
+			state.unsigned_previous[7] = atomic_xor(state.unsigned_value, 1);
+			state.unsigned_previous[8] = atomic_compare_exchange(state.unsigned_value, 10, 77);
+
+			atomic_store(state.signed_value, negative_ten);
+			state.signed_previous[0] = atomic_exchange(state.signed_value, signed_twenty);
+			state.signed_previous[1] = atomic_add(state.signed_value, negative_five);
+			state.signed_previous[2] = atomic_sub(state.signed_value, signed_three);
+			state.signed_previous[3] = atomic_min(state.signed_value, negative_two);
+			state.signed_previous[4] = atomic_max(state.signed_value, signed_four);
+			state.signed_previous[5] = atomic_and(state.signed_value, signed_seven);
+			state.signed_previous[6] = atomic_or(state.signed_value, signed_eight);
+			state.signed_previous[7] = atomic_xor(state.signed_value, signed_three);
+			state.signed_previous[8] = atomic_compare_exchange(state.signed_value, signed_fifteen, negative_ten);
+		}
+		"#,
+		None,
+	);
+	let slot = ResourceSlot::new(45);
+	let mut state = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut state);
+
+	for (index, expected) in [10, 20, 25, 22, 22, 40, 8, 11, 10].into_iter().enumerate() {
+		assert_eq!(
+			state
+				.read_indexed("unsigned_previous", index)
+				.expect("Expected unsigned buffer atomic result"),
+			Value::U32(expected)
+		);
+	}
+	for (index, expected) in [-10, 20, 15, 12, -2, 4, 4, 12, 15].into_iter().enumerate() {
+		assert_eq!(
+			state
+				.read_indexed("signed_previous", index)
+				.expect("Expected signed buffer atomic result"),
+			Value::I32(expected)
+		);
+	}
+	assert_eq!(state.read("unsigned_value").unwrap(), Value::U32(77));
+	assert_eq!(state.read("signed_value").unwrap(), Value::I32(-10));
+}
+
+#[test]
+fn executable_program_classifies_f16_and_f32_values() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			nan_f16: bool,
+			infinite_f16: bool,
+			finite_f16: bool,
+			normal_f16: bool,
+			nan_f32: bool,
+			infinite_f32: bool,
+			finite_f32: bool,
+			normal_f32: bool,
+		}
+		result: descriptor<{ type: Result, binding: 44, access: read_write }>;
+		main: fn () -> void {
+			let zero_f16: f16 = f16(0.0);
+			let one_f16: f16 = f16(1.0);
+			result.nan_f16 = is_nan(zero_f16 / zero_f16);
+			result.infinite_f16 = is_infinite(one_f16 / zero_f16);
+			result.finite_f16 = is_finite(one_f16);
+			result.normal_f16 = is_normal(one_f16);
+			result.nan_f32 = is_nan(0.0 / 0.0);
+			result.infinite_f32 = is_infinite(1.0 / 0.0);
+			result.finite_f32 = is_finite(1.0);
+			result.normal_f32 = is_normal(1.0);
+		}
+		"#,
+		None,
+	);
+	let slot = ResourceSlot::new(44);
+	let mut result = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut result);
+
+	for member in [
+		"nan_f16",
+		"infinite_f16",
+		"finite_f16",
+		"normal_f16",
+		"nan_f32",
+		"infinite_f32",
+		"finite_f32",
+		"normal_f32",
+	] {
+		assert_eq!(
+			result.read(member).expect("Expected classification result"),
+			Value::Bool(true)
+		);
+	}
 }
 
 #[test]

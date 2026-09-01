@@ -57,23 +57,55 @@ jobs:
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
     - name: Install DirectX Shader Compiler
+      if: matrix.platform == 'windows'
+      shell: powershell
+      run: |
+        # Every Windows matrix entry can execute resource-management HLSL tests, including network-only builds.
+        $packageRoot = Join-Path $env:RUNNER_TEMP "directx"
+        $packageId = "Microsoft.Direct3D.DXC"
+        $packageVersion = "1.9.2607.13"
+        $packageName = $packageId.ToLowerInvariant()
+        $archive = Join-Path $env:RUNNER_TEMP "$packageName.zip"
+        $install = Join-Path $packageRoot $packageId
+        $url = "https://api.nuget.org/v3-flatcontainer/$packageName/$packageVersion/$packageName.$packageVersion.nupkg"
+        Invoke-WebRequest $url -OutFile $archive
+        Expand-Archive $archive -DestinationPath $install
+
+        $dxcBin = Join-Path $install "build\native\bin\x64"
+        $dxcDll = Join-Path $dxcBin "dxcompiler.dll"
+        $dxcExecutable = Join-Path $dxcBin "dxc.exe"
+        if (-not (Test-Path $dxcDll)) {
+          throw "dxcompiler.dll was not found in Microsoft.Direct3D.DXC $packageVersion."
+        }
+        if (-not (Test-Path $dxcExecutable)) {
+          throw "dxc.exe was not found in Microsoft.Direct3D.DXC $packageVersion."
+        }
+        $version = & $dxcExecutable --version 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch "dxcompiler\.dll: 1\.9\(5402-") {
+          throw "Microsoft.Direct3D.DXC $packageVersion did not report the required retail DXC commit 5402. Output: $version"
+        }
+        Write-Host $version.Trim()
+        Add-Content $env:GITHUB_PATH $dxcBin
+
+    - name: Install DirectX 12 Agility SDK
       if: matrix.platform == 'windows' && matrix.feature == 'headed'
       shell: powershell
       run: |
-        $release = Invoke-RestMethod "https://api.github.com/repos/microsoft/DirectXShaderCompiler/releases/latest"
-        $asset = $release.assets | Where-Object { $_.name -match '^dxc_.*\.zip$' } | Select-Object -First 1
-        if (-not $asset) {
-          throw "No DirectX Shader Compiler zip asset found in the latest release."
-        }
-        $archive = Join-Path $env:RUNNER_TEMP $asset.name
-        $install = Join-Path $env:RUNNER_TEMP "dxc"
-        Invoke-WebRequest $asset.browser_download_url -OutFile $archive
+        $packageRoot = Join-Path $env:RUNNER_TEMP "directx"
+        $packageId = "Microsoft.Direct3D.D3D12"
+        $packageVersion = "1.619.5"
+        $packageName = $packageId.ToLowerInvariant()
+        $archive = Join-Path $env:RUNNER_TEMP "$packageName.zip"
+        $install = Join-Path $packageRoot $packageId
+        $url = "https://api.nuget.org/v3-flatcontainer/$packageName/$packageVersion/$packageName.$packageVersion.nupkg"
+        Invoke-WebRequest $url -OutFile $archive
         Expand-Archive $archive -DestinationPath $install
-        $bin = Join-Path $install "bin\x64"
-        if (-not (Test-Path (Join-Path $bin "dxcompiler.dll"))) {
-          throw "dxcompiler.dll was not found in the DirectX Shader Compiler archive."
+
+        $agilityBin = Join-Path $install "build\native\bin\x64"
+        if (-not (Test-Path (Join-Path $agilityBin "D3D12Core.dll"))) {
+          throw "D3D12Core.dll was not found in Microsoft.Direct3D.D3D12 $packageVersion."
         }
-        Add-Content $env:GITHUB_PATH $bin
+        Add-Content $env:GITHUB_ENV "BYTE_ENGINE_D3D12_SDK_PATH=$agilityBin"
     - name: Install nextest
       uses: taiki-e/install-action@nextest
     - name: Build and test

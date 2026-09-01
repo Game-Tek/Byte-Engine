@@ -67,6 +67,69 @@ mod tests {
 		assert!(!shader.contains("pow("));
 	}
 
+	#[test]
+	fn modern_half_and_integer_atomics_lower_to_relaxed_msl() {
+		let source = r#"
+			unsigned_value: workgroup<atomicu32>;
+			signed_value: workgroup<atomici32>;
+			main: fn () -> void {
+				let signed_one: i32 = 1;
+				atomic_store(unsigned_value, 1);
+				atomic_load(unsigned_value);
+				atomic_exchange(unsigned_value, 2);
+				atomic_add(unsigned_value, 1);
+				atomic_sub(unsigned_value, 1);
+				atomic_min(unsigned_value, 1);
+				atomic_max(unsigned_value, 2);
+				atomic_and(unsigned_value, 3);
+				atomic_or(unsigned_value, 4);
+				atomic_xor(unsigned_value, 5);
+				atomic_compare_exchange(unsigned_value, 1, 2);
+				atomic_store(signed_value, signed_one);
+				atomic_min(signed_value, signed_one);
+				let zero: f16 = f16(0.0);
+				let one: f16 = f16(1.0);
+				let fused: f16 = fma(one, one, one);
+				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
+				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
+					atomic_store(unsigned_value, 0);
+				}
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected modern MSL source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected modern MSL source generation");
+
+		assert_string_contains!(shader, "threadgroup atomic_uint unsigned_value;");
+		assert_string_contains!(shader, "threadgroup atomic_int signed_value;");
+		for operation in [
+			"atomic_store_explicit(&",
+			"atomic_load_explicit(&",
+			"atomic_exchange_explicit(&",
+			"atomic_fetch_add_explicit(&",
+			"atomic_fetch_sub_explicit(&",
+			"atomic_fetch_min_explicit(&",
+			"atomic_fetch_max_explicit(&",
+			"atomic_fetch_and_explicit(&",
+			"atomic_fetch_or_explicit(&",
+			"atomic_fetch_xor_explicit(&",
+			"_besl_atomic_compare_exchange(",
+		] {
+			assert_string_contains!(shader, operation);
+		}
+		assert_string_contains!(shader, "memory_order_relaxed");
+		assert_string_contains!(shader, "half fused=fma(");
+		assert_string_contains!(shader, "half3 fused_vector=fma(");
+		for predicate in ["isnan(", "isinf(", "isfinite(", "isnormal("] {
+			assert_string_contains!(shader, predicate);
+		}
+	}
+
 	fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
 		besl::Node::binding(
 			name,

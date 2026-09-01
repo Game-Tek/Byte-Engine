@@ -214,9 +214,9 @@ independent 2D texture descriptors instead.
 Reflection retains the authored name and flat slot for each descriptor reachable
 from `main`.
 
-Storage-buffer counters use `atomicu32` members with `atomic_add`,
-`atomic_compare_exchange`, `atomic_load`, and `atomic_store`. Integer storage
-images can be read as scalars with `image_load_u32`:
+Storage-buffer counters use `atomicu32` or `atomici32` members with the
+[atomic intrinsics](/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics).
+Integer storage images can be read as scalars with `image_load_u32`:
 
 ```rust
 Counters: struct {

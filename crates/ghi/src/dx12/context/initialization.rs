@@ -1,24 +1,56 @@
 //! DX12 device operations for initialization.
 
+use windows::Win32::Graphics::Direct3D12 as d3d12;
+
 use super::*;
+
+/// The `ModernDx12Capabilities` struct captures the mandatory runtime contract before queue creation.
+#[derive(Clone, Copy)]
+struct ModernDx12Capabilities {
+	shader_model_6_9: bool,
+	enhanced_barriers: bool,
+	root_signature_1_2: bool,
+	native_16_bit_shader_ops: bool,
+	wave_ops: bool,
+	int64_shader_ops: bool,
+	typed_resource_int64_atomics: bool,
+	group_shared_int64_atomics: bool,
+	descriptor_heap_int64_atomics: bool,
+}
 
 impl Device {
 	const NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE: &str = "DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.";
 	const WAVE_OPS_UNAVAILABLE: &str = "DX12 wave operations are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12 WaveOps support required by Material Count.";
+	const SHADER_MODEL_6_9_UNAVAILABLE: &str =
+		"DX12 Shader Model 6.9 is unavailable. The most likely cause is an outdated DirectX runtime, GPU driver, or GPU.";
+	const ENHANCED_BARRIERS_UNAVAILABLE: &str = "DX12 enhanced barriers are unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU does not report D3D12_OPTIONS12::EnhancedBarriersSupported.";
+	const ROOT_SIGNATURE_1_2_UNAVAILABLE: &str = "DX12 root signature version 1.2 is unavailable. The most likely cause is that the DirectX runtime, GPU driver, or selected GPU reports an older D3D12 root signature version.";
+	const INT64_SHADER_OPS_UNAVAILABLE: &str = "DX12 64-bit integer shader operations are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12_OPTIONS1::Int64ShaderOps.";
+	const TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 typed-resource and groupshared 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report both required D3D12_OPTIONS9 atomic capabilities.";
+	const DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE: &str = "DX12 descriptor-heap 64-bit atomics are unavailable. The most likely cause is that the selected GPU or driver does not report D3D12_OPTIONS11::AtomicInt64OnDescriptorHeapResourceSupported.";
+	const AGILITY_SDK_UNAVAILABLE: &str = "Failed to activate DirectX 12 Agility SDK 1.619.5. The most likely cause is that the Microsoft.Direct3D.D3D12 1.619.5 app-local payload is missing from '.\\D3D12\\' or BYTE_ENGINE_D3D12_SDK_PATH, or Windows does not meet the Agility SDK minimum version. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
+	const AGILITY_SDK_PATH_INVALID: &str = "Invalid DirectX 12 Agility SDK path. The most likely cause is that BYTE_ENGINE_D3D12_SDK_PATH is empty, is not valid Unicode, or contains an embedded NUL byte.";
+	const AGILITY_DEBUG_LAYER_UNAVAILABLE: &str = "Failed to configure the DirectX 12 Agility SDK debug layer. The most likely cause is that D3D12SDKLayers.dll from Microsoft.Direct3D.D3D12 1.619.5 is missing from the app-local SDK directory. See https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/.";
+	const AGILITY_SDK_VERSION: u32 = 619;
+	const DEFAULT_AGILITY_SDK_PATH: &str = ".\\D3D12\\";
+	const AGILITY_SDK_PATH_ENVIRONMENT_VARIABLE: &str = "BYTE_ENGINE_D3D12_SDK_PATH";
+	const MINIMUM_DXC_MAJOR_VERSION: u32 = 1;
+	const MINIMUM_DXC_MINOR_VERSION: u32 = 9;
+	const MINIMUM_DXC_1_9_COMMIT_COUNT: u32 = 5402;
 
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
+		let device_factory = Self::create_agility_device_factory(settings)?;
 		let adapter: Option<&IUnknown> = None;
 		let mut device: Option<ID3D12Device> = None;
-		unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, &mut device) }
-			.or_else(|_| unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, &mut device) })
-			.map_err(|_| "Failed to create a D3D12 device. The most likely cause is that the GPU or driver does not support the required feature level.")?;
+		unsafe { device_factory.CreateDevice(adapter, D3D_FEATURE_LEVEL_12_2, &mut device) }.map_err(|_| {
+			"Failed to create a DX12 feature level 12_2 device. The most likely cause is that the selected GPU lacks feature level 12_2 or an incompatible process-global D3D12 device already exists."
+		})?;
 		let device = device.ok_or(
-			"Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.",
+			"Failed to acquire a D3D12 device. The most likely cause is that the independent device factory returned no device instance.",
 		)?;
-		if !Self::query_wave_ops_support(&device) {
-			return Err(Self::WAVE_OPS_UNAVAILABLE);
-		}
+		let capabilities = Self::query_modern_dx12_capabilities(&device);
+		Self::require_modern_dx12_capabilities(capabilities)?;
 		let info_queue = if settings.validation {
 			device.cast::<ID3D12InfoQueue>().ok()
 		} else {
@@ -32,6 +64,10 @@ impl Device {
 
 		for (selection, handle) in queues.iter_mut() {
 			let queue_type = select_d3d12_command_list_type(selection.r#type)?;
+			debug_assert_eq!(
+				queue_type, D3D12_COMMAND_LIST_TYPE_DIRECT,
+				"DX12 graphics workloads must use DIRECT command lists until the backend records explicit enhanced-layout queue handoffs."
+			);
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {
 				Type: queue_type,
@@ -44,7 +80,11 @@ impl Device {
 				.map_err(|_| "Failed to create a D3D12 command queue. The most likely cause is that the device does not support the requested queue type.")?;
 
 			let index = queue_storage.len() as u64;
-			queue_storage.push(StoredQueue { queue, queue_type });
+			queue_storage.push(StoredQueue {
+				queue,
+				queue_type,
+				workloads: selection.r#type,
+			});
 			**handle = Some(QueueHandle(index));
 		}
 
@@ -57,6 +97,185 @@ impl Device {
 		))
 	}
 
+	/// Creates an independent device factory backed by the retail Agility SDK shipped with the application.
+	fn create_agility_device_factory(settings: Features) -> Result<ID3D12DeviceFactory, &'static str> {
+		let sdk_path_override = match std::env::var(Self::AGILITY_SDK_PATH_ENVIRONMENT_VARIABLE) {
+			Ok(path) => Some(path),
+			Err(std::env::VarError::NotPresent) => None,
+			Err(std::env::VarError::NotUnicode(_)) => return Err(Self::AGILITY_SDK_PATH_INVALID),
+		};
+		let sdk_path = Self::agility_sdk_path(sdk_path_override.as_deref())?;
+
+		let mut sdk_configuration: Option<ID3D12SDKConfiguration1> = None;
+		unsafe { D3D12GetInterface(&CLSID_D3D12SDKConfiguration, &mut sdk_configuration) }
+			.map_err(|_| Self::AGILITY_SDK_UNAVAILABLE)?;
+		let sdk_configuration = sdk_configuration.ok_or(Self::AGILITY_SDK_UNAVAILABLE)?;
+		// sdk_path owns the bytes passed to D3D12 until this synchronous factory creation call returns.
+		let factory: ID3D12DeviceFactory =
+			unsafe { sdk_configuration.CreateDeviceFactory(Self::AGILITY_SDK_VERSION, PCSTR(sdk_path.as_ptr().cast())) }
+				.map_err(|_| Self::AGILITY_SDK_UNAVAILABLE)?;
+		Self::configure_agility_debug_layer(&factory, settings)?;
+		Ok(factory)
+	}
+
+	/// Returns a NUL-terminated Agility SDK directory and adds the trailing separator required by D3D12.
+	pub(crate) fn agility_sdk_path(path_override: Option<&str>) -> Result<std::ffi::CString, &'static str> {
+		let path = path_override.unwrap_or(Self::DEFAULT_AGILITY_SDK_PATH);
+		if path.is_empty() {
+			return Err(Self::AGILITY_SDK_PATH_INVALID);
+		}
+		let mut path = path.to_owned();
+		if !path.ends_with('\\') && !path.ends_with('/') {
+			path.push('\\');
+		}
+		std::ffi::CString::new(path).map_err(|_| Self::AGILITY_SDK_PATH_INVALID)
+	}
+
+	/// Applies validation settings to the independent factory before it creates the device.
+	fn configure_agility_debug_layer(factory: &ID3D12DeviceFactory, settings: Features) -> Result<(), &'static str> {
+		if !settings.validation {
+			return Ok(());
+		}
+		let debug = unsafe { factory.GetConfigurationInterface::<ID3D12Debug>(&CLSID_D3D12Debug) }
+			.map_err(|_| Self::AGILITY_DEBUG_LAYER_UNAVAILABLE)?;
+		unsafe {
+			debug.EnableDebugLayer();
+			if settings.gpu_validation {
+				let debug3 = debug
+					.cast::<ID3D12Debug3>()
+					.map_err(|_| Self::AGILITY_DEBUG_LAYER_UNAVAILABLE)?;
+				debug3.SetEnableGPUBasedValidation(true);
+				debug3.SetEnableSynchronizedCommandQueueValidation(true);
+				debug3.SetGPUBasedValidationFlags(D3D12_GPU_BASED_VALIDATION_FLAGS_NONE);
+			}
+		}
+		Ok(())
+	}
+
+	/// Queries the shader, synchronization, root-signature, and atomic capabilities required by the DX12 backend.
+	fn query_modern_dx12_capabilities(device: &ID3D12Device) -> ModernDx12Capabilities {
+		let mut root_signature = d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE {
+			HighestVersion: d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2,
+		};
+		let root_signature_result = unsafe {
+			device.CheckFeatureSupport(
+				d3d12::D3D12_FEATURE_ROOT_SIGNATURE,
+				(&mut root_signature as *mut d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE).cast(),
+				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_ROOT_SIGNATURE>() as u32,
+			)
+		};
+
+		let mut options1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+		let options1_result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_D3D12_OPTIONS1,
+				(&mut options1 as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS1>() as u32,
+			)
+		};
+
+		let mut options4 = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+		let options4_result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_D3D12_OPTIONS4,
+				(&mut options4 as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS4).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>() as u32,
+			)
+		};
+
+		let mut options9 = d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
+		let options9_result = unsafe {
+			device.CheckFeatureSupport(
+				d3d12::D3D12_FEATURE_D3D12_OPTIONS9,
+				(&mut options9 as *mut d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9).cast(),
+				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS9>() as u32,
+			)
+		};
+
+		let mut options11 = d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11::default();
+		let options11_result = unsafe {
+			device.CheckFeatureSupport(
+				d3d12::D3D12_FEATURE_D3D12_OPTIONS11,
+				(&mut options11 as *mut d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11).cast(),
+				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_D3D12_OPTIONS11>() as u32,
+			)
+		};
+
+		ModernDx12Capabilities {
+			shader_model_6_9: Self::query_shader_model_6_9_support(device),
+			enhanced_barriers: Self::query_enhanced_barriers_support(device),
+			root_signature_1_2: root_signature_result.is_ok()
+				&& root_signature.HighestVersion.0 >= d3d12::D3D_ROOT_SIGNATURE_VERSION_1_2.0,
+			native_16_bit_shader_ops: options4_result.is_ok() && options4.Native16BitShaderOpsSupported.as_bool(),
+			wave_ops: options1_result.is_ok()
+				&& options1.WaveOps.as_bool()
+				&& options1.WaveLaneCountMin > 0
+				&& options1.WaveLaneCountMax <= 128,
+			int64_shader_ops: options1_result.is_ok() && options1.Int64ShaderOps.as_bool(),
+			typed_resource_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnTypedResourceSupported.as_bool(),
+			group_shared_int64_atomics: options9_result.is_ok() && options9.AtomicInt64OnGroupSharedSupported.as_bool(),
+			descriptor_heap_int64_atomics: options11_result.is_ok()
+				&& options11.AtomicInt64OnDescriptorHeapResourceSupported.as_bool(),
+		}
+	}
+
+	/// Reports the first missing capability so the user can update the relevant runtime, driver, or GPU.
+	fn require_modern_dx12_capabilities(capabilities: ModernDx12Capabilities) -> Result<(), &'static str> {
+		if !capabilities.shader_model_6_9 {
+			return Err(Self::SHADER_MODEL_6_9_UNAVAILABLE);
+		}
+		if !capabilities.enhanced_barriers {
+			return Err(Self::ENHANCED_BARRIERS_UNAVAILABLE);
+		}
+		if !capabilities.root_signature_1_2 {
+			return Err(Self::ROOT_SIGNATURE_1_2_UNAVAILABLE);
+		}
+		if !capabilities.native_16_bit_shader_ops {
+			return Err(Self::NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE);
+		}
+		if !capabilities.wave_ops {
+			return Err(Self::WAVE_OPS_UNAVAILABLE);
+		}
+		if !capabilities.int64_shader_ops {
+			return Err(Self::INT64_SHADER_OPS_UNAVAILABLE);
+		}
+		if !capabilities.typed_resource_int64_atomics || !capabilities.group_shared_int64_atomics {
+			return Err(Self::TYPED_AND_GROUP_SHARED_INT64_ATOMICS_UNAVAILABLE);
+		}
+		if !capabilities.descriptor_heap_int64_atomics {
+			return Err(Self::DESCRIPTOR_HEAP_INT64_ATOMICS_UNAVAILABLE);
+		}
+		Ok(())
+	}
+
+	/// Checks that the runtime and driver expose the shader model used by every DXC compilation path.
+	fn query_shader_model_6_9_support(device: &ID3D12Device) -> bool {
+		let mut shader_model = D3D12_FEATURE_DATA_SHADER_MODEL {
+			HighestShaderModel: d3d12::D3D_SHADER_MODEL_6_9,
+		};
+		let result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_SHADER_MODEL,
+				(&mut shader_model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_SHADER_MODEL>() as u32,
+			)
+		};
+		result.is_ok() && shader_model.HighestShaderModel.0 >= d3d12::D3D_SHADER_MODEL_6_9.0
+	}
+
+	/// Checks the enhanced-barrier capability before queues can accept work under the modern DX12 contract.
+	fn query_enhanced_barriers_support(device: &ID3D12Device) -> bool {
+		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+		let result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_D3D12_OPTIONS12,
+				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS12).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS12>() as u32,
+			)
+		};
+		result.is_ok() && options.EnhancedBarriersSupported.as_bool()
+	}
+
 	/// Creates an empty DX12 context over an already-selected native device and queues.
 	pub(crate) fn from_native_parts(
 		device: ID3D12Device,
@@ -65,7 +284,6 @@ impl Device {
 		debug_log_function: fn(&str),
 		queues: Vec<StoredQueue>,
 	) -> Self {
-		let native_16_bit_shader_ops_supported = Self::query_native_16_bit_shader_ops_support(&device);
 		let descriptor_handle_increment_sizes = [
 			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) },
 			unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) },
@@ -76,7 +294,6 @@ impl Device {
 			device,
 			descriptor_handle_increment_sizes,
 			settings,
-			native_16_bit_shader_ops_supported,
 			info_queue,
 			debug_log_function,
 			debug_log_count: AtomicU64::new(0),
@@ -85,6 +302,7 @@ impl Device {
 
 			queues,
 			command_buffers: Vec::new(),
+			active_command_buffer: None,
 			buffers: Vec::new(),
 			dynamic_buffers: Vec::new(),
 			images: Vec::new(),
@@ -249,6 +467,7 @@ impl Device {
 	}
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
+		let previous_frames = self.frames;
 		self.frames = frames.max(1);
 		self.pending_texture_syncs
 			.retain(|(_, sequence_index)| *sequence_index < self.frames);
@@ -302,6 +521,17 @@ impl Device {
 						.map(Self::native_resource_key),
 				);
 				frame_resources.resize(self.frames as usize, None);
+			}
+		}
+		if previous_frames < self.frames {
+			// Newly added dynamic sequences also require their staging data before the first GPU access.
+			for (image_index, image) in self.images.iter().enumerate() {
+				if image.frame_data.is_some() {
+					for sequence_index in previous_frames..self.frames {
+						self.pending_texture_syncs
+							.push((crate::BaseImageHandle(image_index as u64), sequence_index));
+					}
+				}
 			}
 		}
 		self.invalidate_attachment_views_for_resources(&retired_image_state_keys);
@@ -424,130 +654,24 @@ impl Device {
 		stage: ShaderTypes,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
-		if let Some(target) = Self::dxc_target(stage, Self::hlsl_uses_native_16_bit_types(source)) {
-			return self.compile_hlsl_with_dxc(name, source, entry_point, target, specialization_map);
-		}
-		let target = match stage {
-			ShaderTypes::Vertex => "vs_5_0",
-			ShaderTypes::Fragment => "ps_5_0",
-			ShaderTypes::Compute => "cs_5_0",
-			_ => return Err(()),
-		};
-		let entry_point = std::ffi::CString::new(entry_point).map_err(|_| ())?;
-		let target = std::ffi::CString::new(target).map_err(|_| ())?;
-		let (macro_names, macro_values) = Self::hlsl_specialization_macro_storage(specialization_map)?;
-		let mut macros = macro_names
-			.iter()
-			.zip(macro_values.iter())
-			.map(|(name, value)| D3D_SHADER_MACRO {
-				Name: PCSTR(name.as_ptr().cast()),
-				Definition: PCSTR(value.as_ptr().cast()),
-			})
-			.collect::<Vec<_>>();
-		if !macros.is_empty() {
-			macros.push(D3D_SHADER_MACRO {
-				Name: PCSTR::null(),
-				Definition: PCSTR::null(),
-			});
-		}
-		let mut shader = None;
-		let mut errors = None;
-		unsafe {
-			D3DCompile(
-				source.as_ptr().cast(),
-				source.len(),
-				PCSTR::null(),
-				(!macros.is_empty()).then_some(macros.as_ptr()),
-				None::<&ID3DInclude>,
-				PCSTR(entry_point.as_ptr().cast()),
-				PCSTR(target.as_ptr().cast()),
-				0,
-				0,
-				&mut shader,
-				Some(&mut errors),
-			)
-			.map_err(|error| {
-				self.log_hlsl_compile_error(
-					source,
-					entry_point.to_str().unwrap_or("<invalid-entry-point>"),
-					target.to_str().unwrap_or("<invalid-target>"),
-					&format!("{error:?}"),
-				);
-			})?;
-		}
-		let Some(shader) = shader else {
-			self.log_hlsl_compile_error(
-				source,
-				entry_point.to_str().unwrap_or("<invalid-entry-point>"),
-				target.to_str().unwrap_or("<invalid-target>"),
-				"D3DCompile returned no shader bytecode.",
-			);
-			return Err(());
-		};
-		let bytecode = unsafe { std::slice::from_raw_parts(shader.GetBufferPointer().cast::<u8>(), shader.GetBufferSize()) };
-		Ok(bytecode.to_vec())
+		self.compile_hlsl_with_dxc(name, source, entry_point, Self::dxc_target(stage), specialization_map)
 	}
 
-	/// Selects a DXC profile when the shader stage or native-width source requires DXIL compilation.
-	pub(crate) fn dxc_target(stage: ShaderTypes, native_16_bit_types: bool) -> Option<&'static str> {
-		match (stage, native_16_bit_types) {
-			// Native 16-bit scalar and vector storage requires Shader Model 6.2 or newer.
-			(ShaderTypes::Vertex, true) => Some("vs_6_2"),
-			(ShaderTypes::Fragment, true) => Some("ps_6_2"),
-			(ShaderTypes::Compute, true) => Some("cs_6_2"),
-			// HLSL sources can use SM6 resource-object syntax, so DX12 compiles native source through DXC.
-			(ShaderTypes::Vertex, false) => Some("vs_6_0"),
-			(ShaderTypes::Fragment, false) => Some("ps_6_0"),
-			(ShaderTypes::Compute, false) => Some("cs_6_0"),
-			(ShaderTypes::Task, _) => Some("as_6_5"),
-			(ShaderTypes::Mesh, _) => Some("ms_6_5"),
-			(
-				ShaderTypes::RayGen
-				| ShaderTypes::Miss
-				| ShaderTypes::ClosestHit
-				| ShaderTypes::AnyHit
-				| ShaderTypes::Intersection,
-				_,
-			) => Some("lib_6_3"),
-			_ => None,
+	/// Selects the Shader Model 6.9 DXC profile for a DX12 shader stage.
+	pub(crate) fn dxc_target(stage: ShaderTypes) -> &'static str {
+		match stage {
+			ShaderTypes::Vertex => "vs_6_9",
+			ShaderTypes::Fragment => "ps_6_9",
+			ShaderTypes::Compute => "cs_6_9",
+			ShaderTypes::Task => "as_6_9",
+			ShaderTypes::Mesh => "ms_6_9",
+			ShaderTypes::RayGen
+			| ShaderTypes::Miss
+			| ShaderTypes::ClosestHit
+			| ShaderTypes::AnyHit
+			| ShaderTypes::Intersection
+			| ShaderTypes::Callable => "lib_6_9",
 		}
-	}
-
-	/// Reports whether HLSL source uses an explicit native-width 16-bit scalar or vector type.
-	pub(crate) fn hlsl_uses_native_16_bit_types(source: &str) -> bool {
-		source
-			.split(|character: char| character != '_' && !character.is_ascii_alphanumeric())
-			.any(|token| {
-				["uint16_t", "int16_t", "float16_t"].iter().any(|&native_type| {
-					let Some(suffix) = token.strip_prefix(native_type) else {
-						return false;
-					};
-
-					// Match only native scalar, vector, or matrix spellings instead of similarly prefixed identifiers.
-					matches!(suffix.as_bytes(), [] | [b'1'..=b'4'] | [b'1'..=b'4', b'x', b'1'..=b'4'])
-				})
-			})
-	}
-
-	/// Selects the minimum DXC target that can represent native 16-bit source types.
-	pub(crate) fn dxc_target_for_source<'a>(target: &'a str, source: &str) -> &'a str {
-		if !Self::hlsl_uses_native_16_bit_types(source) {
-			return target;
-		}
-
-		// Native 16-bit types require Shader Model 6.2, including explicit DXC recompiles for mesh fragment shaders.
-		match target {
-			"vs_6_0" | "vs_6_1" => "vs_6_2",
-			"ps_6_0" | "ps_6_1" => "ps_6_2",
-			"cs_6_0" | "cs_6_1" => "cs_6_2",
-			"lib_6_0" | "lib_6_1" => "lib_6_2",
-			_ => target,
-		}
-	}
-
-	/// Returns the user-facing failure when native 16-bit source exceeds the device capability.
-	pub(crate) fn native_16_bit_support_error(source: &str, supported: bool) -> Option<&'static str> {
-		(Self::hlsl_uses_native_16_bit_types(source) && !supported).then_some(Self::NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE)
 	}
 
 	pub(crate) fn compile_hlsl_with_dxc(
@@ -558,11 +682,6 @@ impl Device {
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
-		let target = Self::dxc_target_for_source(target, source);
-		if let Some(error) = Self::native_16_bit_support_error(source, self.native_16_bit_shader_ops_supported) {
-			self.log_dx12_error(error);
-			return Err(());
-		}
 		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
 			self.log_hlsl_compile_error(
 				source,
@@ -571,15 +690,18 @@ impl Device {
 				&format!("Failed to create DXC compiler: {error:?}"),
 			);
 		})?;
+		let dxc_identity = Self::dxc_identity(&compiler).map_err(|reason| {
+			self.log_hlsl_compile_error(source, entry_point, target, &reason);
+		})?;
 		let source_buffer = DxcBuffer {
 			Ptr: source.as_ptr().cast(),
 			Size: source.len(),
 			Encoding: DXC_CP_UTF8.0,
 		};
-		let mut argument_storage = Vec::with_capacity(10 + specialization_map.len() * 2);
+		let mut argument_storage = Vec::with_capacity(13 + specialization_map.len() * 2);
 		let debug_artifacts_enabled = self.hlsl_debug_artifacts_enabled();
 		let dxil_cache_path = (!debug_artifacts_enabled)
-			.then(|| Self::hlsl_dxil_cache_path(source, entry_point, target, specialization_map))
+			.then(|| Self::hlsl_dxil_cache_path(&dxc_identity, source, entry_point, target, specialization_map))
 			.flatten();
 		if let Some(cache_path) = &dxil_cache_path {
 			if let Ok(bytecode) = std::fs::read(cache_path) {
@@ -605,10 +727,10 @@ impl Device {
 		argument_storage.push(Self::wide_argument(target));
 		// Every declared slot is materialized before binding, so DXC can optimize under the fully-bound resource contract.
 		argument_storage.push(Self::wide_argument("-all_resources_bound"));
-		if Self::hlsl_uses_native_16_bit_types(source) {
-			// DXC only exposes native-width 16-bit arithmetic and storage types when this option is explicit.
-			argument_storage.push(Self::wide_argument("-enable-16bit-types"));
-		}
+		// Pin modern language semantics and exact-width 16-bit types for every generated HLSL program.
+		argument_storage.push(Self::wide_argument("-HV"));
+		argument_storage.push(Self::wide_argument("2021"));
+		argument_storage.push(Self::wide_argument("-enable-16bit-types"));
 		if debug_artifacts_enabled {
 			argument_storage.push(Self::wide_argument("-Zi"));
 			argument_storage.push(Self::wide_argument("-Qembed_debug"));
@@ -668,13 +790,15 @@ impl Device {
 	}
 
 	pub(crate) fn hlsl_dxil_cache_path(
+		dxc_identity: &str,
 		source: &str,
 		entry_point: &str,
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Option<std::path::PathBuf> {
-		// Version 4 uses DXC's official IDxcCompiler argument for the fully-bound resource contract.
-		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v4");
+		// Version 6 binds cached DXIL to the version and commit reported by the compiler that will produce it.
+		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v6");
+		Self::fnv64_update_text(&mut hash, dxc_identity);
 		Self::fnv64_update_text(&mut hash, source);
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
@@ -689,6 +813,60 @@ impl Device {
 		path.push("shader-dxil-cache");
 		path.push(format!("{hash:016x}.dxil"));
 		Some(path)
+	}
+
+	/// Reads and validates the version and commit from the DXC object that will compile the shader.
+	pub(crate) fn dxc_identity(compiler: &IDxcCompiler3) -> Result<String, String> {
+		let version_info = compiler.cast::<IDxcVersionInfo2>().map_err(|error| {
+			format!(
+				"Failed to query the loaded DirectX Shader Compiler identity. The most likely cause is that dxcompiler.dll predates DXC version metadata support. Error: {error:?}"
+			)
+		})?;
+		let mut major = 0;
+		let mut minor = 0;
+		// SAFETY: major and minor are valid output slots and version_info remains alive for this COM call.
+		unsafe { version_info.GetVersion(&mut major, &mut minor) }.map_err(|error| {
+			format!(
+				"Failed to read the loaded DirectX Shader Compiler version. The most likely cause is an invalid or incompatible dxcompiler.dll. Error: {error:?}"
+			)
+		})?;
+		let flags = unsafe { version_info.GetFlags() }.map_err(|error| {
+			format!(
+				"Failed to read the loaded DirectX Shader Compiler build flags. The most likely cause is an invalid or incompatible dxcompiler.dll. Error: {error:?}"
+			)
+		})?;
+		let mut commit_count = 0;
+		let mut commit_hash = std::ptr::null_mut();
+		// SAFETY: both values are valid output slots and DXC owns the returned NUL-terminated commit string.
+		unsafe { version_info.GetCommitInfo(&mut commit_count, &mut commit_hash) }.map_err(|error| {
+			format!(
+				"Failed to read the loaded DirectX Shader Compiler commit. The most likely cause is an invalid or incompatible dxcompiler.dll. Error: {error:?}"
+			)
+		})?;
+		if commit_hash.is_null() {
+			return Err(
+				"DXC returned no compiler commit identity. The most likely cause is an incomplete or unofficial dxcompiler.dll build."
+					.to_string(),
+			);
+		}
+		// SAFETY: GetCommitInfo returned a non-null NUL-terminated string owned by the live version_info object.
+		let commit_hash = unsafe { std::ffi::CStr::from_ptr(commit_hash) }
+			.to_string_lossy()
+			.into_owned();
+		if !Self::dxc_version_supports_shader_model_6_9(major, minor, commit_count) {
+			return Err(format!(
+				"DirectX Shader Compiler {major}.{minor} commit {commit_count} ({commit_hash}) is too old. The most likely cause is that Windows loaded dxcompiler.dll from an older SDK instead of Microsoft.Direct3D.DXC 1.9.2607.13. See https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2607."
+			));
+		}
+
+		Ok(format!("dxc-{major}.{minor}-{commit_count}-{commit_hash}-flags-{flags:08x}"))
+	}
+
+	/// Checks the reported DXC version against the first retail compiler with Shader Model 6.9 support.
+	pub(crate) fn dxc_version_supports_shader_model_6_9(major: u32, minor: u32, commit_count: u32) -> bool {
+		(major, minor) > (Self::MINIMUM_DXC_MAJOR_VERSION, Self::MINIMUM_DXC_MINOR_VERSION)
+			|| ((major, minor) == (Self::MINIMUM_DXC_MAJOR_VERSION, Self::MINIMUM_DXC_MINOR_VERSION)
+				&& commit_count >= Self::MINIMUM_DXC_1_9_COMMIT_COUNT)
 	}
 
 	pub(crate) fn write_hlsl_dxil_cache(path: &std::path::Path, bytecode: &[u8]) {

@@ -117,9 +117,10 @@ impl crate::queue::Queue for Queue<'_> {
 			let submitted = unsafe { device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer) };
 			if !submitted {
 				unsafe {
-					device_pointer
-						.as_mut()
-						.abandon_texture_readbacks_for_command_buffer(command_buffer);
+					let device = device_pointer.as_mut();
+					device.abandon_texture_readbacks_for_command_buffer(command_buffer);
+					device.requeue_recorded_texture_syncs_for_command_buffer(command_buffer);
+					device.rollback_command_buffer_resource_states(command_buffer);
 				}
 			}
 		}

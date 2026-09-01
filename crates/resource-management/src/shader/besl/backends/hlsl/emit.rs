@@ -313,6 +313,7 @@ impl Generator {
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
+			r#return,
 			..
 		} = intrinsic.node()
 		else {
@@ -389,6 +390,18 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
+			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
+				string.push_str(match name.as_str() {
+					"is_nan" => "isnan",
+					"is_infinite" => "isinf",
+					"is_finite" => "isfinite",
+					"is_normal" => "isnormal",
+					_ => unreachable!(),
+				});
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"
 			| "floor" | "round" | "fwidth" | "step" | "radians" | "smoothstep" | "dot" | "cross" | "normalize" | "reflect"
 			| "length" => {
@@ -428,7 +441,7 @@ impl Generator {
 				string.push(')');
 			}
 			"u16" => {
-				string.push_str("uint(");
+				string.push_str("uint16_t(");
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
 					self.emit_node_string(string, argument)
 				});
@@ -520,15 +533,7 @@ impl Generator {
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
 			}
-			"image_atomic_or" => {
-				string.push_str("({ uint _previous; InterlockedOr(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push('[');
-				self.emit_node_string(string, &arguments[1]);
-				string.push_str("], ");
-				self.emit_node_string(string, &arguments[2]);
-				string.push_str(", _previous); _previous; })");
-			}
+			"image_atomic_or" => unreachable!("HLSL image atomics must be lifted before expression emission"),
 			"image_load_u32" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push('[');
@@ -554,20 +559,30 @@ impl Generator {
 				string.push_str("] = ");
 				self.emit_node_string(string, &arguments[2]);
 			}
-			"atomic_add" => {
-				self.emit_atomic_add_call(string, arguments, None);
-			}
-			"atomic_compare_exchange" => {
-				// HLSL requires an out parameter even when BESL discards the previous value.
-				string.push_str("{ uint _besl_atomic_previous; ");
-				self.emit_atomic_compare_exchange_call(string, arguments, Some("_besl_atomic_previous"));
-				string.push_str("; }");
-			}
-			"atomic_load" => self.emit_node_string(string, &arguments[0]),
+			"atomic_load"
+			| "atomic_exchange"
+			| "atomic_compare_exchange"
+			| "atomic_add"
+			| "atomic_sub"
+			| "atomic_min"
+			| "atomic_max"
+			| "atomic_and"
+			| "atomic_or"
+			| "atomic_xor" => unreachable!("HLSL value atomics must be lifted before expression emission"),
 			"atomic_store" => {
+				let temporary_id = self.atomic_temporary_counter;
+				self.atomic_temporary_counter = self.atomic_temporary_counter.checked_add(1).expect(
+					"HLSL atomic temporary count overflowed. The most likely cause is an invalid shader with billions of atomic calls.",
+				);
+				let value_type = Self::node_type_name(&arguments[1]).unwrap_or_else(|| "u32".to_string());
+				string.push('{');
+				Self::emit_type_name(string, &value_type);
+				let _ = write!(string, " besl_atomic_stored_{temporary_id};InterlockedExchange(");
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str(" = ");
+				string.push_str(ShaderFormatting::new(self.minified).comma_str());
 				self.emit_node_string(string, &arguments[1]);
+				string.push_str(ShaderFormatting::new(self.minified).comma_str());
+				let _ = write!(string, "besl_atomic_stored_{temporary_id});}}");
 			}
 			"thread_id" => {
 				string.push_str("dispatch_thread_id.xy");
@@ -613,7 +628,9 @@ impl Generator {
 				string.push(')');
 			}
 			"fma" => {
-				string.push_str("mad(");
+				let return_type = r#return.borrow();
+				let returns_half = matches!(return_type.get_name(), Some("f16" | "vec2f16" | "vec3f16" | "vec4f16"));
+				string.push_str(if returns_half { "_besl_fma_f16(" } else { "mad(" });
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}

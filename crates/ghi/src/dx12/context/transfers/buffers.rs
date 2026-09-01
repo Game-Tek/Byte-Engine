@@ -33,7 +33,7 @@ impl Device {
 			return;
 		};
 		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
-		let mut clear_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		let mut clear_barriers = EnhancedBarrierBatch::default();
 		for &buffer_handle in buffer_handles {
 			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
 				continue;
@@ -46,20 +46,16 @@ impl Device {
 				if gpu_clear_buffers.iter().any(|(handle, _)| *handle == buffer_handle) {
 					continue;
 				}
-				unsafe {
-					self.transition_tracked_buffer_into(
-						buffer_handle,
-						&buffer.resource,
-						D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-						&mut clear_barriers,
-					);
-				}
+				self.transition_tracked_buffer_into(
+					buffer_handle,
+					&buffer.resource,
+					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
+					&mut clear_barriers,
+				);
 				gpu_clear_buffers.push((buffer_handle, buffer.resource));
 			}
 		}
-		unsafe {
-			Self::submit_resource_barriers(&command_list, &clear_barriers);
-		}
+		Self::submit_resource_barriers(&command_list, &clear_barriers);
 
 		for &buffer_handle in buffer_handles {
 			let Some(buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
@@ -177,23 +173,23 @@ impl Device {
 			);
 		}
 
+		if source.heap_kind == BufferHeapKind::Default {
+			self.transition_tracked_buffer(
+				&command_list,
+				copy.source_buffer,
+				&source.resource,
+				BufferBarrierState::COPY_SOURCE,
+			);
+		}
+		if destination.heap_kind == BufferHeapKind::Default {
+			self.transition_tracked_buffer(
+				&command_list,
+				copy.destination_buffer,
+				&destination.resource,
+				BufferBarrierState::COPY_DESTINATION,
+			);
+		}
 		unsafe {
-			if source.heap_kind == BufferHeapKind::Default {
-				self.transition_tracked_buffer(
-					&command_list,
-					copy.source_buffer,
-					&source.resource,
-					D3D12_RESOURCE_STATE_COPY_SOURCE,
-				);
-			}
-			if destination.heap_kind == BufferHeapKind::Default {
-				self.transition_tracked_buffer(
-					&command_list,
-					copy.destination_buffer,
-					&destination.resource,
-					D3D12_RESOURCE_STATE_COPY_DEST,
-				);
-			}
 			command_list.CopyBufferRegion(
 				&destination.resource,
 				copy.destination_offset as u64,
@@ -201,22 +197,22 @@ impl Device {
 				copy.source_offset as u64,
 				copy.size as u64,
 			);
-			if destination.heap_kind == BufferHeapKind::Default {
-				self.transition_tracked_buffer(
-					&command_list,
-					copy.destination_buffer,
-					&destination.resource,
-					D3D12_RESOURCE_STATE_COMMON,
-				);
-			}
-			if source.heap_kind == BufferHeapKind::Default {
-				self.transition_tracked_buffer(
-					&command_list,
-					copy.source_buffer,
-					&source.resource,
-					D3D12_RESOURCE_STATE_COMMON,
-				);
-			}
+		}
+		if destination.heap_kind == BufferHeapKind::Default {
+			self.transition_tracked_buffer(
+				&command_list,
+				copy.destination_buffer,
+				&destination.resource,
+				BufferBarrierState::COMMON,
+			);
+		}
+		if source.heap_kind == BufferHeapKind::Default {
+			self.transition_tracked_buffer(
+				&command_list,
+				copy.source_buffer,
+				&source.resource,
+				BufferBarrierState::COMMON,
+			);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.buffer_copy_count += 1;
@@ -255,15 +251,15 @@ impl Device {
 				return;
 			};
 
+			if transition_before_clear {
+				self.transition_tracked_buffer(
+					&command_list,
+					buffer_handle,
+					&destination,
+					BufferBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
+				);
+			}
 			unsafe {
-				if transition_before_clear {
-					self.transition_tracked_buffer(
-						&command_list,
-						buffer_handle,
-						&destination,
-						D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-					);
-				}
 				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(descriptor.gpu, descriptor.cpu, &destination, &[0, 0, 0, 0], &[]);
 			}
@@ -278,12 +274,17 @@ impl Device {
 			return;
 		}
 
+		self.transition_tracked_buffer(
+			&command_list,
+			buffer_handle,
+			&destination,
+			BufferBarrierState::COPY_DESTINATION,
+		);
 		unsafe {
 			std::ptr::write_bytes(mapped, 0, destination_size);
-			self.transition_tracked_buffer(&command_list, buffer_handle, &destination, D3D12_RESOURCE_STATE_COPY_DEST);
 			command_list.CopyBufferRegion(&destination, 0, &upload, 0, destination_size as u64);
-			self.transition_tracked_buffer(&command_list, buffer_handle, &destination, D3D12_RESOURCE_STATE_COMMON);
 		}
+		self.transition_tracked_buffer(&command_list, buffer_handle, &destination, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);
 		self.buffer_clear_count += 1;

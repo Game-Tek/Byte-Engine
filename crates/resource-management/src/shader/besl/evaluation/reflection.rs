@@ -172,7 +172,15 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 			besl::Nodes::Member {
 				r#type, count: Some(_), ..
 			} => {
-				let element = reflected_storage_member_type_layout(r#type, target, true, true, &mut visiting)?;
+				// DX12 exposes flat narrow arrays as atomically addressable 32-bit words,
+				// even though native u16 values remain two bytes in every other HLSL layout.
+				let packed_hlsl_narrow =
+					target == StorageLayoutTarget::Hlsl && matches!(r#type.borrow().get_name(), Some("u8" | "u16"));
+				let element = if packed_hlsl_narrow {
+					StorageLayout { size: 4, alignment: 4 }
+				} else {
+					reflected_storage_member_type_layout(r#type, target, true, true, &mut visiting)?
+				};
 				checked_align_up(element.size, element.alignment)?
 			}
 			_ => reflected_storage_members_layout(members, target, true, &mut visiting)?.size,
@@ -295,9 +303,10 @@ pub(super) fn primitive_storage_layout(
 ) -> Option<StorageLayout> {
 	let (size, alignment) = match target {
 		StorageLayoutTarget::Hlsl => match type_name {
-			// HLSL lowers narrow integer scalar values to 32-bit uint values. Its
-			// structured-buffer vectors and row-major matrices use scalar alignment.
-			"bool" | "u8" | "u16" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			// BESL u8 remains a 32-bit uint in HLSL, while native u16 values keep
+			// their exact two-byte object representation and scalar alignment.
+			"bool" | "u8" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
+			"u16" => (2, 2),
 			"f16" => (2, 2),
 			"vec2u16" => (4, 2),
 			"vec4u16" => (8, 2),
@@ -316,7 +325,7 @@ pub(super) fn primitive_storage_layout(
 		StorageLayoutTarget::Msl => match type_name {
 			"bool" | "u8" => (1, 1),
 			"u16" | "f16" => (2, 2),
-			"u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
 			"vec2u16" => (4, if packed_msl_vector { 2 } else { 4 }),
 			"vec4u16" => (8, if packed_msl_vector { 2 } else { 8 }),
 			"vec2f16" => (4, if packed_msl_vector { 2 } else { 4 }),
@@ -351,7 +360,7 @@ pub(super) fn primitive_storage_layout(
 		StorageLayoutTarget::GlslScalar => match type_name {
 			"u8" => (1, 1),
 			"u16" | "f16" => (2, 2),
-			"bool" | "u32" | "atomicu32" | "i32" | "f32" => (4, 4),
+			"bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
 			"vec2u16" => (4, 2),
 			"vec4u16" => (8, 2),
 			"vec2f16" => (4, 2),

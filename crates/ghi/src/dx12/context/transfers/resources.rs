@@ -204,10 +204,13 @@ impl Device {
 		}
 	}
 
-	/// Rounds uniform allocations to the full range exposed by their aligned CBVs.
+	/// Rounds native allocations to the full range exposed by DX12 buffer descriptors.
 	pub(crate) fn buffer_resource_size(size: usize, uses: Uses) -> usize {
 		if uses.intersects(Uses::Uniform) {
 			Self::align_up(size.max(1), 256)
+		} else if uses.intersects(Uses::Storage) {
+			// HLSL packs flat u8 and u16 storage arrays into 32-bit words, so the final partial word needs backing memory.
+			Self::align_up(size.max(1), std::mem::size_of::<u32>())
 		} else {
 			size
 		}
@@ -236,11 +239,6 @@ impl Device {
 			BufferHeapKind::Upload => D3D12_HEAP_TYPE_UPLOAD,
 			BufferHeapKind::Readback => D3D12_HEAP_TYPE_READBACK,
 		};
-		let initial_state: D3D12_RESOURCE_STATES = match heap_kind {
-			BufferHeapKind::Upload => D3D12_RESOURCE_STATE_GENERIC_READ,
-			BufferHeapKind::Readback => D3D12_RESOURCE_STATE_COPY_DEST,
-			BufferHeapKind::Default => D3D12_RESOURCE_STATE_COMMON,
-		};
 		let cpu_visible = host_write || host_read;
 		let resource_flags = if heap_kind == BufferHeapKind::Default {
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
@@ -254,7 +252,7 @@ impl Device {
 			CreationNodeMask: 1,
 			VisibleNodeMask: 1,
 		};
-		let resource_desc = D3D12_RESOURCE_DESC {
+		let resource_desc = D3D12_RESOURCE_DESC1 {
 			Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
 			Alignment: 0,
 			Width: size.max(1) as u64,
@@ -265,15 +263,22 @@ impl Device {
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
 			Flags: resource_flags,
+			SamplerFeedbackMipRegion: Default::default(),
 		};
 
+		let Ok(device) = self.device.cast::<ID3D12Device10>() else {
+			return (None, std::ptr::null_mut(), heap_kind);
+		};
 		let mut resource: Option<ID3D12Resource> = None;
 		let result = unsafe {
-			self.device.CreateCommittedResource(
+			// Enhanced-barrier buffer creation requires UNDEFINED regardless of the heap type.
+			device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
-				initial_state,
+				D3D12_BARRIER_LAYOUT_UNDEFINED,
+				None,
+				None::<&ID3D12ProtectedResourceSession>,
 				None,
 				&mut resource,
 			)
@@ -331,7 +336,7 @@ impl Device {
 			CreationNodeMask: 1,
 			VisibleNodeMask: 1,
 		};
-		let resource_desc = D3D12_RESOURCE_DESC {
+		let resource_desc = D3D12_RESOURCE_DESC1 {
 			Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 			Alignment: 0,
 			Width: extent.width().max(1) as u64,
@@ -344,15 +349,21 @@ impl Device {
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
 			Flags: flags,
+			SamplerFeedbackMipRegion: Default::default(),
+		};
+		let Ok(device) = self.device.cast::<ID3D12Device10>() else {
+			return None;
 		};
 		let mut resource = None;
 		let result = unsafe {
-			self.device.CreateCommittedResource(
+			device.CreateCommittedResource3(
 				&heap_properties,
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
-				D3D12_RESOURCE_STATE_COMMON,
+				D3D12_BARRIER_LAYOUT_COMMON,
 				optimized_clear_value.as_ref().map(|clear_value| clear_value as *const _),
+				None::<&ID3D12ProtectedResourceSession>,
+				None,
 				&mut resource,
 			)
 		};

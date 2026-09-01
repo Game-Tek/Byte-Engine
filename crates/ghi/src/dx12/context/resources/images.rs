@@ -67,6 +67,7 @@ impl Device {
 		} else {
 			None
 		};
+		let initializes_frame_resources = frame_data.is_some();
 		let flags = Self::image_resource_flags(builder.format, builder.resource_uses);
 		let optimized_clear_value = builder
 			.optimized_clear_value
@@ -112,7 +113,15 @@ impl Device {
 			optimized_clear_value,
 		});
 
-		ImageHandle(crate::BaseImageHandle((self.images.len() - 1) as u64))
+		let handle = crate::BaseImageHandle((self.images.len() - 1) as u64);
+		if initializes_frame_resources {
+			// Committed textures have undefined contents. Upload each frame's zeroed staging image on first use.
+			for sequence_index in 0..self.frames {
+				self.pending_texture_syncs.push((handle, sequence_index));
+			}
+		}
+
+		ImageHandle(handle)
 	}
 
 	pub(crate) fn image_resource_state(&self, image: ImageHandle) -> Option<(Extent, bool)> {
@@ -132,7 +141,7 @@ impl Device {
 		})
 	}
 
-	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<D3D12_RESOURCE_STATES> {
+	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<TextureBarrierState> {
 		self.tracked_image_resource_state_for_sequence(image, 0)
 	}
 
@@ -140,7 +149,7 @@ impl Device {
 		&self,
 		image: ImageHandle,
 		sequence_index: u8,
-	) -> Option<D3D12_RESOURCE_STATES> {
+	) -> Option<TextureBarrierState> {
 		let image = self.images.get(image.0.0 as usize)?;
 		let resource = if let Some(resources) = image.frame_resources.as_ref() {
 			resources.get(sequence_index as usize)?.as_ref()?
@@ -279,8 +288,8 @@ impl Device {
 				self.image_states
 					.get(&Self::native_resource_key(resource))
 					.copied()
-					.unwrap_or(D3D12_RESOURCE_STATE_COMMON)
-					== D3D12_RESOURCE_STATE_COMMON
+					.unwrap_or(TextureBarrierState::COMMON)
+					== TextureBarrierState::COMMON
 			})
 	}
 }

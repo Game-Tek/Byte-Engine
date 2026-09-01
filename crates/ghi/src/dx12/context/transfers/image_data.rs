@@ -72,12 +72,12 @@ impl Device {
 			return Err(crate::TextureTransferError::AllocationFailed);
 		};
 
-		let source_location = D3D12_TEXTURE_COPY_LOCATION {
+		let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
 			pResource: std::mem::ManuallyDrop::new(Some(source)),
 			Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
 		};
-		let destination_location = D3D12_TEXTURE_COPY_LOCATION {
+		let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
 			pResource: std::mem::ManuallyDrop::new(Some(readback.clone())),
 			Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
 			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
@@ -95,20 +95,25 @@ impl Device {
 			},
 		};
 
+		self.transition_tracked_image(
+			&command_list,
+			image_handle.0,
+			source_location.pResource.as_ref().unwrap(),
+			TextureBarrierState::COPY_SOURCE,
+		);
 		unsafe {
-			self.transition_tracked_image(
-				&command_list,
-				image_handle.0,
-				source_location.pResource.as_ref().unwrap(),
-				D3D12_RESOURCE_STATE_COPY_SOURCE,
-			);
 			command_list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
-			self.transition_tracked_image(
-				&command_list,
-				image_handle.0,
-				source_location.pResource.as_ref().unwrap(),
-				D3D12_RESOURCE_STATE_COMMON,
-			);
+		}
+		self.transition_tracked_image(
+			&command_list,
+			image_handle.0,
+			source_location.pResource.as_ref().unwrap(),
+			TextureBarrierState::COMMON,
+		);
+		// The copy call only borrows these descriptors. Release their COM clones while the image and readback registry own execution lifetimes.
+		unsafe {
+			std::mem::ManuallyDrop::drop(&mut source_location.pResource);
+			std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
 		if !return_readback {

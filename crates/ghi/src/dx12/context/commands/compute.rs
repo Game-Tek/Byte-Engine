@@ -62,7 +62,7 @@ impl Device {
 				&command_list,
 				base_buffer_handle,
 				&resource,
-				D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+				BufferBarrierState::INDIRECT_ARGUMENT,
 			);
 			command_list.ExecuteIndirect(&command_signature, 1, &resource, argument_offset, None, 0);
 		}

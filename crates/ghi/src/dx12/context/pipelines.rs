@@ -80,7 +80,7 @@ impl Device {
 		let has_depth_attachment = depth_stencil_format != DXGI_FORMAT_UNKNOWN;
 
 		self.graphics_pipeline_state_create_attempt_count += 1;
-		let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+		let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
 			VS: D3D12_SHADER_BYTECODE {
 				pShaderBytecode: vertex_shader.as_ptr().cast(),
@@ -153,7 +153,10 @@ impl Device {
 			Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
 		};
 
-		match unsafe { self.device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&desc) } {
+		let pipeline_state = unsafe { self.device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&desc) };
+		// Pipeline creation synchronously consumes the descriptor. Release the temporary root-signature clone afterward.
+		unsafe { std::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
+		match pipeline_state {
 			Ok(pipeline_state) => {
 				self.graphics_pipeline_state_last_error = None;
 				Some(pipeline_state)
@@ -197,7 +200,7 @@ impl Device {
 			.iter()
 			.any(|shader| matches!(shader.stage, ShaderTypes::Fragment));
 		let fragment_shader = if has_fragment_shader {
-			self.shader_dxil_for_stage_with_dxc_target(builder.shaders.as_ref(), ShaderTypes::Fragment, "ps_6_0")?
+			self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Fragment)?
 		} else {
 			Vec::new()
 		};
@@ -364,24 +367,6 @@ impl Device {
 		shaders: &[pipelines::ShaderParameter],
 		stage: ShaderTypes,
 	) -> Option<Vec<u8>> {
-		self.shader_dxil_for_stage_impl(shaders, stage, None)
-	}
-
-	pub(crate) fn shader_dxil_for_stage_with_dxc_target(
-		&mut self,
-		shaders: &[pipelines::ShaderParameter],
-		stage: ShaderTypes,
-		target: &str,
-	) -> Option<Vec<u8>> {
-		self.shader_dxil_for_stage_impl(shaders, stage, Some(target))
-	}
-
-	pub(crate) fn shader_dxil_for_stage_impl(
-		&mut self,
-		shaders: &[pipelines::ShaderParameter],
-		stage: ShaderTypes,
-		dxc_target: Option<&str>,
-	) -> Option<Vec<u8>> {
 		let parameter = shaders.iter().find(|parameter| {
 			matches!(
 				(parameter.stage, stage),
@@ -392,23 +377,7 @@ impl Device {
 			)
 		})?;
 		let shader = self.shaders.get(parameter.handle.0 as usize)?;
-		if let Some(target) = dxc_target {
-			if let Some(hlsl) = shader.hlsl.as_ref() {
-				let dxil = self
-					.compile_hlsl_with_dxc(
-						hlsl.name.as_deref(),
-						&hlsl.source,
-						&hlsl.entry_point,
-						target,
-						parameter.specialization_map,
-					)
-					.ok();
-				if dxil.is_some() && !parameter.specialization_map.is_empty() {
-					self.hlsl_specialization_compile_count += 1;
-				}
-				return dxil;
-			}
-		} else if !parameter.specialization_map.is_empty() {
+		if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
 				let dxil = self
 					.compile_hlsl(
@@ -542,7 +511,7 @@ impl Device {
 			return None;
 		}
 		self.compute_pipeline_state_create_attempt_count += 1;
-		let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+		let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
 			pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
 			CS: D3D12_SHADER_BYTECODE {
 				pShaderBytecode: dxil.as_ptr().cast(),
@@ -554,6 +523,8 @@ impl Device {
 		};
 
 		let pipeline_state = unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
+		// Pipeline creation synchronously consumes the descriptor. Release the temporary root-signature clone afterward.
+		unsafe { std::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
 		if let Err(error) = &pipeline_state {
 			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 			self.log_dx12_error(format!(
@@ -699,7 +670,7 @@ impl Device {
 		if subobjects.is_empty() {
 			return (None, HashMap::default());
 		}
-		let global_root_signature = D3D12_GLOBAL_ROOT_SIGNATURE {
+		let mut global_root_signature = D3D12_GLOBAL_ROOT_SIGNATURE {
 			pGlobalRootSignature: std::mem::ManuallyDrop::new(Some(root_signature)),
 		};
 		subobjects.push(D3D12_STATE_SUBOBJECT {
@@ -737,7 +708,10 @@ impl Device {
 			NumSubobjects: subobjects.len() as u32,
 			pSubobjects: subobjects.as_ptr(),
 		};
-		let state_object = match unsafe { device.CreateStateObject::<ID3D12StateObject>(&desc) } {
+		let state_object = unsafe { device.CreateStateObject::<ID3D12StateObject>(&desc) };
+		// State-object creation synchronously consumes every subobject. Release the temporary root-signature clone afterward.
+		unsafe { std::mem::ManuallyDrop::drop(&mut global_root_signature.pGlobalRootSignature) };
+		let state_object = match state_object {
 			Ok(state_object) => state_object,
 			Err(error) => {
 				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };

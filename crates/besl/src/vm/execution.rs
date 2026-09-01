@@ -543,6 +543,7 @@ impl ExecutableProgram {
 			| Instruction::Normalize { .. }
 			| Instruction::Reflect { .. }
 			| Instruction::UnaryScalar { .. }
+			| Instruction::FloatPredicate { .. }
 			| Instruction::RoundToVec2I { .. }
 			| Instruction::BinaryScalar { .. }
 			| Instruction::TernaryScalar { .. } => {
@@ -579,7 +580,7 @@ impl ExecutableProgram {
 			| Instruction::StoreTaskPayload { .. }
 			| Instruction::LoadWorkgroup { .. }
 			| Instruction::StoreWorkgroup { .. }
-			| Instruction::AtomicAddWorkgroup { .. }
+			| Instruction::AtomicWorkgroup { .. }
 			| Instruction::AtomicCompareExchangeWorkgroup { .. }
 			| Instruction::SetTaskMeshOutputCount { .. } => {
 				Self::execute_task_and_workgroup_instruction(instruction, &mut frame.registers, descriptors, state.config)?;
@@ -596,7 +597,7 @@ impl ExecutableProgram {
 			| Instruction::LoadBufferIndexed { .. }
 			| Instruction::StoreBuffer { .. }
 			| Instruction::StoreBufferIndexed { .. }
-			| Instruction::AtomicAddBuffer { .. }
+			| Instruction::AtomicBuffer { .. }
 			| Instruction::AtomicCompareExchangeBuffer { .. } => {
 				Self::execute_buffer_instruction(instruction, &mut frame.registers, descriptors)?;
 				Ok(InstructionProgress::Advance)
@@ -731,6 +732,14 @@ impl ExecutableProgram {
 			} => {
 				let value = read_register(registers, *value)?;
 				registers[*register] = Some(apply_scalar_unary(*operator, &value)?);
+			}
+			Instruction::FloatPredicate {
+				register,
+				predicate,
+				value,
+			} => {
+				let value = read_register(registers, *value)?;
+				registers[*register] = Some(apply_float_predicate(*predicate, &value)?);
 			}
 			Instruction::RoundToVec2I { register, value } => {
 				let value = read_register(registers, *value)?;
@@ -943,28 +952,37 @@ impl ExecutableProgram {
 					.workgroup_state_mut()?
 					.store(name, index, *count, value_type, value)?;
 			}
-			Instruction::AtomicAddWorkgroup {
+			Instruction::AtomicWorkgroup {
 				register,
+				operation,
 				name,
 				index,
 				count,
+				value_type,
 				value,
 			} => {
 				let index = index
 					.map(|index| read_register(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
-				let value = expect_u32(read_register(registers, *value)?)?;
+				let value = read_register(registers, *value)?;
+				if !value.matches_type(value_type) {
+					return Err(VmError::TypeMismatch {
+						expected: value_type.name().to_string(),
+						found: value.value_type().name().to_string(),
+					});
+				}
 				let previous = descriptors
 					.workgroup_state_mut()?
-					.atomic_add_u32(name, index, *count, value)?;
-				registers[*register] = Some(Value::U32(previous));
+					.atomic_apply(name, index, *count, *operation, &value)?;
+				registers[*register] = Some(previous);
 			}
 			Instruction::AtomicCompareExchangeWorkgroup {
 				register,
 				name,
 				index,
 				count,
+				value_type,
 				expected,
 				desired,
 			} => {
@@ -972,12 +990,18 @@ impl ExecutableProgram {
 					.map(|index| read_register(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
-				let expected = expect_u32(read_register(registers, *expected)?)?;
-				let desired = expect_u32(read_register(registers, *desired)?)?;
+				let expected = read_register(registers, *expected)?;
+				let desired = read_register(registers, *desired)?;
+				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
+					return Err(VmError::TypeMismatch {
+						expected: value_type.name().to_string(),
+						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
+					});
+				}
 				let previous = descriptors
 					.workgroup_state_mut()?
-					.atomic_compare_exchange_u32(name, index, *count, expected, desired)?;
-				registers[*register] = Some(Value::U32(previous));
+					.atomic_compare_exchange(name, index, *count, &expected, &desired)?;
+				registers[*register] = Some(previous);
 			}
 			Instruction::SetTaskMeshOutputCount { count } => {
 				let count = expect_u32(read_register(registers, *count)?)?;
@@ -1137,25 +1161,34 @@ impl ExecutableProgram {
 				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
 				buffer.write_value(*offset + *stride * index, value_type, &value)?;
 			}
-			Instruction::AtomicAddBuffer {
+			Instruction::AtomicBuffer {
 				register,
+				operation,
 				slot,
 				offset,
 				stride,
 				count,
 				index,
+				value_type,
 				value,
 			} => {
-				let value = expect_u32(read_register(registers, *value)?)?;
+				let value = read_register(registers, *value)?;
+				if !value.matches_type(value_type) {
+					return Err(VmError::TypeMismatch {
+						expected: value_type.name().to_string(),
+						found: value.value_type().name().to_string(),
+					});
+				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
 					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
 					None => 0,
 				};
 				let address = *offset + *stride * index;
-				let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
-				buffer.write_value(address, &ValueType::U32, &Value::U32(previous.wrapping_add(value)))?;
-				registers[*register] = Some(Value::U32(previous));
+				let previous = buffer.read_value(address, value_type)?;
+				let replacement = apply_atomic_operation(*operation, &previous, &value)?;
+				buffer.write_value(address, value_type, &replacement)?;
+				registers[*register] = Some(previous);
 			}
 			Instruction::AtomicCompareExchangeBuffer {
 				register,
@@ -1164,22 +1197,29 @@ impl ExecutableProgram {
 				stride,
 				count,
 				index,
+				value_type,
 				expected,
 				desired,
 			} => {
-				let expected = expect_u32(read_register(registers, *expected)?)?;
-				let desired = expect_u32(read_register(registers, *desired)?)?;
+				let expected = read_register(registers, *expected)?;
+				let desired = read_register(registers, *desired)?;
+				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
+					return Err(VmError::TypeMismatch {
+						expected: value_type.name().to_string(),
+						found: format!("{} and {}", expected.value_type().name(), desired.value_type().name()),
+					});
+				}
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = match index {
 					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
 					None => 0,
 				};
 				let address = *offset + *stride * index;
-				let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
+				let previous = buffer.read_value(address, value_type)?;
 				if previous == expected {
-					buffer.write_value(address, &ValueType::U32, &Value::U32(desired))?;
+					buffer.write_value(address, value_type, &desired)?;
 				}
-				registers[*register] = Some(Value::U32(previous));
+				registers[*register] = Some(previous);
 			}
 			_ => unreachable!("Buffer instruction dispatch must select only buffer instructions"),
 		}

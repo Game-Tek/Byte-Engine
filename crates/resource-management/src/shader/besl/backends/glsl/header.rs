@@ -70,6 +70,16 @@ pub(super) fn generate_glsl_header_block(
 	}
 
 	glsl_block.push_str("const float PI = 3.14159265359;");
+	glsl_block.push_str(
+		"bool _besl_is_finite(float value){return !isnan(value)&&!isinf(value);}\n\
+		 bool _besl_is_normal(float value){return _besl_is_finite(value)&&abs(value)>=1.1754943508222875e-38;}\n",
+	);
+	if uses_f16_types {
+		glsl_block.push_str(
+			"bool _besl_is_finite(float16_t value){return !isnan(value)&&!isinf(value);}\n\
+			 bool _besl_is_normal(float16_t value){return _besl_is_finite(value)&&abs(value)>=float16_t(0.00006103515625);}\n",
+		);
+	}
 	if !generator.minified {
 		glsl_block.push('\n');
 	}

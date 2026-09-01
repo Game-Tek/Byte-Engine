@@ -70,7 +70,7 @@ impl Device {
 			}
 		}
 
-		let mut barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		let mut barriers = EnhancedBarrierBatch::default();
 		for (resource_descriptor, retained_descriptor) in retained {
 			let resource_sequence = self.frame_index_with_offset(
 				sequence_index as usize,
@@ -86,14 +86,12 @@ impl Device {
 					if self.buffer_heap_kind_for_sequence(handle, resource_sequence) != Some(BufferHeapKind::Default) {
 						continue;
 					}
-					unsafe {
-						self.transition_tracked_buffer_into(
-							handle,
-							&resource,
-							Self::descriptor_buffer_state(resource_descriptor, pipeline_kind),
-							&mut barriers,
-						);
-					}
+					self.transition_tracked_buffer_into(
+						handle,
+						&resource,
+						Self::descriptor_buffer_state(resource_descriptor, pipeline_kind),
+						&mut barriers,
+					);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				WriteData::Image { handle, .. }
@@ -103,14 +101,12 @@ impl Device {
 					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
 						continue;
 					};
-					unsafe {
-						self.transition_tracked_image_into(
-							handle,
-							&resource,
-							Self::descriptor_image_state(resource_descriptor, pipeline_kind),
-							&mut barriers,
-						);
-					}
+					self.transition_tracked_image_into(
+						handle,
+						&resource,
+						Self::descriptor_image_state(resource_descriptor, pipeline_kind),
+						&mut barriers,
+					);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				WriteData::Swapchain(handle) => {
@@ -120,22 +116,18 @@ impl Device {
 					let Some(resource) = self.ensure_image_resource_for_sequence(image.into(), resource_sequence) else {
 						continue;
 					};
-					unsafe {
-						self.transition_tracked_image_into(
-							image.into(),
-							&resource,
-							Self::descriptor_image_state(resource_descriptor, pipeline_kind),
-							&mut barriers,
-						);
-					}
+					self.transition_tracked_image_into(
+						image.into(),
+						&resource,
+						Self::descriptor_image_state(resource_descriptor, pipeline_kind),
+						&mut barriers,
+					);
 					self.mark_command_buffer_work(command_buffer_handle);
 				}
 				_ => {}
 			}
 		}
-		unsafe {
-			Self::submit_resource_barriers(&command_list, &barriers);
-		}
+		Self::submit_resource_barriers(&command_list, &barriers);
 	}
 
 	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {

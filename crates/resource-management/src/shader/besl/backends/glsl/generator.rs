@@ -61,6 +61,7 @@ impl Generator {
 		match source {
 			"void" => "void",
 			"atomicu32" => "uint32_t",
+			"atomici32" => "int32_t",
 			"vec2f16" => "f16vec2",
 			"vec3f16" => "f16vec3",
 			"vec4f16" => "f16vec4",
@@ -369,7 +370,13 @@ impl Generator {
 	// Emits all non-texture, non-image intrinsic lowerings and the generic GLSL fallback.
 	// Keep the intrinsic table contiguous so unsupported names cannot silently drift between GLSL call forms.
 	#[allow(clippy::too_many_lines)]
-	fn emit_builtin_intrinsic_call(&mut self, string: &mut String, name: &str, arguments: &[besl::NodeReference]) {
+	fn emit_builtin_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		name: &str,
+		arguments: &[besl::NodeReference],
+		return_type: Option<&str>,
+	) {
 		match name {
 			"pow" if arguments.len() == 2 && is_two(&arguments[0]) => {
 				string.push_str("exp2(");
@@ -390,6 +397,25 @@ impl Generator {
 			}
 			"fma" => {
 				string.push_str("fma(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"is_nan" => {
+				string.push_str("isnan(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"is_infinite" => {
+				string.push_str("isinf(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"is_finite" | "is_normal" => {
+				string.push_str(if name == "is_finite" {
+					"_besl_is_finite("
+				} else {
+					"_besl_is_normal("
+				});
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -431,8 +457,17 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
-			"atomic_add" => {
-				string.push_str("atomicAdd(");
+			"atomic_exchange" | "atomic_add" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or" | "atomic_xor" => {
+				string.push_str(match name {
+					"atomic_exchange" => "atomicExchange(",
+					"atomic_add" => "atomicAdd(",
+					"atomic_min" => "atomicMin(",
+					"atomic_max" => "atomicMax(",
+					"atomic_and" => "atomicAnd(",
+					"atomic_or" => "atomicOr(",
+					"atomic_xor" => "atomicXor(",
+					_ => unreachable!("Expected an atomic binary intrinsic"),
+				});
 				self.emit_node_string(string, &arguments[0]);
 				if self.minified {
 					string.push(',');
@@ -441,6 +476,14 @@ impl Generator {
 				}
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
+			}
+			"atomic_sub" => {
+				string.push_str("atomicAdd(");
+				self.emit_node_string(string, &arguments[0]);
+				self.emit_separator(string);
+				string.push_str("-(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("))");
 			}
 			"atomic_compare_exchange" => {
 				string.push_str("atomicCompSwap(");
@@ -456,16 +499,18 @@ impl Generator {
 				string.push(')');
 			}
 			"atomic_load" => {
+				string.push_str("atomicAdd(");
 				self.emit_node_string(string, &arguments[0]);
+				self.emit_separator(string);
+				string.push_str(if return_type == Some("i32") { "0" } else { "0u" });
+				string.push(')');
 			}
 			"atomic_store" => {
+				string.push_str("atomicExchange(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push('=');
-				} else {
-					string.push_str(" = ");
-				}
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
 			}
 			"thread_id" => {
 				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
@@ -556,7 +601,7 @@ impl Generator {
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
-			..
+			r#return,
 		} = intrinsic.node()
 		else {
 			for element in elements {
@@ -580,7 +625,8 @@ impl Generator {
 		if self.emit_image_intrinsic_call(string, name, arguments) {
 			return;
 		}
-		self.emit_builtin_intrinsic_call(string, name, arguments);
+		let return_type = r#return.borrow().get_name().map(str::to_owned);
+		self.emit_builtin_intrinsic_call(string, name, arguments, return_type.as_deref());
 	}
 
 	// This function appends to the `string` parameter the string representation of the node.

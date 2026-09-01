@@ -136,8 +136,8 @@ void main() {
 			msl: "#include <metal_stdlib>\nusing namespace metal; kernel void raygen_main() {}",
 			msl_entry_point: "raygen_main",
 			hlsl: r#"
-struct Payload {
-float3 hit_value;
+struct [raypayload] Payload {
+	float3 hit_value : read(caller) : write(caller, closesthit, miss);
 };
 
 RaytracingAccelerationStructure top_level_as : register(t0, space0);
@@ -177,8 +177,8 @@ output_image[launch_id] = float4(payload.hit_value, 1.0);
 			msl: "#include <metal_stdlib>\nusing namespace metal; kernel void closest_hit_main() {}",
 			msl_entry_point: "closest_hit_main",
 			hlsl: r#"
-struct Payload {
-float3 hit_value;
+struct [raypayload] Payload {
+	float3 hit_value : read(caller) : write(caller, closesthit, miss);
 };
 
 StructuredBuffer<float3> positions : register(t2, space0);
@@ -206,8 +206,8 @@ payload.hit_value = color.xyz;
 			msl: "#include <metal_stdlib>\nusing namespace metal; kernel void miss_main() {}",
 			msl_entry_point: "miss_main",
 			hlsl: r#"
-struct Payload {
-float3 hit_value;
+struct [raypayload] Payload {
+	float3 hit_value : read(caller) : write(caller, closesthit, miss);
 };
 
 [shader("miss")]

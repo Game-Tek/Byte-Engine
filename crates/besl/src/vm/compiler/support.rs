@@ -437,6 +437,7 @@ pub(super) fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmEr
 		"f16" => Ok(ValueType::F16),
 		"f32" => Ok(ValueType::F32),
 		"atomicu32" => Ok(ValueType::U32),
+		"atomici32" => Ok(ValueType::I32),
 		"vec2u16" => Ok(ValueType::Vec2U16),
 		"vec4u16" => Ok(ValueType::Vec4U16),
 		"vec2i" => Ok(ValueType::Vec2I),

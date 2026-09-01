@@ -220,7 +220,7 @@ mod tests {
 
 		for (type_name, size, alignment) in [
 			("u8", 4, 4),
-			("u16", 4, 4),
+			("u16", 2, 2),
 			("u32", 4, 4),
 			("f16", 2, 2),
 			("vec2u16", 4, 2),
@@ -320,6 +320,28 @@ mod tests {
 			assert_eq!(reflected_storage_buffer_stride_for_target(&bytes, target), Ok(byte_stride));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&words, target), Ok(word_stride));
 		}
+	}
+
+	#[test]
+	fn hlsl_native_u16_record_stride_matches_the_emitted_struct() {
+		let mut root = besl::Node::root();
+		let u16_type = root.get_child("u16").expect("Expected u16");
+		let pair = root.add_child(
+			besl::Node::r#struct(
+				"Pair",
+				vec![
+					besl::Node::member("low", u16_type.clone()).into(),
+					besl::Node::member("high", u16_type).into(),
+				],
+			)
+			.into(),
+		);
+		let pairs = vec![besl::Node::array("pairs", pair, 3)];
+
+		assert_eq!(
+			reflected_storage_buffer_stride_for_target(&pairs, StorageLayoutTarget::Hlsl),
+			Ok(4)
+		);
 	}
 
 	#[test]

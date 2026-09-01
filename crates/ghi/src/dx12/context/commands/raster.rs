@@ -25,14 +25,12 @@ impl Device {
 				continue;
 			};
 			let size_in_bytes = buffer.size.saturating_sub(buffer_descriptor.offset).min(u32::MAX as usize) as u32;
-			unsafe {
-				self.transition_tracked_buffer(
-					&command_list,
-					buffer_descriptor.buffer,
-					&resource,
-					D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-				);
-			}
+			self.transition_tracked_buffer(
+				&command_list,
+				buffer_descriptor.buffer,
+				&resource,
+				BufferBarrierState::VERTEX_BUFFER,
+			);
 			views.push(D3D12_VERTEX_BUFFER_VIEW {
 				BufferLocation: unsafe { resource.GetGPUVirtualAddress() } + buffer_descriptor.offset as u64,
 				SizeInBytes: size_in_bytes,
@@ -92,7 +90,7 @@ impl Device {
 				&command_list,
 				buffer_descriptor.buffer,
 				&resource,
-				D3D12_RESOURCE_STATE_INDEX_BUFFER,
+				BufferBarrierState::INDEX_BUFFER,
 			);
 			command_list.IASetIndexBuffer(Some(&view));
 		}
@@ -458,39 +456,33 @@ impl Device {
 		}
 
 		// Plan attachment transitions before recording any clears so independent attachments share
-		// one native ResourceBarrier call. Integer render targets transition through UAV in their clear.
-		let mut attachment_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		// one native Barrier call. Integer render targets transition through UAV in their clear.
+		let mut attachment_barriers = EnhancedBarrierBatch::default();
 		for target in &target_resources {
 			let state = if !target.load && matches!(target.clear, ClearValue::Integer(..)) && target.format == Formats::U32 {
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+				TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW)
 			} else {
-				D3D12_RESOURCE_STATE_RENDER_TARGET
+				TextureBarrierState::RENDER_TARGET
 			};
-			unsafe {
-				if let Some(image_handle) = target.image_handle {
-					self.transition_tracked_image_into(image_handle, &target.resource, state, &mut attachment_barriers);
-				} else {
-					attachment_barriers.push(Self::transition_resource_barrier(
-						&target.resource,
-						D3D12_RESOURCE_STATE_PRESENT,
-						D3D12_RESOURCE_STATE_RENDER_TARGET,
-					));
-				}
-			}
-		}
-		if let Some((image_handle, resource, ..)) = &depth_resource {
-			unsafe {
-				self.transition_tracked_image_into(
-					*image_handle,
-					resource,
-					D3D12_RESOURCE_STATE_DEPTH_WRITE,
+			if let Some(image_handle) = target.image_handle {
+				self.transition_tracked_image_into(image_handle, &target.resource, state, &mut attachment_barriers);
+			} else {
+				self.transition_swapchain_texture_into(
+					&target.resource,
+					TextureBarrierState::RENDER_TARGET,
 					&mut attachment_barriers,
 				);
 			}
 		}
-		unsafe {
-			Self::submit_resource_barriers(&command_list, &attachment_barriers);
+		if let Some((image_handle, resource, ..)) = &depth_resource {
+			self.transition_tracked_image_into(
+				*image_handle,
+				resource,
+				TextureBarrierState::DEPTH_WRITE,
+				&mut attachment_barriers,
+			);
 		}
+		Self::submit_resource_barriers(&command_list, &attachment_barriers);
 
 		let mut handles = SmallVec::<[D3D12_CPU_DESCRIPTOR_HANDLE; 8]>::new();
 		let mut integer_clear_targets = SmallVec::<[(crate::BaseImageHandle, ID3D12Resource); 8]>::new();
@@ -551,20 +543,16 @@ impl Device {
 			self.render_target_bind_count += 1;
 		}
 
-		let mut post_clear_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
+		let mut post_clear_barriers = EnhancedBarrierBatch::default();
 		for (image_handle, resource) in integer_clear_targets {
-			unsafe {
-				self.transition_tracked_image_into(
-					image_handle,
-					&resource,
-					D3D12_RESOURCE_STATE_RENDER_TARGET,
-					&mut post_clear_barriers,
-				);
-			}
+			self.transition_tracked_image_into(
+				image_handle,
+				&resource,
+				TextureBarrierState::RENDER_TARGET,
+				&mut post_clear_barriers,
+			);
 		}
-		unsafe {
-			Self::submit_resource_barriers(&command_list, &post_clear_barriers);
-		}
+		Self::submit_resource_barriers(&command_list, &post_clear_barriers);
 
 		let mut depth_handle = None;
 		if let Some((_, resource, format, array_layers, layer, layer_count, load, clear)) = depth_resource {

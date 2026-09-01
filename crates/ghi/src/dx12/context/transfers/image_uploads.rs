@@ -183,7 +183,25 @@ impl Device {
 				self.pending_texture_syncs.push((image_handle, sequence_index));
 				continue;
 			}
-			self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index);
+			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index) {
+				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+					command_buffer.recorded_texture_syncs.push((image_handle, sequence_index));
+				}
+			} else {
+				self.queue_texture_sync_for_sequence(image_handle, sequence_index);
+			}
+		}
+	}
+
+	/// Restores texture uploads whose command list was reset or abandoned before submission.
+	pub(crate) fn requeue_recorded_texture_syncs_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
+		let recorded = self
+			.command_buffers
+			.get_mut(command_buffer_handle.0 as usize)
+			.map(|command_buffer| std::mem::take(&mut command_buffer.recorded_texture_syncs))
+			.unwrap_or_default();
+		for (image_handle, sequence_index) in recorded {
+			self.queue_texture_sync_for_sequence(image_handle, sequence_index);
 		}
 	}
 
@@ -200,24 +218,24 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		sequence_index: u8,
-	) {
+	) -> bool {
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
 			.and_then(|command_buffer| command_buffer.command_list.clone())
 		else {
-			return;
+			return false;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
 		let Some(image) = self.images.get(image_handle.0.0 as usize) else {
-			return;
+			return false;
 		};
 		let (Some(destination), Some(format), Some((source_row_pitch, ..))) = (
 			destination,
 			Self::dxgi_format(image.format),
 			utils::texture_copy_layout(image.format, image.extent),
 		) else {
-			return;
+			return false;
 		};
 		let extent = image.extent;
 		let source_bytes = image
@@ -227,7 +245,7 @@ impl Device {
 			.cloned()
 			.or_else(|| image.data.clone())
 			.unwrap_or_default();
-		if self.record_image_upload(
+		let recorded = self.record_image_upload(
 			command_buffer_handle,
 			&command_list,
 			image_handle.0,
@@ -241,9 +259,11 @@ impl Device {
 					.map(|(_, rows, _)| rows)
 					.unwrap_or(0),
 			0,
-		) {
+		);
+		if recorded {
 			self.gpu_uploaded_images.insert(image_handle.0);
 		}
+		recorded
 	}
 
 	pub(crate) fn begin_debug_region(&self, command_buffer_handle: CommandBufferHandle, name: &str) {
@@ -286,7 +306,7 @@ impl Device {
 	pub(crate) fn record_image_upload(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 		image_handle: crate::BaseImageHandle,
 		destination: ID3D12Resource,
 		format: DXGI_FORMAT,
@@ -329,7 +349,7 @@ impl Device {
 			}
 		}
 
-		let source_location = D3D12_TEXTURE_COPY_LOCATION {
+		let mut source_location = D3D12_TEXTURE_COPY_LOCATION {
 			pResource: std::mem::ManuallyDrop::new(Some(upload.clone())),
 			Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
 			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
@@ -345,7 +365,7 @@ impl Device {
 				},
 			},
 		};
-		let destination_location = D3D12_TEXTURE_COPY_LOCATION {
+		let mut destination_location = D3D12_TEXTURE_COPY_LOCATION {
 			pResource: std::mem::ManuallyDrop::new(Some(destination)),
 			Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
 			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
@@ -353,20 +373,25 @@ impl Device {
 			},
 		};
 
+		self.transition_tracked_image(
+			command_list,
+			image_handle,
+			destination_location.pResource.as_ref().unwrap(),
+			TextureBarrierState::COPY_DESTINATION,
+		);
 		unsafe {
-			self.transition_tracked_image(
-				command_list,
-				image_handle,
-				destination_location.pResource.as_ref().unwrap(),
-				D3D12_RESOURCE_STATE_COPY_DEST,
-			);
 			command_list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
-			self.transition_tracked_image(
-				command_list,
-				image_handle,
-				destination_location.pResource.as_ref().unwrap(),
-				D3D12_RESOURCE_STATE_COMMON,
-			);
+		}
+		self.transition_tracked_image(
+			command_list,
+			image_handle,
+			destination_location.pResource.as_ref().unwrap(),
+			TextureBarrierState::COMMON,
+		);
+		// The copy call only borrows these descriptors. Release their COM clones while the separately retained resources stay alive.
+		unsafe {
+			std::mem::ManuallyDrop::drop(&mut source_location.pResource);
+			std::mem::ManuallyDrop::drop(&mut destination_location.pResource);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.retain_command_buffer_upload_resource(command_buffer_handle, upload);

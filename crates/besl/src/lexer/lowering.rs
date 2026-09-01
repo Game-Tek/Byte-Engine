@@ -4,6 +4,93 @@ use super::resolution::*;
 use super::*;
 use crate::parser;
 
+const ATOMIC_INTRINSICS_DOCUMENTATION: &str =
+	"https://byte-engine.0x44491229.dev/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics";
+
+#[derive(Clone, Copy)]
+enum AtomicAccessRequirement {
+	Write,
+	ReadWrite,
+}
+
+#[derive(Clone, Copy)]
+enum AtomicTargetRoot {
+	Binding { read: bool, write: bool },
+	Workgroup,
+}
+
+/// Returns the access policy shared by every portable buffer and workgroup atomic intrinsic.
+fn atomic_access_requirement(name: &str) -> Option<AtomicAccessRequirement> {
+	match name {
+		"atomic_store" => Some(AtomicAccessRequirement::Write),
+		"atomic_load"
+		| "atomic_exchange"
+		| "atomic_compare_exchange"
+		| "atomic_add"
+		| "atomic_sub"
+		| "atomic_min"
+		| "atomic_max"
+		| "atomic_and"
+		| "atomic_or"
+		| "atomic_xor" => Some(AtomicAccessRequirement::ReadWrite),
+		_ => None,
+	}
+}
+
+/// Peels indexing and member access without accepting a copied atomic value as addressable storage.
+fn atomic_target_root(target: &NodeReference) -> Option<AtomicTargetRoot> {
+	let next = {
+		let target = target.borrow();
+		match target.node() {
+			Nodes::Binding { read, write, .. } => {
+				return Some(AtomicTargetRoot::Binding {
+					read: *read,
+					write: *write,
+				});
+			}
+			Nodes::Workgroup { .. } => return Some(AtomicTargetRoot::Workgroup),
+			Nodes::Expression(Expressions::Member { source, .. }) => source.clone(),
+			Nodes::Expression(Expressions::Accessor { left, .. }) => left.clone(),
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0].clone(),
+			_ => return None,
+		}
+	};
+
+	atomic_target_root(&next)
+}
+
+/// Rejects atomic calls that cannot preserve portable address-space and access semantics.
+fn validate_atomic_target(name: &str, target: &NodeReference, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
+	let Some(root) = atomic_target_root(target) else {
+		return Err(LexError::Undefined {
+			message: Some(format!(
+				"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+			)),
+		});
+	};
+
+	let AtomicTargetRoot::Binding { read, write } = root else {
+		return Ok(());
+	};
+	let valid_access = match requirement {
+		AtomicAccessRequirement::Write => write,
+		AtomicAccessRequirement::ReadWrite => read && write,
+	};
+	if valid_access {
+		return Ok(());
+	}
+
+	let message = match requirement {
+		AtomicAccessRequirement::Write => format!(
+			"Atomic store requires a writable buffer. The most likely cause is that the descriptor used by `{name}` does not include write access. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+		),
+		AtomicAccessRequirement::ReadWrite => format!(
+			"Atomic operation requires a read-write buffer. The most likely cause is that the descriptor used by `{name}` does not use `read_write` access. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+		),
+	};
+	Err(LexError::Undefined { message: Some(message) })
+}
+
 // This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) fn lex_parsed_node(
@@ -479,17 +566,24 @@ pub(super) fn lex_parsed_node(
 								}
 								Node::expression(Expressions::FunctionCall { function: r, parameters })
 							}
-							Nodes::Intrinsic { elements, .. } => Node::expression(Expressions::IntrinsicCall {
-								intrinsic: r,
-								arguments: parameters.clone(),
-								elements: {
-									let expansion_id = *next_intrinsic_expansion_id;
-									*next_intrinsic_expansion_id = next_intrinsic_expansion_id.checked_add(1).expect(
-										"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
-									);
-									build_intrinsic(elements, &parameters, expansion_id)?
-								},
-							}),
+							Nodes::Intrinsic { name, elements, .. } => {
+								if let Some(requirement) = atomic_access_requirement(name)
+									&& let Some(target) = parameters.first()
+								{
+									validate_atomic_target(name, target, requirement)?;
+								}
+								Node::expression(Expressions::IntrinsicCall {
+									intrinsic: r,
+									arguments: parameters.clone(),
+									elements: {
+										let expansion_id = *next_intrinsic_expansion_id;
+										*next_intrinsic_expansion_id = next_intrinsic_expansion_id.checked_add(1).expect(
+											"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
+										);
+										build_intrinsic(elements, &parameters, expansion_id)?
+									},
+								})
+							}
 							_ => {
 								return Err(LexError::Undefined {
 									message: Some("Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.".to_string()),

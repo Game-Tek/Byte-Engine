@@ -307,6 +307,234 @@ mod tests {
 		assert!(root.borrow().get_child("push_constant").is_some());
 	}
 
+	/// Builds one statement for each supported scalar buffer or workgroup atomic intrinsic.
+	fn atomic_statement(name: &str, target: &str) -> String {
+		match name {
+			"atomic_load" => format!("{name}({target});"),
+			"atomic_compare_exchange" => format!("{name}({target}, 1, 2);"),
+			_ => format!("{name}({target}, 1);"),
+		}
+	}
+
+	/// Compiles invalid source and returns the plain-language linker diagnostic.
+	fn atomic_link_error(source: &str) -> String {
+		match crate::compile_to_besl(source, None).expect_err("invalid atomic source should fail while linking") {
+			crate::CompilationError::Lex(LexError::Undefined { message: Some(message) }) => message,
+			error => panic!("Expected a detailed atomic linker error, found {error:?}"),
+		}
+	}
+
+	#[test]
+	fn value_returning_atomics_require_read_write_buffers() {
+		for operation in [
+			"atomic_load",
+			"atomic_exchange",
+			"atomic_compare_exchange",
+			"atomic_add",
+			"atomic_sub",
+			"atomic_min",
+			"atomic_max",
+			"atomic_and",
+			"atomic_or",
+			"atomic_xor",
+		] {
+			let statement = atomic_statement(operation, "counters.value");
+			for access in ["read", "write"] {
+				let source = format!(
+					r#"
+						Counters: struct {{ value: atomicu32, }}
+						counters: descriptor<{{ type: Counters, binding: 3, access: {access} }}>;
+						main: fn () -> void {{ {statement} }}
+					"#
+				);
+				let message = atomic_link_error(&source);
+				assert!(
+					message.contains("requires a read-write buffer"),
+					"Unexpected `{operation}` error: {message}"
+				);
+				assert!(
+					message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"),
+					"Atomic access diagnostics should link to the focused recovery documentation"
+				);
+			}
+
+			let source = format!(
+				r#"
+					Counters: struct {{ value: atomicu32, }}
+					counters: descriptor<{{ type: Counters, binding: 3, access: read_write }}>;
+					main: fn () -> void {{ {statement} }}
+				"#
+			);
+			crate::compile_to_besl(&source, None)
+				.unwrap_or_else(|error| panic!("`{operation}` should accept a read-write descriptor: {error:?}"));
+		}
+	}
+
+	#[test]
+	fn atomic_store_accepts_write_access_and_rejects_read_only_buffers() {
+		for access in ["write", "read_write"] {
+			let source = format!(
+				r#"
+					Counters: struct {{ value: atomicu32, }}
+					counters: descriptor<{{ type: Counters, binding: 3, access: {access} }}>;
+					main: fn () -> void {{ atomic_store(counters.value, 1); }}
+				"#
+			);
+			crate::compile_to_besl(&source, None)
+				.unwrap_or_else(|error| panic!("Atomic store should accept `{access}` access: {error:?}"));
+		}
+
+		let source = r#"
+			Counters: struct { value: atomicu32, }
+			counters: descriptor<{ type: Counters, binding: 3, access: read }>;
+			main: fn () -> void { atomic_store(counters.value, 1); }
+		"#;
+		let message = atomic_link_error(source);
+		assert!(
+			message.contains("requires a writable buffer"),
+			"Unexpected atomic store error: {message}"
+		);
+		assert!(message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"));
+	}
+
+	#[test]
+	fn every_atomic_intrinsic_accepts_addressable_workgroup_storage() {
+		let statements = [
+			"atomic_store",
+			"atomic_load",
+			"atomic_exchange",
+			"atomic_compare_exchange",
+			"atomic_add",
+			"atomic_sub",
+			"atomic_min",
+			"atomic_max",
+			"atomic_and",
+			"atomic_or",
+			"atomic_xor",
+		]
+		.into_iter()
+		.map(|operation| atomic_statement(operation, "counter"))
+		.collect::<Vec<_>>()
+		.join("\n");
+		let source = format!(
+			r#"
+				counter: workgroup<atomicu32>;
+				main: fn () -> void {{ {statements} }}
+			"#
+		);
+
+		crate::compile_to_besl(&source, None).expect("All atomic intrinsics should accept addressable workgroup storage");
+	}
+
+	#[test]
+	fn every_atomic_intrinsic_rejects_by_value_function_parameters() {
+		for operation in [
+			"atomic_store",
+			"atomic_load",
+			"atomic_exchange",
+			"atomic_compare_exchange",
+			"atomic_add",
+			"atomic_sub",
+			"atomic_min",
+			"atomic_max",
+			"atomic_and",
+			"atomic_or",
+			"atomic_xor",
+		] {
+			let statement = atomic_statement(operation, "value");
+			let source = format!(
+				r#"
+					apply: fn (value: atomicu32) -> void {{ {statement} }}
+					main: fn () -> void {{}}
+				"#
+			);
+			let message = atomic_link_error(&source);
+			assert!(
+				message.contains("must come directly from a buffer or workgroup"),
+				"Unexpected `{operation}` target error: {message}"
+			);
+			assert!(
+				message.contains(operation),
+				"Atomic target diagnostic should identify `{operation}`"
+			);
+		}
+	}
+
+	#[test]
+	fn atomic_intrinsics_reject_local_values_and_function_results() {
+		for source in [
+			r#"
+				counter: workgroup<atomicu32>;
+				main: fn () -> void {
+					let copied: atomicu32 = counter;
+					atomic_load(copied);
+				}
+			"#,
+			r#"
+				counter: workgroup<atomicu32>;
+				copy: fn () -> atomicu32 { return counter; }
+				main: fn () -> void { atomic_load(copy()); }
+			"#,
+		] {
+			let message = atomic_link_error(source);
+			assert!(
+				message.contains("must come directly from a buffer or workgroup"),
+				"Unexpected target error: {message}"
+			);
+			assert!(message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"));
+		}
+	}
+
+	#[test]
+	fn source_links_portable_integer_atomics_and_float_classification() {
+		let source = r#"
+			Counters: struct {
+				unsigned_value: atomicu32,
+				signed_value: atomici32,
+			}
+			counters: descriptor<{ type: Counters, binding: 3, access: read_write }>;
+			main: fn () -> void {
+				atomic_store(counters.unsigned_value, 7);
+				atomic_exchange(counters.unsigned_value, 8);
+				atomic_add(counters.unsigned_value, 2);
+				atomic_sub(counters.unsigned_value, 1);
+				atomic_min(counters.unsigned_value, 4);
+				atomic_max(counters.unsigned_value, 9);
+				atomic_and(counters.unsigned_value, 15);
+				atomic_or(counters.unsigned_value, 16);
+				atomic_xor(counters.unsigned_value, 3);
+				atomic_compare_exchange(counters.unsigned_value, 26, 1);
+				atomic_load(counters.unsigned_value);
+
+				let negative: i32 = 0 - 7;
+				atomic_store(counters.signed_value, negative);
+				atomic_exchange(counters.signed_value, negative);
+				atomic_add(counters.signed_value, negative);
+				atomic_sub(counters.signed_value, negative);
+				atomic_min(counters.signed_value, negative);
+				atomic_max(counters.signed_value, negative);
+				atomic_and(counters.signed_value, negative);
+				atomic_or(counters.signed_value, negative);
+				atomic_xor(counters.signed_value, negative);
+				atomic_compare_exchange(counters.signed_value, negative, 1);
+				atomic_load(counters.signed_value);
+
+				is_nan(f16(0.0));
+				is_infinite(f16(0.0));
+				is_finite(0.0);
+				is_normal(1.0);
+				fma(f16(1.0), f16(2.0), f16(3.0));
+				fma(vec2f16(1.0, 2.0), vec2f16(2.0, 3.0), vec2f16(3.0, 4.0));
+				fma(vec3f16(1.0, 2.0, 3.0), vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0));
+				fma(vec4f16(1.0, 2.0, 3.0, 4.0), vec4f16(2.0, 3.0, 4.0, 5.0), vec4f16(3.0, 4.0, 5.0, 6.0));
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("portable atomic and classification source should link");
+		root.get_main()
+			.expect("portable atomic and classification source should have main");
+	}
+
 	#[test]
 	fn source_task_storage_and_stage_interfaces_link_without_injected_rust_nodes() {
 		let source = r#"

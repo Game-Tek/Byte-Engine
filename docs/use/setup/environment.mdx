@@ -147,16 +147,20 @@ version when you build inside the checkout.
 ### Install Visual Studio Build Tools
 
 Install the Visual Studio Build Tools with the MSVC C++ toolchain and Windows
-SDK before building on Windows. Byte Engine's Windows backends use Win32,
-Direct3D 12, DXGI, and DXC APIs from the Windows SDK.
+SDK before building on Windows. Byte Engine's Windows backend uses Win32,
+Direct3D 12, and DXGI APIs from the Windows SDK.
 
-<Callout type="info" title="Bundle DirectStorage with the application">
-	The DirectStorage runtime is an app-local redistributable, not a system-wide
-	development prerequisite. You can compile without copying its DLLs into the
-	Windows SDK. Before you run native resource-I/O tests or distribute an
-	application, follow the
+<Callout type="warning" title="Bundle the modern DirectX runtimes">
+	The DX12 backend requires the retail Agility SDK 1.619.5 and DXC 1.9.2607.13.
+	It starts only on a device that supports feature level 12.2, Shader Model 6.9,
+	and Enhanced Barriers. Your operating system must be Windows 10 version 1909
+	or newer and include the servicing revision required by the
+	[Agility SDK loader](https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/).
+	Agility SDK, DXC, and DirectStorage are app-local
+	redistributables, not system-wide development prerequisites. Before you run
+	native DX12 tests or distribute an application, follow the
 	[Windows bundle steps](/docs/use/build#build-and-bundle-for-windows) to stage
-	the matching runtime beside the executable.
+	the matching runtimes.
 </Callout>
 
 ### Enable AVX2 on x64

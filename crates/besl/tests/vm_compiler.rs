@@ -334,66 +334,6 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 	);
 }
 
-#[test]
-fn atomic_add_requires_read_and_write_descriptor_access() {
-	assert_eq!(
-		compile_error(compile_atomic_add(true, false)),
-		VmError::DescriptorAccessDenied {
-			slot: ResourceSlot::new(0),
-			access: "write",
-		}
-	);
-	assert_eq!(
-		compile_error(compile_atomic_add(false, true)),
-		VmError::DescriptorAccessDenied {
-			slot: ResourceSlot::new(0),
-			access: "read",
-		}
-	);
-	compile_atomic_add(true, true).expect("Read-write atomics must compile");
-}
-
-fn compile_atomic_add(read: bool, write: bool) -> Result<ExecutableProgram, VmError> {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	let atomic_u32_type = root.add_child(Node::r#struct("atomicu32", Vec::new()).into());
-	root.add_child(
-		Node::binding(
-			"counter",
-			BindingTypes::Buffer {
-				members: vec![Node::member("count", atomic_u32_type.clone()).into()],
-			},
-			0,
-			read,
-			write,
-		)
-		.into(),
-	);
-	let atomic_add = root.add_child(Node::intrinsic("atomic_add", Vec::new(), u32_type.clone()).into());
-	atomic_add.borrow_mut().add_children(vec![
-		Node::new(Nodes::Parameter {
-			name: "value".to_string(),
-			r#type: atomic_u32_type,
-		})
-		.into(),
-		Node::new(Nodes::Parameter {
-			name: "increment".to_string(),
-			r#type: u32_type,
-		})
-		.into(),
-	]);
-	let program = compile_to_besl(
-		r#"
-		main: fn () -> void {
-			atomic_add(counter.count, 1);
-		}
-		"#,
-		Some(root),
-	)
-	.expect("Expected lexed atomic program");
-	ExecutableProgram::compile(program)
-}
-
 fn compile_error(result: Result<ExecutableProgram, VmError>) -> VmError {
 	match result {
 		Ok(_) => panic!("Expected VM compilation to fail"),

@@ -72,28 +72,28 @@ impl Device {
 			return;
 		};
 
+		self.transition_tracked_image(
+			&command_list,
+			source_image,
+			&source_resource,
+			TextureBarrierState::COPY_SOURCE,
+		);
+		self.transition_tracked_image(
+			&command_list,
+			destination_image,
+			&destination_resource,
+			TextureBarrierState::COPY_DESTINATION,
+		);
 		unsafe {
-			self.transition_tracked_image(
-				&command_list,
-				source_image,
-				&source_resource,
-				D3D12_RESOURCE_STATE_COPY_SOURCE,
-			);
-			self.transition_tracked_image(
-				&command_list,
-				destination_image,
-				&destination_resource,
-				D3D12_RESOURCE_STATE_COPY_DEST,
-			);
 			command_list.CopyResource(&destination_resource, &source_resource);
-			self.transition_tracked_image(
-				&command_list,
-				destination_image,
-				&destination_resource,
-				D3D12_RESOURCE_STATE_COMMON,
-			);
-			self.transition_tracked_image(&command_list, source_image, &source_resource, D3D12_RESOURCE_STATE_COMMON);
 		}
+		self.transition_tracked_image(
+			&command_list,
+			destination_image,
+			&destination_resource,
+			TextureBarrierState::COMMON,
+		);
+		self.transition_tracked_image(&command_list, source_image, &source_resource, TextureBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.texture_copy_count += 1;
 	}

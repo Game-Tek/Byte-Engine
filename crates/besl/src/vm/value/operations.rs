@@ -267,6 +267,61 @@ pub(crate) fn apply_comparison(operator: ComparisonOperator, left: &Value, right
 	}
 }
 
+/// Classifies one scalar floating-point value without changing its precision.
+pub(crate) fn apply_float_predicate(predicate: FloatPredicate, value: &Value) -> Result<Value, VmError> {
+	let result = match value {
+		Value::F16(value) => match predicate {
+			FloatPredicate::Nan => value.is_nan(),
+			FloatPredicate::Infinite => value.is_infinite(),
+			FloatPredicate::Finite => value.is_finite(),
+			FloatPredicate::Normal => value.is_normal(),
+		},
+		Value::F32(value) => match predicate {
+			FloatPredicate::Nan => value.is_nan(),
+			FloatPredicate::Infinite => value.is_infinite(),
+			FloatPredicate::Finite => value.is_finite(),
+			FloatPredicate::Normal => value.is_normal(),
+		},
+		value => {
+			return Err(VmError::TypeMismatch {
+				expected: "f16 or f32".to_string(),
+				found: value.value_type().name().to_string(),
+			});
+		}
+	};
+	Ok(Value::Bool(result))
+}
+
+/// Applies one relaxed scalar integer read-modify-write operation and returns the replacement value.
+pub(crate) fn apply_atomic_operation(operation: AtomicOperation, previous: &Value, operand: &Value) -> Result<Value, VmError> {
+	match (previous, operand) {
+		(Value::U32(previous), Value::U32(operand)) => Ok(Value::U32(match operation {
+			AtomicOperation::Exchange => *operand,
+			AtomicOperation::Add => previous.wrapping_add(*operand),
+			AtomicOperation::Subtract => previous.wrapping_sub(*operand),
+			AtomicOperation::Min => (*previous).min(*operand),
+			AtomicOperation::Max => (*previous).max(*operand),
+			AtomicOperation::And => *previous & *operand,
+			AtomicOperation::Or => *previous | *operand,
+			AtomicOperation::Xor => *previous ^ *operand,
+		})),
+		(Value::I32(previous), Value::I32(operand)) => Ok(Value::I32(match operation {
+			AtomicOperation::Exchange => *operand,
+			AtomicOperation::Add => previous.wrapping_add(*operand),
+			AtomicOperation::Subtract => previous.wrapping_sub(*operand),
+			AtomicOperation::Min => (*previous).min(*operand),
+			AtomicOperation::Max => (*previous).max(*operand),
+			AtomicOperation::And => *previous & *operand,
+			AtomicOperation::Or => *previous | *operand,
+			AtomicOperation::Xor => *previous ^ *operand,
+		})),
+		(previous, operand) => Err(VmError::TypeMismatch {
+			expected: previous.value_type().name().to_string(),
+			found: operand.value_type().name().to_string(),
+		}),
+	}
+}
+
 pub(crate) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 	match value {
 		Value::Bool(value) => Ok(!*value),
@@ -767,6 +822,67 @@ pub(crate) fn apply_scalar_ternary(
 	second: &Value,
 	third: &Value,
 ) -> Result<Value, VmError> {
+	/// Rounds an unsigned significand after discarding `shift` low bits.
+	fn round_shift_right_to_even(value: u64, shift: u32) -> u64 {
+		if shift == 0 {
+			return value;
+		}
+		if shift >= u64::BITS {
+			return 0;
+		}
+		let truncated = value >> shift;
+		let remainder_mask = (1_u64 << shift) - 1;
+		let remainder = value & remainder_mask;
+		let halfway = 1_u64 << (shift - 1);
+		truncated + u64::from(remainder > halfway || (remainder == halfway && truncated & 1 != 0))
+	}
+
+	/// Converts binary64 directly to binary16 with round-to-nearest, ties-to-even.
+	fn f16_from_f64_round_to_even(value: f64) -> f16 {
+		let bits = value.to_bits();
+		let sign = ((bits >> 48) & 0x8000) as u16;
+		let exponent = ((bits >> 52) & 0x7ff) as i32;
+		let fraction = bits & 0x000f_ffff_ffff_ffff;
+
+		if exponent == 0x7ff {
+			if fraction == 0 {
+				return f16::from_bits(sign | 0x7c00);
+			}
+			let payload = ((fraction >> 42) as u16 | 0x0200) & 0x03ff;
+			return f16::from_bits(sign | 0x7c00 | payload);
+		}
+		if exponent == 0 {
+			return f16::from_bits(sign);
+		}
+
+		let unbiased_exponent = exponent - 1023;
+		let significand = (1_u64 << 52) | fraction;
+		if unbiased_exponent >= -14 {
+			if unbiased_exponent > 15 {
+				return f16::from_bits(sign | 0x7c00);
+			}
+			let mut half_exponent = unbiased_exponent + 15;
+			let mut rounded_significand = round_shift_right_to_even(significand, 42);
+			if rounded_significand == 0x0800 {
+				rounded_significand = 0x0400;
+				half_exponent += 1;
+			}
+			if half_exponent >= 31 {
+				return f16::from_bits(sign | 0x7c00);
+			}
+			return f16::from_bits(sign | ((half_exponent as u16) << 10) | (rounded_significand as u16 & 0x03ff));
+		}
+
+		// One binary16 subnormal step is 2^-24. Shift the exact binary64
+		// significand into that scale before applying the same rounding rule.
+		let shift = (28 - unbiased_exponent) as u32;
+		let rounded_fraction = round_shift_right_to_even(significand, shift);
+		if rounded_fraction >= 0x0400 {
+			return f16::from_bits(sign | 0x0400);
+		}
+		f16::from_bits(sign | rounded_fraction as u16)
+	}
+
 	fn apply(operator: ScalarTernaryOperator, first: f32, second: f32, third: f32) -> f32 {
 		match operator {
 			ScalarTernaryOperator::Mix => first + (second - first) * third,
@@ -778,42 +894,33 @@ pub(crate) fn apply_scalar_ternary(
 			}
 		}
 	}
+	// Binary64 retains enough guard precision to decide the final binary16
+	// rounding. Using the f32 path can land on a binary32 midpoint first.
+	fn apply_f16(operator: ScalarTernaryOperator, first: f16, second: f16, third: f16) -> f16 {
+		if operator == ScalarTernaryOperator::Fma {
+			f16_from_f64_round_to_even(first.to_f64().mul_add(second.to_f64(), third.to_f64()))
+		} else {
+			f16::from_f32(apply(operator, first.to_f32(), second.to_f32(), third.to_f32()))
+		}
+	}
 	match (first, second, third) {
-		(Value::F16(first), Value::F16(second), Value::F16(third)) => Ok(Value::F16(f16::from_f32(apply(
-			operator,
-			first.to_f32(),
-			second.to_f32(),
-			third.to_f32(),
-		)))),
+		(Value::F16(first), Value::F16(second), Value::F16(third)) => {
+			Ok(Value::F16(apply_f16(operator, *first, *second, *third)))
+		}
 		(Value::F32(first), Value::F32(second), Value::F32(third)) => Ok(Value::F32(apply(operator, *first, *second, *third))),
 		(Value::Vec2F16(first), Value::Vec2F16(second), Value::Vec2F16(third)) => {
 			Ok(Value::Vec2F16(std::array::from_fn(|index| {
-				f16::from_f32(apply(
-					operator,
-					first[index].to_f32(),
-					second[index].to_f32(),
-					third[index].to_f32(),
-				))
+				apply_f16(operator, first[index], second[index], third[index])
 			})))
 		}
 		(Value::Vec3F16(first), Value::Vec3F16(second), Value::Vec3F16(third)) => {
 			Ok(Value::Vec3F16(std::array::from_fn(|index| {
-				f16::from_f32(apply(
-					operator,
-					first[index].to_f32(),
-					second[index].to_f32(),
-					third[index].to_f32(),
-				))
+				apply_f16(operator, first[index], second[index], third[index])
 			})))
 		}
 		(Value::Vec4F16(first), Value::Vec4F16(second), Value::Vec4F16(third)) => {
 			Ok(Value::Vec4F16(std::array::from_fn(|index| {
-				f16::from_f32(apply(
-					operator,
-					first[index].to_f32(),
-					second[index].to_f32(),
-					third[index].to_f32(),
-				))
+				apply_f16(operator, first[index], second[index], third[index])
 			})))
 		}
 		(Value::Vec2F(first), Value::Vec2F(second), Value::Vec2F(third)) => Ok(Value::Vec2F(std::array::from_fn(|index| {

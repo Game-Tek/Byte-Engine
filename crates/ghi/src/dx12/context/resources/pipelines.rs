@@ -43,37 +43,6 @@ impl Device {
 			.map(|pipeline| pipeline.ray_tracing_shader_identifiers.len())
 	}
 
-	/// Queries native 16-bit shader support once so pipeline compilation can use a stable capability.
-	pub(crate) fn query_native_16_bit_shader_ops_support(device: &ID3D12Device) -> bool {
-		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
-		let result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS4,
-				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS4).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>() as u32,
-			)
-		};
-		result.is_ok() && options.Native16BitShaderOpsSupported.as_bool()
-	}
-
-	/// Checks the Wave-op guarantee required by portable BESL subgroup lowering.
-	pub(crate) fn query_wave_ops_support(device: &ID3D12Device) -> bool {
-		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
-		let result = unsafe {
-			device.CheckFeatureSupport(
-				D3D12_FEATURE_D3D12_OPTIONS1,
-				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
-				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS1>() as u32,
-			)
-		};
-		result.is_ok() && options.WaveOps.as_bool() && options.WaveLaneCountMin > 0 && options.WaveLaneCountMax <= 128
-	}
-
-	/// Reports the cached native 16-bit shader capability for backend policy decisions.
-	pub(crate) fn supports_native_16_bit_shader_ops(&self) -> bool {
-		self.native_16_bit_shader_ops_supported
-	}
-
 	pub(crate) fn supports_native_ray_tracing(&self) -> bool {
 		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
 		let result = unsafe {

@@ -210,10 +210,16 @@ impl<'a> Compiler<'a> {
 			}
 			"atomic_load" => {
 				require_argument_count(arguments, 1)?;
+				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
+					return Err(VmError::TypeMismatch {
+						expected: "u32 or i32".to_string(),
+						found: return_type.name().to_string(),
+					});
+				}
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					if target.value_type != ValueType::U32 {
+					if target.value_type != return_type {
 						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
+							expected: return_type.name().to_string(),
 							found: target.value_type.name().to_string(),
 						});
 					}
@@ -232,15 +238,39 @@ impl<'a> Compiler<'a> {
 					});
 					return Ok(register);
 				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
+				if target.value_type != return_type {
+					return Err(VmError::TypeMismatch {
+						expected: return_type.name().to_string(),
+						found: target.value_type.name().to_string(),
+					});
+				}
 				self.compile_resolved_buffer_load(target, descriptor_layouts)
 			}
-			"atomic_add" => {
+			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
+			| "atomic_xor" => {
 				require_argument_count(arguments, 2)?;
+				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
+					return Err(VmError::TypeMismatch {
+						expected: "u32 or i32".to_string(),
+						found: return_type.name().to_string(),
+					});
+				}
+				let operation = match name.as_str() {
+					"atomic_exchange" => AtomicOperation::Exchange,
+					"atomic_add" => AtomicOperation::Add,
+					"atomic_sub" => AtomicOperation::Subtract,
+					"atomic_min" => AtomicOperation::Min,
+					"atomic_max" => AtomicOperation::Max,
+					"atomic_and" => AtomicOperation::And,
+					"atomic_or" => AtomicOperation::Or,
+					"atomic_xor" => AtomicOperation::Xor,
+					_ => unreachable!("Expected an atomic read-modify-write intrinsic"),
+				};
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					if target.value_type != ValueType::U32 {
+					if target.value_type != return_type {
 						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
+							expected: return_type.name().to_string(),
 							found: target.value_type.name().to_string(),
 						});
 					}
@@ -249,44 +279,54 @@ impl<'a> Compiler<'a> {
 						.as_ref()
 						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
 						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+					let value = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::AtomicAddWorkgroup {
+					self.instructions.push(Instruction::AtomicWorkgroup {
 						register,
+						operation,
 						name: target.name,
 						index,
 						count: target.count,
+						value_type: target.value_type,
 						value,
 					});
 					return Ok(register);
 				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
-				if target.value_type != ValueType::U32 {
+				if target.value_type != return_type {
 					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
+						expected: return_type.name().to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
 				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::AtomicAddBuffer {
+				self.instructions.push(Instruction::AtomicBuffer {
 					register,
+					operation,
 					slot: target.slot,
 					offset: target.offset,
 					stride: target.stride,
 					count: target.count,
 					index: target.index,
+					value_type: return_type,
 					value,
 				});
 				Ok(register)
 			}
 			"atomic_compare_exchange" => {
 				require_argument_count(arguments, 3)?;
+				if !matches!(return_type, ValueType::U32 | ValueType::I32) {
+					return Err(VmError::TypeMismatch {
+						expected: "u32 or i32".to_string(),
+						found: return_type.name().to_string(),
+					});
+				}
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					if target.value_type != ValueType::U32 {
+					if target.value_type != return_type {
 						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
+							expected: return_type.name().to_string(),
 							found: target.value_type.name().to_string(),
 						});
 					}
@@ -295,29 +335,30 @@ impl<'a> Compiler<'a> {
 						.as_ref()
 						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
 						.transpose()?;
-					let expected = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
-					let desired = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+					let expected = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
+					let desired = self.compile_value_expression(&arguments[2], &return_type, descriptor_layouts)?;
 					let register = self.allocate_register();
 					self.instructions.push(Instruction::AtomicCompareExchangeWorkgroup {
 						register,
 						name: target.name,
 						index,
 						count: target.count,
+						value_type: target.value_type,
 						expected,
 						desired,
 					});
 					return Ok(register);
 				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
-				if target.value_type != ValueType::U32 {
+				if target.value_type != return_type {
 					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
+						expected: return_type.name().to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
 				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let expected = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
-				let desired = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+				let expected = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
+				let desired = self.compile_value_expression(&arguments[2], &return_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::AtomicCompareExchangeBuffer {
 					register,
@@ -326,6 +367,7 @@ impl<'a> Compiler<'a> {
 					stride: target.stride,
 					count: target.count,
 					index: target.index,
+					value_type: return_type,
 					expected,
 					desired,
 				});
@@ -464,6 +506,30 @@ impl<'a> Compiler<'a> {
 					register,
 					incident,
 					normal,
+				});
+				Ok(register)
+			}
+			"is_nan" | "is_infinite" | "is_finite" | "is_normal" => {
+				require_argument_count(arguments, 1)?;
+				let source_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
+				if !matches!(source_type, ValueType::F16 | ValueType::F32) {
+					return Err(VmError::TypeMismatch {
+						expected: "f16 or f32".to_string(),
+						found: source_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::FloatPredicate {
+					register,
+					predicate: match name.as_str() {
+						"is_nan" => FloatPredicate::Nan,
+						"is_infinite" => FloatPredicate::Infinite,
+						"is_finite" => FloatPredicate::Finite,
+						"is_normal" => FloatPredicate::Normal,
+						_ => unreachable!("Expected a floating-point classification intrinsic"),
+					},
+					value,
 				});
 				Ok(register)
 			}

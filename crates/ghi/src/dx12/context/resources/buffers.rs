@@ -102,8 +102,8 @@ impl Device {
 				self.buffer_states
 					.get(&Self::native_resource_key(resource))
 					.copied()
-					.unwrap_or(D3D12_RESOURCE_STATE_COMMON)
-					== D3D12_RESOURCE_STATE_COMMON
+					.unwrap_or(BufferBarrierState::COMMON)
+					== BufferBarrierState::COMMON
 			})
 	}
 

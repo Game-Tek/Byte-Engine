@@ -18,7 +18,6 @@ impl Device {
 		let queue_handle = command_buffer.queue_handle;
 		let sequence_index = command_buffer.sequence_index;
 
-		self.transition_present_resources(command_buffer_handle, &command_list);
 		let recorded_work = self
 			.command_buffers
 			.get(command_buffer_index)
@@ -58,6 +57,10 @@ impl Device {
 		unsafe {
 			queue.queue.ExecuteCommandLists(&command_lists);
 		}
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
+			command_buffer.recorded_texture_syncs.clear();
+		}
+		self.commit_command_buffer_resource_states(command_buffer_handle);
 		// Native submission now owns the staging lifetime, even if later fence setup fails.
 		for &handle in &readback_handles {
 			self.texture_readbacks.mark_submitted(handle);
@@ -80,6 +83,18 @@ impl Device {
 			}
 		}
 		true
+	}
+
+	/// Records terminal swapchain transitions before later command buffers derive their opening layouts.
+	pub(crate) fn finish_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
+		let command_list = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone());
+		if let Some(command_list) = command_list {
+			self.transition_present_resources(command_buffer_handle, &command_list);
+		}
+		self.finish_command_buffer_state_transaction(command_buffer_handle);
 	}
 
 	pub(crate) fn record_present_preparation(
@@ -119,36 +134,32 @@ impl Device {
 				continue;
 			};
 
+			// Copy the engine swapchain proxy image into the actual DXGI backbuffer before Present.
+			let mut copy_barriers = EnhancedBarrierBatch::default();
+			self.transition_tracked_image_into(
+				source_image.0,
+				&source_resource,
+				TextureBarrierState::COPY_SOURCE,
+				&mut copy_barriers,
+			);
+			self.transition_swapchain_texture_into(
+				&destination_resource,
+				TextureBarrierState::COPY_DESTINATION,
+				&mut copy_barriers,
+			);
+			Self::submit_resource_barriers(&command_list, &copy_barriers);
 			unsafe {
-				// Copy the engine swapchain proxy image into the actual DXGI backbuffer before Present.
-				let mut copy_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
-				self.transition_tracked_image_into(
-					source_image.0,
-					&source_resource,
-					D3D12_RESOURCE_STATE_COPY_SOURCE,
-					&mut copy_barriers,
-				);
-				copy_barriers.push(Self::transition_resource_barrier(
-					&destination_resource,
-					D3D12_RESOURCE_STATE_PRESENT,
-					D3D12_RESOURCE_STATE_COPY_DEST,
-				));
-				Self::submit_resource_barriers(&command_list, &copy_barriers);
 				command_list.CopyResource(&destination_resource, &source_resource);
-				let mut present_barriers = SmallVec::<[D3D12_RESOURCE_BARRIER; 32]>::new();
-				present_barriers.push(Self::transition_resource_barrier(
-					&destination_resource,
-					D3D12_RESOURCE_STATE_COPY_DEST,
-					D3D12_RESOURCE_STATE_PRESENT,
-				));
-				self.transition_tracked_image_into(
-					source_image.0,
-					&source_resource,
-					D3D12_RESOURCE_STATE_COMMON,
-					&mut present_barriers,
-				);
-				Self::submit_resource_barriers(&command_list, &present_barriers);
 			}
+			let mut present_barriers = EnhancedBarrierBatch::default();
+			self.transition_swapchain_texture_into(&destination_resource, TextureBarrierState::PRESENT, &mut present_barriers);
+			self.transition_tracked_image_into(
+				source_image.0,
+				&source_resource,
+				TextureBarrierState::COMMON,
+				&mut present_barriers,
+			);
+			Self::submit_resource_barriers(&command_list, &present_barriers);
 			self.mark_command_buffer_work(command_buffer_handle);
 			self.texture_copy_count += 1;
 		}
@@ -157,20 +168,13 @@ impl Device {
 	pub(crate) fn transition_present_resources(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 	) {
 		let Some(resources) = self.present_transitions.remove(&command_buffer_handle) else {
 			return;
 		};
 		for resource in resources {
-			unsafe {
-				Self::transition_resource(
-					command_list,
-					&resource,
-					D3D12_RESOURCE_STATE_RENDER_TARGET,
-					D3D12_RESOURCE_STATE_PRESENT,
-				);
-			}
+			self.transition_swapchain_texture(command_list, &resource, TextureBarrierState::PRESENT);
 			self.mark_command_buffer_work(command_buffer_handle);
 			self.swapchain_present_transition_count += 1;
 		}

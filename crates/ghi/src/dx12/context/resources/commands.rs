@@ -4,7 +4,7 @@ impl Device {
 	pub fn create_command_buffer(&mut self, _name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle {
 		let queue = &self.queues[queue_handle.0 as usize];
 		let allocator = unsafe { self.device.CreateCommandAllocator(queue.queue_type) }.ok();
-		let command_list: Option<ID3D12GraphicsCommandList> = if let Some(allocator) = allocator.as_ref() {
+		let command_list: Option<ID3D12GraphicsCommandList7> = if let Some(allocator) = allocator.as_ref() {
 			unsafe { self.device.CreateCommandList(0, queue.queue_type, allocator, None) }.ok()
 		} else {
 			None
@@ -22,6 +22,9 @@ impl Device {
 			retained_descriptor_heaps: Vec::new(),
 			retained_resources: Vec::new(),
 			retained_upload_resource_count: 0,
+			recorded_texture_syncs: Vec::new(),
+			original_buffer_states: SmallVec::new(),
+			original_image_states: SmallVec::new(),
 			cbv_srv_uav_staging_heap: None,
 			sampler_staging_heap: None,
 			is_open: false,

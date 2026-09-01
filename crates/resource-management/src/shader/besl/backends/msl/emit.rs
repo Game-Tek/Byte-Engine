@@ -169,6 +169,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"void" => "void",
 			"bool" => "bool",
 			"atomicu32" => "atomic_uint",
+			"atomici32" => "atomic_int",
 			"vec2f16" => "half2",
 			"vec3f16" => "half3",
 			"vec4f16" => "half4",
@@ -572,6 +573,20 @@ impl<A: Allocator + Clone> Generator<A> {
 				 }\n\
 				 inline uint _besl_atomic_compare_exchange(threadgroup atomic_uint& value, uint expected, uint desired) {\n\
 				 \tuint original = expected;\n\
+				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
+				 \t\tif (expected != original) { return expected; }\n\
+				 \t}\n\
+				 \treturn original;\n\
+				 }\n\
+				 inline int _besl_atomic_compare_exchange(device atomic_int& value, int expected, int desired) {\n\
+				 \tint original = expected;\n\
+				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
+				 \t\tif (expected != original) { return expected; }\n\
+				 \t}\n\
+				 \treturn original;\n\
+				 }\n\
+				 inline int _besl_atomic_compare_exchange(threadgroup atomic_int& value, int expected, int desired) {\n\
+				 \tint original = expected;\n\
 				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
 				 \t\tif (expected != original) { return expected; }\n\
 				 \t}\n\

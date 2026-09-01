@@ -401,9 +401,9 @@ impl<'a> Compiler<'a> {
 			"atomic_store" => {
 				require_argument_count(arguments, 2)?;
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					if target.value_type != ValueType::U32 {
+					if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
 						return Err(VmError::TypeMismatch {
-							expected: ValueType::U32.name().to_string(),
+							expected: "u32 or i32".to_string(),
 							found: target.value_type.name().to_string(),
 						});
 					}
@@ -412,7 +412,7 @@ impl<'a> Compiler<'a> {
 						.as_ref()
 						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
 						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+					let value = self.compile_value_expression(&arguments[1], &target.value_type, descriptor_layouts)?;
 					self.instructions.push(Instruction::StoreWorkgroup {
 						name: target.name,
 						index,
@@ -423,18 +423,35 @@ impl<'a> Compiler<'a> {
 					return Ok(());
 				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
-				if target.value_type != ValueType::U32 {
+				if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
 					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
+						expected: "u32 or i32".to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
+				let value_type = target.value_type.clone();
 				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let register = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let register = self.compile_value_expression(&arguments[1], &value_type, descriptor_layouts)?;
 				self.emit_buffer_store(target, register);
 				Ok(())
 			}
-			"atomic_add" | "atomic_compare_exchange" | "image_atomic_or" => {
+			"atomic_exchange"
+			| "atomic_add"
+			| "atomic_sub"
+			| "atomic_min"
+			| "atomic_max"
+			| "atomic_and"
+			| "atomic_or"
+			| "atomic_xor"
+			| "atomic_compare_exchange" => {
+				let return_type = match intrinsic.borrow().node() {
+					Nodes::Intrinsic { r#return, .. } => resolve_value_type(r#return)?,
+					_ => unreachable!("Statement intrinsic was already validated"),
+				};
+				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type, descriptor_layouts)?;
+				Ok(())
+			}
+			"image_atomic_or" => {
 				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32, descriptor_layouts)?;
 				Ok(())
 			}

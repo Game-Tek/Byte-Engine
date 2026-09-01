@@ -28,16 +28,22 @@ impl Device {
 		swapchain_handle: SwapchainHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let resource = {
+		let (resource, newly_cached) = {
 			let swapchain = self.swapchains.get_mut(swapchain_handle.0 as usize)?;
 			let image_index = swapchain.acquired_image_indices[sequence_index as usize] as usize;
 			let image_index = image_index.min(swapchain.image_count.saturating_sub(1) as usize);
+			let mut newly_cached = false;
 			if swapchain.backbuffers[image_index].is_none() {
 				let resource = unsafe { swapchain.swapchain.GetBuffer::<ID3D12Resource>(image_index as u32) }.ok()?;
 				swapchain.backbuffers[image_index] = Some(resource);
+				newly_cached = true;
 			}
-			swapchain.backbuffers[image_index].clone()?
+			(swapchain.backbuffers[image_index].clone()?, newly_cached)
 		};
+		if newly_cached {
+			self.image_states
+				.insert(Self::native_resource_key(&resource), TextureBarrierState::PRESENT);
+		}
 		self.materialize_render_target_views(&resource, Formats::BGRAu8, 1);
 		Some(resource)
 	}
@@ -129,7 +135,7 @@ impl Device {
 		image_handle: ImageHandle,
 		clear: crate::ClearValue,
 		sequence_index: u8,
-		final_state: Option<D3D12_RESOURCE_STATES>,
+		final_state: Option<TextureBarrierState>,
 		transition_before_clear: bool,
 	) {
 		let Some(command_list) = self
@@ -164,9 +170,7 @@ impl Device {
 				sequence_index,
 			);
 			if let Some(final_state) = final_state {
-				unsafe {
-					self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-				}
+				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
 			}
 			return;
 		};
@@ -196,22 +200,20 @@ impl Device {
 				sequence_index,
 			);
 			if let Some(final_state) = final_state {
-				unsafe {
-					self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-				}
+				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
 			}
 			return;
 		};
 
+		if transition_before_clear {
+			self.transition_tracked_image(
+				&command_list,
+				image_handle.0,
+				&destination,
+				TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW),
+			);
+		}
 		unsafe {
-			if transition_before_clear {
-				self.transition_tracked_image(
-					&command_list,
-					image_handle.0,
-					&destination,
-					D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-				);
-			}
 			self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 			match clear {
 				crate::ClearValue::Integer(r, g, b, a) => {
@@ -237,10 +239,10 @@ impl Device {
 				}
 				crate::ClearValue::Depth(_) => {}
 			}
-			if let Some(final_state) = final_state {
-				// The transition orders the UAV clear and makes a separate UAV barrier redundant.
-				self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
-			}
+		}
+		if let Some(final_state) = final_state {
+			// The transition orders the UAV clear and makes a separate UAV barrier redundant.
+			self.transition_tracked_image(&command_list, image_handle.0, &destination, final_state);
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
@@ -251,7 +253,7 @@ impl Device {
 	pub(crate) fn record_image_clear_upload_fallback(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		command_list: &ID3D12GraphicsCommandList,
+		command_list: &ID3D12GraphicsCommandList7,
 		image_handle: crate::BaseImageHandle,
 		destination: ID3D12Resource,
 		format: Formats,

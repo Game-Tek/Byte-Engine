@@ -193,19 +193,11 @@ shader generation.
 The syntax is Rust-inspired, but BESL is not Rust:
 
 ```rust
-VertexInput: struct {
-    position: vec3f,
-    normal: vec3f,
-    uv: vec2f,
-}
+albedo: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 
-albedo: binding CombinedImageSampler set=0 binding=0 read
-uv: input vec2f location=0
-color: output vec4f location=0
-
-main: fn () -> void {
-    let texel: vec4f = sample(albedo, uv);
-    color = texel;
+main: fn (pipeline_input: interface { uv: vec2f }) -> output { color: vec4f } {
+    let color: vec4f = sample(albedo, pipeline_input.uv);
+    return { color };
 }
 ```
 

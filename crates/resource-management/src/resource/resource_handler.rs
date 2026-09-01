@@ -11,7 +11,33 @@ pub mod tests {
 			ReadTargets, ReadTargetsMut,
 			reader::{ResourceReader, ResourceReaderBacking},
 		},
+		stream::StreamMut,
 	};
+
+	/// Copies every requested named stream from its described source range.
+	fn read_streams<'a>(
+		data: &[u8],
+		stream_descriptions: Option<&[StreamDescription]>,
+		mut streams: Vec<StreamMut<'a>>,
+	) -> Result<ReadTargets<'a>, ()> {
+		let stream_descriptions = stream_descriptions.ok_or(())?;
+		for description in stream_descriptions {
+			let Some(stream) = streams.iter_mut().find(|stream| stream.name() == description.name) else {
+				continue;
+			};
+			let offset = stream.offset();
+			let read_len = stream
+				.size()
+				.unwrap_or(stream.buffer().len())
+				.min(stream.buffer().len())
+				.min(data.len().saturating_sub(description.offset + offset));
+			stream.buffer_mut()[..read_len].copy_from_slice(&data[(description.offset + offset)..][..read_len]);
+		}
+
+		Ok(ReadTargets::Streams(
+			streams.into_iter().map(|stream| stream.into()).collect(),
+		))
+	}
 
 	#[derive(Debug)]
 	pub struct MemoryResourceReader {
@@ -62,29 +88,7 @@ pub mod tests {
 							Ok(ReadTargets::Box(buffer))
 						}
 					}
-					ReadTargetsMut::Streams(mut streams) => {
-						if let Some(stream_descriptions) = stream_descriptions {
-							for sd in stream_descriptions {
-								let stream_offset = sd.offset;
-								if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
-									let offset = s.offset();
-									let read_len = s
-										.size()
-										.unwrap_or(s.buffer().len())
-										.min(s.buffer().len())
-										.min(self.data.len().saturating_sub(stream_offset + offset));
-									s.buffer_mut()[..read_len]
-										.copy_from_slice(&self.data[(stream_offset + offset)..][..read_len]);
-								}
-							}
-
-							Ok(ReadTargets::Streams(
-								streams.into_iter().map(|stream| stream.into()).collect(),
-							))
-						} else {
-							Err(())
-						}
-					}
+					ReadTargetsMut::Streams(streams) => read_streams(&self.data, stream_descriptions, streams),
 					ReadTargetsMut::BackingStorage => {
 						Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(self.data.clone())))
 					}

@@ -45,10 +45,10 @@ MeshDispatchWork: struct {
 	items: u32[131072],
 }
 
-views: descriptor<Views, 0, read, constant>;
-meshes: descriptor<Meshes, 1, read, device>;
-meshlets: descriptor<Meshlets, 8, read, device>;
-mesh_dispatch_work: descriptor<MeshDispatchWork, 1063, read, device>;
+views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
+meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
+meshlets: descriptor<{ type: Meshlets, binding: 8, access: read, memory: device }>;
+mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
 
 meshlet_instances: task_payload<u32, 32>;
 visible_count: workgroup<atomicu32>;

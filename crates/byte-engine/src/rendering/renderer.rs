@@ -38,6 +38,13 @@ mod tests {
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 
+	/// Creates an opaque nonzero image handle for render-target bookkeeping tests.
+	fn image_handle(value: u64) -> ghi::BaseImageHandle {
+		assert_ne!(value, 0);
+		// SAFETY: Test values are nonzero and `BaseImageHandle` is the transparent opaque handle representation used by GHI.
+		unsafe { std::mem::transmute(value) }
+	}
+
 	struct NamedRenderPass(&'static str);
 
 	impl RenderPass for NamedRenderPass {
@@ -66,7 +73,7 @@ mod tests {
 
 	#[test]
 	fn captures_keep_request_order_at_a_prepared_pass_entry() {
-		let image: ghi::BaseImageHandle = unsafe { std::mem::transmute(7_u64) };
+		let image: ghi::BaseImageHandle = image_handle(7);
 		let target = ghi::ImageOrSwapchain::Image(image);
 		let captures = [
 			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
@@ -169,97 +176,26 @@ mod tests {
 	}
 
 	#[test]
-	fn test_insert_and_get() {
+	fn render_targets_keep_names_and_aliases_isolated_by_sink() {
 		let mut rt = RenderTargets::new();
-		let image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let format = ghi::Formats::RGBA8UNORM;
-		let index = rt.insert("test".to_string(), 0, image, format);
-
-		assert_eq!(index, 0);
-		let retrieved = rt.get("test", 0);
-
-		assert!(retrieved.is_some());
-		assert_eq!(rt.get("nonexistent", 0), None);
-	}
-
-	#[test]
-	fn test_insert_multiple() {
-		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
-		let format2 = ghi::Formats::Depth32;
-
-		rt.insert("color".to_string(), 0, image1, format1);
-		rt.insert("depth".to_string(), 0, image2, format2);
-
-		assert!(rt.get("color", 0).is_some());
-		assert!(rt.get("depth", 0).is_some());
-	}
-
-	#[test]
-	fn test_get_attachment_infos() {
-		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
-		let format2 = ghi::Formats::Depth32;
-
-		rt.insert("color".to_string(), 0, image1, format1);
-		rt.insert("depth".to_string(), 0, image2, format2);
-		rt.insert(
-			"other".to_string(),
-			1,
-			unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(3) },
-			ghi::Formats::RGBA16UNORM,
-		);
-
-		let attachments = rt.get_attachment_infos(0);
-
-		assert_eq!(attachments.len(), 2);
-
-		let attachments_view1 = rt.get_attachment_infos(1);
-
-		assert_eq!(attachments_view1.len(), 1);
-	}
-
-	#[test]
-	fn test_get_attachment_infos_empty_view() {
-		let rt = RenderTargets::new();
-		let attachments = rt.get_attachment_infos(0);
-
-		assert!(attachments.is_empty());
-	}
-
-	#[test]
-	fn test_alias_overrides_previous_mapping() {
-		let mut rt = RenderTargets::new();
-		let first_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let second_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let first_image = image_handle(1);
+		let second_image = image_handle(2);
+		let other_sink_image = image_handle(3);
 
 		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
 		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
+		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32);
 		rt.alias(0, "first", "main");
 		rt.alias(0, "second", "main");
-
-		let (image, _) = rt.get("main", 0).expect("main alias should resolve");
-
-		assert_eq!(*image, second_image);
-	}
-
-	#[test]
-	fn test_insert_same_name_for_different_sinks() {
-		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
-
-		rt.insert("main".to_string(), 0, image1, ghi::Formats::RGBA16UNORM);
-		rt.insert("main".to_string(), 1, image2, ghi::Formats::RGBA16UNORM);
 
 		let (sink0_image, _) = rt.get("main", 0).expect("sink 0 main should resolve");
 		let (sink1_image, _) = rt.get("main", 1).expect("sink 1 main should resolve");
 
-		assert_eq!(*sink0_image, image1);
-		assert_eq!(*sink1_image, image2);
+		assert_eq!(*sink0_image, second_image);
+		assert_eq!(*sink1_image, other_sink_image);
+		assert_eq!(rt.get("missing", 0), None);
+		assert_eq!(rt.get_attachment_infos(0).len(), 2);
+		assert_eq!(rt.get_attachment_infos(1).len(), 1);
+		assert!(RenderTargets::new().get_attachment_infos(0).is_empty());
 	}
 }

@@ -13,7 +13,9 @@ impl<'a> Frame<'a> {
 	}
 
 	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
-		panic!("Cannot write a dynamic debug GHI buffer. The debug backend does not allocate buffer storage.")
+		panic!(
+			"Debug dynamic-buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
+		)
 	}
 
 	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {}

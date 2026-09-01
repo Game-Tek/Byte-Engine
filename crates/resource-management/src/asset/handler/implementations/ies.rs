@@ -24,7 +24,6 @@ const ANGLE_EPSILON_DEGREES: f32 = 0.001;
 
 /// The `IESAssetHandler` struct bakes LM-63 photometric profiles into calibrated intensity-map images.
 #[derive(Default)]
-
 pub struct IESAssetHandler;
 
 impl IESAssetHandler {
@@ -180,7 +179,6 @@ impl ParsedIes {
 
 /// The `HorizontalSymmetry` enum expands the standard C-plane angle ranges into a full revolution.
 #[derive(Clone, Copy)]
-
 enum HorizontalSymmetry {
 	Rotational,
 	Quadrantal,
@@ -647,7 +645,6 @@ impl<'a> NumberReader<'a> {
 
 /// The `IesError` struct explains why an LM-63 source cannot produce a calibrated intensity map.
 #[derive(Debug)]
-
 struct IesError(String);
 
 impl IesError {
@@ -668,7 +665,6 @@ fn lerp(lower: f32, upper: f32, factor: f32) -> f32 {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::sync::Arc;

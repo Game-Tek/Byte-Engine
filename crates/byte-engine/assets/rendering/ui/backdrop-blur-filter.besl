@@ -1,5 +1,5 @@
-source_texture: descriptor<Texture2D, 0, read>;
-result_texture: descriptor<StorageImage<rgba16f>, 1, write>;
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
 
 push_constant: push_constant {
 	filter_data: vec4f,

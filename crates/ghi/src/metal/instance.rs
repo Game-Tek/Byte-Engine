@@ -9,6 +9,7 @@ pub struct Instance {
 	settings: crate::device::Features,
 }
 
+// SAFETY: The instance owns retained Metal device objects, which Metal documents as safe to transfer between threads.
 unsafe impl Send for Instance {}
 
 impl Instance {

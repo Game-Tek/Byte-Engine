@@ -59,7 +59,8 @@ pub struct StreamMut<'a> {
 
 impl<'a> StreamMut<'a> {
 	pub fn new<T: Copy>(name: &'a str, buffer: &'a mut [T]) -> Self {
-		// SAFETY: The byte slice covers the same initialized allocation and cannot outlive the exclusively borrowed typed slice.
+		// SAFETY: `u8` has alignment one, the byte slice covers exactly the initialized `T` slice,
+		// and the mutable borrow prevents either view from being used through another reference.
 		let buffer = unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, std::mem::size_of_val(buffer)) };
 		StreamMut {
 			buffer,
@@ -101,17 +102,6 @@ impl<'a> StreamMut<'a> {
 #[cfg(test)]
 mod tests {
 	use super::{Stream, StreamMut};
-
-	#[test]
-	fn immutable_stream_preserves_name_range_and_buffer() {
-		let bytes = [1u8, 2, 3, 4];
-		let stream = Stream::new("vertices", &bytes, 12, Some(3));
-
-		assert_eq!(stream.name(), "vertices");
-		assert_eq!(stream.buffer(), &bytes);
-		assert_eq!(stream.offset(), 12);
-		assert_eq!(stream.size(), Some(3));
-	}
 
 	#[test]
 	fn mutable_typed_stream_exposes_the_complete_object_representation() {

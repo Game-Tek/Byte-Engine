@@ -556,7 +556,6 @@ mod tests {
 		assert!(capabilities.supports_compression(ResourceIoCompression::None));
 		assert!(!capabilities.supports_compression(ResourceIoCompression::Lz4));
 	}
-
 	#[test]
 	fn image_request_defaults_to_the_subresource_origin() {
 		let request = ResourceIoImageLoad::new(

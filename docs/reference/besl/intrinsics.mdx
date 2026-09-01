@@ -71,7 +71,7 @@ lists the explicit conversion overloads registered as intrinsics.
 
 | Name | Signature | Explanation |
 | --- | --- | --- |
-| `sample` | `sample(Texture2D, vec2f uv) -> vec4f` | Samples a 2D texture with implicit derivatives. |
+| `sample` | `sample(Texture2D, vec2f uv) -> vec4f`; `sample(Texture2DArray[LAYER], vec2f uv) -> vec4f` | Samples a 2D texture or an indexed layer of one 2D-array texture with implicit derivatives. |
 | `texture_lod` | `texture_lod(Texture2D, vec2f uv) -> vec4f`; `texture_lod(Texture2D, vec2f uv, f32 lod) -> vec4f`; `texture_lod(Texture3D, vec3f uv) -> vec4f`; `texture_lod(TextureCube, vec3f direction, f32 lod) -> vec4f` | Samples a texture through the explicit-LOD path. The two-argument overload uses the default level. |
 | `texture_cube_array_lod` | `texture_cube_array_lod(TextureCubeArray, vec3f direction, u32 cube, f32 lod) -> vec4f` | Samples one cube and mip level from a cube array. |
 | `downsample_min` | `downsample_min(Texture2D, vec2f uv, f32 lod) -> f32` | Returns the minimum scalar value in the downsample footprint. |
@@ -104,8 +104,10 @@ Use these calls with an `atomicu32` buffer member or workgroup value.
 
 ## Vertex stage
 
-The vertex stage adds no stage-specific intrinsic names. Use the shared
-intrinsics above with the inputs and outputs supplied by the render model.
+The vertex stage adds no stage-specific intrinsic calls. Read `vertex_index`
+and `instance_index` through the `StageInput` parameter described under
+[stage input values](/docs/reference/besl/interface#stage-input-values), then
+use the shared intrinsics above as needed.
 
 ## Fragment stage
 

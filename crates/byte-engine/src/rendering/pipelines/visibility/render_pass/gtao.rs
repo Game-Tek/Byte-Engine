@@ -179,6 +179,8 @@ pub struct GtaoPass {
 }
 
 impl GtaoPass {
+	// Keep the depth-pyramid, AO, blur, and upscale descriptor graph together because each stage consumes the prior stage.
+	#[allow(clippy::too_many_lines)]
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &crate::rendering::PipelineManagerClient,

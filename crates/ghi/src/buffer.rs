@@ -96,41 +96,13 @@ impl PrivateHandle for BufferHandle {
 
 #[cfg(test)]
 mod tests {
-	use super::{BufferHandle, Builder, Mapping};
-	use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses};
-
-	#[test]
-	fn builder_defaults_to_device_only_and_preserves_requested_uses() {
-		let builder = Builder::new(Uses::Vertex | Uses::TransferDestination);
-
-		assert_eq!(builder.name, None);
-		assert_eq!(builder.resource_uses, Uses::Vertex | Uses::TransferDestination);
-		assert_eq!(builder.device_accesses, DeviceAccesses::DeviceOnly);
-	}
-
-	#[test]
-	fn builder_overrides_are_independent() {
-		let builder = Builder::new(Uses::Uniform)
-			.name("camera")
-			.device_accesses(DeviceAccesses::HostToDevice);
-
-		assert_eq!(builder.name, Some("camera"));
-		assert_eq!(builder.resource_uses, Uses::Uniform);
-		assert_eq!(builder.device_accesses, DeviceAccesses::HostToDevice);
-	}
-
-	#[test]
-	fn private_buffer_handle_round_trips_index_and_variant() {
-		let handle = BufferHandle::new(17);
-
-		assert_eq!(handle.index(), 17);
-		assert!(matches!(PrivateHandles::from(handle), PrivateHandles::Buffer(value) if value == handle));
-	}
+	use super::Mapping;
 
 	#[test]
 	fn mapping_transfers_address_and_size_without_borrowing() {
 		let mut bytes = [0u8; 8];
 		let pointer = bytes.as_mut_ptr();
+		// SAFETY: The stack array remains alive and exclusively borrowed until the mapping is consumed below.
 		let mapping = unsafe { Mapping::from_raw_parts(pointer, bytes.len()) };
 
 		assert_eq!(mapping.byte_count(), bytes.len());

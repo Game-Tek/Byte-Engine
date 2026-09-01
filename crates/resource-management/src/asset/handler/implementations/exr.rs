@@ -1,98 +1,18 @@
-/// The `DecodedExr` struct accumulates allocator-backed RGBA16F pixels while the EXR reader visits image blocks.
-struct DecodedExr<'a> {
-	data: Vec<u8, &'a dyn Allocator>,
-	extent: Option<Extent>,
-	width: usize,
-	valid: bool,
-}
+/// The `EXRAssetHandler` struct provides standalone linear HDR image resources.
+pub struct EXRAssetHandler;
 
-impl<'a> DecodedExr<'a> {
-	/// Allocates the exact half-float RGBA surface required by the decoded EXR layer.
-	fn new(resolution: exr::prelude::Vec2<usize>, allocator: &'a dyn Allocator) -> Self {
-		let extent = u32::try_from(resolution.width())
-			.ok()
-			.zip(u32::try_from(resolution.height()).ok())
-			.map(|(width, height)| Extent::rectangle(width, height));
-
-		let byte_len = resolution
-			.width()
-			.checked_mul(resolution.height())
-			.and_then(|pixel_count| pixel_count.checked_mul(4 * std::mem::size_of::<f16>()));
-
-		let mut data = Vec::new_in(allocator);
-
-		let valid = extent.is_some()
-			&& byte_len
-				.map(|byte_len| {
-					if data.try_reserve_exact(byte_len).is_err() {
-						return false;
-					}
-
-					data.resize(byte_len, 0);
-
-					true
-				})
-				.unwrap_or(false);
-
-		Self {
-			data,
-			extent,
-			width: resolution.width(),
-			valid,
-		}
+impl EXRAssetHandler {
+	/// Creates a handler that stores EXR pixels as a plain RGBA16F image.
+	///
+	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
+	pub fn new() -> Self {
+		Self
 	}
-
-	/// Writes one decoded EXR pixel into its tightly packed little-endian RGBA16F location.
-	fn set_pixel(&mut self, position: exr::prelude::Vec2<usize>, channels: (f16, f16, f16, f16)) {
-		let Some(offset) = position
-			.y()
-			.checked_mul(self.width)
-			.and_then(|row| row.checked_add(position.x()))
-			.and_then(|pixel| pixel.checked_mul(4 * std::mem::size_of::<f16>()))
-		else {
-			self.valid = false;
-
-			return;
-		};
-
-		let Some(end) = offset.checked_add(4 * std::mem::size_of::<f16>()) else {
-			self.valid = false;
-
-			return;
-		};
-
-		let Some(pixel) = self.data.get_mut(offset..end) else {
-			self.valid = false;
-
-			return;
-		};
-
-		for (destination, channel) in pixel
-			.chunks_exact_mut(2)
-			.zip([channels.0, channels.1, channels.2, channels.3])
-		{
-			destination.copy_from_slice(&channel.to_le_bytes());
-		}
-	}
-}
-
-/// The `EXRAssetHandler` struct provides decoded linear HDR images to the configured image-processing pipeline.
-pub struct EXRAssetHandler {
-	ibl_generator: IBLGenerator,
 }
 
 impl Default for EXRAssetHandler {
 	fn default() -> Self {
-		Self::new(IBLGenerator::new())
-	}
-}
-
-impl EXRAssetHandler {
-	/// Creates an EXR handler that sends decoded HDR pixels to `ibl_generator`.
-	///
-	/// Next, register this handler with [`crate::asset::manager::AssetManager::add_asset_handler`].
-	pub fn new(ibl_generator: IBLGenerator) -> Self {
-		Self { ibl_generator }
+		Self::new()
 	}
 }
 
@@ -104,6 +24,7 @@ impl AssetHandler for EXRAssetHandler {
 			|| r#type.eq_ignore_ascii_case("image/x-exr")
 	}
 
+	/// Decodes one EXR and stores only its linear base image without environment lighting maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
 		if let Some(data_type) = context.resource_type(url)
 			&& !self.can_handle(data_type)
@@ -113,39 +34,41 @@ impl AssetHandler for EXRAssetHandler {
 
 		let (source, _, data_type) = context.resolve(url).await?;
 
-		let allocator = context.allocator();
-
 		if !self.can_handle(&data_type) {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		// EXR values are decoded directly to half floats so highlights above 1.0 remain available to lighting.
-		let image = exr::prelude::read()
-			.no_deep_data()
-			.largest_resolution_level()
-			.rgba_channels(
-				|resolution, _| DecodedExr::new(resolution, allocator),
-				|pixels, position, channels: (f16, f16, f16, f16)| pixels.set_pixel(position, channels),
-			)
-			.first_valid_layer()
-			.all_attributes()
-			.from_buffered(Cursor::new(source.as_slice()))
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let decoded = decode_rgba16f_in(source.as_slice(), context.allocator()).map_err(|error| {
+			context.error(format_args!(
+				"EXR image '{}' could not be decoded. The most likely cause is invalid or unsupported EXR data. Decoder: {error}",
+				url.as_ref()
+			));
 
-		let decoded = image.layer_data.channel_data.pixels;
+			LoadErrors::FailedToProcess
+		})?;
 
-		let extent = decoded.extent.filter(|_| decoded.valid).ok_or(LoadErrors::FailedToProcess)?;
+		if decoded.format() != image::ImageFormat::OpenExr {
+			return Err(LoadErrors::UnsupportedType);
+		}
 
-		self.ibl_generator
-			.generate_and_store(context, url, extent, &decoded.data)
+		let image = Image {
+			format: Formats::RGBA16F,
+			gamma: Gamma::Linear,
+			extent: decoded.extent().as_array(),
+			mip_count: 1,
+			ibl: None,
+			photometry: None,
+		};
+		let streams = vec![StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, decoded.data().len(), 0)];
+
+		context
+			.store_primary(ProcessedAsset::new(url, image).with_streams(streams), decoded.data())
 			.await
 	}
 }
 
 #[cfg(test)]
-
 mod tests {
-
 	use std::io::Cursor;
 
 	use exr::prelude::{SpecificChannels, WritableImage as _};
@@ -159,14 +82,13 @@ mod tests {
 		types::{Formats, Gamma},
 	};
 
+	/// Encodes a tiny HDR fixture with values outside normalized image range.
 	fn hdr_fixture() -> Vec<u8> {
 		let channels = SpecificChannels::rgb(|position: exr::prelude::Vec2<usize>| match position.x() {
 			0 => (4.0_f32, 0.5_f32, -0.25_f32),
 			_ => (16.0_f32, 2.0_f32, 8.0_f32),
 		});
-
 		let image = exr::prelude::Image::from_channels((2, 1), channels);
-
 		let mut bytes = Vec::new();
 
 		image
@@ -180,7 +102,7 @@ mod tests {
 
 	#[test]
 	fn handles_exr_extensions_and_mime_types_case_insensitively() {
-		let handler = EXRAssetHandler::default();
+		let handler = EXRAssetHandler::new();
 
 		assert!(crate::AssetHandler::can_handle(&handler, "exr"));
 		assert!(crate::AssetHandler::can_handle(&handler, "EXR"));
@@ -190,17 +112,15 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn asset_manager_bakes_linear_hdr_pixels_from_memory() {
+	async fn exr_bakes_a_plain_linear_hdr_image() {
 		let source_storage = TestStorageBackend::new();
 
 		source_storage.add_file("studio.exr", &hdr_fixture());
 
 		let resource_storage = TestResourceStorage::new();
-
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EXRAssetHandler::default());
-
+		asset_manager.add_asset_handler(EXRAssetHandler::new());
 		asset_manager
 			.bake("studio.exr")
 			.await
@@ -210,14 +130,11 @@ mod tests {
 			.read(ResourceId::new("studio.exr"))
 			.await
 			.expect("the baked EXR image must be stored");
-
 		let image: Image = crate::from_slice(stored.resource()).expect("the stored EXR metadata must deserialize");
-
 		let data = resource_storage
 			.get_resource_data_by_name(ResourceId::new("studio.exr"))
 			.expect("the stored EXR pixels must exist");
-
-		let base_values = data[..16]
+		let values = data
 			.chunks_exact(2)
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect::<Vec<_>>();
@@ -227,68 +144,17 @@ mod tests {
 		assert_eq!(image.gamma, Gamma::Linear);
 		assert_eq!(image.extent, [2, 1, 0]);
 		assert_eq!(image.mip_count, 1);
+		assert!(image.ibl.is_none());
+		assert!(image.photometry.is_none());
+		assert_eq!(values, vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);
 
-		let ibl = image.ibl.expect("EXR images must include baked IBL maps");
+		let streams = stored.streams().expect("the EXR image must describe its base mip");
 
-		assert_eq!(ibl.diffuse_irradiance.extent, [8, 8, 0]);
-		assert_eq!(ibl.diffuse_irradiance.array_layers, 6);
-		assert_eq!(ibl.prefiltered_specular.extent, [1, 1, 0]);
-		assert_eq!(ibl.prefiltered_specular.mip_count, 8);
-		assert_eq!(ibl.prefiltered_specular.array_layers, 6);
-		assert_eq!(base_values, vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);
-
-		let streams = stored.streams().expect("the EXR image and IBL maps must be described");
-
-		assert_eq!(streams.len(), 10);
+		assert_eq!(streams.len(), 1);
 		assert_eq!(streams[0].name(), crate::resources::image::IMAGE_BASE_MIP_STREAM_NAME);
 		assert_eq!(streams[0].offset(), 0);
 		assert_eq!(streams[0].size(), 16);
-		assert_eq!(
-			streams[1].name(),
-			crate::resources::image::ibl_prefiltered_specular_stream_name(0)
-		);
-		assert_eq!(streams[1].offset(), 16);
-		assert_eq!(streams[1].size(), 48);
-		assert_eq!(
-			streams.last().unwrap().name(),
-			crate::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME
-		);
-		assert_eq!(data.len(), 3_472);
-	}
-
-	#[cfg(feature = "gpu-ibl")]
-	#[r#async::test]
-	async fn unavailable_gpu_worker_falls_back_to_cpu_baking() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("fallback.exr", &hdr_fixture());
-
-		let resource_storage = TestResourceStorage::new();
-
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
-
-		asset_manager.add_asset_handler(EXRAssetHandler::new(crate::ibl::IBLGenerator::unavailable_for_test()));
-
-		asset_manager
-			.bake("fallback.exr")
-			.await
-			.expect("CPU fallback must bake the EXR when the GPU worker is unavailable");
-
-		let (stored, _) = resource_storage
-			.read(ResourceId::new("fallback.exr"))
-			.await
-			.expect("CPU fallback must store the baked image");
-
-		let image: Image = crate::from_slice(stored.resource()).expect("fallback image metadata must deserialize");
-
-		assert_eq!(
-			image
-				.ibl
-				.expect("fallback must include IBL")
-				.prefiltered_specular
-				.array_layers,
-			6
-		);
+		assert_eq!(data.len(), 16);
 	}
 
 	#[r#async::test]
@@ -298,23 +164,22 @@ mod tests {
 		source_storage.add_file("broken.exr", b"not an exr image");
 
 		let resource_storage = TestResourceStorage::new();
-
 		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
 
-		asset_manager.add_asset_handler(EXRAssetHandler::default());
+		asset_manager.add_asset_handler(EXRAssetHandler::new());
 
 		assert!(asset_manager.bake("broken.exr").await.is_err());
 		assert!(resource_storage.read(ResourceId::new("broken.exr")).await.is_none());
 	}
 }
 
-use std::{alloc::Allocator, io::Cursor};
-
-use exr::prelude::{ReadChannels as _, ReadImage as _, ReadLayers as _, f16};
-use utils::Extent;
-
 use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::ibl::IBLGenerator;
+use crate::{
+	ProcessedAsset, StreamDescription,
+	processors::processor::implementations::image::decode_rgba16f_in,
+	resources::image::{IMAGE_BASE_MIP_STREAM_NAME, Image},
+	types::{Formats, Gamma},
+};

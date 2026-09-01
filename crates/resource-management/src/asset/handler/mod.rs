@@ -1,7 +1,7 @@
 //! Define and implement source-format handlers used by the asset manager.
 
-mod handler;
+mod asset_handler;
 pub mod implementations;
 
-pub use handler::*;
+pub use asset_handler::*;
 pub use implementations::*;

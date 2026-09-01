@@ -19,8 +19,6 @@ type PipelineManagerId = usize;
 /// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
 /// windows and cameras before handing frame preparation to the graphics application.
 pub struct Renderer {
-	/// The GHI device that is used for rendering.
-	device: Arc<ghi::implementation::Device>,
 	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
 
@@ -84,6 +82,8 @@ impl Renderer {
 	///
 	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
 	/// render passes that load resources.
+	// Keep device, queue, compilation, and frame-resource initialization in their required ownership order.
+	#[allow(clippy::too_many_lines)]
 	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Self {
 		let settings = Settings::new();
 
@@ -200,7 +200,6 @@ impl Renderer {
 
 		Renderer {
 			context,
-			device: Arc::new(device),
 			instance,
 
 			started_frame_count: 0,
@@ -473,6 +472,8 @@ impl Renderer {
 	///
 	/// The renderer skips execution when no swapchain is available or when any
 	/// swapchain surface has a zero-sized dimension.
+	// Keep the frame transaction contiguous so acquisition, recording, presentation, and screenshot transfers stay ordered.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn prepare(
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
@@ -997,7 +998,6 @@ use std::{
 	io::Write,
 	ops::{Deref, DerefMut},
 	rc::Rc,
-	sync::Arc,
 };
 
 use ghi::{

@@ -1,0 +1,20 @@
+Instance: struct {
+	position: vec3f,
+}
+
+Globals: struct {
+	time: f32,
+}
+
+instances: descriptor<{ type: Instance[], binding: 0, access: read }>;
+globals: descriptor<{ type: Globals, binding: 1, access: read, memory: constant }>;
+textures: descriptor<{ type: Texture2D, binding: 2, access: read, count: 4 }>;
+output: descriptor<{ type: StorageImage<rgba16f>, binding: 3, access: write }>;
+
+main: fn () -> void {
+	let instance: Instance = instances[0];
+	instance;
+	globals;
+	textures[0];
+	output;
+}

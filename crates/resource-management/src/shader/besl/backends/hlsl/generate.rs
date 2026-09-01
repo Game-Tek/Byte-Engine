@@ -47,6 +47,7 @@ impl Generator {
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
+		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
 		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
 		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
 			return Err(());
@@ -275,10 +276,54 @@ impl Generator {
 		)
 	}
 
+	/// Emits one specialization aggregate as plain HLSL constants for DXC.
+	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
+		let mut members = Vec::new();
+		let r#type = r#type.borrow();
+		let type_name = Self::translate_type(r#type.get_name().unwrap());
+
+		if let besl::Nodes::Struct { fields, .. } = r#type.node() {
+			for field in fields {
+				let field = field.borrow();
+				let besl::Nodes::Member {
+					name: member_name,
+					r#type,
+					..
+				} = field.node()
+				else {
+					continue;
+				};
+				let member_name = format!("{name}_{member_name}");
+				string.push_str("static const ");
+				string.push_str(Self::translate_type(r#type.borrow().get_name().unwrap()));
+				string.push(' ');
+				string.push_str(&member_name);
+				string.push_str("=1.0f;");
+				if !self.minified {
+					string.push('\n');
+				}
+				members.push(member_name);
+			}
+		}
+
+		string.push_str("static const ");
+		string.push_str(type_name);
+		string.push(' ');
+		string.push_str(name);
+		string.push('=');
+		string.push_str(&format!("{}({})", type_name, members.join(",")));
+		string.push(';');
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
+	// Keep the exhaustive node-to-HLSL mapping together so adding a BESL node requires handling its backend contract here.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
@@ -334,48 +379,8 @@ impl Generator {
 					string.push_str("ConstantBuffer<PushConstant> push_constant : register(b0, space0);\n");
 				}
 			}
-			besl::Nodes::Specialization { name, r#type } => {
-				// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
-				let mut members = Vec::new();
-
-				let r#type = r#type.borrow();
-
-				let t = r#type.get_name().unwrap();
-				let type_name = Self::translate_type(t);
-
-				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
-					for field in fields.iter() {
-						if let besl::Nodes::Member {
-							name: member_name,
-							r#type,
-							..
-						} = field.borrow().node()
-						{
-							let member_name = format!("{}_{}", name, { member_name });
-							string.push_str("static const ");
-							string.push_str(Self::translate_type(r#type.borrow().get_name().unwrap()));
-							string.push(' ');
-							string.push_str(&member_name);
-							string.push_str("=1.0f;");
-							if !self.minified {
-								string.push('\n');
-							}
-							members.push(member_name);
-						}
-					}
-				}
-
-				string.push_str("static const ");
-				string.push_str(type_name);
-				string.push(' ');
-				string.push_str(name);
-				string.push('=');
-				string.push_str(&format!("{}({})", type_name, members.join(",")));
-				string.push(';');
-				if !self.minified {
-					string.push('\n');
-				}
-			}
+			// DXC treats Vulkan specialization attributes as resource metadata, so use plain HLSL constants.
+			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					let type_name = Self::translate_type(type_name);
@@ -551,6 +556,17 @@ impl Generator {
 							string.push('\n');
 						}
 					}
+					besl::BindingTypes::BufferArray { element } => {
+						string.push_str(buffer_type);
+						string.push('<');
+						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						string.push_str("> ");
+						string.push_str(name);
+						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
+						if !self.minified {
+							string.push('\n');
+						}
+					}
 					besl::BindingTypes::Image { format } => {
 						// UAV (unordered access view) for images
 						let texture_type = match format.as_str() {
@@ -606,6 +622,11 @@ impl Generator {
 						string.push_str("SamplerState ");
 						string.push_str(name);
 						string.push_str("_sampler");
+						if let Some(count) = count {
+							string.push('[');
+							string.push_str(count.to_string().as_str());
+							string.push(']');
+						}
 						string.push_str(&format!(" : register(s{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');

@@ -8,8 +8,8 @@ mod gpu_shaders;
 
 /// The `IBLGenerator` struct provides reusable CPU or GPU image-based lighting generation for decoded HDR images.
 ///
-/// Pass this generator to an image asset handler after choosing the desired GPU setup. GPU generation automatically falls
-/// back to the CPU implementation when an individual bake fails.
+/// Pass this generator to an environment-map asset handler after choosing the desired GPU setup. GPU generation
+/// automatically falls back to the CPU implementation when an individual bake fails.
 pub struct IBLGenerator {
 	#[cfg(feature = "gpu-ibl")]
 	gpu_client: Option<gpu::GPUIBLClient>,
@@ -35,7 +35,6 @@ impl IBLGenerator {
 	/// Create thread-affine GHI state inside `initialize`; captured values must be safe to move to the worker. Setup errors
 	/// are returned so you can select [`Self::new`].
 	#[cfg(feature = "gpu-ibl")]
-
 	pub fn with_gpu_processor_factory(
 		initialize: impl FnOnce() -> Result<gpu::GPUIBLProcessor, gpu::GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, gpu::GPUIBLBakeError> {
@@ -49,7 +48,6 @@ impl IBLGenerator {
 	/// Build the context inside `initialize` so a non-`Send` backend context never crosses a thread boundary. Return an owner
 	/// guard that keeps its device and instance alive; the queue must support compute and transfer work.
 	#[cfg(feature = "gpu-ibl")]
-
 	pub fn with_gpu_context<Owner: 'static>(
 		initialize: impl FnOnce() -> Result<(ghi::implementation::Context, ghi::QueueHandle, Owner), gpu::GPUIBLBakeError>
 		+ Send
@@ -66,7 +64,6 @@ impl IBLGenerator {
 	///
 	/// Use [`Self::new`] when deterministic CPU-only baking is required or when this constructor reports a setup error.
 	#[cfg(feature = "gpu-ibl")]
-
 	pub fn try_with_default_gpu() -> Result<Self, gpu::GPUIBLBakeError> {
 		Self::with_gpu_processor_factory(gpu::GPUIBLProcessor::try_new)
 	}
@@ -111,7 +108,6 @@ impl IBLGenerator {
 	}
 
 	#[cfg(all(test, feature = "gpu-ibl"))]
-
 	pub(crate) fn unavailable_for_test() -> Self {
 		Self {
 			gpu_client: Some(gpu::GPUIBLClient::unavailable_for_test()),

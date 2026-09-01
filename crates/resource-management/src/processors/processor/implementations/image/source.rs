@@ -1,8 +1,9 @@
 use std::alloc::Allocator;
 
+use exr::prelude::f16;
 use utils::Extent;
 
-use crate::types::Formats;
+use crate::types::{Formats, Gamma};
 
 /// The `SourceChannels` enum describes how decoded source samples form one image pixel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum SourceEncoding {
 	U16BigEndian,
 	U16NativeEndian,
 	F16LittleEndian,
+	F32NativeEndian,
 }
 
 impl SourceEncoding {
@@ -39,6 +41,7 @@ impl SourceEncoding {
 		match self {
 			Self::U8 => 1,
 			Self::U16LittleEndian | Self::U16BigEndian | Self::U16NativeEndian | Self::F16LittleEndian => 2,
+			Self::F32NativeEndian => 4,
 		}
 	}
 }
@@ -100,18 +103,35 @@ impl<'a> ImageSource<'a> {
 }
 
 /// The `CanonicalImageData` enum borrows compatible decoder output and owns storage only when normalization is required.
-pub(super) enum CanonicalImageData<'a, A: Allocator> {
+pub(crate) enum CanonicalImageData<'a, A: Allocator> {
 	Borrowed(&'a [u8]),
 	Owned(Box<[u8], A>),
 }
 
 impl<A: Allocator> CanonicalImageData<'_, A> {
-	pub(super) fn as_slice(&self) -> &[u8] {
+	pub(crate) fn as_slice(&self) -> &[u8] {
 		match self {
 			Self::Borrowed(data) => data,
 			Self::Owned(data) => data,
 		}
 	}
+}
+
+/// Converts a high-precision source into the linear RGBA16F surface required by environment processing.
+pub(crate) fn canonicalize_rgba16f_in<A: Allocator + Clone>(
+	source: ImageSource<'_>,
+	gamma: Gamma,
+	allocator: A,
+) -> Option<CanonicalImageData<'_, A>> {
+	if gamma == Gamma::Linear {
+		return canonicalize_image_in(source, Formats::RGBA16F, allocator);
+	}
+
+	let pixel_count = validated_pixel_count(source)?;
+	let mut output = Vec::with_capacity_in(pixel_count.checked_mul(target_stride(Formats::RGBA16F)?)?, allocator);
+	append_rgba16f(source, gamma, &mut output)?;
+
+	Some(CanonicalImageData::Owned(output.into_boxed_slice()))
 }
 
 /// Normalizes source channels and sample byte order into the surface required by mip generation and compression.
@@ -176,6 +196,7 @@ fn append_canonical_image_unchecked<A: Allocator>(
 	match target_format {
 		Formats::RGBA8 | Formats::RGBA8SRGB => append_rgba8(source, output)?,
 		Formats::RGBA16 => append_rgba16(source, output)?,
+		Formats::RGBA16F => append_rgba16f(source, Gamma::Linear, output)?,
 		_ => return None,
 	}
 	Some(())
@@ -233,13 +254,52 @@ fn append_rgba16<A: Allocator>(source: ImageSource<'_>, output: &mut Vec<u8, A>)
 	Some(())
 }
 
+/// Expands source channels, removes the RGB transfer function, and stores linear half-float RGBA pixels.
+fn append_rgba16f<A: Allocator>(source: ImageSource<'_>, gamma: Gamma, output: &mut Vec<u8, A>) -> Option<()> {
+	let bytes_per_sample = source.encoding.bytes_per_sample();
+	let source_stride = source.channels.count().checked_mul(bytes_per_sample)?;
+
+	for pixel in source.data.chunks_exact(source_stride) {
+		let mut channels = [0.0_f32; 4];
+
+		for (channel, bytes) in pixel.chunks_exact(bytes_per_sample).enumerate() {
+			channels[channel] = read_linear_f32(bytes, source.encoding)?;
+		}
+
+		let mut rgba = match source.channels {
+			SourceChannels::Luminance => [channels[0], channels[0], channels[0], 1.0],
+			SourceChannels::LuminanceAlpha => [channels[0], channels[0], channels[0], channels[1]],
+			SourceChannels::RGB => [channels[0], channels[1], channels[2], 1.0],
+			SourceChannels::RGBA => channels,
+		};
+		if gamma == Gamma::SRGB {
+			rgba[..3].iter_mut().for_each(|channel| *channel = srgb_to_linear(*channel));
+		}
+
+		for channel in rgba {
+			output.extend_from_slice(&f16::from_f32(channel).to_le_bytes());
+		}
+	}
+
+	Some(())
+}
+
+/// Removes the IEC 61966-2-1 transfer function from one normalized sRGB channel.
+fn srgb_to_linear(channel: f32) -> f32 {
+	if channel <= 0.040_45 {
+		channel / 12.92
+	} else {
+		((channel + 0.055) / 1.055).powf(2.4)
+	}
+}
+
 fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	match encoding {
 		SourceEncoding::U8 => bytes.first().copied(),
 		SourceEncoding::U16LittleEndian | SourceEncoding::U16BigEndian | SourceEncoding::U16NativeEndian => {
 			Some((read_u16(bytes, encoding)? >> 8) as u8)
 		}
-		SourceEncoding::F16LittleEndian => None,
+		SourceEncoding::F16LittleEndian | SourceEncoding::F32NativeEndian => None,
 	}
 }
 
@@ -249,7 +309,27 @@ fn read_u16(bytes: &[u8], encoding: SourceEncoding) -> Option<u16> {
 		SourceEncoding::U16LittleEndian => Some(u16::from_le_bytes(bytes)),
 		SourceEncoding::U16BigEndian => Some(u16::from_be_bytes(bytes)),
 		SourceEncoding::U16NativeEndian => Some(u16::from_ne_bytes(bytes)),
-		SourceEncoding::U8 | SourceEncoding::F16LittleEndian => None,
+		SourceEncoding::U8 | SourceEncoding::F16LittleEndian | SourceEncoding::F32NativeEndian => None,
+	}
+}
+
+/// Reads one source sample as linear floating-point radiance without applying a transfer function.
+fn read_linear_f32(bytes: &[u8], encoding: SourceEncoding) -> Option<f32> {
+	match encoding {
+		SourceEncoding::U16LittleEndian | SourceEncoding::U16BigEndian | SourceEncoding::U16NativeEndian => {
+			Some(f32::from(read_u16(bytes, encoding)?) / f32::from(u16::MAX))
+		}
+		SourceEncoding::F16LittleEndian => {
+			let bytes = [*bytes.first()?, *bytes.get(1)?];
+
+			Some(f16::from_le_bytes(bytes).to_f32())
+		}
+		SourceEncoding::F32NativeEndian => {
+			let bytes = [*bytes.first()?, *bytes.get(1)?, *bytes.get(2)?, *bytes.get(3)?];
+
+			Some(f32::from_ne_bytes(bytes))
+		}
+		SourceEncoding::U8 => None,
 	}
 }
 
@@ -259,8 +339,10 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in};
-	use crate::types::Formats;
+	use super::{
+		CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in, canonicalize_rgba16f_in,
+	};
+	use crate::types::{Formats, Gamma};
 
 	#[test]
 	fn borrows_compatible_rgba8_decoder_output() {
@@ -318,6 +400,77 @@ mod tests {
 		)
 		.expect("16-bit luminance source should normalize");
 		assert_eq!(canonical.as_slice(), &[0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0xff, 0xff]);
+	}
+
+	#[test]
+	fn canonicalizes_high_precision_linear_sources_to_rgba16f() {
+		let rgb16 = [0_u16, u16::MAX / 2, u16::MAX]
+			.into_iter()
+			.flat_map(u16::to_ne_bytes)
+			.collect::<Vec<_>>();
+		let canonical = canonicalize_rgba16f_in(
+			ImageSource::new(
+				Extent::rectangle(1, 1),
+				SourceChannels::RGB,
+				SourceEncoding::U16NativeEndian,
+				&rgb16,
+			),
+			Gamma::Linear,
+			Global,
+		)
+		.expect("16-bit RGB must normalize to RGBA16F");
+		let values = canonical
+			.as_slice()
+			.chunks_exact(2)
+			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
+			.collect::<Vec<_>>();
+
+		assert_eq!(values, vec![0.0, 0.5, 1.0, 1.0]);
+
+		let rgba16f = [0_u8; 8];
+		let source = ImageSource::new(
+			Extent::rectangle(1, 1),
+			SourceChannels::RGBA,
+			SourceEncoding::F16LittleEndian,
+			&rgba16f,
+		);
+		let canonical = canonicalize_rgba16f_in(source, Gamma::Linear, Global).expect("RGBA16F must remain compatible");
+
+		assert!(matches!(canonical, CanonicalImageData::Borrowed(_)));
+		assert_eq!(canonical.as_slice().as_ptr(), rgba16f.as_ptr());
+	}
+
+	#[test]
+	fn linearizes_srgb_rgb_without_changing_alpha() {
+		let samples = [u16::MAX / 2, u16::MAX / 4, u16::MAX, u16::MAX / 8]
+			.into_iter()
+			.flat_map(u16::to_ne_bytes)
+			.collect::<Vec<_>>();
+		let source = ImageSource::new(
+			Extent::rectangle(1, 1),
+			SourceChannels::RGBA,
+			SourceEncoding::U16NativeEndian,
+			&samples,
+		);
+		let canonical =
+			canonicalize_rgba16f_in(source, Gamma::SRGB, Global).expect("high-precision sRGB must normalize to linear RGBA16F");
+		let values = canonical
+			.as_slice()
+			.chunks_exact(2)
+			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
+			.collect::<Vec<_>>();
+
+		assert!((values[0] - 0.214).abs() < 0.001);
+		assert!((values[1] - 0.0509).abs() < 0.001);
+		assert_eq!(values[2], 1.0);
+		assert!((values[3] - 0.125).abs() < 0.001);
+	}
+
+	#[test]
+	fn rejects_8_bit_sources_from_rgba16f_canonicalization() {
+		let source = ImageSource::new(Extent::rectangle(1, 1), SourceChannels::RGBA, SourceEncoding::U8, &[0; 4]);
+
+		assert!(canonicalize_rgba16f_in(source, Gamma::Linear, Global).is_none());
 	}
 
 	#[test]

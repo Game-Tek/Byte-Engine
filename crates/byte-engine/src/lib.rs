@@ -114,22 +114,23 @@ pub mod utils {
 	pub struct CountingAllocator;
 
 	#[allow(unsafe_code)]
-	// SAFETY: This wrapper forwards every allocation contract unchanged to System and only records successful call attempts.
+	// SAFETY: Every operation delegates to `System` with the caller-provided pointer and layout;
+	// the wrapper only updates an independent atomic counter before allocation.
 	unsafe impl GlobalAlloc for CountingAllocator {
 		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
 			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
-			// SAFETY: The caller supplies the GlobalAlloc layout contract unchanged to System.
+			// SAFETY: `GlobalAlloc::alloc` forwards the valid caller-provided layout unchanged.
 			unsafe { System.alloc(layout) }
 		}
 
 		unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-			// SAFETY: The caller guarantees that ptr and layout identify a live System allocation.
+			// SAFETY: The caller guarantees that `ptr` and `layout` identify a live allocation from this allocator.
 			unsafe { System.dealloc(ptr, layout) };
 		}
 
 		unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
 			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
-			// SAFETY: The caller guarantees the existing System allocation contract and a valid replacement size.
+			// SAFETY: The caller guarantees the old allocation contract, and `new_size` is forwarded unchanged.
 			unsafe { System.realloc(ptr, layout, new_size) }
 		}
 	}

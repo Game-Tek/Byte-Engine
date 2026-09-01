@@ -204,7 +204,9 @@ pub fn setup_default_resource_and_asset_management(
 			IBLGenerator::new()
 		});
 
-		asset_manager.add_asset_handler(EXRAssetHandler::new(ibl_generator));
+		asset_manager.add_asset_handler(EXRAssetHandler::new());
+
+		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl_generator));
 
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
 
@@ -377,11 +379,11 @@ use resource_management::asset::handler::implementations::bema::ProgramGenerator
 #[cfg(debug_assertions)]
 use resource_management::asset::{
 	FileStorageBackend, handler::implementations::bema::BEMAAssetHandler,
-	handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::exr::EXRAssetHandler,
-	handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
-	handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
-	handler::implementations::ogg::OGGAssetHandler, handler::implementations::png::PNGAssetHandler,
-	handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
+	handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::environment::EnvironmentMapAssetHandler,
+	handler::implementations::exr::EXRAssetHandler, handler::implementations::fbx::FBXAssetHandler,
+	handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
+	handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
+	handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
 };
 #[cfg(debug_assertions)]
 use resource_management::{
@@ -409,7 +411,6 @@ use crate::{
 };
 
 #[cfg(all(test, debug_assertions))]
-
 mod tests {
 
 	use std::sync::atomic::{AtomicUsize, Ordering};

@@ -41,7 +41,6 @@ pub(crate) fn select_unfragmented_gltf_resource(
 
 /// The `GLTFAssetHandler` struct provides the glTF boundary used to bake renderable meshes, skeletal clips, materials, and images.
 #[derive(Default)]
-
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,
@@ -74,6 +73,228 @@ impl GLTFAssetHandler {
 	/// Selects the offline backend used only for image resources generated from glTF materials.
 	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
 		self.material_mip_generator = Some(generator);
+	}
+
+	/// Imports and stores one animation clip together with its generated skeleton dependency.
+	async fn store_animation(
+		context: BakeContext<'_>,
+		url: ResourceId<'_>,
+		source_id: ResourceId<'_>,
+		gltf: &gltf::Gltf,
+		buffers: &[gltf::buffer::Data],
+		fragment: &str,
+	) -> Result<(), LoadErrors> {
+		let graph = import_gltf_node_graph(gltf).map_err(|error| {
+			log::error!("Failed to import glTF animation skeleton '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
+		let skeleton_id = generated_gltf_skeleton_id(source_id);
+		let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
+		let animation = import_gltf_animation(gltf, buffers, fragment, &graph.source_to_dense, skeleton).map_err(|error| {
+			log::error!("Failed to import glTF animation '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
+
+		context.store_primary(ProcessedAsset::new(url, animation), &[]).await
+	}
+
+	/// Resolves each distinct glTF material once and preserves its per-primitive index mapping.
+	async fn resolve_materials<'a>(
+		&self,
+		context: BakeContext<'_>,
+		url: ResourceId<'_>,
+		spec: Option<&serde_json::Value>,
+		gltf: &gltf::Gltf,
+		buffers: &[gltf::buffer::Data],
+		primitives: &[gltf::Primitive<'a>],
+	) -> Result<(Vec<ReferenceModel<VariantModel>>, Vec<usize>), LoadErrors> {
+		let (unique_materials, material_indices) = unique_gltf_materials(primitives);
+		let mut resolved_materials = Vec::with_capacity(unique_materials.len());
+		for material in unique_materials {
+			resolved_materials.push(
+				material_for_gltf_primitive(
+					context,
+					spec,
+					url,
+					gltf,
+					buffers,
+					material,
+					self.generator.clone(),
+					self.material_mip_generator.as_deref(),
+				)
+				.await?,
+			);
+		}
+
+		Ok((resolved_materials, material_indices))
+	}
+
+	/// Packs prepared glTF primitives through the shared mesh processor and commits their payload.
+	async fn store_mesh<'a>(
+		&self,
+		context: BakeContext<'_>,
+		url: ResourceId<'_>,
+		buffers: &[gltf::buffer::Data],
+		vertex_layout: Vec<VertexComponent>,
+		skeleton: Option<ReferenceModel<SkeletonModel>>,
+		skin_bindings: Vec<SkinBinding>,
+		primitives: &[(gltf::Primitive<'a>, maths_rs::Mat4f, Option<u32>, Option<u32>)],
+		material_indices: &[usize],
+		materials: &[ReferenceModel<VariantModel>],
+	) -> Result<(), LoadErrors> {
+		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
+		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
+		let mut mesh_processor = MeshProcessor::new()
+			.with_triangle_front_face_winding(self.triangle_front_face_winding)
+			.begin(vertex_layout, skeleton, skin_bindings)
+			.map_err(|error| {
+				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+		for ((primitive, transform, transform_node, skin), material_index) in primitives.iter().zip(material_indices) {
+			validate_gltf_flattened_animation_transform(*transform, *transform_node).map_err(|error| {
+				log::error!("Failed to import glTF animated mesh transform '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+			validate_gltf_skin_attribute_sets(primitive, skin.is_some()).map_err(|error| {
+				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+			let source = GltfPrimitiveSource::new(
+				primitive,
+				buffers,
+				&materials[*material_index],
+				*transform,
+				*transform_node,
+				*skin,
+				skin.map(|skin| skin_joint_counts[skin as usize]),
+				primitive_attributes,
+			);
+			mesh_processor.push_primitive(&source).map_err(|error| {
+				match error {
+					MeshPrimitiveProcessingError::Source(error) => {
+						log::error!("Failed to import glTF mesh '{}': {error}", url.as_ref());
+					}
+					MeshPrimitiveProcessingError::Processing(error) => {
+						log::error!("Failed to process glTF mesh '{}': {error}", url.as_ref());
+					}
+				}
+				LoadErrors::FailedToProcess
+			})?;
+		}
+
+		let mut transaction = context.begin_resource(url, mesh_processor.payload_size()).await?;
+		let (mesh, stream_descriptions) = mesh_processor
+			.finish_into_resource(&mut transaction)
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
+		context
+			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
+			.await
+	}
+
+	/// Imports the mesh hierarchy, skins, materials, and primitives selected by an unfragmented glTF request.
+	async fn store_selected_mesh<'a>(
+		&self,
+		context: BakeContext<'_>,
+		url: ResourceId<'_>,
+		source_id: ResourceId<'_>,
+		spec: Option<&serde_json::Value>,
+		gltf: &'a gltf::Gltf,
+		buffers: &[gltf::buffer::Data],
+	) -> Result<(), LoadErrors> {
+		let graph = import_gltf_node_graph(gltf).map_err(|error| {
+			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
+		let vertex_layouts = gltf
+			.meshes()
+			.flat_map(|mesh| {
+				mesh.primitives().map(|primitive| {
+					primitive
+						.attributes()
+						.filter_map(|(semantic, _)| gltf_vertex_component(semantic))
+						.collect::<Vec<VertexComponent>>()
+				})
+			})
+			.collect::<Vec<_>>();
+		let vertex_layout =
+			include_skin_vertex_layout(normalize_vertex_layouts(&vertex_layouts), &vertex_layouts).map_err(|error| {
+				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+		// Preserve the existing all-scenes traversal order while sourcing transforms from the canonical node graph.
+		let mut flat_tree = Vec::with_capacity(gltf.nodes().len());
+		for scene in gltf.scenes() {
+			for node in scene.nodes() {
+				append_gltf_node_subtree(node, &mut flat_tree);
+			}
+		}
+		let handedness = handedness_matrix();
+		let flat_tree = flat_tree
+			.into_iter()
+			.map(|node| {
+				let transform = handedness * graph.source_global_transforms[node.index()];
+				(node, transform)
+			})
+			.collect::<Vec<_>>();
+		let primitives = flat_tree
+			.iter()
+			.filter_map(|(node, _)| node.mesh().map(|mesh| mesh.primitives()))
+			.flatten()
+			.collect::<Vec<_>>();
+
+		let mut skin_bindings = Vec::new();
+		let mut skin_binding_by_node = HashMap::new();
+		for (node, _) in &flat_tree {
+			if node.mesh().is_none() || node.skin().is_none() || skin_binding_by_node.contains_key(&node.index()) {
+				continue;
+			}
+			let binding = import_gltf_skin_binding(node, buffers, &graph).map_err(|error| {
+				log::error!("Failed to import glTF skin binding '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+			let binding_index = skin_bindings.len() as u32;
+			skin_bindings.push(binding);
+			skin_binding_by_node.insert(node.index(), binding_index);
+		}
+
+		let retain_skeleton = !skin_bindings.is_empty() || gltf.animations().next().is_some();
+		let primitives_and_transform = flat_tree
+			.iter()
+			.filter_map(|(node, transform)| {
+				let skin = skin_binding_by_node.get(&node.index()).copied();
+				let transform_node = gltf_primitive_transform_node(&graph, node, retain_skeleton);
+				node.mesh().map(|mesh| {
+					mesh.primitives()
+						.map(move |primitive| (primitive, *transform, transform_node, skin))
+				})
+			})
+			.flatten()
+			.collect::<Vec<_>>();
+		let skeleton = if retain_skeleton {
+			let skeleton_id = generated_gltf_skeleton_id(source_id);
+			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?)
+		} else {
+			None
+		};
+		let (materials, material_indices) = self.resolve_materials(context, url, spec, gltf, buffers, &primitives).await?;
+
+		self.store_mesh(
+			context,
+			url,
+			buffers,
+			vertex_layout,
+			skeleton,
+			skin_bindings,
+			&primitives_and_transform,
+			&material_indices,
+			&materials,
+		)
+		.await
 	}
 }
 
@@ -169,24 +390,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 		if let Some(fragment) = url.get_fragment() {
 			if is_gltf_animation_fragment(fragment.as_ref()) {
-				let graph = import_gltf_node_graph(&gltf).map_err(|error| {
-					log::error!("Failed to import glTF animation skeleton '{}': {error}", url.as_ref());
-
-					LoadErrors::FailedToProcess
-				})?;
-
-				let skeleton_id = generated_gltf_skeleton_id(source_id);
-
-				let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
-
-				let animation = import_gltf_animation(&gltf, &buffers, fragment.as_ref(), &graph.source_to_dense, skeleton)
-					.map_err(|error| {
-						log::error!("Failed to import glTF animation '{}': {error}", url.as_ref());
-
-						LoadErrors::FailedToProcess
-					})?;
-
-				return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
+				return Self::store_animation(context, url, source_id, &gltf, &buffers, fragment.as_ref()).await;
 			}
 
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
@@ -201,210 +405,10 @@ impl AssetHandler for GLTFAssetHandler {
 		}
 
 		if default_resource == Some(ContainerDefaultResource::Animation) {
-			let graph = import_gltf_node_graph(&gltf).map_err(|error| {
-				log::error!("Failed to import default glTF animation skeleton '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-
-			let skeleton_id = generated_gltf_skeleton_id(source_id);
-
-			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
-
-			let animation =
-				import_gltf_animation(&gltf, &buffers, DEFAULT_ANIMATION_FRAGMENT, &graph.source_to_dense, skeleton).map_err(
-					|error| {
-						log::error!("Failed to import default glTF animation '{}': {error}", url.as_ref());
-
-						LoadErrors::FailedToProcess
-					},
-				)?;
-
-			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
+			return Self::store_animation(context, url, source_id, &gltf, &buffers, DEFAULT_ANIMATION_FRAGMENT).await;
 		}
 
-		let spec = spec.as_ref();
-
-		let graph = import_gltf_node_graph(&gltf).map_err(|error| {
-			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
-
-			LoadErrors::FailedToProcess
-		})?;
-
-		let vertex_layouts = gltf
-			.meshes()
-			.flat_map(|mesh| {
-				mesh.primitives().map(|primitive| {
-					primitive
-						.attributes()
-						.filter_map(|(semantic, _)| gltf_vertex_component(semantic))
-						.collect::<Vec<VertexComponent>>()
-				})
-			})
-			.collect::<Vec<Vec<VertexComponent>>>();
-
-		let vertex_layout =
-			include_skin_vertex_layout(normalize_vertex_layouts(&vertex_layouts), &vertex_layouts).map_err(|error| {
-				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-
-		// Preserve the existing all-scenes traversal order while sourcing transforms from the canonical node graph.
-		let mut flat_tree = Vec::with_capacity(gltf.nodes().len());
-
-		for scene in gltf.scenes() {
-			for node in scene.nodes() {
-				append_gltf_node_subtree(node, &mut flat_tree);
-			}
-		}
-
-		let handedness = handedness_matrix();
-
-		let flat_tree = flat_tree
-			.into_iter()
-			.map(|node| {
-				let transform = handedness * graph.source_global_transforms[node.index()];
-
-				(node, transform)
-			})
-			.collect::<Vec<_>>();
-
-		let primitives = flat_tree
-			.iter()
-			.filter_map(|(node, _)| node.mesh().map(|mesh| mesh.primitives()))
-			.flatten()
-			.collect::<Vec<_>>();
-
-		let mut skin_bindings = Vec::new();
-
-		let mut skin_binding_by_node = HashMap::new();
-
-		for (node, _) in &flat_tree {
-			if node.mesh().is_none() || node.skin().is_none() || skin_binding_by_node.contains_key(&node.index()) {
-				continue;
-			}
-
-			let binding = import_gltf_skin_binding(node, &buffers, &graph).map_err(|error| {
-				log::error!("Failed to import glTF skin binding '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-
-			let binding_index = skin_bindings.len() as u32;
-
-			skin_bindings.push(binding);
-
-			skin_binding_by_node.insert(node.index(), binding_index);
-		}
-
-		let retain_skeleton = !skin_bindings.is_empty() || gltf.animations().next().is_some();
-
-		let primitives_and_transform = flat_tree
-			.iter()
-			.filter_map(|(node, transform)| {
-				let skin = skin_binding_by_node.get(&node.index()).copied();
-
-				let transform_node = gltf_primitive_transform_node(&graph, node, retain_skeleton);
-
-				node.mesh().map(|mesh| {
-					mesh.primitives()
-						.map(move |primitive| (primitive, *transform, transform_node, skin))
-				})
-			})
-			.flatten()
-			.collect::<Vec<_>>();
-
-		let flat_mesh_tree = {
-			primitives_and_transform
-				.iter()
-				.map(|(primitive, transform, transform_node, skin)| (primitive, *transform, *transform_node, *skin))
-		};
-
-		let skeleton = if !retain_skeleton {
-			None
-		} else {
-			let skeleton_id = generated_gltf_skeleton_id(source_id);
-
-			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?)
-		};
-
-		let (unique_materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
-
-		let mut resolved_materials = Vec::with_capacity(unique_materials.len());
-
-		for material in unique_materials {
-			let material = material_for_gltf_primitive(
-				context,
-				spec,
-				url,
-				&gltf,
-				&buffers,
-				material,
-				self.generator.clone(),
-				self.material_mip_generator.as_deref(),
-			)
-			.await?;
-
-			resolved_materials.push(material);
-		}
-
-		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
-		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
-
-		let mut mesh_processor = MeshProcessor::new()
-			.with_triangle_front_face_winding(self.triangle_front_face_winding)
-			.begin(vertex_layout, skeleton, skin_bindings)
-			.map_err(|error| {
-				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
-				LoadErrors::FailedToProcess
-			})?;
-
-		for ((primitive, transform, transform_node, skin), material_index) in flat_mesh_tree.zip(material_indices_per_primitive)
-		{
-			validate_gltf_flattened_animation_transform(transform, transform_node).map_err(|error| {
-				log::error!("Failed to import glTF animated mesh transform '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-
-			validate_gltf_skin_attribute_sets(primitive, skin.is_some()).map_err(|error| {
-				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-
-			let source = GltfPrimitiveSource::new(
-				primitive,
-				&buffers,
-				&resolved_materials[material_index],
-				transform,
-				transform_node,
-				skin,
-				skin.map(|skin| skin_joint_counts[skin as usize]),
-				primitive_attributes,
-			);
-			mesh_processor.push_primitive(&source).map_err(|error| {
-				match error {
-					MeshPrimitiveProcessingError::Source(error) => {
-						log::error!("Failed to import glTF mesh '{}': {error}", url.as_ref());
-					}
-					MeshPrimitiveProcessingError::Processing(error) => {
-						log::error!("Failed to process glTF mesh '{}': {error}", url.as_ref());
-					}
-				}
-				LoadErrors::FailedToProcess
-			})?;
-		}
-
-		let mut transaction = context.begin_resource(url, mesh_processor.payload_size()).await?;
-		let (mesh, stream_descriptions) = mesh_processor
-			.finish_into_resource(&mut transaction)
-			.await
-			.map_err(|_| LoadErrors::FailedToStore)?;
-
-		context
-			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
+		self.store_selected_mesh(context, url, source_id, spec.as_ref(), &gltf, &buffers)
 			.await
 	}
 }

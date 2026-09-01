@@ -129,7 +129,6 @@ pub(crate) fn select_unfragmented_fbx_resource(
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
 #[derive(Default)]
-
 pub struct FBXAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,

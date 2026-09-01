@@ -22,6 +22,7 @@ pub(crate) use crate::asset::{
 
 pub mod bema;
 pub mod besl;
+pub mod environment;
 pub mod exr;
 pub mod fbx;
 pub mod gltf;
@@ -34,6 +35,7 @@ pub mod wav;
 
 pub use bema::*;
 pub use besl::*;
+pub use environment::*;
 pub use exr::*;
 pub use fbx::*;
 pub use gltf::*;

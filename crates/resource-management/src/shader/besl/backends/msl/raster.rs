@@ -6,6 +6,30 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Emits declared types using direct-buffer packing for runtime array elements.
+	pub(crate) fn emit_storage_declarations(
+		&mut self,
+		string: &mut String,
+		nodes: &[&besl::NodeReference],
+		bindings: &[&besl::NodeReference],
+	) {
+		for node in nodes {
+			let runtime_element = bindings.iter().any(|binding| {
+				matches!(
+					binding.borrow().node(),
+					besl::Nodes::Binding {
+						r#type: besl::BindingTypes::BufferArray { element },
+						..
+					} if element == *node
+				)
+			});
+			let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
+			self.in_buffer_binding_struct = runtime_element;
+			self.emit_node_string(string, node);
+			self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
+		}
+	}
+
 	pub(crate) fn emit_buffer_binding_structs(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
 		for binding in bindings {
 			if let besl::Nodes::Binding {
@@ -25,7 +49,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) {
 		let nodes = self.classify_nodes(order);
-		self.emit_declarations(string, &nodes.declarations);
+		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
@@ -37,6 +61,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_vertex_output_struct(string, &nodes.outputs);
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_vertex_index: nodes.inputs.iter().any(
+				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN),
+			),
+			has_instance_index: nodes.inputs.iter().any(
+				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
+			),
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -169,7 +199,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			else {
 				continue;
 			};
-			if count.is_some() || name == "position" {
+			if count.is_some() || besl::is_position_output(name) {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
@@ -197,7 +227,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) {
 		let nodes = self.classify_nodes(order);
-		self.emit_declarations(string, &nodes.declarations);
+		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
@@ -211,6 +241,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_vertex_index: false,
+			has_instance_index: false,
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -305,7 +337,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, indent);
 			string.push_str(output_name);
 			string.push('.');
-			string.push_str(name);
+			string.push_str(if besl::is_position_output(name) { "position" } else { name });
 			string.push('=');
 			string.push_str(name);
 			formatting.push_statement_end(string);
@@ -331,17 +363,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("(VertexInput in [[stage_in]]");
 		if inputs
 			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "vertex_id"))
+			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN))
 		{
 			self.emit_separator(string);
-			string.push_str("uint vertex_id [[vertex_id]]");
+			string.push_str("uint vertex_index [[vertex_id]]");
 		}
-		if inputs
-			.iter()
-			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "instance_id"))
-		{
+		if inputs.iter().any(
+			|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::INSTANCE_INDEX_BUILTIN),
+		) {
 			self.emit_separator(string);
-			string.push_str("uint instance_id [[instance_id]]");
+			string.push_str("uint instance_index [[instance_id]]");
 		}
 		if has_resources {
 			self.emit_separator(string);
@@ -356,7 +387,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			string,
 			inputs,
 			"in",
-			&[("vertex_id", "vertex_id"), ("instance_id", "instance_id")],
+			&[
+				(besl::VERTEX_INDEX_BUILTIN, besl::VERTEX_INDEX_BUILTIN),
+				(besl::INSTANCE_INDEX_BUILTIN, besl::INSTANCE_INDEX_BUILTIN),
+			],
 			1,
 		);
 		formatting.push_indentation(string, 1);
@@ -446,7 +480,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
-		matches!(name, "vertex_id" | "instance_id")
+		crate::shader::generator::is_vertex_builtin_input(name)
 	}
 
 	pub(crate) fn is_fragment_builtin_input(name: &str) -> bool {
@@ -468,7 +502,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		uses_simd_lane_id: bool,
 	) {
 		let nodes = self.classify_nodes(order);
-		self.emit_declarations(string, &nodes.declarations);
+		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_declarations(string, &nodes.outputs);
 
@@ -580,7 +614,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
 
-		self.emit_declarations(string, &nodes.declarations);
+		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 		if !bindings.is_empty() {
 			self.emit_argument_buffer_struct(string, &bindings);
@@ -646,7 +680,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			maximum_vertices,
 			maximum_primitives,
 		});
-		self.emit_declarations(string, &nodes.declarations);
+		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 

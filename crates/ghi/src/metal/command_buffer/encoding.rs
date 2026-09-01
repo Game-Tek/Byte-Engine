@@ -49,6 +49,7 @@ impl CommandBufferRecording<'_> {
 					}
 					Descriptor::AccelerationStructure { handle } => {
 						if let Some(structure) = device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
 							let allocation = unsafe {
 								Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone())
 							};
@@ -74,13 +75,14 @@ impl CommandBufferRecording<'_> {
 			.metal_device
 			.newBufferWithLength_options(layout.encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
 			.expect("Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.");
+		// SAFETY: The newly allocated shared buffer exposes `encoded_length` writable bytes.
+		unsafe { std::ptr::write_bytes(argument_buffer.contents().as_ptr() as *mut u8, 0, layout.encoded_length) };
+		// SAFETY: The encoder's required length produced this buffer allocation and offset zero is aligned.
 		unsafe {
-			// Metal does not guarantee fresh buffer contents are zeroed. Null all unwritten array elements deterministically.
-			std::ptr::write_bytes(argument_buffer.contents().as_ptr() as *mut u8, 0, layout.encoded_length);
 			layout
 				.argument_encoder
-				.setArgumentBuffer_offset(Some(argument_buffer.as_ref()), 0);
-		}
+				.setArgumentBuffer_offset(Some(argument_buffer.as_ref()), 0)
+		};
 
 		for binding in &layout.bindings {
 			let Some(descriptors) = self.descriptors_at_slot(binding.descriptor.slot()) else {
@@ -90,12 +92,14 @@ impl CommandBufferRecording<'_> {
 			for (&array_element, &descriptor) in descriptors {
 				let argument_slot = binding.slot_for_array_element(array_element);
 				match (argument_slot, descriptor) {
+					// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 					(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
 						let buffer = self.device.buffers.resource(buffer);
 						layout
 							.argument_encoder
 							.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
 					},
+					// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, mip_level, .. }) => unsafe {
 						let image = self.device.images.resource(image);
 						let texture_view = descriptor_texture_view(&image.texture, image.format, mip_level);
@@ -105,17 +109,22 @@ impl CommandBufferRecording<'_> {
 							texture_views.push(texture_view);
 						}
 					},
-					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
+					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => {
 						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
 							let image = self.device.images.resource(proxy);
-							layout
-								.argument_encoder
-								.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
+							unsafe {
+								layout
+									.argument_encoder
+									.setTexture_atIndex(Some(image.texture.as_ref()), slot as _)
+							};
 						} else {
 							let texture = self.drawable_texture(handle);
-							layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _);
+							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
+							unsafe { layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _) };
 						}
-					},
+					}
+					// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 					(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
 						let sampler = &self.device.samplers[sampler.0 as usize];
 						layout
@@ -129,18 +138,25 @@ impl CommandBufferRecording<'_> {
 							sampler: sampler_handle,
 							..
 						},
-					) => unsafe {
+					) => {
 						let image = self.device.images.resource(image);
 						let sampler_state = &self.device.samplers[sampler_handle.0 as usize];
-						layout
-							.argument_encoder
-							.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
-						layout
-							.argument_encoder
-							.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
-					},
+						// SAFETY: The texture slot was produced by this argument encoder's reflection layout.
+						unsafe {
+							layout
+								.argument_encoder
+								.setTexture_atIndex(Some(image.texture.as_ref()), texture as _)
+						};
+						// SAFETY: The sampler slot was produced by this argument encoder's reflection layout.
+						unsafe {
+							layout
+								.argument_encoder
+								.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _)
+						};
+					}
 					(DescriptorBindingSlot::AccelerationStructure(slot), Descriptor::AccelerationStructure { handle }) => {
 						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 							unsafe {
 								layout
 									.argument_encoder
@@ -442,6 +458,7 @@ impl CommandBufferRecording<'_> {
 				attachment.setStoreAction(mtl::MTLStoreAction::Store);
 				attachment.setClearDepth(utils::clear_depth(*clear_value));
 			} else {
+				// SAFETY: `color_index` counts only non-depth attachments and stays within the render-pass descriptor array.
 				let attachment = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(color_index) };
 				attachment.setTexture(Some(image.texture.as_ref()));
 				attachment.setLoadAction(mtl::MTLLoadAction::Clear);

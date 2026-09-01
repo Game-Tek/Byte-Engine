@@ -20,15 +20,7 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		renderer.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = renderer.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
@@ -120,15 +112,7 @@ pub(super) fn multiframe_present(renderer: &mut impl ghi::context::Context, queu
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		renderer.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = renderer.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 

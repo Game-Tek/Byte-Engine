@@ -7,6 +7,9 @@
 pub trait TargetedMessage: Message {
 	type Payload;
 
+	/// Whether publishing this message ends the target entity's lifecycle.
+	const ENDS_TARGET_LIFECYCLE: bool = false;
+
 	fn from_handle_and_payload(handle: Handle, payload: Self::Payload) -> Self
 	where
 		Self: Sized;

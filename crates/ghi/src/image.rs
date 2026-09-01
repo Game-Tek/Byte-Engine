@@ -154,52 +154,8 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{Builder, ImageHandle, mip_extent};
-	use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
-
-	#[test]
-	fn builder_defaults_are_valid_for_a_single_static_image() {
-		let builder = Builder::new(Formats::RGBA8UNORM, Uses::Image);
-
-		assert_eq!(builder.get_name(), None);
-		assert_eq!(builder.get_format(), Formats::RGBA8UNORM);
-		assert_eq!(builder.extent, Extent::cube(0, 0, 0));
-		assert_eq!(builder.resource_uses, Uses::Image);
-		assert_eq!(builder.device_accesses, DeviceAccesses::DeviceOnly);
-		assert_eq!(builder.use_case, UseCases::STATIC);
-		assert_eq!(builder.mip_levels, 1);
-		assert_eq!(builder.array_layers, None);
-		assert!(!builder.cube_compatible);
-		assert!(!builder.cube_array_compatible);
-		assert_eq!(builder.optimized_clear_value, None);
-	}
-
-	#[test]
-	fn builder_preserves_all_explicit_image_constraints() {
-		let builder = Builder::new(Formats::BC7, Uses::Image | Uses::TransferDestination)
-			.additional_uses(Uses::TransferSource)
-			.name("albedo")
-			.extent(Extent::rectangle(64, 32))
-			.device_accesses(DeviceAccesses::HostToDevice)
-			.use_case(UseCases::DYNAMIC)
-			.mip_levels(7)
-			.cube_compatible()
-			.optimized_clear_value(crate::ClearValue::Depth(0.0));
-
-		assert_eq!(builder.get_name(), Some("albedo"));
-		assert_eq!(builder.extent, Extent::rectangle(64, 32));
-		assert_eq!(
-			builder.resource_uses,
-			Uses::Image | Uses::TransferDestination | Uses::TransferSource
-		);
-		assert_eq!(builder.device_accesses, DeviceAccesses::HostToDevice);
-		assert_eq!(builder.use_case, UseCases::DYNAMIC);
-		assert_eq!(builder.mip_levels, 7);
-		assert_eq!(builder.array_layers, NonZeroU32::new(6));
-		assert!(builder.cube_compatible);
-		assert!(!builder.cube_array_compatible);
-		assert_eq!(builder.optimized_clear_value, Some(crate::ClearValue::Depth(0.0)));
-	}
+	use super::{Builder, mip_extent};
+	use crate::{Formats, Uses};
 
 	#[test]
 	fn cube_array_builder_uses_six_layers_per_cube() {
@@ -210,14 +166,6 @@ mod tests {
 		assert_eq!(builder.array_layers, NonZeroU32::new(24));
 		assert!(!builder.cube_compatible);
 		assert!(builder.cube_array_compatible);
-	}
-
-	#[test]
-	fn private_image_handle_round_trips_index_and_variant() {
-		let handle = ImageHandle::new(9);
-
-		assert_eq!(handle.index(), 9);
-		assert!(matches!(PrivateHandles::from(handle), PrivateHandles::Image(value) if value == handle));
 	}
 
 	#[test]

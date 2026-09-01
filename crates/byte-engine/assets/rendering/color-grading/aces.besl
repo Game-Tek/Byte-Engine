@@ -4,10 +4,10 @@ ColorGradingParameters: struct {
 	sampling: vec4f,
 }
 
-source_texture: descriptor<Texture2D, 0, read>;
-lut_texture: descriptor<Texture3D, 1, read>;
-result_texture: descriptor<StorageImage, 2, write>;
-parameters: descriptor<ColorGradingParameters, 3, read, constant>;
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
+result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+parameters: descriptor<{ type: ColorGradingParameters, binding: 3, access: read, memory: constant }>;
 
 // This D65-to-D60-adapted matrix converts the renderer's linear-sRGB output to ACEScg AP1.
 linear_srgb_to_acescg: fn(color: vec3f) -> vec3f {

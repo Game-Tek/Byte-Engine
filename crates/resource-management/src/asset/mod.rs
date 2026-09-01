@@ -98,7 +98,6 @@ pub(crate) fn sanitize_material_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-
 mod container_default_resource_tests {
 
 	use super::{ContainerDefaultResource, container_default_resource};
@@ -166,14 +165,16 @@ pub async fn read_asset_from_source<'a>(
 			let path = path.join(base.as_ref());
 
 			let spec_path = path.with_added_extension("bead");
+			let format = url.get_asset_type().to_string();
 
-			let format = path
-				.extension()
-				.and_then(|extension| extension.to_str())
-				.unwrap_or_default()
-				.to_string();
-
-			let spec = read_asset_spec(&spec_path);
+			// A BEAD declaration is itself the source description, so it cannot have another BEAD sidecar.
+			let spec = async {
+				if url.get_extension().eq_ignore_ascii_case("bead") {
+					Ok(None)
+				} else {
+					read_asset_spec(&spec_path).await
+				}
+			};
 
 			let source_bytes = read_asset_bytes(&path, allocator);
 
@@ -186,6 +187,26 @@ pub async fn read_asset_from_source<'a>(
 			Err(())
 		}
 	}
+}
+
+/// Loads the exact source file without looking for or parsing an adjacent BEAD sidecar.
+///
+/// Use this path when a file is data referenced by another asset instead of an independently bakeable asset.
+pub(crate) async fn read_raw_asset_from_source<'a>(
+	url: ResourceId<'a>,
+	base_path: Option<&'a std::path::Path>,
+	allocator: &'a dyn Allocator,
+) -> Result<AssetStorageBytes<'a>, ()> {
+	let base = url.get_base();
+
+	if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
+		return Err(());
+	}
+
+	let path = base_path.unwrap_or(std::path::Path::new("")).join(base.as_ref());
+	let source_bytes = read_asset_bytes(&path, allocator).await?;
+
+	Ok(source_bytes)
 }
 
 async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>, ()> {

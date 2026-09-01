@@ -32,6 +32,8 @@ impl VisibilityPipelineManager {
 	/// first. Next, register this manager through
 	/// [`crate::rendering::Renderer::add_pipeline_manager`]; its frame callbacks
 	/// will drive transfer retirement and recording.
+	// Keep construction of the interdependent visibility passes and scene buffers in ownership order.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
@@ -307,6 +309,8 @@ impl VisibilityPipelineManager {
 	/// interns factory objects, assigns table slots, submits or polls native I/O,
 	/// marks loader tokens ready or failed, and resolves waiting renderables after
 	/// their complete dependency closure becomes resident.
+	// Keep completion adoption as one transaction so loader state and resident scene state cannot diverge.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		#[cfg(target_os = "macos")]
 		self.poll_texture_io(frame);
@@ -778,6 +782,8 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Rebuilds the active instance list from whole renderables whose material dependencies are ready.
+	// Keep instance filtering, skin palette generation, and cache publication in one coherent rebuild.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
 		self.scene.render_info.clear_active_instances();
 		let loaded_materials = &self.loaded_materials;

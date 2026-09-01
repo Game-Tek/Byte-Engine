@@ -38,6 +38,7 @@ fn attachment_texture_view(
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
 	if let Some(layer) = layer {
 		if array_layers > 1 {
+			// SAFETY: The requested layer is validated against the image's array-layer count by the caller.
 			unsafe {
 				return texture
 					.newTextureViewWithPixelFormat_textureType_levels_slices(
@@ -64,6 +65,7 @@ fn descriptor_texture_view(
 ) -> Option<Retained<ProtocolObject<dyn mtl::MTLTexture>>> {
 	let mip_level = mip_level?;
 
+	// SAFETY: The requested mip is validated against the image's mip-level count by the caller.
 	Some(unsafe {
 		texture
 			.newTextureViewWithPixelFormat_textureType_levels_slices(
@@ -163,13 +165,12 @@ pub(in crate::metal) fn encode_texture_upload(
 		let destination_offset = slice * aligned_bytes_per_image;
 		let source_bytes = &staging[source_offset..source_offset + bytes_per_image];
 		for row in 0..row_count {
-			unsafe {
-				std::ptr::copy_nonoverlapping(
-					source_bytes.as_ptr().add(row * bytes_per_row),
-					destination.add(destination_offset + row * aligned_bytes_per_row),
-					bytes_per_row,
-				);
-			}
+			// SAFETY: Slice bounds above validate the source row offset.
+			let source = unsafe { source_bytes.as_ptr().add(row * bytes_per_row) };
+			// SAFETY: The upload allocation covers every padded row in every array layer.
+			let destination = unsafe { destination.add(destination_offset + row * aligned_bytes_per_row) };
+			// SAFETY: Source and upload allocations do not overlap and both expose `bytes_per_row` bytes.
+			unsafe { std::ptr::copy_nonoverlapping(source, destination, bytes_per_row) };
 		}
 	}
 
@@ -177,6 +178,7 @@ pub(in crate::metal) fn encode_texture_upload(
 	source_size.depth = 1;
 	let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 	for slice in 0..array_layers as usize {
+		// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
 		unsafe {
 			transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 				upload_buffer.as_ref(),

@@ -90,7 +90,7 @@ pub struct OwnedBakedImageIBL {
 
 /// The `GPUIBLClient` struct serializes environment-map requests onto a dedicated GHI context thread.
 ///
-/// Install this client on an EXR asset handler. The handler can then run on the asset manager's shared worker pool
+/// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
 /// without moving or concurrently accessing the backend context.
 pub struct GPUIBLClient {
 	sender: SyncSender<GPUIBLWorkerMessage>,
@@ -166,7 +166,8 @@ impl GPUIBLClient {
 				while let Ok(message) = receiver.recv() {
 					match message {
 						GPUIBLWorkerMessage::Bake(request) => {
-							// SAFETY: The submitting asset worker blocks on this response, so its borrowed source remains valid.
+							// SAFETY: The submitting asset worker blocks on this response, so the source allocation
+							// remains live and immutable for the reconstructed slice's full use.
 							let source = unsafe { std::slice::from_raw_parts(request.source, request.source_len) };
 							let result = processor.bake_image_ibl(request.source_extent, source);
 							if response_sender.send(result).is_err() {

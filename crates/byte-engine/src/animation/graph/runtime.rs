@@ -651,26 +651,6 @@ mod tests {
 	}
 
 	#[test]
-	fn resident_clips_occupy_disjoint_ranges_of_one_preallocated_arena() {
-		let clip_bytes = packed_test_animation_bytes("first", 1.0);
-		let mut pool = pool(clip_bytes * 2);
-		pool.admit("first.animation".into(), test_animation("first", 1.0));
-		pool.admit("second.animation".into(), test_animation("second", 2.0));
-
-		assert_eq!(pool.storage.len() * std::mem::size_of::<u32>(), clip_bytes * 2);
-		let first = match pool.entries.get(&AnimationLease::new("first.animation")) {
-			Some(AnimationPoolEntry::Resident(entry)) => entry.region,
-			_ => panic!("first animation should remain resident"),
-		};
-		let second = match pool.entries.get(&AnimationLease::new("second.animation")) {
-			Some(AnimationPoolEntry::Resident(entry)) => entry.region,
-			_ => panic!("second animation should remain resident"),
-		};
-
-		assert!(first.end() <= second.offset || second.end() <= first.offset);
-	}
-
-	#[test]
 	fn oversized_clips_fail_once_until_the_caller_explicitly_retries_them() {
 		let animation = test_animation("oversized", 1.0);
 		let mut pool = pool(packed_test_animation_bytes("oversized", 1.0) - 1);

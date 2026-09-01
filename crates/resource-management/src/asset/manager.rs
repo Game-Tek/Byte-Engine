@@ -123,14 +123,12 @@ impl AssetManager {
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn source_directory_accessible(&self, path: &std::path::Path) -> Option<bool> {
 		self.state.storage_backend.directory_accessible(path)
 	}
 
 	/// Returns whether this manager writes to the same shared store as a resource manager.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn uses_resource_storage(&self, storage: &Arc<dyn DynResourceStorageBackend>) -> bool {
 		Arc::ptr_eq(&self.state.resource_storage_backend, storage)
 	}
@@ -139,7 +137,6 @@ impl AssetManager {
 	///
 	/// Next, call [`ResourceTrace::items`] with a requested resource ID.
 	#[cfg(debug_assertions)]
-
 	pub fn resource_trace(&self) -> &ResourceTrace {
 		&self.state.resource_trace
 	}
@@ -151,7 +148,7 @@ impl AssetManager {
 		self.state
 			.asset_handlers
 			.iter()
-			.any(|handler| handler.can_handle(id.get_extension()))
+			.any(|handler| handler.can_handle(id.get_asset_type()))
 	}
 
 	/// Returns whether recursive discovery should include the given supported source asset.
@@ -161,7 +158,7 @@ impl AssetManager {
 		self.state
 			.asset_handlers
 			.iter()
-			.any(|handler| handler.can_handle(id.get_extension()) && handler.should_discover(id, has_sidecar))
+			.any(|handler| handler.can_handle(id.get_asset_type()) && handler.should_discover(id, has_sidecar))
 	}
 
 	/// Returns the discoverable source IDs supported by the registered asset handlers.
@@ -210,14 +207,12 @@ impl AssetManager {
 
 	/// Adds a requested root resource to the development dependency index.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn track_resource(&self, resource: &crate::SerializableResource) {
 		self.state.track_resource(resource);
 	}
 
 	/// Starts recursive debounced watching when the source backend exposes a local root.
 	#[cfg(debug_assertions)]
-
 	pub(crate) fn start_watching(&self, updates: Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>) {
 		let Some(root) = self.state.storage_backend.watch_root() else {
 			return;
@@ -235,12 +230,21 @@ impl AssetManager {
 			move |result: notify_debouncer_full::DebounceEventResult| match result {
 				Ok(events) => {
 					let Some(state) = weak.upgrade() else { return };
-					let paths = events
-						.iter()
-						.flat_map(|event| event.paths.iter())
-						.filter_map(|path| source_id_from_path(&watched_root, &path))
-						.collect::<std::collections::HashSet<_>>();
-					state.reload_sources(paths);
+					let mut sources = std::collections::HashSet::new();
+
+					for path in events.iter().flat_map(|event| event.paths.iter()) {
+						let Some((id, sidecar_source)) = source_ids_from_path(&watched_root, path) else {
+							continue;
+						};
+
+						sources.insert(id);
+
+						if let Some(sidecar_source) = sidecar_source {
+							sources.insert(sidecar_source);
+						}
+					}
+
+					state.reload_sources(sources);
 				}
 				Err(errors) => log::warn!(
 					"Asset watching reported an error. The most likely cause is that the development asset directory became inaccessible: {errors:?}"
@@ -308,7 +312,6 @@ impl Drop for InFlightBakeCleanup {
 }
 
 #[cfg(debug_assertions)]
-
 struct HotReloadState {
 	watcher: Option<
 		notify_debouncer_full::Debouncer<
@@ -324,7 +327,6 @@ struct HotReloadState {
 }
 
 #[cfg(debug_assertions)]
-
 impl Default for HotReloadState {
 	fn default() -> Self {
 		Self {
@@ -340,7 +342,6 @@ impl Default for HotReloadState {
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
-
 pub enum LoadMessages {
 	/// The asset was not found in the storage backend.
 	NoAsset,
@@ -361,7 +362,6 @@ pub enum LoadMessages {
 impl AssetManagerState {
 	/// Replaces one root resource's entries in the inverse source dependency index.
 	#[cfg(debug_assertions)]
-
 	fn track_resource(&self, resource: &crate::SerializableResource) {
 		let mut hot_reload = self.hot_reload.lock();
 
@@ -396,7 +396,6 @@ impl AssetManagerState {
 
 	/// Schedules one rebake for every tracked root affected by a debounced source batch.
 	#[cfg(debug_assertions)]
-
 	fn reload_sources(self: &Arc<Self>, sources: std::collections::HashSet<String>) {
 		let roots = {
 			let mut hot_reload = self.hot_reload.lock();
@@ -438,7 +437,6 @@ impl AssetManagerState {
 
 	/// Rebakes one affected root and publishes it only after replacement storage succeeds.
 	#[cfg(debug_assertions)]
-
 	async fn reload_resource(self: Arc<Self>, id: String) {
 		let stale = match self.resource_storage_backend.read(ResourceId::new(&id)).await {
 			Some((resource, _)) => self.resource_is_stale(&resource).await,
@@ -582,7 +580,6 @@ impl AssetManagerState {
 
 	/// Copies the latest in-memory trace into development resource storage for external tools.
 	#[cfg(debug_assertions)]
-
 	fn persist_resource_trace(&self, id: ResourceId<'_>) {
 		if let Err(error) = self
 			.resource_storage_backend
@@ -612,7 +609,7 @@ impl AssetManagerState {
 		let asset_handler = match self
 			.asset_handlers
 			.iter()
-			.find(|handler| handler.can_handle(id.get_extension()))
+			.find(|handler| handler.can_handle(id.get_asset_type()))
 		{
 			Some(handler) => handler,
 			None => {
@@ -785,7 +782,12 @@ impl AssetManagerState {
 		use utils::r#async::StreamExt as _;
 
 		let checks = resource.asset_dependencies().iter().map(|dependency| async move {
-			let current = self.storage_backend.version(ResourceId::new(dependency.id())).await;
+			let id = ResourceId::new(dependency.id());
+			let current = if dependency.version().tracks_sidecar() {
+				self.storage_backend.version(id).await
+			} else {
+				self.storage_backend.raw_version(id).await
+			};
 
 			current.as_ref().ok() != Some(dependency.version())
 		});
@@ -798,25 +800,24 @@ impl AssetManagerState {
 	}
 }
 
-/// Converts a watcher path, including BEAD sidecars, into its source asset ID.
+/// Converts a watcher path into its raw asset ID and, for BEAD files, its possible sidecar source ID.
 #[cfg(debug_assertions)]
-
-fn source_id_from_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+fn source_ids_from_path(root: &std::path::Path, path: &std::path::Path) -> Option<(String, Option<String>)> {
 	let relative = path.strip_prefix(root).ok()?;
 
-	let mut id = relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+	let id = relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+	let resource_id = ResourceId::new(&id);
+	let extension = resource_id.get_extension();
+	let sidecar_source = extension
+		.eq_ignore_ascii_case("bead")
+		.then(|| id[..id.len() - extension.len() - 1].to_string());
 
-	if let Some(source) = id.strip_suffix(".bead") {
-		id = source.to_string();
-	}
-
-	Some(id)
+	Some((id, sidecar_source))
 }
 
 const ASSETS_DOCS_PATH: &str = "develop/resource-management/assets";
 
 #[cfg(test)]
-
 pub mod tests {
 
 	use std::{
@@ -839,7 +840,6 @@ pub mod tests {
 	};
 
 	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-
 	struct TestResource {}
 
 	impl Model for TestResource {
@@ -849,6 +849,7 @@ pub mod tests {
 	}
 
 	struct TestAssetHandler {}
+	struct CompoundBeadAssetHandler;
 
 	impl TestAssetHandler {
 		fn new() -> TestAssetHandler {
@@ -1063,6 +1064,26 @@ pub mod tests {
 		}
 	}
 
+	impl AssetHandler for CompoundBeadAssetHandler {
+		fn can_handle(&self, asset_type: &str) -> bool {
+			asset_type.eq_ignore_ascii_case("environment.bead")
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			if context.resource_type(id) != Some("environment.bead") {
+				return Err(LoadErrors::UnsupportedType);
+			}
+
+			let (source, sidecar, asset_type) = context.resolve(id).await?;
+
+			if sidecar.is_some() || asset_type != "environment.bead" {
+				return Err(LoadErrors::UnsupportedType);
+			}
+
+			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source).await
+		}
+	}
+
 	pub fn new_testing_asset_manager() -> AssetManager {
 		let storage_backend = TestStorageBackend::new();
 
@@ -1080,6 +1101,8 @@ pub mod tests {
 		assert!(asset_manager.supports("nested/example.test"));
 		assert!(asset_manager.supports("nested/example.test#fragment"));
 		assert!(!asset_manager.supports("nested/example.unknown"));
+		assert!(!asset_manager.supports(""));
+		assert!(!asset_manager.supports("#fragment"));
 	}
 
 	#[test]
@@ -1112,18 +1135,55 @@ pub mod tests {
 		);
 	}
 
+	#[r#async::test]
+	async fn compound_bead_sources_are_discoverable_and_dispatch_without_claiming_sidecars() {
+		let storage_backend = TestStorageBackend::new();
+		storage_backend.add_file("studio.environment.bead", b"environment");
+		storage_backend.add_file("studio.environment.bead.bead", b"{ invalid: true }");
+		storage_backend.add_file("studio.exr.bead", b"{ image: true }");
+
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend, resource_storage.clone());
+		asset_manager.add_asset_handler(CompoundBeadAssetHandler);
+
+		assert!(asset_manager.supports("studio.environment.bead"));
+		assert!(!asset_manager.supports("studio.exr.bead"));
+		assert_eq!(asset_manager.discover().await.unwrap(), ["studio.environment.bead"]);
+
+		asset_manager
+			.bake("studio.environment.bead")
+			.await
+			.expect("the compound BEAD handler must receive the primary declaration");
+
+		let data = resource_storage
+			.get_resource_data_by_name(ResourceId::new("studio.environment.bead"))
+			.expect("the compound BEAD resource must be stored");
+
+		assert_eq!(data.as_ref(), b"environment");
+	}
+
 	#[cfg(debug_assertions)]
 	#[test]
-	fn watcher_paths_normalize_sidecars_to_their_source_ids() {
+	fn watcher_paths_preserve_bead_assets_and_also_report_possible_sidecar_sources() {
 		let root = std::path::Path::new("/assets");
 
 		assert_eq!(
-			source_id_from_path(root, std::path::Path::new("/assets/rendering/pass.pipeline")),
-			Some("rendering/pass.pipeline".to_string())
+			source_ids_from_path(root, std::path::Path::new("/assets/rendering/pass.pipeline")),
+			Some(("rendering/pass.pipeline".to_string(), None))
 		);
 		assert_eq!(
-			source_id_from_path(root, std::path::Path::new("/assets/rendering/pass.besl.bead")),
-			Some("rendering/pass.besl".to_string())
+			source_ids_from_path(root, std::path::Path::new("/assets/rendering/pass.besl.bead")),
+			Some((
+				"rendering/pass.besl.bead".to_string(),
+				Some("rendering/pass.besl".to_string())
+			))
+		);
+		assert_eq!(
+			source_ids_from_path(root, std::path::Path::new("/assets/lighting/studio.environment.BEAD")),
+			Some((
+				"lighting/studio.environment.BEAD".to_string(),
+				Some("lighting/studio.environment".to_string())
+			))
 		);
 	}
 
@@ -1539,7 +1599,6 @@ pub mod tests {
 		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
 
 		#[cfg(debug_assertions)]
-
 		assert_eq!(
 			asset_manager.resource_trace().items("example.unknown")[0].level(),
 			ResourceTraceLevel::Error

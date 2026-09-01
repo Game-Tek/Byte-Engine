@@ -139,7 +139,11 @@ impl<'dispatch, T> LaneValues<'dispatch, T> {
 	{
 		// SAFETY: `CollectiveSlot::each` constructs this iterator only after every lane
 		// initialized its aligned slot and the collective reached ready. `T: Copy` leaves storage valid.
-		unsafe { self.storage.add(lane_idx * COLLECTIVE_VALUE_SIZE).cast::<T>().read() }
+		let lane_offset = lane_idx * COLLECTIVE_VALUE_SIZE;
+		// SAFETY: The validated lane index and fixed stride keep this address inside collective storage.
+		let lane = unsafe { self.storage.add(lane_offset) };
+		// SAFETY: Registration validated `T` alignment and initialization before the ready state was published.
+		unsafe { lane.cast::<T>().read() }
 	}
 }
 
@@ -476,7 +480,10 @@ impl CollectiveSlot {
 			let value = self.compute(f);
 			// SAFETY: Registration validates the type layout, and producer election
 			// grants this lane exclusive write access to lane slot zero.
-			unsafe { self.value_ptr::<T>(0).write(value) };
+			// SAFETY: Registration validated the type layout and lane zero is within storage.
+			let value_ptr = unsafe { self.value_ptr::<T>(0) };
+			// SAFETY: Producer election grants this lane exclusive initialization of the slot.
+			unsafe { value_ptr.write(value) };
 			self.published.store(1, Ordering::Release);
 			self.publish_ready(section);
 		} else {
@@ -484,7 +491,10 @@ impl CollectiveSlot {
 		}
 
 		// SAFETY: Ready was published after lane slot zero was initialized, and `T: Copy`.
-		unsafe { self.value_ptr::<T>(0).read() }
+		// SAFETY: Registration validated the type layout and lane zero is within storage.
+		let value_ptr = unsafe { self.value_ptr::<T>(0) };
+		// SAFETY: The ready state guarantees that the elected producer initialized this `T`.
+		unsafe { value_ptr.read() }
 	}
 
 	/// Publishes one value per lane and returns completed values in lane order.
@@ -511,7 +521,10 @@ impl CollectiveSlot {
 
 		let value = self.compute(f);
 		// SAFETY: Each lane writes to its unique cache-line-sized slot after layout validation.
-		unsafe { self.value_ptr::<T>(lane_idx).write(value) };
+		// SAFETY: Capacity and layout checks keep this lane's slot within storage.
+		let value_ptr = unsafe { self.value_ptr::<T>(lane_idx) };
+		// SAFETY: Each lane exclusively initializes its own slot before publication.
+		unsafe { value_ptr.write(value) };
 		let published = self.published.fetch_add(1, Ordering::AcqRel) + 1;
 		if published == lane_count {
 			self.publish_ready(section);
@@ -599,7 +612,10 @@ impl CollectiveSlot {
 		}
 
 		// SAFETY: Active or ready was observed with `Acquire` after type publication.
-		let stored_type = unsafe { self.type_id.get().read().assume_init() };
+		// SAFETY: Type publication initialized the cell before the active state became visible.
+		let stored_type = unsafe { self.type_id.get().read() };
+		// SAFETY: The acquired active or ready state proves `stored_type` is initialized.
+		let stored_type = unsafe { stored_type.assume_init() };
 		if stored_type != TypeId::of::<T>() {
 			self.poison();
 			panic!("Collective type mismatch at section {section}. Every lane must use the same result type for that section.");

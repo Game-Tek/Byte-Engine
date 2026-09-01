@@ -7,12 +7,12 @@ SkyParameters: struct {
 	misc: vec4f,
 }
 
-depth_texture: descriptor<Texture2D, 0, read>;
-source: descriptor<StorageImage<rgba16f>, 1, read>;
-result: descriptor<StorageImage, 2, write>;
-sky_view_lut: descriptor<Texture2D, 3, read>;
-transmittance_lut: descriptor<Texture2D, 4, read>;
-parameters: descriptor<SkyParameters, 5, read, constant>;
+depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+source: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+sky_view_lut: descriptor<{ type: Texture2D, binding: 3, access: read }>;
+transmittance_lut: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+parameters: descriptor<{ type: SkyParameters, binding: 5, access: read, memory: constant }>;
 
 get_camera_position: fn () -> vec3f {
 	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);

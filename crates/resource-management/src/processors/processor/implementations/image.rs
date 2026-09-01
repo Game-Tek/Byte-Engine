@@ -1,7 +1,10 @@
+mod decode;
 mod source;
 
-use source::{CanonicalImageData, append_canonical_image_in, canonicalize_image_in};
+pub(crate) use decode::decode_rgba16f_in;
+pub(crate) use source::{CanonicalImageData, canonicalize_rgba16f_in};
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
+use source::{append_canonical_image_in, canonicalize_image_in};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {
@@ -502,75 +505,36 @@ mod tests {
 	}
 
 	#[test]
-	fn extracts_semantic_from_asset_name() {
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Base_color.png").get_base()),
-			Semantic::Albedo
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Diffuse.png").get_base()),
-			Semantic::Albedo
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Albedo.png").get_base()),
-			Semantic::Albedo
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Normal.png").get_base()),
-			Semantic::Normal
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Metallic.png").get_base()),
-			Semantic::Metallic
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Roughness.png").get_base()),
-			Semantic::Roughness
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Emissive.png").get_base()),
-			Semantic::Emissive
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Height.png").get_base()),
-			Semantic::Height
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Opacity.png").get_base()),
-			Semantic::Opacity
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Displacement.png").get_base()),
-			Semantic::Displacement
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_AO.png").get_base()),
-			Semantic::AO
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/brick_wall_Color.png").get_base()),
-			Semantic::Other
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/diffuse_bomb_icon.png").get_base()),
-			Semantic::Other
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/icon_diffuse.png").get_base()),
-			Semantic::Albedo
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/DiffuseBombIcon.png").get_base()),
-			Semantic::Other
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/NormalityChecker.png").get_base()),
-			Semantic::Other
-		);
-		assert_eq!(
-			guess_semantic_from_name(ResourceId::new("textures/AOGenerator.png").get_base()),
-			Semantic::Other
-		);
+	fn infers_texture_semantic_and_default_gamma_from_asset_name() {
+		let cases = [
+			("textures/brick_wall_Base_color.png", Semantic::Albedo, Gamma::SRGB),
+			("textures/brick_wall_Diffuse.png", Semantic::Albedo, Gamma::SRGB),
+			("textures/brick_wall_Albedo.png", Semantic::Albedo, Gamma::SRGB),
+			("textures/brick_wall_Normal.png", Semantic::Normal, Gamma::Linear),
+			("textures/brick_wall_Metallic.png", Semantic::Metallic, Gamma::Linear),
+			("textures/brick_wall_Roughness.png", Semantic::Roughness, Gamma::Linear),
+			("textures/brick_wall_Emissive.png", Semantic::Emissive, Gamma::SRGB),
+			("textures/brick_wall_Height.png", Semantic::Height, Gamma::Linear),
+			("textures/brick_wall_Opacity.png", Semantic::Opacity, Gamma::Linear),
+			("textures/brick_wall_Displacement.png", Semantic::Displacement, Gamma::Linear),
+			("textures/brick_wall_AO.png", Semantic::AO, Gamma::Linear),
+			("textures/brick_wall_Color.png", Semantic::Other, Gamma::SRGB),
+			("textures/diffuse_bomb_icon.png", Semantic::Other, Gamma::SRGB),
+			("textures/icon_diffuse.png", Semantic::Albedo, Gamma::SRGB),
+			("textures/DiffuseBombIcon.png", Semantic::Other, Gamma::SRGB),
+			("textures/NormalityChecker.png", Semantic::Other, Gamma::SRGB),
+			("textures/AOGenerator.png", Semantic::Other, Gamma::SRGB),
+		];
+
+		for (id, expected_semantic, expected_gamma) in cases {
+			let semantic = guess_semantic_from_name(ResourceId::new(id).get_base());
+
+			assert_eq!(
+				(semantic, gamma_from_semantic(semantic)),
+				(expected_semantic, expected_gamma),
+				"asset: {id}"
+			);
+		}
 	}
 
 	#[test]
@@ -582,7 +546,6 @@ mod tests {
 			determine_image_format(Formats::RGB8, false, Semantic::Other, Gamma::SRGB),
 			Formats::RGBA8SRGB
 		);
-		assert_eq!(gamma_from_semantic(Semantic::Emissive), Gamma::SRGB);
 		assert_eq!(
 			determine_image_format(Formats::RGBA8, false, Semantic::Emissive, Gamma::SRGB),
 			Formats::RGBA8SRGB

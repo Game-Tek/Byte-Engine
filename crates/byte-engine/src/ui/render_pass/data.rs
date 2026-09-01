@@ -684,6 +684,8 @@ pub(super) fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f3
 	})
 }
 
+// Keep the render snapshot conversion as one pass so all draw-list arrays share the same ordering and opacity rules.
+#[allow(clippy::too_many_lines)]
 pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 	let root_size = render.root().size;
 

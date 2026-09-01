@@ -165,6 +165,7 @@ pub struct Pipeline {
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
 }
 
+// SAFETY: Metal pipeline states, depth state, and retained shader metadata are immutable and documented for cross-thread use.
 unsafe impl Send for Pipeline {}
 
 #[derive(Clone)]
@@ -180,6 +181,7 @@ pub struct ComputePipeline {
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
 }
 
+// SAFETY: Metal compute pipeline states and their immutable reflection metadata support cross-thread ownership transfer.
 unsafe impl Send for ComputePipeline {}
 
 /// The `Image` struct carries a Metal image built before it has a public GHI handle.
@@ -187,6 +189,7 @@ pub struct Image {
 	pub(crate) image: crate::metal::image::Image,
 }
 
+// SAFETY: The prepared image owns a retained Metal texture and immutable metadata; mutation begins only after context adoption.
 unsafe impl Send for Image {}
 
 /// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
@@ -194,6 +197,7 @@ pub struct Sampler {
 	pub(crate) sampler: crate::metal::sampler::Sampler,
 }
 
+// SAFETY: Metal sampler states are immutable retained objects and support cross-thread ownership transfer.
 unsafe impl Send for Sampler {}
 
 use objc2_metal::{MTLDepthStencilState, MTLDevice};

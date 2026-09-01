@@ -12,7 +12,6 @@ pub(crate) use mesh::*;
 pub(crate) use skeleton::*;
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::{
@@ -107,11 +106,9 @@ mod tests {
 
 	/// The `TestVariantAssetHandler` struct supplies a material override without invoking a platform shader compiler.
 	#[cfg(debug_assertions)]
-
 	struct TestVariantAssetHandler;
 
 	#[cfg(debug_assertions)]
-
 	impl AssetHandler for TestVariantAssetHandler {
 		fn can_handle(&self, resource_type: &str) -> bool {
 			resource_type == "variant"

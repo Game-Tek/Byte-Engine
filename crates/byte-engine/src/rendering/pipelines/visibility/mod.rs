@@ -103,6 +103,20 @@ mod tests {
 		)))
 	}
 
+	fn masked_fragment_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/masked-fragment.besl"
+		)))
+	}
+
+	fn masked_depth_fragment_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/masked-depth-fragment.besl"
+		)))
+	}
+
 	fn visibility_task_program() -> besl::NodeReference {
 		asset_program(include_str!(concat!(
 			env!("CARGO_MANIFEST_DIR"),
@@ -152,6 +166,13 @@ mod tests {
 		)))
 	}
 
+	/// Verifies both masked fragment assets parse and link through the source-owned BESL seam.
+	#[test]
+	fn masked_fragment_assets_parse_and_link_with_structural_interfaces() {
+		let _masked_visibility = masked_fragment_program();
+		let _masked_depth = masked_depth_fragment_program();
+	}
+
 	/// Verifies the visibility fragment preserves the mesh-stage identifiers consumed by later compute passes.
 	#[test]
 	fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
@@ -181,10 +202,10 @@ mod tests {
 				.clone(),
 		);
 		instance_input
-			.write("in_instance_index", Value::U32(37))
+			.write("_besl_interface_instance_index", Value::U32(37))
 			.expect("Failed to initialize the visibility instance input. The most likely cause is a drifted input type.");
 		primitive_input
-			.write("in_primitive_index", Value::U32(0x0102_03ab))
+			.write("_besl_interface_primitive_index", Value::U32(0x0102_03ab))
 			.expect("Failed to initialize the visibility primitive input. The most likely cause is a drifted input type.");
 
 		{
@@ -200,13 +221,13 @@ mod tests {
 
 		assert_eq!(
 			primitive_output
-				.read("out_primitive_index")
+				.read("_besl_output_primitive_index")
 				.expect("Failed to read the visibility primitive output. The most likely cause is a drifted output layout."),
 			Value::U32(0x0102_03ab)
 		);
 		assert_eq!(
 			instance_output
-				.read("out_instance_id")
+				.read("_besl_output_instance_id")
 				.expect("Failed to read the visibility instance output. The most likely cause is a drifted output layout."),
 			Value::U32(37)
 		);
@@ -840,6 +861,8 @@ mod tests {
 	}
 
 	/// Reduces one positive-linear-depth image while ignoring zero-valued background texels.
+	// This test reference intentionally mirrors the shader's complete two-dimensional reduction footprint.
+	#[allow(clippy::excessive_nesting)]
 	fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) -> (Vec<[f32; 4]>, u32, u32) {
 		let reduced_width = width.div_ceil(2).max(1);
 		let reduced_height = height.div_ceil(2).max(1);

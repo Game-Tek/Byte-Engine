@@ -30,6 +30,29 @@ pub use lexer::Operators;
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::{BindingTypes, BufferMemoryClass};
 
+/// Names the current vertex invocation's vertex index.
+///
+/// Vertex shaders can read this implicit `u32` value as `vertex_index` without declaring an
+/// interface input. Each graphics backend supplies its native vertex system value.
+pub const VERTEX_INDEX_BUILTIN: &str = "vertex_index";
+
+/// Names the current vertex invocation's instance index.
+///
+/// Vertex shaders can read this implicit `u32` value as `instance_index` without declaring an
+/// interface input. Each graphics backend supplies its native instance system value.
+pub const INSTANCE_INDEX_BUILTIN: &str = "instance_index";
+
+/// Names the collision-free semantic output used for a structural vertex `position` field.
+pub const STRUCTURAL_POSITION_OUTPUT: &str = "_besl_interface_position";
+
+/// Reports whether an emitted output name carries the native vertex position.
+///
+/// Structural entry points use a reserved symbol so `return { position }` can read a local
+/// named `position`. The legacy flat interface spelling remains valid during shader migration.
+pub fn is_position_output(name: &str) -> bool {
+	matches!(name, "position" | STRUCTURAL_POSITION_OUTPUT)
+}
+
 /// A shared parser node used by BESL syntax trees.
 pub type ParserNode<'a> = parser::Node<'a>;
 

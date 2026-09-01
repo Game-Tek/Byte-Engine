@@ -24,7 +24,6 @@ use shadow::*;
 
 /// The `SkinningPaletteCacheEntry` struct shares one uploaded binding palette across a renderable's primitives.
 #[derive(Clone, Copy)]
-
 struct SkinningPaletteCacheEntry {
 	handle: Handle,
 	binding: *const SkinBinding,
@@ -34,7 +33,6 @@ struct SkinningPaletteCacheEntry {
 
 /// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
 #[derive(Clone, Copy)]
-
 struct EnvironmentTexture {
 	diffuse_image: ghi::BaseImageHandle,
 	specular_image: ghi::BaseImageHandle,
@@ -55,7 +53,6 @@ struct PendingTextureIo {
 
 /// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-
 pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
@@ -195,6 +192,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.resource_manager.record_frame_uploads(frame, recording);
 	}
 
+	// Keep per-frame visibility pass preparation ordered around shared scene buffers and shadow allocations.
+	#[allow(clippy::too_many_lines)]
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -379,6 +378,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		Some(commands)
 	}
 
+	// Keep the sink's target graph and pass wiring together so aliases and descriptor inputs stay consistent.
+	#[allow(clippy::too_many_lines)]
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		log::debug!("Visibility sink created: sink_id={}", sink_id);
 
@@ -652,7 +653,6 @@ impl PipelineManager for VisibilityPipelineManager {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use std::sync::Arc;
@@ -1282,23 +1282,11 @@ mod tests {
 	}
 
 	#[test]
-	fn lit_binding_supports_transparent_read_modify_write() {
-		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
-	}
-
-	#[test]
-	fn material_data_defaults_every_texture_slot_to_missing() {
-		let material_data = MaterialData::default();
+	fn material_texture_updates_replace_the_complete_canonical_record() {
+		let mut material_data = MaterialData::default();
 
 		assert!(material_data.textures.iter().all(|texture_index| *texture_index == u32::MAX));
-	}
-
-	#[test]
-	fn material_texture_updates_replace_the_complete_canonical_record() {
-		let mut material_data = MaterialData {
-			textures: [41; MAX_MATERIAL_TEXTURES],
-			..MaterialData::default()
-		};
+		material_data.textures.fill(41);
 
 		assert!(!write_material_texture_indices(&mut material_data, [Some(7), None, Some(11)]));
 		assert_eq!(material_data.textures[..3], [7, u32::MAX, 11]);

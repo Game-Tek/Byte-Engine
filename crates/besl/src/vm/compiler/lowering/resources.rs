@@ -8,14 +8,9 @@ impl<'a> Compiler<'a> {
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (binding, selectors) = extract_access_chain(expression)?;
-		let Some(AccessSelector::Member(member_name)) = selectors.first() else {
-			return Err(VmError::UnsupportedExpression {
-				message: "Buffer access must select a named member first".to_string(),
-			});
-		};
 
 		let binding_ref = binding.borrow();
-		let (slot, layout) = match binding_ref.node() {
+		let (slot, layout, runtime_element_type) = match binding_ref.node() {
 			Nodes::Binding {
 				slot,
 				read,
@@ -25,8 +20,12 @@ impl<'a> Compiler<'a> {
 			} => {
 				let slot = ResourceSlot::new(*slot);
 				require_descriptor_access(slot, *read, *write, access)?;
-				let layout = match r#type {
-					BindingTypes::Buffer { members } => compile_buffer_layout(members)?,
+				let (layout, runtime_element_type) = match r#type {
+					BindingTypes::Buffer { members } => (compile_buffer_layout(members)?, None),
+					BindingTypes::BufferArray { element } => {
+						let (layout, element_type) = compile_buffer_array_layout(element)?;
+						(layout, Some(element_type))
+					}
 					_ => {
 						return Err(VmError::UnsupportedDescriptor {
 							slot,
@@ -35,7 +34,7 @@ impl<'a> Compiler<'a> {
 					}
 				};
 
-				(slot, layout)
+				(slot, layout, runtime_element_type)
 			}
 			Nodes::PushConstant { members } => {
 				if access.requires_write() {
@@ -44,7 +43,7 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				(PUSH_CONSTANT_SLOT, compile_buffer_layout(members)?)
+				(PUSH_CONSTANT_SLOT, compile_buffer_layout(members)?, None)
 			}
 			node => {
 				return Err(VmError::UnsupportedExpression {
@@ -73,57 +72,7 @@ impl<'a> Compiler<'a> {
 			}
 		}
 
-		let member = layout.member(member_name).ok_or_else(|| VmError::UnknownBufferMember {
-			member: member_name.clone(),
-		})?;
-		let mut offset = member.offset();
-		let mut current_stride = member.value_type().size();
-		let mut current_count = member.count();
-		let mut value_type = member.value_type().clone();
-		let mut index = None;
-		let mut indexed_stride = current_stride;
-		let mut indexed_count = current_count;
-		for selector in selectors.iter().skip(1) {
-			match selector {
-				AccessSelector::Index(index_expression) => {
-					if index.is_some() {
-						return Err(VmError::UnsupportedExpression {
-							message: format!("Buffer member `{}` cannot use more than one dynamic index", member_name),
-						});
-					}
-					indexed_stride = current_stride;
-					indexed_count = current_count;
-					index = Some(index_expression.clone());
-					current_count = 1;
-				}
-				AccessSelector::Member(field_name) => {
-					if current_count > 1 {
-						return Err(VmError::UnsupportedExpression {
-							message: format!("Buffer member `{}` is an array and requires an element index", member_name),
-						});
-					}
-					let (field_offset, field_type, field_count) = aggregate_member_layout(&value_type, field_name)?;
-					offset += field_offset;
-					value_type = field_type;
-					current_stride = value_type.size();
-					current_count = field_count;
-				}
-			}
-		}
-		if current_count > 1 {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Buffer member `{}` is an array and requires an element index", member_name),
-			});
-		}
-
-		Ok(ResolvedBufferAccess {
-			slot,
-			offset,
-			stride: indexed_stride,
-			count: indexed_count,
-			index_expression: index,
-			value_type,
-		})
+		resolve_buffer_access(slot, &layout, runtime_element_type, &selectors)
 	}
 
 	pub(super) fn resolve_texture_slot(
@@ -194,6 +143,39 @@ impl<'a> Compiler<'a> {
 				Ok(slot)
 			}
 		}
+	}
+
+	/// Resolves `array_texture[layer]` without treating the layer as a descriptor-array index.
+	pub(super) fn resolve_array_texture_layer_access(
+		&mut self,
+		expression: &NodeReference,
+		access: RequiredAccess,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<Option<(ResourceSlot, NodeReference)>, VmError> {
+		let (texture, layer) = {
+			let borrowed = expression.borrow();
+			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+				return Ok(None);
+			};
+			(left.clone(), right.clone())
+		};
+		let Ok(binding) = extract_binding_reference(&texture) else {
+			return Ok(None);
+		};
+		let is_layered_texture = matches!(
+			binding.borrow().node(),
+			Nodes::Binding {
+				r#type: BindingTypes::CombinedImageSampler { format },
+				count: None,
+				..
+			} if format == "ArrayTexture2D"
+		);
+		if !is_layered_texture {
+			return Ok(None);
+		}
+
+		let slot = self.resolve_texture_slot(&texture, access, descriptor_layouts)?;
+		Ok(Some((slot, layer)))
 	}
 
 	pub(super) fn resolve_image_slot(
@@ -292,7 +274,7 @@ impl<'a> Compiler<'a> {
 				let value_type = resolve_value_type(format)?;
 				let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
 				(
-					if output_name == "position" {
+					if crate::is_position_output(&output_name) {
 						builtin_position_slot()
 					} else {
 						output_slot(*location)
@@ -333,7 +315,7 @@ impl<'a> Compiler<'a> {
 			slot,
 			offset: 0,
 			stride: layout.members()[0].value_type().size(),
-			count: layout.members()[0].count(),
+			count: Some(layout.members()[0].count()),
 			index_expression: None,
 			value_type: layout.members()[0].value_type().clone(),
 		})
@@ -385,8 +367,13 @@ impl<'a> Compiler<'a> {
 				}
 
 				let value_type = resolve_value_type(format)?;
+				let slot = match name.as_str() {
+					crate::VERTEX_INDEX_BUILTIN => builtin_vertex_index_slot(),
+					crate::INSTANCE_INDEX_BUILTIN => builtin_instance_index_slot(),
+					_ => input_slot(*location),
+				};
 				(
-					input_slot(*location),
+					slot,
 					BufferLayout {
 						members: vec![BufferMemberLayout {
 							name: input_name,
@@ -423,9 +410,93 @@ impl<'a> Compiler<'a> {
 			slot,
 			offset: 0,
 			stride: layout.size(),
-			count: 1,
+			count: Some(1),
 			index_expression: None,
 			value_type: layout.members()[0].value_type().clone(),
 		})
 	}
+}
+
+/// Resolves selectors rooted at either a fixed buffer member or a runtime buffer element.
+fn resolve_buffer_access(
+	slot: ResourceSlot,
+	layout: &BufferLayout,
+	runtime_element_type: Option<ValueType>,
+	selectors: &[AccessSelector],
+) -> Result<ResolvedBufferAccess, VmError> {
+	let (mut resolved, mut current_stride, mut current_count) = if let Some(value_type) = runtime_element_type {
+		let Some(AccessSelector::Index(index_expression)) = selectors.first() else {
+			return Err(VmError::UnsupportedExpression {
+				message: "Runtime-sized buffer access must select an element first".to_string(),
+			});
+		};
+		(
+			ResolvedBufferAccess {
+				slot,
+				offset: 0,
+				stride: layout.size(),
+				count: None,
+				index_expression: Some(index_expression.clone()),
+				value_type,
+			},
+			layout.size(),
+			1,
+		)
+	} else {
+		let Some(AccessSelector::Member(member_name)) = selectors.first() else {
+			return Err(VmError::UnsupportedExpression {
+				message: "Buffer access must select a named member first".to_string(),
+			});
+		};
+		let member = layout.member(member_name).ok_or_else(|| VmError::UnknownBufferMember {
+			member: member_name.clone(),
+		})?;
+		(
+			ResolvedBufferAccess {
+				slot,
+				offset: member.offset(),
+				stride: member.value_type().size(),
+				count: Some(member.count()),
+				index_expression: None,
+				value_type: member.value_type().clone(),
+			},
+			member.value_type().size(),
+			member.count(),
+		)
+	};
+
+	for selector in selectors.iter().skip(1) {
+		match selector {
+			AccessSelector::Index(index_expression) => {
+				if resolved.index_expression.is_some() {
+					return Err(VmError::UnsupportedExpression {
+						message: "Buffer access cannot use more than one dynamic index".to_string(),
+					});
+				}
+				resolved.stride = current_stride;
+				resolved.count = Some(current_count);
+				resolved.index_expression = Some(index_expression.clone());
+				current_count = 1;
+			}
+			AccessSelector::Member(field_name) => {
+				if current_count > 1 {
+					return Err(VmError::UnsupportedExpression {
+						message: "Buffer array requires an element index before member access".to_string(),
+					});
+				}
+				let (field_offset, field_type, field_count) = aggregate_member_layout(&resolved.value_type, field_name)?;
+				resolved.offset += field_offset;
+				resolved.value_type = field_type;
+				current_stride = resolved.value_type.size();
+				current_count = field_count;
+			}
+		}
+	}
+	if current_count > 1 {
+		return Err(VmError::UnsupportedExpression {
+			message: "Buffer array requires an element index".to_string(),
+		});
+	}
+
+	Ok(resolved)
 }

@@ -31,50 +31,14 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 		_ => e,
 	})?;
 
-	fn atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
-		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
-
-		if let Some((i, e)) = max_precedence_item {
-			match e {
-				Atoms::Operator { name } => {
-					let left = atoms_to_node(&atoms[..i]);
-					let right = atoms_to_node(&atoms[i + 1..]);
-					Node {
-						node: Nodes::Expression(Expressions::Operator {
-							name,
-							left: Box::new(left),
-							right: Box::new(right),
-						}),
-					}
-				}
-				Atoms::FunctionCall { name, parameters } => {
-					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
-					Node {
-						node: Nodes::Expression(Expressions::Call {
-							name: name.clone(),
-							parameters,
-						}),
-					}
-				}
-				Atoms::Literal { value } => Node {
-					node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
-				},
-				Atoms::Member { name } => Node {
-					node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
-				},
-				_ => panic!("Unexpected atom in const expression"),
-			}
-		} else {
-			panic!("No atoms in const expression");
-		}
-	}
-
-	let value = atoms_to_node(&expressions);
+	let value = expression_atoms_to_node(&expressions);
 
 	Ok((Node::constant_with_type(name, r#type, value), iterator))
 }
 
-/// Parses a flat resource descriptor and preserves its source type name for semantic resolution.
+/// Parses a named resource descriptor and preserves its source type name for semantic resolution.
+// Descriptor grammar validation is one ordered parse transaction because every key must be unique.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
@@ -83,106 +47,178 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
 	iterator.next_str("<").map_err(|_| {
 		syntax_error(format!(
-			"Expected < after descriptor in resource {}. The most likely cause is that the descriptor arguments are missing.",
+			"Expected < after descriptor in resource {}. The most likely cause is that the descriptor properties are missing.",
 			name
 		))
 	})?;
-	let resource_type = iterator.next_identifier().map_err(|_| {
+	iterator.next_str("{").map_err(|_| {
 		syntax_error(format!(
-			"Expected a resource type in descriptor {}. The most likely cause is that the first descriptor argument is missing.",
+			"Expected {{ after < in descriptor {}. The most likely cause is that positional descriptor syntax was used.",
 			name
 		))
 	})?;
-	let format = if iterator.clone().next().copied() == Some("<") {
-		iterator.next();
-		let format = iterator.next_identifier().map_err(|_| {
-			syntax_error(format!(
-				"Expected a storage image format in descriptor {}. The most likely cause is that the StorageImage format argument is missing.",
-				name
-			))
-		})?;
-		iterator.next_str(">").map_err(|_| {
-			syntax_error(format!(
-				"Expected > after storage image format in descriptor {}. The most likely cause is that the resource type arguments are malformed.",
-				name
-			))
-		})?;
-		if resource_type != "StorageImage" {
-			return Err(syntax_error(format!(
-				"Resource type {} cannot declare format `{}` in descriptor {}. The most likely cause is that a storage image format was attached to a non-StorageImage resource.",
-				resource_type, format, name
-			)));
+
+	let mut descriptor_type = None;
+	let mut slot = None;
+	let mut access = None;
+	let mut memory_class = None;
+	let mut count = None;
+
+	loop {
+		if iterator.clone().next().copied() == Some("}") {
+			iterator.next();
+			break;
 		}
-		Some(format)
-	} else {
-		None
-	};
-	iterator.next_str(",").map_err(|_| {
-		syntax_error(format!(
-			"Expected , after resource type in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
-			name
-		))
-	})?;
 
-	let slot = iterator
-		.next()
-		.ok_or_else(|| {
+		let key = iterator.next_identifier().map_err(|_| {
 			syntax_error(format!(
-				"Expected a slot in descriptor {}. The most likely cause is that the second descriptor argument is missing.",
-				name
-			))
-		})?
-		.parse::<u32>()
-		.map_err(|_| {
-			syntax_error(format!(
-				"Invalid slot in descriptor {}. The most likely cause is that the slot is not a u32 literal.",
+				"Expected a property name in descriptor {}. The most likely cause is that two properties are not separated by a comma.",
 				name
 			))
 		})?;
-	iterator.next_str(",").map_err(|_| {
-		syntax_error(format!(
-			"Expected , after slot in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
-			name
-		))
-	})?;
+		iterator.next_str(":").map_err(|_| {
+			syntax_error(format!(
+				"Expected : after property `{}` in descriptor {}. The most likely cause is that the property value is malformed.",
+				key, name
+			))
+		})?;
 
-	let access = iterator.next().ok_or_else(|| {
-		syntax_error(format!(
-			"Expected an access mode in descriptor {}. The most likely cause is that the third descriptor argument is missing.",
-			name
-		))
-	})?;
-	let (read, write) = match *access {
-		"read" => (true, false),
-		"write" => (false, true),
-		"read_write" => (true, true),
-		_ => {
-			return Err(syntax_error(format!(
-				"Invalid access mode `{}` in descriptor {}. The most likely cause is that the access is not read, write, or read_write.",
-				access, name
-			)));
-		}
-	};
+		match key {
+			"type" => {
+				if descriptor_type.is_some() {
+					return Err(syntax_error(format!(
+						"Duplicate `type` property in descriptor {}. The most likely cause is that the property was declared twice.",
+						name
+					)));
+				}
 
-	let (memory_class, count) = if iterator.clone().next().copied() == Some(",") {
-		iterator.next();
-		let memory_class_or_count = iterator
-			.next()
-			.ok_or_else(|| {
-				syntax_error(format!(
-					"Expected a buffer memory class or resource count in descriptor {}. The most likely cause is that the fourth descriptor argument is missing.",
-					name
-				))
-			})?;
-
-		if matches!(*memory_class_or_count, "constant" | "device") {
-			let count = if iterator.clone().next().copied() == Some(",") {
-				iterator.next();
-				let count = iterator
+				let resource_type = iterator.next_identifier().map_err(|_| {
+					syntax_error(format!(
+						"Expected a resource type in descriptor {}. The most likely cause is that the `type` property is empty.",
+						name
+					))
+				})?;
+				let runtime_array = if iterator.clone().next().copied() == Some("[") {
+					iterator.next();
+					iterator.next_str("]").map_err(|_| {
+						syntax_error(format!(
+							"Expected ] after the runtime array marker in descriptor {}. The most likely cause is that the resource used a fixed count inside `[]`.",
+							name
+						))
+					})?;
+					true
+				} else {
+					false
+				};
+				let format = if iterator.clone().next().copied() == Some("<") {
+					iterator.next();
+					let format = iterator.next_identifier().map_err(|_| {
+						syntax_error(format!(
+							"Expected a storage image format in descriptor {}. The most likely cause is that the StorageImage format argument is missing.",
+							name
+						))
+					})?;
+					iterator.next_str(">").map_err(|_| {
+						syntax_error(format!(
+							"Expected > after storage image format in descriptor {}. The most likely cause is that the resource type arguments are malformed.",
+							name
+						))
+					})?;
+					if resource_type != "StorageImage" {
+						return Err(syntax_error(format!(
+							"Resource type {} cannot declare format `{}` in descriptor {}. The most likely cause is that a storage image format was attached to a non-StorageImage resource.",
+							resource_type, format, name
+						)));
+					}
+					Some(format)
+				} else {
+					None
+				};
+				descriptor_type = Some((resource_type, runtime_array, format));
+			}
+			"binding" => {
+				if slot.is_some() {
+					return Err(syntax_error(format!(
+						"Duplicate `binding` property in descriptor {}. The most likely cause is that the property was declared twice.",
+						name
+					)));
+				}
+				slot = Some(
+					iterator
+						.next()
+						.ok_or_else(|| {
+							syntax_error(format!(
+								"Expected a binding in descriptor {}. The most likely cause is that the `binding` property is empty.",
+								name
+							))
+						})?
+						.parse::<u32>()
+						.map_err(|_| {
+							syntax_error(format!(
+								"Invalid binding in descriptor {}. The most likely cause is that the binding is not a u32 literal.",
+								name
+							))
+						})?,
+				);
+			}
+			"access" => {
+				if access.is_some() {
+					return Err(syntax_error(format!(
+						"Duplicate `access` property in descriptor {}. The most likely cause is that the property was declared twice.",
+						name
+					)));
+				}
+				let value = iterator.next().ok_or_else(|| {
+					syntax_error(format!(
+						"Expected an access mode in descriptor {}. The most likely cause is that the `access` property is empty.",
+						name
+					))
+				})?;
+				access = Some(match *value {
+					"read" => (true, false),
+					"write" => (false, true),
+					"read_write" => (true, true),
+					_ => {
+						return Err(syntax_error(format!(
+							"Invalid access mode `{}` in descriptor {}. The most likely cause is that the access is not read, write, or read_write.",
+							value, name
+						)));
+					}
+				});
+			}
+			"memory" => {
+				if memory_class.is_some() {
+					return Err(syntax_error(format!(
+						"Duplicate `memory` property in descriptor {}. The most likely cause is that the property was declared twice.",
+						name
+					)));
+				}
+				let value = iterator.next().ok_or_else(|| {
+					syntax_error(format!(
+						"Expected a memory class in descriptor {}. The most likely cause is that the `memory` property is empty.",
+						name
+					))
+				})?;
+				if !matches!(*value, "constant" | "device") {
+					return Err(syntax_error(format!(
+						"Invalid memory class `{}` in descriptor {}. The most likely cause is that the memory is not constant or device.",
+						value, name
+					)));
+				}
+				memory_class = Some(*value);
+			}
+			"count" => {
+				if count.is_some() {
+					return Err(syntax_error(format!(
+						"Duplicate `count` property in descriptor {}. The most likely cause is that the property was declared twice.",
+						name
+					)));
+				}
+				let value = iterator
 					.next()
 					.ok_or_else(|| {
 						syntax_error(format!(
-							"Expected a resource count in descriptor {}. The most likely cause is that the fifth descriptor argument is missing.",
+							"Expected a resource count in descriptor {}. The most likely cause is that the `count` property is empty.",
 							name
 						))
 					})?
@@ -193,40 +229,60 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 							name
 						))
 					})?;
-				Some(NonZeroU32::new(count).ok_or_else(|| {
+				count = Some(NonZeroU32::new(value).ok_or_else(|| {
 					syntax_error(format!(
 						"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
 						name
 					))
-				})?)
-			} else {
-				None
-			};
-			(Some(*memory_class_or_count), count)
-		} else {
-			let count = memory_class_or_count.parse::<u32>().map_err(|_| {
-				syntax_error(format!(
-					"Invalid buffer memory class or resource count `{}` in descriptor {}. The most likely cause is that the fourth descriptor argument is neither constant, device, nor a u32 count.",
-					memory_class_or_count, name
-				))
-			})?;
-			(
-				None,
-				Some(NonZeroU32::new(count).ok_or_else(|| {
-					syntax_error(format!(
-						"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
-						name
-					))
-				})?),
-			)
+				})?);
+			}
+			_ => {
+				return Err(syntax_error(format!(
+					"Unknown property `{}` in descriptor {}. The most likely cause is that the property name is misspelled.",
+					key, name
+				)));
+			}
 		}
-	} else {
-		(None, None)
-	};
+
+		match iterator.next().copied() {
+			Some(",") => {}
+			Some("}") => break,
+			_ => {
+				return Err(syntax_error(format!(
+					"Expected , or }} after property `{}` in descriptor {}. The most likely cause is that the next property is not separated by a comma.",
+					key, name
+				)));
+			}
+		}
+	}
+
+	let (resource_type, runtime_array, format) = descriptor_type.ok_or_else(|| {
+		syntax_error(format!(
+			"Descriptor {} is missing `type`. The most likely cause is that the required property was omitted.",
+			name
+		))
+	})?;
+	let slot = slot.ok_or_else(|| {
+		syntax_error(format!(
+			"Descriptor {} is missing `binding`. The most likely cause is that the required property was omitted.",
+			name
+		))
+	})?;
+	let (read, write) = access.ok_or_else(|| {
+		syntax_error(format!(
+			"Descriptor {} is missing `access`. The most likely cause is that the required property was omitted.",
+			name
+		))
+	})?;
+	if runtime_array && count.is_some() {
+		return Err(syntax_error(format!(
+			"Runtime buffer descriptor {name} cannot declare a resource count. The most likely cause is that a runtime element array was combined with descriptor-array syntax."
+		)));
+	}
 
 	iterator.next_str(">").map_err(|_| {
 		syntax_error(format!(
-			"Expected > after descriptor {} arguments. The most likely cause is that the descriptor declaration is incomplete.",
+			"Expected > after descriptor {} properties. The most likely cause is that the descriptor declaration is incomplete.",
 			name
 		))
 	})?;
@@ -242,6 +298,7 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 			node: Nodes::Descriptor {
 				name,
 				resource_type,
+				runtime_array,
 				format,
 				slot,
 				read,
@@ -255,6 +312,8 @@ pub(crate) fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'
 }
 
 /// Parses stage-interface storage declared directly in BESL source.
+// Stage-interface grammar validation is one ordered parse transaction over a shared iterator.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 ) -> FeatureParserResult<'i, 'a> {
@@ -493,67 +552,107 @@ pub(crate) fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -
 	Ok((make_scope("MACRO", vec![]), iter))
 }
 
+/// Parses one named struct and requires comma-delimited fields.
 pub(crate) fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	iterator.next_str("struct")?;
-	iterator.next_str("{").map_err(|e| match e {
-		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find {{ after struct {} declaration.", name),
-		},
-		_ => e,
-	})?;
+	let invalid = || ParsingFailReasons::BadSyntax {
+		message: format!("Invalid struct {name}. The most likely cause is a missing `name: type` field, comma, or closing }}."),
+	};
+	iterator.next_str("{").map_err(|_| invalid())?;
 
-	let mut fields = vec![];
-
-	while let Some(&v) = iterator.next() {
-		if v == "}" {
+	let mut fields = Vec::new();
+	let mut needs_comma = false;
+	let mut closed = false;
+	while let Some(&token) = iterator.next() {
+		if token == "}" {
+			closed = true;
 			break;
-		} else if v == "," {
+		}
+		if needs_comma {
+			if token != "," {
+				return Err(invalid());
+			}
+			needs_comma = false;
 			continue;
 		}
+		if token == "," {
+			return Err(invalid());
+		}
 
-		iterator.next_str(":").map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected to find : after name for member {} in struct {}", v, name),
-			},
-			_ => e,
-		})?;
-
-		let type_name = iterator.next_identifier().map_err(|e| match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-				message: format!("Expected to find a type name after : for member {} in struct {}", v, name),
-			},
-			_ => e,
-		})?;
-
-		// See if is array type
-		let type_name = if iterator.clone().peekable().peek().map(|v| v.as_ref()) == Some("[") {
+		iterator.next_str(":").map_err(|_| invalid())?;
+		let type_name = iterator.next_identifier().map_err(|_| invalid())?;
+		let type_name = if iterator.clone().next().copied() == Some("[") {
 			iterator.next();
 			let count = iterator
 				.next()
-				.and_then(|v| v.parse::<u32>().ok())
-				.ok_or(ParsingFailReasons::BadSyntax {
-					message: format!("Expected to find a number after [ for member {} in struct {}", v, name),
-				})?;
-			iterator.next().unwrap();
-			format!("{}[{}]", type_name, count)
+				.and_then(|value| value.parse::<u32>().ok())
+				.ok_or_else(&invalid)?;
+			iterator.next_str("]").map_err(|_| invalid())?;
+			format!("{type_name}[{count}]")
 		} else {
 			type_name.to_string()
 		};
-
-		fields.push(make_member(v, &type_name));
+		fields.push(make_member(token, &type_name));
+		needs_comma = true;
+	}
+	if !closed {
+		return Err(invalid());
 	}
 
-	let node = Node::r#struct(name, fields);
-
-	Ok((node, iterator))
+	Ok((Node::r#struct(name, fields), iterator))
 }
+
+fn parse_record_type<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	role: RecordRole,
+) -> Result<(Vec<TypeField<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	let invalid = || ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Invalid anonymous {role} type. The most likely cause is a missing `name: type` field, comma, or closing }}."
+		),
+	};
+	iterator.next_str("{").map_err(|_| invalid())?;
+	let mut fields = Vec::new();
+	loop {
+		if iterator.clone().next().copied() == Some("}") {
+			iterator.next();
+			return Ok((fields, iterator));
+		}
+		let name = iterator.next_identifier().map_err(|_| invalid())?;
+		iterator.next_str(":").map_err(|_| invalid())?;
+		let base_type = iterator.next_identifier().map_err(|_| invalid())?;
+		let (type_name, next) = parse_type_name(iterator, base_type)?;
+		iterator = next;
+		fields.push(TypeField { name, type_name });
+		match iterator.clone().next().copied() {
+			Some(",") => {
+				iterator.next();
+			}
+			Some("}") => {}
+			_ => return Err(invalid()),
+		}
+	}
+}
+
+/// Parses named, fixed-array, and anonymous record types without flattening their structure.
 pub(crate) fn parse_type_name<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	base_type: &'a str,
 ) -> Result<(TypeName<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
-	let mut type_name = TypeName::Named(base_type);
+	let role = match base_type {
+		"interface" => Some(RecordRole::Interface),
+		"output" => Some(RecordRole::Output),
+		_ => None,
+	};
+	let mut type_name = if let Some(role) = role.filter(|_| iterator.clone().next().copied() == Some("{")) {
+		let (fields, next) = parse_record_type(iterator, role)?;
+		iterator = next;
+		TypeName::Record { role, fields }
+	} else {
+		TypeName::Named(base_type)
+	};
 
 	while iterator.clone().peekable().peek().map(|token| token.as_ref()) == Some("[") {
 		iterator.next_str("[")?;

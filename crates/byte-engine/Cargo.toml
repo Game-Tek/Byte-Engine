@@ -20,7 +20,7 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [features]
 default = ["headed", "network"]
-headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:flate2", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
+headed = ["dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:flate2", "dep:png", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
 network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
@@ -54,6 +54,7 @@ harness = false
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 flate2 = { version = "1.1.9", optional = true }
+png = { version = "0.18.1", optional = true }
 facet = "0.50.0-rc.7"
 facet-json = "0.50.0-rc.7"
 serde_json = "1.0.140"

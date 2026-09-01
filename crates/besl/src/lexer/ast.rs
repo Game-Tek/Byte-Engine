@@ -116,12 +116,15 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 
 	let root: NodeReference = root.into();
 
-	match &node.node {
+	match &mut node.node {
 		parser::Nodes::Scope { name, children } => {
 			assert_eq!(*name, "root");
 
 			let mut next_intrinsic_expansion_id = 0;
 			for child in children {
+				for declaration in super::entry::normalize_entry(child, &root)? {
+					root.borrow_mut().add_child(declaration.into());
+				}
 				let c = lex_parsed_node(vec![root.clone()], child, &mut next_intrinsic_expansion_id)?;
 				root.borrow_mut().add_child(c);
 			}
@@ -144,6 +147,8 @@ impl Node {
 	}
 
 	/// Creates the single root node that owns a program's other nodes.
+	// Keep the built-in registry contiguous so overload ordering and shared type handles remain auditable together.
+	#[allow(clippy::too_many_lines)]
 	pub fn root() -> Node {
 		let void = primitive_type("void");
 		let bool_t = primitive_type("bool");
@@ -264,6 +269,10 @@ impl Node {
 			texture_cube_array.clone(),
 			array_texture_2d.clone(),
 			atomic_u32.clone(),
+			// Vertex invocation indices are implicit BESL values. Their placeholder locations are
+			// never exposed as vertex attributes; backends and the VM map them to dedicated built-ins.
+			Node::input(crate::VERTEX_INDEX_BUILTIN, u32_t.clone(), u8::MAX - 1).into(),
+			Node::input(crate::INSTANCE_INDEX_BUILTIN, u32_t.clone(), u8::MAX).into(),
 			builtin_intrinsic(
 				"sample",
 				vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
@@ -1049,9 +1058,19 @@ impl Node {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTypes {
-	Buffer { members: Vec<NodeReference> },
-	CombinedImageSampler { format: String },
-	Image { format: String },
+	Buffer {
+		members: Vec<NodeReference>,
+	},
+	/// A storage buffer whose element count is supplied by the bound resource.
+	BufferArray {
+		element: NodeReference,
+	},
+	CombinedImageSampler {
+		format: String,
+	},
+	Image {
+		format: String,
+	},
 }
 
 /// The `BufferMemoryClass` enum selects the memory region that best matches a buffer's shader access pattern.
@@ -1196,6 +1215,10 @@ impl Nodes {
 		}
 
 		match self {
+			Nodes::Binding {
+				r#type: BindingTypes::BufferArray { .. },
+				..
+			} => true,
 			Nodes::Member { r#type, count, .. } => count.is_some() || type_is_indexable(r#type),
 			Nodes::Input { format, .. } => type_is_indexable(format),
 			Nodes::Output { format, count, .. } => count.is_some() || type_is_indexable(format),
@@ -1205,7 +1228,14 @@ impl Nodes {
 			| Nodes::Specialization { r#type, .. }
 			| Nodes::Const { r#type, .. }
 			| Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => type_is_indexable(r#type),
-			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
+			Nodes::Expression(Expressions::Member { source, .. }) => match source.borrow().node() {
+				Nodes::Binding {
+					r#type: BindingTypes::CombinedImageSampler { format },
+					count: None,
+					..
+				} => format == "ArrayTexture2D",
+				_ => source.borrow().node().is_indexable(),
+			},
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
 			_ => false,
 		}
@@ -1214,7 +1244,7 @@ impl Nodes {
 	pub fn is_buffer_binding(&self) -> bool {
 		match self {
 			Nodes::Binding {
-				r#type: BindingTypes::Buffer { .. },
+				r#type: BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. },
 				..
 			} => true,
 			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_buffer_binding(),
@@ -1224,6 +1254,8 @@ impl Nodes {
 }
 
 impl std::fmt::Debug for Node {
+	// Every node variant is formatted here so Debug output stays exhaustive when the AST grows.
+	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
 			Nodes::Null => {

@@ -107,13 +107,12 @@ impl Context {
 			for row in 0..readback.row_count {
 				let source_offset = image * readback.native_bytes_per_image + row * readback.native_bytes_per_row;
 				let destination_offset = image * readback.bytes_per_image + row * readback.bytes_per_row;
-				unsafe {
-					std::ptr::copy_nonoverlapping(
-						pointer.add(source_offset),
-						readback.bytes.as_mut_ptr().add(destination_offset),
-						readback.bytes_per_row,
-					);
-				}
+				// SAFETY: Native readback layout calculations bound this row within the mapped Metal buffer.
+				let source = unsafe { pointer.add(source_offset) };
+				// SAFETY: Compact layout calculations bound this row within the owned destination vector.
+				let destination = unsafe { readback.bytes.as_mut_ptr().add(destination_offset) };
+				// SAFETY: The mapped native buffer and owned destination vector are distinct and cover one compact row.
+				unsafe { std::ptr::copy_nonoverlapping(source, destination, readback.bytes_per_row) };
 			}
 		}
 

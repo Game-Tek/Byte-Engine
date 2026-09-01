@@ -63,36 +63,42 @@ impl NativeCommand {
 
 	/// Retains a Metal buffer and declares its allocation in this command's residency set.
 	pub(crate) fn retain_buffer(&mut self, buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>) {
+		// SAFETY: Every MTLBuffer is also an MTLAllocation in Metal's object model.
 		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(buffer) };
 		self.retain_allocation(allocation);
 	}
 
 	/// Retains a Metal texture and declares its allocation in this command's residency set.
 	pub(crate) fn retain_texture(&mut self, texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>) {
+		// SAFETY: Every MTLTexture is also an MTLAllocation in Metal's object model.
 		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(texture) };
 		self.retain_allocation(allocation);
 	}
 
 	/// Retains a compute pipeline and declares its compiled allocation in this command's residency set.
 	pub(crate) fn retain_compute_pipeline(&mut self, pipeline: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>) {
+		// SAFETY: Metal pipeline states conform to MTLAllocation and may be placed in a residency set.
 		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
 		self.retain_allocation(allocation);
 	}
 
 	/// Retains a render pipeline and declares its compiled allocation in this command's residency set.
 	pub(crate) fn retain_render_pipeline(&mut self, pipeline: Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>) {
+		// SAFETY: Metal pipeline states conform to MTLAllocation and may be placed in a residency set.
 		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
 		self.retain_allocation(allocation);
 	}
 
 	/// Retains a sampler referenced from a nested argument buffer until GPU completion.
 	pub(crate) fn retain_sampler(&mut self, sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>) {
+		// SAFETY: Erasing the Objective-C protocol preserves the same retained object and lifetime.
 		let sampler = unsafe { Retained::cast_unchecked::<AnyObject>(sampler) };
 		self.retained_objects.push(sampler);
 	}
 
 	/// Retains a Metal 4 argument table until every command snapshot that references it completes.
 	pub(crate) fn retain_argument_table(&mut self, table: Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>) {
+		// SAFETY: Erasing the Objective-C protocol preserves the same retained object and lifetime.
 		let table = unsafe { Retained::cast_unchecked::<AnyObject>(table) };
 		self.retained_objects.push(table);
 	}
@@ -100,6 +106,7 @@ impl NativeCommand {
 	/// Retains a drawable and its texture until Metal completes the submitted batch.
 	pub(crate) fn retain_drawable(&mut self, drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>) {
 		self.retain_texture(drawable.texture());
+		// SAFETY: Erasing the Objective-C protocol preserves the same retained drawable and lifetime.
 		let drawable = unsafe { Retained::cast_unchecked::<AnyObject>(drawable) };
 		self.retained_objects.push(drawable);
 	}
@@ -239,6 +246,7 @@ impl StoredQueue {
 		let feedback_handler = StackBlock::new(move |feedback: NonNull<ProtocolObject<dyn mtl::MTL4CommitFeedback>>| {
 			// Metal may invoke this block on any thread, so it sends an owned result without accessing GHI state.
 			let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				// SAFETY: Metal owns the feedback object for the full feedback-handler invocation.
 				let feedback = unsafe { feedback.as_ref() };
 				match feedback.error() {
 					Some(error) => BatchCommitFeedbackStatus::Failed(error.localizedDescription().to_string()),
@@ -249,11 +257,13 @@ impl StoredQueue {
 			let _ = feedback_sender.try_send(result);
 		});
 		let commit_options = mtl::MTL4CommitOptions::new();
+		// SAFETY: The copied block is retained below until Metal invokes it for this submission.
+		unsafe { commit_options.addFeedbackHandler(NonNull::from(&*feedback_handler).as_ptr()) };
+		// SAFETY: The pointer addresses `command_buffers.len()` contiguous retained command-buffer references.
 		unsafe {
-			commit_options.addFeedbackHandler(NonNull::from(&*feedback_handler).as_ptr());
 			self.queue
-				.commit_count_options(command_buffer_pointer, command_buffers.len(), commit_options.as_ref());
-		}
+				.commit_count_options(command_buffer_pointer, command_buffers.len(), commit_options.as_ref())
+		};
 		SubmittedBatch {
 			queue_handle,
 			commands,

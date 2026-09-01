@@ -642,7 +642,7 @@ mod tests {
 			Counters: struct {
 				value: atomicu32,
 			}
-			counters: descriptor<Counters, 0, read_write>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
 			increment: fn() -> u32 {
 				return atomic_add(counters.value, 1);
 			}
@@ -742,7 +742,7 @@ mod tests {
 			Counters: struct {
 				value: atomicu32,
 			}
-			counters: descriptor<Counters, 0, read_write>;
+			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
 			main: fn() -> void {
 				return;
 				let previous: u32 = atomic_add(counters.value, 1);

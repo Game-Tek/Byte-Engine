@@ -160,13 +160,20 @@ impl Application for GraphicsApplication {
 		let physics_transforms_listener = world.transforms_channel().listener();
 		let renderer_transforms_listener = world.transforms_channel().listener();
 
-		// Reflected posting is enabled only after every future-only transform listener exists.
-		let mut inspector = Inspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
+		// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
+		let mut inspector =
+			DefaultInspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
 		inspector
 			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
 			.unwrap_or_else(|error| panic!("{error}"));
+		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+			inspector
+				.register_message::<DeleteMessage>(message_type)
+				.unwrap_or_else(|error| panic!("{error}"));
+		}
 		let inspector = EntityHandle::from(inspector);
-		let screenshot_broker = inspector.screenshots();
+		let screenshot_broker = inspector.screenshot_broker();
+		let inspector: EntityHandle<dyn Inspector> = inspector;
 		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let window_factory = messages.factory();
@@ -240,106 +247,125 @@ impl GraphicsApplication {
 		&self.configuration
 	}
 
+	/// Samples one monotonic frame interval and advances the application clock.
+	fn sample_frame_time(&mut self) -> Time {
+		let elapsed = MediaTime::from_std(std::time::Instant::now().duration_since(self.start_time));
+		let delta = elapsed - self.last_tick_time;
+		self.last_tick_time = elapsed;
+		Time { elapsed, delta }
+	}
+
+	/// Routes window input events and reports whether any window requested close.
+	fn process_window_events(&mut self) -> bool {
+		let span = debug_span!("GraphicsApplication::process_window_events");
+		let _enter = span.enter();
+		let mut close = false;
+		for window_events in self.renderer.update_windows() {
+			for event in window_events {
+				close |= matches!(event, ghi::window::Events::Close);
+				if let Some((seat, device, action, value)) = process_default_window_input(&mut self.input_system, event) {
+					self.input_system.record_trigger_value_for_device(seat, device, action, value);
+				}
+			}
+		}
+		close
+	}
+
+	/// Polls newly connected gamepads and forwards their trigger values into the input manager.
+	fn process_gamepad_events(&mut self) {
+		let span = debug_span!("GraphicsApplication::process_gamepad_events");
+		let _enter = span.enter();
+		if self.tick_count > 0 && self.gamepad_system.is_none() {
+			self.gamepad_system = input::gamepad::GamepadSystem::new()
+				.map_err(|error| log::warn!("{}", error))
+				.ok();
+		}
+		let Some(gamepad_system) = self.gamepad_system.as_mut().filter(|_| self.tick_count > 0) else {
+			return;
+		};
+		let (new_devices, events) = gamepad_system.poll();
+		if let Some(device_class) = self.gamepad_device_class_handle {
+			for (path, kind, device) in new_devices {
+				// Keep physical HID identity distinct so player and device routing is preserved.
+				let device_handle = self.input_system.create_device(&device_class);
+				gamepad_system.add_device(path, kind, device, device_handle);
+			}
+		} else if !new_devices.is_empty() {
+			log::warn!(
+				"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
+				crate::online_docs_url("reference/input")
+			);
+		}
+		for event in events {
+			log::debug!(
+				target: "byte_engine::input::events",
+				"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+				event.device_handle(),
+				event.trigger(),
+				event.value()
+			);
+			self.input_system.record_trigger_value_for_device(
+				input::SeatHandle::stub(),
+				event.device_handle(),
+				event.trigger(),
+				event.value(),
+			);
+		}
+	}
+
+	/// Adopts newly created windows and cameras before renderer preparation.
+	fn prepare_renderer_state(&mut self) {
+		let span = debug_span!("GraphicsApplication::prepare_renderer_state");
+		let _enter = span.enter();
+		while let Some(message) = self.window_factory.1.read() {
+			self.renderer.create_window(message.into_data());
+		}
+		while let Some(message) = self.cameras_listener.read() {
+			self.renderer.create_camera(message.handle(), message.into_data());
+		}
+	}
+
+	/// Renders one frame and completes every screenshot request with its encoded result.
+	fn render_frame(&mut self) {
+		let span = debug_span!("GraphicsApplication::render_frame");
+		let _enter = span.enter();
+		let requests = self.screenshot_broker.drain();
+		let captures = requests
+			.iter()
+			.map(|request| (request.sink, &request.capture))
+			.collect::<Vec<_>>();
+		let results = self.renderer.prepare(
+			&mut self.renderer_transforms_listener,
+			&self.application.frame_allocator,
+			&captures,
+		);
+		for (request, capture) in requests.into_iter().zip(results) {
+			let result = capture
+				.map_err(crate::inspector::screenshot::ScreenshotError::from)
+				.and_then(|(frame, readback)| {
+					crate::inspector::screenshot::encode_screenshot_png(readback)
+						.map(|png| crate::inspector::screenshot::Screenshot { frame, png })
+						.map_err(crate::inspector::screenshot::ScreenshotError::Internal)
+				});
+			request.complete(result);
+		}
+	}
+
 	/// Runs one graphics tick and lets application code update state before rendering.
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
-		let now = std::time::Instant::now();
-		// Sample the monotonic clock once, then keep application time entirely in
-		// media ticks so elapsed time is exactly the sum of observed frame deltas.
-		let elapsed = MediaTime::from_std(now.duration_since(self.start_time));
-		let dt = elapsed - self.last_tick_time;
-		self.last_tick_time = elapsed;
-		let tick_count = self.tick_count;
-
-		let mut close = false;
-
+		let time = self.sample_frame_time();
+		let dt = time.delta;
 		{
 			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
 			let _enter = span.enter();
 			self.application.frame_allocator.reset();
 		}
-
-		{
-			let span = debug_span!("GraphicsApplication::process_window_events");
-			let _enter = span.enter();
-			let renderer = &mut self.renderer;
-			let input_system = &mut self.input_system;
-
-			for window_events in renderer.update_windows() {
-				for event in window_events {
-					if let ghi::window::Events::Close = event {
-						close = true;
-					}
-
-					if let Some((seat_handle, device_handle, input_source_action, value)) =
-						process_default_window_input(input_system, event)
-					{
-						input_system.record_trigger_value_for_device(seat_handle, device_handle, input_source_action, value);
-					}
-				}
-			}
-		}
-
-		{
-			let span = debug_span!("GraphicsApplication::process_application_events");
-			let _enter = span.enter();
-			if let Some(e) = self.application_events.1.read() {
-				match e {
-					Events::Close => {
-						close = true;
-					}
-				}
-			}
-		}
-
-		{
-			let span = debug_span!("GraphicsApplication::process_gamepad_events");
-			let _enter = span.enter();
-			if self.tick_count > 0 && self.gamepad_system.is_none() {
-				self.gamepad_system = input::gamepad::GamepadSystem::new()
-					.map_err(|error| log::warn!("{}", error))
-					.ok();
-			}
-			if self.tick_count > 0
-				&& let Some(gamepad_system) = &mut self.gamepad_system
-			{
-				let (new_devices, events) = gamepad_system.poll();
-
-				if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
-					for (path, kind, device) in new_devices {
-						// Each physical HID device gets its own input-system device so actions can
-						// preserve player/device identity instead of collapsing into one gamepad.
-						let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
-						gamepad_system.add_device(path, kind, device, device_handle);
-					}
-				} else if !new_devices.is_empty() {
-					log::warn!(
-						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
-						crate::online_docs_url("reference/input")
-					);
-				}
-
-				for event in events {
-					log::debug!(
-						target: "byte_engine::input::events",
-						"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
-						event.device_handle(),
-						event.trigger(),
-						event.value()
-					);
-					self.input_system.record_trigger_value_for_device(
-						input::SeatHandle::stub(),
-						event.device_handle(),
-						event.trigger(),
-						event.value(),
-					);
-				}
-			}
-		}
-
-		let time = Time { elapsed, delta: dt };
+		let mut close = self.process_window_events();
+		close |= matches!(self.application_events.1.read(), Some(Events::Close));
+		self.process_gamepad_events();
 
 		{
 			let span = debug_span!("GraphicsApplication::update_input");
@@ -367,44 +393,8 @@ impl GraphicsApplication {
 			);
 		}
 
-		{
-			let span = debug_span!("GraphicsApplication::prepare_renderer_state");
-			let _enter = span.enter();
-			let window_listener = &mut self.window_factory.1;
-
-			while let Some(message) = window_listener.read() {
-				self.renderer.create_window(message.into_data());
-			}
-
-			while let Some(message) = self.cameras_listener.read() {
-				self.renderer.create_camera(message.handle(), message.into_data());
-			}
-		}
-
-		{
-			let span = debug_span!("GraphicsApplication::render_frame");
-			let _enter = span.enter();
-			let requests = self.screenshot_broker.drain();
-			let captures = requests
-				.iter()
-				.map(|request| (request.sink, &request.capture))
-				.collect::<Vec<_>>();
-			let frame_allocator = &self.application.frame_allocator;
-			let results = self
-				.renderer
-				.prepare(&mut self.renderer_transforms_listener, frame_allocator, &captures);
-			for (request, capture) in requests.into_iter().zip(results) {
-				let result =
-					capture
-						.map_err(crate::inspector::screenshot::ScreenshotError::from)
-						.and_then(|(frame, readback)| {
-							crate::inspector::screenshot::encode_screenshot_png(readback)
-								.map(|png| crate::inspector::screenshot::Screenshot { frame, png })
-								.map_err(crate::inspector::screenshot::ScreenshotError::Internal)
-						});
-				request.complete(result);
-			}
-		}
+		self.prepare_renderer_state();
+		self.render_frame();
 
 		{
 			let span = debug_span!("GraphicsApplication::flush_world_deletions");
@@ -774,7 +764,10 @@ use crate::{
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	ghi::command_buffer::CommandBufferRecording as _,
 	input::{Action, input_trigger},
-	inspector::{Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE, http::HttpInspectorServer},
+	inspector::{
+		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+		http::HttpInspectorServer,
+	},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
 		Environment, RenderableMesh, UpdatePose,

@@ -1,8 +1,8 @@
-image_texture: descriptor<Texture2D, 0, read>;
-in_uv: input<vec2f, 0>;
-in_opacity: input<f32, 1>;
-out_color_attachment: output<vec4f, 0>;
-main: fn() -> void {
-	let color: vec4f = sample(image_texture, in_uv);
-	out_color_attachment = vec4f(color.x, color.y, color.z, color.w * in_opacity);
+image_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+
+main: fn(pipeline_input: interface { uv: vec2f, opacity: f32 }) -> output { color_attachment: vec4f } {
+	let color: vec4f = sample(image_texture, pipeline_input.uv);
+	let color_attachment: vec4f = vec4f(color.x, color.y, color.z, color.w * pipeline_input.opacity);
+
+	return { color_attachment };
 }

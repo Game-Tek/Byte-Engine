@@ -63,6 +63,64 @@ mod tests {
 	}
 
 	#[test]
+	fn runtime_buffer_and_texture_array_layer_use_native_glsl_resources() {
+		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
+			.expect("Expected runtime-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected runtime-array fragment GLSL generation");
+
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=1,scalar) readonly buffer _instances{Instance instances[];};"
+		);
+		assert_string_contains!(shader, "layout(set=0,binding=0) uniform sampler2DArray sprites;");
+		assert_string_contains!(shader, "Instance instance=instances[");
+		assert_string_contains!(shader, "texture(sprites,vec3(");
+		assert_string_contains!(shader, "float(instance.sprite_id)");
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-runtime-array-texture-layer")
+			.expect("Expected runtime-array fragment GLSL to compile to SPIR-V");
+	}
+
+	#[test]
+	fn sampled_descriptor_array_keeps_descriptor_indexing_in_glsl() {
+		let root = besl::compile_to_besl(
+			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
+			None,
+		)
+		.expect("Expected sampled descriptor-array source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected sampled descriptor-array GLSL generation");
+
+		assert_string_contains!(shader, "uniform sampler2D textures[4];");
+		assert_string_contains!(shader, "texture(textures[nonuniformEXT(2)],vec2(0.0,0.0))");
+	}
+
+	#[test]
+	fn structural_position_uses_gl_position_without_colliding_with_a_local() {
+		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
+			.expect("Expected structural position source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected structural position GLSL generation");
+
+		assert_string_contains!(shader, "vec4 position=vec4(float(uint(gl_VertexIndex)),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "gl_Position=position;");
+		assert!(!shader.contains("out vec4 _besl_interface_position"));
+	}
+
+	#[test]
 	fn compute_subgroup_intrinsics_require_and_lower_to_glsl_subgroup_operations() {
 		let root = besl::compile_to_besl(
 			r#"
@@ -96,7 +154,7 @@ mod tests {
 	#[test]
 	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
 		let root = besl::compile_to_besl(
-			"image: descriptor<StorageImage<rgba16f>, 4, write>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",
 			None,
 		)
 		.expect("Expected formatted storage image descriptor to compile");
@@ -113,7 +171,7 @@ mod tests {
 	#[test]
 	fn source_unformatted_storage_image_descriptor_omits_glsl_format() {
 		let root = besl::compile_to_besl(
-			"image: descriptor<StorageImage, 5, write>; main: fn () -> void { image; }",
+			"image: descriptor<{ type: StorageImage, binding: 5, access: write }>; main: fn () -> void { image; }",
 			None,
 		)
 		.expect("Expected unformatted storage image descriptor to compile");
@@ -268,6 +326,46 @@ mod tests {
 		assert_string_contains!(
 			shader,
 			"void used_by_used(){}void used(){used_by_used();}void main(){used();}"
+		);
+	}
+
+	#[test]
+	fn vertex_invocation_indices_lower_to_vulkan_builtins_inside_helpers() {
+		let root = besl::compile_to_besl(
+			r#"
+			invocation_sum: fn () -> u32 {
+				return vertex_index + instance_index;
+			}
+			out_value: output<u32, 0>;
+			main: fn () -> void {
+				out_value = invocation_sum();
+			}
+			"#,
+			None,
+		)
+		.expect("Expected implicit vertex builtins to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected vertex builtins to lower to GLSL");
+
+		assert_string_contains!(shader, "uint(gl_VertexIndex)");
+		assert_string_contains!(shader, "uint(gl_InstanceIndex)");
+		assert!(!shader.contains("layout(location=254)"));
+		assert!(!shader.contains("layout(location=255)"));
+	}
+
+	#[test]
+	fn vertex_invocation_indices_are_rejected_outside_the_vertex_stage() {
+		let root = besl::compile_to_besl("main: fn () -> void { vertex_index; }", None)
+			.expect("Expected implicit vertex builtin to link");
+		assert!(
+			Generator::new()
+				.generate(
+					&ShaderGenerationSettings::fragment(),
+					&root.get_main().expect("Expected main")
+				)
+				.is_err()
 		);
 	}
 

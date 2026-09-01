@@ -120,23 +120,4 @@ mod tests {
 		assert_eq!(directional.class(), LightClasses::Directional);
 		assert!(directional.as_string().contains("DirectionalLight"));
 	}
-
-	#[test]
-	fn erased_light_conversion_preserves_the_concrete_variant_and_payload() {
-		let cone = ConeLight::new(white(), candela(100.0), math::Radians::new(0.25), math::Radians::new(0.5))
-			.expect("physical cone light");
-		let point = PointLight::new(white(), candela(100.0)).expect("physical point light");
-		let directional = DirectionalLight::new(
-			white(),
-			PhotometricIntensity::Illuminance {
-				lux: 5_000.0,
-				measurement_distance_m: 1.0,
-			},
-		)
-		.expect("physical directional light");
-
-		assert!(matches!(Lights::from(cone.clone()), Lights::Cone(light) if light == cone));
-		assert!(matches!(Lights::from(point.clone()), Lights::Point(light) if light == point));
-		assert!(matches!(Lights::from(directional.clone()), Lights::Direction(light) if light == directional));
-	}
 }

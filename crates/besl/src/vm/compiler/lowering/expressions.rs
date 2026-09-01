@@ -2,6 +2,8 @@ use super::*;
 
 impl<'a> Compiler<'a> {
 	/// Compiles a scalar BESL expression into one register-producing VM instruction sequence.
+	// Expression lowering is an exhaustive AST dispatcher; branch-local validation remains next to emitted instructions.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(super) fn compile_value_expression(
 		&mut self,
 		expression: &NodeReference,
@@ -139,7 +141,7 @@ impl<'a> Compiler<'a> {
 						let layout = match r#type {
 							BindingTypes::CombinedImageSampler { .. } => DescriptorLayout::Texture,
 							BindingTypes::Image { .. } => DescriptorLayout::Image,
-							BindingTypes::Buffer { .. } => {
+							BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. } => {
 								return Err(VmError::TypeMismatch {
 									expected: expected_type.name().to_string(),
 									found: "buffer".to_string(),

@@ -347,10 +347,11 @@ use crate::{
 };
 
 #[cfg(test)]
-
 mod tests {
 
-	use besl::vm::{DescriptorBindings, ResourceSlot, Value, builtin_position_slot, input_slot, output_slot};
+	use besl::vm::{
+		DescriptorBindings, ResourceSlot, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot,
+	};
 	use resource_management::shader::{
 		besl::backends::{hlsl::HLSLTranspiler, msl::MSLTranspiler},
 		generator::ShaderGenerationSettings,
@@ -397,11 +398,11 @@ mod tests {
 		let mut output = output_buffer(&program, 0);
 
 		instance
-			.write("in_instance_index", Value::U32(instance_index))
+			.write("_besl_interface_instance_index", Value::U32(instance_index))
 			.expect("Failed to seed the instance index. The most likely cause is a simple fragment interface type mismatch.");
 
 		position
-			.write("in_local_position", Value::Vec3F(local_position))
+			.write("_besl_interface_local_position", Value::Vec3F(local_position))
 			.expect("Failed to seed the local position. The most likely cause is a simple fragment interface type mismatch.");
 
 		{
@@ -416,7 +417,7 @@ mod tests {
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
-		let Ok(Value::Vec4F(color)) = output.read("out_albedo") else {
+		let Ok(Value::Vec4F(color)) = output.read("_besl_output_albedo") else {
 			panic!("Expected vec4 fragment output")
 		};
 
@@ -434,7 +435,7 @@ mod tests {
 
 		let mut input_position = input_buffer(&program, 0);
 
-		let mut input_instance = input_buffer(&program, 1);
+		let mut input_instance = buffer(&program, builtin_instance_index_slot());
 
 		let mut output_position = builtin_position_buffer(&program);
 
@@ -459,7 +460,7 @@ mod tests {
 			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
 
 		input_instance
-			.write("instance_id", Value::U32(3))
+			.write("instance_index", Value::U32(3))
 			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
 
 		{
@@ -471,7 +472,7 @@ mod tests {
 
 			descriptors.bind_buffer(input_slot(0), &mut input_position);
 
-			descriptors.bind_buffer(input_slot(1), &mut input_instance);
+			descriptors.bind_buffer(builtin_instance_index_slot(), &mut input_instance);
 
 			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
 
@@ -482,9 +483,15 @@ mod tests {
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 
-		assert_eq!(output_position.read("position"), Ok(Value::Vec4F([11.0, 22.0, 33.0, 1.0])));
-		assert_eq!(output_instance.read("out_instance_index"), Ok(Value::U32(3)));
-		assert_eq!(output_local.read("out_local_position"), Ok(Value::Vec3F([1.0, 2.0, 3.0])));
+		assert_eq!(
+			output_position.read("_besl_interface_position"),
+			Ok(Value::Vec4F([11.0, 22.0, 33.0, 1.0]))
+		);
+		assert_eq!(output_instance.read("_besl_interface_instance_index"), Ok(Value::U32(3)));
+		assert_eq!(
+			output_local.read("_besl_interface_local_position"),
+			Ok(Value::Vec3F([1.0, 2.0, 3.0]))
+		);
 	}
 
 	/// Verifies palette selection, grid blending, and wrapped instance indices in the VM.

@@ -2,7 +2,7 @@
 	"openapi": "3.2.0",
 	"info": {
 		"title": "Byte Engine HTTP Inspector API",
-		"version": "0.1.0",
+		"version": "0.2.0",
 		"description": "Inspect and control a running headed Byte Engine application through its loopback HTTP server. The inspector listens on port 6680 and does not provide authentication. Keep it bound to the loopback interface."
 	},
 	"servers": [
@@ -14,7 +14,7 @@
 	"tags": [
 		{
 			"name": "Inspection",
-			"description": "Read runtime entities, message publication ranges, and configuration events.",
+			"description": "Read runtime entities, registered message payload shapes, publication ranges, and configuration events.",
 			"x-displayName": "Inspect runtime state"
 		},
 		{
@@ -118,14 +118,21 @@
 			"post": {
 				"operationId": "postMessage",
 				"summary": "Post a message",
-				"description": "Publishes one supported targeted message to the running application. The current protocol accepts only `TransformationUpdate`. The request object must contain exactly `type`, `target`, and `payload`.",
+				"description": "Publishes one registered targeted message to the running application. Query `GET /messages/types` first to discover the accepted protocol names and JSON payload shapes. The request object must contain exactly `type`, `target`, and `payload`.",
 				"tags": ["Control"],
 				"requestBody": {
 					"required": true,
 					"content": {
 						"application/json": {
 							"schema": {
-								"$ref": "#/components/schemas/TransformationUpdateMessage"
+								"oneOf": [
+									{
+										"$ref": "#/components/schemas/TransformationUpdateMessage"
+									},
+									{
+										"$ref": "#/components/schemas/DeletionMessage"
+									}
+								]
 							},
 							"example": {
 								"type": "TransformationUpdate",
@@ -144,11 +151,57 @@
 						"description": "The message was accepted and published."
 					},
 					"400": {
-						"description": "The envelope, message type, target, or transform payload is invalid.",
+						"description": "The envelope, message type, target, or reflected payload is invalid.",
 						"content": {
 							"text/plain": {
 								"schema": {
 									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/messages/types": {
+			"get": {
+				"operationId": "listMessageTypes",
+				"summary": "List message payload shapes",
+				"description": "Returns every protocol message type currently accepted by `POST /messages`, sorted by `type`. Each `payload` is a cached JSON-oriented descriptor derived from the same Facet shape used to parse posted values. Use object fields and array lengths to build editor controls, and use `required` to decide which object fields the editor must send.",
+				"tags": ["Inspection"],
+				"responses": {
+					"200": {
+						"description": "Registered protocol message names and payload shapes.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MessageTypeCatalog"
+								},
+								"example": {
+									"types": [
+										{
+											"type": "TransformationUpdate",
+											"payload": {
+												"type": "object",
+												"fields": [
+													{
+														"name": "position",
+														"required": true,
+														"flattened": false,
+														"shape": {
+															"type": "array",
+															"items": {
+																"type": "number",
+																"format": "f32"
+															},
+															"length": 3
+														}
+													}
+												],
+												"additional_fields": false
+											}
+										}
+									]
 								}
 							}
 						}
@@ -371,6 +424,62 @@
 					}
 				}
 			},
+			"MessageTypeCatalog": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["types"],
+				"properties": {
+					"types": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RegisteredMessageType"
+						}
+					}
+				}
+			},
+			"RegisteredMessageType": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "payload"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Stable protocol name accepted in the posted message envelope."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/PayloadShape"
+					}
+				}
+			},
+			"PayloadShape": {
+				"type": "object",
+				"required": ["type"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"enum": [
+							"null",
+							"boolean",
+							"string",
+							"integer",
+							"number",
+							"array",
+							"tuple",
+							"object",
+							"optional",
+							"map",
+							"result",
+							"enum",
+							"any",
+							"recursive",
+							"unknown"
+						]
+					}
+				},
+				"additionalProperties": true,
+				"description": "Recursive JSON payload descriptor. Scalars use `type` and may include a Rust `format`. Arrays use `items` and optional `length`, `unique`, or `dimensions`. Tuples use `items`. Objects use ordered `fields` with `name`, `required`, `flattened`, and nested `shape`, plus `additional_fields`. Optional values use `shape`; maps use `keys` and `values`; results use `ok` and `error`; enums use `representation`, optional `tag` and `content`, and named `variants`. Recursive and unknown values include `name`."
+			},
 			"MessageRange": {
 				"type": "object",
 				"additionalProperties": false,
@@ -418,6 +527,26 @@
 					},
 					"payload": {
 						"$ref": "#/components/schemas/TransformPayload"
+					}
+				}
+			},
+			"DeletionMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"enum": ["Delete", "Destroy"],
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4294967295,
+						"description": "Entity handle returned by `GET /entities`."
+					},
+					"payload": {
+						"type": "null"
 					}
 				}
 			},

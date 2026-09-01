@@ -552,6 +552,8 @@ mod tests {
 
 	/// Verifies the textured-material generator samples every BRDF image role and extracts packed channels when executed.
 	#[test]
+	// Keep the full VM material contract in one fixture so all generated outputs are exercised together.
+	#[allow(clippy::too_many_lines)]
 	fn textured_material_besl_program_runs_in_the_vm() {
 		let mut builder = BrdfMaterialBuilder::new();
 		let base_color = builder.texture(BrdfTexture {

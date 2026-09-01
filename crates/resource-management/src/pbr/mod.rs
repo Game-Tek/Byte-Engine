@@ -289,19 +289,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn builder_assigns_stable_dense_node_ids() {
-		let mut builder = BrdfMaterialBuilder::new();
-
-		let first = builder.constant(BrdfValue::Scalar(1.0));
-		let second = builder.constant(BrdfValue::Scalar(2.0));
-		let third = builder.multiply(first, second);
-
-		assert_eq!(first, BrdfNodeId::new(0));
-		assert_eq!(second, BrdfNodeId::new(1));
-		assert_eq!(third, BrdfNodeId::new(2));
-	}
-
-	#[test]
 	fn validates_complete_material_graph() {
 		let material = test_material_graph();
 

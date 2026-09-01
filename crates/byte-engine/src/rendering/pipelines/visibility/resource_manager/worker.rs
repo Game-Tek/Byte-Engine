@@ -517,6 +517,8 @@ impl VisibilityPipelineResourceManagerClient {
 	/// Call this before scene draw preparation. It first returns completed frame
 	/// uploads, then drains worker results, discovers dependent material and image
 	/// requests, and reports whether the renderer must record new uploads.
+	// Keep retry discovery and dependency requeueing in one scan so each resource transitions at most once per frame.
+	#[allow(clippy::excessive_nesting)]
 	pub(crate) fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
 		for (_, resident) in self.uploads.retire_frame(completed_frame, &mut self.loader) {
 			self.completions.push(resident);

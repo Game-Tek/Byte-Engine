@@ -59,12 +59,8 @@ mod tests {
 	use super::Scale;
 
 	#[test]
-	fn identity_has_unit_factors() {
+	fn identity_and_maths_conversion_preserve_scale_factors() {
 		assert_eq!(Scale::identity(), Scale::new(1.0, 1.0, 1.0));
-	}
-
-	#[test]
-	fn maths_conversion_is_explicit_and_lossless() {
 		let scale = Scale::from_maths(Vec3f::new(2.0, 3.0, 4.0));
 
 		assert_eq!((scale.x(), scale.y(), scale.z()), (2.0, 3.0, 4.0));

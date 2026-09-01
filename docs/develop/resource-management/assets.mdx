@@ -20,7 +20,8 @@ handler from the asset type or extension.
 
 The standard graphics setup installs handlers for common engine formats:
 
-- PNG images
+- PNG and EXR images
+- `.environment.bead` environment maps
 - glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
 - FBX meshes, skeletons, and skeletal animation clips
 - `.bema` materials and variants
@@ -64,8 +65,45 @@ The trace is an in-memory development tool: release builds do not expose it, and
 Asset processing turns source data into engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
+Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
+For color textures, supported sRGB or linear PNG metadata overrides the filename default; an unsupported transfer function falls back to the inferred semantic.
+EXR images keep their linear HDR values in an `RGBA16F` image and don't generate lighting maps by default.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
+
+## Environment maps
+
+Create a standalone `.environment.bead` asset when you want to generate
+image-based lighting from a high-precision source image. The source can be an
+EXR or another high-precision image format that Byte Engine can decode for
+environment maps. Byte Engine doesn't need to support that file as a standalone
+image asset.
+
+Use a full-sphere, 2:1 latitude-longitude image with at least 16-bit integer or
+floating-point precision. The environment decoder accepts EXR, Radiance HDR,
+16-bit PNG, high-precision TIFF and PNM, and farbfeld sources. It rejects 8-bit
+images so quantization doesn't become baked lighting or reflections. The
+decoder converts supported nonlinear source metadata to linear light before it
+generates the lighting maps. Author TIFF and PNM sources in linear light because
+their decoders don't expose reliable transfer metadata. Untagged PNG and
+farbfeld sources are interpreted as sRGB.
+
+For `studio.exr`, create `studio.environment.bead`:
+
+```json5
+{
+  $schema: "byte-engine/schemas/environment.bead.schema.json",
+  source: "studio.exr",
+}
+```
+
+The `source` ID is relative to the application `assets/` directory. Baking the
+environment asset retains the source image and adds a diffuse irradiance
+cubemap and eight roughness-prefiltered specular levels. The visibility renderer
+loads the complete set when you select `studio.environment.bead` as the world
+environment.
+
+Then [bake the application resources](/docs/develop/resource-management/baking-app-resources).
 
 ## Skeletal model resources
 

@@ -59,16 +59,23 @@ pub(crate) fn apply_specialization_map_entry(
 	let constant_id = specialization_map_entry.get_constant_id() as usize;
 
 	match specialization_map_entry.get_type().as_str() {
+		// SAFETY: The specialization entry owns a value of the declared scalar type for the duration of this call.
 		"bool" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Bool, constant_id) },
+		// SAFETY: The specialization entry owns a value of the declared scalar type for the duration of this call.
 		"i32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Int, constant_id) },
+		// SAFETY: The specialization entry owns a value of the declared scalar type for the duration of this call.
 		"u32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::UInt, constant_id) },
+		// SAFETY: The specialization entry owns a value of the declared scalar type for the duration of this call.
 		"f32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Float, constant_id) },
+		// SAFETY: The specialization entry owns two contiguous f32 values for the duration of this call.
 		"vec2f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 2))
 		},
+		// SAFETY: The specialization entry owns three contiguous f32 values for the duration of this call.
 		"vec3f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 3))
 		},
+		// SAFETY: The specialization entry owns four contiguous f32 values for the duration of this call.
 		"vec4f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 4))
 		},
@@ -115,22 +122,24 @@ pub(crate) fn build_vertex_layout(vertex_elements: &[crate::pipelines::VertexEle
 		strides[element.binding as usize] += element.format.size() as u32;
 
 		let offset = binding_offsets[element.binding as usize];
+		// SAFETY: Metal vertex descriptor arrays materialize entries for every valid attribute index.
 		let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
 		attribute.setFormat(utils::vertex_format(element.format));
-		unsafe {
-			attribute.setOffset(offset as _);
-			attribute.setBufferIndex(element.binding as _);
-		}
+		// SAFETY: The validated offset is within the binding stride configured below.
+		unsafe { attribute.setOffset(offset as _) };
+		// SAFETY: `validate_vertex_binding` excludes Metal's reserved buffer indices.
+		unsafe { attribute.setBufferIndex(element.binding as _) };
 
 		binding_offsets[element.binding as usize] += element.format.size();
 	}
 
 	for (binding, stride) in strides.iter().copied().enumerate() {
+		// SAFETY: Each binding came from a vertex element and therefore has a corresponding layout entry.
 		let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
-		unsafe {
-			layout.setStride(stride as _);
-			layout.setStepRate(1);
-		}
+		// SAFETY: The stride is the checked sum of this binding's attribute sizes.
+		unsafe { layout.setStride(stride as _) };
+		// SAFETY: A per-vertex layout advances once for every vertex.
+		unsafe { layout.setStepRate(1) };
 		layout.setStepFunction(mtl::MTLVertexStepFunction::PerVertex);
 	}
 
@@ -167,6 +176,7 @@ pub(crate) fn build_texture_descriptor(
 			"Invalid Metal cubemap-array image. The most likely cause is that cube-array compatibility was requested for a non-square image or an array layer count not divisible by six."
 		);
 	}
+	// SAFETY: The format and nonzero physical dimensions form a valid Metal 2D texture descriptor.
 	let descriptor = unsafe {
 		mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
 			utils::to_pixel_format(format),
@@ -187,16 +197,17 @@ pub(crate) fn build_texture_descriptor(
 	}
 	descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
 	descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
-	unsafe {
-		descriptor.setArrayLength(if cube_compatible {
-			1
-		} else if cube_array_compatible {
-			array_layers / 6
-		} else {
-			array_layers
-		} as _);
-		descriptor.setMipmapLevelCount(mip_levels as _);
-	}
+	let array_length = if cube_compatible {
+		1
+	} else if cube_array_compatible {
+		array_layers / 6
+	} else {
+		array_layers
+	};
+	// SAFETY: Cube validation and the image builder guarantee a valid native array length.
+	unsafe { descriptor.setArrayLength(array_length as _) };
+	// SAFETY: The image builder supplies at least one mip level and validates it against the extent.
+	unsafe { descriptor.setMipmapLevelCount(mip_levels as _) };
 
 	descriptor
 }
@@ -272,6 +283,7 @@ pub(crate) fn build_metal4_function_descriptor(
 	let library_function = mtl::MTL4LibraryFunctionDescriptor::new();
 	library_function.setLibrary(Some(library.as_ref()));
 	library_function.setName(Some(&entry_point));
+	// SAFETY: MTL4LibraryFunctionDescriptor conforms to the MTL4FunctionDescriptor protocol consumed by pipeline descriptors.
 	let library_function = unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(library_function) };
 
 	if specialization_map.is_empty() {
@@ -285,6 +297,7 @@ pub(crate) fn build_metal4_function_descriptor(
 	let specialized_function = mtl::MTL4SpecializedFunctionDescriptor::new();
 	specialized_function.setFunctionDescriptor(Some(&library_function));
 	specialized_function.setConstantValues(Some(&constant_values));
+	// SAFETY: MTL4SpecializedFunctionDescriptor conforms to the MTL4FunctionDescriptor protocol.
 	Some(unsafe { Retained::cast_unchecked::<mtl::MTL4FunctionDescriptor>(specialized_function) })
 }
 
@@ -318,6 +331,7 @@ fn configure_metal4_render_targets(
 		.filter(|attachment| attachment.format.channel_layout() != crate::ChannelLayout::Depth)
 		.enumerate()
 	{
+		// SAFETY: The index is bounded by the filtered render-target slice and Metal exposes at least that many attachment slots.
 		let color_attachment = unsafe { color_attachments.objectAtIndexedSubscript(index as _) };
 		configure_metal4_color_attachment(&color_attachment, attachment);
 	}

@@ -3,10 +3,10 @@ BloomParameters: struct {
 	blur_data: vec4f[1],
 }
 
-scene_texture: descriptor<Texture2D, 0, read>;
-bloom_texture: descriptor<Texture2D, 1, read>;
-result_texture: descriptor<StorageImage, 2, write>;
-bloom_parameters: descriptor<BloomParameters, 3, read, constant>;
+scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+bloom_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
 
 main: fn() -> void {
 	let coord: vec2u = thread_id();

@@ -102,6 +102,15 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(&format!("_{}* {}", name, name));
 				emit_suffix(string, primary_id);
 			}
+			besl::BindingTypes::BufferArray { element } => {
+				let address_space = buffer_address_space(*memory_class, *write);
+				string.push_str(address_space);
+				string.push(' ');
+				string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+				string.push_str("* ");
+				string.push_str(name);
+				emit_suffix(string, primary_id);
+			}
 			besl::BindingTypes::Image { format } => {
 				let element_type = match format.as_str() {
 					"r8ui" | "r16ui" | "r32ui" => "uint",
@@ -531,6 +540,16 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push(' ');
 				string.push_str(&format!("_{}* {} [[buffer({})]]", name, name, index));
 			}
+			besl::BindingTypes::BufferArray { element } => {
+				let address_space = buffer_address_space(*memory_class, *write);
+				self.emit_separator(string);
+				string.push_str(address_space);
+				string.push(' ');
+				string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+				string.push_str("* ");
+				string.push_str(name);
+				string.push_str(&format!(" [[buffer({index})]]"));
+			}
 			besl::BindingTypes::Image { format } => {
 				let element_type = match format.as_str() {
 					"r8ui" | "r16ui" | "r32ui" => "uint",
@@ -843,11 +862,27 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
+		let mut has_previous_parameter = has_previous_parameter;
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
 			string.push_str("constant _resources& resources");
+			has_previous_parameter = true;
+		}
+		for (used, name) in [
+			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
+			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
+		] {
+			if !used {
+				continue;
+			}
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("uint ");
+			string.push_str(name);
+			has_previous_parameter = true;
 		}
 	}
 
@@ -920,11 +955,26 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
+		let mut has_previous_parameter = has_previous_parameter;
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
 			string.push_str("resources");
+			has_previous_parameter = true;
+		}
+		for (used, name) in [
+			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
+			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
+		] {
+			if !used {
+				continue;
+			}
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(name);
+			has_previous_parameter = true;
 		}
 	}
 }

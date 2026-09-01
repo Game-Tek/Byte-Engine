@@ -1,0 +1,9 @@
+Instance: struct {
+	position: vec3f,
+}
+
+instances: descriptor<{ type: Instance[], binding: 0, access: read }>;
+textures: descriptor<{ count: 4, access: read, binding: 1, type: Texture2D, }>;
+output: descriptor<{ type: StorageImage<rgba16f>, binding: 2, access: write }>;
+
+main: fn () -> void {}

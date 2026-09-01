@@ -54,6 +54,23 @@ fn subgroup_lane_groups(configs: &[ExecutionConfig], subgroup_size: u32) -> Vec<
 	groups.into_iter().map(|(_, lanes)| lanes).collect()
 }
 
+/// Resolves fixed and runtime-sized buffer indices against the active binding.
+fn read_bound_buffer_array_index(
+	registers: &[Option<Value>],
+	register: usize,
+	declared_count: Option<usize>,
+	buffer: &Buffer,
+	stride: usize,
+) -> Result<usize, VmError> {
+	if stride == 0 {
+		return Err(VmError::UnsupportedBufferLayout {
+			message: "Runtime-sized buffer elements must occupy at least one byte".to_string(),
+		});
+	}
+	let count = declared_count.unwrap_or_else(|| buffer.bytes().len() / stride);
+	read_buffer_array_index(registers, register, count)
+}
+
 impl ExecutableProgram {
 	/// Executes the compiled `main` function using the currently bound descriptor resources.
 	pub fn run_main(&self, descriptors: &mut DescriptorBindings<'_>) -> Result<(), VmError> {
@@ -588,7 +605,6 @@ impl ExecutableProgram {
 			| Instruction::FetchTextureArray { .. }
 			| Instruction::FetchTextureU32 { .. }
 			| Instruction::SampleTexture { .. }
-			| Instruction::SampleTextureArray { .. }
 			| Instruction::SampleTexture3D { .. }
 			| Instruction::TextureSize { .. } => {
 				Self::execute_texture_instruction(instruction, &mut frame.registers, descriptors)?;
@@ -1089,16 +1105,13 @@ impl ExecutableProgram {
 				index,
 				value_type,
 			} => {
-				let index = read_buffer_array_index(registers, *index, *count)?;
-				let value = if *slot == PUSH_CONSTANT_SLOT {
-					descriptors
-						.push_constant_mut()?
-						.read_value(*offset + *stride * index, value_type)?
+				let buffer = if *slot == PUSH_CONSTANT_SLOT {
+					descriptors.push_constant_mut()?
 				} else {
-					descriptors
-						.buffer_mut(*slot)?
-						.read_value(*offset + *stride * index, value_type)?
+					descriptors.buffer_mut(*slot)?
 				};
+				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
+				let value = buffer.read_value(*offset + *stride * index, value_type)?;
 				registers[*register] = Some(value);
 			}
 			Instruction::StoreBuffer {
@@ -1119,11 +1132,10 @@ impl ExecutableProgram {
 				value_type,
 				register,
 			} => {
-				let index = read_buffer_array_index(registers, *index, *count)?;
 				let value = read_register(registers, *register)?;
-				descriptors
-					.buffer_mut(*slot)?
-					.write_value(*offset + *stride * index, value_type, &value)?;
+				let buffer = descriptors.buffer_mut(*slot)?;
+				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
+				buffer.write_value(*offset + *stride * index, value_type, &value)?;
 			}
 			Instruction::AtomicAddBuffer {
 				register,
@@ -1134,12 +1146,12 @@ impl ExecutableProgram {
 				index,
 				value,
 			} => {
-				let index = match index {
-					Some(index) => read_buffer_array_index(registers, *index, *count)?,
-					None => 0,
-				};
 				let value = expect_u32(read_register(registers, *value)?)?;
 				let buffer = descriptors.buffer_mut(*slot)?;
+				let index = match index {
+					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
+					None => 0,
+				};
 				let address = *offset + *stride * index;
 				let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
 				buffer.write_value(address, &ValueType::U32, &Value::U32(previous.wrapping_add(value)))?;
@@ -1155,13 +1167,13 @@ impl ExecutableProgram {
 				expected,
 				desired,
 			} => {
-				let index = match index {
-					Some(index) => read_buffer_array_index(registers, *index, *count)?,
-					None => 0,
-				};
 				let expected = expect_u32(read_register(registers, *expected)?)?;
 				let desired = expect_u32(read_register(registers, *desired)?)?;
 				let buffer = descriptors.buffer_mut(*slot)?;
+				let index = match index {
+					Some(index) => read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?,
+					None => 0,
+				};
 				let address = *offset + *stride * index;
 				let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
 				if previous == expected {
@@ -1184,9 +1196,9 @@ impl ExecutableProgram {
 			Instruction::FetchTexture { .. } | Instruction::FetchTextureArray { .. } | Instruction::FetchTextureU32 { .. } => {
 				Self::execute_texture_fetch_instruction(instruction, registers, descriptors)
 			}
-			Instruction::SampleTexture { .. }
-			| Instruction::SampleTextureArray { .. }
-			| Instruction::SampleTexture3D { .. } => Self::execute_texture_sample_instruction(instruction, registers, descriptors),
+			Instruction::SampleTexture { .. } | Instruction::SampleTexture3D { .. } => {
+				Self::execute_texture_sample_instruction(instruction, registers, descriptors)
+			}
 			Instruction::TextureSize { register, slot } => Self::execute_texture_size(*register, *slot, registers, descriptors),
 			_ => unreachable!("Texture instruction dispatch must select only texture instructions"),
 		}
@@ -1260,6 +1272,7 @@ impl ExecutableProgram {
 				register,
 				slot,
 				uv,
+				layer,
 				lod,
 				reduction_mode,
 			} => {
@@ -1273,7 +1286,7 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
 				let sampler = reduction_mode.map(Sampler::new).unwrap_or(sampler);
-				let sampled = if let Some(lod) = lod {
+				let lod = if let Some(lod) = lod {
 					let lod = read_register(registers, *lod)?;
 					let Value::F32(lod) = lod else {
 						return Err(VmError::TypeMismatch {
@@ -1281,45 +1294,25 @@ impl ExecutableProgram {
 							found: lod.value_type().name().to_string(),
 						});
 					};
+					Some(lod)
+				} else {
+					None
+				};
+				let sampled = if let Some(layer) = layer {
+					let layer = read_register(registers, *layer)?;
+					let Value::U32(layer) = layer else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: layer.value_type().name().to_string(),
+						});
+					};
+					texture.sample_array_lod_with_sampler(uv, layer, lod.unwrap_or(0.0), sampler)?
+				} else if let Some(lod) = lod {
 					texture.sample_lod_with_sampler(uv, lod, sampler)?
 				} else {
 					texture.sample_with_sampler(uv, sampler)?
 				};
 				registers[*register] = Some(sampled);
-			}
-			Instruction::SampleTextureArray {
-				register,
-				slot,
-				uv,
-				layer,
-				lod,
-				reduction_mode,
-			} => {
-				let uv = read_register(registers, *uv)?;
-				let Value::Vec2F(uv) = uv else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec2F.name().to_string(),
-						found: uv.value_type().name().to_string(),
-					});
-				};
-				let layer = read_register(registers, *layer)?;
-				let Value::U32(layer) = layer else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::U32.name().to_string(),
-						found: layer.value_type().name().to_string(),
-					});
-				};
-				let lod = read_register(registers, *lod)?;
-				let Value::F32(lod) = lod else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::F32.name().to_string(),
-						found: lod.value_type().name().to_string(),
-					});
-				};
-				let slot = resolve_resource_slot(*slot, registers)?;
-				let (texture, _) = descriptors.texture_and_sampler_mut(slot)?;
-				let sampler = Sampler::new(*reduction_mode);
-				registers[*register] = Some(texture.sample_array_lod_with_sampler(uv, layer, lod, sampler)?);
 			}
 			Instruction::SampleTexture3D { register, slot, uvw } => {
 				let uvw = read_register(registers, *uvw)?;

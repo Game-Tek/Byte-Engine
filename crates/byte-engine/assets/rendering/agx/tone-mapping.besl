@@ -1,5 +1,5 @@
-source: descriptor<StorageImage<rgba16f>, 0, read>;
-result: descriptor<StorageImage, 1, write>;
+source: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 
 splat3: fn(value: f32) -> vec3f {
 	return vec3f(value, value, value);

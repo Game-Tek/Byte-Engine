@@ -26,20 +26,24 @@ Meshes: struct {
 	meshes: Mesh[1024],
 }
 
-meshes: descriptor<Meshes, 1, read, device>;
-material_textures: descriptor<Texture2D, 9, read, 1024>;
-materials: descriptor<Materials, 1046, read, device>;
+meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
+material_textures: descriptor<{ type: Texture2D, binding: 9, access: read, count: 1024 }>;
+materials: descriptor<{ type: Materials, binding: 1046, access: read, memory: device }>;
 
-in_instance_index: input<u32, 0>;
-in_uv: input<vec2f16, 2>;
-
-main: fn() -> void {
-	let material_index: u32 = meshes.meshes[in_instance_index].material_index;
+main: fn (
+	input: StageInput,
+	pipeline_input: interface {
+		instance_index: u32,
+		primitive_index: u32,
+		uv: vec2f16,
+	},
+) -> void {
+	let material_index: u32 = meshes.meshes[pipeline_input.instance_index].material_index;
 	let material: Material = materials.materials[material_index];
 	let coverage: f32 = material.coverage_factor;
 	if (material.coverage_texture_slot != 4294967295) {
 		let texture_index: u32 = material.textures[material.coverage_texture_slot];
-		coverage = coverage * sample(material_textures[texture_index], vec2f(in_uv)).w;
+		coverage = coverage * sample(material_textures[texture_index], vec2f(pipeline_input.uv)).w;
 	}
 	if (coverage < material.alpha_cutoff) {
 		discard;

@@ -1,7 +1,7 @@
 // Build the 4x4 conservative max-depth level for every directional cascade in one dispatch.
 // One SIMD group processes two adjacent 8x8 source tiles so all 32 lanes remain useful.
-source_depth: descriptor<Texture2DArray, 1033, read>;
-reduced_depth_1: descriptor<StorageImage<r32f>, 1034, write>;
+source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
+reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
 
 shared_depth: workgroup<f32, 32>;
 

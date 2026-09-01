@@ -175,7 +175,6 @@ impl ResourceManager {
 	///
 	/// Panics when asset management was already installed on this resource manager.
 	#[cfg(debug_assertions)]
-
 	pub fn set_asset_manager(&self, asset_manager: AssetManager) {
 		assert!(
 			self.try_set_asset_manager(asset_manager).is_ok(),
@@ -185,7 +184,6 @@ impl ResourceManager {
 
 	/// Attempts to install the development asset manager without replacing an existing one.
 	#[cfg(debug_assertions)]
-
 	pub fn try_set_asset_manager(&self, asset_manager: AssetManager) -> Result<(), AssetManager> {
 		if !asset_manager.uses_resource_storage(&self.storage_backend) {
 			return Err(asset_manager);
@@ -203,7 +201,6 @@ impl ResourceManager {
 
 	/// Subscribes to resources replaced after successful development rebakes.
 	#[cfg(debug_assertions)]
-
 	pub fn resource_updates(&self) -> ResourceUpdateListener {
 		self.resource_updates.listener()
 	}
@@ -213,7 +210,6 @@ impl ResourceManager {
 	/// Next, call [`ResourceTrace::items`] with the resource ID shown by the
 	/// editor or other development tool.
 	#[cfg(debug_assertions)]
-
 	pub fn resource_trace(&self) -> Option<&ResourceTrace> {
 		self.asset_manager.get().map(AssetManager::resource_trace)
 	}
@@ -343,7 +339,6 @@ impl ResourceManager {
 }
 
 #[cfg(test)]
-
 mod tests {
 
 	use super::ResourceManager;
@@ -704,7 +699,6 @@ mod debug_tests {
 }
 
 #[cfg(all(test, not(debug_assertions)))]
-
 mod release_tests {
 
 	use super::ResourceManager;

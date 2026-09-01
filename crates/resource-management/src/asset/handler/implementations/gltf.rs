@@ -12,7 +12,6 @@ pub(crate) use mesh::*;
 pub(crate) use skeleton::*;
 
 #[cfg(test)]
-
 mod tests {
 
 	use maths_rs::mat::MatNew4;

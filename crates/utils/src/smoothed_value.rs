@@ -30,3 +30,19 @@ impl<T: Copy + std::ops::AddAssign<O> + std::ops::Sub<T, Output = O>, O: std::op
 		self.current
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::SmoothedValue;
+
+	#[test]
+	fn updates_preserve_state_and_honor_interpolation_factors() {
+		let mut value = SmoothedValue::new(0.0f32);
+
+		assert_eq!(value.update(8.0, 0.25), 2.0);
+		assert_eq!(value.update(10.0, 0.5), 6.0);
+		assert_eq!(value.update(12.0, 0.0), 6.0);
+		assert_eq!(value.update(12.0, 1.0), 12.0);
+		assert_eq!(value.update(16.0, 1.5), 18.0);
+	}
+}

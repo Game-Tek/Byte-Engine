@@ -22,10 +22,10 @@ PixelMapping: struct {
 	pixel_mapping: vec2u16[8294400],
 }
 
-mesh_data: descriptor<MeshData, 1, read, device>;
-material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write, device>;
-pixel_mapping_buffer: descriptor<PixelMapping, 1037, write, device>;
-instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
+mesh_data: descriptor<{ type: MeshData, binding: 1, access: read, memory: device }>;
+material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write, memory: device }>;
+pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 1037, access: write, memory: device }>;
+instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 1040, access: read }>;
 
 tile_histogram_keys: workgroup<atomicu32, 32>;
 tile_histogram_counts: workgroup<atomicu32, 32>;

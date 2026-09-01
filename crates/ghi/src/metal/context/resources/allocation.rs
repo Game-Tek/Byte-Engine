@@ -46,6 +46,7 @@ impl Context {
 		let options = mtl::MTLResourceOptions::StorageModeShared;
 		let index_ptr = NonNull::new(indices.as_ptr() as *mut std::ffi::c_void)
 			.expect("Index data pointer was null. The most likely cause is an empty index slice.");
+		// SAFETY: `index_ptr` references `indices.len()` initialized bytes for the duration of buffer creation.
 		let index_buffer = unsafe {
 			self.device
 				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
@@ -101,6 +102,7 @@ impl Context {
 				let vertex_ptr = NonNull::new(binding_vertices.as_ptr() as *mut std::ffi::c_void)
 					.expect("Vertex data pointer was null. The most likely cause is an empty vertex slice.");
 				Some(
+					// SAFETY: `vertex_ptr` references the initialized packed binding bytes for the duration of buffer creation.
 					unsafe {
 						self.device
 							.newBufferWithBytes_length_options(vertex_ptr, binding_vertices.len() as _, options)
@@ -177,6 +179,7 @@ impl Context {
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
 		unsafe { &*(buffer.pointer as *const T) }
 	}
 
@@ -186,10 +189,15 @@ impl Context {
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
+	///
+	/// # Safety
+	///
+	/// The caller must keep the context and buffer alive and must not create another CPU mapping until the returned mapping is discarded.
 	pub unsafe fn transfer_buffer_mapping<T: Copy>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
@@ -199,6 +207,7 @@ impl Context {
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.pointer, std::mem::size_of::<T>()) }
 	}
 

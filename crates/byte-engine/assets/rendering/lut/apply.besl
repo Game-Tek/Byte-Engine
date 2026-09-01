@@ -4,10 +4,10 @@ LutParameters: struct {
 	sampling: vec4f,
 }
 
-source_texture: descriptor<Texture2D, 0, read>;
-lut_texture: descriptor<Texture3D, 1, read>;
-result_texture: descriptor<StorageImage, 2, write>;
-parameters: descriptor<LutParameters, 3, read, constant>;
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+lut_texture: descriptor<{ type: Texture3D, binding: 1, access: read }>;
+result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+parameters: descriptor<{ type: LutParameters, binding: 3, access: read, memory: constant }>;
 
 apply_lut: fn(color: vec3f) -> vec3f {
 	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);

@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use besl::parser::Node as ParserNode;
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
@@ -9,9 +8,6 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 	types::Size as _,
-};
-use resource_management::{
-	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{Box, Extent, RGBA};
 
@@ -32,14 +28,12 @@ use crate::{
 	},
 };
 
-// Group draw preparation, geometry generation, and shaders by responsibility.
+// Group draw preparation and geometry generation by responsibility.
 mod data;
 mod geometry;
-mod shaders;
 
 use data::*;
 use geometry::*;
-use shaders::*;
 
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
@@ -90,6 +84,8 @@ impl Entity for UiRenderPass {}
 
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
+	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
+	#[allow(clippy::too_many_lines)]
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		// Backdrop blur samples partially rendered UI, so keep a sampleable working image even when the graph output is the swapchain.
@@ -446,6 +442,8 @@ impl RenderPass for UiRenderPass {
 		"ui"
 	}
 
+	// Keep ordered UI batch recording in one function so clears, blur barriers, and depth order cannot diverge.
+	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -844,10 +842,6 @@ mod tests {
 	use besl::vm::{
 		Buffer, DescriptorBindings, ExecutableProgram, Texture, Value, builtin_position_slot, input_slot, output_slot,
 	};
-	use resource_management::shader::{
-		besl::backends::{glsl::GLSLTranspiler, hlsl::HLSLTranspiler, msl::MSLTranspiler},
-		generator::{Generator as _, ShaderGenerationSettings},
-	};
 	use utils::{Extent, RGBA};
 
 	use super::{
@@ -881,6 +875,14 @@ mod tests {
 	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
 	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
 	const UI_BLUR_COMPOSITE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-composite.besl");
+	const UI_RECT_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/rect-vertex.besl");
+	const UI_RECT_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/rect-fragment.besl");
+	const UI_CURVE_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/curve-vertex.besl");
+	const UI_CURVE_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/curve-fragment.besl");
+	const UI_IMAGE_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/image-vertex.besl");
+	const UI_IMAGE_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/image-fragment.besl");
+	const UI_TEXT_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/text-vertex.besl");
+	const UI_TEXT_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/text-fragment.besl");
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -897,6 +899,20 @@ mod tests {
 	// by production standalone compute shaders.
 	fn compile_ui_blur_shader(source: &str) -> ExecutableProgram {
 		compile_shader_vm(simple_compute::compile_test_program(source))
+	}
+
+	// Links one checked-in raster shader through the production BESL frontend.
+	fn ui_raster_program(source: &str, shader_name: &str) -> besl::NodeReference {
+		let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
+			panic!(
+				"Failed to link {shader_name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset."
+			)
+		});
+		program.get_main().unwrap_or_else(|| {
+			panic!(
+				"Missing {shader_name} entry point. The most likely cause is that the checked-in BESL asset has no `main` function."
+			)
+		})
 	}
 
 	// Initializes the shared origin/extent contract used by regional compute stages.
@@ -994,15 +1010,15 @@ mod tests {
 		feather_edges: [f32; 4],
 	) -> [f32; 4] {
 		let mut inputs = [
-			(1, "in_pixel_position", Value::Vec2F(pixel_position)),
-			(2, "in_local_position", Value::Vec2F([1.0, 1.0])),
-			(3, "in_rect_size", Value::Vec2F([2.0, 2.0])),
-			(4, "in_corner_radius", Value::F32(0.0)),
-			(5, "in_corner_exponent", Value::F32(2.0)),
-			(8, "in_feather_mask_position", Value::Vec2F([0.0, 0.0])),
-			(9, "in_feather_mask_size", Value::Vec2F([8.0, 4.0])),
-			(10, "in_feather_mask_edges", Value::Vec4F(feather_edges)),
-			(13, "in_blur_resolution_mix", Value::F32(resolution_mix)),
+			(10, "_besl_interface_pixel_position", Value::Vec2F(pixel_position)),
+			(9, "_besl_interface_local_position", Value::Vec2F([1.0, 1.0])),
+			(11, "_besl_interface_rect_size", Value::Vec2F([2.0, 2.0])),
+			(3, "_besl_interface_corner_radius", Value::F32(0.0)),
+			(2, "_besl_interface_corner_exponent", Value::F32(2.0)),
+			(6, "_besl_interface_feather_mask_position", Value::Vec2F([0.0, 0.0])),
+			(7, "_besl_interface_feather_mask_size", Value::Vec2F([8.0, 4.0])),
+			(5, "_besl_interface_feather_mask_edges", Value::Vec4F(feather_edges)),
+			(0, "_besl_interface_blur_resolution_mix", Value::F32(resolution_mix)),
 		]
 		.map(|(location, name, value)| {
 			let mut input = Buffer::new(
@@ -1036,7 +1052,7 @@ mod tests {
 		}
 
 		match output
-			.read("out_color_attachment")
+			.read("_besl_output_color_attachment")
 			.expect("Failed to read blur composite output. The most likely cause is a changed output interface.")
 		{
 			Value::Vec4F(color) => color,
@@ -1596,6 +1612,8 @@ mod tests {
 	}
 
 	#[test]
+	// The footprint assertion intentionally visits every downsampled texel and its full tent support.
+	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_half_region_contains_every_tent_sample_on_fixed_lattice() {
 		let tent_offsets = [
 			[-1.0, 0.0],
@@ -1647,6 +1665,8 @@ mod tests {
 
 	/// Verifies every adaptive path executes the production shaders over representative UI signals.
 	#[test]
+	// The sweep keeps all radius, scale, and sampled-color assertions in one production-chain regression.
+	#[allow(clippy::excessive_nesting)]
 	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
@@ -1889,50 +1909,48 @@ mod tests {
 
 	/// Executes the production UI fragment shader for one set of interpolated inputs.
 	fn run_ui_fragment_vm(values: UiFragmentVmInputs) -> [f32; 4] {
-		let executable = ExecutableProgram::compile(super::create_ui_fragment_program()).expect(
-			"Failed to compile UI fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
-		);
-		let mut inputs: [Buffer; 12] = std::array::from_fn(|location| {
-			Buffer::new(
+		let executable = ExecutableProgram::compile(ui_raster_program(UI_RECT_FRAGMENT_BESL, "UI rectangle fragment shader"))
+			.expect(
+				"Failed to compile UI fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
+			);
+		let mut inputs = [
+			(1, "_besl_interface_color", Value::Vec4F(values.color)),
+			(10, "_besl_interface_pixel_position", Value::Vec2F(values.pixel_position)),
+			(9, "_besl_interface_local_position", Value::Vec2F(values.local_position)),
+			(11, "_besl_interface_rect_size", Value::Vec2F(values.rect_size)),
+			(3, "_besl_interface_corner_radius", Value::F32(values.corner_radius)),
+			(2, "_besl_interface_corner_exponent", Value::F32(values.corner_exponent)),
+			(8, "_besl_interface_layer_kind", Value::F32(values.layer_kind)),
+			(13, "_besl_interface_stroke_width", Value::F32(values.stroke_width)),
+			(
+				6,
+				"_besl_interface_feather_mask_position",
+				Value::Vec2F(values.feather_mask_position),
+			),
+			(7, "_besl_interface_feather_mask_size", Value::Vec2F(values.feather_mask_size)),
+			(
+				5,
+				"_besl_interface_feather_mask_edges",
+				Value::Vec4F(values.feather_mask_edges),
+			),
+			(
+				4,
+				"_besl_interface_feather_mask_corner",
+				Value::Vec2F(values.feather_mask_corner),
+			),
+		]
+		.map(|(location, name, value)| {
+			let mut input = Buffer::new(
 				executable
-					.input_layout(location as u8)
+					.input_layout(location)
 					.expect("Missing UI fragment input layout. The most likely cause is an unused or unresolved shader input.")
 					.clone(),
-			)
-		});
-		let input_values = [
-			Value::Vec4F(values.color),
-			Value::Vec2F(values.pixel_position),
-			Value::Vec2F(values.local_position),
-			Value::Vec2F(values.rect_size),
-			Value::F32(values.corner_radius),
-			Value::F32(values.corner_exponent),
-			Value::F32(values.layer_kind),
-			Value::F32(values.stroke_width),
-			Value::Vec2F(values.feather_mask_position),
-			Value::Vec2F(values.feather_mask_size),
-			Value::Vec4F(values.feather_mask_edges),
-			Value::Vec2F(values.feather_mask_corner),
-		];
-		let input_names = [
-			"in_color",
-			"in_pixel_position",
-			"in_local_position",
-			"in_rect_size",
-			"in_corner_radius",
-			"in_corner_exponent",
-			"in_layer_kind",
-			"in_stroke_width",
-			"in_feather_mask_position",
-			"in_feather_mask_size",
-			"in_feather_mask_edges",
-			"in_feather_mask_corner",
-		];
-		for ((input, name), value) in inputs.iter_mut().zip(input_names).zip(input_values) {
+			);
 			input
 				.write(name, value)
 				.expect("Failed to seed a UI fragment VM input. The most likely cause is an interface type mismatch.");
-		}
+			(location, input)
+		});
 
 		let mut output = Buffer::new(
 			executable
@@ -1942,8 +1960,8 @@ mod tests {
 		);
 		{
 			let mut descriptors = DescriptorBindings::new();
-			for (location, input) in inputs.iter_mut().enumerate() {
-				descriptors.bind_buffer(input_slot(location as u8), input);
+			for (location, input) in &mut inputs {
+				descriptors.bind_buffer(input_slot(*location), input);
 			}
 			descriptors.bind_buffer(output_slot(0), &mut output);
 			executable
@@ -1952,7 +1970,7 @@ mod tests {
 		}
 
 		match output
-			.read("out_color_attachment")
+			.read("_besl_output_color_attachment")
 			.expect("Failed to read UI fragment output. The most likely cause is an interface layout mismatch.")
 		{
 			Value::Vec4F(color) => color,
@@ -2620,18 +2638,26 @@ mod tests {
 	}
 
 	#[test]
-	fn primary_ui_besl_shaders_build_besl_programs() {
-		let vertex_main = super::create_ui_vertex_program();
-		let fragment_main = super::create_ui_fragment_program();
-
-		assert!(matches!(vertex_main.borrow().node(), besl::Nodes::Function { .. }));
-		assert!(matches!(fragment_main.borrow().node(), besl::Nodes::Function { .. }));
+	fn checked_in_ui_raster_besl_sources_link() {
+		for (shader_name, source) in [
+			("UI rectangle vertex shader", UI_RECT_VERTEX_BESL),
+			("UI rectangle fragment shader", UI_RECT_FRAGMENT_BESL),
+			("UI curve vertex shader", UI_CURVE_VERTEX_BESL),
+			("UI curve fragment shader", UI_CURVE_FRAGMENT_BESL),
+			("UI image vertex shader", UI_IMAGE_VERTEX_BESL),
+			("UI image fragment shader", UI_IMAGE_FRAGMENT_BESL),
+			("UI text vertex shader", UI_TEXT_VERTEX_BESL),
+			("UI text fragment shader", UI_TEXT_FRAGMENT_BESL),
+			("UI backdrop blur composite fragment shader", UI_BLUR_COMPOSITE_BESL),
+		] {
+			ui_raster_program(source, shader_name);
+		}
 	}
 
 	/// Verifies the production UI vertex shader preserves every geometry and styling varying.
 	#[test]
 	fn ui_vertex_besl_vm_forwards_position_and_varyings() {
-		let executable = ExecutableProgram::compile(super::create_ui_vertex_program())
+		let executable = ExecutableProgram::compile(ui_raster_program(UI_RECT_VERTEX_BESL, "UI rectangle vertex shader"))
 			.expect("Failed to compile UI vertex shader for the BESL VM. The most likely cause is missing VM shader support.");
 		let mut inputs: [Buffer; 14] = std::array::from_fn(|location| {
 			Buffer::new(
@@ -2708,42 +2734,42 @@ mod tests {
 		}
 
 		assert_eq!(
-			position.read("position").expect("Expected position output"),
+			position.read("_besl_interface_position").expect("Expected position output"),
 			Value::Vec4F([0.25, -0.75, 0.0, 1.0])
 		);
 		for ((output, name), expected) in outputs
 			.iter()
 			.zip([
-				"out_color",
-				"out_pixel_position",
-				"out_local_position",
-				"out_rect_size",
-				"out_corner_radius",
-				"out_corner_exponent",
-				"out_layer_kind",
-				"out_stroke_width",
-				"out_feather_mask_position",
-				"out_feather_mask_size",
-				"out_feather_mask_edges",
-				"out_feather_mask_corner",
-				"out_screen_uv",
-				"out_blur_resolution_mix",
+				"_besl_interface_blur_resolution_mix",
+				"_besl_interface_color",
+				"_besl_interface_corner_exponent",
+				"_besl_interface_corner_radius",
+				"_besl_interface_feather_mask_corner",
+				"_besl_interface_feather_mask_edges",
+				"_besl_interface_feather_mask_position",
+				"_besl_interface_feather_mask_size",
+				"_besl_interface_layer_kind",
+				"_besl_interface_local_position",
+				"_besl_interface_pixel_position",
+				"_besl_interface_rect_size",
+				"_besl_interface_screen_uv",
+				"_besl_interface_stroke_width",
 			])
 			.zip([
+				Value::F32(0.375),
 				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
-				Value::Vec2F([10.0, 20.0]),
-				Value::Vec2F([3.0, 4.0]),
-				Value::Vec2F([100.0, 80.0]),
-				Value::F32(12.0),
 				Value::F32(3.0),
-				Value::F32(1.0),
-				Value::F32(2.5),
+				Value::F32(12.0),
+				Value::Vec2F([9.0, 2.0]),
+				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
 				Value::Vec2F([5.0, 6.0]),
 				Value::Vec2F([70.0, 60.0]),
-				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
-				Value::Vec2F([9.0, 2.0]),
+				Value::F32(1.0),
+				Value::Vec2F([3.0, 4.0]),
+				Value::Vec2F([10.0, 20.0]),
+				Value::Vec2F([100.0, 80.0]),
 				Value::Vec2F([0.625, 0.875]),
-				Value::F32(0.375),
+				Value::F32(2.5),
 			]) {
 			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
 		}

@@ -13,15 +13,7 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 		VertexElement::new("COLOR", DataTypes::Float4, 0),
 	];
 
-	let mesh = unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout,
-		)
-	};
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
 
 	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
@@ -116,16 +108,7 @@ fn add_depth_state_test_triangle(
 	];
 	let indices = [0u16, 1u16, 2u16];
 
-	// The upload API accepts bytes, and both stack arrays remain alive for the complete synchronous upload call.
-	unsafe {
-		device.add_mesh_from_vertices_and_indices(
-			3,
-			3,
-			std::slice::from_raw_parts(vertices.as_ptr().cast(), std::mem::size_of_val(&vertices)),
-			std::slice::from_raw_parts(indices.as_ptr().cast(), std::mem::size_of_val(&indices)),
-			vertex_layout,
-		)
-	}
+	device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&vertices), u16_bytes(&indices), vertex_layout)
 }
 
 #[cfg(target_os = "macos")]

@@ -1,5 +1,24 @@
 //! Metal I/O implementation for direct file-to-resource loading.
 
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_foundation::{NSError, NSString, NSURL};
+use objc2_metal::{
+	MTLDevice as _, MTLIOCommandBuffer as _, MTLIOCommandQueue as _, MTLIOCommandQueueDescriptor, MTLIOCommandQueueType,
+	MTLIOCompressionMethod, MTLIOFileHandle, MTLIOPriority, MTLIOStatus,
+};
+
+use super::{context, mtl};
+use crate::io::{
+	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
+	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
+	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority, ResourceIoQueueDescriptor,
+	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
+};
+
 /// The `OpenFile` struct retains one source registered with a Metal I/O queue.
 struct OpenFile {
 	handle: Retained<ProtocolObject<dyn MTLIOFileHandle>>,
@@ -36,6 +55,7 @@ impl ResourceIoQueue {
 			native_descriptor.setMaxCommandsInFlight(descriptor.max_commands_in_flight);
 		}
 		if descriptor.max_batches_in_flight > 0 {
+			// SAFETY: A positive count is a valid Metal I/O command-buffer limit for this new descriptor.
 			unsafe {
 				native_descriptor.setMaxCommandBufferCount(descriptor.max_batches_in_flight);
 			}
@@ -84,6 +104,7 @@ impl ResourceIoQueue {
 			return Err(ResourceIoError::InvalidDestinationRange { request: request_index });
 		}
 
+		// SAFETY: Validation above bounds the source file region and destination buffer range for this retained batch.
 		unsafe {
 			command_buffer.loadBuffer_offset_size_sourceHandle_sourceHandleOffset(
 				destination.buffer.as_ref(),
@@ -134,6 +155,7 @@ impl ResourceIoQueue {
 			return Err(ResourceIoError::InvalidDestinationRange { request: request_index });
 		}
 
+		// SAFETY: Validation above bounds the file layout and destination texture subresource for this retained batch.
 		unsafe {
 			command_buffer
 				.loadTexture_slice_level_size_sourceBytesPerRow_sourceBytesPerImage_destinationOrigin_sourceHandle_sourceHandleOffset(
@@ -344,6 +366,7 @@ pub(crate) fn write_compressed_file(
 	let method = metal_compression_method(compression).ok_or(ResourceIoError::UnsupportedCompression(compression))?;
 	let path = path.to_str().ok_or(ResourceIoError::InvalidPath)?;
 	let path = CString::new(path).map_err(|_| ResourceIoError::InvalidPath)?;
+	// SAFETY: The CString remains alive for context creation and Metal copies the path into its compression context.
 	let context = unsafe {
 		MTLIOCreateCompressionContext(
 			NonNull::new(path.as_ptr() as *mut _).ok_or(ResourceIoError::InvalidPath)?,
@@ -358,6 +381,7 @@ pub(crate) fn write_compressed_file(
 	}
 
 	if !decoded.is_empty() {
+		// SAFETY: `decoded` is initialized and remains alive for the synchronous append call.
 		unsafe {
 			MTLIOCompressionContextAppendData(
 				context,
@@ -366,6 +390,7 @@ pub(crate) fn write_compressed_file(
 			);
 		}
 	}
+	// SAFETY: `context` was created successfully above and is destroyed exactly once here.
 	let status = unsafe { MTLIOFlushAndDestroyCompressionContext(context) };
 	if status != MTLIOCompressionStatus::Complete {
 		let _ = std::fs::remove_file(path.to_string_lossy().as_ref());
@@ -605,22 +630,3 @@ mod tests {
 		fs::remove_file(path).expect("remove invalid range resource-I/O test file");
 	}
 }
-
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2_foundation::{NSError, NSString, NSURL};
-use objc2_metal::{
-	MTLDevice as _, MTLIOCommandBuffer as _, MTLIOCommandQueue as _, MTLIOCommandQueueDescriptor, MTLIOCommandQueueType,
-	MTLIOCompressionMethod, MTLIOFileHandle, MTLIOPriority, MTLIOStatus,
-};
-
-use super::{context, mtl};
-use crate::io::{
-	ResourceIoBufferLoad, ResourceIoCapabilities, ResourceIoCompression, ResourceIoCompressionMethods, ResourceIoContext,
-	ResourceIoDestinationKinds, ResourceIoError, ResourceIoFeatures, ResourceIoFileDescriptor, ResourceIoFileHandle,
-	ResourceIoFileRegion, ResourceIoImageLoad, ResourceIoImageSourceLayout, ResourceIoPriority, ResourceIoQueueDescriptor,
-	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
-};

@@ -11,6 +11,8 @@ pub mod anchor;
 pub mod collider;
 #[doc(hidden)]
 pub mod killer;
+#[doc(hidden)]
+pub mod name;
 
 #[doc(hidden)]
 pub mod pathfinding;
@@ -25,6 +27,7 @@ pub mod world;
 pub use anchor::{Anchor, AnchorSystem, Anchorage, Anchoring};
 pub use collider::{Cube, Sphere};
 pub use killer::KillMessage;
+pub use name::Name;
 pub use transform::{Transform, TransformationUpdate};
 #[cfg(feature = "headed")]
 pub use world::DefaultWorld;

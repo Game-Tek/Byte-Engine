@@ -27,6 +27,37 @@ use crate::{lexer::BufferMemoryClass, tokenizer};
 pub enum TypeName<'a> {
 	Named(&'a str),
 	Array { element: Box<TypeName<'a>>, count: u32 },
+	Record { role: RecordRole, fields: Vec<TypeField<'a>> },
+}
+
+/// The `RecordRole` enum preserves how an anonymous record participates in a shader stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordRole {
+	Interface,
+	Output,
+}
+
+impl std::fmt::Display for RecordRole {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Self::Interface => "interface",
+			Self::Output => "output",
+		})
+	}
+}
+
+/// The `TypeField` struct identifies one named value in an anonymous record type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeField<'a> {
+	pub name: &'a str,
+	pub type_name: TypeName<'a>,
+}
+
+/// The `RecordField` struct pairs a record-literal field name with its value expression.
+#[derive(Clone, Debug)]
+pub struct RecordField<'a> {
+	pub name: &'a str,
+	pub value: Node<'a>,
 }
 
 impl<'a> From<&'a str> for TypeName<'a> {
@@ -40,6 +71,18 @@ impl std::fmt::Display for TypeName<'_> {
 		match self {
 			Self::Named(name) => f.write_str(name),
 			Self::Array { element, count } => write!(f, "{element}[{count}]"),
+			Self::Record { role, fields } => {
+				write!(f, "{role} {{")?;
+				for (index, field) in fields.iter().enumerate() {
+					if index == 0 {
+						f.write_str(" ")?;
+					} else {
+						f.write_str(", ")?;
+					}
+					write!(f, "{}: {}", field.name, field.type_name)?;
+				}
+				f.write_str(if fields.is_empty() { "}" } else { " }" })
+			}
 		}
 	}
 }
@@ -320,6 +363,13 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	/// Builds an anonymous record value from named field expressions.
+	pub fn record_literal(fields: Vec<RecordField<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::RecordLiteral { fields }),
+		}
+	}
+
 	pub fn return_value(value: Node<'a>) -> Node<'a> {
 		Node {
 			node: Nodes::Expression(Expressions::Return {
@@ -590,10 +640,11 @@ pub enum Nodes<'a> {
 		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroUsize>,
 	},
-	/// A flat resource descriptor declared directly in BESL source.
+	/// A named resource descriptor declared directly in BESL source.
 	Descriptor {
 		name: &'a str,
 		resource_type: &'a str,
+		runtime_array: bool,
 		format: Option<&'a str>,
 		slot: u32,
 		read: bool,
@@ -686,6 +737,9 @@ pub enum Expressions<'a> {
 	Literal {
 		value: Cow<'a, str>,
 	},
+	RecordLiteral {
+		fields: Vec<RecordField<'a>>,
+	},
 	Call {
 		name: TypeName<'a>,
 		parameters: Vec<Node<'a>>,
@@ -730,6 +784,9 @@ pub(super) enum Atoms<'a> {
 	Literal {
 		value: &'a str,
 	},
+	RecordLiteral {
+		fields: Vec<AtomRecordField<'a>>,
+	},
 	FunctionCall {
 		name: TypeName<'a>,
 		parameters: Vec<Vec<Atoms<'a>>>,
@@ -741,6 +798,13 @@ pub(super) enum Atoms<'a> {
 		name: &'a str,
 		r#type: TypeName<'a>,
 	},
+}
+
+/// The `AtomRecordField` struct preserves a record field until expression lowering builds its syntax node.
+#[derive(Clone, Debug)]
+pub(super) struct AtomRecordField<'a> {
+	pub name: &'a str,
+	pub value: Option<Vec<Atoms<'a>>>,
 }
 
 #[derive(Debug)]
@@ -817,6 +881,7 @@ impl Precedence for Atoms<'_> {
 			Atoms::GroupedExpression { .. } => 0,
 			Atoms::Member { .. } => 0,
 			Atoms::Literal { .. } => 0,
+			Atoms::RecordLiteral { .. } => 0,
 			Atoms::FunctionCall { .. } => 0,
 			Atoms::Operator { name } => match *name {
 				"=" => 8,

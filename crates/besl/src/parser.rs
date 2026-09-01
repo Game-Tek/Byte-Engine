@@ -8,11 +8,10 @@ mod expressions;
 mod iterator;
 
 pub(crate) use declarations::parse;
-pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, TypeName};
+pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName};
 #[cfg(test)]
 use expressions::*;
 pub use iterator::ProgramState;
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -108,14 +107,14 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_resource_descriptors_with_flat_slots_access_and_count() {
+	fn parse_resource_descriptors_with_named_properties() {
 		let tokens = tokenize(
 			r#"
-				source: descriptor<Texture2D, 3, read>;
-				result: descriptor<StorageImage<rgba16f>, 7, write, 4>;
-				unformatted_result: descriptor<StorageImage, 8, write>;
-				data: descriptor<Data, 11, read_write>;
-				textures: descriptor<Texture2DArray, 20, read, 16>;
+				source: descriptor<{ access: read, type: Texture2D, binding: 3, }>;
+				result: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write, count: 4 }>;
+				unformatted_result: descriptor<{ type: StorageImage, binding: 8, access: write }>;
+				data: descriptor<{ type: Data, binding: 11, access: read_write }>;
+				textures: descriptor<{ type: Texture2DArray, binding: 20, access: read, count: 16 }>;
 			"#,
 		)
 		.expect("descriptor source should tokenize");
@@ -138,6 +137,10 @@ mod tests {
 		assert!(*read);
 		assert!(!*write);
 		assert_eq!(*count, None);
+		assert!(!matches!(
+			root["source"].node(),
+			Nodes::Descriptor { runtime_array: true, .. }
+		));
 		assert!(matches!(
 			root["result"].node(),
 			Nodes::Descriptor {
@@ -175,12 +178,45 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_buffer_memory_classes_after_descriptor_access() {
+	fn parse_runtime_array_descriptor() {
+		let tokens = tokenize("instances: descriptor<{ type: Instance[], binding: 1, access: read }>;")
+			.expect("runtime-array descriptor source should tokenize");
+		let root = parse(&tokens).expect("runtime-array descriptor source should parse");
+
+		assert!(matches!(
+			root["instances"].node(),
+			Nodes::Descriptor {
+				resource_type: "Instance",
+				runtime_array: true,
+				count: None,
+				..
+			}
+		));
+	}
+
+	#[test]
+	fn runtime_array_descriptor_rejects_fixed_element_or_resource_counts() {
+		for source in [
+			"instances: descriptor<{ type: Instance[4], binding: 1, access: read }>;",
+			"instances: descriptor<{ type: Instance[], binding: 1, access: read, count: 4 }>;",
+			"instances: descriptor<{ type: Instance[], binding: 1, access: read, memory: device, count: 4 }>;",
+		] {
+			let tokens = tokenize(source).expect("invalid runtime-array descriptor source should tokenize");
+
+			assert!(
+				parse(&tokens).is_err(),
+				"invalid runtime-array descriptor should be rejected: {source}"
+			);
+		}
+	}
+
+	#[test]
+	fn parse_buffer_memory_classes_and_descriptor_counts() {
 		let tokens = tokenize(
 			r#"
-				view: descriptor<View, 0, read, constant>;
-				vertices: descriptor<Vertices, 1, read, device>;
-				counters: descriptor<Counters, 2, read_write, device, 4>;
+				view: descriptor<{ type: View, binding: 0, access: read, memory: constant }>;
+				vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
+				counters: descriptor<{ count: 4, memory: device, access: read_write, binding: 2, type: Counters }>;
 			"#,
 		)
 		.expect("buffer memory class source should tokenize");
@@ -239,11 +275,23 @@ mod tests {
 	}
 
 	#[test]
-	fn descriptor_rejects_invalid_access_count_and_arguments() {
+	fn descriptor_rejects_invalid_properties() {
 		for source in [
-			"texture: descriptor<Texture2D, 0, execute>;",
-			"textures: descriptor<Texture2D, 0, read, 0>;",
-			"texture: descriptor<Texture2D>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: execute }>;",
+			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 0 }>;",
+			"texture: descriptor<{ binding: 0, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0 }>;",
+			"texture: descriptor<{ type: Texture2D, binding: first, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, count: many }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, memory: shared }>;",
+			"texture: descriptor<{ type: Texture2D, type: Texture3D, binding: 0, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, binding: 1, access: read }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, access: write }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, memory: device, memory: constant }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, count: 1, count: 2 }>;",
+			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, group: 1 }>;",
+			"texture: descriptor<{ type: Texture2D; binding: 0; access: read }>;",
 		] {
 			let tokens = tokenize(source).expect("descriptor source should tokenize");
 
@@ -254,8 +302,8 @@ mod tests {
 	#[test]
 	fn descriptor_rejects_formats_on_non_storage_image_resources() {
 		for source in [
-			"texture: descriptor<Texture2D<rgba16f>, 0, read>;",
-			"data: descriptor<Data<rgba16f>, 0, read>;",
+			"texture: descriptor<{ type: Texture2D<rgba16f>, binding: 0, access: read }>;",
+			"data: descriptor<{ type: Data<rgba16f>, binding: 0, access: read }>;",
 		] {
 			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
 
@@ -268,6 +316,64 @@ mod tests {
 
 	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
 		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
+	}
+
+	#[test]
+	fn parse_structural_entry_types_and_record_values() {
+		let tokens = tokenize(
+			"main: fn (input: StageInput, pipeline_input: interface { uv: vec2f, }) -> output { color: vec4f, } { return { color, }; }",
+		)
+		.expect("trailing-comma record source should tokenize");
+		let root = parse(&tokens).expect("trailing-comma record source should parse");
+		let Nodes::Function {
+			params,
+			return_type,
+			statements,
+			..
+		} = root["main"].node()
+		else {
+			panic!("expected main function");
+		};
+
+		assert!(matches!(
+			params[1].node(),
+			Nodes::Parameter {
+				r#type: TypeName::Record {
+					role: RecordRole::Interface,
+					fields,
+				},
+				..
+			} if fields.len() == 1 && fields[0].name == "uv"
+		));
+		assert!(matches!(
+			return_type,
+			TypeName::Record {
+				role: RecordRole::Output,
+				fields,
+			} if fields.len() == 1 && fields[0].name == "color"
+		));
+		assert!(matches!(
+			statements[0].node(),
+			Nodes::Expression(Expressions::Return { value: Some(value) })
+				if matches!(value.node(), Nodes::Expression(Expressions::RecordLiteral { fields }) if fields.len() == 1 && fields[0].name == "color")
+		));
+	}
+
+	#[test]
+	fn record_and_struct_fields_require_comma_separators() {
+		for source in [
+			"main: fn (input: interface { uv: vec2f; }) -> void {}",
+			"main: fn () -> output { color: vec4f; } { return { color: vec4f(1.0); }; }",
+			"Instance: struct { position: vec3f; }",
+			"Instance: struct { position: vec3f sprite_id: u32 }",
+		] {
+			let tokens = tokenize(source).expect("invalid field separator source should tokenize");
+
+			assert!(
+				parse(&tokens).is_err(),
+				"non-comma field separators should be rejected: {source}"
+			);
+		}
 	}
 
 	fn print_tree(node: &Node) {
@@ -561,57 +667,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	fn builder_creates_assignment_expression() {
-		let node = Node::assignment(Node::member_expression("albedo"), Node::literal_expression("1.0"));
-
-		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
-			panic!("Expected assignment operator");
-		};
-
-		assert_eq!(name, "=");
-		assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "albedo"));
-		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "1.0"));
-	}
-
-	#[test]
-	fn builder_creates_call_expression() {
-		let node = Node::call(
-			"vec4f",
-			vec![
-				Node::literal_expression("1.0"),
-				Node::literal_expression("0.0"),
-				Node::literal_expression("0.0"),
-				Node::literal_expression("1.0"),
-			],
-		);
-
-		let Nodes::Expression(Expressions::Call { name, parameters, .. }) = node.node else {
-			panic!("Expected call expression");
-		};
-
-		assert_named_type(&name, "vec4f");
-
-		assert_eq!(parameters.len(), 4);
-	}
-
-	#[test]
-	fn builder_creates_variable_declaration_assignment() {
-		let node = Node::let_assignment("roughness", "f32", Node::literal_expression("0.5"));
-
-		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
-			panic!("Expected assignment operator");
-		};
-
-		assert_eq!(name, "=");
-		assert!(matches!(
-			left.node,
-			Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. })
-				if name == "roughness" && matches!(r#type, TypeName::Named("f32")),
-		));
-		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "0.5"));
-	}
-
-	#[test]
 	fn builder_program_lexes() {
 		let program = Node::root_with_children(vec![Node::main_function(vec![Node::let_assignment(
 			"albedo",
@@ -631,6 +686,8 @@ main: fn () -> void {
 	}
 
 	#[test]
+	// This syntax-tree assertion intentionally mirrors the nested accessor AST it validates.
+	#[allow(clippy::excessive_nesting)]
 	fn parse_accessor() {
 		let source = "
 main: fn () -> void {
@@ -778,6 +835,8 @@ main: fn () -> void {
 	}
 
 	#[test]
+	// This syntax-tree assertion intentionally mirrors the nested assignment and accessor AST it validates.
+	#[allow(clippy::excessive_nesting)]
 	fn test_parse_accessor_and_assignment() {
 		let source = "
 main: fn () -> void {

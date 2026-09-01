@@ -117,6 +117,8 @@ impl ShadowPass {
 	}
 
 	/// Prepares directional cascades, cone layers, and point-cube faces for the current scene geometry.
+	// Keep all shadow-family recordings together so shared instance ranges and barriers remain synchronized.
+	#[allow(clippy::too_many_lines)]
 	pub(super) fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,

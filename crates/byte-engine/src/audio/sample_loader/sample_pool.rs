@@ -299,13 +299,17 @@ impl AudioSampleLease {
 	#[allow(unsafe_code)]
 	pub(crate) fn mono_frame(&self, frame: usize) -> f32 {
 		let index = frame * usize::from(self.layout.channel_count);
-		// SAFETY: The pool retains this complete region until the lease ID returns, and frame is within the retained layout.
-		let current = unsafe { *self.samples.as_ptr().add(index) };
+		// SAFETY: The validated sample layout keeps `index` inside the retained allocation.
+		let current_ptr = unsafe { self.samples.as_ptr().add(index) };
+		// SAFETY: `current_ptr` addresses an initialized sample retained by this lease.
+		let current = unsafe { *current_ptr };
 		if self.layout.channel_count == 1 {
 			current
 		} else {
-			// SAFETY: A stereo layout retains a second scalar for every in-range frame.
-			let right = unsafe { *self.samples.as_ptr().add(index + 1) };
+			// SAFETY: A non-mono layout validates a second channel for every frame.
+			let right_ptr = unsafe { self.samples.as_ptr().add(index + 1) };
+			// SAFETY: `right_ptr` addresses an initialized sample retained by this lease.
+			let right = unsafe { *right_ptr };
 			(current + right) * 0.5
 		}
 	}
@@ -313,7 +317,7 @@ impl AudioSampleLease {
 
 #[allow(unsafe_code)]
 // SAFETY: The immutable allocation remains pool-owned until the audio thread returns
-// this lease ID. Moving the pointer between the loader and audio thread is safe.
+// this lease ID, so moving the pointer between the loader and audio thread preserves validity.
 unsafe impl Send for AudioSampleLease {}
 
 /// The `AudioSampleReleaseQueue` struct returns lease IDs from one audio thread

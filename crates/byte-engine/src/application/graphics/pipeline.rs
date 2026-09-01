@@ -138,6 +138,8 @@ pub fn setup_simple_render_pipeline(
 /// Next, create an [`Environment`] through
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
 /// specular reflections.
+// Keep the cross-layer setup sequence contiguous so listeners, workers, mappings, and renderer ownership remain ordered.
+#[allow(clippy::too_many_lines)]
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),

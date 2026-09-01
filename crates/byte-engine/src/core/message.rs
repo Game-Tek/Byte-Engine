@@ -31,6 +31,7 @@ impl Message for DeleteMessage {}
 
 impl TargetedMessage for DeleteMessage {
 	type Payload = ();
+	const ENDS_TARGET_LIFECYCLE: bool = true;
 
 	fn from_handle_and_payload(handle: Handle, (): Self::Payload) -> Self {
 		Self::new(handle)

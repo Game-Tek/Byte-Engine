@@ -7,6 +7,8 @@ use std::{
 
 pub use Generator as MSLTranspiler;
 
+use super::{ResourceAccessorKind, resource_accessor, runtime_buffer_element};
+
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.
 pub const MSL_ENTRY_POINT: &str = "besl_main";
 
@@ -109,10 +111,57 @@ mod tests {
 			.expect("Expected sparse fixed-slot MSL argument IDs to compile natively");
 	}
 
+	#[compio::test]
+	async fn runtime_buffer_and_texture_array_layer_use_native_msl_resources() {
+		let root = besl::compile_to_besl(super::super::RUNTIME_ARRAY_FRAGMENT, None)
+			.expect("Expected runtime-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected runtime-array fragment MSL generation");
+
+		assert_string_contains!(shader, "const device Instance* instances [[id(2)]];");
+		assert_string_contains!(shader, "texture2d_array<float> sprites [[id(0)]];");
+		assert_string_contains!(shader, "Instance instance=resources.instances[");
+		assert_string_contains!(shader, "resources.sprites.sample(resources.sprites_sampler, ");
+		assert_string_contains!(shader, ", instance.sprite_id)");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-runtime-array-texture-layer")
+			.await
+			.expect("Expected runtime-array fragment MSL to compile natively");
+	}
+
+	#[compio::test]
+	async fn structural_position_uses_metal_position_without_colliding_with_a_local() {
+		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
+			.expect("Expected structural position source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &root.get_main().expect("Expected main"))
+			.expect("Expected structural position MSL generation");
+
+		assert_string_contains!(
+			shader,
+			"struct VertexOutput{float4 position [[position]];float2 _besl_interface_uv"
+		);
+		assert_string_contains!(shader, "float4 position=float4(float(vertex_index),0.0,0.0,1.0);");
+		assert_string_contains!(shader, "out.position=_besl_interface_position;");
+		assert!(!shader.contains("_besl_interface_position [[user("));
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-structural-position")
+			.await
+			.expect("Expected structural position MSL to compile natively");
+	}
+
 	#[test]
 	fn full_program_resource_abi_retains_unreachable_declared_bindings() {
 		let program = besl::compile_to_besl(
-			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<Unused, 3, read, constant>; Used: struct { value: u32, } used: descriptor<Used, 9, write, device>; main: fn () -> void { used.value = 7; }",
+			"Payload: struct { value: f32, } Unused: struct { payload: Payload, } unused: descriptor<{ type: Unused, binding: 3, access: read, memory: constant }>; Used: struct { value: u32, } used: descriptor<{ type: Used, binding: 9, access: write, memory: device }>; main: fn () -> void { used.value = 7; }",
 			None,
 		)
 		.expect("Expected full-program resource ABI fixture to link");
@@ -412,7 +461,7 @@ mod tests {
 	#[compio::test]
 	async fn texture_lod_qualifies_metal_level_helper() {
 		let source = r#"
-			depth_texture: descriptor<Texture2D, 0, read>;
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 			sample_depth: fn (uv: vec2f, level: u32) -> f32 {
 				return texture_lod(depth_texture, uv, f32(level)).x;
 			}
@@ -437,7 +486,7 @@ mod tests {
 	#[compio::test]
 	async fn sample_intrinsic_lowers_to_a_texture_sample_call() {
 		let source = r#"
-			image_texture: descriptor<Texture2D, 0, read>;
+			image_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 			in_uv: input<vec2f, 0>;
 			out_color_attachment: output<vec4f, 0>;
 			main: fn() -> void {
@@ -464,8 +513,8 @@ mod tests {
 	#[compio::test]
 	async fn conservative_downsampling_defaults_to_native_sampler_reduction_and_keeps_a_gather_fallback() {
 		let source = r#"
-			depth_texture: descriptor<Texture2D, 0, read>;
-			array_depth_texture: descriptor<Texture2DArray, 1, read>;
+			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
 			main: fn () -> void {
 				let minimum: f32 = downsample_min(depth_texture, vec2f(0.5, 0.5), 0.0);
 				let maximum: f32 = downsample_max(depth_texture, vec2f(0.5, 0.5), 0.0);
@@ -521,9 +570,9 @@ mod tests {
 			DispatchValues: struct { value: u32, }
 			Vertices: struct { values: u32[1024], }
 			Counters: struct { values: u32[1024], }
-			dispatch_values: descriptor<DispatchValues, 0, read, constant>;
-			vertices: descriptor<Vertices, 1, read, device>;
-			counters: descriptor<Counters, 2, read_write, device>;
+			dispatch_values: descriptor<{ type: DispatchValues, binding: 0, access: read, memory: constant }>;
+			vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
+			counters: descriptor<{ type: Counters, binding: 2, access: read_write, memory: device }>;
 			main: fn () -> void {
 				let index: u32 = thread_id().x;
 				counters.values[index] = vertices.values[index] + dispatch_values.value;
@@ -743,7 +792,7 @@ mod tests {
 		Meshlets: struct {
 			values: u32[32],
 		}
-		meshlets: descriptor<Meshlets, 8, read>;
+		meshlets: descriptor<{ type: Meshlets, binding: 8, access: read }>;
 		visible_meshlets: task_payload<u32, 32>;
 		visible_count: workgroup<atomicu32>;
 		push_constant: push_constant {
@@ -970,7 +1019,7 @@ mod tests {
 					values: Transform[2],
 					direct: mat4x3f[2],
 				}
-				transforms: descriptor<Transforms, 0, read_write, device>;
+				transforms: descriptor<{ type: Transforms, binding: 0, access: read_write, memory: device }>;
 
 				main: fn() -> void {
 					let model: mat4x3f = transforms.values[0].model;
@@ -1190,23 +1239,38 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "float3 color;color;out.color=color;return out;");
 	}
 
-	#[test]
-	fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
-		let mut root = besl::Node::root();
-		let u32_type = root.get_child("u32").expect("Expected u32 type");
-		root.add_child(besl::Node::input("vertex_id", u32_type.clone(), 0).into());
-		root.add_child(besl::Node::input("instance_id", u32_type, 1).into());
-
-		let root = besl::compile_to_besl("main: fn () -> void { vertex_id; instance_id; }", Some(root)).unwrap();
+	#[compio::test]
+	async fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
+		let root = besl::compile_to_besl(
+			r#"
+			invocation_sum: fn () -> u32 {
+				return vertex_index + instance_index;
+			}
+			position: output<vec4f, 255>;
+			out_value: output<u32, 0>;
+			main: fn () -> void {
+				position = vec4f(f32(vertex_index), 0.0, 0.0, 1.0);
+				out_value = invocation_sum();
+			}
+			"#,
+			None,
+		)
+		.expect("Expected implicit vertex builtins to link");
 		let main = root.borrow().get_child("main").unwrap();
 		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "struct VertexInput{};");
-		assert_string_contains!(shader, "uint vertex_id [[vertex_id]],uint instance_id [[instance_id]]");
-		assert!(!shader.contains("uint vertex_id=vertex_id;"));
-		assert!(!shader.contains("uint instance_id=instance_id;"));
+		assert_string_contains!(shader, "uint vertex_index [[vertex_id]],uint instance_index [[instance_id]]");
+		assert_string_contains!(shader, "invocation_sum(vertex_index,instance_index)");
+		assert!(!shader.contains("uint vertex_index=vertex_index;"));
+		assert!(!shader.contains("uint instance_index=instance_index;"));
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-vertex-invocation-indices")
+			.await
+			.expect("Expected vertex invocation builtins to compile as native Metal semantics");
 	}
 
 	#[test]
@@ -1996,8 +2060,8 @@ struct PrimitiveOutput {
 			Counters: struct {
 				values: atomicu32[8],
 			}
-			counters: descriptor<Counters, 2, read_write>;
-			index_image: descriptor<StorageImage<r32ui>, 4, read>;
+			counters: descriptor<{ type: Counters, binding: 2, access: read_write }>;
+			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
 			shared_keys: workgroup<atomicu32, 8>;
 			push_constant: push_constant {
 				base: u32,

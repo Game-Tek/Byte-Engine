@@ -41,6 +41,7 @@ impl crate::context::Context for Context {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
+		// SAFETY: This trait method forwards the caller's mapping lifetime and exclusivity obligations unchanged.
 		unsafe { Context::transfer_buffer_mapping(self, buffer_handle) }
 	}
 

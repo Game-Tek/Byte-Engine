@@ -86,11 +86,15 @@ impl Device {
 	}
 
 	pub fn build_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
-		panic!("Cannot build a debug GHI buffer. The debug backend does not allocate buffer storage.")
+		panic!(
+			"Debug buffer storage is unavailable. The most likely cause is that a test used the schema-only GHI backend for resource memory."
+		)
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
-		panic!("Cannot build a dynamic debug GHI buffer. The debug backend does not allocate buffer storage.")
+		panic!(
+			"Debug dynamic-buffer storage is unavailable. The most likely cause is that a test used the schema-only GHI backend for resource memory."
+		)
 	}
 
 	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> crate::DynamicImageHandle {
@@ -102,11 +106,15 @@ impl Device {
 	}
 
 	pub fn get_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
-		panic!("Cannot read a debug GHI buffer. The debug backend does not allocate buffer storage.")
+		panic!(
+			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
+		)
 	}
 
 	pub fn get_mut_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
-		panic!("Cannot write a debug GHI buffer. The debug backend does not allocate buffer storage.")
+		panic!(
+			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
+		)
 	}
 
 	pub fn get_texture_slice_mut(&mut self, _texture_handle: ImageHandle) -> &mut [u8] {

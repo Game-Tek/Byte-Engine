@@ -199,8 +199,8 @@ mod tests {
 	}
 
 	#[test]
-	fn resource_descriptors_preserve_flat_arguments() {
-		let tokens = tokenize("textures: descriptor<Texture2D, 5, read, 16>;").unwrap();
+	fn resource_descriptors_preserve_named_properties() {
+		let tokens = tokenize("textures: descriptor<{ type: Texture2D, binding: 5, access: read, count: 16 }>;").unwrap();
 
 		assert_eq!(
 			tokens.tokens,
@@ -209,13 +209,23 @@ mod tests {
 				":",
 				"descriptor",
 				"<",
+				"{",
+				"type",
+				":",
 				"Texture2D",
 				",",
+				"binding",
+				":",
 				"5",
 				",",
+				"access",
+				":",
 				"read",
 				",",
+				"count",
+				":",
 				"16",
+				"}",
 				">",
 				";"
 			]

@@ -31,7 +31,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			if uses_simd_lane_id || self.function_requires_resource_context(function_node, true) {
 				self.emit_compute_hidden_parameters(string, !params.is_empty(), uses_simd_lane_id);
 			}
-		} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false) {
+		} else if self
+			.raster_stage_context
+			.as_ref()
+			.is_some_and(|context| context.has_vertex_builtins())
+			|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false)
+		{
 			self.emit_raster_hidden_parameters(string, !params.is_empty());
 		}
 
@@ -201,6 +206,8 @@ impl<A: Allocator + Clone> Generator<A> {
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
+	// Keep the exhaustive node-to-MSL mapping together so adding a BESL node requires handling its backend contract here.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub(crate) fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
@@ -380,6 +387,18 @@ impl<A: Allocator + Clone> Generator<A> {
 						}
 
 						string.push_str(&format!(" [[buffer({})]];", index));
+						if !self.minified {
+							string.push('\n');
+						}
+					}
+					besl::BindingTypes::BufferArray { element } => {
+						let address_space = buffer_address_space(*memory_class, *write);
+						string.push_str(address_space);
+						string.push(' ');
+						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						string.push_str("* ");
+						string.push_str(name);
+						string.push_str(&format!(" [[buffer({index})]];"));
 						if !self.minified {
 							string.push('\n');
 						}

@@ -1,5 +1,4 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-
 pub(crate) enum MaterialKey {
 	Default,
 	Material(u32),

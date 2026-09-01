@@ -148,11 +148,59 @@ pub(crate) fn parse_grouped_expression<'i, 'a: 'i>(
 		.unwrap_or(Ok((expressions, inner_iterator)))
 }
 
+/// Parses an anonymous record value with named or shorthand fields.
+pub(crate) fn parse_record_literal<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("{")?;
+	let invalid = || ParsingFailReasons::BadSyntax {
+		message: "Invalid record literal. The most likely cause is a missing field value, comma, or closing }.".to_string(),
+	};
+	let mut fields = Vec::new();
+	loop {
+		if iterator.clone().next().copied() == Some("}") {
+			iterator.next();
+			break;
+		}
+		let field_name = iterator.next_identifier().map_err(|_| invalid())?;
+		let value = if iterator.clone().next().copied() == Some(":") {
+			iterator.next();
+			let (value, next_iterator) =
+				execute_expression_parsers(&[parse_rvalue], iterator, Vec::new()).map_err(|_| invalid())?;
+			iterator = next_iterator;
+			Some(value)
+		} else {
+			None
+		};
+		fields.push(AtomRecordField { name: field_name, value });
+		match iterator.clone().next().copied() {
+			Some(",") => {
+				iterator.next();
+			}
+			Some("}") => {
+				iterator.next();
+				break;
+			}
+			_ => return Err(invalid()),
+		}
+	}
+
+	expressions.push(Atoms::RecordLiteral { fields });
+	Ok((expressions, iterator))
+}
+
 pub(crate) fn parse_rvalue<'i, 'a: 'i>(
 	iterator: std::slice::Iter<'i, &'a str>,
 	expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let parsers = vec![parse_function_call, parse_grouped_expression, parse_literal, parse_variable];
+	let parsers = vec![
+		parse_record_literal,
+		parse_function_call,
+		parse_grouped_expression,
+		parse_literal,
+		parse_variable,
+	];
 
 	execute_expression_parsers(&parsers, iterator.clone(), expressions)
 }
@@ -255,6 +303,18 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			Atoms::Literal { value } => Node {
 				node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
 			},
+			Atoms::RecordLiteral { fields } => Node::record_literal(
+				fields
+					.iter()
+					.map(|field| RecordField {
+						name: field.name,
+						value: field
+							.value
+							.as_deref()
+							.map_or_else(|| Node::member_expression(field.name), expression_atoms_to_node),
+					})
+					.collect(),
+			),
 			Atoms::Member { name } => Node {
 				node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
 			},

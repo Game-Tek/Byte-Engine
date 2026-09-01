@@ -13,8 +13,10 @@ platform shader source or executes the program in the VM.
 2. An optional `ProgramGenerator` transforms that tree to add the renderer's
    bindings, declarations, helpers, and entry-point contract.
 3. `lex` resolves names, types, members, calls, overloads, and references into a
-   semantic graph. `compile_to_besl` combines parsing and linking and can link
-   the source to a supplied parent scope.
+   semantic graph. It normalizes `StageInput`, `interface`, `output`, and record
+   returns into the stage input and output nodes that the VM and generators use.
+   `compile_to_besl` combines parsing and linking and can link the source to a
+   supplied parent scope.
 4. The optimizer removes semantically dead portable code.
 5. Reflection evaluates the reachable graph, and the active generator emits
    GLSL, HLSL, or MSL. Tests can compile the same graph for VM execution.

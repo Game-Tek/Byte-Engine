@@ -72,6 +72,8 @@ impl BloomPass {
 	}
 
 	/// Creates a bloom pass with caller-supplied settings and remaps `main` for downstream passes.
+	// Keep the paired downsample and upsample resource graph together so level indices remain symmetric.
+	#[allow(clippy::too_many_lines)]
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: BloomPassSettings) -> Self {
 		let source = render_pass_builder.read_from("main");
 		let main_format = render_pass_builder.format_of("main");

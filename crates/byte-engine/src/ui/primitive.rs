@@ -67,10 +67,7 @@ impl Shapes {
 	pub fn bbox(&self, available_space: Size) -> Size {
 		match self {
 			Self::Box { half, .. } => Size::new(half.0.calculate(available_space.x()), half.1.calculate(available_space.y())),
-			Self::Circle { radius } => {
-				let diameter = radius.max(0.0) * 2.0;
-				Size::new(diameter, diameter)
-			}
+			Self::Circle { radius } => Size::new(radius * 2.0, radius * 2.0),
 			Self::Triangle { vertices } => {
 				let min_x = vertices.iter().map(Location::x).fold(f32::INFINITY, f32::min);
 				let max_x = vertices.iter().map(Location::x).fold(f32::NEG_INFINITY, f32::max);
@@ -210,5 +207,33 @@ impl Primitive for Primitives {
 			Primitives::Shape(shape) => shape.visual_ref(),
 			Primitives::Curve(curve) => curve.visual_ref(),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Shapes;
+	use crate::ui::{
+		flow::{Location, Size},
+		layout::Sizing,
+	};
+
+	#[test]
+	fn shape_bounds_follow_each_variant_geometry_contract() {
+		let triangle = Shapes::Triangle {
+			vertices: [Location::new(7.0, -3.0), Location::new(-2.0, 4.0), Location::new(3.0, 11.0)],
+		};
+
+		assert_eq!(triangle.bbox(Size::new(100.0, 100.0)), Size::new(9.0, 14.0));
+		let rectangle = Shapes::Box {
+			half: (Sizing::Relative(3, 4), Sizing::pixels(24.0)),
+			radius: 8.0,
+			exponent: 2.0,
+		};
+
+		assert_eq!(rectangle.bbox(Size::new(200.0, 80.0)), Size::new(150.0, 24.0));
+		let circle = Shapes::Circle { radius: 6.5 };
+
+		assert_eq!(circle.bbox(Size::new(1.0, 1.0)), Size::new(13.0, 13.0));
 	}
 }

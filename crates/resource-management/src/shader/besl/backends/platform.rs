@@ -227,15 +227,12 @@ mod tests {
 	#[test]
 	fn current_platform_language_matches_target() {
 		#[cfg(target_vendor = "apple")]
-
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Msl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
-
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Hlsl);
 
 		#[cfg(all(not(target_vendor = "apple"), target_os = "linux"))]
-
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
 	}
 

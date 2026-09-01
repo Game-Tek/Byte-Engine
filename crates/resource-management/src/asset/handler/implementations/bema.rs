@@ -75,6 +75,121 @@ impl BEMAAssetHandler {
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
 		self.generator = Some(Arc::new(generator));
 	}
+
+	/// Bakes a material definition and its independently compiled shader stages.
+	async fn bake_material<'a>(&self, context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
+		use utils::r#async::StreamExt as _;
+
+		let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
+		let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+		let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
+		let asset_shaders = asset["shaders"].as_object().ok_or(LoadErrors::FailedToProcess)?;
+
+		// Compile independent stages together while preserving declaration order in the material model.
+		let shader_requests = asset_shaders.iter().map(|(shader_type, shader_json)| {
+			compile_and_store_shader(
+				context,
+				self.compiler.clone(),
+				generator.clone(),
+				material_domain,
+				asset_object,
+				shader_json,
+				shader_type,
+			)
+		});
+		let shaders = utils::r#async::stream::iter(shader_requests)
+			.buffered(4)
+			.collect::<Vec<_>>()
+			.await
+			.into_iter()
+			.collect::<Result<Vec<_>, _>>()?;
+
+		let asset_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
+		// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
+		let value_requests = asset_variables.iter().map(|variable| async move {
+			let data_type = variable["data_type"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+			let value = variable["value"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+			resolve_value(context, data_type, value).await
+		});
+		let values = utils::r#async::stream::iter(value_requests)
+			.buffered(8)
+			.collect::<Vec<_>>()
+			.await
+			.into_iter()
+			.collect::<Result<Vec<_>, _>>()?;
+		let parameters = asset_variables
+			.iter()
+			.zip(values)
+			.map(|(variable, value)| ParameterModel {
+				name: variable["name"].as_str().unwrap().to_string(),
+				r#type: variable["data_type"].as_str().unwrap().to_string(),
+				value,
+			})
+			.collect();
+
+		let resource = MaterialModel {
+			double_sided: false,
+			alpha_mode: AlphaMode::Opaque,
+			coverage: MaterialCoverage {
+				factor: 1.0,
+				texture_slot: None,
+			},
+			model: RenderModel {
+				name: "Visibility".to_string(),
+				pass: "MaterialEvaluation".to_string(),
+			},
+			shaders,
+			parameters,
+		};
+
+		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
+	}
+
+	/// Bakes one material variant by resolving its inherited parameters.
+	async fn bake_variant<'a>(context: BakeContext<'a>, url: ResourceId<'a>, asset: &Value) -> Result<(), LoadErrors> {
+		use utils::r#async::StreamExt as _;
+
+		let parent_material_url = asset["parent"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+		let material = context.bake_dependency(parent_material_url).await?;
+		let material_repr: MaterialModel = crate::from_slice(&material.resource).map_err(|_| LoadErrors::FailedToProcess)?;
+		let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
+		let value_requests = material_repr.parameters.iter().map(|parameter| async move {
+			let value = authored_variables
+				.iter()
+				.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
+				.and_then(|variable| variable["value"].as_str())
+				.ok_or(LoadErrors::FailedToProcess)?;
+			resolve_value(context, &parameter.r#type, value).await
+		});
+		let values = utils::r#async::stream::iter(value_requests)
+			.buffered(8)
+			.collect::<Vec<_>>()
+			.await
+			.into_iter()
+			.collect::<Result<Vec<_>, _>>()?;
+		let variables = material_repr
+			.parameters
+			.iter()
+			.zip(values)
+			.map(|(parameter, value)| VariantVariableModel {
+				value,
+				name: parameter.name.clone(),
+				r#type: parameter.r#type.clone(),
+			})
+			.collect();
+		let alpha_mode = match asset.get("transparency") {
+			Some(Value::Bool(true)) => AlphaMode::Blend,
+			Some(Value::String(value)) if value == "Blend" => AlphaMode::Blend,
+			_ => AlphaMode::Opaque,
+		};
+		let resource = VariantModel {
+			material,
+			variables,
+			alpha_mode,
+		};
+
+		context.store_primary(ProcessedAsset::new(url, resource), &[]).await
+	}
 }
 
 impl AssetHandler for BEMAAssetHandler {
@@ -83,8 +198,6 @@ impl AssetHandler for BEMAAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		use utils::r#async::StreamExt as _;
-
 		if let Some(dt) = context.resource_type(url)
 			&& dt != "bema"
 		{
@@ -100,162 +213,10 @@ impl AssetHandler for BEMAAssetHandler {
 		let asset = asset::parse_json(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
-		let is_material = asset.get("parent").is_none();
-
-		if is_material {
-			let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
-
-			let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-
-			let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
-
-			let asset_shaders = match asset["shaders"].as_object() {
-				Some(v) => v,
-				None => {
-					return Err(LoadErrors::FailedToProcess);
-				}
-			};
-
-			// Compile independent stages together while preserving declaration order in the material model.
-			let shader_requests = asset_shaders.iter().map(|(shader_type, shader_json)| {
-				compile_and_store_shader(
-					context,
-					self.compiler.clone(),
-					generator.clone(),
-					material_domain,
-					asset_object,
-					shader_json,
-					shader_type,
-				)
-			});
-
-			let shaders = utils::r#async::stream::iter(shader_requests)
-				.buffered(4)
-				.collect::<Vec<_>>()
-				.await
-				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?;
-
-			let asset_variables = match asset["variables"].as_array() {
-				Some(v) => v,
-				None => {
-					return Err(LoadErrors::FailedToProcess);
-				}
-			};
-
-			// Texture parameters can trigger independent dependency bakes; scalar values complete immediately.
-			let value_requests = asset_variables.iter().map(|variable| async move {
-				let data_type = variable["data_type"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-
-				let value = variable["value"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-
-				resolve_value(context, data_type, value).await
-			});
-
-			let values = utils::r#async::stream::iter(value_requests)
-				.buffered(8)
-				.collect::<Vec<_>>()
-				.await
-				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?;
-
-			let parameters = asset_variables
-				.iter()
-				.zip(values)
-				.map(|(v, value)| {
-					let name = v["name"].as_str().unwrap().to_string();
-
-					let data_type = v["data_type"].as_str().unwrap().to_string();
-
-					ParameterModel {
-						name,
-						r#type: data_type,
-						value,
-					}
-				})
-				.collect();
-
-			let resource = MaterialModel {
-				double_sided: false,
-				alpha_mode: AlphaMode::Opaque,
-				coverage: MaterialCoverage {
-					factor: 1.0,
-					texture_slot: None,
-				},
-				model: RenderModel {
-					name: "Visibility".to_string(),
-					pass: "MaterialEvaluation".to_string(),
-				},
-				shaders,
-				parameters,
-			};
-
-			let resource = ProcessedAsset::new(url, resource);
-
-			context.store_primary(resource, &[]).await
+		if asset.get("parent").is_none() {
+			self.bake_material(context, url, &asset).await
 		} else {
-			let parent_material_url = asset["parent"].as_str().unwrap();
-
-			let material = context.bake_dependency(parent_material_url).await?;
-
-			let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
-
-			let authored_variables = asset["variables"].as_array().ok_or(LoadErrors::FailedToProcess)?;
-
-			let value_requests = material_repr.parameters.iter().map(|parameter| async move {
-				let value = authored_variables
-					.iter()
-					.find(|variable| variable["name"].as_str() == Some(parameter.name.as_str()))
-					.and_then(|variable| variable["value"].as_str())
-					.ok_or(LoadErrors::FailedToProcess)?;
-
-				resolve_value(context, &parameter.r#type, value).await
-			});
-
-			let values = utils::r#async::stream::iter(value_requests)
-				.buffered(8)
-				.collect::<Vec<_>>()
-				.await
-				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?;
-
-			let variables = material_repr
-				.parameters
-				.iter()
-				.zip(values)
-				.map(|(v, value)| VariantVariableModel {
-					value,
-					name: v.name.clone(),
-					r#type: v.r#type.clone(),
-				})
-				.collect();
-
-			let alpha_mode = match asset.get("transparency") {
-				Some(Value::Bool(v)) => {
-					if *v {
-						AlphaMode::Blend
-					} else {
-						AlphaMode::Opaque
-					}
-				}
-				Some(Value::String(s)) => match s.as_str() {
-					"Opaque" => AlphaMode::Opaque,
-					"Blend" => AlphaMode::Blend,
-					_ => AlphaMode::Opaque,
-				},
-				_ => AlphaMode::Opaque,
-			};
-
-			let resource = ProcessedAsset::new(
-				url,
-				VariantModel {
-					material,
-					variables,
-					alpha_mode,
-				},
-			);
-
-			context.store_primary(resource, &[]).await
+			Self::bake_variant(context, url, &asset).await
 		}
 	}
 }
@@ -499,7 +460,6 @@ const BEMA_DOCS_PATH: &str = "develop/resource-management/bema";
 const BESL_DOCS_PATH: &str = "reference/besl";
 
 #[cfg(test)]
-
 pub mod tests {
 
 	use std::sync::Arc;

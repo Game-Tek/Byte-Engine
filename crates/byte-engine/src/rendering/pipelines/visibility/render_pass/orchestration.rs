@@ -107,6 +107,8 @@ impl VisibilityPipelineRenderPass {
 	}
 
 	/// Prepares one opaque visibility layer and one nearest-surface transparent layer.
+	// Keep the ordered pass closure contiguous because its barriers and attachment transitions form one GPU transaction.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,

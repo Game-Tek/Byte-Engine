@@ -58,6 +58,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("))");
 	}
 
+	// Keep the intrinsic table contiguous because each arm defines one exact Metal lowering contract.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -80,28 +82,30 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match name.as_str() {
 			"sample" => {
-				let sampled = arguments[0].borrow();
-				if let besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) = sampled.node() {
-					let left_node = left.borrow();
-					if let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = left_node.node() {
-						self.emit_intrinsic_resource_reference(string, left);
+				if let Some((kind, resource, index)) = resource_accessor(&arguments[0]) {
+					self.emit_intrinsic_resource_reference(string, &resource);
+					if kind == ResourceAccessorKind::DescriptorArray {
 						string.push('[');
-						self.emit_node_string(string, right);
-						string.push_str("].sample(");
-						if self.in_compute_body || self.task_stage_context.is_some() {
-							self.emit_compute_binding_reference(string, &format!("{name}_sampler"));
-						} else {
-							self.emit_raster_binding_reference(string, &format!("{name}_sampler"));
-						}
-						string.push('[');
-						self.emit_node_string(string, right);
-						string.push_str("], ");
-						self.emit_node_string(string, &arguments[1]);
-						string.push(')');
-						return;
+						self.emit_node_string(string, &index);
+						string.push(']');
 					}
+					string.push_str(".sample(");
+					self.emit_intrinsic_resource_reference(string, &resource);
+					string.push_str("_sampler");
+					if kind == ResourceAccessorKind::DescriptorArray {
+						string.push('[');
+						self.emit_node_string(string, &index);
+						string.push(']');
+					}
+					string.push_str(", ");
+					self.emit_node_string(string, &arguments[1]);
+					if kind == ResourceAccessorKind::Texture2DArrayLayer {
+						string.push_str(", ");
+						self.emit_node_string(string, &index);
+					}
+					string.push(')');
+					return;
 				}
-				drop(sampled);
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
 				self.emit_node_string(string, &arguments[0]);

@@ -1,6 +1,6 @@
-linear_depth: descriptor<Texture2D, 1033, read>;
-ao_source: descriptor<Texture2D, 1034, read>;
-ao_output: descriptor<StorageImage<r8>, 1035, write>;
+linear_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+ao_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+ao_output: descriptor<{ type: StorageImage<r8>, binding: 1035, access: write }>;
 
 shared_linear_depth: workgroup<f32, 120>;
 shared_ao: workgroup<f32, 96>;

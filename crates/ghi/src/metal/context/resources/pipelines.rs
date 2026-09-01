@@ -126,22 +126,24 @@ impl Context {
 			strides[element.binding as usize] += element.format.size() as u32;
 
 			let offset = binding_offsets[element.binding as usize];
+			// SAFETY: The attribute index enumerates the validated vertex-element slice.
 			let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
 			attribute.setFormat(utils::vertex_format(element.format));
-			unsafe {
-				attribute.setOffset(offset as _);
-				attribute.setBufferIndex(element.binding as _);
-			}
+			// SAFETY: The offset is accumulated from formats within this binding's stride.
+			unsafe { attribute.setOffset(offset as _) };
+			// SAFETY: The pipeline builder validated this Metal vertex buffer binding.
+			unsafe { attribute.setBufferIndex(element.binding as _) };
 
 			binding_offsets[element.binding as usize] += element.format.size();
 		}
 
 		for (binding, stride) in strides.iter().copied().enumerate() {
+			// SAFETY: Every enumerated stride corresponds to a materialized Metal layout entry.
 			let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
-			unsafe {
-				layout.setStride(stride as _);
-				layout.setStepRate(1);
-			}
+			// SAFETY: The stride is the validated sum of binding attribute sizes.
+			unsafe { layout.setStride(stride as _) };
+			// SAFETY: Per-vertex input advances exactly once per vertex.
+			unsafe { layout.setStepRate(1) };
 			layout.setStepFunction(mtl::MTLVertexStepFunction::PerVertex);
 		}
 

@@ -56,6 +56,7 @@ impl Context {
 				],
 			);
 			barrier.encode_compute(transfer_encoder.as_ref());
+			// SAFETY: The staging and destination buffers are retained and each covers the recorded upload size.
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 					staging.buffer.as_ref(),

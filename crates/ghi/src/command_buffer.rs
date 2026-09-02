@@ -176,9 +176,7 @@ pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
 	/// Writes plain data without padding to the push-constant register.
-	fn write_push_constant<T: Pod>(&mut self, offset: u32, data: T)
-	where
-		[(); std::mem::size_of::<T>()]: Sized;
+	fn write_push_constant<T: Pod>(&mut self, offset: u32, data: T);
 }
 
 /// The `BoundRasterizationPipelineMode` trait provides draw commands for a bound raster pipeline.

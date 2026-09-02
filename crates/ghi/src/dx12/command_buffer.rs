@@ -347,10 +347,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
-	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T) {
 		let offset = offset as usize;
 		let size = std::mem::size_of::<T>();
 

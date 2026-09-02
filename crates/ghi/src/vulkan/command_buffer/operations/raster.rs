@@ -112,10 +112,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 }
 
 impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
-	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T) {
 		let layout_handle = self.bound_pipeline_layout.expect(
 			"No Vulkan pipeline is bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
 		);

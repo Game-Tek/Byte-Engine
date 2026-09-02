@@ -191,7 +191,7 @@ impl<R: RenderResource> ResourceLoader<R> {
 			"Render resource completion capacity must be non-zero."
 		);
 		let registry_id = NEXT_RESOURCE_LOADER_ID
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
 			.expect(
 				"Render resource loader identities are exhausted. The most likely cause is an impractically large number of loader constructions.",
 			);

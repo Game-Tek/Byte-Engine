@@ -794,10 +794,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
-	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T) {
 		let pipeline_layout_handle = self.active_pipeline_layout.expect(
 			"No pipeline bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
 		);

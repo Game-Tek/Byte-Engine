@@ -126,11 +126,7 @@ impl<'a> CommandBufferRecording<'a> {
 		self
 	}
 
-	pub fn write_push_constant<T: crate::Pod>(&mut self, _offset: u32, _data: T)
-	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
-	}
+	pub fn write_push_constant<T: crate::Pod>(&mut self, _offset: u32, _data: T) {}
 
 	pub fn draw_mesh(&mut self, _mesh_handle: &MeshHandle) {}
 

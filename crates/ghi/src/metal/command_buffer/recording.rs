@@ -54,7 +54,13 @@ impl<'a> CommandBufferRecording<'a> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
+		let buffer = self.device.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.device.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
+		// SAFETY: Typed handles preserve the allocation's type, and creating a recording exclusively borrows the context.
+		unsafe { &mut *buffer.pointer.cast::<T>() }
 	}
 
 	/// Records a staging-to-buffer upload on this command buffer.

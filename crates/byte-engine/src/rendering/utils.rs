@@ -1,4 +1,4 @@
-use std::{alloc::Allocator, hash::Hash, marker::PhantomData, usize};
+use std::{alloc::Allocator, hash::Hash, marker::PhantomData};
 
 use utils::{
 	StableVec, StableVecHandle,

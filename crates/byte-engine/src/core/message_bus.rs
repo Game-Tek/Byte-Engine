@@ -340,7 +340,7 @@ impl MessageBus {
 		let id = self
 			.inner
 			.next_scope
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
 			.unwrap_or_else(|_| {
 				panic!("Message scope identifiers exhausted. The most likely cause is an unbounded scope creation loop.")
 			});

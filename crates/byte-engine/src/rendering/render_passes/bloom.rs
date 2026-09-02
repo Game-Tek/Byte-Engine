@@ -44,7 +44,7 @@ impl BloomPassSettings {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BloomShaderData {
 	prefilter: [f32; 4],
 	filter: [f32; 4],

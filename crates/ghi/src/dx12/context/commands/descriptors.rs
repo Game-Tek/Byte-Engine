@@ -1,8 +1,196 @@
 use super::super::*;
 
+/// The `DescriptorAliasKey` enum identifies one frame-resolved resource exposed through shader descriptors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DescriptorAliasKey {
+	Buffer(BaseBufferHandle, u8),
+	Image(crate::BaseImageHandle, u8),
+	Swapchain(SwapchainHandle, u8),
+}
+
+/// The `DescriptorAliasState` enum records the enhanced-barrier contract required by one shader-visible alias.
+#[derive(Clone, Copy, Debug)]
+enum DescriptorAliasState {
+	Buffer(BufferBarrierState),
+	Texture(TextureBarrierState),
+}
+
+impl DescriptorAliasState {
+	/// Merges compatible read aliases and rejects overlapping whole-resource writes.
+	fn merge(&mut self, other: Self) {
+		match (self, other) {
+			(Self::Buffer(current), Self::Buffer(other)) => {
+				assert!(
+					current.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS
+						&& other.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+					"Incompatible DX12 buffer descriptor aliases. The most likely cause is that one whole buffer was bound simultaneously for overlapping shader reads and writes. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#single-queue-simultaneous-access."
+				);
+				current.sync |= other.sync;
+				current.access |= other.access;
+			}
+			(Self::Texture(current), Self::Texture(other)) => {
+				assert!(
+					current.layout == other.layout
+						&& current.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS
+						&& other.access != D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+					"Incompatible DX12 image descriptor aliases. The most likely cause is that one whole image was bound simultaneously with incompatible shader-resource and unordered-access layouts. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility."
+				);
+				current.sync |= other.sync;
+				current.access |= other.access;
+			}
+			_ => unreachable!("A DX12 descriptor alias key cannot identify both a buffer and an image."),
+		}
+	}
+}
+
+/// The `DescriptorAliasUse` struct keeps one unique resource and its merged shader access contract.
+#[derive(Clone, Copy, Debug)]
+struct DescriptorAliasUse {
+	key: DescriptorAliasKey,
+	state: DescriptorAliasState,
+}
+
+const DESCRIPTOR_LINEAR_SEARCH_LIMIT: usize = 32;
+
+/// The `DescriptorAliasCollection` struct keeps small descriptor tables allocation-free and indexes larger tables.
+struct DescriptorAliasCollection {
+	entries: SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]>,
+	indices: Option<HashMap<DescriptorAliasKey, usize>>,
+	capacity_hint: usize,
+}
+
+impl DescriptorAliasCollection {
+	fn new(capacity_hint: usize) -> Self {
+		Self {
+			entries: SmallVec::new(),
+			indices: None,
+			capacity_hint,
+		}
+	}
+
+	/// Merges one alias in constant time after a large table exceeds the inline search limit.
+	fn merge_or_insert(&mut self, alias: DescriptorAliasUse) {
+		let existing_index = self
+			.indices
+			.as_ref()
+			.and_then(|indices| indices.get(&alias.key).copied())
+			.or_else(|| {
+				self.indices
+					.is_none()
+					.then(|| self.entries.iter().position(|entry| entry.key == alias.key))
+					.flatten()
+			});
+		if let Some(existing_index) = existing_index {
+			self.entries[existing_index].state.merge(alias.state);
+			return;
+		}
+
+		let index = self.entries.len();
+		if let Some(indices) = self.indices.as_mut() {
+			indices.insert(alias.key, index);
+		} else if index == DESCRIPTOR_LINEAR_SEARCH_LIMIT {
+			// Build the index once. Typical descriptor tables remain entirely inline.
+			let mut indices = HashMap::default();
+			indices.reserve(self.capacity_hint.max(index + 1));
+			for (existing_index, entry) in self.entries.iter().enumerate() {
+				indices.insert(entry.key, existing_index);
+			}
+			indices.insert(alias.key, index);
+			self.indices = Some(indices);
+		}
+		self.entries.push(alias);
+	}
+}
+
+/// The `DescriptorRequirementKey` enum identifies one native resource and its barrier category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DescriptorRequirementKey {
+	Buffer(usize),
+	Image(usize),
+}
+
+/// The `DescriptorRequirementHandle` enum preserves the logical handle needed to update resource state tracking.
+enum DescriptorRequirementHandle {
+	Buffer(BaseBufferHandle),
+	Image(crate::BaseImageHandle),
+}
+
+/// The `DescriptorRequirement` struct groups compatible shader reads of one native resource into one barrier.
+struct DescriptorRequirement {
+	key: DescriptorRequirementKey,
+	handle: DescriptorRequirementHandle,
+	resource: ID3D12Resource,
+	state: DescriptorAliasState,
+}
+
+/// The `DescriptorRequirementCollection` struct avoids quadratic native-resource scans for large descriptor tables.
+struct DescriptorRequirementCollection {
+	entries: SmallVec<[DescriptorRequirement; DESCRIPTOR_LINEAR_SEARCH_LIMIT]>,
+	indices: Option<HashMap<DescriptorRequirementKey, usize>>,
+	capacity_hint: usize,
+}
+
+impl DescriptorRequirementCollection {
+	fn new(capacity_hint: usize) -> Self {
+		Self {
+			entries: SmallVec::new(),
+			indices: None,
+			capacity_hint,
+		}
+	}
+
+	/// Merges one native requirement while preserving the first logical handle chosen for state tracking.
+	fn merge_or_insert(&mut self, requirement: DescriptorRequirement) {
+		let existing_index = self
+			.indices
+			.as_ref()
+			.and_then(|indices| indices.get(&requirement.key).copied())
+			.or_else(|| {
+				self.indices
+					.is_none()
+					.then(|| self.entries.iter().position(|entry| entry.key == requirement.key))
+					.flatten()
+			});
+		if let Some(existing_index) = existing_index {
+			self.entries[existing_index].state.merge(requirement.state);
+			return;
+		}
+
+		let index = self.entries.len();
+		if let Some(indices) = self.indices.as_mut() {
+			indices.insert(requirement.key, index);
+		} else if index == DESCRIPTOR_LINEAR_SEARCH_LIMIT {
+			// Build the index once. Typical descriptor tables remain entirely inline.
+			let mut indices = HashMap::default();
+			indices.reserve(self.capacity_hint.max(index + 1));
+			for (existing_index, entry) in self.entries.iter().enumerate() {
+				indices.insert(entry.key, existing_index);
+			}
+			indices.insert(requirement.key, index);
+			self.indices = Some(indices);
+		}
+		self.entries.push(requirement);
+	}
+}
+
 impl Device {
 	pub(crate) fn bind_descriptor_heaps(&mut self, command_buffer_handle: CommandBufferHandle, sets: &[DescriptorSetHandle]) {
 		self.bind_descriptor_heaps_and_tables(command_buffer_handle, None, sets, 0);
+	}
+
+	/// Returns the native list only while its reusable command-buffer handle owns an open recording.
+	fn descriptor_command_list_for_recording(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
+		let command_buffer = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		assert!(
+			command_buffer.lifecycle == CommandBufferLifecycle::Recording && command_buffer.is_open,
+			"DX12 descriptors require an open command-buffer recording. The most likely cause is that descriptor barriers or native tables were bound before recording began or after it ended."
+		);
+		command_buffer.command_list.clone().expect(
+			"Missing DX12 command list. The most likely cause is that native command-buffer creation failed before descriptor binding.",
+		)
 	}
 
 	/// Transitions the concrete resources referenced by the active pipeline's retained set union.
@@ -16,13 +204,7 @@ impl Device {
 		let Some(pipeline_handle) = pipeline_handle else {
 			return;
 		};
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
+		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
 		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
 			return;
 		};
@@ -30,12 +212,12 @@ impl Device {
 		let Some(layout) = self
 			.pipeline_layouts
 			.get(pipeline.layout.0 as usize)
-			.map(|layout| layout.key.clone())
+			.map(|layout| &layout.key)
 		else {
 			return;
 		};
 
-		let mut retained = SmallVec::<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>::new();
+		let mut retained = std::mem::take(&mut self.command_buffers[command_buffer_handle.0 as usize].descriptor_sync_scratch);
 		for resource in &layout.resources {
 			for &set_handle in sets {
 				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
@@ -65,7 +247,8 @@ impl Device {
 				self.frames as usize,
 			) as u8;
 			match retained_descriptor.descriptor {
-				WriteData::Buffer { handle, .. } => self.sync_buffer_for_sequence(handle, resource_sequence),
+				// Native buffer resolution centrally flushes dirty CPU shadows.
+				WriteData::Buffer { .. } => {}
 				WriteData::Image { handle, .. }
 				| WriteData::CombinedImageSampler {
 					image_handle: handle, ..
@@ -74,8 +257,8 @@ impl Device {
 			}
 		}
 
-		let mut barriers = EnhancedBarrierBatch::default();
-		for (resource_descriptor, retained_descriptor) in retained {
+		let mut requirements = DescriptorRequirementCollection::new(retained.len());
+		for (resource_descriptor, retained_descriptor) in retained.drain(..) {
 			let resource_sequence = self.frame_index_with_offset(
 				sequence_index as usize,
 				Some(retained_descriptor.frame_offset),
@@ -84,51 +267,78 @@ impl Device {
 			match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
 					// Buffer contents can change without changing the retained descriptor or its native heap.
-					let Some(resource) = self.buffer_resource_for_sequence(handle, resource_sequence) else {
-						continue;
-					};
-					if self.buffer_heap_kind_for_sequence(handle, resource_sequence) != Some(BufferHeapKind::Default) {
-						continue;
-					}
-					self.transition_tracked_buffer_into(
-						handle,
-						&resource,
-						Self::descriptor_buffer_state(resource_descriptor, pipeline_kind),
-						&mut barriers,
+					let resource = self.buffer_resource_for_sequence(handle, resource_sequence).expect(
+						"Missing DX12 descriptor buffer resource. The most likely cause is that native buffer allocation failed before the descriptor was bound.",
 					);
-					self.mark_command_buffer_work(command_buffer_handle);
+					let state = Self::descriptor_buffer_state(resource_descriptor, pipeline_kind);
+					requirements.merge_or_insert(DescriptorRequirement {
+						key: DescriptorRequirementKey::Buffer(Self::native_resource_key(&resource)),
+						handle: DescriptorRequirementHandle::Buffer(handle),
+						resource,
+						state: DescriptorAliasState::Buffer(state),
+					});
 				}
 				WriteData::Image { handle, .. }
 				| WriteData::CombinedImageSampler {
 					image_handle: handle, ..
 				} => {
-					let Some(resource) = self.ensure_image_resource_for_sequence(handle, resource_sequence) else {
-						continue;
-					};
-					self.transition_tracked_image_into(
-						handle,
-						&resource,
-						Self::descriptor_image_state(resource_descriptor, pipeline_kind),
-						&mut barriers,
+					let resource = self.ensure_image_resource_for_sequence(handle, resource_sequence).expect(
+						"Missing DX12 descriptor image resource. The most likely cause is that a deferred image was bound before native allocation completed.",
 					);
-					self.mark_command_buffer_work(command_buffer_handle);
+					let state = Self::descriptor_image_state(resource_descriptor, pipeline_kind);
+					requirements.merge_or_insert(DescriptorRequirement {
+						key: DescriptorRequirementKey::Image(Self::native_resource_key(&resource)),
+						handle: DescriptorRequirementHandle::Image(handle),
+						resource,
+						state: DescriptorAliasState::Texture(state),
+					});
 				}
 				WriteData::Swapchain(handle) => {
-					let image = self
-						.get_swapchain_image_for_sequence(handle, Uses::Storage, resource_sequence)
-						.0;
-					let Some(resource) = self.ensure_image_resource_for_sequence(image.into(), resource_sequence) else {
-						continue;
-					};
-					self.transition_tracked_image_into(
-						image.into(),
-						&resource,
-						Self::descriptor_image_state(resource_descriptor, pipeline_kind),
-						&mut barriers,
+					let uses = Self::descriptor_image_use(resource_descriptor);
+					let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
+					let resource = self.ensure_image_resource_for_sequence(image.into(), resource_sequence).expect(
+						"Missing DX12 swapchain proxy resource. The most likely cause is that proxy image allocation failed before presentation.",
 					);
-					self.mark_command_buffer_work(command_buffer_handle);
+					let state = Self::descriptor_image_state(resource_descriptor, pipeline_kind);
+					requirements.merge_or_insert(DescriptorRequirement {
+						key: DescriptorRequirementKey::Image(Self::native_resource_key(&resource)),
+						handle: DescriptorRequirementHandle::Image(image.into()),
+						resource,
+						state: DescriptorAliasState::Texture(state),
+					});
+				}
+				WriteData::AccelerationStructure { handle } => {
+					let resource = self
+						.top_level_acceleration_structures
+						.get(handle.0 as usize)
+						.and_then(|acceleration_structure| acceleration_structure.resource.clone())
+						.expect(
+							"Missing DX12 acceleration-structure descriptor resource. The most likely cause is that native acceleration-structure allocation failed before binding.",
+						);
+					self.retain_command_buffer_resource(command_buffer_handle, &resource);
 				}
 				_ => {}
+			}
+		}
+		self.command_buffers[command_buffer_handle.0 as usize].descriptor_sync_scratch = retained;
+
+		let mut barriers = EnhancedBarrierBatch::default();
+		for requirement in requirements.entries {
+			match (requirement.handle, requirement.state) {
+				(DescriptorRequirementHandle::Buffer(handle), DescriptorAliasState::Buffer(state)) => {
+					let heap_kind = self
+						.buffer_heap_kind_for_resource(handle, &requirement.resource)
+						.unwrap_or(BufferHeapKind::Default);
+					self.transition_tracked_buffer_into(handle, &requirement.resource, state, &mut barriers);
+					if heap_kind == BufferHeapKind::Default {
+						self.mark_command_buffer_work(command_buffer_handle);
+					}
+				}
+				(DescriptorRequirementHandle::Image(handle), DescriptorAliasState::Texture(state)) => {
+					self.transition_tracked_image_into(handle, &requirement.resource, state, &mut barriers);
+					self.mark_command_buffer_work(command_buffer_handle);
+				}
+				_ => unreachable!("A DX12 native descriptor requirement cannot change resource category."),
 			}
 		}
 		Self::submit_resource_barriers(&command_list, &barriers);
@@ -150,6 +360,124 @@ impl Device {
 		}
 	}
 
+	/// Normalizes a dynamic buffer alias to the frame resource selected by its descriptor offset.
+	fn descriptor_buffer_alias_key(&self, handle: BaseBufferHandle, sequence_index: u8) -> DescriptorAliasKey {
+		let (_, dynamic) = Self::buffer_index(handle);
+		DescriptorAliasKey::Buffer(handle, if dynamic { sequence_index } else { 0 })
+	}
+
+	/// Normalizes a dynamic image alias to the frame resource selected by its descriptor offset.
+	fn descriptor_image_alias_key(&self, handle: crate::BaseImageHandle, sequence_index: u8) -> DescriptorAliasKey {
+		let dynamic = self
+			.images
+			.get(handle.0 as usize)
+			.is_some_and(|image| image.frame_resources.is_some());
+		DescriptorAliasKey::Image(handle, if dynamic { sequence_index } else { 0 })
+	}
+
+	/// Collects active descriptors while proving that every repeated whole-resource binding is compatible.
+	fn descriptor_alias_uses(
+		&self,
+		pipeline_handle: PipelineHandle,
+		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
+	) -> SmallVec<[DescriptorAliasUse; 32]> {
+		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
+		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize].key;
+		let pipeline_kind = pipeline.kind;
+		let capacity_hint = layout
+			.resources
+			.iter()
+			.map(|resource| resource.descriptor.count() as usize)
+			.sum();
+		let mut aliases = DescriptorAliasCollection::new(capacity_hint);
+
+		for resource in &layout.resources {
+			for &set_handle in sets {
+				let Some(set_handle) = self.descriptor_set_for_sequence(set_handle, sequence_index) else {
+					continue;
+				};
+				let Some(descriptors) = self.descriptor_sets[set_handle.0 as usize]
+					.descriptors
+					.get(&resource.descriptor.slot())
+				else {
+					continue;
+				};
+
+				for retained in descriptors.values() {
+					let resource_sequence = self.frame_index_with_offset(
+						sequence_index as usize,
+						Some(retained.frame_offset),
+						self.frames as usize,
+					) as u8;
+					let alias = match retained.descriptor {
+						WriteData::Buffer { handle, .. } => DescriptorAliasUse {
+							key: self.descriptor_buffer_alias_key(handle, resource_sequence),
+							state: DescriptorAliasState::Buffer(Self::descriptor_buffer_state(
+								resource.descriptor,
+								pipeline_kind,
+							)),
+						},
+						WriteData::Image { handle, .. }
+						| WriteData::CombinedImageSampler {
+							image_handle: handle, ..
+						} => DescriptorAliasUse {
+							key: self.descriptor_image_alias_key(handle, resource_sequence),
+							state: DescriptorAliasState::Texture(Self::descriptor_image_state(
+								resource.descriptor,
+								pipeline_kind,
+							)),
+						},
+						WriteData::Swapchain(handle) => DescriptorAliasUse {
+							key: DescriptorAliasKey::Swapchain(handle, resource_sequence),
+							state: DescriptorAliasState::Texture(Self::descriptor_image_state(
+								resource.descriptor,
+								pipeline_kind,
+							)),
+						},
+						_ => continue,
+					};
+
+					aliases.merge_or_insert(alias);
+				}
+			}
+		}
+
+		aliases.entries
+	}
+
+	/// Rejects shader descriptors that alias an attachment still active in the render pass.
+	fn validate_descriptor_attachment_aliases(
+		&self,
+		aliases: &[DescriptorAliasUse],
+		sequence_index: u8,
+		attachments: &[crate::BaseImageHandle],
+	) {
+		if attachments.is_empty() {
+			return;
+		}
+
+		for &attachment in attachments {
+			let attachment_key = self.descriptor_image_alias_key(attachment, sequence_index);
+			assert!(
+				aliases.iter().all(|alias| alias.key != attachment_key),
+				"Incompatible DX12 attachment and descriptor aliases. The most likely cause is that one whole image was bound simultaneously as an attachment and shader resource. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#layout-access-compatibility."
+			);
+		}
+	}
+
+	/// Validates one binding and reuses its resolved aliases for active-attachment checks.
+	pub(crate) fn validate_descriptor_binding_contract(
+		&self,
+		pipeline_handle: PipelineHandle,
+		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
+		attachments: &[crate::BaseImageHandle],
+	) {
+		let aliases = self.validate_descriptor_sets_and_collect_aliases(pipeline_handle, sets, sequence_index);
+		self.validate_descriptor_attachment_aliases(&aliases, sequence_index, attachments);
+	}
+
 	/// Validates native allocation requirements that are stricter than retained descriptor kinds.
 	pub(crate) fn validate_descriptor_resource(
 		&self,
@@ -158,9 +486,38 @@ impl Device {
 		sequence_index: u8,
 	) {
 		match retained.descriptor {
+			WriteData::Buffer { handle, size } if shader_resource.kind() == ResourceKind::UniformBuffer => {
+				let buffer = self.buffer(handle).expect(
+					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
+				);
+				assert!(
+					self.buffer_heap_kind_for_sequence(handle, sequence_index) != Some(BufferHeapKind::Readback),
+					"Invalid DX12 uniform-buffer descriptor. The most likely cause is that a readback-heap buffer was bound for GPU reads. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
+				);
+				assert!(
+					buffer.uses.intersects(Uses::Uniform),
+					"Invalid DX12 uniform-buffer descriptor. The most likely cause is that the buffer was not created with uniform usage."
+				);
+				let requested_size = match size {
+					crate::Ranges::Size(size) => size,
+					crate::Ranges::Whole => buffer.size,
+				};
+				assert!(
+					requested_size <= buffer.size,
+					"Invalid DX12 buffer descriptor range. The most likely cause is that the requested descriptor size exceeds the logical buffer allocation."
+				);
+				assert!(
+					requested_size != 0 && requested_size <= 64 * 1024,
+					"Invalid DX12 constant-buffer view size. The most likely cause is that the requested range is empty or exceeds the 64-KiB shader-visible constant-buffer limit. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/constants."
+				);
+			}
 			WriteData::Buffer { handle, .. } if shader_resource.kind() == ResourceKind::StorageBuffer => {
 				let buffer = self.buffer(handle).expect(
 					"Invalid DX12 buffer descriptor. The most likely cause is that the retained buffer handle is stale.",
+				);
+				assert!(
+					self.buffer_heap_kind_for_sequence(handle, sequence_index) != Some(BufferHeapKind::Readback),
+					"Invalid DX12 storage-buffer descriptor. The most likely cause is that a readback-heap buffer was bound for shader access. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
 				);
 
 				assert!(
@@ -196,22 +553,35 @@ impl Device {
 			.images
 			.get(image_handle.0 as usize)
 			.expect("Invalid DX12 image descriptor. The most likely cause is that the retained image handle is stale.");
-
 		assert!(
-			shader_resource.texture_view() != TextureViewTypes::Texture3D,
-			"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+			image.extent.width() != 0 && image.extent.height() != 0 && (!image.is_3d || image.extent.depth() != 0),
+			"Invalid DX12 image descriptor extent. The most likely cause is that a deferred zero-sized image was bound before it was resized."
 		);
+
+		if shader_resource.texture_view() == TextureViewTypes::Texture3D {
+			assert!(
+				image.is_3d && image.array_layers == 1 && layer.is_none(),
+				"Invalid DX12 Texture3D descriptor view. The most likely cause is that the image is 2D, has array metadata, or selects a 2D array layer."
+			);
+		} else {
+			assert!(
+				!image.is_3d,
+				"Invalid DX12 2D descriptor view. The most likely cause is that a Texture3D image was bound to a 2D, array, or cubemap shader resource."
+			);
+		}
 		if shader_resource.texture_view() == TextureViewTypes::TextureCubeArray {
 			assert!(
 				layer.is_none() && image.array_layers > 0 && image.array_layers.is_multiple_of(6),
 				"Invalid DX12 cube-array descriptor view. The most likely cause is that the image layer count is not divisible by six."
 			);
 		}
+		let required_use = Self::descriptor_image_use(shader_resource);
+		assert!(
+			required_use.is_empty() || image.uses.intersects(required_use),
+			"Invalid DX12 image descriptor usage. The most likely cause is that the image was not created for the shader resource kind declared by the active pipeline."
+		);
 		if shader_resource.kind() == ResourceKind::StorageImage {
-			assert!(
-				image.uses.intersects(Uses::Storage),
-				"Invalid DX12 storage-image descriptor. The most likely cause is that the image was not created with storage usage."
-			);
+			self.validate_typed_uav_format_support(image.format, shader_resource.access());
 		}
 		if let Some(mip_level) = mip_level {
 			assert!(
@@ -244,6 +614,16 @@ impl Device {
 		sets: &[DescriptorSetHandle],
 		sequence_index: u8,
 	) {
+		let _ = self.validate_descriptor_sets_and_collect_aliases(pipeline_handle, sets, sequence_index);
+	}
+
+	/// Validates retained sets and returns their already-merged aliases for the next binding check.
+	fn validate_descriptor_sets_and_collect_aliases(
+		&self,
+		pipeline_handle: PipelineHandle,
+		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
+	) -> SmallVec<[DescriptorAliasUse; DESCRIPTOR_LINEAR_SEARCH_LIMIT]> {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let layout = &self.pipeline_layouts[pipeline.layout.0 as usize].key;
 		let sequence_sets = sets
@@ -251,21 +631,24 @@ impl Device {
 			.map(|&set| self.descriptor_set_for_sequence(set, sequence_index).unwrap_or(set))
 			.collect::<SmallVec<[DescriptorSetHandle; 8]>>();
 
-		let mut occupied_slots = HashSet::default();
 		for &set_handle in &sequence_sets {
 			let set = &self.descriptor_sets[set_handle.0 as usize];
 			for &slot in set.descriptors.keys() {
-				if layout.resources.iter().any(|resource| resource.descriptor.slot() == slot) {
-					assert!(
-						occupied_slots.insert(slot),
-						"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
-					);
+				// Pipeline resources are sorted and non-overlapping, so only the insertion point and its predecessor can match.
+				let slot_index = slot.index();
+				let insertion_index = layout
+					.resources
+					.partition_point(|resource| resource.descriptor.slot().index() < slot_index);
+				if layout
+					.resources
+					.get(insertion_index)
+					.is_some_and(|resource| resource.descriptor.slot() == slot)
+				{
 					continue;
 				}
-				let is_array_interior = layout.resources.iter().any(|resource| {
-					let start = resource.descriptor.slot().index();
-					let slot = slot.index();
-					start < slot && slot < Self::resource_range_end(resource.descriptor)
+				let is_array_interior = insertion_index.checked_sub(1).is_some_and(|previous_index| {
+					let descriptor = layout.resources[previous_index].descriptor;
+					descriptor.slot().index() < slot_index && slot_index < Self::resource_range_end(descriptor)
 				});
 
 				assert!(
@@ -311,6 +694,10 @@ impl Device {
 				}
 			}
 		}
+
+		// Descriptor tables expose every retained view to one draw or dispatch. Validate repeated
+		// resources as one simultaneous access contract before any barrier or native heap write.
+		self.descriptor_alias_uses(pipeline_handle, sets, sequence_index)
 	}
 
 	pub(crate) fn bind_descriptor_heaps_and_tables(
@@ -323,13 +710,7 @@ impl Device {
 		let Some(pipeline_handle) = pipeline_handle else {
 			return;
 		};
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
+		let command_list = self.descriptor_command_list_for_recording(command_buffer_handle);
 		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
 			return;
 		};
@@ -353,11 +734,32 @@ impl Device {
 		if heap_count == 0 {
 			return;
 		}
+		let cbv_srv_uav_identity = materialization
+			.cbv_srv_uav_heap
+			.as_ref()
+			.map(|heap| heap.native.as_raw() as usize);
+		let sampler_identity = materialization
+			.sampler_heap
+			.as_ref()
+			.map(|heap| heap.native.as_raw() as usize);
+		let heaps_changed = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.is_none_or(|command_buffer| {
+				command_buffer.bound_cbv_srv_uav_heap != cbv_srv_uav_identity
+					|| command_buffer.bound_sampler_heap != sampler_identity
+			});
 
-		unsafe {
-			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
+		if heaps_changed {
+			unsafe {
+				command_list.SetDescriptorHeaps(&heaps[..heap_count]);
+			}
+			if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+				command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
+				command_buffer.bound_sampler_heap = sampler_identity;
+			}
+			self.descriptor_heap_bind_count += 1;
 		}
-		self.descriptor_heap_bind_count += 1;
 		let Some((resource_table_root, sampler_table_root)) = self
 			.pipeline_layouts
 			.get(layout_handle.0 as usize)

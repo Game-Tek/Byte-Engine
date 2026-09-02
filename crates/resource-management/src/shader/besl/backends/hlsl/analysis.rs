@@ -341,7 +341,9 @@ impl Generator {
 		self.emit_node_string(string, texture_index);
 		string.push_str("].SampleGrad(");
 		self.emit_node_string(string, texture_array);
-		string.push_str("_sampler,");
+		string.push_str("_sampler[");
+		self.emit_node_string(string, texture_index);
+		string.push_str("],");
 		if !self.minified {
 			string.push(' ');
 		}

@@ -3,9 +3,32 @@ use utils::Extent;
 
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, ImageOrSwapchain, Layouts,
-	MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError, rt,
+	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, FrameKey,
+	ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	TextureTransferError, rt,
 };
+
+/// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectDispatchBuffer<const N: usize>(BaseBufferHandle);
+
+impl<const N: usize> IndirectDispatchBuffer<N> {
+	pub(crate) const fn handle(self) -> BaseBufferHandle {
+		self.0
+	}
+}
+
+impl<const N: usize> From<BufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
+	fn from(buffer: BufferHandle<[[u32; 3]; N]>) -> Self {
+		Self(buffer.into())
+	}
+}
+
+impl<const N: usize> From<DynamicBufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
+	fn from(buffer: DynamicBufferHandle<[[u32; 3]; N]>) -> Self {
+		Self(buffer.into())
+	}
+}
 
 /// The `DebugLabelWriter` struct exists so command-buffer implementations can provide temporary label storage without forcing callers to allocate strings.
 pub struct DebugLabelWriter {
@@ -152,8 +175,8 @@ pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 	/// Binds retained descriptor-set groups whose flat shader slots do not overlap.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
-	/// Writes data to the push-constant register.
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	/// Writes plain data without padding to the push-constant register.
+	fn write_push_constant<T: Pod>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized;
 }
@@ -186,7 +209,7 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
 	/// Dispatches compute workgroups using parameters stored in a buffer.
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize);
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: impl Into<IndirectDispatchBuffer<N>>, entry_index: usize);
 }
 
 /// The `BoundRayTracingPipelineMode` trait provides ray dispatch for a bound ray-tracing pipeline.

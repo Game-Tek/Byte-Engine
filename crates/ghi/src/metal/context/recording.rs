@@ -142,6 +142,10 @@ impl Context {
 			.as_ref()
 			.map(|staging| staging.contents().as_ptr() as *mut u8)
 			.unwrap_or_else(|| buffer.contents().as_ptr() as *mut u8);
+		if size != 0 && !pointer.is_null() {
+			// Typed buffer APIs expose the mapped bytes as zeroable POD values, so initialize the complete representation.
+			unsafe { std::ptr::write_bytes(pointer, 0, size) };
+		}
 		let gpu_address = buffer.gpuAddress();
 		let staging = staging.map(|staging| {
 			let mut creator = self.buffers.creator();
@@ -183,9 +187,15 @@ impl Context {
 		if let Some(previous) = previous {
 			let previous_buffer = self.buffers.resource(previous);
 			let copy_size = previous_buffer.size.min(buffer.size);
-			// SAFETY: Both mapped buffers remain alive and `copy_size` is bounded by the smaller allocation.
-			unsafe {
-				std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
+			if copy_size != 0 {
+				assert!(
+					!previous_buffer.pointer.is_null() && !buffer.pointer.is_null(),
+					"Failed to preserve a resized Metal buffer. The most likely cause is that the old or replacement allocation is missing mapped storage.",
+				);
+				// SAFETY: The old and replacement buffers are distinct live allocations, and `copy_size` is bounded by both.
+				unsafe {
+					std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
+				}
 			}
 		}
 		let (_, handle) = self.buffers.add(buffer);

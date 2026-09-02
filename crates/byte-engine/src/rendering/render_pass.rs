@@ -251,7 +251,7 @@ impl<'a> RenderPassBuilder<'a> {
 			self.external_writable_targets.push(("main".to_string(), target));
 			return MainRenderTarget {
 				target,
-				format: ghi::Formats::BGRAu8,
+				format: ghi::Formats::BGRAsRGB,
 			};
 		}
 

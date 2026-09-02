@@ -59,9 +59,18 @@ impl Device {
 	}
 
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
+		// Reject unsupported view contracts before a logical handle can escape to callers.
+		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
+		let is_3d = builder.extent.depth() > 1;
+		Self::validate_image_dimension(
+			builder.extent,
+			is_3d,
+			array_layers,
+			builder.cube_compatible || builder.cube_array_compatible,
+		);
+		self.validate_image_format_support(builder.format, builder.resource_uses, is_3d);
 		let size = utils::texture_copy_size(builder.format, builder.extent);
 		let data = size.map(|bytes| vec![0u8; bytes]);
-		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
 		let frame_data = if builder.use_case == UseCases::DYNAMIC {
 			data.as_ref().map(|data| vec![data.clone(); self.frames as usize])
 		} else {
@@ -77,6 +86,7 @@ impl Device {
 		} else {
 			self.create_image_resource(
 				builder.extent,
+				is_3d,
 				builder.format,
 				builder.resource_uses,
 				array_layers,
@@ -101,6 +111,7 @@ impl Device {
 
 		self.images.push(Image {
 			extent: builder.extent,
+			is_3d,
 			format: builder.format,
 			uses: builder.resource_uses,
 			access: builder.device_accesses,
@@ -128,6 +139,14 @@ impl Device {
 		self.images
 			.get(image.0.0 as usize)
 			.map(|image| (image.extent, image.resource.is_some()))
+	}
+
+	#[cfg(test)]
+	pub(crate) fn image_native_dimension(&self, image: ImageHandle) -> Option<(i32, u16)> {
+		let resource = self.images.get(image.0.0 as usize)?.resource.as_ref()?;
+		// SAFETY: The image registry retains this COM resource for the duration of the query.
+		let descriptor = unsafe { resource.GetDesc() };
+		Some((descriptor.Dimension.0, descriptor.DepthOrArraySize))
 	}
 
 	pub(crate) fn image_frame_resource_state(&self, image: ImageHandle, sequence_index: u8) -> Option<bool> {
@@ -170,10 +189,11 @@ impl Device {
 		image_handle: crate::BaseImageHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let (extent, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = {
+		let (extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic) = {
 			let image = self.images.get(image_handle.0 as usize)?;
 			(
 				image.extent,
+				image.is_3d,
 				image.format,
 				image.uses,
 				image.array_layers,
@@ -183,10 +203,14 @@ impl Device {
 			)
 		};
 		if !dynamic {
-			return self
+			let resource = self
 				.images
 				.get(image_handle.0 as usize)
 				.and_then(|image| image.resource.clone());
+			if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
+				self.retain_command_buffer_resource(command_buffer, resource);
+			}
+			return resource;
 		}
 
 		let frame_index = sequence_index as usize;
@@ -199,7 +223,8 @@ impl Device {
 			.is_none();
 
 		if needs_resource {
-			let resource = self.create_image_resource(extent, format, uses, array_layers, mip_levels, optimized_clear_value);
+			let resource =
+				self.create_image_resource(extent, is_3d, format, uses, array_layers, mip_levels, optimized_clear_value);
 			if let Some(resource) = resource.as_ref() {
 				self.materialize_image_attachment_views(resource, format, uses, array_layers);
 			}
@@ -212,11 +237,16 @@ impl Device {
 			}
 		}
 
-		self.images
+		let resource = self
+			.images
 			.get(image_handle.0 as usize)
 			.and_then(|image| image.frame_resources.as_ref())
 			.and_then(|resources| resources.get(frame_index))
-			.and_then(Clone::clone)
+			.and_then(Clone::clone);
+		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
+			self.retain_command_buffer_resource(command_buffer, resource);
+		}
+		resource
 	}
 
 	pub(crate) fn image_resource_for_sequence(

@@ -4,7 +4,8 @@ impl Device {
 	pub(crate) fn upload_resource_count(&self) -> usize {
 		self.command_buffers
 			.iter()
-			.map(|command_buffer| command_buffer.retained_upload_resource_count)
+			.flat_map(|command_buffer| command_buffer.frames.iter())
+			.map(|frame| frame.retained_upload_resource_count)
 			.sum()
 	}
 

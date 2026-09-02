@@ -3,9 +3,9 @@ use std::marker::PhantomData;
 use utils::Extent;
 
 use crate::{
-	AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle, BufferImageCopyDescriptor,
-	ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle,
-	PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError, graphics_hardware_interface,
+	AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, ClearValue,
+	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey,
+	RGBAu8, SynchronizerHandle, TextureCopyHandle, TextureTransferError, graphics_hardware_interface,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -126,7 +126,7 @@ impl<'a> CommandBufferRecording<'a> {
 		self
 	}
 
-	pub fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
+	pub fn write_push_constant<T: crate::Pod>(&mut self, _offset: u32, _data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
@@ -150,7 +150,12 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn dispatch(&mut self, _dispatch: DispatchExtent) {}
 
-	pub fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[[u32; 3]; N]>, _entry_index: usize) {}
+	pub fn indirect_dispatch<const N: usize>(
+		&mut self,
+		_buffer: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
+		_entry_index: usize,
+	) {
+	}
 
 	pub fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, _x: u32, _y: u32, _z: u32) {}
 }

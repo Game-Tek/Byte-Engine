@@ -17,6 +17,18 @@ pub(super) mod tests {
 	use crate::{ChannelBitSize, ChannelLayout, Encodings, Formats, Layouts, Size as _, descriptors};
 
 	#[test]
+	fn rgba_u8_preserves_channel_byte_order() {
+		let pixel = RGBAu8 {
+			r: 0x11,
+			g: 0x22,
+			b: 0x33,
+			a: 0x44,
+		};
+
+		assert_eq!(bytemuck::bytes_of(&pixel), &[0x11, 0x22, 0x33, 0x44]);
+	}
+
+	#[test]
 	fn attachment_layer_builders_keep_single_and_layered_rendering_distinct() {
 		let single_layer =
 			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layer(3);

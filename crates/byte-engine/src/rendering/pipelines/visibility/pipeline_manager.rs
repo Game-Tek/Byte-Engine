@@ -417,7 +417,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]> = context.build_buffer(
+		let material_xy: ghi::BufferHandle<[[u16; 2]; MAX_PIXEL_MAPPING_ENTRIES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material XY")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),

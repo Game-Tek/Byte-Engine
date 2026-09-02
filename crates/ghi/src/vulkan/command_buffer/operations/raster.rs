@@ -112,7 +112,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 }
 
 impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
@@ -129,8 +129,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 			offset % 4 == 0 && size % 4 == 0 && end <= layout.push_constant_size as usize,
 			"Invalid Vulkan push-data write. The most likely cause is that the offset or data size is not four-byte aligned or exceeds the pipeline's declared push-constant ranges.",
 		);
-		// SAFETY: data is Copy and remains alive for the duration of vkCmdPushDataEXT.
-		let bytes = unsafe { std::slice::from_raw_parts((&data as *const T).cast::<u8>(), size) };
+		let bytes = bytemuck::bytes_of(&data);
 		let push_info = vk::PushDataInfoEXT::default()
 			.offset(offset)
 			.data(vk::HostAddressRangeConstEXT::default().address(bytes));

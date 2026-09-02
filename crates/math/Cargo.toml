@@ -17,6 +17,7 @@ rust-version.workspace = true
 name = "math"
 
 [dependencies]
+bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
 maths-rs = "1.0.0"
 
 [lints]

@@ -2,7 +2,7 @@ use super::*;
 use crate::rendering::pipelines::visibility::RuntimeUnitVector;
 
 #[repr(C, align(16))]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderMesh {
 	pub(crate) model: AffineShaderMatrix,
 	pub(crate) material_index: u32,
@@ -20,7 +20,7 @@ pub struct ShaderMesh {
 
 /// The `LightingData` struct preserves the complete CPU storage layout consumed by material evaluation.
 #[repr(C)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightingData {
 	pub count: u32,
 	pub(crate) _padding: [u32; 3],
@@ -28,7 +28,7 @@ pub struct LightingData {
 }
 
 #[repr(C, align(16))]
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderVec3 {
 	pub(crate) x: f32,
 	pub(crate) y: f32,
@@ -55,7 +55,7 @@ impl From<maths_rs::Vec3f> for ShaderVec3 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ShaderViewData {
 	pub(crate) view: AffineShaderMatrix,
 	pub(crate) view_projection: ShaderMatrix,
@@ -82,7 +82,7 @@ pub(crate) struct IesProfileTexture {
 /// a normalized profile when `ies_profile_texture` is not `NO_IES_PROFILE_TEXTURE`. Their C0 tangent uses
 /// the same compact octahedral encoding as other runtime unit vectors.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightData {
 	pub position: ShaderVec3,
 	pub color: ShaderVec3,
@@ -115,7 +115,7 @@ impl Default for LightData {
 
 /// The `MaterialData` struct retains fixed-width material texture indices for frame-local GPU uploads.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct MaterialData {
 	pub(crate) textures: [u32; MAX_MATERIAL_TEXTURES],
 	pub(crate) coverage_factor: f32,

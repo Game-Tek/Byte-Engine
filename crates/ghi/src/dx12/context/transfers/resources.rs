@@ -1,6 +1,16 @@
+use windows::Win32::Graphics::Direct3D12 as d3d12;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R11G11B10_FLOAT};
+
 use super::*;
 
 impl Device {
+	/// Returns a non-null pointer with the alignment required for a zero-sized typed buffer.
+	pub(crate) fn zero_sized_buffer_pointer(layout: Layout) -> *mut u8 {
+		debug_assert_eq!(layout.size(), 0);
+		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
+		std::ptr::without_provenance_mut(layout.align())
+	}
+
 	pub(crate) fn create_buffer_with_layout(
 		&mut self,
 		layout: Layout,
@@ -8,9 +18,11 @@ impl Device {
 		device_accesses: DeviceAccesses,
 		storage_kind: BufferStorage,
 	) -> u64 {
+		Self::validate_buffer_heap_contract(resource_uses, device_accesses);
+
 		// Allocates CPU storage for a buffer with the requested layout.
 		let data = if layout.size() == 0 {
-			std::ptr::NonNull::<u8>::dangling().as_ptr()
+			Self::zero_sized_buffer_pointer(layout)
 		} else {
 			unsafe { alloc::alloc_zeroed(layout) }
 		};
@@ -28,6 +40,8 @@ impl Device {
 			data,
 			layout,
 			size: layout.size(),
+			host_generation: 1,
+			uploaded_generation: 0,
 			uses: resource_uses,
 			access: device_accesses,
 			resource,
@@ -47,6 +61,24 @@ impl Device {
 			BufferStorage::Static => index,
 			BufferStorage::Dynamic => DYNAMIC_BUFFER_HANDLE_FLAG | index,
 		}
+	}
+
+	/// Rejects buffer contracts that cannot be represented by the selected native heap.
+	fn validate_buffer_heap_contract(resource_uses: Uses, device_accesses: DeviceAccesses) {
+		let uses_readback_heap =
+			device_accesses.intersects(DeviceAccesses::CpuRead) && !device_accesses.intersects(DeviceAccesses::CpuWrite);
+		if !uses_readback_heap {
+			return;
+		}
+
+		assert!(
+			!device_accesses.intersects(DeviceAccesses::GpuRead),
+			"Invalid DX12 readback-buffer access. The most likely cause is that CPU-readable memory was also declared for GPU reads. Readback heaps support only copy or resolve destination access. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/readback-data-using-heaps."
+		);
+		assert!(
+			resource_uses.difference(Uses::TransferDestination).is_empty(),
+			"Invalid DX12 readback-buffer usage. The most likely cause is that a CPU-readable buffer was declared for a GPU binding instead of transfer-destination readback. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
+		);
 	}
 
 	pub(crate) fn buffer_index(buffer_handle: BaseBufferHandle) -> (usize, bool) {
@@ -113,18 +145,24 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
+		// Every native consumer crosses this seam, so dirty host writes become visible without per-command special cases.
+		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
 		let buffer = self.buffer(buffer_handle)?;
-		if sequence_index == 0 {
-			return buffer.resource.clone();
+		let resource = if sequence_index == 0 {
+			buffer.resource.clone()
+		} else {
+			buffer
+				.frame_resources
+				.as_ref()
+				.and_then(|resources| resources.get(sequence_index as usize))
+				.and_then(|resource| resource.as_ref())
+				.and_then(|resource| resource.resource.clone())
+				.or_else(|| buffer.resource.clone())
+		};
+		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
+			self.retain_command_buffer_resource(command_buffer, resource);
 		}
-		buffer
-			.frame_resources
-			.as_ref()
-			.and_then(|resources| resources.get(sequence_index as usize))
-			.and_then(|resource| resource.as_ref())
-			.and_then(|resource| resource.resource.clone())
-			.or_else(|| buffer.resource.clone())
+		resource
 	}
 
 	pub(crate) fn buffer_heap_kind_for_sequence(
@@ -171,21 +209,27 @@ impl Device {
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		let buffer = self.buffer_mut(buffer_handle)?;
 		if sequence_index == 0 {
+			Self::mark_buffer_host_write(buffer);
 			return Some((buffer.data, buffer.size));
 		}
 		let size = buffer.size;
-		buffer
+		let storage = buffer
 			.frame_resources
 			.as_mut()
 			.and_then(|resources| resources.get_mut(sequence_index as usize))
-			.and_then(|resource| resource.as_mut())
-			.map(|resource| (resource.data, size))
-			.or(Some((buffer.data, size)))
+			.and_then(|resource| resource.as_mut());
+		if let Some(storage) = storage {
+			Self::mark_buffer_frame_host_write(storage);
+			Some((storage.data, size))
+		} else {
+			Self::mark_buffer_host_write(buffer);
+			Some((buffer.data, size))
+		}
 	}
 
 	pub(crate) fn create_buffer_frame_storage(&self, layout: Layout, access: DeviceAccesses, uses: Uses) -> BufferFrameStorage {
 		let data = if layout.size() == 0 {
-			std::ptr::NonNull::<u8>::dangling().as_ptr()
+			Self::zero_sized_buffer_pointer(layout)
 		} else {
 			unsafe { alloc::alloc_zeroed(layout) }
 		};
@@ -198,6 +242,8 @@ impl Device {
 		BufferFrameStorage {
 			data,
 			layout,
+			host_generation: 1,
+			uploaded_generation: 0,
 			resource,
 			mapped,
 			heap_kind,
@@ -308,24 +354,51 @@ impl Device {
 		(resource, mapped, heap_kind)
 	}
 
+	/// Rejects image metadata that cannot describe one native 2D or 3D texture.
+	pub(crate) fn validate_image_dimension(extent: Extent, is_3d: bool, array_layers: u32, cube_compatible: bool) {
+		assert!(
+			array_layers > 0,
+			"Invalid DX12 image array size. The most likely cause is that the image builder supplied an empty array."
+		);
+		if is_3d {
+			assert!(
+				array_layers == 1 && !cube_compatible,
+				"Invalid DX12 3D texture array. The most likely cause is that array or cubemap metadata was combined with a Texture3D extent. DX12 interprets DepthOrArraySize as depth for Texture3D resources. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_resource_desc."
+			);
+		} else {
+			assert!(
+				extent.depth() <= 1,
+				"Invalid DX12 2D texture depth. The most likely cause is that a 2D image was resized with a 3D extent."
+			);
+		}
+	}
+
 	pub(crate) fn create_image_resource(
 		&self,
 		extent: Extent,
+		is_3d: bool,
 		format: Formats,
 		uses: Uses,
 		array_layers: u32,
 		mip_levels: u32,
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
 	) -> Option<ID3D12Resource> {
+		Self::validate_image_dimension(extent, is_3d, array_layers, false);
 		let dxgi_format = Self::dxgi_resource_format(format, uses)?;
-		if extent.width() == 0 || extent.height() == 0 {
+		if extent.width() == 0 || extent.height() == 0 || (is_3d && extent.depth() == 0) {
 			return None;
 		}
 
 		let flags = Self::image_resource_flags(format, uses);
-		let depth_or_array_size = u16::try_from(array_layers.max(1)).expect(
-			"Invalid DX12 image array size. The most likely cause is that the layer count exceeds the native 16-bit limit.",
-		);
+		let depth_or_array_size = if is_3d {
+			u16::try_from(extent.depth().max(1)).expect(
+				"Invalid DX12 image depth. The most likely cause is that the 3D texture depth exceeds the native 16-bit limit.",
+			)
+		} else {
+			u16::try_from(array_layers.max(1)).expect(
+				"Invalid DX12 image array size. The most likely cause is that the layer count exceeds the native 16-bit limit.",
+			)
+		};
 		let heap_properties = D3D12_HEAP_PROPERTIES {
 			Type: D3D12_HEAP_TYPE_DEFAULT,
 			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -334,7 +407,11 @@ impl Device {
 			VisibleNodeMask: 1,
 		};
 		let resource_desc = D3D12_RESOURCE_DESC1 {
-			Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+			Dimension: if is_3d {
+				D3D12_RESOURCE_DIMENSION_TEXTURE3D
+			} else {
+				D3D12_RESOURCE_DIMENSION_TEXTURE2D
+			},
 			Alignment: 0,
 			Width: extent.width().max(1) as u64,
 			Height: extent.height().max(1),
@@ -364,16 +441,189 @@ impl Device {
 		if let Err(error) = result {
 			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
 			self.log_dx12_error(format!(
-				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Dimension: {}D. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
 				format,
 				extent,
+				if is_3d { 3 } else { 2 },
 				uses,
 				array_layers
 			));
-			None
+			panic!(
+				"Failed to create a DX12 image resource. The most likely cause is that the requested format/use combination is invalid, memory is exhausted, or the device was removed. Native error: {error:?}. Device removed reason: {removed_reason:?}."
+			);
 		} else {
-			resource
+			Some(resource.expect(
+				"Failed to create a DX12 image resource. The most likely cause is that the driver reported success without returning the requested native resource.",
+			))
 		}
+	}
+
+	/// Verifies every native view capability promised by an image before its logical handle is published.
+	pub(crate) fn validate_image_format_support(&self, format: Formats, uses: Uses, is_3d: bool) {
+		assert!(
+			!uses.intersects(Uses::DepthStencil) || format.is_depth(),
+			"Invalid DX12 depth-stencil image. The most likely cause is that depth-stencil usage was requested for a color format."
+		);
+		assert!(
+			!format.is_depth() || !uses.intersects(Uses::RenderTarget | Uses::Storage),
+			"Invalid DX12 depth image usage. The most likely cause is that a depth format was requested as a color render target or unordered-access image. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags."
+		);
+		assert!(
+			!is_3d || (!format.is_depth() && !uses.intersects(Uses::RenderTarget | Uses::DepthStencil)),
+			"Invalid DX12 3D attachment image. The most likely cause is that the current attachment path requires a 2D render-target or depth-stencil view."
+		);
+		let resource_format = Self::dxgi_resource_format(format, uses).unwrap_or_else(|| {
+			panic!(
+				"Unsupported DX12 image format. The most likely cause is that {format:?} has no exact DXGI representation. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+			)
+		});
+		let attachment_format = Self::dxgi_format(format).unwrap_or_else(|| {
+			panic!(
+				"Unsupported DX12 image view format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+			)
+		});
+
+		let (dimension_support, dimension_name) = if is_3d {
+			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, "3D texture")
+		} else {
+			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE2D, "2D texture")
+		};
+		Self::assert_format_support1(
+			self.query_format_support(resource_format),
+			dimension_support,
+			format,
+			dimension_name,
+		);
+		if uses.intersects(Uses::Image) {
+			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+				panic!(
+					"Unsupported DX12 shader-resource format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+				)
+			});
+			Self::assert_format_support1(
+				self.query_format_support(shader_format),
+				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
+				format,
+				"shader-resource load and sampling",
+			);
+		}
+		if uses.intersects(Uses::InputAttachment) {
+			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+				panic!(
+					"Unsupported DX12 input-attachment format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+				)
+			});
+			Self::assert_format_support1(
+				self.query_format_support(shader_format),
+				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
+				format,
+				"input-attachment shader load",
+			);
+		}
+		if format.is_depth() {
+			Self::assert_format_support1(
+				self.query_format_support(attachment_format),
+				d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL,
+				format,
+				"depth-stencil view",
+			);
+		} else if uses.intersects(Uses::RenderTarget) {
+			Self::assert_format_support1(
+				self.query_format_support(attachment_format),
+				d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET,
+				format,
+				"render-target view",
+			);
+		}
+		if uses.intersects(Uses::Storage) {
+			let storage_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+				panic!(
+					"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+				)
+			});
+			let storage_support = self.query_format_support(storage_format);
+			Self::assert_format_support1(
+				storage_support,
+				d3d12::D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW,
+				format,
+				"typed unordered-access view",
+			);
+			Self::assert_format_support2(
+				storage_support,
+				d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
+				format,
+				"typed unordered-access store",
+			);
+		}
+	}
+
+	/// Verifies optional typed-UAV reads required by one shader resource declaration.
+	pub(crate) fn validate_typed_uav_format_support(&self, format: Formats, access: crate::AccessPolicies) {
+		if !access.intersects(crate::AccessPolicies::READ) {
+			return;
+		}
+		let native_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+			panic!(
+				"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+			)
+		});
+		Self::assert_format_support2(
+			self.query_format_support(native_format),
+			d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD,
+			format,
+			"typed unordered-access load",
+		);
+	}
+
+	/// Returns device support for one exact DXGI format and caches the immutable driver result.
+	fn query_format_support(&self, format: DXGI_FORMAT) -> d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+		if let Some(support) = self.format_support_cache.borrow().get(&format.0).copied() {
+			return support;
+		}
+
+		let mut support = d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+			Format: format,
+			..Default::default()
+		};
+		let result = unsafe {
+			self.device.CheckFeatureSupport(
+				d3d12::D3D12_FEATURE_FORMAT_SUPPORT,
+				(&mut support as *mut d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
+			)
+		};
+		assert!(
+			result.is_ok(),
+			"Failed to query DX12 format support. The most likely cause is that the device was removed or the driver rejected the capability query. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_format_support."
+		);
+		self.format_support_cache.borrow_mut().insert(format.0, support);
+		support
+	}
+
+	/// Rejects a format when its driver support does not cover every required resource operation.
+	fn assert_format_support1(
+		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
+		required: d3d12::D3D12_FORMAT_SUPPORT1,
+		format: Formats,
+		operation: &str,
+	) {
+		assert!(
+			support.Support1.contains(required),
+			"Unsupported DX12 image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1."
+		);
+	}
+
+	/// Rejects a format when its driver support does not cover the required typed-UAV operation.
+	fn assert_format_support2(
+		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
+		required: d3d12::D3D12_FORMAT_SUPPORT2,
+		format: Formats,
+		operation: &str,
+	) {
+		assert!(
+			support.Support2.contains(required),
+			"Unsupported DX12 storage-image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support2."
+		);
 	}
 
 	pub(crate) fn image_resource_flags(format: Formats, uses: Uses) -> D3D12_RESOURCE_FLAGS {
@@ -557,7 +807,7 @@ impl Device {
 	}
 
 	pub(crate) fn dxgi_resource_format(format: Formats, uses: Uses) -> Option<DXGI_FORMAT> {
-		if format.is_depth() && uses.intersects(Uses::Image) {
+		if format.is_depth() && uses.intersects(Uses::Image | Uses::InputAttachment) {
 			match format {
 				Formats::Depth16 => Some(DXGI_FORMAT_R16_TYPELESS),
 				Formats::Depth32 => Some(DXGI_FORMAT_R32_TYPELESS),
@@ -582,27 +832,27 @@ impl Device {
 
 	pub(crate) fn dxgi_format(format: Formats) -> Option<DXGI_FORMAT> {
 		match format {
-			Formats::R8UNORM | Formats::R8F | Formats::R8sRGB => Some(DXGI_FORMAT_R8_UNORM),
+			Formats::R8UNORM => Some(DXGI_FORMAT_R8_UNORM),
 			Formats::R8SNORM => Some(DXGI_FORMAT_R8_SNORM),
 			Formats::R16F => Some(DXGI_FORMAT_R16_FLOAT),
-			Formats::R16UNORM | Formats::R16sRGB => Some(DXGI_FORMAT_R16_UNORM),
+			Formats::R16UNORM => Some(DXGI_FORMAT_R16_UNORM),
 			Formats::R16SNORM => Some(DXGI_FORMAT_R16_SNORM),
 			Formats::R32F => Some(DXGI_FORMAT_R32_FLOAT),
-			Formats::R32UNORM | Formats::R32sRGB | Formats::U32 => Some(DXGI_FORMAT_R32_UINT),
-			Formats::RG8UNORM | Formats::RG8F | Formats::RG8sRGB => Some(DXGI_FORMAT_R8G8_UNORM),
+			Formats::U32 => Some(DXGI_FORMAT_R32_UINT),
+			Formats::RG8UNORM => Some(DXGI_FORMAT_R8G8_UNORM),
 			Formats::RG8SNORM => Some(DXGI_FORMAT_R8G8_SNORM),
 			Formats::RG16F => Some(DXGI_FORMAT_R16G16_FLOAT),
-			Formats::RG16UNORM | Formats::RG16sRGB => Some(DXGI_FORMAT_R16G16_UNORM),
+			Formats::RG16UNORM => Some(DXGI_FORMAT_R16G16_UNORM),
 			Formats::RG16SNORM => Some(DXGI_FORMAT_R16G16_SNORM),
-			Formats::RGBA8UNORM | Formats::RGBA8F => Some(DXGI_FORMAT_R8G8B8A8_UNORM),
+			Formats::RGBA8UNORM => Some(DXGI_FORMAT_R8G8B8A8_UNORM),
 			Formats::RGBA8SNORM => Some(DXGI_FORMAT_R8G8B8A8_SNORM),
 			Formats::RGBA8sRGB => Some(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
 			Formats::RGBA16F => Some(DXGI_FORMAT_R16G16B16A16_FLOAT),
-			Formats::RGBA16UNORM | Formats::RGBA16sRGB => Some(DXGI_FORMAT_R16G16B16A16_UNORM),
+			Formats::RGBA16UNORM => Some(DXGI_FORMAT_R16G16B16A16_UNORM),
 			Formats::RGBA16SNORM => Some(DXGI_FORMAT_R16G16B16A16_SNORM),
+			Formats::RGBu11u11u10 => Some(DXGI_FORMAT_R11G11B10_FLOAT),
 			Formats::BGRAu8 => Some(DXGI_FORMAT_B8G8R8A8_UNORM),
-			// DX12 swapchains expose BGRA backbuffers as UNORM, so the pipeline format must match that native RTV.
-			Formats::BGRAsRGB => Some(DXGI_FORMAT_B8G8R8A8_UNORM),
+			Formats::BGRAsRGB => Some(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),
 			Formats::Depth16 => Some(DXGI_FORMAT_D16_UNORM),
 			Formats::Depth32 => Some(DXGI_FORMAT_D32_FLOAT),
 			Formats::BC5 => Some(DXGI_FORMAT_BC5_UNORM),
@@ -613,24 +863,50 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn sync_buffer_storage(buffer: &Buffer) {
+	/// Marks the base CPU shadow dirty before exposing mutable storage.
+	pub(crate) fn mark_buffer_host_write(buffer: &mut Buffer) {
+		buffer.host_generation = buffer.host_generation.wrapping_add(1);
+		if buffer.host_generation == buffer.uploaded_generation {
+			buffer.host_generation = buffer.host_generation.wrapping_add(1);
+		}
+	}
+
+	/// Marks one frame-local CPU shadow dirty before exposing mutable storage.
+	fn mark_buffer_frame_host_write(frame_storage: &mut BufferFrameStorage) {
+		frame_storage.host_generation = frame_storage.host_generation.wrapping_add(1);
+		if frame_storage.host_generation == frame_storage.uploaded_generation {
+			frame_storage.host_generation = frame_storage.host_generation.wrapping_add(1);
+		}
+	}
+
+	/// Copies a changed base CPU shadow into its mapped native allocation.
+	pub(crate) fn sync_buffer_storage(buffer: &mut Buffer) {
 		if buffer.mapped.is_null() || buffer.size == 0 || !buffer.access.intersects(DeviceAccesses::CpuWrite) {
+			return;
+		}
+		if buffer.host_generation == buffer.uploaded_generation {
 			return;
 		}
 
 		unsafe {
 			std::ptr::copy_nonoverlapping(buffer.data, buffer.mapped, buffer.size);
 		}
+		buffer.uploaded_generation = buffer.host_generation;
 	}
 
-	pub(crate) fn sync_buffer_frame_storage(frame_storage: &BufferFrameStorage, size: usize, access: DeviceAccesses) {
+	/// Copies a changed frame-local CPU shadow into its mapped native allocation.
+	pub(crate) fn sync_buffer_frame_storage(frame_storage: &mut BufferFrameStorage, size: usize, access: DeviceAccesses) {
 		if frame_storage.mapped.is_null() || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
+			return;
+		}
+		if frame_storage.host_generation == frame_storage.uploaded_generation {
 			return;
 		}
 
 		unsafe {
 			std::ptr::copy_nonoverlapping(frame_storage.data, frame_storage.mapped, size);
 		}
+		frame_storage.uploaded_generation = frame_storage.host_generation;
 	}
 
 	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
@@ -640,7 +916,7 @@ impl Device {
 	pub(crate) fn sync_buffer_for_sequence(&mut self, buffer_handle: impl Into<BaseBufferHandle>, sequence_index: u8) {
 		let buffer_handle = buffer_handle.into();
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
-		if let Some(buffer) = self.buffer(buffer_handle) {
+		if let Some(buffer) = self.buffer_mut(buffer_handle) {
 			// Static buffers share one host-mapped resource across all frame sequences.
 			// Transfer recordings may run on sequence 1, so do not gate their flushes on sequence 0.
 			if sequence_index == 0 || buffer.frame_resources.is_none() {
@@ -649,9 +925,9 @@ impl Device {
 			}
 			if let Some(frame_storage) = buffer
 				.frame_resources
-				.as_ref()
-				.and_then(|resources| resources.get(sequence_index as usize))
-				.and_then(|resource| resource.as_ref())
+				.as_mut()
+				.and_then(|resources| resources.get_mut(sequence_index as usize))
+				.and_then(|resource| resource.as_mut())
 			{
 				Self::sync_buffer_frame_storage(frame_storage, buffer.size, buffer.access);
 			}

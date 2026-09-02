@@ -509,8 +509,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let native_bytes_per_image = native_bytes_per_row
 			.checked_mul(row_count)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let size = native_bytes_per_image;
-		let compact_size = bytes_per_image;
+		let size = native_bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let compact_size = bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let mut bytes = Vec::new();
 		bytes
 			.try_reserve_exact(compact_size)
@@ -526,8 +530,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.consume_compute_resources([source_use]);
 		self.command_buffer.retain_texture(source_texture.clone());
 		self.command_buffer.retain_buffer(staging.clone());
-		let mut source_size = utils::texture_copy_size(format, extent);
-		source_size.depth = 1;
+		let source_size = utils::texture_copy_size(format, extent);
 		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 		for slice in 0..array_layers as usize {
 			// SAFETY: The source subresource and readback buffer layout cover this array slice.
@@ -556,7 +559,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			native_bytes_per_row,
 			native_bytes_per_image,
 			row_count,
-			image_count: 1,
+			image_count: layout.depth_slices,
 		});
 		self.texture_readbacks.push(handle);
 		Ok(handle)
@@ -791,7 +794,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
@@ -810,14 +813,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 			self.resize_push_constants_for_layout(pipeline_layout_handle);
 		}
 
-		// SAFETY: The destination range is bounds-checked above and `data` is an initialized nonoverlapping value.
-		unsafe {
-			std::ptr::copy_nonoverlapping(
-				&data as *const T as *const u8,
-				self.push_constant_data[offset as usize..end].as_mut_ptr(),
-				std::mem::size_of::<T>(),
-			);
-		}
+		self.push_constant_data[offset as usize..end].copy_from_slice(bytemuck::bytes_of(&data));
 
 		self.compute_push_constants_dirty = true;
 		self.render_push_constants_dirty = true;
@@ -1038,14 +1034,14 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
+		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
 		entry_index: usize,
 	) {
 		assert!(
 			entry_index < N,
 			"Metal indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
 		);
-		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into());
+		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into().handle());
 		let buffer = self.device.buffers.resource(internal_buffer);
 		let indirect_offset = entry_index.checked_mul(std::mem::size_of::<[u32; 3]>()).expect(
 			"Metal indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",

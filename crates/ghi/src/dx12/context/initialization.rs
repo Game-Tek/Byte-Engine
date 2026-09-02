@@ -281,6 +281,7 @@ impl Device {
 			device_configuration,
 			dxc_compiler,
 			descriptor_handle_increment_sizes,
+			format_support_cache: RefCell::new(HashMap::default()),
 			settings,
 			info_queue,
 			debug_log_function,
@@ -291,6 +292,7 @@ impl Device {
 			queues,
 			command_buffers: Vec::new(),
 			active_command_buffer: None,
+			deferred_tasks: std::array::from_fn(|_| Vec::new()),
 			buffers: Vec::new(),
 			dynamic_buffers: Vec::new(),
 			images: Vec::new(),
@@ -305,13 +307,15 @@ impl Device {
 			meshes: Vec::new(),
 			swapchains: Vec::new(),
 			synchronizers: Vec::new(),
+			synchronizer_masters: Vec::new(),
+			last_frame_synchronizers: [None; crate::MAX_FRAMES_IN_FLIGHT],
 			top_level_acceleration_structures: Vec::new(),
 			bottom_level_acceleration_structures: Vec::new(),
 			allocations: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			gpu_uploaded_images: HashSet::default(),
 			pending_texture_syncs: Vec::new(),
-			present_transitions: HashMap::default(),
+			untracked_present_work: false,
 			render_target_views: HashMap::default(),
 			depth_stencil_views: HashMap::default(),
 			retained_clear_uav_descriptors: HashMap::default(),
@@ -408,20 +412,46 @@ impl Device {
 				continue;
 			}
 
-			let mut message_bytes = vec![0u8; message_byte_len];
-			let message = message_bytes.as_mut_ptr().cast::<D3D12_MESSAGE>();
-			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err() {
+			let message_header_size = std::mem::size_of::<D3D12_MESSAGE>();
+			if message_byte_len < message_header_size {
+				self.log_debug_message(
+					"DX12 returned a debug message smaller than D3D12_MESSAGE. The most likely cause is an invalid debug-layer response.",
+				);
+				self.debug_log_count.fetch_add(10, Ordering::Relaxed);
+				continue;
+			}
+			let message_units = message_byte_len.div_ceil(message_header_size);
+			let mut message_storage = vec![std::mem::MaybeUninit::<D3D12_MESSAGE>::uninit(); message_units];
+			let storage_byte_len = message_units * message_header_size;
+			message_byte_len = storage_byte_len;
+			let message = message_storage.as_mut_ptr().cast::<D3D12_MESSAGE>();
+			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err()
+				|| message_byte_len < message_header_size
+				|| message_byte_len > storage_byte_len
+			{
 				continue;
 			}
 
+			// GetMessage initialized the header and reported that it fits in the aligned allocation above.
 			let message = unsafe { &*message };
 			let description = if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
 				""
 			} else {
-				let bytes = unsafe {
-					std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength.saturating_sub(1))
-				};
-				std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
+				let storage_start = message_storage.as_ptr().cast::<u8>() as usize;
+				let storage_end = storage_start.checked_add(message_byte_len);
+				let description_start = message.pDescription as usize;
+				let description_end = description_start.checked_add(message.DescriptionByteLength);
+				match (storage_end, description_end) {
+					(Some(storage_end), Some(description_end))
+						if description_start >= storage_start && description_end <= storage_end =>
+					{
+						// The validated description range is part of message_storage and remains alive for this conversion.
+						let bytes = unsafe { std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength) };
+						let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+						std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
+					}
+					_ => "<invalid D3D12 debug message description>",
+				}
 			};
 			self.log_debug_message(format!(
 				"DX12 {:?} {:?} #{}: {}",
@@ -451,17 +481,64 @@ impl Device {
 		}
 	}
 
+	/// Rebuilds frame-local chains and resources at a global native queue-idle boundary.
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
+		assert!(
+			(1..=crate::MAX_FRAMES_IN_FLIGHT as u8).contains(&frames),
+			"Invalid frames-in-flight count. The most likely cause is that the requested count is zero or exceeds the engine maximum."
+		);
 		let previous_frames = self.frames;
-		self.frames = frames.max(1);
+		if frames == previous_frames {
+			return;
+		}
+		assert!(
+			self.swapchains
+				.iter()
+				.all(|swapchain| swapchain.acquired_sequences.iter().all(|acquired| !acquired)),
+			"DX12 frame topology cannot change while a swapchain image is acquired. The most likely cause is that a present key was retained across set_frames_in_flight."
+		);
+		self.wait_for_all_queues_idle().expect(
+			"Failed to wait for DX12 queues before changing frames in flight. The most likely cause is that the device was removed.",
+		);
+		self.prepare_for_topology_change().expect(
+			"Failed to reset DX12 command lists before changing frames in flight. The most likely cause is that a completed command list became invalid.",
+		);
+		self.process_all_tasks_after_idle();
+		self.resize_command_buffer_frames(frames);
+		self.resize_descriptor_set_chains(frames);
+		self.frames = frames;
+		self.last_frame_synchronizers = [None; crate::MAX_FRAMES_IN_FLIGHT];
 		self.pending_texture_syncs
-			.retain(|(_, sequence_index)| *sequence_index < self.frames);
-		let image_count = self.frames.max(2);
-		let resizes_swapchains = self.swapchains.iter().any(|swapchain| {
-			swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0
-		});
-		if resizes_swapchains {
-			self.invalidate_attachment_views();
+			.retain(|(_, sequence_index)| *sequence_index < frames);
+
+		// Keep dormant chain nodes linked so repeated frame-count changes reuse their fences instead of growing device storage.
+		for master_index in 0..self.synchronizer_masters.len() {
+			let master = self.synchronizer_masters[master_index];
+			let handles = self.all_synchronizer_handles(master);
+			if frames as usize > handles.len() {
+				let mut tail = *handles.last().expect(
+					"Missing DX12 synchronizer master. The most likely cause is that its sequence chain was corrupted.",
+				);
+				for _ in handles.len()..frames as usize {
+					let next = self.create_synchronizer_internal(false);
+					self.synchronizers[tail.0 as usize].next = Some(next);
+					tail = next;
+				}
+			}
+		}
+
+		let image_count = frames.max(2);
+		let retired_backbuffer_keys = self
+			.swapchains
+			.iter()
+			.filter(|swapchain| {
+				swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0
+			})
+			.flat_map(|swapchain| swapchain.backbuffers.iter().flatten().map(Self::native_resource_key))
+			.collect::<SmallVec<[usize; 8]>>();
+		self.invalidate_attachment_views_for_resources(&retired_backbuffer_keys);
+		for &key in &retired_backbuffer_keys {
+			self.image_states.remove(&key);
 		}
 
 		for swapchain in &mut self.swapchains {
@@ -483,65 +560,73 @@ impl Device {
 						"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
 					);
 				}
-				swapchain.backbuffers = std::array::from_fn(|_| None);
+				swapchain.image_count = image_count;
 			}
 
-			swapchain.image_count = image_count;
-			swapchain.next_image_index %= image_count;
+			swapchain.next_image_index %= swapchain.image_count;
+			swapchain.acquired_sequences = [false; 8];
 		}
 
-		let mut retired_image_state_keys = SmallVec::<[usize; 8]>::new();
+		let retired_image_keys = self
+			.images
+			.iter()
+			.filter_map(|image| image.frame_resources.as_ref())
+			.flat_map(|resources| {
+				resources
+					.iter()
+					.skip(frames as usize)
+					.flatten()
+					.map(Self::native_resource_key)
+			})
+			.collect::<SmallVec<[usize; 8]>>();
+		self.invalidate_attachment_views_for_resources(&retired_image_keys);
+		self.invalidate_clear_uav_descriptors_for_resources(&retired_image_keys);
+		for &key in &retired_image_keys {
+			self.image_states.remove(&key);
+		}
 		for image in &mut self.images {
 			let Some(frame_data) = image.frame_data.as_mut() else {
 				continue;
 			};
 			let data = image.data.clone().unwrap_or_default();
-			frame_data.resize(self.frames as usize, data);
+			frame_data.resize(frames as usize, data);
 			if let Some(frame_resources) = image.frame_resources.as_mut() {
-				retired_image_state_keys.extend(
-					frame_resources
-						.iter()
-						.skip(self.frames as usize)
-						.flatten()
-						.map(Self::native_resource_key),
-				);
-				frame_resources.resize(self.frames as usize, None);
+				frame_resources.resize(frames as usize, None);
 			}
 		}
-		if previous_frames < self.frames {
+		if previous_frames < frames {
 			// Newly added dynamic sequences also require their staging data before the first GPU access.
 			for (image_index, image) in self.images.iter().enumerate() {
 				if image.frame_data.is_some() {
-					for sequence_index in previous_frames..self.frames {
+					for sequence_index in previous_frames..frames {
 						self.pending_texture_syncs
 							.push((crate::BaseImageHandle(image_index as u64), sequence_index));
 					}
 				}
 			}
 		}
-		self.invalidate_attachment_views_for_resources(&retired_image_state_keys);
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_image_state_keys);
-		for &key in &retired_image_state_keys {
-			self.image_states.remove(&key);
-		}
 
-		let mut retired_buffer_state_keys = SmallVec::<[usize; 8]>::new();
+		let retired_buffer_keys = self
+			.dynamic_buffers
+			.iter()
+			.filter_map(|buffer| buffer.frame_resources.as_ref())
+			.flat_map(|resources| {
+				resources
+					.iter()
+					.skip(frames as usize)
+					.flatten()
+					.filter_map(|frame| frame.resource.as_ref())
+					.map(Self::native_resource_key)
+			})
+			.collect::<SmallVec<[usize; 8]>>();
+		self.invalidate_clear_uav_descriptors_for_resources(&retired_buffer_keys);
+		for &key in &retired_buffer_keys {
+			self.buffer_states.remove(&key);
+		}
 		for buffer in &mut self.dynamic_buffers {
 			if let Some(frame_resources) = buffer.frame_resources.as_mut() {
-				retired_buffer_state_keys.extend(
-					frame_resources
-						.iter()
-						.skip(self.frames as usize)
-						.flatten()
-						.filter_map(|frame| frame.resource.as_ref())
-						.map(Self::native_resource_key),
-				);
-				frame_resources.resize_with(self.frames as usize, || None);
+				frame_resources.resize_with(frames as usize, || None);
 			}
-		}
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_buffer_state_keys);
-		for key in retired_buffer_state_keys {
-			self.buffer_states.remove(&key);
 		}
 		self.invalidate_descriptor_materializations();
 	}
@@ -751,8 +836,17 @@ impl Device {
 		if debug_artifacts_enabled {
 			self.write_shader_debug_files(name, entry_point, target, source, &result);
 		}
-		let bytecode = unsafe { std::slice::from_raw_parts(object.GetBufferPointer().cast::<u8>(), object.GetBufferSize()) };
-		let bytecode = bytecode.to_vec();
+		let bytecode = match Self::dxc_blob_bytes(&object) {
+			Ok([]) => {
+				self.log_hlsl_compile_error(source, entry_point, target, "DXC returned empty object bytecode.");
+				return Err(());
+			}
+			Ok(bytes) => bytes.to_vec(),
+			Err(reason) => {
+				self.log_hlsl_compile_error(source, entry_point, target, reason);
+				return Err(());
+			}
+		};
 		if let Some(cache_path) = &dxil_cache_path {
 			Self::write_hlsl_dxil_cache(cache_path, bytecode.as_slice());
 		}
@@ -911,7 +1005,13 @@ impl Device {
 			return;
 		};
 		let pdb_path = hlsl_path.with_extension("pdb");
-		let bytes = unsafe { std::slice::from_raw_parts(pdb.GetBufferPointer().cast::<u8>(), pdb.GetBufferSize()) };
+		let bytes = match Self::dxc_blob_bytes(&pdb) {
+			Ok(bytes) => bytes,
+			Err(reason) => {
+				self.log_dx12_error(reason);
+				return;
+			}
+		};
 		if let Err(error) = std::fs::write(&pdb_path, bytes) {
 			self.log_dx12_error(format!("Failed to write DX12 shader PDB '{}': {error}", pdb_path.display()));
 		}
@@ -952,13 +1052,31 @@ impl Device {
 			return "DXC compilation failed with no error output.".to_string();
 		};
 
-		let bytes = unsafe { std::slice::from_raw_parts(errors.GetBufferPointer().cast::<u8>(), errors.GetBufferSize()) };
+		let Ok(bytes) = Self::dxc_blob_bytes(&errors) else {
+			return "DXC compilation failed and returned invalid error output.".to_string();
+		};
 		let message = String::from_utf8_lossy(bytes).trim().to_string();
 		if message.is_empty() {
 			"DXC compilation failed with empty error output.".to_string()
 		} else {
 			message
 		}
+	}
+
+	/// Borrows the bytes reported by a live DXC blob without constructing a slice from a null pointer.
+	fn dxc_blob_bytes(blob: &IDxcBlob) -> Result<&[u8], &'static str> {
+		let byte_len = unsafe { blob.GetBufferSize() };
+		if byte_len == 0 {
+			return Ok(&[]);
+		}
+		let bytes = unsafe { blob.GetBufferPointer() }.cast::<u8>();
+		if bytes.is_null() {
+			return Err(
+				"DXC returned a null pointer for nonempty blob data. The most likely cause is an invalid compiler response.",
+			);
+		}
+		// IDxcBlob owns byte_len initialized bytes at this pointer and remains borrowed for the returned slice lifetime.
+		Ok(unsafe { std::slice::from_raw_parts(bytes, byte_len) })
 	}
 
 	pub(crate) fn log_hlsl_compile_error(&self, source: &str, entry_point: &str, target: &str, reason: &str) {

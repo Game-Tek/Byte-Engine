@@ -123,7 +123,10 @@ impl Context {
 		graphics_hardware_interface::MeshHandle((self.meshes.len() - 1) as u64)
 	}
 
-	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {
+	pub fn build_buffer<T: crate::Pod>(
+		&mut self,
+		builder: buffer_builder::Builder,
+	) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 		let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 
@@ -133,7 +136,7 @@ impl Context {
 		)
 	}
 
-	pub fn build_dynamic_buffer<T: Copy>(
+	pub fn build_dynamic_buffer<T: crate::Pod>(
 		&mut self,
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
@@ -173,24 +176,33 @@ impl Context {
 		self.buffers.get_single(buffer_handle).unwrap().gpu_address
 	}
 
-	pub fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
+	pub fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
 		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
-		unsafe { &*(buffer.pointer as *const T) }
+		unsafe { &*pointer }
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
 		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
-		unsafe { &mut *(buffer.pointer as *mut T) }
+		unsafe { &mut *pointer }
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
@@ -198,7 +210,7 @@ impl Context {
 	/// # Safety
 	///
 	/// The caller must keep the context and buffer alive and must not create another CPU mapping until the returned mapping is discarded.
-	pub unsafe fn transfer_buffer_mapping<T: Copy>(
+	pub unsafe fn transfer_buffer_mapping<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
@@ -207,11 +219,20 @@ impl Context {
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
+		let pointer = if std::mem::size_of::<T>() == 0 {
+			std::ptr::NonNull::<T>::dangling().as_ptr().cast::<u8>()
+		} else {
+			buffer.pointer
+		};
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
-		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.pointer, std::mem::size_of::<T>()) }
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer, std::mem::size_of::<T>()) }
 	}
 
-	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
+	pub fn resize_buffer<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
+		size: usize,
+	) {
 		let buffer_handle = buffer_handle.into();
 		let buffer = self.buffers.get_single(buffer_handle).unwrap();
 

@@ -29,15 +29,15 @@ impl crate::context::Context for Context {
 		Context::get_buffer_address(self, buffer_handle)
 	}
 
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
+	fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		Context::get_buffer_slice(self, buffer_handle)
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
 		Context::get_mut_buffer_slice(self, buffer_handle)
 	}
 
-	unsafe fn transfer_buffer_mapping<T: Copy>(
+	unsafe fn transfer_buffer_mapping<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
@@ -114,7 +114,11 @@ impl crate::context::Context for Context {
 		Context::get_image_data(self, texture_copy_handle)
 	}
 
-	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
+	fn resize_buffer<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
+		size: usize,
+	) {
 		Context::resize_buffer(self, buffer_handle, size);
 	}
 
@@ -195,11 +199,11 @@ impl crate::context::ContextCreate for Context {
 		Context::create_ray_tracing_pipeline(self, builder)
 	}
 
-	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
+	fn build_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
 		Context::build_buffer(self, builder)
 	}
 
-	fn build_dynamic_buffer<T: Copy>(
+	fn build_dynamic_buffer<T: crate::Pod>(
 		&mut self,
 		builder: crate::buffer::Builder,
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {

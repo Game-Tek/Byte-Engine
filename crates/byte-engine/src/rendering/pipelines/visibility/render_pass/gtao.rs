@@ -107,7 +107,7 @@ fn configuration_u32(value: &ConfigurationValue) -> Option<u32> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct GtaoShaderParameters {
 	radius: f32,
 	samples_per_ray: u32,
@@ -116,7 +116,7 @@ struct GtaoShaderParameters {
 
 /// The `FastGtaoViewData` struct provides compact camera reconstruction constants to the GTAO compute passes.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct FastGtaoViewData {
 	pub(crate) pixel_to_ray_mul: [f32; 2],
 	pub(crate) pixel_to_ray_add: [f32; 2],

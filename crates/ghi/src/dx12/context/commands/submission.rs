@@ -1,92 +1,174 @@
 use super::super::*;
 
 impl Device {
+	/// Submits one directly recorded command buffer through the same ordered batch path used by queue executions.
 	pub(crate) fn submit_command_buffer(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		synchronizer_handle: SynchronizerHandle,
-	) -> bool {
-		let command_buffer_index = command_buffer_handle.0 as usize;
-		let Some(command_buffer) = self.command_buffers.get(command_buffer_index) else {
-			return false;
-		};
-		let Some(command_list) = command_buffer.command_list.as_ref() else {
-			return false;
-		};
-		let command_list = (*command_list).clone();
-		let is_open = command_buffer.is_open;
-		let queue_handle = command_buffer.queue_handle;
-		let sequence_index = command_buffer.sequence_index;
-
-		let recorded_work = self
+	) {
+		let (queue_handle, sequence_index, frame_synchronizer) = self
 			.command_buffers
-			.get(command_buffer_index)
-			.map(|command_buffer| command_buffer.recorded_work)
-			.unwrap_or(false);
-		if is_open {
-			let result = unsafe { command_list.Close() };
-			if result.is_err() {
-				self.drain_debug_messages();
-				panic!(
-					"Failed to close a DX12 command list. The most likely cause is that command list recording failed or the command list was already closed."
-				);
-			}
-			if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
-				command_buffer.is_open = false;
-			}
+			.get(command_buffer_handle.0 as usize)
+			.map(|command_buffer| {
+				(
+					command_buffer.queue_handle,
+					command_buffer.sequence_index,
+					command_buffer.frame_synchronizer,
+				)
+			})
+			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		if let Some(frame_synchronizer) = frame_synchronizer {
+			assert_eq!(
+				frame_synchronizer, synchronizer_handle,
+				"Invalid DX12 frame synchronizer. The most likely cause is that a frame command buffer would signal a different fence than the one used to retire its sequence."
+			);
 		}
-
-		if !recorded_work {
-			self.empty_command_list_skip_count += 1;
-			self.complete_synchronizer_for_sequence_from_cpu(synchronizer_handle, sequence_index);
-			return false;
-		}
-
-		let readback_handles = self
-			.texture_readbacks
-			.entries()
-			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
-			.collect::<SmallVec<[_; 4]>>();
-		let Some(queue) = self.queues.get(queue_handle.0 as usize) else {
-			return false;
-		};
-		let command_list = command_list.cast::<ID3D12CommandList>().expect(
-			"Failed to cast a DX12 graphics command list for execution. The most likely cause is an incompatible command list object.",
+		let readbacks =
+			self.execute_command_buffers(queue_handle, std::slice::from_ref(&command_buffer_handle), sequence_index);
+		self.complete_command_buffer_execution(
+			queue_handle,
+			std::slice::from_ref(&command_buffer_handle),
+			synchronizer_handle,
+			sequence_index,
+			readbacks,
 		);
-		let command_lists = [Some(command_list)];
-		unsafe {
-			queue.queue.ExecuteCommandLists(&command_lists);
+	}
+
+	/// Closes and submits one execution as a single native queue batch before presentation and its terminal signal.
+	pub(crate) fn execute_command_buffers(
+		&mut self,
+		queue_handle: QueueHandle,
+		command_buffer_handles: &[CommandBufferHandle],
+		sequence_index: u8,
+	) -> SmallVec<[TextureCopyHandle; 4]> {
+		// Validate the entire execution before closing any list so a rejected batch leaves every recording recoverable.
+		for &handle in command_buffer_handles {
+			let command_buffer = self.command_buffers.get(handle.0 as usize).expect(
+				"Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.",
+			);
+			assert_eq!(
+				command_buffer.queue_handle, queue_handle,
+				"Invalid DX12 execution queue. The most likely cause is that the command buffer was created by a different queue."
+			);
+			assert_eq!(
+				command_buffer.sequence_index, sequence_index,
+				"Invalid DX12 execution sequence. The most likely cause is that the execution combined command buffers from different frames."
+			);
+			assert_eq!(
+				command_buffer.lifecycle,
+				CommandBufferLifecycle::Scheduled,
+				"DX12 command buffer is not scheduled. The most likely cause is that the recording was abandoned or submitted more than once."
+			);
+			assert!(
+				command_buffer.command_list.is_some(),
+				"Missing DX12 command list. The most likely cause is that command-buffer creation failed."
+			);
 		}
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
-			command_buffer.recorded_texture_syncs.clear();
-		}
-		self.commit_command_buffer_resource_states(command_buffer_handle);
-		// Native submission now owns the staging lifetime, even if later fence setup fails.
-		for &handle in &readback_handles {
-			self.texture_readbacks.mark_submitted(handle);
-		}
-		self.native_command_list_execute_count += 1;
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
-			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
-		}
-		self.signal_synchronizer_for_sequence(queue_handle, synchronizer_handle, sequence_index);
-		let completion = self
-			.synchronizer_for_sequence(synchronizer_handle, sequence_index)
-			.and_then(|handle| {
-				self.synchronizers
-					.get(handle.0 as usize)
-					.map(|synchronizer| (handle, synchronizer.value))
-			});
-		for handle in readback_handles {
-			if let Some(readback) = self.texture_readbacks.get_mut(handle) {
-				readback.completion = completion;
+
+		let mut native_lists = SmallVec::<[Option<ID3D12CommandList>; 4]>::new();
+		let mut readback_candidates = SmallVec::<[TextureCopyHandle; 4]>::new();
+		let mut submitted_readbacks = SmallVec::<[TextureCopyHandle; 4]>::new();
+		for &handle in command_buffer_handles {
+			let command_buffer_index = handle.0 as usize;
+			let (command_list, is_open, recorded_work) = {
+				let command_buffer = &self.command_buffers[command_buffer_index];
+				(
+					command_buffer.command_list.as_ref().unwrap().clone(),
+					command_buffer.is_open,
+					command_buffer.recorded_work,
+				)
+			};
+			if is_open {
+				if unsafe { command_list.Close() }.is_err() {
+					// A list whose Close call fails can never be reset. Keep its native references and block later submissions.
+					self.command_buffers[command_buffer_index].lifecycle = CommandBufferLifecycle::Poisoned;
+					self.drain_debug_messages();
+					panic!(
+						"Failed to close a DX12 command list. The most likely cause is that command list recording failed or the command list was already closed."
+					);
+				}
+				self.command_buffers[command_buffer_index].is_open = false;
+			}
+			if recorded_work {
+				native_lists.push(Some(command_list.cast::<ID3D12CommandList>().expect(
+					"Failed to cast a DX12 graphics command list for execution. The most likely cause is an incompatible command list object.",
+				)));
+				readback_candidates.extend_from_slice(&self.command_buffers[command_buffer_index].recorded_readbacks);
+			} else {
+				debug_assert!(self.command_buffers[command_buffer_index].recorded_readbacks.is_empty());
+				self.empty_command_list_skip_count += 1;
 			}
 		}
-		true
+
+		if !native_lists.is_empty() {
+			let queue = self
+				.queues
+				.get(queue_handle.0 as usize)
+				.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
+			// SAFETY: All command-list interfaces stay alive through this synchronous queue call.
+			unsafe { queue.queue.ExecuteCommandLists(&native_lists) };
+			// Until a terminal signal succeeds, keep submitted resources permanently retained if unwinding interrupts finalization.
+			for &handle in command_buffer_handles {
+				self.command_buffers[handle.0 as usize].lifecycle = CommandBufferLifecycle::Poisoned;
+			}
+			self.native_command_list_execute_count = self.native_command_list_execute_count.saturating_add(native_lists.len());
+			for handle in readback_candidates {
+				if self.texture_readbacks.mark_submitted(handle) {
+					submitted_readbacks.push(handle);
+				}
+			}
+		}
+
+		for &handle in command_buffer_handles {
+			self.command_buffers[handle.0 as usize].recorded_readbacks.clear();
+			self.command_buffers[handle.0 as usize].recorded_texture_syncs.clear();
+			self.commit_command_buffer_resource_states(handle);
+		}
+		submitted_readbacks
+	}
+
+	/// Appends the execution's one terminal queue signal after presentation and publishes its exact completion value.
+	pub(crate) fn complete_command_buffer_execution(
+		&mut self,
+		queue_handle: QueueHandle,
+		command_buffer_handles: &[CommandBufferHandle],
+		synchronizer_handle: SynchronizerHandle,
+		sequence_index: u8,
+		submitted_readbacks: SmallVec<[TextureCopyHandle; 4]>,
+	) {
+		let completion = match self.signal_synchronizer_for_sequence(queue_handle, synchronizer_handle, sequence_index) {
+			Some(Ok(completion)) => completion,
+			Some(Err(_)) => {
+				panic!(
+					"Failed to signal a DX12 fence. The most likely cause is that the queue or fence was invalid or the device was removed."
+				)
+			}
+			None => panic!(
+				"Invalid DX12 synchronizer sequence. The most likely cause is that the synchronizer was not created for the active frame count."
+			),
+		};
+		for &handle in command_buffer_handles {
+			let command_buffer = &mut self.command_buffers[handle.0 as usize];
+			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
+			command_buffer.lifecycle = CommandBufferLifecycle::Submitted;
+		}
+		for handle in submitted_readbacks {
+			if let Some(readback) = self.texture_readbacks.get_mut(handle) {
+				readback.completion = Some(completion);
+			}
+		}
 	}
 
 	/// Records terminal swapchain transitions before later command buffers derive their opening layouts.
 	pub(crate) fn finish_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
+		assert_eq!(
+			self.command_buffers
+				.get(command_buffer_handle.0 as usize)
+				.map(|command_buffer| command_buffer.lifecycle),
+			Some(CommandBufferLifecycle::Recording),
+			"DX12 command buffer is not recording. The most likely cause is that the recording was finished more than once."
+		);
 		let command_list = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -95,6 +177,7 @@ impl Device {
 			self.transition_present_resources(command_buffer_handle, &command_list);
 		}
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
+		self.command_buffers[command_buffer_handle.0 as usize].lifecycle = CommandBufferLifecycle::Scheduled;
 	}
 
 	pub(crate) fn record_present_preparation(
@@ -110,6 +193,8 @@ impl Device {
 			return;
 		};
 
+		let mut copies = SmallVec::<[(ImageHandle, ID3D12Resource, ID3D12Resource); 2]>::new();
+		let mut copy_barriers = EnhancedBarrierBatch::default();
 		for present_key in present_keys {
 			let Some((source_image, proxy_uses)) =
 				self.swapchains.get(present_key.swapchain.0 as usize).and_then(|swapchain| {
@@ -134,8 +219,6 @@ impl Device {
 				continue;
 			};
 
-			// Copy the engine swapchain proxy image into the actual DXGI backbuffer before Present.
-			let mut copy_barriers = EnhancedBarrierBatch::default();
 			self.transition_tracked_image_into(
 				source_image.0,
 				&source_resource,
@@ -147,22 +230,32 @@ impl Device {
 				TextureBarrierState::COPY_DESTINATION,
 				&mut copy_barriers,
 			);
-			Self::submit_resource_barriers(&command_list, &copy_barriers);
+			copies.push((source_image, source_resource, destination_resource));
+		}
+		if copies.is_empty() {
+			return;
+		}
+
+		// Transition every proxy first, issue the copies, then return them in one terminal batch.
+		Self::submit_resource_barriers(&command_list, &copy_barriers);
+		for (_, source_resource, destination_resource) in &copies {
 			unsafe {
-				command_list.CopyResource(&destination_resource, &source_resource);
+				command_list.CopyResource(destination_resource, source_resource);
 			}
-			let mut present_barriers = EnhancedBarrierBatch::default();
-			self.transition_swapchain_texture_into(&destination_resource, TextureBarrierState::PRESENT, &mut present_barriers);
+		}
+		let mut present_barriers = EnhancedBarrierBatch::default();
+		for (source_image, source_resource, destination_resource) in &copies {
+			self.transition_swapchain_texture_into(destination_resource, TextureBarrierState::PRESENT, &mut present_barriers);
 			self.transition_tracked_image_into(
 				source_image.0,
-				&source_resource,
+				source_resource,
 				TextureBarrierState::COMMON,
 				&mut present_barriers,
 			);
-			Self::submit_resource_barriers(&command_list, &present_barriers);
-			self.mark_command_buffer_work(command_buffer_handle);
-			self.texture_copy_count += 1;
 		}
+		Self::submit_resource_barriers(&command_list, &present_barriers);
+		self.mark_command_buffer_work(command_buffer_handle);
+		self.texture_copy_count += copies.len();
 	}
 
 	/// Transitions every backbuffer used by one recording into PRESENT through one native barrier batch.
@@ -171,15 +264,15 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		command_list: &ID3D12GraphicsCommandList7,
 	) {
-		let Some(resources) = self.present_transitions.remove(&command_buffer_handle) else {
-			return;
-		};
+		let command_buffer_index = command_buffer_handle.0 as usize;
+		let mut resources = std::mem::take(&mut self.command_buffers[command_buffer_index].present_resources);
 		let mut barriers = EnhancedBarrierBatch::default();
 		let mut transition_count = 0;
-		for resource in resources {
+		for resource in resources.drain(..) {
 			transition_count +=
 				usize::from(self.transition_swapchain_texture_into(&resource, TextureBarrierState::PRESENT, &mut barriers));
 		}
+		self.command_buffers[command_buffer_index].present_resources = resources;
 		if transition_count != 0 {
 			Self::submit_resource_barriers(command_list, &barriers);
 			self.mark_command_buffer_work(command_buffer_handle);
@@ -191,20 +284,27 @@ impl Device {
 		&mut self,
 		queue_handle: QueueHandle,
 		synchronizer_handle: crate::synchronizer::SynchronizerHandle,
-	) {
-		let Some(queue) = self.queues.get(queue_handle.0 as usize) else {
-			return;
-		};
-		let Some(synchronizer) = self.synchronizers.get_mut(synchronizer_handle.0 as usize) else {
-			return;
-		};
-		synchronizer.value = synchronizer.value.saturating_add(1);
-		let result = unsafe { queue.queue.Signal(&synchronizer.fence, synchronizer.value) };
-		if result.is_err() {
-			panic!(
-				"Failed to signal a DX12 fence. The most likely cause is that the queue or fence was invalid or the device was removed."
-			);
+	) -> Option<windows::core::Result<(crate::synchronizer::SynchronizerHandle, u64)>> {
+		let queue = self.queues.get(queue_handle.0 as usize)?.queue.clone();
+		let synchronizer = self.synchronizers.get(synchronizer_handle.0 as usize)?;
+		let fence = synchronizer.fence.clone();
+		let current_value = synchronizer.value;
+		let last_signal_queue = synchronizer.last_signal_queue;
+		let next_value = synchronizer.value.checked_add(1).expect(
+			"DX12 fence value overflowed. The most likely cause is that the synchronizer was signaled more than u64::MAX times.",
+		);
+		if last_signal_queue.is_some_and(|previous| previous != queue_handle) {
+			// Serialize a fence handoff before another queue advances the same progress timeline.
+			if let Err(error) = unsafe { queue.Wait(&fence, current_value) } {
+				return Some(Err(error));
+			}
 		}
+		if let Err(error) = unsafe { queue.Signal(&fence, next_value) } {
+			return Some(Err(error));
+		}
+		self.synchronizers[synchronizer_handle.0 as usize].value = next_value;
+		self.synchronizers[synchronizer_handle.0 as usize].last_signal_queue = Some(queue_handle);
+		Some(Ok((synchronizer_handle, next_value)))
 	}
 
 	pub(crate) fn signal_synchronizer_for_sequence(
@@ -212,39 +312,25 @@ impl Device {
 		queue_handle: QueueHandle,
 		synchronizer_handle: SynchronizerHandle,
 		sequence_index: u8,
-	) {
-		let Some(handle) = self.synchronizer_for_sequence(synchronizer_handle, sequence_index) else {
-			return;
-		};
-		self.signal_private_synchronizer(queue_handle, handle);
+	) -> Option<windows::core::Result<(crate::synchronizer::SynchronizerHandle, u64)>> {
+		let handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index)?;
+		self.signal_private_synchronizer(queue_handle, handle)
 	}
 
-	/// Completes an empty submission without sending a no-op command list to the GPU queue.
-	pub(crate) fn complete_private_synchronizer_from_cpu(
-		&mut self,
-		synchronizer_handle: crate::synchronizer::SynchronizerHandle,
-	) {
-		let Some(synchronizer) = self.synchronizers.get_mut(synchronizer_handle.0 as usize) else {
-			return;
-		};
-		synchronizer.value = synchronizer.value.saturating_add(1);
-		let result = unsafe { synchronizer.fence.Signal(synchronizer.value) };
-		if result.is_err() {
-			panic!(
-				"Failed to complete a DX12 fence from the CPU. The most likely cause is that the fence was invalid or the device was removed."
+	/// Inserts GPU-side waits for every concrete fence in one logical synchronizer chain.
+	pub(crate) fn queue_wait_for_synchronizer(&self, queue_handle: QueueHandle, synchronizer_handle: SynchronizerHandle) {
+		let queue = self
+			.queues
+			.get(queue_handle.0 as usize)
+			.expect("Invalid DX12 queue handle. The most likely cause is that the handle came from another device.");
+		for handle in self.synchronizer_handles(synchronizer_handle) {
+			let synchronizer = self
+				.synchronizers
+				.get(handle.0 as usize)
+				.expect("Invalid DX12 synchronizer handle. The most likely cause is that the handle came from another device.");
+			unsafe { queue.queue.Wait(&synchronizer.fence, synchronizer.value) }.expect(
+				"Failed to queue a DX12 fence wait. The most likely cause is that the queue or fence was invalid or the device was removed.",
 			);
 		}
-	}
-
-	/// Completes an empty frame sequence without submitting work to a DX12 queue.
-	pub(crate) fn complete_synchronizer_for_sequence_from_cpu(
-		&mut self,
-		synchronizer_handle: SynchronizerHandle,
-		sequence_index: u8,
-	) {
-		let Some(handle) = self.synchronizer_for_sequence(synchronizer_handle, sequence_index) else {
-			return;
-		};
-		self.complete_private_synchronizer_from_cpu(handle);
 	}
 }

@@ -2,6 +2,7 @@ use super::super::*;
 
 impl Device {
 	/// Returns whether any retained native materialization contains this logical set.
+	#[cfg(test)]
 	pub(crate) fn descriptor_set_has_native_heaps(&self, descriptor_set: DescriptorSetHandle) -> Option<(bool, bool)> {
 		self.descriptor_sets.get(descriptor_set.0 as usize)?;
 		let frame_sets = self.collect_descriptor_set_handles(descriptor_set);
@@ -155,13 +156,14 @@ impl Device {
 	/// Applies retained flat-slot descriptor writes to every frame-local set.
 	pub fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]) {
 		for write in descriptor_set_writes {
-			let set_handles = self.collect_descriptor_set_handles(DescriptorSetHandle(write.descriptor_set.0));
-			for set_handle in set_handles {
+			let mut current = Some(DescriptorSetHandle(write.descriptor_set.0));
+			while let Some(set_handle) = current {
 				let retained = RetainedDescriptor {
 					descriptor: write.descriptor,
 					frame_offset: write.frame_offset.unwrap_or(0),
 				};
 				let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+				let next = descriptor_set.next.map(|handle| DescriptorSetHandle(handle.0));
 				let previous = descriptor_set
 					.descriptors
 					.entry(write.slot)
@@ -171,6 +173,7 @@ impl Device {
 					descriptor_set.version = descriptor_set.version.wrapping_add(1);
 				}
 				self.materialize_descriptor_base_image_resource(set_handle, write.descriptor);
+				current = next;
 			}
 		}
 	}

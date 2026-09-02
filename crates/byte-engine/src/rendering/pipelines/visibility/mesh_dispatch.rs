@@ -20,7 +20,7 @@ const _: () = assert!(
 );
 
 /// The `MeshDispatchWorkItem` struct identifies one independently culled meshlet range.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(transparent)]
 pub(crate) struct MeshDispatchWorkItem {
 	packed: u32,

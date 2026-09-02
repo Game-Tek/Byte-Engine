@@ -16,7 +16,7 @@ impl Device {
 			return;
 		};
 
-		let mut views = Vec::with_capacity(buffer_descriptors.len());
+		let mut views = SmallVec::<[D3D12_VERTEX_BUFFER_VIEW; 8]>::new();
 		for buffer_descriptor in buffer_descriptors {
 			let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 				continue;
@@ -24,7 +24,21 @@ impl Device {
 			let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
 				continue;
 			};
-			let size_in_bytes = buffer.size.saturating_sub(buffer_descriptor.offset).min(u32::MAX as usize) as u32;
+			assert!(
+				buffer_descriptor.offset <= buffer.size,
+				"DX12 vertex buffer offset exceeds the buffer. The most likely cause is that BufferDescriptor::offset was built from stale mesh metadata. offset={}, buffer_size={}",
+				buffer_descriptor.offset,
+				buffer.size,
+			);
+			let remaining = buffer.size - buffer_descriptor.offset;
+			let size_in_bytes = u32::try_from(remaining).expect(
+				"DX12 vertex buffer view exceeds four GiB. The most likely cause is that one buffer view spans more bytes than D3D12_VERTEX_BUFFER_VIEW can represent.",
+			);
+			let buffer_location = unsafe { resource.GetGPUVirtualAddress() }
+				.checked_add(buffer_descriptor.offset as u64)
+				.expect(
+					"DX12 vertex buffer address overflowed. The most likely cause is an invalid native resource address or offset.",
+				);
 			self.transition_tracked_buffer(
 				&command_list,
 				buffer_descriptor.buffer,
@@ -32,7 +46,7 @@ impl Device {
 				BufferBarrierState::VERTEX_BUFFER,
 			);
 			views.push(D3D12_VERTEX_BUFFER_VIEW {
-				BufferLocation: unsafe { resource.GetGPUVirtualAddress() } + buffer_descriptor.offset as u64,
+				BufferLocation: buffer_location,
 				SizeInBytes: size_in_bytes,
 				StrideInBytes: 0,
 			});
@@ -69,9 +83,9 @@ impl Device {
 		let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
 			return;
 		};
-		let format = match buffer_descriptor.index_type {
-			Some(DataTypes::U16) => DXGI_FORMAT_R16_UINT,
-			Some(DataTypes::U32) => DXGI_FORMAT_R32_UINT,
+		let (format, index_element_size) = match buffer_descriptor.index_type {
+			Some(DataTypes::U16) => (DXGI_FORMAT_R16_UINT, std::mem::size_of::<u16>()),
+			Some(DataTypes::U32) => (DXGI_FORMAT_R32_UINT, std::mem::size_of::<u32>()),
 			Some(_) => panic!(
 				"Unsupported index buffer type. The most likely cause is that bind_index_buffer was given a DataTypes value other than U16 or U32."
 			),
@@ -79,9 +93,32 @@ impl Device {
 				"Missing index buffer type. The most likely cause is that bind_index_buffer was called with a BufferDescriptor that did not specify index_type(DataTypes::U16) or index_type(DataTypes::U32)."
 			),
 		};
+		assert!(
+			buffer_descriptor.offset <= buffer.size,
+			"DX12 index buffer offset exceeds the buffer. The most likely cause is that BufferDescriptor::offset was built from stale mesh metadata. offset={}, buffer_size={}",
+			buffer_descriptor.offset,
+			buffer.size,
+		);
+		assert!(
+			buffer_descriptor.offset.is_multiple_of(index_element_size),
+			"DX12 index buffer offset is misaligned. The most likely cause is that BufferDescriptor::offset is not a multiple of the selected index element size.",
+		);
+		let remaining = buffer.size - buffer_descriptor.offset;
+		let size_in_bytes = u32::try_from(remaining).expect(
+			"DX12 index buffer view exceeds four GiB. The most likely cause is that one buffer view spans more bytes than D3D12_INDEX_BUFFER_VIEW can represent.",
+		);
+		let buffer_location = unsafe { resource.GetGPUVirtualAddress() }
+			.checked_add(buffer_descriptor.offset as u64)
+			.expect(
+				"DX12 index buffer address overflowed. The most likely cause is an invalid native resource address or offset.",
+			);
+		assert!(
+			buffer_location.is_multiple_of(index_element_size as u64),
+			"DX12 index buffer address is misaligned. The most likely cause is an invalid native buffer allocation or index offset.",
+		);
 		let view = D3D12_INDEX_BUFFER_VIEW {
-			BufferLocation: unsafe { resource.GetGPUVirtualAddress() } + buffer_descriptor.offset as u64,
-			SizeInBytes: buffer.size.saturating_sub(buffer_descriptor.offset).min(u32::MAX as usize) as u32,
+			BufferLocation: buffer_location,
+			SizeInBytes: size_in_bytes,
 			Format: format,
 		};
 

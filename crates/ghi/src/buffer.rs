@@ -1,5 +1,17 @@
 use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses, graphics_hardware_interface};
 
+/// Returns a typed pointer only when the mapped byte range satisfies Rust's reference requirements.
+pub(crate) fn typed_buffer_pointer<T: crate::Pod>(pointer: *mut u8, byte_count: usize) -> Option<*mut T> {
+	if std::mem::size_of::<T>() == 0 {
+		return Some(std::ptr::NonNull::<T>::dangling().as_ptr());
+	}
+
+	(byte_count >= std::mem::size_of::<T>()
+		&& !pointer.is_null()
+		&& (pointer as usize).is_multiple_of(std::mem::align_of::<T>()))
+	.then_some(pointer.cast::<T>())
+}
+
 /// The `Mapping` struct transfers exclusive CPU access to one persistently mapped buffer.
 ///
 /// A mapping does not own the backend allocation. The context that created it must remain
@@ -96,7 +108,31 @@ impl PrivateHandle for BufferHandle {
 
 #[cfg(test)]
 mod tests {
-	use super::Mapping;
+	use super::{Mapping, typed_buffer_pointer};
+
+	#[repr(C, align(64))]
+	#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+	struct AlignedZeroSized;
+
+	#[test]
+	fn typed_buffer_pointer_preserves_zst_alignment_and_rejects_invalid_storage() {
+		let zero_sized = typed_buffer_pointer::<AlignedZeroSized>(std::ptr::null_mut(), 0)
+			.expect("A zero-sized POD value should not require mapped storage");
+		assert!(!zero_sized.is_null());
+		assert!((zero_sized as usize).is_multiple_of(std::mem::align_of::<AlignedZeroSized>()));
+
+		assert!(typed_buffer_pointer::<u32>(std::ptr::null_mut(), std::mem::size_of::<u32>()).is_none());
+		let mut storage = [0u32; 2];
+		assert!(typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast(), std::mem::size_of::<u16>()).is_none());
+		assert!(
+			typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast::<u8>().wrapping_add(1), std::mem::size_of::<u32>(),)
+				.is_none()
+		);
+		assert_eq!(
+			typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast(), std::mem::size_of::<u32>()),
+			Some(storage.as_mut_ptr())
+		);
+	}
 
 	#[test]
 	fn mapping_transfers_address_and_size_without_borrowing() {

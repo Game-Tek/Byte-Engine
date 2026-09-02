@@ -2,8 +2,9 @@ use super::*;
 
 impl Device {
 	/// Collects the per-frame descriptor set handles chained from the root handle.
-	pub(crate) fn collect_descriptor_set_handles(&self, handle: DescriptorSetHandle) -> Vec<DescriptorSetHandle> {
-		let mut handles = Vec::new();
+	#[cfg(test)]
+	pub(crate) fn collect_descriptor_set_handles(&self, handle: DescriptorSetHandle) -> SmallVec<[DescriptorSetHandle; 4]> {
+		let mut handles = SmallVec::new();
 		let mut current = Some(handle);
 
 		while let Some(handle) = current {
@@ -55,21 +56,10 @@ impl Device {
 	}
 
 	pub(crate) fn descriptor_set_sequence_index(&self, descriptor_set: DescriptorSetHandle) -> usize {
-		for root_index in 0..self.descriptor_sets.len() {
-			let mut sequence_index = 0;
-			let mut current = Some(DescriptorSetHandle(root_index as u64));
-			while let Some(handle) = current {
-				if handle == descriptor_set {
-					return sequence_index;
-				}
-				let Some(set) = self.descriptor_sets.get(handle.0 as usize) else {
-					break;
-				};
-				current = set.next.map(|handle| DescriptorSetHandle(handle.0));
-				sequence_index += 1;
-			}
-		}
-		0
+		self.descriptor_sets
+			.get(descriptor_set.0 as usize)
+			.map(|set| usize::from(set.sequence_index))
+			.unwrap_or(0)
 	}
 
 	#[cfg(test)]
@@ -118,6 +108,16 @@ impl Device {
 				BufferBarrierState::unordered_access(sync)
 			}
 			_ => BufferBarrierState::shader_resource(sync),
+		}
+	}
+
+	/// Maps one image descriptor kind to the logical image capability its native view requires.
+	pub(crate) fn descriptor_image_use(descriptor: ShaderResourceDescriptor) -> Uses {
+		match descriptor.kind() {
+			ResourceKind::StorageImage => Uses::Storage,
+			ResourceKind::InputAttachment => Uses::InputAttachment,
+			ResourceKind::SampledImage | ResourceKind::CombinedImageSampler => Uses::Image,
+			_ => Uses::empty(),
 		}
 	}
 
@@ -214,9 +214,8 @@ impl Device {
 				slot,
 			),
 			WriteData::Swapchain(handle) => {
-				let image = self
-					.get_swapchain_image_for_sequence(handle, Uses::Storage, resource_sequence)
-					.0;
+				let uses = Self::descriptor_image_use(resource.descriptor);
+				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
 				self.write_native_image_descriptor(
 					resource.descriptor,
 					image.into(),
@@ -243,8 +242,7 @@ impl Device {
 		heap: &DescriptorHeap,
 		slot: u32,
 	) {
-		// Descriptor reads should include CPU writes made through the host shadow before the bind.
-		self.sync_buffer_for_sequence(handle, sequence_index);
+		// Binding flushes CPU writes before materialization. Repeating the upload here would copy the same range twice.
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
@@ -252,18 +250,29 @@ impl Device {
 			return;
 		};
 		let buffer_size = match size {
-			crate::Ranges::Size(size) => size.min(buffer.size),
+			crate::Ranges::Size(size) => {
+				assert!(
+					size <= buffer.size,
+					"Invalid DX12 buffer descriptor range. The most likely cause is that the requested descriptor size exceeds the logical buffer allocation."
+				);
+				size
+			}
 			crate::Ranges::Whole => buffer.size,
 		};
 		let heap_kind = self
 			.buffer_heap_kind_for_sequence(handle, sequence_index)
 			.unwrap_or(buffer.heap_kind);
+		assert!(
+			heap_kind != BufferHeapKind::Readback,
+			"Invalid DX12 shader buffer descriptor. The most likely cause is that a readback-heap resource reached native CBV, SRV, or UAV materialization. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
+		);
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
 		match descriptor.kind() {
 			ResourceKind::UniformBuffer => {
+				let size_in_bytes = Self::constant_buffer_view_size(buffer, &resource, buffer_size);
 				let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
 					BufferLocation: unsafe { resource.GetGPUVirtualAddress() },
-					SizeInBytes: Self::align_up(buffer_size.max(1), 256) as u32,
+					SizeInBytes: size_in_bytes,
 				};
 				unsafe { self.device.CreateConstantBufferView(Some(&desc), cpu_handle) };
 			}
@@ -329,6 +338,38 @@ impl Device {
 		self.descriptor_write_count += 1;
 	}
 
+	/// Validates and rounds one logical uniform-buffer range for a native CBV.
+	fn constant_buffer_view_size(buffer: &Buffer, resource: &ID3D12Resource, requested_size: usize) -> u32 {
+		assert!(
+			buffer.uses.intersects(Uses::Uniform),
+			"Invalid DX12 uniform-buffer descriptor. The most likely cause is that the buffer was not created with uniform usage."
+		);
+		assert!(
+			requested_size != 0,
+			"Invalid DX12 constant-buffer view size. The most likely cause is that an empty logical buffer was bound as a uniform buffer. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/creating-descriptors#constant-buffer-view."
+		);
+		let aligned_size = requested_size
+			.checked_add(255)
+			.map(|size| size & !255)
+			.expect(
+				"Invalid DX12 constant-buffer view size. The most likely cause is that 256-byte alignment overflowed the addressable range. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/creating-descriptors#constant-buffer-view.",
+			);
+		assert!(
+			aligned_size <= 64 * 1024,
+			"Invalid DX12 constant-buffer view size. The most likely cause is that the requested range exceeds the 64-KiB shader-visible constant-buffer limit. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/constants."
+		);
+		let native_width = usize::try_from(unsafe { resource.GetDesc() }.Width).expect(
+			"Invalid DX12 constant-buffer allocation width. The most likely cause is that the native resource exceeds the process addressable range.",
+		);
+		assert!(
+			aligned_size <= native_width,
+			"Invalid DX12 constant-buffer view range. The most likely cause is that the 256-byte-aligned descriptor exceeds the native buffer allocation. See https://learn.microsoft.com/en-us/windows/win32/direct3d12/creating-descriptors#constant-buffer-view."
+		);
+		u32::try_from(aligned_size).expect(
+			"Invalid DX12 constant-buffer view size. The most likely cause is that the aligned range exceeds the native 32-bit descriptor field.",
+		)
+	}
+
 	pub(crate) fn write_native_acceleration_structure_descriptor(
 		&mut self,
 		handle: TopLevelAccelerationStructureHandle,
@@ -372,36 +413,46 @@ impl Device {
 		slot: u32,
 	) {
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
-		let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
-			return;
-		};
-		let Some(image) = self.images.get(image_handle.0 as usize) else {
-			return;
-		};
-		let Some(format) = Self::dxgi_shader_resource_format(image.format) else {
-			return;
-		};
+		let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index).expect(
+			"Missing DX12 descriptor image resource. The most likely cause is that a deferred zero-sized image was bound before it was resized or native allocation failed.",
+		);
+		let image = self
+			.images
+			.get(image_handle.0 as usize)
+			.expect("Invalid DX12 descriptor image handle. The most likely cause is that the retained image handle is stale.");
+		let format = Self::dxgi_shader_resource_format(image.format).unwrap_or_else(|| {
+			panic!(
+				"Unsupported DX12 descriptor image format. The most likely cause is that {:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format.",
+				image.format,
+			)
+		});
 		let uses = image.uses;
+		let extent = image.extent;
+		let is_3d = image.is_3d;
 		let array_layers = image.array_layers.max(1);
 		unsafe {
 			if descriptor.kind() == ResourceKind::StorageImage {
-				let desc = Self::descriptor_texture_uav_desc(format, descriptor.texture_view(), array_layers, layer, mip_level);
-				if uses.intersects(Uses::Storage) {
-					self.device
-						.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				} else {
-					self.device.CreateUnorderedAccessView(
-						None::<&ID3D12Resource>,
-						None::<&ID3D12Resource>,
-						Some(&desc),
-						cpu_handle,
-					);
-				}
+				assert!(
+					uses.intersects(Uses::Storage),
+					"Invalid DX12 storage-image descriptor. The most likely cause is that the image was not created with storage usage."
+				);
+				let desc = Self::descriptor_texture_uav_desc(
+					format,
+					descriptor.texture_view(),
+					extent,
+					is_3d,
+					array_layers,
+					layer,
+					mip_level,
+				);
+				self.device
+					.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
 				self.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
 					format,
 					descriptor.texture_view(),
+					is_3d,
 					array_layers,
 					layer,
 					image.mip_levels,

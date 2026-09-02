@@ -197,7 +197,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -364,7 +364,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.create_command_buffer_recording_internal(command_buffer_handle, false)
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
 		let buffers = &self.device.buffers;
 		let frame_key = self.frame_key;
 
@@ -373,25 +373,24 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.unwrap();
 		let buffer = buffers.resource(handle);
 
-		if super::buffer::PERSISTENT_WRITE {
-			if let Some(source_handle) = buffer.source {
-				// Return the persistent source buffer's pointer. The user writes
-				// here and every frame the data is automatically memcpy'd to per-frame
-				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
-				let source_buffer = buffers.resource(source_handle);
-				return unsafe { std::mem::transmute(source_buffer.pointer) };
-			}
-		}
-
-		if let Some(staging_handle) = buffer.staging {
+		let (pointer, byte_count) = if super::buffer::PERSISTENT_WRITE
+			&& let Some(source_handle) = buffer.source
+		{
+			// The persistent source receives user writes. Frame recording copies it to the current staging buffer.
+			let source_buffer = buffers.resource(source_handle);
+			(source_buffer.pointer, source_buffer.size)
+		} else if let Some(staging_handle) = buffer.staging {
 			self.device.pending_buffer_syncs.insert(handle);
-
 			let staging_buffer = buffers.resource(staging_handle);
-
-			return unsafe { std::mem::transmute(staging_buffer.pointer) };
-		}
-
-		unsafe { std::mem::transmute(buffer.pointer) }
+			(staging_buffer.pointer, staging_buffer.size)
+		} else {
+			(buffer.pointer, buffer.size)
+		};
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
+			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
+		unsafe { &mut *pointer }
 	}
 }
 
@@ -430,9 +429,18 @@ impl Frame<'_> {
 				let staging_buffer = self.device().buffers.resource(staging_handle);
 				let size = frame_buffer.size;
 
-				// CPU-side memcpy: source → per-frame staging
-				unsafe {
-					std::ptr::copy_nonoverlapping(source_buffer.pointer, staging_buffer.pointer, size);
+				if size != 0 {
+					assert!(
+						size <= source_buffer.size
+							&& size <= staging_buffer.size
+							&& !source_buffer.pointer.is_null()
+							&& !staging_buffer.pointer.is_null(),
+						"Failed to copy a persistent Vulkan buffer. The most likely cause is that its source or frame-local staging allocation is missing mapped storage.",
+					);
+					// SAFETY: The source and staging buffers are distinct live allocations, and `size` is bounded by both.
+					unsafe {
+						std::ptr::copy_nonoverlapping(source_buffer.pointer, staging_buffer.pointer, size);
+					}
 				}
 
 				// Enqueue staging → GPU copy
@@ -501,11 +509,11 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 			.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
 	}
 
-	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
+	fn build_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
 		self.device.build_buffer(builder)
 	}
 
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		self.device.build_dynamic_buffer(builder)
 	}
 

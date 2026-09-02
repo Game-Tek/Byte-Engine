@@ -1,7 +1,10 @@
 use super::*;
 
 impl CommandBufferRecording<'_> {
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 

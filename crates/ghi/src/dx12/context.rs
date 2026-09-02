@@ -8,6 +8,8 @@ pub struct Device {
 	dxc_compiler: DxcCompiler,
 	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
 	descriptor_handle_increment_sizes: [u32; 4],
+	// Native format support is immutable for a device, so descriptor validation reuses creation-time queries.
+	format_support_cache: RefCell<HashMap<i32, windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_FORMAT_SUPPORT>>,
 	settings: Features,
 	info_queue: Option<ID3D12InfoQueue>,
 	debug_log_function: fn(&str),
@@ -18,6 +20,7 @@ pub struct Device {
 	queues: Vec<StoredQueue>,
 	command_buffers: Vec<CommandBuffer>,
 	active_command_buffer: Option<CommandBufferHandle>,
+	deferred_tasks: [Vec<DeferredTask>; crate::MAX_FRAMES_IN_FLIGHT],
 	buffers: Vec<Buffer>,
 	dynamic_buffers: Vec<Buffer>,
 	images: Vec<Image>,
@@ -32,13 +35,15 @@ pub struct Device {
 	meshes: Vec<Mesh>,
 	pub(crate) swapchains: Vec<Swapchain>,
 	synchronizers: Vec<Synchronizer>,
+	synchronizer_masters: Vec<SynchronizerHandle>,
+	last_frame_synchronizers: [Option<SynchronizerHandle>; crate::MAX_FRAMES_IN_FLIGHT],
 	top_level_acceleration_structures: Vec<AccelerationStructure>,
 	bottom_level_acceleration_structures: Vec<AccelerationStructure>,
 	allocations: Vec<Allocation>,
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
 	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
-	present_transitions: HashMap<CommandBufferHandle, Vec<ID3D12Resource>>,
+	untracked_present_work: bool,
 	render_target_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
 	depth_stencil_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
 	retained_clear_uav_descriptors: HashMap<usize, RetainedCpuDescriptor>,
@@ -106,6 +111,68 @@ pub struct Device {
 	debug_region_end_count: Cell<usize>,
 }
 
+impl Drop for Device {
+	fn drop(&mut self) {
+		// Device teardown owns every remaining recording, so abandon speculative state before enforcing the queue-idle precondition.
+		for index in (0..self.command_buffers.len()).rev() {
+			let command_buffer_handle = CommandBufferHandle(index as u64);
+			let frame_count = self.command_buffers[index].frames.len();
+			for sequence_index in (0..frame_count).rev() {
+				self.command_buffers[index].activate_sequence(sequence_index as u8);
+				self.discard_command_buffer_recording(command_buffer_handle);
+			}
+		}
+		if self.wait_for_all_queues_idle().is_err() {
+			(self.debug_log_function)(
+				"Failed to prove that the DX12 queues stopped during device destruction. The most likely cause is that the device was removed or rejected the terminal fence signal.",
+			);
+			self.retain_gpu_state_after_failed_shutdown();
+		}
+	}
+}
+
+impl Device {
+	/// Retains every object that queued GPU work may still reference when shutdown cannot prove completion.
+	fn retain_gpu_state_after_failed_shutdown(&mut self) {
+		// Child objects do not make the application's resource lifetime implicit. Keep one device reference and
+		// every potentially referenced allocation alive until process teardown instead of risking a GPU use-after-free.
+		std::mem::forget(self.device.clone());
+
+		macro_rules! retain_field {
+			($field:ident) => {
+				std::mem::forget(std::mem::take(&mut self.$field));
+			};
+		}
+
+		retain_field!(queues);
+		retain_field!(command_buffers);
+		retain_field!(deferred_tasks);
+		retain_field!(buffers);
+		retain_field!(dynamic_buffers);
+		retain_field!(images);
+		retain_field!(samplers);
+		retain_field!(descriptor_sets);
+		retain_field!(descriptor_materializations);
+		retain_field!(pipeline_layouts);
+		retain_field!(pipelines);
+		retain_field!(indirect_dispatch_signature);
+		retain_field!(shaders);
+		retain_field!(meshes);
+		retain_field!(swapchains);
+		retain_field!(synchronizers);
+		retain_field!(top_level_acceleration_structures);
+		retain_field!(bottom_level_acceleration_structures);
+		retain_field!(allocations);
+		retain_field!(render_target_views);
+		retain_field!(depth_stencil_views);
+		retain_field!(retained_clear_uav_descriptors);
+		retain_field!(clear_uav_descriptor_pages);
+
+		let readbacks = std::mem::replace(&mut self.texture_readbacks, crate::context::TextureReadbackRegistry::new());
+		std::mem::forget(readbacks);
+	}
+}
+
 #[path = "context/commands.rs"]
 mod device_commands;
 #[path = "context/descriptors.rs"]
@@ -161,25 +228,118 @@ pub(crate) fn validate_d3d12_workloads(requested: WorkloadTypes) -> Result<(), &
 	)
 }
 
-/// The `CommandBuffer` struct owns reusable native recording state for one shared command-buffer handle.
-struct CommandBuffer {
-	queue_handle: QueueHandle,
+/// The `CommandBufferFrame` struct owns native recording state that can be reused after one frame sequence completes.
+struct CommandBufferFrame {
+	lifecycle: CommandBufferLifecycle,
 	allocator: Option<ID3D12CommandAllocator>,
 	command_list: Option<ID3D12GraphicsCommandList7>,
 	pending_clear_descriptor_copies: Vec<PendingDescriptorCopy>,
 	prepared_clear_descriptors: Vec<PreparedClearDescriptor>,
 	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	retained_resources: Vec<ID3D12Resource>,
+	retained_resource_keys: HashSet<usize>,
 	retained_upload_resource_count: usize,
+	descriptor_sync_scratch: SmallVec<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>,
+	present_resources: SmallVec<[ID3D12Resource; 2]>,
+	recorded_readbacks: SmallVec<[TextureCopyHandle; 4]>,
 	recorded_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
 	original_buffer_states: SmallVec<[(usize, Option<BufferBarrierState>); 16]>,
 	original_image_states: SmallVec<[(usize, Option<TextureBarrierState>); 16]>,
 	cbv_srv_uav_staging_heap: Option<DescriptorHeapArena>,
 	sampler_staging_heap: Option<DescriptorHeapArena>,
+	bound_cbv_srv_uav_heap: Option<usize>,
+	bound_sampler_heap: Option<usize>,
 	is_open: bool,
 	recorded_work: bool,
 	sequence_index: u8,
+	frame_synchronizer: Option<SynchronizerHandle>,
 	last_submission: Option<(SynchronizerHandle, u8)>,
+}
+
+impl CommandBufferFrame {
+	/// Releases ownership recorded by the previous command list before this frame slot is reused.
+	fn clear_recording_state(&mut self) {
+		self.recorded_work = false;
+		self.frame_synchronizer = None;
+		self.last_submission = None;
+		self.pending_clear_descriptor_copies.clear();
+		self.prepared_clear_descriptors.clear();
+		self.retained_descriptor_heaps.clear();
+		self.retained_resources.clear();
+		self.retained_resource_keys.clear();
+		self.retained_upload_resource_count = 0;
+		self.descriptor_sync_scratch.clear();
+		self.present_resources.clear();
+		self.recorded_readbacks.clear();
+		self.recorded_texture_syncs.clear();
+		self.original_buffer_states.clear();
+		self.original_image_states.clear();
+		self.bound_cbv_srv_uav_heap = None;
+		self.bound_sampler_heap = None;
+	}
+
+	/// Rewinds reusable descriptor arenas without releasing their native heaps.
+	fn rewind_staging_heaps(&mut self) {
+		if let Some(arena) = self.cbv_srv_uav_staging_heap.as_mut() {
+			arena.used = 0;
+		}
+		if let Some(arena) = self.sampler_staging_heap.as_mut() {
+			arena.used = 0;
+		}
+	}
+
+	/// Releases descriptor arenas before changing the resource topology.
+	fn release_staging_heaps(&mut self) {
+		self.cbv_srv_uav_staging_heap = None;
+		self.sampler_staging_heap = None;
+	}
+}
+
+/// The `CommandBuffer` struct keeps one independently reusable native recording for each frame in flight.
+struct CommandBuffer {
+	queue_handle: QueueHandle,
+	frames: Vec<CommandBufferFrame>,
+	active_sequence_index: u8,
+}
+
+impl CommandBuffer {
+	/// Selects the native recording state owned by the requested frame sequence.
+	fn activate_sequence(&mut self, sequence_index: u8) {
+		assert!(
+			(sequence_index as usize) < self.frames.len(),
+			"Missing DX12 command-buffer frame. The most likely cause is that the command buffer was not extended after the frames-in-flight count increased."
+		);
+		self.active_sequence_index = sequence_index;
+	}
+
+	/// Returns whether any frame-local native recording matches the requested lifecycle predicate.
+	fn frames_any(&self, predicate: impl Fn(CommandBufferLifecycle) -> bool) -> bool {
+		self.frames.iter().any(|frame| predicate(frame.lifecycle))
+	}
+}
+
+impl std::ops::Deref for CommandBuffer {
+	type Target = CommandBufferFrame;
+
+	fn deref(&self) -> &Self::Target {
+		&self.frames[self.active_sequence_index as usize]
+	}
+}
+
+impl std::ops::DerefMut for CommandBuffer {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.frames[self.active_sequence_index as usize]
+	}
+}
+
+/// The `CommandBufferLifecycle` enum prevents a reusable native command list from being reset while an execution owns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandBufferLifecycle {
+	Idle,
+	Recording,
+	Scheduled,
+	Submitted,
+	Poisoned,
 }
 
 /// The `BufferBarrierState` struct preserves the synchronization and access contract for one buffer use.
@@ -311,40 +471,44 @@ impl EnhancedBarrierBatch {
 
 	/// Submits at most one native group for each enhanced barrier type.
 	fn submit(&self, command_list: &ID3D12GraphicsCommandList7) {
-		let mut groups = SmallVec::<[D3D12_BARRIER_GROUP; 3]>::new();
+		let mut groups = [D3D12_BARRIER_GROUP::default(); 3];
+		let mut group_count = 0;
 		if !self.global.is_empty() {
-			groups.push(D3D12_BARRIER_GROUP {
+			groups[group_count] = D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_GLOBAL,
 				NumBarriers: self.global.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pGlobalBarriers: self.global.as_ptr(),
 				},
-			});
+			};
+			group_count += 1;
 		}
 		if !self.buffer.is_empty() {
-			groups.push(D3D12_BARRIER_GROUP {
+			groups[group_count] = D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_BUFFER,
 				NumBarriers: self.buffer.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pBufferBarriers: self.buffer.as_ptr(),
 				},
-			});
+			};
+			group_count += 1;
 		}
 		if !self.texture.is_empty() {
-			groups.push(D3D12_BARRIER_GROUP {
+			groups[group_count] = D3D12_BARRIER_GROUP {
 				Type: D3D12_BARRIER_TYPE_TEXTURE,
 				NumBarriers: self.texture.len() as u32,
 				Anonymous: D3D12_BARRIER_GROUP_0 {
 					pTextureBarriers: self.texture.as_ptr(),
 				},
-			});
+			};
+			group_count += 1;
 		}
-		if groups.is_empty() {
+		if group_count == 0 {
 			return;
 		}
 
 		// SAFETY: Each group points into this live batch, and the synchronous call only borrows the arrays.
-		unsafe { command_list.Barrier(&groups) };
+		unsafe { command_list.Barrier(&groups[..group_count]) };
 	}
 }
 
@@ -427,6 +591,8 @@ pub(crate) struct Buffer {
 	data: *mut u8,
 	layout: Layout,
 	size: usize,
+	host_generation: u64,
+	uploaded_generation: u64,
 	uses: Uses,
 	access: DeviceAccesses,
 	resource: Option<ID3D12Resource>,
@@ -436,9 +602,11 @@ pub(crate) struct Buffer {
 }
 
 /// The `BufferFrameStorage` struct provides lazy frame-local backing storage for dynamic DX12 buffers.
-struct BufferFrameStorage {
+pub(crate) struct BufferFrameStorage {
 	data: *mut u8,
 	layout: Layout,
+	host_generation: u64,
+	uploaded_generation: u64,
 	resource: Option<ID3D12Resource>,
 	mapped: *mut u8,
 	heap_kind: BufferHeapKind,
@@ -485,7 +653,6 @@ struct TextureReadbackData {
 
 /// The `TextureReadback` struct keeps one DX12 transfer result and optional native staging alive until consumption.
 struct TextureReadback {
-	command_buffer_handle: Option<CommandBufferHandle>,
 	completion: Option<(crate::synchronizer::SynchronizerHandle, u64)>,
 	resource: Option<ID3D12Resource>,
 	sequence_index: u8,
@@ -547,6 +714,7 @@ impl Drop for BufferFrameStorage {
 
 pub(crate) struct Image {
 	extent: Extent,
+	is_3d: bool,
 	format: Formats,
 	uses: Uses,
 	access: DeviceAccesses,
@@ -572,6 +740,7 @@ struct Sampler {
 /// The `DescriptorSet` struct retains one frame's logical resource writes and native snapshot version.
 pub(crate) struct DescriptorSet {
 	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
+	sequence_index: u8,
 	version: u64,
 	descriptors: HashMap<ResourceSlot, HashMap<u32, RetainedDescriptor>>,
 }
@@ -757,14 +926,25 @@ pub(crate) struct Swapchain {
 	present_mode: PresentationModes,
 	images: [Option<ImageHandle>; 8],
 	proxy_uses: [Uses; 8],
+	proxy_resource_uses: Uses,
 	backbuffers: [Option<ID3D12Resource>; 8],
 	pub(crate) acquired_image_indices: [u8; 8],
+	pub(crate) acquired_sequences: [bool; 8],
+	queue_handle: QueueHandle,
 }
 
 pub(crate) struct Synchronizer {
 	pub(crate) next: Option<crate::synchronizer::SynchronizerHandle>,
 	fence: ID3D12Fence,
 	value: u64,
+	last_signal_queue: Option<QueueHandle>,
+}
+
+/// The `DeferredTask` enum keeps DX12 work and resources with the frame sequence that can safely process them.
+pub(crate) enum DeferredTask {
+	RetireResource(ID3D12Resource),
+	RetireBufferFrameStorage(BufferFrameStorage),
+	ResizeImage { handle: ImageHandle, extent: Extent },
 }
 
 struct Allocation {
@@ -790,6 +970,8 @@ pub struct Execution<'a> {
 	pub(crate) frame: Option<super::Frame<'a>>,
 	pub(crate) completed_frame: Option<crate::FrameKey>,
 	pub(crate) command_buffers: smallvec::SmallVec<[CommandBufferHandle; 4]>,
+	pub(crate) prepared_present_keys: smallvec::SmallVec<[PresentKey; 4]>,
+	pub(crate) queue_handle: QueueHandle,
 }
 
 impl Drop for Execution<'_> {
@@ -925,10 +1107,10 @@ impl crate::context::ContextCreate for Device {
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle {
 		Device::create_ray_tracing_pipeline(self, builder)
 	}
-	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+	fn build_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		Device::build_buffer(self, builder)
 	}
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		Device::build_dynamic_buffer(self, builder)
 	}
 	fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
@@ -1000,15 +1182,15 @@ impl crate::context::Context for Device {
 		Device::get_buffer_address(self, buffer_handle)
 	}
 
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
+	fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		Device::get_buffer_slice(self, buffer_handle)
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		Device::get_mut_buffer_slice(self, buffer_handle)
 	}
 
-	unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	unsafe fn transfer_buffer_mapping<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
 		unsafe { Device::transfer_buffer_mapping(self, buffer_handle) }
 	}
 
@@ -1083,7 +1265,7 @@ impl crate::context::Context for Device {
 		Device::get_image_data(self, texture_copy_handle)
 	}
 
-	fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
+	fn resize_buffer<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
 		Device::resize_buffer(self, buffer_handle, size);
 	}
 
@@ -1106,7 +1288,7 @@ impl crate::context::Context for Device {
 
 use std::{
 	alloc::{self, Layout},
-	cell::Cell,
+	cell::{Cell, RefCell},
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
@@ -1116,7 +1298,7 @@ use std::{
 use ::utils::Extent;
 use ::utils::hash::{HashMap, HashSet};
 use smallvec::SmallVec;
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HANDLE, RECT};
 use windows::Win32::Graphics::Direct3D::Dxc::{
 	CLSID_DxcCompiler, DXC_CP_UTF8, DXC_OUT_ERRORS, DXC_OUT_OBJECT, DXC_OUT_PDB, DxcBuffer, DxcCreateInstance, IDxcBlob,
 	IDxcCompiler3, IDxcIncludeHandler, IDxcResult, IDxcVersionInfo2,
@@ -1170,7 +1352,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RENDER_TARGET_VIEW_DESC,
 	D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+	D3D12_RESOURCE_DIMENSION_TEXTURE3D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_FLAGS, D3D12_ROOT_CONSTANTS,
 	D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
 	D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_RT_FORMAT_ARRAY, D3D12_RTV_DIMENSION_TEXTURE2D,
@@ -1182,9 +1364,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_STATE_SUBOBJECT, D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE,
 	D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION,
-	D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEX2D_ARRAY_DSV,
-	D3D12_TEX2D_ARRAY_RTV, D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV,
-	D3D12_TEX2D_UAV, D3D12_TEX3D_SRV, D3D12_TEX3D_UAV, D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE,
+	D3D12_STENCIL_OP_KEEP, D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION, D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_ARRAY_RTV,
+	D3D12_TEX2D_ARRAY_SRV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_DSV, D3D12_TEX2D_RTV, D3D12_TEX2D_SRV, D3D12_TEX2D_UAV,
+	D3D12_TEX3D_SRV, D3D12_TEX3D_UAV, D3D12_TEXCUBE_ARRAY_SRV, D3D12_TEXCUBE_SRV, D3D12_TEXTURE_ADDRESS_MODE,
 	D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR,
 	D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
 	D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
@@ -1218,9 +1400,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO, D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
 	D3D12_BARRIER_SYNC_INDEX_INPUT, D3D12_BARRIER_SYNC_NONE, D3D12_BARRIER_SYNC_RENDER_TARGET,
 	D3D12_BARRIER_SYNC_VERTEX_SHADING, D3D12_BARRIER_TYPE_BUFFER, D3D12_BARRIER_TYPE_GLOBAL, D3D12_BARRIER_TYPE_TEXTURE,
-	D3D12_BUFFER_BARRIER, D3D12_GLOBAL_BARRIER, D3D12_RESOURCE_DESC1, D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
-	D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE, ID3D12Device10, ID3D12GraphicsCommandList7,
-	ID3D12ProtectedResourceSession,
+	D3D12_BUFFER_BARRIER, D3D12_COMMAND_LIST_FLAG_NONE, D3D12_GLOBAL_BARRIER, D3D12_RESOURCE_DESC1,
+	D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_TEXTURE_BARRIER, D3D12_TEXTURE_BARRIER_FLAG_NONE,
+	ID3D12Device10, ID3D12GraphicsCommandList7, ID3D12ProtectedResourceSession,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
 	DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC5_UNORM,

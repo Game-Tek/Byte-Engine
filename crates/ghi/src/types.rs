@@ -735,7 +735,7 @@ pub struct BufferDescriptor {
 }
 
 impl BufferDescriptor {
-	pub fn new<T: Copy, const N: usize>(buffer: BufferHandle<[T; N]>) -> Self {
+	pub fn new<T: bytemuck::Pod, const N: usize>(buffer: BufferHandle<[T; N]>) -> Self {
 		Self {
 			buffer: buffer.into(),
 			offset: 0,
@@ -856,7 +856,7 @@ mod tests {
 	}
 }
 
-impl<T: Copy> From<BufferHandle<T>> for BufferDescriptor {
+impl<T: bytemuck::Pod> From<BufferHandle<T>> for BufferDescriptor {
 	fn from(val: BufferHandle<T>) -> Self {
 		BufferDescriptor {
 			buffer: val.into(),

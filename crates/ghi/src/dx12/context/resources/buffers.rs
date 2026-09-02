@@ -1,7 +1,7 @@
 use super::super::*;
 
 impl Device {
-	pub fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+	pub fn build_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
 			Layout::new::<T>(),
 			builder.resource_uses,
@@ -11,7 +11,7 @@ impl Device {
 		BufferHandle(BaseBufferHandle(handle), std::marker::PhantomData)
 	}
 
-	pub fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	pub fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
 			Layout::new::<T>(),
 			builder.resource_uses,
@@ -21,9 +21,17 @@ impl Device {
 		DynamicBufferHandle(BaseBufferHandle(handle), std::marker::PhantomData)
 	}
 
-	pub fn get_buffer_address(&self, _buffer_handle: BaseBufferHandle) -> u64 {
-		self.buffer(_buffer_handle)
-			.and_then(|buffer| buffer.resource.as_ref())
+	pub fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
+		let buffer = self
+			.buffer(buffer_handle)
+			.expect("Invalid DX12 buffer address request. The most likely cause is that the handle is stale.");
+		assert!(
+			buffer.heap_kind != BufferHeapKind::Readback,
+			"Invalid DX12 readback-buffer address request. The most likely cause is that CPU readback memory was selected for a GPU-address operation. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
+		);
+		buffer
+			.resource
+			.as_ref()
 			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
 			.unwrap_or(0)
 	}
@@ -34,17 +42,20 @@ impl Device {
 			.unwrap_or(0)
 	}
 
-	pub fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
+	pub fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		let buffer = self
 			.buffer(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		// SAFETY: Typed handles preserve the allocation's layout; zero-sized buffers carry an aligned sentinel pointer.
 		unsafe { &*(buffer.data as *const T) }
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		let buffer = self
-			.buffer(buffer_handle.into())
+			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		Self::mark_buffer_host_write(buffer);
+		// SAFETY: Typed handles preserve the allocation's layout and `&mut self` guarantees exclusive CPU access.
 		unsafe { &mut *(buffer.data as *mut T) }
 	}
 
@@ -53,10 +64,12 @@ impl Device {
 	/// # Safety
 	///
 	/// The caller must keep the buffer alive and prevent concurrent access for the lifetime of the returned mapping.
-	pub unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	pub unsafe fn transfer_buffer_mapping<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
 		let buffer = self
-			.buffer(buffer_handle.into())
+			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		Self::mark_buffer_host_write(buffer);
+		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.data, std::mem::size_of::<T>()) }
 	}
 
@@ -112,6 +125,7 @@ impl Device {
 		if size > buffer_data.size {
 			return None;
 		}
+		// SAFETY: Buffer shadow storage is non-null, stable, and contains at least the checked number of initialized bytes.
 		Some(unsafe { std::slice::from_raw_parts(buffer_data.data, size).to_vec() })
 	}
 
@@ -125,6 +139,7 @@ impl Device {
 		if size > buffer_size {
 			return None;
 		}
+		// SAFETY: Sequence storage is non-null, stable, and contains at least the checked number of initialized bytes.
 		Some(unsafe { std::slice::from_raw_parts(data, size).to_vec() })
 	}
 
@@ -155,6 +170,7 @@ impl Device {
 		if mapped.is_null() {
 			return None;
 		}
+		// SAFETY: The retained resource mapping covers at least the checked logical buffer size.
 		Some(unsafe { std::slice::from_raw_parts(mapped, size).to_vec() })
 	}
 }

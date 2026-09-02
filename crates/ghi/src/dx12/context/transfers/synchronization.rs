@@ -3,10 +3,46 @@ use super::*;
 impl Device {
 	/// Discards every unsubmitted side effect owned by one command-buffer recording.
 	pub(crate) fn discard_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) {
+		let lifecycle = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.map(|command_buffer| command_buffer.lifecycle);
+		if !matches!(
+			lifecycle,
+			Some(CommandBufferLifecycle::Recording | CommandBufferLifecycle::Scheduled)
+		) {
+			return;
+		}
 		self.abandon_texture_readbacks_for_command_buffer(command_buffer_handle);
 		// A discarded recording never executes its uploads, so make their staging data available to the next recording.
 		self.requeue_recorded_texture_syncs_for_command_buffer(command_buffer_handle);
 		self.rollback_command_buffer_resource_states(command_buffer_handle);
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			command_buffer.lifecycle = CommandBufferLifecycle::Idle;
+		}
+	}
+
+	/// Rejects command buffers that cannot join one queue execution before recording mutates their native state.
+	pub(crate) fn validate_command_buffer_for_execution(
+		&self,
+		command_buffer_handle: CommandBufferHandle,
+		queue_handle: QueueHandle,
+	) {
+		let command_buffer = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		assert_eq!(
+			command_buffer.queue_handle, queue_handle,
+			"Invalid DX12 execution queue. The most likely cause is that the command buffer was created by a different queue."
+		);
+		assert!(
+			matches!(
+				command_buffer.lifecycle,
+				CommandBufferLifecycle::Idle | CommandBufferLifecycle::Submitted
+			),
+			"DX12 command buffer is already recording or scheduled. The most likely cause is that one execution recorded the same handle more than once."
+		);
 	}
 
 	/// Starts recording speculative resource states for one command buffer.
@@ -36,7 +72,9 @@ impl Device {
 
 	/// Restores resource states when recorded barriers will never execute.
 	pub(crate) fn rollback_command_buffer_resource_states(&mut self, command_buffer_handle: CommandBufferHandle) {
-		self.present_transitions.remove(&command_buffer_handle);
+		self.command_buffers[command_buffer_handle.0 as usize]
+			.present_resources
+			.clear();
 		let (buffer_states, image_states) = self
 			.command_buffers
 			.get_mut(command_buffer_handle.0 as usize)
@@ -146,6 +184,9 @@ impl Device {
 		after: TextureBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) -> bool {
+		if let Some(command_buffer) = self.active_command_buffer {
+			self.retain_command_buffer_resource(command_buffer, resource);
+		}
 		let key = Self::native_resource_key(resource);
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::PRESENT);
 		if before == after {
@@ -198,6 +239,18 @@ impl Device {
 		})
 	}
 
+	/// Checks that one enhanced buffer access is legal for the resource's native heap.
+	pub(crate) fn validate_buffer_heap_access(heap_kind: BufferHeapKind, after: BufferBarrierState) {
+		if heap_kind != BufferHeapKind::Readback {
+			return;
+		}
+
+		assert!(
+			matches!(after.access, D3D12_BARRIER_ACCESS_COMMON | D3D12_BARRIER_ACCESS_COPY_DEST),
+			"Invalid DX12 readback-buffer GPU access. The most likely cause is that a readback resource was bound for a GPU read or non-copy write. Readback heaps support only copy or resolve destination access. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#readback-heap-resources."
+		);
+	}
+
 	pub(crate) fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList7,
@@ -218,9 +271,13 @@ impl Device {
 		after: BufferBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
+		if let Some(command_buffer) = self.active_command_buffer {
+			self.retain_command_buffer_resource(command_buffer, resource);
+		}
 		let heap_kind = self
 			.buffer_heap_kind_for_resource(buffer, resource)
 			.unwrap_or(BufferHeapKind::Default);
+		Self::validate_buffer_heap_access(heap_kind, after);
 		if heap_kind != BufferHeapKind::Default {
 			return;
 		}
@@ -234,6 +291,9 @@ impl Device {
 		after: BufferBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
+		if let Some(command_buffer) = self.active_command_buffer {
+			self.retain_command_buffer_resource(command_buffer, resource);
+		}
 		let key = Self::native_resource_key(resource);
 		let before = self.buffer_states.get(&key).copied().unwrap_or(BufferBarrierState::COMMON);
 		if before == after {
@@ -268,6 +328,9 @@ impl Device {
 		after: TextureBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
+		if let Some(command_buffer) = self.active_command_buffer {
+			self.retain_command_buffer_resource(command_buffer, resource);
+		}
 		let key = Self::native_resource_key(resource);
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
 		if before == after {
@@ -334,15 +397,16 @@ impl Device {
 		sequence_index: u8,
 	) -> Option<(*const u8, usize)> {
 		let (data, buffer_size) = self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index)?;
-		let end = offset.saturating_add(size);
+		let end = offset.checked_add(size).expect(
+			"Failed to resolve a DX12 buffer range. The most likely cause is that the requested offset and size overflow addressable memory.",
+		);
 		if end > buffer_size {
 			panic!(
 				"Failed to read DX12 buffer data. The most likely cause is that the requested range is outside the buffer allocation."
 			);
 		}
 
-		// Buffer storage remains stable while the caller records the copy. Returning its address avoids
-		// allocating and duplicating the whole upload range before DX12 copies it into an upload heap.
+		// SAFETY: The checked end is within buffer_size, so offset stays within the allocation, including an empty tail range.
 		Some((unsafe { data.add(offset) }, size))
 	}
 }

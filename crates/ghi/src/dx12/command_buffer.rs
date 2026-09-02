@@ -20,6 +20,7 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline: Option<PipelineHandle>,
 	bound_descriptor_sets: SmallVec<[DescriptorSetHandle; 8]>,
 	descriptor_tables_dirty: bool,
+	active_attachments: SmallVec<[BaseImageHandle; 8]>,
 	active_render_target: Option<BaseImageHandle>,
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
@@ -48,6 +49,7 @@ impl<'a> CommandBufferRecording<'a> {
 			bound_pipeline: None,
 			bound_descriptor_sets: SmallVec::new(),
 			descriptor_tables_dirty: false,
+			active_attachments: SmallVec::new(),
 			active_render_target: None,
 			active_extent: None,
 			push_constants: Vec::new(),
@@ -55,12 +57,18 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
 	fn sequence_index(&self) -> u8 {
 		self.frame_key.map(|frame_key| frame_key.sequence_index).unwrap_or(0)
+	}
+
+	/// Validates the complete descriptor access contract before recording barriers or native bindings.
+	fn validate_descriptor_bindings(&self, pipeline: PipelineHandle, sets: &[DescriptorSetHandle]) {
+		self.device
+			.validate_descriptor_binding_contract(pipeline, sets, self.sequence_index(), &self.active_attachments);
 	}
 
 	/// Rebinds descriptor tables when an intervening command changed the active DX12 descriptor heap.
@@ -71,8 +79,7 @@ impl<'a> CommandBufferRecording<'a> {
 		let pipeline = self.bound_pipeline.expect(
 			"No pipeline is bound. The most likely cause is that descriptor tables were marked dirty without an active pipeline.",
 		);
-		self.device
-			.validate_descriptor_sets(pipeline, &self.bound_descriptor_sets, self.sequence_index());
+		self.validate_descriptor_bindings(pipeline, &self.bound_descriptor_sets);
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
 			Some(pipeline),
@@ -132,6 +139,26 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) -> &mut impl RasterizationRenderPassMode {
 		AttachmentInformation::render_pass_layer_count(attachments);
 		let sequence_index = self.sequence_index();
+		let mut active_attachments = SmallVec::<[BaseImageHandle; 8]>::new();
+		for attachment in attachments {
+			let ImageOrSwapchain::Image(image) = attachment.target else {
+				continue;
+			};
+			assert!(
+				!active_attachments.contains(&image),
+				"Incompatible DX12 attachment aliases. The most likely cause is that one whole image was bound more than once as a writable render-pass attachment. See https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#single-queue-simultaneous-access."
+			);
+			active_attachments.push(image);
+		}
+		if let Some(pipeline) = self.bound_pipeline.filter(|_| !self.bound_descriptor_sets.is_empty()) {
+			self.device.validate_descriptor_binding_contract(
+				pipeline,
+				&self.bound_descriptor_sets,
+				sequence_index,
+				&active_attachments,
+			);
+		}
+		self.active_attachments = active_attachments;
 		self.active_extent = Some(extent);
 		self.active_render_target = attachments.first().map(|attachment| match attachment.target {
 			ImageOrSwapchain::Image(image) => image,
@@ -218,14 +245,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn execute(mut self, synchronizer: SynchronizerHandle) {
 		self.finish_for_submission();
-		if !self.device.submit_command_buffer(self.command_buffer, synchronizer) {
-			self.queued_for_submission = false;
-		}
+		// Keep unwind cleanup armed until submission moves the recording into the native queue.
+		self.queued_for_submission = false;
+		self.device.submit_command_buffer(self.command_buffer, synchronizer);
 	}
 }
 
 impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode {
+		if !self.bound_descriptor_sets.is_empty() {
+			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
+		}
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
@@ -234,6 +264,9 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode {
+		if !self.bound_descriptor_sets.is_empty() {
+			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
+		}
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
@@ -264,6 +297,9 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode {
+		if !self.bound_descriptor_sets.is_empty() {
+			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
+		}
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
@@ -285,6 +321,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 	fn end_render_pass(&mut self) {
 		self.device.end_render_pass_native(self.command_buffer);
+		self.active_attachments.clear();
 		self.active_render_target = None;
 		self.active_extent = None;
 	}
@@ -295,7 +332,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		let pipeline = self.bound_pipeline.expect(
 			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		self.device.validate_descriptor_sets(pipeline, sets, self.sequence_index());
+		self.validate_descriptor_bindings(pipeline, sets);
 		self.bound_descriptor_sets.clear();
 		self.bound_descriptor_sets.extend_from_slice(sets);
 		self.device.flush_pending_descriptor_texture_syncs(
@@ -310,7 +347,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	fn write_push_constant<T: crate::Pod>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
@@ -327,7 +364,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		if self.push_constants.len() < end {
 			self.push_constants.resize(end, 0);
 		}
-		let bytes = unsafe { std::slice::from_raw_parts((&data as *const T).cast::<u8>(), size) };
+		let bytes = bytemuck::bytes_of(&data);
 		self.push_constants[offset..end].copy_from_slice(bytes);
 		self.device
 			.write_push_constants_native(self.command_buffer, self.bound_pipeline, offset as u32, bytes);
@@ -348,8 +385,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 		let transform = if self.push_constants.len() >= std::mem::size_of::<[f32; 16]>() {
 			let mut matrix = [0.0f32; 16];
-			let bytes =
-				unsafe { std::slice::from_raw_parts_mut(matrix.as_mut_ptr().cast::<u8>(), std::mem::size_of::<[f32; 16]>()) };
+			let bytes = bytemuck::bytes_of_mut(&mut matrix);
 			bytes.copy_from_slice(&self.push_constants[..std::mem::size_of::<[f32; 16]>()]);
 			Some(matrix)
 		} else {
@@ -404,10 +440,18 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
 	}
 
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 3]; N]>, entry_index: usize) {
+	fn indirect_dispatch<const N: usize>(
+		&mut self,
+		buffer: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
+		entry_index: usize,
+	) {
 		self.refresh_descriptor_tables_if_dirty();
-		self.device
-			.dispatch_compute_indirect_native(self.command_buffer, buffer, entry_index);
+		self.device.dispatch_compute_indirect_native::<N>(
+			self.command_buffer,
+			buffer.into().handle(),
+			entry_index,
+			self.sequence_index(),
+		);
 	}
 }
 

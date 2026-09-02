@@ -45,6 +45,8 @@ pub mod metal;
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
+pub use bytemuck::{Pod, Zeroable};
+
 #[cfg(not(target_os = "windows"))]
 pub(crate) use crate::frame_resources::*;
 #[cfg(target_os = "windows")]

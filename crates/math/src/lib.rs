@@ -139,12 +139,12 @@ macro_rules! assert_geometry_near {
 
 /// The `ShaderMatrix` struct provides the aligned matrix layout graphics backends use for GPU uploads.
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderMatrix(pub [f32; 16]);
 
 /// The `AffineShaderMatrix` struct provides the compact affine matrix layout for GPU transform uploads.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AffineShaderMatrix(pub [f32; 12]);
 
 impl From<Matrix> for ShaderMatrix {

@@ -246,9 +246,28 @@ impl Device {
 		if heap_count == 0 {
 			return;
 		}
+		let cbv_srv_uav_identity = command_buffer
+			.cbv_srv_uav_staging_heap
+			.as_ref()
+			.filter(|arena| arena.used > 0)
+			.map(|arena| arena.heap.native.as_raw() as usize);
+		let sampler_identity = command_buffer
+			.sampler_staging_heap
+			.as_ref()
+			.filter(|arena| arena.used > 0)
+			.map(|arena| arena.heap.native.as_raw() as usize);
+		if command_buffer.bound_cbv_srv_uav_heap == cbv_srv_uav_identity
+			&& command_buffer.bound_sampler_heap == sampler_identity
+		{
+			return;
+		}
 
 		unsafe {
 			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
+		}
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
+			command_buffer.bound_sampler_heap = sampler_identity;
 		}
 		self.descriptor_heap_bind_count += 1;
 	}
@@ -289,12 +308,16 @@ impl Device {
 	pub(crate) fn retain_command_buffer_resource(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		resource: ID3D12Resource,
+		resource: &ID3D12Resource,
 	) {
 		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
 			return;
 		};
-		command_buffer.retained_resources.push(resource);
+		let identity = resource.as_raw() as usize;
+		if !command_buffer.retained_resource_keys.insert(identity) {
+			return;
+		}
+		command_buffer.retained_resources.push(resource.clone());
 	}
 
 	/// Retains an upload resource and tracks its live command-buffer-scoped allocation.

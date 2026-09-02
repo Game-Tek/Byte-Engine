@@ -158,8 +158,8 @@ pub struct ResourceIoTicket {
 	fence: ID3D12Fence,
 	cancellation_tag: u64,
 	cancellation_requested: AtomicBool,
-	_name: Option<CString>,
-	_requests: Vec<ValidatedRequest>,
+	_name: ManuallyDrop<Option<CString>>,
+	_requests: ManuallyDrop<Vec<ValidatedRequest>>,
 }
 
 impl ResourceIoQueue {
@@ -427,8 +427,8 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			fence,
 			cancellation_tag,
 			cancellation_requested: AtomicBool::new(false),
-			_name: name,
-			_requests: validated,
+			_name: ManuallyDrop::new(name),
+			_requests: ManuallyDrop::new(validated),
 		})
 	}
 }
@@ -436,10 +436,24 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 impl ResourceIoTicket {
 	/// Blocks until the native queue has passed this batch's final lifetime marker.
 	fn wait_for_completion_marker(&self) -> Result<(), ResourceIoError> {
-		if unsafe { self.fence.GetCompletedValue() } < 1 {
+		let completed = unsafe { self.fence.GetCompletedValue() };
+		if completed == u64::MAX {
+			return Err(ResourceIoError::Execution(
+				"DirectStorage completion became unavailable. The most likely cause is that the DX12 device was removed."
+					.to_string(),
+			));
+		}
+		if completed < 1 {
 			// A null event asks D3D12 to block in this call, so the ticket owns no native handle that can outlive it.
 			unsafe { self.fence.SetEventOnCompletion(1, HANDLE::default()) }
 				.map_err(|error| ResourceIoError::Execution(native_error_message(&error)))?;
+		}
+		// GetCompletedValue returns UINT64_MAX after device removal. That sentinel does not prove request completion.
+		if unsafe { self.fence.GetCompletedValue() } == u64::MAX {
+			return Err(ResourceIoError::Execution(
+				"DirectStorage completion became unavailable. The most likely cause is that the DX12 device was removed."
+					.to_string(),
+			));
 		}
 		Ok(())
 	}
@@ -497,7 +511,19 @@ impl crate::io::ResourceIoTicket for ResourceIoTicket {
 impl Drop for ResourceIoTicket {
 	fn drop(&mut self) {
 		// DirectStorage borrows the request's native objects and debug name until the completion marker runs.
-		let _ = self.wait_for_completion_marker();
+		if self.wait_for_completion_marker().is_ok() {
+			// The completion marker proves that DirectStorage no longer borrows either payload.
+			unsafe {
+				ManuallyDrop::drop(&mut self._requests);
+				ManuallyDrop::drop(&mut self._name);
+			}
+			return;
+		}
+		// If the native wait fails, intentionally retain every object referenced by queued status/signal work.
+		// DirectStorage does not promise that queue entries retain caller COM objects or the debug-name pointer.
+		std::mem::forget(self.queue.clone());
+		std::mem::forget(self.status.clone());
+		std::mem::forget(self.fence.clone());
 	}
 }
 

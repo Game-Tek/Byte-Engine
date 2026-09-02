@@ -314,6 +314,50 @@ mod tests {
 	}
 
 	#[test]
+	fn descriptor_array_sample_grad_indexes_the_matching_sampler_and_compiles() {
+		let mut root = besl::parse(
+			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample_texture_2d_array_grad(textures, 2, vec2f(0.0, 0.0), vec2f(0.0, 0.0), vec2f(0.0, 0.0)); color; }",
+		)
+		.expect("Expected descriptor-array gradient sample source to parse");
+		root.add(vec![besl::parser::Node::intrinsic_with_parameters(
+			"sample_texture_2d_array_grad",
+			vec![
+				besl::parser::Node::parameter("texture_array", "Texture2D"),
+				besl::parser::Node::parameter("texture_index", "u32"),
+				besl::parser::Node::parameter("uv", "vec2f"),
+				besl::parser::Node::parameter("uv_derivative_x", "vec2f"),
+				besl::parser::Node::parameter("uv_derivative_y", "vec2f"),
+			],
+			besl::parser::Node::sentence(vec![besl::parser::Node::member_expression("textures")]),
+			"vec4f",
+		)]);
+		let root = besl::lex(root).expect("Expected descriptor-array gradient sample source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected descriptor-array gradient sample HLSL generation");
+
+		assert_string_contains!(shader, "Texture2D<float4> textures[4] : register(t3, space0);");
+		assert_string_contains!(shader, "SamplerState textures_sampler[4] : register(s3, space0);");
+		assert_string_contains!(
+			shader,
+			"textures[2].SampleGrad(textures_sampler[2],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
+		);
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"descriptor-array-sample-grad-regression",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected descriptor-array gradient sample HLSL to compile to DXIL");
+	}
+
+	#[test]
 	fn structural_position_uses_sv_position_without_colliding_with_a_local() {
 		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
 			.expect("Expected structural position source to link");

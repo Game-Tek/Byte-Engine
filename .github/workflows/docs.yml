@@ -57,7 +57,7 @@ jobs:
             ${{ runner.os }}-docs-bun-
 
       - name: Install Rust toolchain
-        run: rustup toolchain install nightly-2026-05-31 --profile minimal
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
 
       - name: Cache Cargo downloads and API documentation tools
         uses: actions/cache@v6

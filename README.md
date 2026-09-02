@@ -35,7 +35,7 @@ Byte-Engine currently targets nightly Rust and uses unstable language features.
 The repository pins the toolchain in [`rust-toolchain.toml`](rust-toolchain.toml):
 
 ```text
-nightly-2026-05-31
+nightly-2026-08-31
 ```
 
 Install Rust with `rustup`. When you run Cargo inside the checkout, it uses the

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # rustdoc JSON and cargo-docs-md must agree on the unstable schema version.
-readonly TOOLCHAIN="nightly-2026-05-31"
+readonly TOOLCHAIN="nightly-2026-08-31"
 readonly CARGO_DOCS_MD_VERSION="0.2.4"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

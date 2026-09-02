@@ -73,7 +73,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SkyShaderData {
 	inverse_view_projection: ShaderMatrix,
 	camera_position: [f32; 4],

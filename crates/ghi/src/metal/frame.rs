@@ -73,14 +73,14 @@ impl<'a> Frame<'a> {
 			)
 	}
 
-	fn frame_buffer_pointer(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> *mut u8 {
+	fn frame_buffer_parts(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> (*mut u8, usize) {
 		let buffer = self.device.buffers.resource(self.get_current_buffer_handle(buffer_handle));
 		let buffer = buffer
 			.staging
 			.map(|staging_handle| self.device.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
 
-		buffer.pointer
+		(buffer.pointer, buffer.size)
 	}
 
 	fn frame_texture_staging_parts(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> (*mut u8, usize) {
@@ -118,7 +118,10 @@ impl Frame<'_> {
 		self.device.intern_sampler(sampler)
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -126,12 +129,16 @@ impl Frame<'_> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<T: Copy>(
+	pub fn get_mut_dynamic_buffer_slice<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
-		// SAFETY: Typed handles preserve the allocation type and the frame owns exclusive access to its sequence resource.
-		unsafe { &mut *(self.frame_buffer_pointer(buffer_handle.into()) as *mut T) }
+		let (pointer, byte_count) = self.frame_buffer_parts(buffer_handle.into());
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
+			"Failed to map a typed Metal frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
+		unsafe { &mut *pointer }
 	}
 
 	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
@@ -421,7 +428,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -445,7 +452,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: Copy>(
+	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
@@ -520,11 +527,11 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		self.device.create_ray_tracing_pipeline(builder)
 	}
 
-	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
+	fn build_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
 		self.device.build_buffer(builder)
 	}
 
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		self.device.build_dynamic_buffer(builder)
 	}
 

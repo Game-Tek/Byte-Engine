@@ -10,7 +10,7 @@ pub struct LutRenderPass {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct LutShaderParameters {
 	pub(super) domain_min: [f32; 4],
 	pub(super) domain_scale: [f32; 4],

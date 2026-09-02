@@ -533,7 +533,7 @@ impl GPUIBLProcessor {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GPUIBLPushConstants {
 	source_width: u32,
 	source_height: u32,

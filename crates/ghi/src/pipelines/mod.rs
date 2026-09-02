@@ -60,25 +60,15 @@ pub struct SpecializationMapEntry {
 }
 
 impl SpecializationMapEntry {
-	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self
-	where
-		[(); std::mem::size_of::<T>()]:,
-	{
+	pub fn new<T: bytemuck::NoUninit + 'static>(constant_id: u32, r#type: String, value: T) -> Self {
 		if r#type == "vec4f" {
 			assert_eq!(std::mem::size_of::<T>(), 16);
 		}
 
-		let mut data = [0_u8; std::mem::size_of::<T>()];
-
-		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		unsafe {
-			std::ptr::copy_nonoverlapping((&value) as *const T as *const u8, data.as_mut_ptr(), std::mem::size_of::<T>())
-		};
-
 		Self {
 			r#type,
 			constant_id,
-			value: Box::new(data),
+			value: bytemuck::bytes_of(&value).into(),
 		}
 	}
 

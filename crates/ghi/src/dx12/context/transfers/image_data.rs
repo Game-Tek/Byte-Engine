@@ -29,7 +29,11 @@ impl Device {
 		let readback = self
 			.record_image_readback_internal(command_buffer_handle, image_handle, true, sequence_index)?
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
-		Ok(self.texture_readbacks.insert(readback))
+		let handle = self.texture_readbacks.insert(readback);
+		self.command_buffers[command_buffer_handle.0 as usize]
+			.recorded_readbacks
+			.push(handle);
+		Ok(handle)
 	}
 
 	/// Records one base-mip copy and returns native staging only when the result will be mapped later.
@@ -52,18 +56,24 @@ impl Device {
 		let layout = crate::context::texture_transfer_layout(image.format, image.extent, image.array_layers, image.uses)?;
 		let extent = image.extent;
 		let image_format = image.format;
-		let format = Self::dxgi_format(image_format).ok_or(crate::TextureTransferError::UnsupportedFormat(image_format))?;
+		Self::dxgi_format(image_format).ok_or(crate::TextureTransferError::UnsupportedFormat(image_format))?;
 		let source = self
 			.ensure_image_resource_for_sequence(image_handle.0, sequence_index)
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
-		let readback_row_pitch = layout
-			.bytes_per_row
-			.checked_add(255)
-			.map(|bytes| bytes & !255)
+		let footprint = self
+			.native_texture_copy_footprint(&source, 0)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let readback_size = readback_row_pitch
-			.checked_mul(layout.row_count)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let readback_row_pitch =
+			usize::try_from(footprint.placed.Footprint.RowPitch).map_err(|_| crate::TextureTransferError::UnsupportedLayout)?;
+		let native_depth =
+			usize::try_from(footprint.placed.Footprint.Depth).map_err(|_| crate::TextureTransferError::UnsupportedLayout)?;
+		if footprint.row_size != layout.bytes_per_row
+			|| footprint.row_count != layout.row_count
+			|| native_depth != layout.depth_slices
+		{
+			return Err(crate::TextureTransferError::UnsupportedLayout);
+		}
+		let readback_size = footprint.total_size;
 		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost) else {
 			return Err(crate::TextureTransferError::AllocationFailed);
 		};
@@ -77,17 +87,7 @@ impl Device {
 			pResource: std::mem::ManuallyDrop::new(Some(readback.clone())),
 			Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
 			Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-				PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-					Offset: 0,
-					Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
-						Format: format,
-						Width: extent.width(),
-						Height: extent.height(),
-						Depth: 1,
-						RowPitch: u32::try_from(readback_row_pitch)
-							.map_err(|_| crate::TextureTransferError::UnsupportedLayout)?,
-					},
-				},
+				PlacedFootprint: footprint.placed,
 			},
 		};
 
@@ -97,6 +97,7 @@ impl Device {
 			source_location.pResource.as_ref().unwrap(),
 			TextureBarrierState::COPY_SOURCE,
 		);
+		// SAFETY: Both retained resources and their driver-provided subresource footprints remain valid through submission.
 		unsafe {
 			command_list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
 		}
@@ -113,19 +114,18 @@ impl Device {
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
 		if !return_readback {
-			self.retain_command_buffer_resource(command_buffer_handle, readback);
+			self.retain_command_buffer_resource(command_buffer_handle, &readback);
 			return Ok(None);
 		}
 
 		Ok(Some(TextureReadback {
-			command_buffer_handle: Some(command_buffer_handle),
 			completion: None,
 			resource: Some(readback),
 			sequence_index,
 			row_pitch: readback_row_pitch,
 			row_bytes: layout.bytes_per_row,
 			height: layout.row_count,
-			depth: 1,
+			depth: layout.depth_slices,
 			size: readback_size,
 			mapping_failed: false,
 			data: TextureReadbackData {
@@ -140,14 +140,12 @@ impl Device {
 
 	/// Releases every unsubmitted readback associated with one discarded command-list recording.
 	pub(crate) fn abandon_texture_readbacks_for_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let handles = self
-			.texture_readbacks
-			.entries()
-			.filter_map(|(handle, readback)| (readback.command_buffer_handle == Some(command_buffer_handle)).then_some(handle))
-			.collect::<SmallVec<[_; 4]>>();
-		for handle in handles {
+		let command_buffer_index = command_buffer_handle.0 as usize;
+		let mut handles = std::mem::take(&mut self.command_buffers[command_buffer_index].recorded_readbacks);
+		for handle in handles.drain(..) {
 			self.texture_readbacks.abandon_recorded(handle);
 		}
+		self.command_buffers[command_buffer_index].recorded_readbacks = handles;
 	}
 
 	pub(crate) fn refresh_readback_texture_copies(&mut self, sequence_index: Option<u8>) {
@@ -164,7 +162,35 @@ impl Device {
 			let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
 				continue;
 			};
+			// SAFETY: The synchronizer registry owns the live fence queried here.
 			if unsafe { synchronizer.fence.GetCompletedValue() } < completion_value {
+				continue;
+			}
+			let Some(compact_size) = readback.data.bytes_per_image.checked_mul(readback.depth) else {
+				readback.mapping_failed = true;
+				readback.resource = None;
+				continue;
+			};
+			let Some(native_bytes_per_image) = readback.row_pitch.checked_mul(readback.height) else {
+				readback.mapping_failed = true;
+				readback.resource = None;
+				continue;
+			};
+			let native_required = readback
+				.depth
+				.saturating_sub(1)
+				.checked_mul(native_bytes_per_image)
+				.and_then(|offset| {
+					readback
+						.height
+						.saturating_sub(1)
+						.checked_mul(readback.row_pitch)
+						.and_then(|row| offset.checked_add(row))
+				})
+				.and_then(|offset| offset.checked_add(readback.row_bytes));
+			if native_required.is_none_or(|required| required > readback.size) {
+				readback.mapping_failed = true;
+				readback.resource = None;
 				continue;
 			}
 			let Some(resource) = readback.resource.as_ref() else {
@@ -176,32 +202,37 @@ impl Device {
 				Begin: 0,
 				End: readback.size,
 			};
+			// SAFETY: This retained readback resource is CPU-readable, and the requested range fits its allocation.
 			if unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) }.is_err() || mapped.is_null() {
 				readback.mapping_failed = true;
 				readback.resource = None;
 				continue;
 			}
 
-			let compact_size = readback.data.bytes_per_image;
 			let mut compact = Vec::new();
 			if compact.try_reserve_exact(compact_size).is_err() {
+				// SAFETY: The successful map above remains active and no CPU writes need to be published.
 				unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
 				readback.mapping_failed = true;
 				readback.resource = None;
 				continue;
 			}
 			compact.resize(compact_size, 0);
-			for row in 0..readback.height {
-				let source_offset = row * readback.row_pitch;
-				let destination_offset = row * readback.row_bytes;
-				unsafe {
-					std::ptr::copy_nonoverlapping(
-						(mapped as *const u8).add(source_offset),
-						compact.as_mut_ptr().add(destination_offset),
-						readback.row_bytes,
-					);
+			for depth_slice in 0..readback.depth {
+				for row in 0..readback.height {
+					let source_offset = depth_slice * native_bytes_per_image + row * readback.row_pitch;
+					let destination_offset = depth_slice * readback.data.bytes_per_image + row * readback.row_bytes;
+					// SAFETY: The checked native footprint and compact allocation bound this row copy.
+					unsafe {
+						std::ptr::copy_nonoverlapping(
+							(mapped as *const u8).add(source_offset),
+							compact.as_mut_ptr().add(destination_offset),
+							readback.row_bytes,
+						);
+					}
 				}
 			}
+			// SAFETY: The successful map above remains active and the CPU did not modify the readback allocation.
 			unsafe { resource.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 })) };
 
 			readback.data.bytes = compact;
@@ -227,7 +258,7 @@ impl Device {
 			return;
 		};
 
-		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) };
+		let bytes = bytemuck::cast_slice(data);
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
 	}

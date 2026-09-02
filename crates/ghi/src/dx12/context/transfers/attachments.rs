@@ -15,7 +15,7 @@ impl Device {
 			ImageOrSwapchain::Swapchain(swapchain_handle) => {
 				let resource = self.swapchain_backbuffer_resource(swapchain_handle, sequence_index)?;
 				let resource_key = Self::native_resource_key(&resource);
-				let present_resources = self.present_transitions.entry(command_buffer_handle).or_default();
+				let present_resources = &mut self.command_buffers[command_buffer_handle.0 as usize].present_resources;
 				// Multiple render passes can target one backbuffer, but it needs only one terminal PRESENT transition.
 				if present_resources
 					.iter()
@@ -35,7 +35,17 @@ impl Device {
 	) -> Option<ID3D12Resource> {
 		let (resource, newly_cached) = {
 			let swapchain = self.swapchains.get_mut(swapchain_handle.0 as usize)?;
-			let image_index = swapchain.acquired_image_indices[sequence_index as usize] as usize;
+			let sequence_index = usize::from(sequence_index);
+			assert!(
+				swapchain.acquired_sequences[sequence_index],
+				"DX12 swapchain backbuffer was used without an acquisition. The most likely cause is that command recording omitted acquire_swapchain_image for this frame sequence."
+			);
+			let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
+			let current_image_index = unsafe { swapchain.swapchain.GetCurrentBackBufferIndex() } as usize;
+			assert_eq!(
+				image_index, current_image_index,
+				"DX12 acquired backbuffer is no longer current. The most likely cause is that the swapchain advanced outside its owning frame execution."
+			);
 			let image_index = image_index.min(swapchain.image_count.saturating_sub(1) as usize);
 			let mut newly_cached = false;
 			if swapchain.backbuffers[image_index].is_none() {
@@ -49,7 +59,6 @@ impl Device {
 			self.image_states
 				.insert(Self::native_resource_key(&resource), TextureBarrierState::PRESENT);
 		}
-		self.materialize_render_target_views(&resource, Formats::BGRAu8, 1);
 		Some(resource)
 	}
 
@@ -75,12 +84,28 @@ impl Device {
 
 	pub(crate) fn attachment_format(&self, attachment: &AttachmentInformation) -> Formats {
 		match attachment.target {
-			ImageOrSwapchain::Image(image) => self
-				.images
-				.get(image.0 as usize)
-				.map(|image| image.format)
-				.unwrap_or(Formats::RGBA8UNORM),
-			ImageOrSwapchain::Swapchain(_) => Formats::BGRAu8,
+			ImageOrSwapchain::Image(image) => {
+				let image_format = self
+					.images
+					.get(image.0 as usize)
+					.map(|image| image.format)
+					.unwrap_or(Formats::RGBA8UNORM);
+				if let Some(format) = attachment.format {
+					assert_eq!(
+						format, image_format,
+						"Unsupported DX12 attachment format reinterpretation. The most likely cause is that a typed image was bound with an attachment format different from its allocation."
+					);
+				}
+				image_format
+			}
+			ImageOrSwapchain::Swapchain(_) => {
+				let format = attachment.format.unwrap_or(Formats::BGRAsRGB);
+				assert!(
+					matches!(format, Formats::BGRAu8 | Formats::BGRAsRGB),
+					"Unsupported DX12 swapchain attachment format. The most likely cause is that the backbuffer view is not BGRA8 UNORM or BGRA8 sRGB. See https://learn.microsoft.com/en-us/windows-hardware/drivers/display/fully-typed-back-buffers-casting."
+				);
+				format
+			}
 		}
 	}
 
@@ -117,7 +142,7 @@ impl Device {
 			else {
 				continue;
 			};
-			let description = Self::texture_uav_desc(format, image.array_layers);
+			let description = Self::texture_uav_desc(format, image.extent, image.is_3d, image.array_layers);
 			self.prepare_clear_descriptor(command_buffer_handle, &resource, &description);
 		}
 		self.flush_pending_clear_descriptor_copies(command_buffer_handle);
@@ -158,6 +183,7 @@ impl Device {
 		};
 		let image_format = image.format;
 		let extent = image.extent;
+		let is_3d = image.is_3d;
 		let uses_storage = image.uses.intersects(Uses::Storage);
 		let array_layers = image.array_layers;
 		let Some(format) = uses_storage
@@ -179,7 +205,7 @@ impl Device {
 			}
 			return;
 		};
-		let desc = Self::texture_uav_desc(format, array_layers);
+		let desc = Self::texture_uav_desc(format, extent, is_3d, array_layers);
 		if !self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -266,7 +292,7 @@ impl Device {
 		clear: crate::ClearValue,
 		sequence_index: u8,
 	) {
-		let (Some(dxgi_format), Some(bytes_per_pixel)) = (Self::dxgi_format(format), utils::bytes_per_pixel(format)) else {
+		let (Some(_), Some(bytes_per_pixel)) = (Self::dxgi_format(format), utils::bytes_per_pixel(format)) else {
 			return;
 		};
 		if bytes_per_pixel != std::mem::size_of::<RGBAu8>() {
@@ -286,7 +312,6 @@ impl Device {
 			command_list,
 			image_handle,
 			destination,
-			dxgi_format,
 			extent,
 			&source_bytes,
 			extent.width() as usize * bytes_per_pixel,

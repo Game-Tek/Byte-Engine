@@ -67,6 +67,23 @@ mod tests {
 	}
 
 	#[test]
+	fn zero_sized_typed_buffers_preserve_element_alignment() {
+		#[repr(C, align(64))]
+		#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+		struct AlignedZeroSized;
+
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let buffer = device.build_buffer::<AlignedZeroSized>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let address = device.get_buffer_slice(buffer) as *const AlignedZeroSized as usize;
+
+		assert!(address.is_multiple_of(std::mem::align_of::<AlignedZeroSized>()));
+	}
+
+	#[test]
 	fn debug_info_queue_messages_use_device_log_function() {
 		DX12_DEBUG_TEST_LOGS.store(0, Ordering::Relaxed);
 		let features = crate::device::Features::new()
@@ -477,6 +494,40 @@ mod tests {
 	}
 
 	#[test]
+	fn growing_frames_extends_existing_descriptor_sets() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let sampler = device.build_sampler(crate::sampler::Builder::new());
+		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
+			set,
+			slot,
+			image,
+			sampler,
+			crate::Layouts::Read,
+			-1,
+		)]);
+
+		device.set_frames_in_flight(3);
+
+		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(1));
+		device.write(&[crate::DescriptorWrite::combined_image_sampler_with_frame(
+			set,
+			slot,
+			image,
+			sampler,
+			crate::Layouts::Read,
+			1,
+		)]);
+		assert_eq!(device.descriptor_sequence_index(set, 2, slot), Some(0));
+	}
+
+	#[test]
 	fn combined_image_sampler_array_writes_preserve_frame_offset() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -521,8 +572,10 @@ mod tests {
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.validate_descriptor_sets(pipeline, &[set], 0);
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		}
 
 		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 2);
 		assert_eq!(
@@ -602,7 +655,18 @@ mod tests {
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 1);
+		device.begin_command_buffer(command_buffer, 1);
+		{
+			let mut recording = super::command_buffer::CommandBufferRecording::new(
+				&mut device,
+				command_buffer,
+				Some(crate::FrameKey {
+					frame_index: 1,
+					sequence_index: 1,
+				}),
+			);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		}
 
 		assert_eq!(
 			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
@@ -640,8 +704,13 @@ mod tests {
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let expected_state = TextureBarrierState::shader_resource(D3D12_BARRIER_SYNC_COMPUTE_SHADING);
+		let synchronizer = device.create_synchronizer(None, false);
 
-		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 0);
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
 
 		assert_eq!(device.upload_resource_count(), 1);
 		assert_eq!(device.pending_texture_sync_count(), 1);
@@ -654,7 +723,19 @@ mod tests {
 			None
 		);
 
-		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 1);
+		device.begin_command_buffer(command_buffer, 1);
+		{
+			let mut recording = super::command_buffer::CommandBufferRecording::new(
+				&mut device,
+				command_buffer,
+				Some(crate::FrameKey {
+					frame_index: 1,
+					sequence_index: 1,
+				}),
+			);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
 
 		assert_eq!(device.upload_resource_count(), 2);
 		assert_eq!(device.pending_texture_sync_count(), 0);
@@ -691,8 +772,13 @@ mod tests {
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let synchronizer = device.create_synchronizer(None, false);
 
-		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 0);
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
 
 		assert_eq!(device.uav_barrier_count(), 0);
 		assert_eq!(
@@ -700,7 +786,19 @@ mod tests {
 			Some(TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_COMPUTE_SHADING))
 		);
 
-		device.flush_pending_descriptor_texture_syncs(command_buffer, Some(pipeline), &[set], 1);
+		device.begin_command_buffer(command_buffer, 1);
+		{
+			let mut recording = super::command_buffer::CommandBufferRecording::new(
+				&mut device,
+				command_buffer,
+				Some(crate::FrameKey {
+					frame_index: 1,
+					sequence_index: 1,
+				}),
+			);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		}
 
 		assert_eq!(device.uav_barrier_count(), 0);
 		assert_eq!(
@@ -820,8 +918,10 @@ mod tests {
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
-		device.validate_descriptor_sets(pipeline, &[set], 0);
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		}
 
 		assert_eq!(device.image_uav_descriptor_write_count(), 1);
 	}
@@ -891,19 +991,18 @@ mod tests {
 			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
 		));
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.validate_descriptor_sets(pipeline, &[set], 0);
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+			recording.bind_descriptor_sets(&[set]);
+		}
 
 		assert_eq!(device.descriptor_write_count(), 3);
 		assert_eq!(device.image_srv_descriptor_write_count(), 1);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
 		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((true, true)));
 		assert_eq!(device.descriptor_materialization_count(), 1);
-
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 0);
-
-		assert_eq!(device.descriptor_write_count(), 3);
-		assert_eq!(device.descriptor_materialization_count(), 1);
+		assert_eq!(device.descriptor_heap_bind_count(), 1);
 	}
 
 	/// Verifies that frame rotation reuses stable native descriptor heaps instead of consuming transient arena slots.
@@ -1735,15 +1834,14 @@ void main() {
 			crate::pipelines::VertexElement::new("POSITION", crate::DataTypes::Float3, 0),
 			crate::pipelines::VertexElement::new("COLOR", crate::DataTypes::Float4, 0),
 		];
-		let mesh = unsafe {
-			device.add_mesh_from_vertices_and_indices(
-				3,
-				3,
-				std::slice::from_raw_parts(vertices.as_ptr().cast(), std::mem::size_of_val(&vertices)),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr().cast(), 3 * std::mem::size_of::<u16>()),
-				&vertex_layout,
-			)
-		};
+		let indices = [0u16, 1u16, 2u16];
+		let mesh = device.add_mesh_from_vertices_and_indices(
+			3,
+			3,
+			bytemuck::cast_slice(&vertices),
+			bytemuck::cast_slice(&indices),
+			&vertex_layout,
+		);
 		let vertex = device
 			.create_shader(
 				None,
@@ -1785,7 +1883,7 @@ void main() {
 			crate::pipelines::ShaderParameter::new(&vertex, crate::ShaderTypes::Vertex),
 			crate::pipelines::ShaderParameter::new(&fragment, crate::ShaderTypes::Fragment),
 		];
-		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(crate::Formats::BGRAu8)];
+		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(crate::Formats::BGRAsRGB)];
 		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
 			&[],
 			&vertex_layout,
@@ -1819,6 +1917,29 @@ void main() {
 
 		assert_eq!(device.swapchain_backbuffer_bind_count(), 1);
 		assert_eq!(device.swapchain_present_transition_count(), 1);
+	}
+
+	#[test]
+	fn swapchain_rejects_a_second_acquisition_before_present() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let extent = ::utils::Extent::rectangle(4, 4);
+		let window = crate::window::Window::new("DX12 Outstanding Acquisition Test", extent)
+			.expect("Failed to create DX12 test window.");
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
+		let synchronizer = device.create_synchronizer(None, true);
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let mut frame = device.start_frame(0, synchronizer);
+			let _ = frame.acquire_swapchain_image(swapchain);
+			let _ = frame.acquire_swapchain_image(swapchain);
+		}));
+
+		assert!(
+			rejected.is_err(),
+			"A DXGI swapchain must not expose a second outstanding present key for the same native backbuffer chain."
+		);
 	}
 
 	#[test]
@@ -2322,6 +2443,48 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn indirect_dispatch_uses_and_flushes_the_active_frame_buffer() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let shader = device
+			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.expect("Failed to create DX12 compute shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let indirect_buffer = device.build_dynamic_buffer::<[[u32; 3]; 2]>(
+			crate::buffer::Builder::new(crate::Uses::Indirect).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let sequence_data = [[7, 8, 9], [10, 11, 12]];
+		*device.dynamic_buffer_slice_mut(indirect_buffer, 1) = sequence_data;
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.begin_command_buffer(command_buffer, 1);
+		let mut recording = super::command_buffer::CommandBufferRecording::new(
+			&mut device,
+			command_buffer,
+			Some(crate::FrameKey {
+				frame_index: 1,
+				sequence_index: 1,
+			}),
+		);
+		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
+			.indirect_dispatch(indirect_buffer, 0);
+		drop(recording);
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(indirect_buffer.into(), std::mem::size_of_val(&sequence_data), 1),
+			Some(bytemuck::bytes_of(&sequence_data).to_vec()),
+		);
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(indirect_buffer.into(), std::mem::size_of_val(&sequence_data), 0),
+			Some(vec![0; std::mem::size_of_val(&sequence_data)]),
+		);
+	}
+
+	#[test]
 	fn raster_input_and_draw_calls_encode_native_commands() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -2394,7 +2557,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		));
 		let vertices = [0u8; 3 * 7 * std::mem::size_of::<f32>()];
 		let indices = [0u16, 1, 2];
-		let indices = unsafe { std::slice::from_raw_parts(indices.as_ptr().cast::<u8>(), std::mem::size_of_val(&indices)) };
+		let indices = bytemuck::cast_slice(&indices);
 		let mesh = device.add_mesh_from_vertices_and_indices(
 			3,
 			3,
@@ -3312,12 +3475,11 @@ void main(uint3 id : SV_DispatchThreadID) {
 			.extent(::utils::Extent::rectangle(1, 1))
 			.device_accesses(crate::DeviceAccesses::DeviceToHost),
 		);
-		let pixel = [7, 8, 9, 10];
-		let data = unsafe { std::slice::from_raw_parts(pixel.as_ptr() as *const crate::RGBAu8, 1) };
+		let data = [crate::RGBAu8 { r: 7, g: 8, b: 9, a: 10 }];
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
+		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), &data);
 		drop(recording);
 
 		assert_eq!(device.upload_resource_count(), 1);
@@ -3457,12 +3619,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			.device_accesses(crate::DeviceAccesses::DeviceToHost),
 		);
 		let synchronizer = device.create_synchronizer(None, false);
-		let pixel = [21, 22, 23, 24];
-		let data = unsafe { std::slice::from_raw_parts(pixel.as_ptr() as *const crate::RGBAu8, 1) };
+		let pixel = crate::RGBAu8 {
+			r: 21,
+			g: 22,
+			b: 23,
+			a: 24,
+		};
+		let data = [pixel];
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
-		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
+		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), &data);
 		let copies = [
 			crate::command_buffer::CommandBufferRecording::transfer_texture(&mut recording, image.into()).expect(
 				"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
@@ -3478,7 +3645,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 					"Texture mapping failed. The most likely cause is that the DX12 test handle was not created by this device."
 				)
 				.bytes,
-			&pixel
+			bytemuck::bytes_of(&pixel)
 		);
 		assert_eq!(
 			device.get_image_data(copies[0]),
@@ -3552,6 +3719,265 @@ void main(uint3 id : SV_DispatchThreadID) {
 	}
 
 	#[test]
+	fn queue_batch_signals_once_after_nonempty_and_empty_lists_and_allows_immediate_reuse() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		device.set_frames_in_flight(1);
+		let image = device.build_image(
+			crate::image::Builder::new(
+				crate::Formats::RGBA8UNORM,
+				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
+			)
+			.extent(::utils::Extent::rectangle(1, 1))
+			.device_accesses(crate::DeviceAccesses::DeviceToHost),
+		);
+		let pixel = crate::RGBAu8 {
+			r: 31,
+			g: 32,
+			b: 33,
+			a: 34,
+		};
+		let synchronizer = device.create_synchronizer(None, false);
+		let nonempty = device.create_command_buffer(Some("nonempty batch list"), queue_handle);
+		let empty = device.create_command_buffer(Some("empty batch list"), queue_handle);
+		let mut copy = None;
+
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(nonempty, |recording| {
+					crate::command_buffer::CommandBufferRecording::write_image_data(recording, image.into(), &[pixel]);
+					copy = Some(
+						crate::command_buffer::CommandBufferRecording::transfer_texture(recording, image.into()).expect(
+							"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+						),
+					);
+				});
+				execution.record(empty, |_| {});
+				[]
+			},
+		);
+
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.native_command_list_execute_count(), 1);
+		assert_eq!(device.empty_command_list_skip_count(), 1);
+
+		// Reusing the same sequence and both allocators immediately must wait for the batch's one terminal fence.
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(1, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(nonempty, |_| {});
+				execution.record(empty, |_| {});
+				[]
+			},
+		);
+
+		let copy = copy.expect(
+			"Missing DX12 readback handle. The most likely cause is that the nonempty command list did not record its transfer.",
+		);
+		assert_eq!(
+			device
+				.get_image_data(copy)
+				.expect(
+					"Texture mapping failed. The most likely cause is that the terminal batch fence did not complete the readback."
+				)
+				.bytes,
+			bytemuck::bytes_of(&pixel),
+		);
+		assert_eq!(device.synchronizer_value(synchronizer), Some(2));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn queue_execution_rejects_a_foreign_command_buffer_before_mutation() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let features = crate::device::Features::new().validation(false).mesh_shading(false);
+		let Ok(mut instance) = Instance::new(features) else {
+			return;
+		};
+		let mut compute_queue = None;
+		let mut transfer_queue = None;
+		let Ok(mut device) = instance.create_device(
+			features,
+			&mut [
+				(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut compute_queue),
+				(
+					crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER),
+					&mut transfer_queue,
+				),
+			],
+		) else {
+			return;
+		};
+		let compute_queue = compute_queue.expect("DX12 compute queue creation must return its GHI handle.");
+		let transfer_queue = transfer_queue.expect("DX12 transfer queue creation must return its GHI handle.");
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(Some("compute-owned list"), compute_queue);
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.queue(transfer_queue).execute(
+				Some(crate::queue::FrameRequest::new(0, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					execution.record(command_buffer, |_| {});
+					[]
+				},
+			);
+		}));
+
+		assert!(rejected.is_err());
+		device.queue(compute_queue).execute(
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |_| {});
+				[]
+			},
+		);
+		device.wait_for_synchronizer(synchronizer);
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn queue_execution_rejects_duplicate_command_buffers_before_submission_and_remains_reusable() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let synchronizer = device.create_synchronizer(None, false);
+		let first_command_buffer = device.create_command_buffer(None, queue_handle);
+		let second_command_buffer = device.create_command_buffer(None, queue_handle);
+		let duplicate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.queue(queue_handle).execute(
+				Some(crate::queue::FrameRequest::new(0, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					execution.record(first_command_buffer, |_| {});
+					execution.record(second_command_buffer, |_| {});
+					execution.record(first_command_buffer, |_| {});
+					[]
+				},
+			);
+		}));
+
+		assert!(duplicate.is_err());
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(first_command_buffer, |_| {});
+				execution.record(second_command_buffer, |_| {});
+				[]
+			},
+		);
+		device.wait_for_synchronizer(synchronizer);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn frame_sequence_waits_its_previous_synchronizer_when_the_master_changes() {
+		use crate::context::Context as _;
+		use crate::queue::Queue as _;
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let first = device.create_synchronizer(None, false);
+		let replacement = device.create_synchronizer(None, false);
+
+		device
+			.queue(queue_handle)
+			.execute(Some(crate::queue::FrameRequest::new(0, first)), &[], first, |_| []);
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(2, replacement)),
+			&[],
+			replacement,
+			|_| [],
+		);
+		device.wait_for_synchronizer(replacement);
+
+		assert_eq!(device.synchronizer_value(first), Some(1));
+		assert_eq!(device.synchronizer_value(replacement), Some(1));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn frame_recording_rejects_a_different_completion_synchronizer_before_submission() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		device.set_frames_in_flight(1);
+		let frame_synchronizer = device.create_synchronizer(None, false);
+		let different_synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let mut frame = device.start_frame(0, frame_synchronizer);
+			let recording = frame.create_command_buffer_recording(command_buffer);
+			crate::command_buffer::CommandBufferRecording::execute(recording, different_synchronizer);
+		}));
+
+		assert!(rejected.is_err());
+		assert_eq!(device.synchronizer_value(frame_synchronizer), Some(0));
+		assert_eq!(device.synchronizer_value(different_synchronizer), Some(0));
+
+		let mut frame = device.start_frame(0, frame_synchronizer);
+		let recording = frame.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommandBufferRecording::execute(recording, frame_synchronizer);
+		drop(frame);
+		device.wait_for_synchronizer(frame_synchronizer);
+		assert_eq!(device.synchronizer_value(frame_synchronizer), Some(1));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn storage_present_requires_recorded_preparation_before_submission() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let extent = ::utils::Extent::rectangle(4, 4);
+		let window = crate::window::Window::new("DX12 Missing Present Preparation Test", extent).expect(
+			"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
+		);
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
+		device.get_swapchain_image(swapchain, crate::Uses::Storage);
+		let synchronizer = device.create_synchronizer(None, false);
+		let missing_preparation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.queue(queue_handle).execute(
+				Some(crate::queue::FrameRequest::new(0, synchronizer)),
+				&[],
+				synchronizer,
+				|execution| {
+					let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+					[present_key]
+				},
+			);
+		}));
+
+		assert!(missing_preparation.is_err());
+	}
+
+	#[test]
 	fn clear_buffers_updates_shadow_storage() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -3621,6 +4047,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			&mut recording,
 			&[first_buffer.into(), second_buffer.into()],
 		);
+		recording.finish_for_submission();
 		drop(recording);
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
@@ -3630,6 +4057,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[first_buffer.into()]);
+		recording.finish_for_submission();
 		drop(recording);
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (2, 1, 2, 0));
@@ -3654,6 +4082,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+		recording.finish_for_submission();
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
@@ -3666,6 +4095,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+		recording.finish_for_submission();
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
@@ -3692,13 +4122,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 			&mut recording,
 			&[(image.into(), crate::ClearValue::Color(::utils::RGBA::black()))],
 		);
+		recording.finish_for_submission();
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (1, 1, 1, 0));
 
-		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4));
+		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4), 0);
 
 		assert_eq!(device.retained_clear_uav_descriptor_pool_state(), (0, 1, 1, 1));
 
@@ -3707,6 +4138,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			&mut recording,
 			&[(image.into(), crate::ClearValue::Color(::utils::RGBA::black()))],
 		);
+		recording.finish_for_submission();
 		drop(recording);
 		device.submit_command_buffer(command_buffer, synchronizer);
 		device.wait_for_synchronizer(synchronizer);
@@ -3731,12 +4163,172 @@ void main(uint3 id : SV_DispatchThreadID) {
 		for _ in 0..2 {
 			let mut recording = device.create_command_buffer_recording(command_buffer);
 			crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+			recording.finish_for_submission();
 			drop(recording);
 			device.submit_command_buffer(command_buffer, synchronizer);
 		}
 		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(device.buffer_clear_count(), 2);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn reusing_logical_command_buffer_on_the_next_sequence_does_not_wait_for_the_previous_sequence() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let blocker = device
+			.block_queue_until_test_fence(queue_handle)
+			.expect("Failed to block the DX12 test queue. The most likely cause is that the test device was removed.");
+
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |_| {});
+				[]
+			},
+		);
+
+		// Release a broken single-allocator implementation after a bounded delay so the regression fails instead of hanging.
+		let watchdog_fence = blocker.clone();
+		let (cancel_watchdog, watchdog_cancelled) = std::sync::mpsc::channel();
+		let watchdog = std::thread::spawn(move || {
+			if watchdog_cancelled.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+				unsafe { watchdog_fence.Signal(1) }.expect(
+					"Failed to release the DX12 test queue. The most likely cause is that the test device was removed.",
+				);
+			}
+		});
+		let start = std::time::Instant::now();
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(1, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |_| {});
+				[]
+			},
+		);
+		let elapsed = start.elapsed();
+
+		unsafe { blocker.Signal(1) }
+			.expect("Failed to release the DX12 test queue. The most likely cause is that the test device was removed.");
+		let _ = cancel_watchdog.send(());
+		watchdog.join().expect(
+			"DX12 queue watchdog panicked. The most likely cause is that the test fence could not release blocked work.",
+		);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert!(
+			elapsed < std::time::Duration::from_secs(2),
+			"The next DX12 frame sequence waited for the previous sequence's allocator. elapsed={elapsed:?}"
+		);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn later_sequence_submission_does_not_reassign_a_completed_texture_readback() {
+		use crate::context::Context as _;
+		use crate::queue::{Queue as _, QueueExecution as _};
+
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		device.set_frames_in_flight(2);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.device_accesses(crate::DeviceAccesses::DeviceToHost),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut first_copy = None;
+
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(0, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |recording| {
+					first_copy = Some(
+						crate::command_buffer::CommandBufferRecording::transfer_texture(recording, image.into()).expect(
+							"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+						),
+					);
+				});
+				[]
+			},
+		);
+		let first_copy = first_copy.expect(
+			"Missing DX12 readback handle. The most likely cause is that the first sequence did not record its transfer.",
+		);
+		device.wait_for_texture_copy_readback(first_copy);
+
+		let blocker = device
+			.block_queue_until_test_fence(queue_handle)
+			.expect("Failed to block the DX12 test queue. The most likely cause is that the test device was removed.");
+		let mut second_copy = None;
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest::new(1, synchronizer)),
+			&[],
+			synchronizer,
+			|execution| {
+				execution.record(command_buffer, |recording| {
+					second_copy = Some(
+						crate::command_buffer::CommandBufferRecording::transfer_texture(recording, image.into()).expect(
+							"Texture transfer failed. The most likely cause is that the DX12 test image is not a valid transfer source.",
+						),
+					);
+				});
+				[]
+			},
+		);
+
+		// Release a bad completion reassignment after a bounded delay so the regression fails instead of hanging.
+		let watchdog_fence = blocker.clone();
+		let (cancel_watchdog, watchdog_cancelled) = std::sync::mpsc::channel();
+		let watchdog = std::thread::spawn(move || {
+			if watchdog_cancelled.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+				unsafe { watchdog_fence.Signal(1) }.expect(
+					"Failed to release the DX12 test queue. The most likely cause is that the test device was removed.",
+				);
+			}
+		});
+		let start = std::time::Instant::now();
+		device.wait_for_texture_copy_readback(first_copy);
+		let elapsed = start.elapsed();
+
+		unsafe { blocker.Signal(1) }
+			.expect("Failed to release the DX12 test queue. The most likely cause is that the test device was removed.");
+		let _ = cancel_watchdog.send(());
+		watchdog.join().expect(
+			"DX12 queue watchdog panicked. The most likely cause is that the test fence could not release blocked work.",
+		);
+		device.wait_for_synchronizer(synchronizer);
+		let _ = device
+			.get_image_data(first_copy)
+			.expect("Texture mapping failed. The most likely cause is that the first sequence lost its completion ownership.");
+		let _ = device
+			.get_image_data(second_copy.expect(
+				"Missing DX12 readback handle. The most likely cause is that the second sequence did not record its transfer.",
+			))
+			.expect("Texture mapping failed. The most likely cause is that the second sequence did not complete.");
+
+		assert!(
+			elapsed < std::time::Duration::from_secs(2),
+			"A later DX12 frame sequence reassigned an earlier readback's completion fence. elapsed={elapsed:?}"
+		);
 		assert!(!device.has_errors());
 	}
 
@@ -3764,7 +4356,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
 		let dynamic_buffer = device.build_dynamic_buffer::<[u32; 8]>(
-			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::DeviceToHost),
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
 		);
 
 		assert_eq!(
@@ -3822,7 +4414,18 @@ void main(uint3 id : SV_DispatchThreadID) {
 		assert_eq!(device.descriptor_write_count(), 0);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
-		device.bind_descriptor_heaps_and_tables(command_buffer, Some(pipeline), &[set], 1);
+		device.begin_command_buffer(command_buffer, 1);
+		{
+			let mut recording = super::command_buffer::CommandBufferRecording::new(
+				&mut device,
+				command_buffer,
+				Some(crate::FrameKey {
+					frame_index: 1,
+					sequence_index: 1,
+				}),
+			);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		}
 
 		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
 		assert_eq!(device.buffer_native_size_for_sequence(buffer.into(), 1), Some(256));
@@ -3948,6 +4551,16 @@ void main(uint3 id : SV_DispatchThreadID) {
 		});
 		let transform = [[1.0, 0.0, 0.0, 4.0], [0.0, 1.0, 0.0, 5.0], [0.0, 0.0, 1.0, 6.0]];
 
+		device.write_instance(instance_buffer, usize::MAX, transform, 7, 0xff, 3, bottom_level);
+		let unchanged = device
+			.buffer_bytes(
+				instance_buffer,
+				std::mem::size_of::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
+			)
+			.expect("Instance buffer bytes should be available.");
+		assert!(unchanged.iter().all(|byte| *byte == 0));
+		assert_eq!(device.acceleration_structure_instance_write_count(), 0);
+
 		device.write_instance(instance_buffer, 0, transform, 7, 0xff, 3, bottom_level);
 
 		let bytes = device
@@ -3956,8 +4569,14 @@ void main(uint3 id : SV_DispatchThreadID) {
 				std::mem::size_of::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
 			)
 			.expect("Instance buffer bytes should be available.");
-		let instance =
-			unsafe { *(bytes.as_ptr() as *const windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC) };
+		// The buffer shadow is byte-aligned storage, so copy the descriptor without imposing native alignment on the slice.
+		let instance = unsafe {
+			std::ptr::read_unaligned(
+				bytes
+					.as_ptr()
+					.cast::<windows::Win32::Graphics::Direct3D12::D3D12_RAYTRACING_INSTANCE_DESC>(),
+			)
+		};
 
 		assert_eq!(device.acceleration_structure_instance_write_count(), 1);
 		assert_eq!(
@@ -4179,7 +4798,8 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 			},
 		});
 		let instances = device.create_acceleration_structure_instance_buffer(Some("instances"), 1);
-		let scratch = device.build_buffer::<[u8; 256]>(
+		// Keep enough room for the device-reported scratch requirement of both one-primitive builds.
+		let scratch = device.build_buffer::<[u8; 65_536]>(
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
 		let vertices = device.build_buffer::<[[f32; 3]; 3]>(
@@ -4283,12 +4903,65 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 			Some((::utils::Extent::rectangle(2, 2), true))
 		);
 
-		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4));
+		device.resize_image_internal(image, ::utils::Extent::rectangle(4, 4), 0);
 
 		assert_eq!(
 			device.image_resource_state(image),
 			Some((::utils::Extent::rectangle(4, 4), true))
 		);
+	}
+
+	#[test]
+	fn texture3d_creation_uses_depth_instead_of_array_size() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::new(8, 4, 3)),
+		);
+
+		assert_eq!(
+			device.image_native_dimension(image),
+			Some((windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_DIMENSION_TEXTURE3D.0, 3,))
+		);
+	}
+
+	#[test]
+	fn texture3d_creation_rejects_array_metadata() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.build_image(
+				crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+					.extent(::utils::Extent::new(8, 4, 3))
+					.array_layers(std::num::NonZeroU32::new(2)),
+			)
+		}));
+
+		assert!(result.is_err(), "DX12 accepted array metadata on a Texture3D resource.");
+	}
+
+	#[test]
+	fn texture3d_uav_uses_the_selected_mip_depth() {
+		let descriptor = Device::descriptor_texture_uav_desc(
+			windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+			crate::TextureViewTypes::Texture3D,
+			::utils::Extent::new(16, 8, 9),
+			true,
+			1,
+			None,
+			Some(2),
+		);
+
+		assert_eq!(
+			descriptor.ViewDimension,
+			windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE3D
+		);
+		let texture = unsafe { descriptor.Anonymous.Texture3D };
+		assert_eq!(texture.MipSlice, 2);
+		assert_eq!(texture.FirstWSlice, 0);
+		assert_eq!(texture.WSize, 2);
 	}
 
 	#[test]
@@ -4308,5 +4981,404 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 				Some((::utils::Extent::rectangle(8, 8), true))
 			);
 		}
+	}
+
+	#[test]
+	fn unsupported_srgb_channel_layout_is_rejected_before_handle_publication() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.build_image(
+				crate::image::Builder::new(crate::Formats::R8sRGB, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+			)
+		}));
+
+		assert!(
+			result.is_err(),
+			"DX12 accepted an sRGB format that has no exact DXGI representation."
+		);
+	}
+
+	#[test]
+	fn exact_srgb_image_formats_allocate_native_resources() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+
+		for format in [crate::Formats::RGBA8sRGB, crate::Formats::BGRAsRGB, crate::Formats::BC7SRGB] {
+			let image = device
+				.build_image(crate::image::Builder::new(format, crate::Uses::Image).extent(::utils::Extent::rectangle(8, 8)));
+			assert_eq!(
+				device.image_resource_state(image),
+				Some((::utils::Extent::rectangle(8, 8), true))
+			);
+		}
+	}
+
+	#[test]
+	fn sampled_depth_images_use_a_typed_shader_view() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::Depth32, crate::Uses::DepthStencil | crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let set = device.create_descriptor_set(None);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[crate::ShaderResourceDescriptor::single(
+					slot,
+					crate::ResourceKind::SampledImage,
+					crate::AccessPolicies::READ,
+				)],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		}
+
+		assert_eq!(device.image_srv_descriptor_write_count(), 1);
+	}
+
+	#[test]
+	fn sampled_descriptor_rejects_image_without_sampled_usage() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let set = device.create_descriptor_set(None);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[crate::ShaderResourceDescriptor::single(
+					slot,
+					crate::ResourceKind::SampledImage,
+					crate::AccessPolicies::READ,
+				)],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.validate_descriptor_sets(pipeline, &[set], 0);
+		}));
+		assert!(
+			result.is_err(),
+			"DX12 accepted a sampled descriptor over a storage-only image."
+		);
+	}
+
+	#[test]
+	fn uniform_descriptor_rejects_buffer_without_uniform_usage() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let set = device.create_descriptor_set(None);
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[crate::ShaderResourceDescriptor::single(
+					slot,
+					crate::ResourceKind::UniformBuffer,
+					crate::AccessPolicies::READ,
+				)],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.validate_descriptor_sets(pipeline, &[set], 0);
+		}));
+		assert!(result.is_err(), "DX12 accepted a CBV over a buffer without uniform usage.");
+	}
+
+	#[test]
+	fn uniform_descriptor_rejects_ranges_larger_than_64_kib() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let set = device.create_descriptor_set(None);
+		let buffer = device.build_buffer::<[u32; 16_385]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+		device.write(&[crate::DescriptorWrite::buffer(set, slot, buffer.into())]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[crate::ShaderResourceDescriptor::single(
+					slot,
+					crate::ResourceKind::UniformBuffer,
+					crate::AccessPolicies::READ,
+				)],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.validate_descriptor_sets(pipeline, &[set], 0);
+		}));
+		assert!(result.is_err(), "DX12 accepted a shader-visible CBV larger than 64 KiB.");
+	}
+
+	#[test]
+	fn readback_buffer_creation_rejects_every_gpu_read_or_binding_use() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let gpu_binding_uses = [
+			crate::Uses::Uniform,
+			crate::Uses::Storage,
+			crate::Uses::Vertex,
+			crate::Uses::Index,
+			crate::Uses::Indirect,
+			crate::Uses::AccelerationStructure,
+			crate::Uses::AccelerationStructureBuild,
+			crate::Uses::AccelerationStructureBuildScratch,
+			crate::Uses::ShaderBindingTable,
+			crate::Uses::TransferSource,
+			crate::Uses::Clear,
+		];
+
+		for uses in gpu_binding_uses {
+			let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				device.build_buffer::<[u32; 4]>(
+					crate::buffer::Builder::new(uses | crate::Uses::TransferDestination)
+						.device_accesses(crate::DeviceAccesses::DeviceToHost),
+				)
+			}));
+			assert!(rejected.is_err(), "DX12 accepted a GPU binding use on a readback heap.");
+		}
+
+		let rejected_access = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.build_buffer::<[u32; 4]>(
+				crate::buffer::Builder::new(crate::Uses::TransferDestination)
+					.device_accesses(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::GpuRead),
+			)
+		}));
+		assert!(
+			rejected_access.is_err(),
+			"DX12 accepted explicit GPU-read access on a readback heap."
+		);
+
+		let valid_readback = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
+		);
+		let destination = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let rejected_copy_source = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			crate::command_buffer::CommandBufferRecording::copy_buffers(
+				&mut recording,
+				&[crate::BufferCopyDescriptor::new(
+					valid_readback.into(),
+					0,
+					destination.into(),
+					0,
+					std::mem::size_of::<[u32; 4]>(),
+				)],
+			);
+		}));
+		assert!(
+			rejected_copy_source.is_err(),
+			"DX12 accepted a readback resource as a GPU copy source."
+		);
+	}
+
+	#[test]
+	fn descriptor_binding_rejects_overlapping_buffer_read_write_aliases() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let read_slot = crate::ResourceSlot::new(0);
+		let write_slot = crate::ResourceSlot::new(1);
+		let set = device.create_descriptor_set(None);
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		device.write(&[
+			crate::DescriptorWrite::buffer(set, read_slot, buffer.into()),
+			crate::DescriptorWrite::buffer(set, write_slot, buffer.into()),
+		]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[
+					crate::ShaderResourceDescriptor::single(
+						read_slot,
+						crate::ResourceKind::StorageBuffer,
+						crate::AccessPolicies::READ,
+					),
+					crate::ShaderResourceDescriptor::single(
+						write_slot,
+						crate::ResourceKind::StorageBuffer,
+						crate::AccessPolicies::WRITE,
+					),
+				],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline);
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			recording.bind_descriptor_sets(&[set]);
+		}));
+		assert!(
+			rejected.is_err(),
+			"DX12 accepted overlapping whole-buffer SRV and UAV aliases."
+		);
+	}
+
+	#[test]
+	fn descriptor_binding_rejects_incompatible_image_layout_aliases() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let read_slot = crate::ResourceSlot::new(0);
+		let write_slot = crate::ResourceSlot::new(1);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[
+			crate::DescriptorWrite::image(set, read_slot, image, crate::Layouts::Read),
+			crate::DescriptorWrite::image(set, write_slot, image, crate::Layouts::General),
+		]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[
+					crate::ShaderResourceDescriptor::single(
+						read_slot,
+						crate::ResourceKind::SampledImage,
+						crate::AccessPolicies::READ,
+					),
+					crate::ShaderResourceDescriptor::single(
+						write_slot,
+						crate::ResourceKind::StorageImage,
+						crate::AccessPolicies::WRITE,
+					),
+				],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline);
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			recording.bind_descriptor_sets(&[set]);
+		}));
+		assert!(
+			rejected.is_err(),
+			"DX12 accepted simultaneous shader-resource and unordered-access image layouts."
+		);
+	}
+
+	#[test]
+	fn render_pass_rejects_an_image_still_bound_as_a_shader_resource() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let slot = crate::ResourceSlot::new(0);
+		let set = device.create_descriptor_set(None);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::RenderTarget)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.write(&[crate::DescriptorWrite::image(set, slot, image, crate::Layouts::Read)]);
+		let shader = device
+			.create_shader(
+				None,
+				crate::shader::Sources::SPIRV(&[]),
+				crate::ShaderTypes::Compute,
+				[crate::ShaderResourceDescriptor::single(
+					slot,
+					crate::ResourceKind::SampledImage,
+					crate::AccessPolicies::READ,
+				)],
+			)
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_compute_pipeline(pipeline).bind_descriptor_sets(&[set]);
+		let attachments = [crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::None,
+			true,
+			true,
+		)];
+
+		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			crate::command_buffer::CommandBufferRecording::start_render_pass(
+				&mut recording,
+				::utils::Extent::rectangle(1, 1),
+				&attachments,
+			);
+		}));
+		assert!(
+			rejected.is_err(),
+			"DX12 accepted one whole image as both an attachment and shader resource."
+		);
 	}
 }

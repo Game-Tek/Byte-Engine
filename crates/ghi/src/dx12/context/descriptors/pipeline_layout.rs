@@ -240,10 +240,10 @@ impl Device {
 		};
 		if let Err(error) = serialization_result {
 			let details = if let Some(error_blob) = error_blob {
-				let message = unsafe {
-					std::slice::from_raw_parts(error_blob.GetBufferPointer().cast::<u8>(), error_blob.GetBufferSize())
-				};
-				String::from_utf8_lossy(message).into_owned()
+				match Self::d3d_blob_bytes(&error_blob) {
+					Ok(message) => String::from_utf8_lossy(message).into_owned(),
+					Err(reason) => reason.to_string(),
+				}
 			} else {
 				"DX12 returned no serialization diagnostics.".to_string()
 			};
@@ -258,7 +258,19 @@ impl Device {
 			);
 			return None;
 		};
-		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) };
+		let bytes = match Self::d3d_blob_bytes(&blob) {
+			Ok([]) => {
+				self.log_dx12_error(
+					"DX12 root-signature serialization returned empty data. The most likely cause is an incompatible Agility SDK runtime.",
+				);
+				return None;
+			}
+			Ok(bytes) => bytes,
+			Err(reason) => {
+				self.log_dx12_error(reason);
+				return None;
+			}
+		};
 		let root_signature = match unsafe { self.device.CreateRootSignature(0, bytes) } {
 			Ok(root_signature) => root_signature,
 			Err(error) => {
@@ -278,6 +290,22 @@ impl Device {
 			sampler_table_root,
 			push_constant_root,
 		})
+	}
+
+	/// Borrows the bytes reported by a live D3D blob without constructing a slice from a null pointer.
+	fn d3d_blob_bytes(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> Result<&[u8], &'static str> {
+		let byte_len = unsafe { blob.GetBufferSize() };
+		if byte_len == 0 {
+			return Ok(&[]);
+		}
+		let bytes = unsafe { blob.GetBufferPointer() }.cast::<u8>();
+		if bytes.is_null() {
+			return Err(
+				"DX12 returned a null pointer for nonempty serialized root-signature data. The most likely cause is an invalid runtime response.",
+			);
+		}
+		// ID3DBlob owns byte_len initialized bytes at this pointer and remains borrowed for the returned slice lifetime.
+		Ok(unsafe { std::slice::from_raw_parts(bytes, byte_len) })
 	}
 
 	pub(crate) fn get_or_create_pipeline_layout(

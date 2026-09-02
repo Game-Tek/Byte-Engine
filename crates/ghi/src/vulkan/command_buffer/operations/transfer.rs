@@ -64,7 +64,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			return Err(crate::TextureTransferError::UnsupportedFormat(format));
 		}
 		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, declared_uses)?;
-		let size = layout.bytes_per_image;
+		let size = layout
+			.bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let (staging, memory, pointer) = self.device.create_texture_readback_buffer(size)?;
 
 		// Register staging before state tracking so unwinding the recording can reclaim every native object.

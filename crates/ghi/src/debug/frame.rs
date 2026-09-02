@@ -12,7 +12,7 @@ impl<'a> Frame<'a> {
 		Self { device, frame_key }
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
+	pub fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		panic!(
 			"Debug dynamic-buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
 		)

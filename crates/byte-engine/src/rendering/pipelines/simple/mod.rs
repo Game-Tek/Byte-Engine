@@ -17,7 +17,7 @@ pub use render_pass::RenderPass as SimpleRenderPass;
 #[repr(C)]
 /// The `CameraShaderData` struct shares simple-pipeline camera data
 /// with generated shader code.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraShaderData {
 	vp: ShaderMatrix,
 }

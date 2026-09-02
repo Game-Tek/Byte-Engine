@@ -194,8 +194,30 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn texture_uav_desc(format: DXGI_FORMAT, array_layers: u32) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+	pub(crate) fn texture_uav_desc(
+		format: DXGI_FORMAT,
+		extent: Extent,
+		is_3d: bool,
+		array_layers: u32,
+	) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
 		let array_layers = array_layers.max(1);
+		if is_3d {
+			assert!(
+				array_layers == 1,
+				"Invalid DX12 Texture3D UAV. The most likely cause is that array metadata was attached to a 3D texture."
+			);
+			return D3D12_UNORDERED_ACCESS_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE3D,
+				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+					Texture3D: D3D12_TEX3D_UAV {
+						MipSlice: 0,
+						FirstWSlice: 0,
+						WSize: extent.depth().max(1),
+					},
+				},
+			};
+		}
 		D3D12_UNORDERED_ACCESS_VIEW_DESC {
 			Format: format,
 			ViewDimension: if array_layers > 1 {
@@ -241,6 +263,8 @@ impl Device {
 	pub(crate) fn descriptor_texture_uav_desc(
 		format: DXGI_FORMAT,
 		texture_view_type: TextureViewTypes,
+		extent: Extent,
+		is_3d: bool,
 		array_layers: u32,
 		layer: Option<u32>,
 		mip_level: Option<u32>,
@@ -252,10 +276,26 @@ impl Device {
 			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
 		);
 		if texture_view_type == TextureViewTypes::Texture3D {
-			panic!(
-				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+			assert!(
+				is_3d && array_layers == 1 && layer.is_none(),
+				"Invalid DX12 Texture3D UAV. The most likely cause is that the image is 2D or carries array-layer metadata."
 			);
+			return D3D12_UNORDERED_ACCESS_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_UAV_DIMENSION_TEXTURE3D,
+				Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+					Texture3D: D3D12_TEX3D_UAV {
+						MipSlice: mip_level,
+						FirstWSlice: 0,
+						WSize: crate::image::mip_extent(extent, mip_level).depth().max(1),
+					},
+				},
+			};
 		}
+		assert!(
+			!is_3d,
+			"Invalid DX12 2D UAV. The most likely cause is that a Texture3D image was bound to a 2D shader resource."
+		);
 		if matches!(
 			texture_view_type,
 			TextureViewTypes::TextureCube | TextureViewTypes::TextureCubeArray
@@ -370,6 +410,7 @@ impl Device {
 	pub(crate) fn descriptor_texture_srv_desc(
 		format: DXGI_FORMAT,
 		texture_view_type: TextureViewTypes,
+		is_3d: bool,
 		array_layers: u32,
 		layer: Option<u32>,
 		mip_levels: u32,
@@ -383,10 +424,27 @@ impl Device {
 			"Invalid DX12 selected-layer descriptor. The most likely cause is that the shader resource declares Texture2D instead of Texture2DArray."
 		);
 		if texture_view_type == TextureViewTypes::Texture3D {
-			panic!(
-				"Unsupported DX12 Texture3D descriptor view. The most likely cause is that the image was allocated by the current 2D-only image path."
+			assert!(
+				is_3d && array_layers == 1 && layer.is_none(),
+				"Invalid DX12 Texture3D SRV. The most likely cause is that the image is 2D or carries array-layer metadata."
 			);
+			return D3D12_SHADER_RESOURCE_VIEW_DESC {
+				Format: format,
+				ViewDimension: D3D12_SRV_DIMENSION_TEXTURE3D,
+				Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+				Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+					Texture3D: D3D12_TEX3D_SRV {
+						MostDetailedMip: most_detailed_mip,
+						MipLevels: mip_count,
+						ResourceMinLODClamp: 0.0,
+					},
+				},
+			};
 		}
+		assert!(
+			!is_3d,
+			"Invalid DX12 2D SRV. The most likely cause is that a Texture3D image was bound to a 2D shader resource."
+		);
 		if texture_view_type == TextureViewTypes::TextureCube {
 			assert!(
 				layer.is_none() && array_layers == 6,

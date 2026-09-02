@@ -184,7 +184,7 @@ impl Default for UiDrawList {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiVertex {
 	pub(super) position: [f32; 2],
 	pub(super) pixel_position: [f32; 2],
@@ -213,7 +213,7 @@ pub(super) const UI_IMAGE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 7] = [
 ];
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiImageVertex {
 	pub(super) position: [f32; 2],
 	pub(super) uv: [f32; 2],
@@ -238,7 +238,7 @@ pub(super) const UI_CURVE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 10] = [
 ];
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiCurveVertex {
 	pub(super) position: [f32; 2],
 	pub(super) pixel_position: [f32; 2],
@@ -303,7 +303,7 @@ pub(super) struct UiBlurDispatchRegion {
 
 /// The `UiBlurDownsamplePush` struct carries one regional half-resolution dispatch to the production shader.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiBlurDownsamplePush {
 	pub(super) origin: [u32; 2],
 	pub(super) extent: [u32; 2],
@@ -311,7 +311,7 @@ pub(super) struct UiBlurDownsamplePush {
 
 /// The `UiBlurFilterPush` struct keeps the complete Gaussian kernel and dispatch region in one aligned GPU record.
 #[repr(C, align(16))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiBlurFilterPush {
 	pub(super) filter_data: [f32; 4],
 	pub(super) origin: [u32; 2],

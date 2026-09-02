@@ -8,6 +8,15 @@ impl Device {
 		sequence_index: u8,
 	) {
 		for copy in copies {
+			let source_heap = self
+				.buffer_heap_kind_for_sequence(copy.source_buffer, sequence_index)
+				.expect("Invalid DX12 buffer copy source. The most likely cause is that the source handle is stale.");
+			let destination_heap = self
+				.buffer_heap_kind_for_sequence(copy.destination_buffer, sequence_index)
+				.expect("Invalid DX12 buffer copy destination. The most likely cause is that the destination handle is stale.");
+			// Validate both native accesses before the CPU shadow copy mutates observable buffer contents.
+			Self::validate_buffer_heap_access(source_heap, BufferBarrierState::COPY_SOURCE);
+			Self::validate_buffer_heap_access(destination_heap, BufferBarrierState::COPY_DESTINATION);
 			self.copy_buffer_shadow(copy, sequence_index);
 			self.record_buffer_copy(command_buffer_handle, copy, sequence_index);
 		}
@@ -173,22 +182,18 @@ impl Device {
 			);
 		}
 
-		if source.heap_kind == BufferHeapKind::Default {
-			self.transition_tracked_buffer(
-				&command_list,
-				copy.source_buffer,
-				&source.resource,
-				BufferBarrierState::COPY_SOURCE,
-			);
-		}
-		if destination.heap_kind == BufferHeapKind::Default {
-			self.transition_tracked_buffer(
-				&command_list,
-				copy.destination_buffer,
-				&destination.resource,
-				BufferBarrierState::COPY_DESTINATION,
-			);
-		}
+		self.transition_tracked_buffer(
+			&command_list,
+			copy.source_buffer,
+			&source.resource,
+			BufferBarrierState::COPY_SOURCE,
+		);
+		self.transition_tracked_buffer(
+			&command_list,
+			copy.destination_buffer,
+			&destination.resource,
+			BufferBarrierState::COPY_DESTINATION,
+		);
 		unsafe {
 			command_list.CopyBufferRegion(
 				&destination.resource,
@@ -198,22 +203,18 @@ impl Device {
 				copy.size as u64,
 			);
 		}
-		if destination.heap_kind == BufferHeapKind::Default {
-			self.transition_tracked_buffer(
-				&command_list,
-				copy.destination_buffer,
-				&destination.resource,
-				BufferBarrierState::COMMON,
-			);
-		}
-		if source.heap_kind == BufferHeapKind::Default {
-			self.transition_tracked_buffer(
-				&command_list,
-				copy.source_buffer,
-				&source.resource,
-				BufferBarrierState::COMMON,
-			);
-		}
+		self.transition_tracked_buffer(
+			&command_list,
+			copy.destination_buffer,
+			&destination.resource,
+			BufferBarrierState::COMMON,
+		);
+		self.transition_tracked_buffer(
+			&command_list,
+			copy.source_buffer,
+			&source.resource,
+			BufferBarrierState::COMMON,
+		);
 		self.mark_command_buffer_work(command_buffer_handle);
 		self.buffer_copy_count += 1;
 	}

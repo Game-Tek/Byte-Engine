@@ -5,10 +5,11 @@ impl Device {
 		let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 		let mut previous: Option<DescriptorSetHandle> = None;
 
-		for _ in 0..self.frames {
+		for sequence_index in 0..self.frames {
 			let frame_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 			self.descriptor_sets.push(DescriptorSet {
 				next: None,
+				sequence_index,
 				version: 0,
 				descriptors: HashMap::default(),
 			});
@@ -21,6 +22,53 @@ impl Device {
 
 		handle
 	}
+
+	/// Extends every retained descriptor-set chain to cover a larger frame topology.
+	///
+	/// Call this only after all queues are idle. New sequence nodes inherit the latest retained writes so
+	/// the first bind after a topology change observes the same logical set on every frame.
+	pub(crate) fn resize_descriptor_set_chains(&mut self, frames: u8) {
+		let original_set_count = self.descriptor_sets.len();
+		for root_index in 0..original_set_count {
+			if self.descriptor_sets[root_index].sequence_index != 0 {
+				continue;
+			}
+
+			let mut tail = DescriptorSetHandle(root_index as u64);
+			let mut chain_length = 1u8;
+			while let Some(next) = self.descriptor_sets[tail.0 as usize].next {
+				let next = DescriptorSetHandle(next.0);
+				assert!(
+					next.0 < original_set_count as u64,
+					"Invalid DX12 descriptor-set chain. The most likely cause is that a frame-local next handle points outside retained descriptor storage."
+				);
+				tail = next;
+				chain_length = chain_length.checked_add(1).expect(
+					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle.",
+				);
+				assert!(
+					chain_length <= crate::MAX_FRAMES_IN_FLIGHT as u8,
+					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle or exceeds the engine frame limit."
+				);
+			}
+
+			while chain_length < frames {
+				let inherited_version = self.descriptor_sets[tail.0 as usize].version;
+				let inherited_descriptors = self.descriptor_sets[tail.0 as usize].descriptors.clone();
+				let next = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+				self.descriptor_sets.push(DescriptorSet {
+					next: None,
+					sequence_index: chain_length,
+					version: inherited_version,
+					descriptors: inherited_descriptors,
+				});
+				self.descriptor_sets[tail.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(next.0));
+				tail = next;
+				chain_length += 1;
+			}
+		}
+	}
+
 	/// Returns the immutable shader-visible heaps for one frame-resolved retained set union.
 	///
 	/// The flat binding model derives native offsets from the pipeline layout, so the first bind creates the heaps.
@@ -59,32 +107,31 @@ impl Device {
 			}
 		}
 
-		let layout = self.pipeline_layouts.get(layout_handle.0 as usize)?.key.clone();
-		let cbv_srv_uav_heap = (layout.cbv_srv_uav_descriptor_count != 0)
+		let (cbv_srv_uav_descriptor_count, sampler_descriptor_count) = self
+			.pipeline_layouts
+			.get(layout_handle.0 as usize)
+			.map(|layout| (layout.key.cbv_srv_uav_descriptor_count, layout.key.sampler_descriptor_count))?;
+		let cbv_srv_uav_heap = (cbv_srv_uav_descriptor_count != 0)
 			.then(|| {
-				self.create_shader_visible_descriptor_heap(
-					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-					layout.cbv_srv_uav_descriptor_count,
-				)
+				self.create_shader_visible_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, cbv_srv_uav_descriptor_count)
 			})
 			.flatten();
-		let sampler_heap = (layout.sampler_descriptor_count != 0)
-			.then(|| {
-				self.create_shader_visible_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, layout.sampler_descriptor_count)
-			})
+		let sampler_heap = (sampler_descriptor_count != 0)
+			.then(|| self.create_shader_visible_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, sampler_descriptor_count))
 			.flatten();
 
-		if layout.cbv_srv_uav_descriptor_count != 0 && cbv_srv_uav_heap.is_none() {
+		if cbv_srv_uav_descriptor_count != 0 && cbv_srv_uav_heap.is_none() {
 			return None;
 		}
-		if layout.sampler_descriptor_count != 0 && sampler_heap.is_none() {
+		if sampler_descriptor_count != 0 && sampler_heap.is_none() {
 			return None;
 		}
+		let layout = &self.pipeline_layouts.get(layout_handle.0 as usize)?.key;
 		if let Some(heap) = cbv_srv_uav_heap.as_ref() {
-			self.initialize_descriptor_heap_defaults(&layout, false, heap, 0);
+			self.initialize_descriptor_heap_defaults(layout, false, heap, 0);
 		}
 		if let Some(heap) = sampler_heap.as_ref() {
-			self.initialize_descriptor_heap_defaults(&layout, true, heap, 0);
+			self.initialize_descriptor_heap_defaults(layout, true, heap, 0);
 		}
 
 		let mut writes = SmallVec::<[(PipelineResource, u32, RetainedDescriptor); 32]>::new();

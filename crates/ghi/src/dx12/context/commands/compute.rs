@@ -35,10 +35,10 @@ impl Device {
 	pub(crate) fn dispatch_compute_indirect_native<const N: usize>(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		buffer_handle: BufferHandle<[[u32; 3]; N]>,
+		base_buffer_handle: BaseBufferHandle,
 		entry_index: usize,
+		sequence_index: u8,
 	) {
-		let base_buffer_handle: BaseBufferHandle = buffer_handle.into();
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -46,17 +46,39 @@ impl Device {
 		else {
 			return;
 		};
-		let Some(buffer) = self.buffer(base_buffer_handle) else {
-			return;
+		let buffer_size = {
+			let Some(buffer) = self.buffer(base_buffer_handle) else {
+				return;
+			};
+			buffer.size
 		};
-		let Some(resource) = buffer.resource.clone() else {
+		assert!(
+			entry_index < N,
+			"DX12 indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
+		);
+		let argument_size = std::mem::size_of::<[u32; 3]>();
+		let argument_offset = entry_index.checked_mul(argument_size).expect(
+			"DX12 indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",
+		);
+		let argument_end = argument_offset.checked_add(argument_size).expect(
+			"DX12 indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
+		);
+		assert!(
+			argument_end <= buffer_size,
+			"DX12 indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={argument_end}, buffer_size={}",
+			buffer_size,
+		);
+		let argument_offset = u64::try_from(argument_offset).expect(
+			"DX12 indirect dispatch offset exceeds the native address range. The most likely cause is that the host address space is wider than DX12 GPU offsets.",
+		);
+		let Some(resource) = self.buffer_resource_for_sequence(base_buffer_handle, sequence_index) else {
 			return;
 		};
 		let Some(command_signature) = self.indirect_dispatch_command_signature() else {
 			return;
 		};
-		let argument_offset = (entry_index * std::mem::size_of::<[u32; 3]>()) as u64;
 
+		// A 12-byte dispatch record keeps every selected offset on DX12's required four-byte boundary.
 		unsafe {
 			self.transition_tracked_buffer(
 				&command_list,

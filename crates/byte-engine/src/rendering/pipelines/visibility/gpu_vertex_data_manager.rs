@@ -37,7 +37,7 @@ pub(crate) struct GPUVertexDataManager {
 	skinning_source_vertex_count: u32,
 
 	/// Vertex positions buffer for rendered meshes.
-	pub vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
+	pub vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; MAX_VERTICES]>,
 	/// Vertex normals buffer for rendered meshes, octahedrally encoded as two UNORM16 components.
 	pub vertex_normals_buffer: ghi::BufferHandle<[RuntimeVertexNormal; MAX_VERTICES]>,
 	/// Vertex UVs buffer for rendered meshes, packed in the visibility runtime format.

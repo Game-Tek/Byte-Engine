@@ -124,13 +124,13 @@ pub struct AllocationHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
-impl<T: Copy> From<BufferHandle<T>> for BaseBufferHandle {
+impl<T: bytemuck::Pod> From<BufferHandle<T>> for BaseBufferHandle {
 	fn from(val: BufferHandle<T>) -> Self {
 		val.0
 	}
 }
 
-impl<T: Copy> From<DynamicBufferHandle<T>> for BaseBufferHandle {
+impl<T: bytemuck::Pod> From<DynamicBufferHandle<T>> for BaseBufferHandle {
 	fn from(val: DynamicBufferHandle<T>) -> Self {
 		val.0
 	}
@@ -185,7 +185,7 @@ pub(crate) trait MasterHandle: Sized + Copy {
 	fn index(&self) -> u64;
 }
 
-impl<T: Copy> MasterHandle for BufferHandle<T> {
+impl<T: bytemuck::Pod> MasterHandle for BufferHandle<T> {
 	fn new(i: u64) -> Self {
 		Self(BaseBufferHandle(i), std::marker::PhantomData)
 	}

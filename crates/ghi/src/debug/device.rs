@@ -85,13 +85,13 @@ impl Device {
 		super::CommandBufferRecording::new(self, command_buffer_handle, Vec::new(), Vec::new(), None)
 	}
 
-	pub fn build_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
+	pub fn build_buffer<T: crate::Pod>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test used the schema-only GHI backend for resource memory."
 		)
 	}
 
-	pub fn build_dynamic_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
+	pub fn build_dynamic_buffer<T: crate::Pod>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		panic!(
 			"Debug dynamic-buffer storage is unavailable. The most likely cause is that a test used the schema-only GHI backend for resource memory."
 		)
@@ -105,13 +105,13 @@ impl Device {
 		0
 	}
 
-	pub fn get_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
+	pub fn get_buffer_slice<T: crate::Pod>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
 		)
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
 		)
@@ -206,7 +206,7 @@ impl Device {
 		super::Frame::new(self, frame_key)
 	}
 
-	pub fn resize_buffer<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>, _size: usize) {}
+	pub fn resize_buffer<T: crate::Pod>(&mut self, _buffer_handle: DynamicBufferHandle<T>, _size: usize) {}
 
 	pub fn start_frame_capture(&self) {}
 

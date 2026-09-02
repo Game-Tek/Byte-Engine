@@ -12,19 +12,25 @@ impl Device {
 		source_sequence_index: u8,
 		destination_sequence_index: u8,
 	) {
-		let Some(source) = self.images.get(source_image.0 as usize) else {
+		let source_index = source_image.0 as usize;
+		let destination_index = destination_image.0 as usize;
+		if source_index == destination_index || source_index >= self.images.len() || destination_index >= self.images.len() {
 			return;
+		}
+		let (source, destination) = if source_index < destination_index {
+			let (before_destination, destination_and_after) = self.images.split_at_mut(destination_index);
+			(&before_destination[source_index], &mut destination_and_after[0])
+		} else {
+			let (before_source, source_and_after) = self.images.split_at_mut(source_index);
+			(&source_and_after[0], &mut before_source[destination_index])
 		};
 		let source_data = source
 			.frame_data
 			.as_ref()
 			.and_then(|frames| frames.get(source_sequence_index as usize).or_else(|| frames.first()))
-			.cloned()
-			.or_else(|| source.data.clone());
+			.map(Vec::as_slice)
+			.or(source.data.as_deref());
 		let Some(source_data) = source_data else {
-			return;
-		};
-		let Some(destination) = self.images.get_mut(destination_image.0 as usize) else {
 			return;
 		};
 		let destination_data = if let Some(frame_data) = destination.frame_data.as_mut() {
@@ -61,7 +67,7 @@ impl Device {
 		let Some(destination) = self.images.get(destination_image.0 as usize) else {
 			return;
 		};
-		if source.extent != destination.extent || source.format != destination.format {
+		if source.extent != destination.extent || source.is_3d != destination.is_3d || source.format != destination.format {
 			return;
 		}
 		// Dynamic images keep separate native resources per frame, so copies must use the active frame resource.
@@ -113,7 +119,7 @@ impl Device {
 			return;
 		}
 
-		let vertices = mesh.vertices.clone();
+		let vertices = mesh.vertices.as_slice();
 		let Some(image) = self.images.get_mut(image_handle.0 as usize) else {
 			return;
 		};
@@ -134,12 +140,19 @@ impl Device {
 			staging.resize(expected_len, 0);
 		}
 
-		let floats =
-			unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const f32, vertices.len() / std::mem::size_of::<f32>()) };
+		// Mesh bytes have no typed alignment guarantee, so decode each scalar instead of manufacturing an `f32` slice.
+		let float = |index: usize| {
+			let start = index * std::mem::size_of::<f32>();
+			f32::from_ne_bytes(
+				vertices[start..start + std::mem::size_of::<f32>()]
+					.try_into()
+					.expect("Failed to decode a DX12 mesh vertex. The most likely cause is truncated packed vertex data."),
+			)
+		};
 		let vertex = |index: usize| {
 			let base = index * 7;
-			let mut x = floats[base];
-			let mut y = floats[base + 1];
+			let mut x = float(base);
+			let mut y = float(base + 1);
 			if let Some(matrix) = transform {
 				let transformed_x = matrix[0] * x + matrix[4] * y + matrix[12];
 				let transformed_y = matrix[1] * x + matrix[5] * y + matrix[13];
@@ -154,7 +167,7 @@ impl Device {
 			}
 			let x = (x * 0.5 + 0.5) * (width.saturating_sub(1) as f32);
 			let y = (1.0 - (y * 0.5 + 0.5)) * (height.saturating_sub(1) as f32);
-			let color = [floats[base + 3], floats[base + 4], floats[base + 5], floats[base + 6]];
+			let color = [float(base + 3), float(base + 4), float(base + 5), float(base + 6)];
 			([x, y], color)
 		};
 
@@ -205,8 +218,8 @@ impl Device {
 		};
 		if let Some(matrix) = transform {
 			let base = 7;
-			let x = floats[base];
-			let y = floats[base + 1];
+			let x = float(base);
+			let y = float(base + 1);
 			let transformed_x = matrix[0] * x + matrix[4] * y + matrix[12];
 			let transformed_y = matrix[1] * x + matrix[5] * y + matrix[13];
 			let transformed_w = matrix[3] * x + matrix[7] * y + matrix[15];

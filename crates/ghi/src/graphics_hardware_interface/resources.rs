@@ -94,7 +94,8 @@ pub struct PresentKey {
 }
 
 /// The `RGBAu8` struct represents one four-channel pixel for image readback and comparison.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RGBAu8 {
 	pub r: u8,
 	pub g: u8,
@@ -185,6 +186,15 @@ impl AttachmentInformation {
 			layer: None,
 			layer_count: None,
 		}
+	}
+
+	/// Selects the typed attachment view used for this render pass.
+	///
+	/// Use this when one resource supports more than one compatible view, such as a DXGI swapchain backbuffer
+	/// viewed as either linear UNORM or sRGB. The selected format must match the active raster pipeline.
+	pub fn format(mut self, format: Formats) -> Self {
+		self.format = Some(format);
+		self
 	}
 
 	/// Selects one array layer for every draw in the render pass.

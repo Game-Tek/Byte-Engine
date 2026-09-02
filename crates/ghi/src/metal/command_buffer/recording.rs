@@ -50,14 +50,11 @@ impl PushUploadArena<'_> {
 }
 
 impl<'a> CommandBufferRecording<'a> {
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
-		let buffer = self.device.buffers.get_single(buffer_handle.into()).unwrap();
-		let buffer = buffer
-			.staging
-			.map(|staging_handle| self.device.buffers.resource(staging_handle))
-			.unwrap_or(buffer);
-		// SAFETY: Typed handles preserve the allocation's type and this recording holds exclusive device access.
-		unsafe { &mut *(buffer.pointer as *mut T) }
+	pub fn get_mut_buffer_slice<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &mut T {
+		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
 	/// Records a staging-to-buffer upload on this command buffer.

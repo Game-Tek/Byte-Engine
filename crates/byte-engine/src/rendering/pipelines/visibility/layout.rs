@@ -170,7 +170,7 @@ pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX
 pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT;
 
 /// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub(crate) struct ShaderMeshletData {
 	/// Base index into the vertex-index buffer.

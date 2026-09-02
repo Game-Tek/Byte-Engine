@@ -133,6 +133,13 @@ fn render_with_multiframe_resources() {
 	resources::multiframe_resources(&mut device, queue_handle);
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn round_trip_texture3d_lut() {
+	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	resources::texture3d_lut_round_trip(&mut device, queue_handle);
+}
+
 #[test]
 #[ignore = "not working on supporting ray tracing right now"]
 fn render_with_ray_tracing() {

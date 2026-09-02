@@ -57,7 +57,7 @@ pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::
 
 /// The `SkinnedVertex` struct provides one aligned position-and-normal record for all visibility rendering stages.
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SkinnedVertex {
 	pub(crate) position: [f32; 4],
 	pub(crate) normal: [f32; 4],
@@ -65,7 +65,7 @@ pub(crate) struct SkinnedVertex {
 
 /// The `DualQuaternion` struct provides the aligned rigid-transform palette layout consumed by GPU skinning.
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct DualQuaternion {
 	pub(crate) real: [f32; 4],
 	pub(crate) dual: [f32; 4],
@@ -107,7 +107,7 @@ impl SkinningSourceBuffers {
 
 /// The `SkinningDispatch` struct identifies one active primitive instance and its palette range.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SkinningDispatch {
 	pub(crate) source_vertex_base: u32,
 	pub(crate) destination_vertex_base: u32,

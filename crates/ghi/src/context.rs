@@ -3,7 +3,7 @@ use utils::Extent;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, Size as _,
+	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, Size as _,
 	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer, descriptors,
 	image,
 	pipelines::VertexElement,
@@ -66,7 +66,7 @@ impl std::fmt::Display for TextureTransferError {
 				"Texture transfer format is unsupported. The most likely cause is that it has no color buffer-copy layout."
 			}
 			Self::UnsupportedSubresource => {
-				"Texture transfer subresource is unsupported. The most likely cause is that it is not one base-mip 2D layer."
+				"Texture transfer subresource is unsupported. The most likely cause is that it is not one base-mip image with a single array layer."
 			}
 			Self::MissingTransferSource => {
 				"Texture transfer source usage is missing. The most likely cause is that the image lacks TransferSource use."
@@ -95,9 +95,10 @@ pub(crate) struct TextureTransferLayout {
 	pub(crate) bytes_per_row: usize,
 	pub(crate) row_count: usize,
 	pub(crate) bytes_per_image: usize,
+	pub(crate) depth_slices: usize,
 }
 
-/// Validates the base-mip, single-layer 2D color transfer contract and computes its compact layout.
+/// Validates the base-mip, single-array-layer color transfer contract and computes its compact layout.
 pub(crate) fn texture_transfer_layout(
 	format: Formats,
 	extent: Extent,
@@ -107,7 +108,7 @@ pub(crate) fn texture_transfer_layout(
 	if !uses.contains(Uses::TransferSource) {
 		return Err(TextureTransferError::MissingTransferSource);
 	}
-	if extent.width() == 0 || extent.height() == 0 || extent.depth() > 1 || array_layers != 1 {
+	if extent.width() == 0 || extent.height() == 0 || array_layers != 1 {
 		return Err(TextureTransferError::UnsupportedSubresource);
 	}
 	if format.is_depth()
@@ -153,6 +154,7 @@ pub(crate) fn texture_transfer_layout(
 		bytes_per_row,
 		row_count,
 		bytes_per_image,
+		depth_slices: usize::try_from(extent.depth().max(1)).map_err(|_| TextureTransferError::UnsupportedLayout)?,
 	})
 }
 
@@ -357,10 +359,14 @@ pub trait Context: ContextCreate {
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
 	/// Returns a shared view into a typed buffer's contents.
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
+	///
+	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding.
+	fn get_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
 	/// Returns a mutable view into CPU-visible buffer contents.
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+	///
+	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding.
+	fn get_mut_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
 
 	/// Transfers exclusive CPU access to a persistently mapped buffer.
 	///
@@ -371,7 +377,7 @@ pub trait Context: ContextCreate {
 	///
 	/// The context must outlive the returned mapping and every region derived from
 	/// it. The caller must not map the buffer again while the transferred mapping exists.
-	unsafe fn transfer_buffer_mapping<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping;
+	unsafe fn transfer_buffer_mapping<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping;
 
 	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
@@ -432,7 +438,7 @@ pub trait Context: ContextCreate {
 	fn get_image_data(&mut self, texture_copy_handle: TextureCopyHandle) -> Result<TextureReadback, TextureTransferError>;
 
 	/// Resizes a dynamic buffer to the specified size.
-	fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
+	fn resize_buffer<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
 
 	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
 	fn start_frame_capture(&mut self);
@@ -498,13 +504,17 @@ pub trait ContextCreate {
 	/// Creates a ray-tracing pipeline.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
 
-	/// Creates a static fixed-size buffer from a builder.
+	/// Creates a zero-initialized static fixed-size buffer from a builder.
+	///
+	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
 	/// Static buffers are not resizable; use [`ContextCreate::build_dynamic_buffer`] when the allocation must grow.
-	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
+	fn build_buffer<T: Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
-	/// Creates a dynamic buffer from a builder.
+	/// Creates a zero-initialized dynamic buffer from a builder.
+	///
+	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
 	/// Dynamic buffers can be resized with [`Context::resize_buffer`].
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
+	fn build_dynamic_buffer<T: Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.
 	fn build_dynamic_image(&mut self, builder: image::Builder) -> DynamicImageHandle;
@@ -547,11 +557,12 @@ mod texture_transfer_tests {
 	use super::*;
 
 	#[test]
-	fn layout_accepts_supported_2d_images() {
-		for depth in [0, 1] {
+	fn layout_accepts_supported_2d_and_3d_images() {
+		for depth in [0, 1, 3] {
 			let layout = texture_transfer_layout(Formats::RGBA8UNORM, Extent::new(3, 2, depth), 1, Uses::TransferSource)
-				.expect("A single 2D color layer with TransferSource use must have a readback layout.");
+				.expect("A single-array-layer color image with TransferSource use must have a readback layout.");
 			assert_eq!((layout.bytes_per_row, layout.row_count, layout.bytes_per_image), (12, 2, 24));
+			assert_eq!(layout.depth_slices, depth.max(1) as usize);
 		}
 	}
 
@@ -559,13 +570,6 @@ mod texture_transfer_tests {
 	fn layout_rejects_unsupported_sources() {
 		let extent = Extent::rectangle(1, 1);
 		for (format, extent, layers, uses, error) in [
-			(
-				Formats::RGBA8UNORM,
-				Extent::new(1, 1, 2),
-				1,
-				Uses::TransferSource,
-				TextureTransferError::UnsupportedSubresource,
-			),
 			(
 				Formats::RGBA8UNORM,
 				extent,

@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, PresentKey, SwapchainHandle,
-	command_buffer::CommandBufferRecording, descriptors,
+	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
+	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
 };
 
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
@@ -21,7 +21,7 @@ where
 	fn key(&self) -> crate::FrameKey;
 
 	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+	fn get_mut_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
 
 	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
@@ -36,7 +36,7 @@ where
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
 	/// Returns a mutable reference to the dynamic buffer's contents.
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
+	fn get_mut_dynamic_buffer_slice<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
 
 	/// Returns a mutable reference to the dynamic image's contents for the current frame.
 	fn get_mut_dynamic_texture_slice(&mut self, image_handle: BaseImageHandle) -> &mut [u8] {

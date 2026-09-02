@@ -24,6 +24,7 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
 
 bitflags = "2.9.0"
+bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
 smallvec = "1.15.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]

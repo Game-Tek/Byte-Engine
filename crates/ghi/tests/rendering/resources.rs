@@ -893,6 +893,150 @@ pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queu
 	assert!(!device.has_errors());
 }
 
+/// Uploads, reads, writes, and repacks a small 3D LUT through native Texture3D descriptors.
+#[cfg(target_os = "windows")]
+pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	let extent = Extent::new(3, 2, 2);
+	let mut expected = vec![0u8; (extent.width() * extent.height() * extent.depth() * 4) as usize];
+	for z in 0..extent.depth() {
+		for y in 0..extent.height() {
+			for x in 0..extent.width() {
+				let offset = (((z * extent.height() + y) * extent.width() + x) * 4) as usize;
+				expected[offset..offset + 4].copy_from_slice(&[
+					(17 + x * 29) as u8,
+					(31 + y * 53) as u8,
+					(47 + z * 71) as u8,
+					255,
+				]);
+			}
+		}
+	}
+
+	let source = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
+			.name("3D LUT source")
+			.extent(extent)
+			.device_accesses(DeviceAccesses::HostToDevice),
+	);
+	let destination = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage | Uses::TransferSource)
+			.name("3D LUT destination")
+			.extent(extent)
+			.device_accesses(DeviceAccesses::DeviceToHost),
+	);
+	device.write_texture(source, |bytes| {
+		assert_eq!(
+			bytes.len(),
+			expected.len(),
+			"Unexpected 3D LUT staging size. The most likely cause is that image depth was omitted from compact storage."
+		);
+		bytes.copy_from_slice(&expected);
+	});
+	device.sync_texture(source);
+
+	let compute_shader_artifact = ghi::shader::compile(
+		"GHI Texture3D LUT round-trip compute shader",
+		ShaderSource::PlatformNative {
+			glsl: r#"
+				#version 450
+				#pragma shader_stage(compute)
+				layout(set=0, binding=0, rgba8) uniform readonly image3D source_texture;
+				layout(set=0, binding=1, rgba8) uniform writeonly image3D destination_texture;
+				layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+				void main() {
+					ivec3 location = ivec3(gl_GlobalInvocationID);
+					imageStore(destination_texture, location, imageLoad(source_texture, location));
+				}
+			"#,
+			msl: r#"
+				#include <metal_stdlib>
+				using namespace metal;
+				struct Resources {
+					texture3d<float, access::read> source_texture [[id(0)]];
+					texture3d<float, access::write> destination_texture [[id(2)]];
+				};
+				kernel void compute_main(
+					uint3 gid [[thread_position_in_grid]],
+					constant Resources& resources [[buffer(16)]]) {
+					resources.destination_texture.write(resources.source_texture.read(gid), gid);
+				}
+			"#,
+			msl_entry_point: "compute_main",
+			hlsl: r#"
+				Texture3D<float4> source_texture : register(t0, space0);
+				RWTexture3D<float4> destination_texture : register(u1, space0);
+				[numthreads(1, 1, 1)]
+				void compute_main(uint3 gid : SV_DispatchThreadID) {
+					destination_texture[gid] = source_texture.Load(int4(gid, 0));
+				}
+			"#,
+			hlsl_entry_point: "compute_main",
+		},
+	)
+	.expect("Failed to compile the Texture3D LUT shader. The most likely cause is invalid native shader source.");
+	let source_resource = ghi::ShaderResourceDescriptor::single(
+		ghi::ResourceSlot::new(0),
+		ghi::ResourceKind::SampledImage,
+		ghi::AccessPolicies::READ,
+	)
+	.texture_view_type(ghi::TextureViewTypes::Texture3D);
+	let destination_resource = ghi::ShaderResourceDescriptor::single(
+		ghi::ResourceSlot::new(1),
+		ghi::ResourceKind::StorageImage,
+		ghi::AccessPolicies::WRITE,
+	)
+	.texture_view_type(ghi::TextureViewTypes::Texture3D);
+	let compute_shader = device
+		.create_shader(
+			Some("Texture3D LUT round trip"),
+			compute_shader_artifact.as_source(),
+			ShaderTypes::Compute,
+			[source_resource, destination_resource],
+		)
+		.expect("Failed to create the Texture3D LUT shader. The most likely cause is invalid native shader metadata.");
+	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
+		&[],
+		ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
+	));
+	let descriptor_set = device.create_descriptor_set(Some("Texture3D LUT descriptors"));
+	device.write(&[
+		ghi::DescriptorWrite::image(descriptor_set, source_resource.slot(), source, Layouts::Read),
+		ghi::DescriptorWrite::image(descriptor_set, destination_resource.slot(), destination, Layouts::General),
+	]);
+
+	let command_buffer = device
+		.queue(queue_handle)
+		.create_command_buffer(Some("Texture3D LUT round trip"));
+	let completion = device.create_synchronizer(Some("Texture3D LUT round trip"), true);
+	let mut copy_handle = None;
+	device
+		.queue(queue_handle)
+		.execute(Some(FrameRequest::new(0, completion)), &[], completion, |execution| {
+			execution.record(command_buffer, |recording| {
+				recording
+					.bind_compute_pipeline(pipeline)
+					.bind_descriptor_sets(&[descriptor_set])
+					.dispatch(DispatchExtent::new(extent, Extent::new(1, 1, 1)));
+				copy_handle = Some(recording.transfer_texture(destination.into()).expect(
+					"Texture3D transfer failed. The most likely cause is that the volume lacks transfer-source usage.",
+				));
+			});
+			[]
+		});
+	device.wait();
+
+	let readback = device
+		.get_image_data(copy_handle.expect("Texture3D transfer did not publish a handle."))
+		.expect(
+			"Texture3D mapping failed. The most likely cause is that the native 3D copy footprint was not retained through submission.",
+		);
+	assert_eq!(readback.extent, extent);
+	assert_eq!(readback.bytes_per_row, 12);
+	assert_eq!(readback.bytes_per_image, 24);
+	assert_eq!(readback.bytes, expected);
+	assert!(!device.has_errors());
+}
+
 // The rendering scenario keeps descriptor creation, mutation, binding, and validation in one contiguous contract.
 #[allow(clippy::too_many_lines)]
 pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {

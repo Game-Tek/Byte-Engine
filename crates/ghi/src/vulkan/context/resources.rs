@@ -315,6 +315,10 @@ impl Context {
 			allocation_accesses,
 		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+		if size != 0 && !pointer.is_null() {
+			// Typed buffer APIs expose mapped storage as zeroable POD values, so initialize the complete representation.
+			unsafe { std::ptr::write_bytes(pointer, 0, size) };
+		}
 
 		Buffer {
 			staging: None,

@@ -212,30 +212,46 @@ impl Context {
 		self.buffers.get_single(buffer_handle).unwrap().device_address
 	}
 
-	pub(crate) fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
+	pub(crate) fn get_buffer_slice<T: crate::Pod>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-		unsafe { &*(buffer.pointer as *const T) }
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
+		unsafe { &*pointer }
 	}
 
-	pub(crate) fn get_mut_buffer_slice<T: Copy>(
+	pub(crate) fn get_mut_buffer_slice<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-
-		unsafe { &mut *(buffer.pointer as *mut T) }
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
+		unsafe { &mut *pointer }
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
-	pub(crate) unsafe fn transfer_buffer_mapping<T: Copy>(
+	pub(crate) unsafe fn transfer_buffer_mapping<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.pointer, std::mem::size_of::<T>()) }
+		let pointer = if std::mem::size_of::<T>() == 0 {
+			std::ptr::NonNull::<T>::dangling().as_ptr().cast::<u8>()
+		} else {
+			buffer.pointer
+		};
+		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer, std::mem::size_of::<T>()) }
 	}
 
 	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
@@ -368,7 +384,7 @@ impl Context {
 			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
-	pub(crate) fn resize_buffer<T: Copy>(
+	pub(crate) fn resize_buffer<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 		size: usize,

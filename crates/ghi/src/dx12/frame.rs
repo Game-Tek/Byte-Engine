@@ -2,17 +2,22 @@ use utils::Extent;
 
 use crate::{
 	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, FrameKey, ImageHandle,
-	PresentKey, SwapchainHandle,
+	PresentKey, SwapchainHandle, SynchronizerHandle,
 };
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,
+	synchronizer: SynchronizerHandle,
 	device: &'a mut super::Device,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut super::Device, frame_key: FrameKey) -> Self {
-		Self { frame_key, device }
+	pub(crate) fn new(device: &'a mut super::Device, frame_key: FrameKey, synchronizer: SynchronizerHandle) -> Self {
+		Self {
+			frame_key,
+			synchronizer,
+			device,
+		}
 	}
 
 	pub(crate) fn device_mut(&mut self) -> &mut super::Device {
@@ -113,7 +118,7 @@ impl Frame<'_> {
 			.collect()
 	}
 
-	pub fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -136,13 +141,14 @@ impl Frame<'_> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
+	pub fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		self.device
 			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}
 
 	pub fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
-		self.device.resize_image_internal(ImageHandle(image_handle), extent);
+		self.device
+			.resize_image_internal(ImageHandle(image_handle), extent, self.frame_key.sequence_index);
 	}
 
 	pub fn create_command_buffer_recording<'a>(
@@ -151,6 +157,8 @@ impl Frame<'_> {
 	) -> super::CommandBufferRecording<'a> {
 		self.device
 			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
+		self.device
+			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
 		self.device
 			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
@@ -162,11 +170,24 @@ impl Frame<'_> {
 	) -> super::CommandBufferRecording<'a> {
 		self.device
 			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
+		self.device
+			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
 	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
-		let extent = self.device.swapchain_extent(swapchain_handle);
+		{
+			let swapchain =
+				self.device.swapchains.get(swapchain_handle.0 as usize).expect(
+					"Invalid DX12 swapchain handle. The most likely cause is that the handle came from another device.",
+				);
+			assert!(
+				swapchain.acquired_sequences.iter().all(|acquired| !acquired),
+				"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
+			);
+		}
+		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
+		let extent = self.device.swapchain_extent(swapchain_handle, self.frame_key.sequence_index);
 		let image_index = self.device.next_swapchain_image_index(swapchain_handle);
 		let present_key = PresentKey {
 			image_index,
@@ -175,6 +196,7 @@ impl Frame<'_> {
 		};
 		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
 			image_index;
+		self.device.swapchains[swapchain_handle.0 as usize].acquired_sequences[self.frame_key.sequence_index as usize] = true;
 		(present_key, extent)
 	}
 
@@ -193,7 +215,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		Frame::get_mut_buffer_slice(self, buffer_handle)
 	}
 
@@ -213,7 +235,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::write(self, descriptor_set_writes);
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
+	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		Frame::get_mut_dynamic_buffer_slice(self, buffer_handle)
 	}
 
@@ -289,11 +311,11 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		self.device.create_ray_tracing_pipeline(builder)
 	}
 
-	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
+	fn build_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
 		self.device.build_buffer(builder)
 	}
 
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		self.device.build_dynamic_buffer(builder)
 	}
 

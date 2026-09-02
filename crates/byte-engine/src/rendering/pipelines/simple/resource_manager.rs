@@ -150,7 +150,7 @@ impl ResourcePreparer<SimpleMeshResource> for SimpleMeshPreparer {
 /// loader to understand those buffers. Keep this store on the render thread and
 /// pass it to [`crate::rendering::resource_loading::FrameUploadQueue::record_frame`].
 pub(crate) struct SimpleResourceStore {
-	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); SIMPLE_VERTEX_CAPACITY]>,
+	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; SIMPLE_INDEX_CAPACITY]>,
 	staging_buffer: ghi::BaseBufferHandle,
 	mesh_buffers_stats: MeshBuffersStats<Handle>,

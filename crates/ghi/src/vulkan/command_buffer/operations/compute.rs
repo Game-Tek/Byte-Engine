@@ -109,16 +109,38 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 3]; N]>,
+		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
 		entry_index: usize,
 	) {
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_handle.into())).buffer;
+		let buffer_handle = buffer_handle.into().handle();
+		let internal_buffer_handle = self.get_internal_buffer_handle(buffer_handle);
+		let buffer_resource = self.get_buffer(internal_buffer_handle);
+		let buffer = buffer_resource.buffer;
+		let buffer_size = buffer_resource.size;
+		assert!(
+			entry_index < N,
+			"Vulkan indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
+		);
+		let argument_size = std::mem::size_of::<[u32; 3]>();
+		let argument_offset = entry_index.checked_mul(argument_size).expect(
+			"Vulkan indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",
+		);
+		let argument_end = argument_offset.checked_add(argument_size).expect(
+			"Vulkan indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
+		);
+		assert!(
+			argument_end <= buffer_size,
+			"Vulkan indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={argument_end}, buffer_size={buffer_size}",
+		);
+		let argument_offset = u64::try_from(argument_offset).expect(
+			"Vulkan indirect dispatch offset exceeds the native address range. The most likely cause is that the host address space is wider than Vulkan device offsets.",
+		);
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		self.consume_resources_current([Consumption {
-			handle: Handles::Buffer(self.get_internal_buffer_handle(buffer_handle.clone().into())),
+			handle: Handles::Buffer(internal_buffer_handle),
 			stages: crate::Stages::COMPUTE,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Indirect,
@@ -126,11 +148,9 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		.apply(self);
 
 		unsafe {
-			self.device.device.cmd_dispatch_indirect(
-				command_buffer_handle,
-				buffer,
-				entry_index as u64 * std::mem::size_of::<[u32; 3]>() as u64,
-			);
+			self.device
+				.device
+				.cmd_dispatch_indirect(command_buffer_handle, buffer, argument_offset);
 		}
 	}
 }

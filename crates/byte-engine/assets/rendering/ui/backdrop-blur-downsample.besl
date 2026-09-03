@@ -9,8 +9,8 @@ push_constant: push_constant {
 // Reduces the source onto a fixed two-pixel lattice. Four bilinear reads at
 // diagonal three-quarter-texel offsets produce the positive [1, 3, 3, 1] / 8
 // marginal without introducing the block-shaped response of an equal box.
-main: fn() -> void {
-	let local_coordinate: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let local_coordinate: vec2u = input.thread_id;
 	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
 		return;
 	}

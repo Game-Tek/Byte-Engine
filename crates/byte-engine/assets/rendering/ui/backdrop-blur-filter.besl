@@ -27,8 +27,8 @@ sample_pair: fn(uv: vec2f, texel_direction: vec2f, offset: f32, weight: f32) -> 
 // Applies a normalized Gaussian with integer support 0 through 22. Pairing
 // adjacent non-center taps keeps the exact CPU-provided distribution while
 // reducing the separable 45-tap kernel to 23 hardware texture reads per axis.
-main: fn() -> void {
-	let local_coordinate: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let local_coordinate: vec2u = input.thread_id;
 	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
 		return;
 	}

@@ -170,14 +170,14 @@ compute_bilateral_weight: fn (relative_depth_difference: f32, inverse_depth_vari
 	return exp(0.0 - exponent_value);
 }
 
-main: fn () -> void {
-	let coord: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	let extent: vec2u = image_size(ao_output);
 	let workgroup_origin: vec2u = vec2u(
 		coord.x - coord.x % GTAO_BLUR_WORKGROUP_WIDTH,
 		coord.y - coord.y % GTAO_BLUR_WORKGROUP_HEIGHT
 	);
-	let lane: u32 = thread_idx();
+	let lane: u32 = input.thread_idx;
 
 	// The depth pyramid already stores positive linear depth at the same
 	// half-resolution extent as the raw AO input.

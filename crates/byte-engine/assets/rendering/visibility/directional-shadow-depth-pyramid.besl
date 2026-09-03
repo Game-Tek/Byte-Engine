@@ -9,9 +9,9 @@ DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
 DIRECTIONAL_SHADOW_LEVEL_1_TILE_WIDTH: const u32 = 4;
 
-main: fn () -> void {
-	let source_quad_coordinate: vec2u = thread_id();
-	let lane: u32 = thread_idx();
+main: fn (input: StageInput) -> void {
+	let source_quad_coordinate: vec2u = input.thread_id;
+	let lane: u32 = input.thread_idx;
 	let source_extent: vec2u = texture_size(source_depth);
 	let source_quad_cascade_height: u32 = source_extent.y / 2;
 	let shadow_layer: u32 = source_quad_coordinate.y / source_quad_cascade_height;

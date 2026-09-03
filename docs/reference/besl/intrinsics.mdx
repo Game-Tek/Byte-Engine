@@ -146,6 +146,11 @@ The fragment stage adds derivative information for this intrinsic:
 
 ## Compute stage
 
+Read dispatch and lane values from the `StageInput` parameter described under
+[stage input values](/docs/reference/besl/interface#stage-input-values). The
+equivalent zero-argument calls remain useful in helper functions that receive no
+stage input parameter.
+
 | Name | Signature | Explanation |
 | --- | --- | --- |
 | `thread_id` | `thread_id() -> vec2u` | Returns the global two-dimensional compute invocation coordinate. |

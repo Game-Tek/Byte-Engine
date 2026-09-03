@@ -18,8 +18,8 @@ apply_lut: fn(color: vec3f) -> vec3f {
 	return vec3f(sampled.x, sampled.y, sampled.z);
 }
 
-main: fn () -> void {
-	let coord: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let extent: vec2u = image_size(result_texture);
 	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));

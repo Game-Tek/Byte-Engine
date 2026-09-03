@@ -138,8 +138,8 @@ linear_srgb_to_srgb: fn(color: vec3f) -> vec3f {
 }
 
 // Convert to DWG/Intermediate, apply the creative look, then use AgX for SDR display rendering.
-main: fn() -> void {
-	let coord: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let extent: vec2u = image_size(result_texture);
 	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));

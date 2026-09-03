@@ -50,8 +50,8 @@ phase_mie: fn (cosine_theta: f32, anisotropy: f32) -> f32 {
 		/ ((2.0 + anisotropy_squared) * max(0.0001, denominator * denominator_root));
 }
 
-main: fn () -> void {
-	let pixel: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
 	guard_image_bounds(sky_view_lut, pixel);
 	let extent: vec2u = image_size(sky_view_lut);
 	let uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));

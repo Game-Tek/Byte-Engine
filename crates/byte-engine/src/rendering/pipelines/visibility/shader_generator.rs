@@ -118,7 +118,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let features = material_reconstruction_features(main);
 		add_material_sample_context(main, &texture_slots);
 		narrow_material_property_assignments(main);
-		if let besl::parser::Nodes::Function { statements, .. } = main.node_mut() {
+		if let besl::parser::Nodes::Function { params, statements, .. } = main.node_mut() {
+			// The injected reconstruction prefix reads compute builtins through the structural entry input.
+			params.push(Node::parameter("input", "StageInput"));
 			statements.splice(0..0, material_evaluation_prefix_statements(features));
 			statements.extend(material_evaluation_suffix_statements(features));
 		}

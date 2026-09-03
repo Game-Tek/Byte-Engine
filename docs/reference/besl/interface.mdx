@@ -56,9 +56,9 @@ explicit input or output list.
 
 ## Stage input values
 
-Add a `StageInput` parameter when a vertex shader needs its invocation indices.
-Read `input.vertex_index` or `input.instance_index`; both values are `u32` and
-don't consume vertex-attribute locations:
+Add a `StageInput` parameter when a shader needs values supplied by its stage.
+Vertex shaders can read `input.vertex_index` or `input.instance_index`; both
+values are `u32` and don't consume vertex-attribute locations:
 
 ```rust
 main: fn (input: StageInput) -> interface { instance_index: u32 } {
@@ -76,6 +76,27 @@ BESL maps both indices to the matching system values on each backend:
 
 These values are available only in the vertex stage. In VM tests, bind them
 through `builtin_vertex_index_slot()` and `builtin_instance_index_slot()`.
+
+Compute shaders can read their dispatch and lane values from the same parameter:
+
+```rust
+main: fn (input: StageInput) -> void {
+	let coordinate: vec2u = input.thread_id;
+	let local_index: u32 = input.thread_idx;
+	let workgroup: u32 = input.threadgroup_position;
+	let subgroup_lane: u32 = input.subgroup_lane_index;
+}
+```
+
+| `StageInput` field | Type | Value |
+| --- | --- | --- |
+| `thread_id` | `vec2u` | Global two-dimensional compute invocation coordinate. |
+| `thread_idx` | `u32` | Linear invocation index inside the local workgroup. |
+| `threadgroup_position` | `u32` | Workgroup position. |
+| `subgroup_lane_index` | `u32` | Lane index inside the current subgroup. |
+
+These values are available only in the compute stage. Pass a value to a helper
+function when code outside `main` needs it.
 
 ## Task payload and workgroup storage
 

@@ -28,8 +28,8 @@ tile_histogram_counts: workgroup<atomicu32, 32>;
 MATERIAL_COUNT_TILE_CAPACITY: const u32 = 32;
 INVALID_MATERIAL_INDEX: const u32 = 4294967295;
 
-main: fn () -> void {
-	let coord: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	let extent: vec2u = image_size(instance_index_render_target);
 	let material_index: u32 = INVALID_MATERIAL_INDEX;
 
@@ -43,9 +43,9 @@ main: fn () -> void {
 		}
 	}
 
-	if (thread_idx() < MATERIAL_COUNT_TILE_CAPACITY) {
-		atomic_store(tile_histogram_keys[thread_idx()], INVALID_MATERIAL_INDEX);
-		atomic_store(tile_histogram_counts[thread_idx()], 0);
+	if (input.thread_idx < MATERIAL_COUNT_TILE_CAPACITY) {
+		atomic_store(tile_histogram_keys[input.thread_idx], INVALID_MATERIAL_INDEX);
+		atomic_store(tile_histogram_counts[input.thread_idx], 0);
 	}
 	workgroup_barrier();
 
@@ -57,12 +57,12 @@ main: fn () -> void {
 		has_remaining = subgroup_ballot_any(remaining)
 	) {
 		let leader_lane: u32 = subgroup_ballot_find_lsb(remaining);
-		let leader_thread_index: u32 = subgroup_broadcast_u32(thread_idx(), leader_lane);
+		let leader_thread_index: u32 = subgroup_broadcast_u32(input.thread_idx, leader_lane);
 		let leader_material_index: u32 = subgroup_broadcast_u32(material_index, leader_lane);
 		let matching: vec4u = subgroup_ballot(material_index == leader_material_index);
 		let matching_count: u32 = subgroup_ballot_count(matching);
 
-		if (thread_idx() == leader_thread_index) {
+		if (input.thread_idx == leader_thread_index) {
 			let claimed_slot: u32 = INVALID_MATERIAL_INDEX;
 			for (
 				let probe: u32 = 0;
@@ -102,11 +102,11 @@ main: fn () -> void {
 	workgroup_barrier();
 
 	// Distinct occupied slots flush independently after the tile histogram is complete.
-	if (thread_idx() < MATERIAL_COUNT_TILE_CAPACITY) {
-		let key: u32 = atomic_load(tile_histogram_keys[thread_idx()]);
+	if (input.thread_idx < MATERIAL_COUNT_TILE_CAPACITY) {
+		let key: u32 = atomic_load(tile_histogram_keys[input.thread_idx]);
 
 		if (key < 1024) {
-			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[thread_idx()]));
+			atomic_add(material_count_buffer.material_count[key], atomic_load(tile_histogram_counts[input.thread_idx]));
 		}
 	}
 }

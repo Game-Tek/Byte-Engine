@@ -436,10 +436,10 @@ update_direction_occlusion: fn (
 	return max(previous_occlusion, alignment * falloff * falloff);
 }
 
-main: fn () -> void {
-	let lane: u32 = thread_idx();
+main: fn (input: StageInput) -> void {
+	let lane: u32 = input.thread_idx;
 	let local: vec2u = vec2u(lane % WORKGROUP_X, lane / WORKGROUP_X);
-	let pixel: vec2u = thread_id();
+	let pixel: vec2u = input.thread_id;
 	let group_base: vec2u = pixel - local;
 	let extent: vec2u = image_size(ao_output);
 	let in_bounds: bool = pixel.x < extent.x && pixel.y < extent.y;

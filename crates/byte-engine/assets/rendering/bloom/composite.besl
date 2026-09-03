@@ -8,8 +8,8 @@ bloom_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
 
-main: fn() -> void {
-	let coord: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let result_size: vec2u = image_size(result_texture);
 	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));

@@ -52,9 +52,9 @@ nearest_nonzero: fn (a: f32, b: f32) -> f32 {
 	return min(a, b);
 }
 
-main: fn () -> void {
-	let level_1_coordinate: vec2u = thread_id();
-	let lane: u32 = thread_idx();
+main: fn (input: StageInput) -> void {
+	let level_1_coordinate: vec2u = input.thread_id;
+	let lane: u32 = input.thread_idx;
 	let source_extent: vec2u = texture_size(source_depth);
 	let level_1_extent: vec2u = image_size(reduced_depth_1);
 	let valid_level_1_coordinate: vec2u = clamp_coordinate(level_1_coordinate, level_1_extent);

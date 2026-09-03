@@ -569,28 +569,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, node);
 		}
 
-		match self.compute_binding_mode {
-			ComputeBindingMode::ArgumentBuffers => {
-				self.emit_compute_entry_point_argument_buffers(
-					string,
-					main_function_node,
-					!bindings.is_empty(),
-					nodes.push_constant,
-					&nodes.workgroups,
-					uses_simd_lane_id,
-				);
-			}
-			ComputeBindingMode::BareResources => {
-				self.emit_compute_entry_point_bare_resources(
-					string,
-					main_function_node,
-					nodes.bindings.as_slice(),
-					nodes.push_constant,
-					&nodes.workgroups,
-					uses_simd_lane_id,
-				);
-			}
-		}
+		self.emit_compute_entry_point(
+			string,
+			main_function_node,
+			nodes.bindings.as_slice(),
+			nodes.push_constant,
+			&nodes.workgroups,
+			uses_simd_lane_id,
+		);
 
 		self.in_compute_body = previous_in_compute_body;
 		self.compute_stage_context = previous_compute_stage_context;

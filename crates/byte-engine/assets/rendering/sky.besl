@@ -41,8 +41,8 @@ reconstruct_view_direction: fn (pixel: vec2u, extent: vec2u) -> vec3f {
 	return normalize(vec3f(world.x / world.w, world.y / world.w, world.z / world.w) - get_camera_position());
 }
 
-main: fn () -> void {
-	let pixel: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
 	guard_image_bounds(result, pixel);
 	let extent: vec2u = image_size(result);
 	let foreground: vec4f = image_load(source, pixel);

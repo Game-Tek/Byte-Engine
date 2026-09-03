@@ -330,6 +330,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			"subgroup_lane_index" => string.push_str("simd_lane_id"),
 			"threadgroup_position" => {
 				string.push_str("threadgroup_position");
+				if self.compute_stage_context.is_some() {
+					string.push_str(".x");
+				}
 			}
 			"subgroup_ballot" => {
 				string.push_str("_besl_subgroup_ballot(");

@@ -7,8 +7,8 @@ source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 
-main: fn() -> void {
-	let coord: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let result_size: vec2u = image_size(result_texture);
 	let source_size: vec2u = texture_size(source_texture);

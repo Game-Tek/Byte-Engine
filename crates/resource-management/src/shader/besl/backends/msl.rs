@@ -496,7 +496,7 @@ mod tests {
 		);
 		assert_string_contains!(
 			shader,
-			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _resources& resources [[buffer(16)]])"
+			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint2 threadgroup_position [[threadgroup_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
 		assert!(
@@ -939,7 +939,10 @@ mod tests {
 		assert_string_contains!(shader, "threadgroup float scratch[64];");
 		assert_string_contains!(shader, "threadgroup float* scratch");
 		assert_string_contains!(shader, "threadgroup_barrier(mem_flags::mem_threadgroup)");
-		assert_string_contains!(shader, "store_scratch(float(thread_index),gid,thread_index,scratch)");
+		assert_string_contains!(
+			shader,
+			"store_scratch(float(thread_index),gid,thread_index,threadgroup_position,scratch)"
+		);
 	}
 
 	#[test]
@@ -994,8 +997,11 @@ mod tests {
 				&root.get_main().expect("Expected subgroup helper main function"),
 			)
 			.expect("Expected subgroup helper MSL generation");
-		assert_string_contains!(shader, "uint lane(uint2 gid,uint simd_lane_id)");
-		assert_string_contains!(shader, "lane(gid,simd_lane_id)");
+		assert_string_contains!(
+			shader,
+			"uint lane(uint2 gid,uint thread_index,uint2 threadgroup_position,uint simd_lane_id)"
+		);
+		assert_string_contains!(shader, "lane(gid,thread_index,threadgroup_position,simd_lane_id)");
 		assert_string_contains!(shader, "uint ordinary()");
 		assert_string_contains!(shader, "uint simd_lane_id [[thread_index_in_simdgroup]]");
 	}
@@ -1243,9 +1249,20 @@ struct PrimitiveOutput {
 		);
 	}
 
-	#[test]
-	fn compute_shaders_emit_threadgroup_metadata() {
-		let source = "main: fn () -> void { let coord: vec3u = thread_id(); }";
+	#[compio::test]
+	async fn compute_stage_inputs_lower_to_msl_builtins() {
+		let source = r#"
+		main: fn (input: StageInput) -> void {
+			let coord: vec2u = input.thread_id;
+			let local: u32 = input.thread_idx;
+			let workgroup: u32 = input.threadgroup_position;
+			let lane: u32 = input.subgroup_lane_index;
+			coord;
+			local;
+			workgroup;
+			lane;
+		}
+		"#;
 		let root = besl::parse(source).unwrap();
 		let root = besl::lex(root).unwrap();
 		let main_node = root.get_main().unwrap();
@@ -1255,6 +1272,15 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(128)), &main_node)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "// besl-threadgroup-size:128,1,1");
+		assert_string_contains!(shader, "uint2 gid [[thread_position_in_grid]]");
+		assert_string_contains!(shader, "uint simd_lane_id [[thread_index_in_simdgroup]]");
+		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
+		assert_string_contains!(shader, "uint2 threadgroup_position [[threadgroup_position_in_grid]]");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-stage-inputs")
+			.await
+			.expect("Expected compute StageInput fields to compile as native Metal semantics");
 	}
 
 	#[test]

@@ -1,8 +1,8 @@
 source: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 
-main: fn() -> void {
-	let coord: vec2u = thread_id();
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 
 	guard_image_bounds(source, coord);

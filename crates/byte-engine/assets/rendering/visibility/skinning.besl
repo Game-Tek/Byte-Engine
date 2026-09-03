@@ -93,8 +93,8 @@ antipodal_sign: fn(reference_rotation: vec4f, value: vec4f) -> f32 {
 	return 1.0;
 }
 
-main: fn () -> void {
-	let local_vertex_index: u32 = thread_id().x;
+main: fn (input: StageInput) -> void {
+	let local_vertex_index: u32 = input.thread_id.x;
 	if (local_vertex_index >= push_constant.vertex_count) {
 		return;
 	}

@@ -192,71 +192,11 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	pub(crate) fn emit_compute_entry_point_bare_resources(
+	pub(crate) fn emit_compute_entry_point(
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
 		bindings: &[&besl::NodeReference],
-		push_constant: Option<&besl::NodeReference>,
-		workgroups: &[&besl::NodeReference],
-		uses_simd_lane_id: bool,
-	) {
-		let node = RefCell::borrow(main_function_node);
-
-		let besl::Nodes::Function {
-			name,
-			statements,
-			params,
-			..
-		} = node.node()
-		else {
-			return;
-		};
-
-		string.push_str("kernel void ");
-		if *name == "main" {
-			string.push_str("besl_main");
-		} else {
-			string.push_str(name);
-		}
-		string.push('(');
-		string.push_str("uint2 gid [[thread_position_in_grid]]");
-		if uses_simd_lane_id {
-			self.emit_separator(string);
-			string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
-		}
-		if !workgroups.is_empty() {
-			self.emit_separator(string);
-			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
-		}
-
-		for param in params {
-			self.emit_separator(string);
-			self.emit_node_string(string, param);
-		}
-
-		if let Some(push_constant) = push_constant {
-			self.emit_separator(string);
-			self.emit_compute_push_constant_parameter(string, push_constant);
-		}
-
-		for binding in bindings {
-			self.emit_compute_binding_parameter(string, binding);
-		}
-
-		ShaderFormatting::new(self.minified).push_block_start(string);
-
-		self.emit_compute_workgroup_declarations(string, workgroups);
-		self.emit_statement_block(string, statements, 1);
-
-		self.emit_block_end(string);
-	}
-
-	pub(crate) fn emit_compute_entry_point_argument_buffers(
-		&mut self,
-		string: &mut String,
-		main_function_node: &besl::NodeReference,
-		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
 		workgroups: &[&besl::NodeReference],
 		uses_simd_lane_id: bool,
@@ -281,13 +221,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
+		self.emit_separator(string);
+		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
+		self.emit_separator(string);
+		string.push_str("uint2 threadgroup_position [[threadgroup_position_in_grid]]");
 		if uses_simd_lane_id {
 			self.emit_separator(string);
 			string.push_str("uint simd_lane_id [[thread_index_in_simdgroup]]");
-		}
-		if !workgroups.is_empty() {
-			self.emit_separator(string);
-			string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
 		}
 
 		for param in params {
@@ -300,9 +240,17 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 
-		if has_resources {
-			self.emit_separator(string);
-			self.emit_argument_buffer_parameter(string);
+		match self.compute_binding_mode {
+			ComputeBindingMode::ArgumentBuffers if !bindings.is_empty() => {
+				self.emit_separator(string);
+				self.emit_argument_buffer_parameter(string);
+			}
+			ComputeBindingMode::BareResources => {
+				for binding in bindings {
+					self.emit_compute_binding_parameter(string, binding);
+				}
+			}
+			ComputeBindingMode::ArgumentBuffers => {}
 		}
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
@@ -805,14 +753,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		}
 
-		let mut has_previous_parameter = has_previous_parameter;
-
 		if has_previous_parameter {
 			self.emit_separator(string);
 		}
 		string.push_str("uint2 gid");
-		has_previous_parameter = true;
-
+		self.emit_separator(string);
+		string.push_str("uint thread_index");
+		self.emit_separator(string);
+		string.push_str("uint2 threadgroup_position");
 		if uses_simd_lane_id {
 			self.emit_separator(string);
 			string.push_str("uint simd_lane_id");
@@ -821,29 +769,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		if compute_stage_context.has_push_constant {
 			self.emit_separator(string);
 			string.push_str("constant PushConstant& push_constant");
-			has_previous_parameter = true;
 		}
 
 		if compute_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
+			self.emit_separator(string);
 			string.push_str("constant _resources& resources");
-			has_previous_parameter = true;
-		}
-
-		if !compute_stage_context.workgroups.is_empty() {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("uint thread_index");
-			has_previous_parameter = true;
 		}
 
 		for workgroup in &compute_stage_context.workgroups {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
+			self.emit_separator(string);
 			string.push_str("threadgroup ");
 			string.push_str(&workgroup.msl_type);
 			if workgroup.count.is_some() {
@@ -852,7 +786,6 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str("& ");
 			}
 			string.push_str(&workgroup.name);
-			has_previous_parameter = true;
 		}
 	}
 
@@ -912,14 +845,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		}
 
-		let mut has_previous_parameter = has_previous_parameter;
-
 		if has_previous_parameter {
 			self.emit_separator(string);
 		}
 		string.push_str("gid");
-		has_previous_parameter = true;
-
+		self.emit_separator(string);
+		string.push_str("thread_index");
+		self.emit_separator(string);
+		string.push_str("threadgroup_position");
 		if uses_simd_lane_id {
 			self.emit_separator(string);
 			string.push_str("simd_lane_id");
@@ -928,31 +861,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		if compute_stage_context.has_push_constant {
 			self.emit_separator(string);
 			string.push_str("push_constant");
-			has_previous_parameter = true;
 		}
 
 		if compute_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
+			self.emit_separator(string);
 			string.push_str("resources");
-			has_previous_parameter = true;
-		}
-
-		if !compute_stage_context.workgroups.is_empty() {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("thread_index");
-			has_previous_parameter = true;
 		}
 
 		for workgroup in &compute_stage_context.workgroups {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
+			self.emit_separator(string);
 			string.push_str(&workgroup.name);
-			has_previous_parameter = true;
 		}
 	}
 

@@ -263,8 +263,8 @@ fn validate_record_literal(
 
 /// Rewrites contextual parameter member access throughout one non-record-return statement.
 fn rewrite_node<'a>(node: &mut parser::Node<'a>, context: &EntryContext<'_, 'a>) -> Result<(), LexError> {
-	if let Some(replacement) = contextual_access_symbol(node, context)? {
-		*node = parser::Node::member_expression(replacement);
+	if let Some(replacement) = contextual_access(node, context)? {
+		*node = replacement;
 		return Ok(());
 	}
 
@@ -321,7 +321,10 @@ fn rewrite_expression<'a>(expression: &mut parser::Expressions<'a>, context: &En
 }
 
 /// Resolves a direct `parameter.field` access before its component nodes enter normal name lookup.
-fn contextual_access_symbol<'a>(node: &parser::Node<'a>, context: &EntryContext<'_, 'a>) -> Result<Option<String>, LexError> {
+fn contextual_access<'a>(
+	node: &parser::Node<'a>,
+	context: &EntryContext<'_, 'a>,
+) -> Result<Option<parser::Node<'a>>, LexError> {
 	let parser::Nodes::Expression(parser::Expressions::Accessor { left, right }) = node.node() else {
 		return Ok(None);
 	};
@@ -332,8 +335,14 @@ fn contextual_access_symbol<'a>(node: &parser::Node<'a>, context: &EntryContext<
 		return Ok(None);
 	};
 	if context.stage_input_parameter == Some(parameter.as_ref()) {
+		// Compute fields reuse the intrinsic nodes that already carry backend and VM semantics.
 		return match field.as_ref() {
-			crate::VERTEX_INDEX_BUILTIN | crate::INSTANCE_INDEX_BUILTIN => Ok(Some(field.to_string())),
+			crate::VERTEX_INDEX_BUILTIN => Ok(Some(parser::Node::member_expression(crate::VERTEX_INDEX_BUILTIN))),
+			crate::INSTANCE_INDEX_BUILTIN => Ok(Some(parser::Node::member_expression(crate::INSTANCE_INDEX_BUILTIN))),
+			"thread_id" => Ok(Some(parser::Node::call("thread_id", Vec::new()))),
+			"thread_idx" => Ok(Some(parser::Node::call("thread_idx", Vec::new()))),
+			"threadgroup_position" => Ok(Some(parser::Node::call("threadgroup_position", Vec::new()))),
+			"subgroup_lane_index" => Ok(Some(parser::Node::call("subgroup_lane_index", Vec::new()))),
 			field => Err(entry_error(&format!("StageInput does not define `{field}`"))),
 		};
 	}
@@ -344,7 +353,7 @@ fn contextual_access_symbol<'a>(node: &parser::Node<'a>, context: &EntryContext<
 		return Ok(None);
 	}
 	if fields.iter().any(|declared| declared.name == field.as_ref()) {
-		Ok(Some(interface_symbol(field)))
+		Ok(Some(parser::Node::member_expression(interface_symbol(field))))
 	} else {
 		Err(entry_error(&format!(
 			"Interface parameter `{parameter}` does not define `{field}`"

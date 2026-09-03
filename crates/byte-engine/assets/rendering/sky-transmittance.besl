@@ -15,8 +15,8 @@ sample_distribution: fn (value: f32) -> f32 {
 	return clamped * clamped;
 }
 
-main: fn () -> void {
-	let pixel: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
 	guard_image_bounds(transmittance_lut, pixel);
 	let extent: vec2u = image_size(transmittance_lut);
 	let uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));

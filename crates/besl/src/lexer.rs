@@ -207,6 +207,26 @@ mod tests {
 	}
 
 	#[test]
+	fn structural_compute_stage_inputs_lower_to_existing_intrinsics() {
+		crate::compile_to_besl(
+			r#"
+				main: fn (input: StageInput) -> void {
+					let dispatch: vec2u = input.thread_id;
+					let local: u32 = input.thread_idx;
+					let workgroup: u32 = input.threadgroup_position;
+					let lane: u32 = input.subgroup_lane_index;
+					dispatch;
+					local;
+					workgroup;
+					lane;
+				}
+			"#,
+			None,
+		)
+		.expect("structural compute stage inputs should link through their intrinsic semantics");
+	}
+
+	#[test]
 	fn structural_entry_rejects_invalid_record_shapes() {
 		for (source, expected) in [
 			(

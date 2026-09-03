@@ -2,8 +2,8 @@ depth: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 source: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 
-main: fn () -> void {
-	let coord: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result, coord);
 	let result_size_u: vec2u = image_size(result);
 	let source_size_u: vec2u = texture_size(source);

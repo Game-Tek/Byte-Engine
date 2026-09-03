@@ -19,8 +19,8 @@ material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access
 material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write }>;
 material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write }>;
 
-main: fn () -> void {
-	let coord: vec2u = thread_id();
+main: fn (input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
 
 	if (coord.x == 0 && coord.y == 0) {
 		let sum: u32 = 0;

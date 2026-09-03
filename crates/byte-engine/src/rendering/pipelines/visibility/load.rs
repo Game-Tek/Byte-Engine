@@ -1,44 +1,23 @@
 //! This module implements loading of resources for the Visibility pipeline.
 
+/// The shared elements for a loading couple.
+trait LoadBase {
+	/// The handle to a resource. A resource is anything that can be loaded by the pipeline.
+	type ResourceHandle: Hash;
+	/// The requirements for a resource.
+	/// These are the memory requirements for the resource.
+	type ResourceRequirements;
+}
+
 /// The requesting counter part of the loading couple.
-struct LoadClient {}
+trait LoadClient: LoadBase {
+	fn request(&self, resource: Self::ResourceHandle);
+}
 
 /// The serving/worker part of the loading couple.
-struct LoadServer {
-	resource_manager: EntityHandle<ResourceManager>,
-	resource_factory: ghi::implementation::Factory,
-}
+trait LoadServer: LoadBase {}
 
-impl LoadServer {
-	async fn load(&self, request: ResourceRequest) {
-		match request {
-			ResourceRequest::Mesh { key, source } => {}
-			ResourceRequest::Material { id } => {}
-			ResourceRequest::Image { key } => {}
-			ResourceRequest::Environment { id } => {}
-		}
-	}
-}
-
-#[derive(Clone)]
-pub(crate) enum ResourceRequest {
-	Mesh { key: MeshKey, source: MeshSource },
-	Material { id: String },
-	Image { key: String },
-	Environment { id: String },
-}
-
-fn spawn(
-	resource_manager: EntityHandle<ResourceManager>,
-	resource_factory: ghi::implementation::Factory,
-) -> (LoadClient, LoadServer) {
-	let server = LoadServer {
-		resource_manager,
-		resource_factory,
-	};
-
-	(LoadClient {}, server)
-}
+use std::hash::Hash;
 
 use resource_management::ResourceManager;
 

@@ -1,12 +1,3 @@
-use std::{alloc::Allocator, hash::Hash, marker::PhantomData};
-
-use utils::{
-	StableVec, StableVecHandle,
-	hash::{HashMap, HashMapExt as _},
-};
-
-use crate::core::factory::Handle;
-
 pub struct MeshStats {
 	vertex_count: usize,
 	index_count: usize,
@@ -309,9 +300,22 @@ impl<'a, I> Iterator for BatchInstancesIterator<'a, I> {
 	}
 }
 
+/// Converts an affine gameplay matrix into the compact column-major skin-palette representation.
+pub fn affine_matrix4x3_from_matrix4(matrix: &Matrix) -> AffineMatrix4x3Columns {
+	[
+		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)]],
+		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)]],
+		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)]],
+		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]],
+	]
+}
+
 #[cfg(test)]
 mod tests {
-	use crate::rendering::utils::{MeshBuffersStats, MeshStats};
+	use math::Matrix;
+	use maths_rs::mat::MatNew4 as _;
+
+	use super::*;
 
 	#[test]
 	fn test_one_mesh_and_instance() {
@@ -444,4 +448,27 @@ mod tests {
 		assert_eq!((frame_batches[1].index_count(), frame_batches[1].instance_count()), (60, 2));
 		assert_eq!((frame_batches[2].index_count(), frame_batches[2].base_instance()), (30, 4));
 	}
+
+	#[test]
+	fn pose_write_conversion_preserves_matrix_majorness() {
+		let matrix = Matrix::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 0.0, 0.0, 0.0, 1.0,
+		);
+
+		assert_eq!(
+			affine_matrix4x3_from_matrix4(&matrix),
+			[[1.0, 5.0, 9.0], [2.0, 6.0, 10.0], [3.0, 7.0, 11.0], [4.0, 8.0, 12.0]]
+		);
+	}
 }
+
+use std::{alloc::Allocator, hash::Hash, marker::PhantomData};
+
+use math::Matrix;
+use resource_management::resources::skeleton::AffineMatrix4x3Columns;
+use utils::{
+	StableVec, StableVecHandle,
+	hash::{HashMap, HashMapExt as _},
+};
+
+use crate::core::factory::Handle;

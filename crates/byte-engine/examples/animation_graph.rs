@@ -96,11 +96,16 @@ fn main() {
 	let mut loading_tasks = byte_engine::application::graphics::defaults::build_deferred_tasks_queue();
 	#[cfg(debug_assertions)]
 	{
-		use byte_engine::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
+		use byte_engine::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 
 		setup_default_resource_and_asset_management(
 			&mut app,
-			VisibilityShaderGenerator::new(true, false, false, false, false, false, true, true),
+			VisibilityShaderGenerator::with_access(ScopeAccess {
+				material_count: byte_engine::ghi::AccessPolicies::READ,
+				material_offset: byte_engine::ghi::AccessPolicies::NONE,
+				material_offset_scratch: byte_engine::ghi::AccessPolicies::NONE,
+				pixel_mapping: byte_engine::ghi::AccessPolicies::READ_WRITE,
+			}),
 		);
 	}
 	setup_default_input(&mut app);

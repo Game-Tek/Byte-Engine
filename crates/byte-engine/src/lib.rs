@@ -19,7 +19,6 @@
 //! for installation, project setup, and the first application workflow.
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, trait_alias, unsize)]
-#![cfg_attr(feature = "headed", feature(slice_pattern))]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(incomplete_features)]

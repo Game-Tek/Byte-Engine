@@ -548,3 +548,80 @@ material_evaluation_suffix: fn () -> void {
 
 // Computes the projected receiver plane so cone PCF compares each texel against the depth at that texel's center.
 // Returning no correction for a degenerate projection keeps the existing bias as a safe fallback.
+
+pub(crate) const U16_TO_U32_SOURCE: &str = "u16_to_u32: fn (value: u16) -> u32 { return u32(value); }";
+
+pub(crate) const CONE_ATTENUATION_SOURCE: &str = "cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }";
+
+// Resolve all three triangle vertices together so mesh and meshlet offsets are computed once.
+pub(crate) const COMPUTE_VERTEX_INDICES_SOURCE: &str = r#"
+compute_vertex_indices: fn (mesh: Mesh, meshlet: Meshlet, primitive_index_base: u32) -> u32[3] {
+	let vertex_index_base: u32 = mesh.base_vertex_index;
+	let relative_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
+	let primitive_index0: u32 = u32(primitive_indices.primitive_indices[primitive_index_base]);
+	let primitive_index1: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 1]);
+	let primitive_index2: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 2]);
+	return u32[3](
+		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index0]),
+		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index1]),
+		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index2])
+	);
+}
+"#;
+
+// Share the clip-space basis between geometry and optional UV interpolation.
+pub(crate) const COMPUTE_TRIANGLE_INTERPOLATION_SOURCE: &str = r#"
+compute_triangle_interpolation: fn (
+	clip_position0: vec4f,
+	clip_position1: vec4f,
+	clip_position2: vec4f
+) -> TriangleInterpolation {
+	let inverse_w: vec3f = vec3f(
+		1.0 / clip_position0.w,
+		1.0 / clip_position1.w,
+		1.0 / clip_position2.w
+	);
+	let origin: vec2f = vec2f(
+		clip_position0.x * inverse_w.x,
+		clip_position0.y * inverse_w.x
+	);
+	let ndc1: vec2f = vec2f(
+		clip_position1.x * inverse_w.y,
+		clip_position1.y * inverse_w.y
+	);
+	let ndc2: vec2f = vec2f(
+		clip_position2.x * inverse_w.z,
+		clip_position2.y * inverse_w.z
+	);
+	let determinant: f32 =
+		(ndc2.x - ndc1.x) * (origin.y - ndc1.y) -
+		(origin.x - ndc1.x) * (ndc2.y - ndc1.y);
+	let inverse_determinant: f32 = 1.0 / determinant;
+	let raw_ddx: vec3f = vec3f(
+		ndc1.y - ndc2.y,
+		ndc2.y - origin.y,
+		origin.y - ndc1.y
+	) * inverse_determinant * inverse_w;
+	let raw_ddy: vec3f = vec3f(
+		ndc2.x - ndc1.x,
+		origin.x - ndc2.x,
+		ndc1.x - origin.x
+	) * inverse_determinant * inverse_w;
+	return TriangleInterpolation(origin, inverse_w, raw_ddx, raw_ddy);
+}
+"#;
+
+// Normal-map decoding stays in the visibility module; BESL only lowers the general texture-array gradient sample.
+pub(crate) const SAMPLE_VISIBILITY_NORMAL_SOURCE: &str = r#"
+sample_visibility_normal: fn (
+	texture_index: u32,
+	uv: vec2f,
+	uv_derivative_x: vec2f,
+	uv_derivative_y: vec2f
+) -> vec3f {
+	let encoded: vec4f = sample_texture_2d_array_grad(
+		textures, texture_index, uv, uv_derivative_x, uv_derivative_y
+	);
+	return unit_vector_from_xy(vec2f(encoded.x, encoded.y));
+}
+"#;

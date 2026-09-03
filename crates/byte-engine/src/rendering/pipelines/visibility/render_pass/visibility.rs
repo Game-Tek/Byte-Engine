@@ -1,15 +1,11 @@
-use super::*;
+//! Rasterizes meshlets into the visibility buffer: per-pixel triangle and instance identifiers plus depth.
 
-/// The `VisibilityPass` struct owns the depth-writing raster state used to populate visibility buffers.
-#[derive(Clone)]
-pub(crate) struct VisibilityPass {
-	descriptor_set: ghi::DescriptorSetHandle,
-	pub(super) pipeline: crate::rendering::PipelineRef,
-	pub(super) masked_pipeline: crate::rendering::PipelineRef,
-	opaque_attachments: [ghi::AttachmentInformation; 3],
-	transparent_attachments: [ghi::AttachmentInformation; 3],
-}
+use utils::Extent;
 
+use super::super::mesh_dispatch::MeshDispatch;
+use crate::rendering::PipelineManagerClient;
+
+/// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum VisibilityPhase {
 	Opaque,
@@ -32,146 +28,103 @@ impl VisibilityPhase {
 	}
 }
 
+/// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
+pub(super) struct VisibilityPass {
+	descriptor_set: ghi::DescriptorSetHandle,
+	pub(super) pipeline: crate::rendering::PipelineRef,
+	pub(super) masked_pipeline: crate::rendering::PipelineRef,
+	primitive_index: ghi::BaseImageHandle,
+	instance_id: ghi::BaseImageHandle,
+	depth: ghi::BaseImageHandle,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct VisibilityPipelines {
+	pub(super) opaque: ghi::PipelineHandle,
+	pub(super) masked: ghi::PipelineHandle,
+}
+
 impl VisibilityPass {
-	/// Creates phase-specific attachment behavior and requests the visibility pipeline.
-	pub(crate) fn new(
-		context: &mut ghi::implementation::Context,
-		pipeline_manager: &crate::rendering::PipelineManagerClient,
+	pub(super) fn new(
+		pipeline_manager: &PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
-		depth_target: ghi::BaseImageHandle,
+		depth: ghi::BaseImageHandle,
 	) -> Self {
-		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline");
-		let masked_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-visibility.pipeline");
-
-		VisibilityPass {
+		Self {
 			descriptor_set,
-			pipeline,
-			masked_pipeline,
-			opaque_attachments: [
-				ghi::AttachmentInformation::new(
-					primitive_index,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
-					false,
-					true,
-				),
-				ghi::AttachmentInformation::new(
-					instance_id,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
-					false,
-					true,
-				),
-				ghi::AttachmentInformation::new(
-					depth_target,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Depth(0.0),
-					false,
-					true,
-				),
-			],
-			transparent_attachments: [
-				ghi::AttachmentInformation::new(
-					primitive_index,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
-					false,
-					true,
-				),
-				ghi::AttachmentInformation::new(
-					instance_id,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
-					false,
-					true,
-				),
-				ghi::AttachmentInformation::new(
-					depth_target,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::Depth(0.0),
-					true,
-					true,
-				),
-			],
+			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline"),
+			masked_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-visibility.pipeline"),
+			primitive_index,
+			instance_id,
+			depth,
 		}
 	}
 
-	/// Records the solid and masked visibility layers in one pass so depth and IDs are cleared once.
+	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<VisibilityPipelines> {
+		Some(VisibilityPipelines {
+			opaque: pipeline_manager.pipeline(self.pipeline)?,
+			masked: pipeline_manager.pipeline(self.masked_pipeline)?,
+		})
+	}
+
+	/// Records the solid and masked dispatches of one phase into the visibility buffers.
 	///
-	/// The transparent phase loads opaque depth, then writes the nearest transparent
-	/// surface into it. This preserves opaque occlusion while resolving overlapping
-	/// triangles within the single transparent layer represented by the visibility buffer.
+	/// The transparent phase loads opaque depth, then writes the nearest transparent surface into it. This
+	/// preserves opaque occlusion while resolving overlapping triangles within the single transparent layer.
 	pub(super) fn record(
 		&self,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		extent: Extent,
-		instances: &[Instance],
-		mesh_dispatch: MeshDispatch,
-		masked_instances: &[Instance],
-		masked_mesh_dispatch: MeshDispatch,
 		phase: VisibilityPhase,
-		pipeline: ghi::PipelineHandle,
-		masked_pipeline: ghi::PipelineHandle,
+		solid: MeshDispatch,
+		masked: MeshDispatch,
+		pipelines: VisibilityPipelines,
 	) {
-		let attachments: &[ghi::AttachmentInformation] = match phase {
-			VisibilityPhase::Opaque => &self.opaque_attachments,
-			VisibilityPhase::Transparent => &self.transparent_attachments,
+		use ghi::command_buffer::{
+			BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
+			CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 		};
-		let drawable_instances = instances
-			.iter()
-			.chain(masked_instances)
-			.filter(|instance| instance.meshlet_count > 0)
-			.count();
-		let meshlet_count = instances
-			.iter()
-			.chain(masked_instances)
-			.map(|instance| instance.meshlet_count)
-			.sum::<u32>();
 
-		log::debug!(
-			"{} visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}, task_workgroups={}",
-			phase.label(),
-			extent.width(),
-			extent.height(),
-			instances.len() + masked_instances.len(),
-			drawable_instances,
-			meshlet_count,
-			mesh_dispatch.workgroup_count(),
-		);
+		let identifier = |image| {
+			ghi::AttachmentInformation::new(
+				image,
+				ghi::Layouts::RenderTarget,
+				ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
+				false,
+				true,
+			)
+		};
+		let attachments = [
+			identifier(self.primitive_index),
+			identifier(self.instance_id),
+			ghi::AttachmentInformation::new(
+				self.depth,
+				ghi::Layouts::RenderTarget,
+				ghi::ClearValue::Depth(0.0),
+				phase == VisibilityPhase::Transparent,
+				true,
+			),
+		];
+
 		c.start_region(|label| {
 			label.write_str(phase.label())?;
 			label.write_str(" Visibility Buffer")
 		});
-
-		let c = c.start_render_pass(extent, attachments);
-		if !mesh_dispatch.is_empty() {
+		let c = c.start_render_pass(extent, &attachments);
+		for (dispatch, pipeline) in [(solid, pipelines.opaque), (masked, pipelines.masked)] {
+			if dispatch.is_empty() {
+				continue;
+			}
 			let c = c.bind_raster_pipeline(pipeline);
 			c.bind_descriptor_sets(&[self.descriptor_set]);
-			c.write_push_constant(0, mesh_dispatch.work_item_base());
+			c.write_push_constant(0, dispatch.work_item_base());
 			c.write_push_constant(4, 0u32);
 			c.write_push_constant(8, 0u32);
-			c.dispatch_meshes(mesh_dispatch.workgroup_count(), 1, 1);
+			c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
 		}
-		if !masked_mesh_dispatch.is_empty() {
-			let c = c.bind_raster_pipeline(masked_pipeline);
-			c.bind_descriptor_sets(&[self.descriptor_set]);
-			c.write_push_constant(0, masked_mesh_dispatch.work_item_base());
-			c.write_push_constant(4, 0u32);
-			c.write_push_constant(8, 0u32);
-			c.dispatch_meshes(masked_mesh_dispatch.workgroup_count(), 1, 1);
-		}
-
 		c.end_render_pass();
 		c.end_region();
 	}
-}
-
-/// Returns the one depth-resolved transparent layer supported by the visibility buffer.
-pub(super) fn transparent_visibility_layer(instances: &[Instance]) -> Option<&[Instance]> {
-	instances
-		.iter()
-		.any(|instance| instance.meshlet_count > 0)
-		.then_some(instances)
 }

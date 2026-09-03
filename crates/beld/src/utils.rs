@@ -74,9 +74,7 @@ where
 		let shader_generator = std::sync::Arc::new({
 			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
 
-			byte_engine::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator::new(
-				true, true, true, true, true, true, true, true,
-			)
+			byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new()
 		});
 
 		material_asset_handler.set_shader_generator(shader_generator.clone());

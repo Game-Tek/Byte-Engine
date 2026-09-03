@@ -744,4 +744,76 @@ mod tests {
 	fn srgb_resource_format_preserves_srgb_gpu_sampling() {
 		assert_eq!(resource_format_to_ghi(ResourceFormat::RGBA8SRGB), ghi::Formats::RGBA8sRGB);
 	}
+
+	/// Lays `source` out as the GPU expects it: compact rows expanded to the padded row pitch.
+	fn staged_texture_bytes(
+		format: ghi::Formats,
+		extent: Extent,
+		layer_count: usize,
+		source: &[u8],
+	) -> (Vec<u8>, TextureUploadLayout) {
+		let layout = TextureUploadLayout::new(format, extent, layer_count, 0).expect("texture layout");
+		assert_eq!(source.len(), layout.compact_size);
+		let mut bytes = vec![0u8; layout.padded_size];
+		bytes[..source.len()].copy_from_slice(source);
+		layout.pack_rows(&mut bytes);
+		(bytes, layout)
+	}
+
+	#[test]
+	fn texture_upload_preserves_minimum_extent_and_bc_row_contents() {
+		let compact_row = 2 * 16;
+		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
+		let (data, upload) = staged_texture_bytes(ghi::Formats::BC7, Extent::rectangle(5, 7), 1, &source);
+
+		assert_eq!(upload.source_bytes_per_row, 256);
+		assert_eq!(upload.source_bytes_per_image, 256 * 2);
+		assert_eq!(&data[0..compact_row], &source[0..compact_row]);
+		assert_eq!(&data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
+
+		let (zero_data, zero_extent) =
+			staged_texture_bytes(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), 1, &[1, 2, 3, 4]);
+		assert_eq!(zero_extent.source_bytes_per_row, 256);
+		assert_eq!(zero_extent.source_bytes_per_image, 256);
+		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
+	}
+
+	/// Ensures half-float rows (IES intensity maps, HDR environments) reach the transfer buffer unchanged.
+	#[test]
+	fn texture_upload_preserves_half_float_rows() {
+		for (format, resource_format, bytes_per_texel) in [
+			(ghi::Formats::R16F, ResourceFormat::R16F, 2),
+			(ghi::Formats::RGBA16F, ResourceFormat::RGBA16F, 8),
+		] {
+			let compact_row = 2 * bytes_per_texel;
+			let source = (0..compact_row * 2).map(|value| value as u8).collect::<Vec<_>>();
+			let (data, upload) = staged_texture_bytes(format, Extent::rectangle(2, 2), 1, &source);
+
+			assert_eq!(resource_format_to_ghi(resource_format), format);
+			assert_eq!(upload.source_bytes_per_row, 256);
+			assert_eq!(upload.source_bytes_per_image, 512);
+			assert_eq!(&data[..compact_row], &source[..compact_row]);
+			assert_eq!(&data[256..256 + compact_row], &source[compact_row..]);
+		}
+	}
+
+	#[test]
+	fn cubemap_upload_preserves_every_face_and_image_pitch() {
+		let compact_face_size = 2 * 2 * 8;
+		let source = (0..compact_face_size * 6).map(|value| value as u8).collect::<Vec<_>>();
+		let (data, upload) = staged_texture_bytes(ghi::Formats::RGBA16F, Extent::square(2), 6, &source);
+
+		assert_eq!(upload.source_bytes_per_image, 512);
+		assert_eq!(data.len(), 512 * 6);
+		for face in 0..6 {
+			for row in 0..2 {
+				let source_start = face * compact_face_size + row * 16;
+				let upload_start = face * 512 + row * 256;
+				assert_eq!(
+					&data[upload_start..upload_start + 16],
+					&source[source_start..source_start + 16]
+				);
+			}
+		}
+	}
 }

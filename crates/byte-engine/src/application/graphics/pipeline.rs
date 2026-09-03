@@ -204,7 +204,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 	let gtao_configuration = application
 		.configuration()
-		.register(crate::rendering::pipelines::visibility::render_pass::GTAO_CONFIGURATION_PREFIX);
+		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);
 	for parameter_name in ["render.gtao.radius", "render.gtao.samples-per-ray", "render.gtao.radial-rays"] {
 		if let Some(parameter) = application.get_parameter(parameter_name) {
 			application.configuration().update(parameter.name(), parameter.value());
@@ -212,24 +212,22 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	let application_resource_manager = application.resource_manager.clone();
-	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
 	let pipeline_manager = renderer.pipeline_manager_client();
 	let context = renderer.context_mut();
-	let material_pipeline_config = rendering::pipelines::visibility::resource_manager::MaterialPipelineConfig::new(
+	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
 		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 		pipeline_manager.clone(),
 	);
 
-	let upload_buffer: ghi::BufferHandle<
-		[u8; rendering::pipelines::visibility::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT],
-	> = context.build_buffer(
-		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
-			.name("Renderer Async Upload Buffer")
-			// The upload arena is itself the GPU copy source. Host-only access keeps
-			// backends from inserting a second full-buffer staging copy.
-			.device_accesses(ghi::DeviceAccesses::HostOnly),
-	);
+	let upload_buffer: ghi::BufferHandle<[u8; rendering::pipelines::visibility::ASYNC_UPLOAD_BUFFER_BYTE_COUNT]> = context
+		.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+				.name("Renderer Async Upload Buffer")
+				// The upload arena is itself the GPU copy source. Host-only access keeps
+				// backends from inserting a second full-buffer staging copy.
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
+		);
 	// SAFETY: The arena becomes the only CPU owner of this fixed mapping. Application
 	// shutdown joins its worker before the renderer drops the backing GHI context.
 	#[allow(unsafe_code)]
@@ -369,7 +367,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
 				renderer.context_mut(),
 				resource_manager_client,
-				visibility_shader_resources,
 				pipeline_manager,
 				transforms_listener,
 				gtao_configuration,

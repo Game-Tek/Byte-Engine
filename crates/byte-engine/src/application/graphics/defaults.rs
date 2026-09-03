@@ -15,7 +15,12 @@
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
-		let generator = VisibilityShaderGenerator::new(true, false, false, false, false, false, true, true);
+		let generator = VisibilityShaderGenerator::with_access(ScopeAccess {
+			material_count: ghi::AccessPolicies::READ,
+			material_offset: ghi::AccessPolicies::NONE,
+			material_offset_scratch: ghi::AccessPolicies::NONE,
+			pixel_mapping: ghi::AccessPolicies::READ_WRITE,
+		});
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -397,7 +402,7 @@ use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline};
 #[cfg(debug_assertions)]
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
-use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
+use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::{AnimationPool, AnimationPoolConfig},
 	application::{Events, application::Application, parameters::Parameters as _, thread::Thread},

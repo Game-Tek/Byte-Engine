@@ -51,6 +51,7 @@ impl Frame<'_> {
 		)
 		.face_winding(pipeline.face_winding)
 		.cull_mode(pipeline.cull_mode)
+		.fill_mode(pipeline.fill_mode)
 		.depth_write(pipeline.depth_write);
 
 		self.device.create_raster_pipeline(builder)

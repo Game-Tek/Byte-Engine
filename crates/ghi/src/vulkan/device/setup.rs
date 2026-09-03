@@ -102,6 +102,7 @@ impl InnerDevice {
 			.shader_storage_image_array_dynamic_indexing(true)
 			.shader_storage_image_write_without_format(true)
 			.texture_compression_bc(true)
+			.fill_mode_non_solid(true)
 			.geometry_shader(settings.geometry_shader)
 			.shader_storage_image_write_without_format(true);
 
@@ -187,6 +188,7 @@ impl InnerDevice {
 
 					let feature_validation = [
 						(features.sample_rate_shading != vk::FALSE, "Sample Rate Shading"),
+						(features.fill_mode_non_solid != vk::FALSE, "Non-solid Fill Mode"),
 						(
 							flag_required_or_available(
 								physical_device_vulkan_12_features.buffer_device_address_capture_replay,

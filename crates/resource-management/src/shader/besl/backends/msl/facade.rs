@@ -103,13 +103,14 @@ pub(crate) struct ComputeStageContext {
 #[derive(Clone, Debug)]
 pub(crate) struct RasterStageContext {
 	pub(crate) has_resources: bool,
+	pub(crate) has_push_constant: bool,
 	pub(crate) has_vertex_index: bool,
 	pub(crate) has_instance_index: bool,
 }
 
 impl RasterStageContext {
-	pub(crate) fn has_vertex_builtins(&self) -> bool {
-		self.has_vertex_index || self.has_instance_index
+	pub(crate) fn has_hidden_inputs(&self) -> bool {
+		self.has_push_constant || self.has_vertex_index || self.has_instance_index
 	}
 }
 

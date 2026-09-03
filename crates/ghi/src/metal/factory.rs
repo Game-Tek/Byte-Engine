@@ -239,6 +239,7 @@ impl crate::device::Device for Factory {
 			mesh_threadgroup_size,
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
+			fill_mode: builder.fill_mode,
 		}
 	}
 
@@ -279,6 +280,7 @@ impl crate::device::Device for Factory {
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
+			fill_mode: crate::pipelines::raster::FillMode::Solid,
 		}
 	}
 

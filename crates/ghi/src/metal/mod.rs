@@ -274,6 +274,14 @@ pub(crate) mod utils {
 		}
 	}
 
+	/// Maps portable triangle fill behavior to Metal's encoder state.
+	pub(crate) fn fill_mode(fill_mode: crate::pipelines::raster::FillMode) -> mtl::MTLTriangleFillMode {
+		match fill_mode {
+			crate::pipelines::raster::FillMode::Solid => mtl::MTLTriangleFillMode::Fill,
+			crate::pipelines::raster::FillMode::Wireframe => mtl::MTLTriangleFillMode::Lines,
+		}
+	}
+
 	#[cfg(not(debug_assertions))]
 	pub(crate) fn debug_compressed_upload(
 		_enabled: bool,

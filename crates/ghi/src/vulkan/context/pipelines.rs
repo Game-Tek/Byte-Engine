@@ -164,7 +164,7 @@ impl Context {
 
 		let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
 			.depth_test_enable(true)
-			.depth_write_enable(true)
+			.depth_write_enable(builder.depth_write)
 			.depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
 			.depth_bounds_test_enable(false)
 			.stencil_test_enable(false)
@@ -205,9 +205,19 @@ impl Context {
 		let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
-			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::BACK)
-			.front_face(vk::FrontFace::CLOCKWISE)
+			.polygon_mode(match builder.fill_mode {
+				crate::pipelines::raster::FillMode::Solid => vk::PolygonMode::FILL,
+				crate::pipelines::raster::FillMode::Wireframe => vk::PolygonMode::LINE,
+			})
+			.cull_mode(match builder.cull_mode {
+				crate::pipelines::raster::CullMode::None => vk::CullModeFlags::NONE,
+				crate::pipelines::raster::CullMode::Front => vk::CullModeFlags::FRONT,
+				crate::pipelines::raster::CullMode::Back => vk::CullModeFlags::BACK,
+			})
+			.front_face(match builder.face_winding {
+				crate::pipelines::raster::FaceWinding::Clockwise => vk::FrontFace::CLOCKWISE,
+				crate::pipelines::raster::FaceWinding::CounterClockwise => vk::FrontFace::COUNTER_CLOCKWISE,
+			})
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)
 			.depth_bias_clamp(0.0)

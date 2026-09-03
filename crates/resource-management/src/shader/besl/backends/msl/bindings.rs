@@ -863,6 +863,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 
 		let mut has_previous_parameter = has_previous_parameter;
+		if raster_stage_context.has_push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("constant PushConstant& push_constant");
+			has_previous_parameter = true;
+		}
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
@@ -956,6 +963,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 
 		let mut has_previous_parameter = has_previous_parameter;
+		if raster_stage_context.has_push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("push_constant");
+			has_previous_parameter = true;
+		}
 		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);

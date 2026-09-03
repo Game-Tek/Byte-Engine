@@ -49,6 +49,9 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) {
 		let nodes = self.classify_nodes(order);
+		if let Some(push_constant) = nodes.push_constant {
+			self.emit_push_constant_struct(string, push_constant);
+		}
 		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
@@ -61,6 +64,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_vertex_output_struct(string, &nodes.outputs);
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_push_constant: nodes.push_constant.is_some(),
 			has_vertex_index: nodes.inputs.iter().any(
 				|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == besl::VERTEX_INDEX_BUILTIN),
 			),
@@ -83,6 +87,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			&nodes.inputs,
 			&nodes.outputs,
 			!bindings.is_empty(),
+			nodes.push_constant,
 		);
 		self.raster_stage_context = previous_raster_stage_context;
 	}
@@ -227,6 +232,9 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) {
 		let nodes = self.classify_nodes(order);
+		if let Some(push_constant) = nodes.push_constant {
+			self.emit_push_constant_struct(string, push_constant);
+		}
 		self.emit_storage_declarations(string, &nodes.declarations, &nodes.bindings);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
@@ -241,6 +249,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
 			has_resources: !bindings.is_empty(),
+			has_push_constant: nodes.push_constant.is_some(),
 			has_vertex_index: false,
 			has_instance_index: false,
 		});
@@ -259,6 +268,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			&nodes.inputs,
 			&nodes.outputs,
 			!bindings.is_empty(),
+			nodes.push_constant,
 		);
 		self.raster_stage_context = previous_raster_stage_context;
 	}
@@ -351,6 +361,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
 		has_resources: bool,
+		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
@@ -373,6 +384,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		) {
 			self.emit_separator(string);
 			string.push_str("uint instance_index [[instance_id]]");
+		}
+		if let Some(push_constant) = push_constant {
+			self.emit_separator(string);
+			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 		if has_resources {
 			self.emit_separator(string);
@@ -415,6 +430,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
 		has_resources: bool,
+		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function {
@@ -446,6 +462,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		{
 			self.emit_separator(string);
 			string.push_str("bool front_facing [[front_facing]]");
+		}
+		if let Some(push_constant) = push_constant {
+			self.emit_separator(string);
+			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 		if has_resources {
 			self.emit_separator(string);

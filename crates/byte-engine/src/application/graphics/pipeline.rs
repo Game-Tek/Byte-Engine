@@ -3,6 +3,40 @@
 use super::*;
 use crate::rendering::{ConeLight, DirectionalLight, PointLight};
 
+/// Installs the retained wireframe debug scene after the render passes registered before this call.
+///
+/// Call this after tone mapping, every other image effect, and any overlay it
+/// should cover to keep debug colors unchanged and on top. The pass also supports
+/// registration before tone mapping when post-processed, scene-linear debug
+/// colors are useful. In either position, depth-aware messages read the scene
+/// pipeline's `depth` image without modifying it. Register this pass before
+/// creating the first window. Next, call [`Factory::create`] once for each
+/// [`rendering::DebugMesh`], [`Factory::derive`] to replace it, and
+/// [`DefaultWorld::delete`] to remove it.
+pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Factory<rendering::DebugMesh> {
+	defaults::setup_default_pipeline_compilation(application);
+	let factory = application.world().factory::<rendering::DebugMesh>();
+	// Register future-only lifecycle listeners before returning the producer factory.
+	let listener = factory.listener();
+	let delete_listener = application.world().deletions_listener();
+	let scene = std::rc::Rc::new(std::cell::RefCell::new(rendering::DebugSceneManager::new(
+		application.renderer.context_mut(),
+		listener,
+		delete_listener,
+	)));
+
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::DebugMeshRenderPass::new(
+				render_pass_builder,
+				std::rc::Rc::clone(&scene),
+			))
+		});
+
+	factory
+}
+
 /// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
 ///
 /// This setup is the smallest end-to-end implementation of

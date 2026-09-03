@@ -580,6 +580,7 @@ pub(crate) struct Pipeline {
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
 	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
 }
 
 #[derive(Clone)]

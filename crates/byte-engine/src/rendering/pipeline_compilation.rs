@@ -262,6 +262,7 @@ impl PipelineManagerServer {
 				attachments,
 				face_winding,
 				cull_mode,
+				fill_mode,
 				depth_write,
 			} => {
 				// Resource reads and debug bakes are independent of mutable GHI state, so
@@ -301,6 +302,12 @@ impl PipelineManagerServer {
 						resource_management::resources::pipeline::CullMode::None => ghi::pipelines::raster::CullMode::None,
 						resource_management::resources::pipeline::CullMode::Front => ghi::pipelines::raster::CullMode::Front,
 						resource_management::resources::pipeline::CullMode::Back => ghi::pipelines::raster::CullMode::Back,
+					})
+					.fill_mode(match fill_mode {
+						resource_management::resources::pipeline::FillMode::Solid => ghi::pipelines::raster::FillMode::Solid,
+						resource_management::resources::pipeline::FillMode::Wireframe => {
+							ghi::pipelines::raster::FillMode::Wireframe
+						}
 					})
 					.depth_write(*depth_write);
 				Ok(DetachedPipeline::Raster(self.factory.create_raster_pipeline(builder)))

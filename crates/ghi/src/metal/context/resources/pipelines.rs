@@ -197,6 +197,7 @@ impl Context {
 			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
 			face_winding: pipeline.face_winding,
 			cull_mode: pipeline.cull_mode,
+			fill_mode: pipeline.fill_mode,
 		})
 	}
 
@@ -217,6 +218,7 @@ impl Context {
 			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
 			face_winding: pipeline.face_winding,
 			cull_mode: pipeline.cull_mode,
+			fill_mode: pipeline.fill_mode,
 		})
 	}
 
@@ -318,6 +320,7 @@ impl Context {
 			mesh_threadgroup_size,
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
+			fill_mode: builder.fill_mode,
 		});
 
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
@@ -364,6 +367,7 @@ impl Context {
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
+			fill_mode: crate::pipelines::raster::FillMode::Solid,
 		});
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
 	}
@@ -384,6 +388,7 @@ impl Context {
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
+			fill_mode: crate::pipelines::raster::FillMode::Solid,
 		});
 		// TODO: Metal ray tracing pipeline mapping.
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)

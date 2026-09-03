@@ -34,8 +34,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		} else if self
 			.raster_stage_context
 			.as_ref()
-			.is_some_and(|context| context.has_vertex_builtins())
-			|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false)
+			.is_some_and(|context| context.has_hidden_inputs())
+			|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, true)
 		{
 			self.emit_raster_hidden_parameters(string, !params.is_empty());
 		}

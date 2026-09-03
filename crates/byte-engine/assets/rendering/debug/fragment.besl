@@ -1,0 +1,3 @@
+main: fn (pipeline_input: interface { color: vec4f }) -> output { color_attachment: vec4f } {
+	return { color_attachment: pipeline_input.color };
+}

@@ -2168,6 +2168,41 @@ struct PrimitiveOutput {
 			.expect("Expected compare-exchange MSL to compile natively");
 	}
 
+	/// Verifies raster entry points and called helpers receive source-declared push constants.
+	#[compio::test]
+	async fn source_declared_raster_push_constants_are_entry_point_parameters() {
+		let source = r#"
+			push_constant: push_constant {
+				transform: mat4f,
+				color: vec4f,
+			}
+			in_position: input<vec3f, 0>;
+			transform_position: fn (position: vec3f) -> vec4f {
+				return push_constant.transform * vec4f(position.x, position.y, position.z, 1.0);
+			}
+			main: fn () -> interface { position: vec4f, color: vec4f } {
+				return {
+					position: transform_position(in_position),
+					color: push_constant.color,
+				};
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected raster push-constant source to lex");
+		let main = root.get_main().expect("Expected raster push-constant main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected raster push constants to lower to MSL");
+
+		assert_string_contains!(shader, "struct PushConstant{");
+		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-raster-push-constant")
+			.await
+			.expect("Expected raster push-constant MSL to compile natively");
+	}
+
 	#[test]
 	fn return_values_and_pretty_spacing_lower_to_msl() {
 		let main = generator::tests::return_value();

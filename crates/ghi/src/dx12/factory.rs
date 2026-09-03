@@ -29,6 +29,7 @@ pub struct RasterPipeline {
 	pub(crate) render_targets: Vec<pipelines::raster::AttachmentDescriptor>,
 	pub(crate) face_winding: pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: pipelines::raster::CullMode,
+	pub(crate) fill_mode: pipelines::raster::FillMode,
 	pub(crate) depth_write: bool,
 	pub(crate) factory_shaders: Vec<Shader>,
 }
@@ -159,6 +160,7 @@ impl crate::device::Device for Factory {
 			render_targets: builder.render_targets.to_vec(),
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
+			fill_mode: builder.fill_mode,
 			depth_write: builder.depth_write,
 			factory_shaders: self.shaders.clone(),
 		}

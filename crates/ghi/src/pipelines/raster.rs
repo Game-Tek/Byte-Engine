@@ -14,6 +14,7 @@ pub struct Builder<'a> {
 	pub(crate) shaders: Cow<'a, [ShaderParameter<'a>]>,
 	pub(crate) face_winding: FaceWinding,
 	pub(crate) cull_mode: CullMode,
+	pub(crate) fill_mode: FillMode,
 	pub(crate) depth_write: bool,
 }
 
@@ -32,6 +33,7 @@ impl<'a> Builder<'a> {
 			render_targets: Cow::Borrowed(render_targets),
 			face_winding: FaceWinding::Clockwise,
 			cull_mode: CullMode::Back,
+			fill_mode: FillMode::Solid,
 			depth_write: true,
 		}
 	}
@@ -49,6 +51,12 @@ impl<'a> Builder<'a> {
 
 	pub fn cull_mode(mut self, cull_mode: CullMode) -> Self {
 		self.cull_mode = cull_mode;
+		self
+	}
+
+	/// Selects whether triangles are filled or rasterized as their edges.
+	pub fn fill_mode(mut self, fill_mode: FillMode) -> Self {
+		self.fill_mode = fill_mode;
 		self
 	}
 
@@ -72,6 +80,16 @@ pub enum CullMode {
 	Front,
 	#[default]
 	Back,
+}
+
+/// The `FillMode` enum selects how a raster pipeline converts triangles into fragments.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum FillMode {
+	/// Fills triangle interiors.
+	#[default]
+	Solid,
+	/// Rasterizes triangle edges without filling their interiors.
+	Wireframe,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -110,5 +128,19 @@ impl AttachmentDescriptor {
 	pub fn blend(mut self, blend: BlendMode) -> Self {
 		self.blend = blend;
 		self
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn raster_fill_mode_defaults_to_solid_and_accepts_wireframe() {
+		let builder = Builder::new(&[], &[], &[], &[]);
+		assert_eq!(builder.fill_mode, FillMode::Solid);
+
+		let builder = builder.fill_mode(FillMode::Wireframe);
+		assert_eq!(builder.fill_mode, FillMode::Wireframe);
 	}
 }

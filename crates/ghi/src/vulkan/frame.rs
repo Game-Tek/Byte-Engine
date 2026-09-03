@@ -634,6 +634,7 @@ impl<'a> Frame<'a> {
 		)
 		.face_winding(pipeline.face_winding)
 		.cull_mode(pipeline.cull_mode)
+		.fill_mode(pipeline.fill_mode)
 		.depth_write(pipeline.depth_write);
 		if let Some(name) = pipeline.name.as_deref() {
 			builder = builder.name(name);

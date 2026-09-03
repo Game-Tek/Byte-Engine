@@ -338,6 +338,7 @@ impl CommandBufferRecording<'_> {
 		let depth_stencil_state = pipeline.depth_stencil_state.clone();
 		let face_winding = pipeline.face_winding;
 		let cull_mode = pipeline.cull_mode;
+		let fill_mode = pipeline.fill_mode;
 		self.command_buffer.retain_render_pipeline(render_pipeline_state.clone());
 		let encoder = self
 			.active_render_encoder
@@ -346,6 +347,7 @@ impl CommandBufferRecording<'_> {
 
 		encoder.setFrontFacingWinding(utils::winding(face_winding));
 		encoder.setCullMode(utils::cull_mode(cull_mode));
+		encoder.setTriangleFillMode(utils::fill_mode(fill_mode));
 		encoder.setDepthStencilState(depth_stencil_state.as_ref().map(|state| state.as_ref()));
 		encoder.setRenderPipelineState(render_pipeline_state.as_ref());
 

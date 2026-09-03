@@ -27,6 +27,8 @@ pub enum PipelineKind {
 		face_winding: FaceWinding,
 		#[serde(default)]
 		cull_mode: CullMode,
+		#[serde(default)]
+		fill_mode: FillMode,
 		#[serde(default = "default_depth_write")]
 		depth_write: bool,
 	},
@@ -101,6 +103,19 @@ pub enum CullMode {
 	Back,
 }
 
+/// The `FillMode` enum selects whether a persisted raster pipeline fills triangles or draws their edges.
+#[derive(
+	Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FillMode {
+	/// Fills triangle interiors.
+	#[default]
+	Solid,
+	/// Rasterizes triangle edges without filling their interiors.
+	Wireframe,
+}
+
 const fn default_depth_write() -> bool {
 	true
 }
@@ -124,5 +139,25 @@ mod tests {
 
 		assert!(matches!(attachments[0].format, Format::U32));
 		assert!(matches!(attachments[1].format, Format::Depth16));
+	}
+
+	#[test]
+	fn raster_fill_mode_defaults_to_solid_and_deserializes_wireframe() {
+		let default_pipeline: Pipeline =
+			serde_json::from_str(r#"{"name":"Solid","kind":{"type":"raster","shaders":[],"attachments":[]}}"#)
+				.expect("Raster fill mode must remain optional for existing pipeline assets.");
+		let PipelineKind::Raster { fill_mode, .. } = default_pipeline.kind else {
+			panic!("Pipeline fixture must deserialize as a raster pipeline.");
+		};
+		assert!(matches!(fill_mode, FillMode::Solid));
+
+		let wireframe_pipeline: Pipeline = serde_json::from_str(
+			r#"{"name":"Wireframe","kind":{"type":"raster","shaders":[],"attachments":[],"fill_mode":"wireframe"}}"#,
+		)
+		.expect("Wireframe must deserialize as a portable raster fill mode.");
+		let PipelineKind::Raster { fill_mode, .. } = wireframe_pipeline.kind else {
+			panic!("Pipeline fixture must deserialize as a raster pipeline.");
+		};
+		assert!(matches!(fill_mode, FillMode::Wireframe));
 	}
 }

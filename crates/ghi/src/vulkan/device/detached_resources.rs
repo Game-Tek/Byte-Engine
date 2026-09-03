@@ -89,6 +89,7 @@ impl crate::device::Device for Device {
 			render_targets: builder.render_targets.into_owned(),
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
+			fill_mode: builder.fill_mode,
 			depth_write: builder.depth_write,
 			factory_shaders: self.shaders.clone(),
 		}

@@ -163,6 +163,7 @@ pub struct Pipeline {
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
 	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
 }
 
 // SAFETY: Metal pipeline states, depth state, and retained shader metadata are immutable and documented for cross-thread use.
@@ -179,6 +180,7 @@ pub struct ComputePipeline {
 	pub(crate) mesh_threadgroup_size: Option<Extent>,
 	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
 }
 
 // SAFETY: Metal compute pipeline states and their immutable reflection metadata support cross-thread ownership transfer.

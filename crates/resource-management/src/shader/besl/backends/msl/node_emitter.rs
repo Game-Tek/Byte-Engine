@@ -36,8 +36,8 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 			&& (self
 				.raster_stage_context
 				.as_ref()
-				.is_some_and(|context| context.has_vertex_builtins())
-				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(node, false))
+				.is_some_and(|context| context.has_hidden_inputs())
+				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(node, true))
 		{
 			self.emit_raster_hidden_parameters(string, has_previous_parameter);
 		}
@@ -66,8 +66,8 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 			} else if self
 				.raster_stage_context
 				.as_ref()
-				.is_some_and(|context| context.has_vertex_builtins())
-				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function, false)
+				.is_some_and(|context| context.has_hidden_inputs())
+				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function, true)
 			{
 				self.emit_raster_hidden_call_arguments(string, has_previous_argument);
 			}

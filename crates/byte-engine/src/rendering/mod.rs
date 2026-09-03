@@ -21,6 +21,9 @@ pub mod common_shader_generator;
 
 mod environment;
 
+/// Retained wireframe geometry for renderer and gameplay diagnostics.
+pub mod debug;
+
 #[doc(hidden)]
 pub mod lights;
 #[doc(hidden)]
@@ -68,6 +71,7 @@ pub mod csm;
 pub mod utils;
 
 pub use camera::Camera;
+pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
 pub use environment::Environment;
 pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, PhotometricError, PhotometricIntensity,

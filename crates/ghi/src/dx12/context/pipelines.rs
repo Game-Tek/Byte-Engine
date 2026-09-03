@@ -101,7 +101,7 @@ impl Device {
 			},
 			SampleMask: u32::MAX,
 			RasterizerState: D3D12_RASTERIZER_DESC {
-				FillMode: D3D12_FILL_MODE_SOLID,
+				FillMode: Self::fill_mode(builder.fill_mode),
 				CullMode: Self::cull_mode(builder.cull_mode),
 				FrontCounterClockwise: match builder.face_winding {
 					pipelines::raster::FaceWinding::Clockwise => BOOL(0),
@@ -272,7 +272,7 @@ impl Device {
 			rasterizer: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER,
 				value: D3D12_RASTERIZER_DESC {
-					FillMode: D3D12_FILL_MODE_SOLID,
+					FillMode: Self::fill_mode(builder.fill_mode),
 					CullMode: Self::cull_mode(builder.cull_mode),
 					FrontCounterClockwise: match builder.face_winding {
 						pipelines::raster::FaceWinding::Clockwise => BOOL(0),
@@ -411,6 +411,14 @@ impl Device {
 			pipelines::raster::CullMode::None => D3D12_CULL_MODE_NONE,
 			pipelines::raster::CullMode::Front => D3D12_CULL_MODE_FRONT,
 			pipelines::raster::CullMode::Back => D3D12_CULL_MODE_BACK,
+		}
+	}
+
+	/// Maps portable triangle fill behavior to its DX12 rasterizer state.
+	pub(crate) fn fill_mode(fill_mode: pipelines::raster::FillMode) -> D3D12_FILL_MODE {
+		match fill_mode {
+			pipelines::raster::FillMode::Solid => D3D12_FILL_MODE_SOLID,
+			pipelines::raster::FillMode::Wireframe => D3D12_FILL_MODE_WIREFRAME,
 		}
 	}
 

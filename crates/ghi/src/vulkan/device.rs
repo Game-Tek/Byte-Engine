@@ -93,6 +93,7 @@ pub struct RasterPipeline {
 	pub(crate) render_targets: Vec<crate::pipelines::raster::AttachmentDescriptor>,
 	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
 	pub(crate) depth_write: bool,
 	pub(crate) factory_shaders: Vec<crate::vulkan::Shader>,
 }

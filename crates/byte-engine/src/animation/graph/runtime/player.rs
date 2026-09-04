@@ -279,14 +279,25 @@ impl<'graph> AnimationGraphPlayer<'graph> {
 	}
 }
 
-/// Owns the retained evaluation buffers after the initial clip supplies the canonical skeleton.
+/// The `ReadyAnimationGraphPlayer` struct retains playback after the initial clip supplies its skeleton.
 struct ReadyAnimationGraphPlayer<'graph> {
 	graph: &'graph AnimationGraph,
+	playback: Playback,
+	pending: Option<PendingPlayerTransition>,
+	pose: PlayerPose,
+}
+
+/// Playback owns either one clip or both sides of a transition, never both representations.
+enum Playback {
+	AwaitingInitial,
+	Playing(RuntimeClip),
+	Transitioning(ActiveTransition),
+}
+
+/// The `PlayerPose` struct retains sampling buffers independently of playback transitions.
+struct PlayerPose {
 	target: Arc<Skeleton>,
 	root_motion: Option<RootMotionTarget>,
-	active: Option<RuntimeClip>,
-	transition: Option<ActiveTransition>,
-	pending: Option<PendingPlayerTransition>,
 	active_previous: Vec<LocalTransform>,
 	active_current: Vec<LocalTransform>,
 	destination_previous: Vec<LocalTransform>,
@@ -305,41 +316,24 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		target: Arc<Skeleton>,
 		root_motion: Option<&OwnedRootMotionSettings>,
 	) -> Result<Self, AnimationGraphPlayerError> {
-		let root_motion = resolve_root_motion_target(&target, root_motion)?;
-		let node_count = target.nodes.len();
-		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
-		let mut global_pose = Vec::with_capacity(node_count);
-		write_global_pose(&target, &rest_pose, &mut global_pose)
-			.expect("Canonical rest pose must match its skeleton node count");
-
 		Ok(Self {
 			graph,
-			target,
-			root_motion,
-			active: None,
-			transition: None,
+			playback: Playback::AwaitingInitial,
 			pending: Some(PendingPlayerTransition {
 				target: graph.initial_state(),
 				duration: None,
 			}),
-			active_previous: rest_pose.clone(),
-			active_current: rest_pose.clone(),
-			destination_previous: rest_pose.clone(),
-			destination_current: rest_pose.clone(),
-			loop_start: rest_pose.clone(),
-			loop_end: rest_pose.clone(),
-			local_pose: rest_pose,
-			global_pose,
-			inertializer: PoseInertializer::new(node_count),
+			pose: PlayerPose::new(target, root_motion)?,
 		})
 	}
 
 	/// Returns the currently playing destination state.
 	fn state(&self) -> Option<AnimationStateId> {
-		self.transition
-			.as_ref()
-			.map(|transition| transition.destination.state)
-			.or_else(|| self.active.as_ref().map(|active| active.state))
+		match &self.playback {
+			Playback::AwaitingInitial => None,
+			Playback::Playing(active) => Some(active.state),
+			Playback::Transitioning(transition) => Some(transition.destination.state),
+		}
 	}
 
 	/// Reconciles playback toward `requested`, advances ready clips, and borrows the resulting pose.
@@ -353,60 +347,64 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		self.refresh_pending_transition(requested);
 		self.start_pending(pool);
 
-		if self.transition.is_none() && self.active.is_some() && self.pending.is_none() {
-			self.select_transition(requested);
+		if let Playback::Playing(active) = &self.playback
+			&& self.pending.is_none()
+		{
+			self.pending = self.selected_transition(active, requested);
 			self.start_pending(pool);
 		}
 
-		// Resolve every clip before borrowing arena regions. The resulting leases
-		// pin those regions until this evaluation and all root-motion samples finish.
-		let root_motion = if self.transition.is_some() {
-			let ready = {
-				let transition = self.transition.as_ref().expect("transition was checked above");
-				pool.request(&transition.source.lease) == AnimationPoolRequest::Ready
+		// Resolve every clip before borrowing arena regions. Leases pin those regions
+		// until pose evaluation and root-motion sampling finish.
+		let root_motion = match &mut self.playback {
+			Playback::AwaitingInitial => {
+				self.pose.write_rest_pose();
+				RootMotionDelta::IDENTITY
+			}
+			Playback::Playing(active) => {
+				if pool.request(&active.lease) == AnimationPoolRequest::Ready {
+					let resident = pool.acquire(&active.lease).expect("ready active lease must remain resident");
+					self.pose.advance_active(active, delta, &resident)
+				} else {
+					RootMotionDelta::IDENTITY
+				}
+			}
+			Playback::Transitioning(transition) => {
+				if pool.request(&transition.source.lease) == AnimationPoolRequest::Ready
 					&& pool.request(&transition.destination.lease) == AnimationPoolRequest::Ready
-			};
-			if ready {
-				let (source, destination) = {
-					let transition = self.transition.as_ref().expect("transition remains active while evaluating");
-					(
-						pool.acquire(&transition.source.lease)
-							.expect("ready source lease must remain resident"),
-						pool.acquire(&transition.destination.lease)
-							.expect("ready destination lease must remain resident"),
-					)
-				};
-				self.advance_transition(delta, &source, &destination)
-			} else {
-				RootMotionDelta::IDENTITY
+				{
+					let source = pool
+						.acquire(&transition.source.lease)
+						.expect("ready source lease must remain resident");
+					let destination = pool
+						.acquire(&transition.destination.lease)
+						.expect("ready destination lease must remain resident");
+					let root_motion = self.pose.advance_transition(transition, delta, &source, &destination);
+					if transition.elapsed == transition.duration {
+						// Move the destination into sole ownership only when the transition completes.
+						let Playback::Transitioning(transition) =
+							std::mem::replace(&mut self.playback, Playback::AwaitingInitial)
+						else {
+							unreachable!("Only a transition can complete playback blending");
+						};
+						self.playback = Playback::Playing(transition.destination);
+					}
+					root_motion
+				} else {
+					RootMotionDelta::IDENTITY
+				}
 			}
-		} else if self.active.is_some() {
-			let ready = {
-				let active = self.active.as_ref().expect("active clip was checked above");
-				pool.request(&active.lease) == AnimationPoolRequest::Ready
-			};
-			if ready {
-				let resident = {
-					let active = self.active.as_ref().expect("active clip remains active while evaluating");
-					pool.acquire(&active.lease).expect("ready active lease must remain resident")
-				};
-				self.advance_active(delta, &resident)
-			} else {
-				RootMotionDelta::IDENTITY
-			}
-		} else {
-			self.write_rest_pose();
-			RootMotionDelta::IDENTITY
 		};
 
 		AnimationGraphPose {
-			skeleton: &self.target,
-			local_pose: &self.local_pose,
-			global_pose: &self.global_pose,
+			skeleton: &self.pose.target,
+			local_pose: &self.pose.local_pose,
+			global_pose: &self.pose.global_pose,
 			root_motion,
 		}
 	}
 
+	/// Starts a selected clip once its data is resident, preserving playback while it loads.
 	fn start_pending(&mut self, pool: &mut AnimationPool) {
 		let Some(pending) = self.pending.as_ref() else {
 			return;
@@ -417,47 +415,45 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 			return;
 		}
 		let resident = pool.acquire(&lease).expect("ready pending lease must remain resident");
-		let pending = self.pending.take().expect("pending state transition was checked above");
-		let destination = RuntimeClip::new(pending.target, lease, &resident, target_state.clip.playback(), &self.target);
+		let destination = RuntimeClip::new(
+			pending.target,
+			lease,
+			&resident,
+			target_state.clip.playback(),
+			&self.pose.target,
+		);
+		let target = pending.target;
 
-		if let Some(duration) = pending.duration {
-			let source = self.active.take().expect("only a loaded state can start a graph transition");
-			sample_target_pose(&destination, &resident, &mut self.destination_current);
-			self.destination_previous.copy_from_slice(&self.destination_current);
-			self.transition = Some(ActiveTransition {
+		self.playback = if let Some(duration) = pending.duration {
+			let Playback::Playing(source) = std::mem::replace(&mut self.playback, Playback::AwaitingInitial) else {
+				unreachable!("Only a playing clip can start a graph transition");
+			};
+			sample_target_pose(&destination, &resident, &mut self.pose.destination_current);
+			self.pose.destination_previous.copy_from_slice(&self.pose.destination_current);
+			Playback::Transitioning(ActiveTransition {
 				source,
 				destination,
 				duration,
 				elapsed: MediaTime::ZERO,
 				begun: false,
-			});
+			})
 		} else {
-			sample_target_pose(&destination, &resident, &mut self.active_current);
-			self.active_previous.copy_from_slice(&self.active_current);
-			self.active = Some(destination);
-		}
+			sample_target_pose(&destination, &resident, &mut self.pose.active_current);
+			self.pose.active_previous.copy_from_slice(&self.pose.active_current);
+			Playback::Playing(destination)
+		};
+		self.pending = None;
 		drop(resident);
-		prefetch_neighbors(self.graph, pending.target, pool);
+		prefetch_neighbors(self.graph, target, pool);
 	}
 
 	/// Cancels or retargets a loading state when its source's selected edge changes.
 	fn refresh_pending_transition(&mut self, requested: AnimationStateId) {
-		let Some(pending) = self.pending.as_ref() else {
-			return;
-		};
-		if pending.duration.is_none() || self.transition.is_some() {
-			return;
+		if let Playback::Playing(active) = &self.playback
+			&& self.pending.as_ref().is_some_and(|pending| pending.duration.is_some())
+		{
+			self.pending = self.selected_transition(active, requested);
 		}
-		let selected = self
-			.active
-			.as_ref()
-			.and_then(|active| self.selected_transition(active, requested));
-		self.pending = selected;
-	}
-
-	fn select_transition(&mut self, requested: AnimationStateId) {
-		let selected = self.active.as_ref().expect("transition selection requires an active clip");
-		self.pending = self.selected_transition(selected, requested);
 	}
 
 	/// Resolves the active clip toward the persistent state requested by client code.
@@ -469,9 +465,40 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 				duration: Some(duration),
 			})
 	}
+}
 
-	fn advance_active(&mut self, delta: MediaTime, resident: &ResidentAnimationLease<'_>) -> RootMotionDelta {
-		let active = self.active.as_mut().expect("active clip was checked before advancing");
+impl PlayerPose {
+	/// Allocates sampling buffers once from the canonical rest pose.
+	fn new(target: Arc<Skeleton>, root_motion: Option<&OwnedRootMotionSettings>) -> Result<Self, AnimationGraphPlayerError> {
+		let root_motion = resolve_root_motion_target(&target, root_motion)?;
+		let node_count = target.nodes.len();
+		let rest_pose: Vec<_> = target.nodes.iter().map(|node| node.rest_local).collect();
+		let mut global_pose = Vec::with_capacity(node_count);
+		write_global_pose(&target, &rest_pose, &mut global_pose)
+			.expect("Canonical rest pose must match its skeleton node count");
+
+		Ok(Self {
+			target,
+			root_motion,
+			active_previous: rest_pose.clone(),
+			active_current: rest_pose.clone(),
+			destination_previous: rest_pose.clone(),
+			destination_current: rest_pose.clone(),
+			loop_start: rest_pose.clone(),
+			loop_end: rest_pose.clone(),
+			local_pose: rest_pose,
+			global_pose,
+			inertializer: PoseInertializer::new(node_count),
+		})
+	}
+
+	/// Samples one playing clip into the retained visual pose and extracts its root motion.
+	fn advance_active(
+		&mut self,
+		active: &mut RuntimeClip,
+		delta: MediaTime,
+		resident: &ResidentAnimationLease<'_>,
+	) -> RootMotionDelta {
 		let advance = active.advance(delta);
 		std::mem::swap(&mut self.active_previous, &mut self.active_current);
 		sample_target_pose(active, resident, &mut self.active_current);
@@ -492,8 +519,10 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		root_motion
 	}
 
+	/// Blends both transition clips and retains the destination samples when blending completes.
 	fn advance_transition(
 		&mut self,
+		transition: &mut ActiveTransition,
 		delta: MediaTime,
 		source_resident: &ResidentAnimationLease<'_>,
 		destination_resident: &ResidentAnimationLease<'_>,
@@ -501,7 +530,6 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		let root_motion_target = self.root_motion;
 		let target = &self.target;
 		let (root_motion, completed) = {
-			let transition = self.transition.as_mut().expect("transition was checked before advancing");
 			let source_advance = transition.source.advance(delta);
 			let destination_advance = transition.destination.advance(delta);
 			std::mem::swap(&mut self.active_previous, &mut self.active_current);
@@ -573,18 +601,13 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		self.write_global_pose();
 
 		if completed {
-			let destination = self
-				.transition
-				.take()
-				.expect("transition remains owned until its duration completes")
-				.destination;
 			self.active_previous.copy_from_slice(&self.destination_current);
 			self.active_current.copy_from_slice(&self.destination_current);
-			self.active = Some(destination);
 		}
 		root_motion
 	}
 
+	/// Restores the canonical pose while no clip is ready.
 	fn write_rest_pose(&mut self) {
 		for (output, node) in self.local_pose.iter_mut().zip(&self.target.nodes) {
 			*output = node.rest_local;
@@ -592,6 +615,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		self.write_global_pose();
 	}
 
+	/// Removes extracted motion from the visual pose so the owning object applies it once.
 	fn remove_root_motion_from_visual_pose(&mut self) {
 		let Some(root_motion) = self.root_motion else {
 			return;
@@ -606,6 +630,7 @@ impl<'graph> ReadyAnimationGraphPlayer<'graph> {
 		}
 	}
 
+	/// Updates the borrowed global pose after local sampling.
 	fn write_global_pose(&mut self) {
 		write_global_pose(&self.target, &self.local_pose, &mut self.global_pose)
 			.expect("player local pose always matches its canonical skeleton");

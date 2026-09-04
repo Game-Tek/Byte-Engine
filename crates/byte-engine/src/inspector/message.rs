@@ -5,7 +5,11 @@ use serde_json::Value;
 
 use super::DefaultInspector;
 use super::shape::describe_json_shape;
-use crate::core::{channel::Channel, factory::Handle, targeted_message::TargetedMessage};
+use crate::core::{
+	channel::{Channel, DefaultChannel},
+	factory::Handle,
+	targeted_message::TargetedMessage,
+};
 
 type SerializableMessagePoster = Box<dyn Fn(Handle, &Value) -> Result<(), String> + Send + Sync + 'static>;
 
@@ -37,8 +41,12 @@ pub const DELETE_MESSAGE_TYPE: &str = "Delete";
 pub const DESTROY_MESSAGE_TYPE: &str = "Destroy";
 
 impl DefaultInspector {
-	/// Adds one reflected targeted message to the transport-neutral registry.
-	pub(super) fn register_reflected_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
+	/// Adds one reflected targeted message and its destination channel to the transport-neutral registry.
+	pub(super) fn register_reflected_message<M>(
+		&mut self,
+		message_type: &'static str,
+		channel: DefaultChannel<M>,
+	) -> Result<(), String>
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
 		M::Payload: Facet<'static>,
@@ -55,14 +63,6 @@ impl DefaultInspector {
 			));
 		}
 
-		let channel = self
-			.messages
-			.try_channel::<M>()
-			.map_err(|error| {
-				format!(
-					"Inspector message could not be registered. The most likely cause is that the typed route for '{message_type}' is unavailable: {error}"
-				)
-			})?;
 		let payload_shape = describe_json_shape(M::Payload::SHAPE);
 		self.serializable_messages.insert(
 			message_type,
@@ -136,6 +136,7 @@ mod tests {
 			message_observer::MessageObserver,
 		},
 		gameplay::TransformationUpdate,
+		input::{ActionEvent, SeatHandle, TRIGGER_ACTION_MESSAGE_TYPE, Value as InputValue},
 		inspector::{DefaultInspector, Inspector},
 	};
 
@@ -149,7 +150,7 @@ mod tests {
 
 		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		inspector
-			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
+			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
 			.expect("register reflected transformation update");
 
 		(inspector, listener)
@@ -171,7 +172,7 @@ mod tests {
 		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 			inspector
-				.register_message::<DeleteMessage>(message_type)
+				.register_message(message_type, deletions.clone())
 				.expect("register reflected deletion message");
 		}
 
@@ -316,11 +317,13 @@ mod tests {
 	fn any_targeted_message_with_a_reflected_payload_can_be_registered_and_posted() {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
-		let messages = message_bus.new_scope("reflected-message-test-world");
-		let mut listener = messages.channel::<ReflectedTestMessage>().listener();
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let inspector_messages = message_bus.new_scope("reflected-message-test-inspector");
+		let destination_messages = message_bus.new_scope("reflected-message-test-destination");
+		let reflected_messages = destination_messages.channel::<ReflectedTestMessage>();
+		let mut listener = reflected_messages.listener();
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), inspector_messages);
 		inspector
-			.register_message::<ReflectedTestMessage>("ReflectedTestMessage")
+			.register_message("ReflectedTestMessage", reflected_messages)
 			.expect("register reflected test message");
 		let types = inspector.message_types();
 		assert_eq!(types.len(), 1);
@@ -366,5 +369,32 @@ mod tests {
 				},
 			})
 		);
+	}
+
+	#[test]
+	fn reflected_action_values_publish_canonical_action_events() {
+		let message_bus = MessageBus::default();
+		message_bus.observe().expect("attach test message observer");
+		let inspector_messages = message_bus.new_scope("action-inspector-test");
+		let action_events = message_bus.new_scope("action-event-test").channel::<ActionEvent>();
+		let mut listener = action_events.listener();
+		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), inspector_messages);
+		inspector
+			.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
+			.expect("register reflected action event");
+		let target = Factory::new().create(());
+
+		inspector
+			.post_message(
+				TRIGGER_ACTION_MESSAGE_TYPE,
+				target,
+				&serde_json::json!({ "type": "Float", "value": 1.0 }),
+			)
+			.expect("post reflected action event");
+
+		let event = listener.read().expect("posted action event");
+		assert_eq!(event.seat_handle(), SeatHandle::stub());
+		assert_eq!(event.handle(), target);
+		assert_eq!(event.value(), InputValue::Float(1.0));
 	}
 }

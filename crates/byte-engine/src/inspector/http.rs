@@ -35,6 +35,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// reflected [`Transform`](crate::gameplay::Transform) payload. To remove an
 /// entity, send `type: "Delete"` or `type: "Destroy"` with its target and a
 /// reflected unit payload represented by JSON `null`.
+/// To drive an action created with
+/// [`GraphicsApplication::create_action`](crate::application::graphics::GraphicsApplication::create_action),
+/// resolve its target with `GET /entities?name=<action>` and send
+/// `type: "TriggerAction"` with a reflected [`Value`](crate::input::Value).
 ///
 /// The server retains only an [`Inspector`] trait object. Pass the same inspector
 /// handle to another transport when clients need a second protocol surface.
@@ -343,10 +347,11 @@ mod tests {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("http-inspector-test-world");
-		let transform_listener = messages.channel().listener();
+		let transforms = messages.channel();
+		let transform_listener = transforms.listener();
 		let mut inspector = DefaultInspector::new(events, configuration, messages);
 		inspector
-			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
+			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
 			.expect("register reflected transformation update");
 		(EntityHandle::from(inspector), event_listener, transform_listener)
 	}
@@ -531,11 +536,12 @@ mod tests {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("http-destroy-test-world");
-		let mut deletions = messages.channel::<DeleteMessage>().listener();
+		let deletion_messages = messages.channel::<DeleteMessage>();
+		let mut deletions = deletion_messages.listener();
 		let entities = messages.factory::<String>();
 		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 		inspector
-			.register_message::<DeleteMessage>(DESTROY_MESSAGE_TYPE)
+			.register_message(DESTROY_MESSAGE_TYPE, deletion_messages)
 			.expect("register reflected destroy message");
 		let inspector = EntityHandle::from(inspector);
 		let server = TestServer::new(inspector.clone());

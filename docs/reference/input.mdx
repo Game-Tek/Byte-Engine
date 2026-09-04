@@ -71,7 +71,9 @@ An action represents input that your application understands. It has:
 For movement, keyboard keys can map to direction vectors, and the resolved action value can be a single `Vector3`.
 For lookaround, mouse position and a gamepad stick can both contribute to the same direction-like action.
 
-Actions are created through the application action factory.
+Actions are normally created through `GraphicsApplication::create_action`.
+This also exposes the action's declared name to the inspector. Use the raw
+action factory only when the action should not be discoverable by name.
 The input manager listens for those creation messages, resolves trigger names to handles, and starts emitting action events.
 
 ## Build actions
@@ -138,6 +140,34 @@ the input-driven behavior.
 This is the same message pattern used elsewhere in the engine.
 Input systems publish action events, and gameplay/application code consumes the actions it understands.
 Raw devices stay behind the input manager.
+
+## Trigger actions from the inspector
+
+Create the action with `GraphicsApplication::create_action`, then query its
+target by name:
+
+```http
+GET /entities?name=Zoom
+```
+
+Post a `TriggerAction` message with a value that matches the action type. This
+example supplies one positive float step to `Zoom`:
+
+```json
+{
+  "type": "TriggerAction",
+  "target": 47,
+  "payload": {
+    "type": "Float",
+    "value": 1.0
+  }
+}
+```
+
+Send this object to `POST /messages`. The inspector publishes the canonical
+`ActionEvent` directly to the same channel used by physical input. Query
+`GET /messages/types` when a tool needs to discover all supported value
+variants and their payload shapes.
 
 ## Practical guidance
 

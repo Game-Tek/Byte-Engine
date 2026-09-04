@@ -118,7 +118,7 @@
 			"post": {
 				"operationId": "postMessage",
 				"summary": "Post a message",
-				"description": "Publishes one registered targeted message to the running application. Query `GET /messages/types` first to discover the accepted protocol names and JSON payload shapes. The request object must contain exactly `type`, `target`, and `payload`.",
+				"description": "Publishes one registered targeted message to the running application. Query `GET /messages/types` first to discover the accepted protocol names and JSON payload shapes. The request object must contain exactly `type`, `target`, and `payload`. To trigger a named action, resolve its target with `GET /entities?name=<action>` and post `TriggerAction` with a matching input value.",
 				"tags": ["Control"],
 				"requestBody": {
 					"required": true,
@@ -131,6 +131,9 @@
 									},
 									{
 										"$ref": "#/components/schemas/DeletionMessage"
+									},
+									{
+										"$ref": "#/components/schemas/TriggerActionMessage"
 									}
 								]
 							},
@@ -549,6 +552,103 @@
 						"type": "null"
 					}
 				}
+			},
+			"TriggerActionMessage": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["type", "target", "payload"],
+				"properties": {
+					"type": {
+						"const": "TriggerAction",
+						"description": "Stable inspector protocol message name."
+					},
+					"target": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4294967295,
+						"description": "Action handle returned by `GET /entities?name=<action>`."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/InputValue"
+					}
+				}
+			},
+			"InputValue": {
+				"description": "A reflected action value. The variant must match the action's declared type.",
+				"oneOf": [
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Boolean"] },
+							"value": { "type": "boolean" }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Unicode"] },
+							"value": { "type": "string", "minLength": 1, "maxLength": 1 }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Float"] },
+							"value": { "type": "number", "format": "float" }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Integer"] },
+							"value": { "type": "integer", "format": "int32" }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Rgba"] },
+							"value": { "type": "array", "items": { "type": "number", "format": "float" }, "minItems": 4, "maxItems": 4 }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Vector2"] },
+							"value": { "type": "array", "items": { "type": "number", "format": "float" }, "minItems": 2, "maxItems": 2 }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Vector3"] },
+							"value": { "type": "array", "items": { "type": "number", "format": "float" }, "minItems": 3, "maxItems": 3 }
+						}
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": ["type", "value"],
+						"properties": {
+							"type": { "enum": ["Quaternion"] },
+							"value": { "type": "array", "items": { "type": "number", "format": "float" }, "minItems": 4, "maxItems": 4 }
+						}
+					}
+				]
 			},
 			"TransformPayload": {
 				"type": "object",

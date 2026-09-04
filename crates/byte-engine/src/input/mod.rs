@@ -70,7 +70,9 @@ pub enum Types {
 	Rgba,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, facet::Facet)]
+#[repr(C)]
+#[facet(opaque, proxy = SerializableValue)]
 /// The [`Value`] enum carries device and action values through the non-generic
 /// input runtime.
 pub enum Value {
@@ -90,6 +92,53 @@ pub enum Value {
 	Vector3(Axis3),
 	/// A quaternion.
 	Quaternion(Quaternion),
+}
+
+/// The `SerializableValue` enum defines the reflected JSON boundary for input values.
+#[derive(facet::Facet)]
+#[repr(u8)]
+#[facet(tag = "type", content = "value")]
+enum SerializableValue {
+	Boolean(bool),
+	Unicode(char),
+	Float(f32),
+	Integer(i32),
+	Rgba([f32; 4]),
+	Vector2([f32; 2]),
+	Vector3([f32; 3]),
+	Quaternion([f32; 4]),
+}
+
+impl TryFrom<SerializableValue> for Value {
+	type Error = String;
+
+	fn try_from(value: SerializableValue) -> Result<Self, Self::Error> {
+		Ok(match value {
+			SerializableValue::Boolean(value) => Self::Bool(value),
+			SerializableValue::Unicode(value) => Self::Unicode(value),
+			SerializableValue::Float(value) => Self::Float(value),
+			SerializableValue::Integer(value) => Self::Int(value),
+			SerializableValue::Rgba([r, g, b, a]) => Self::Rgba(RGBA::new(r, g, b, a)),
+			SerializableValue::Vector2([x, y]) => Self::Vector2(Axis2::new(x, y)),
+			SerializableValue::Vector3([x, y, z]) => Self::Vector3(Axis3::new(x, y, z)),
+			SerializableValue::Quaternion([x, y, z, w]) => Self::Quaternion(Quaternion::new(x, y, z, w)),
+		})
+	}
+}
+
+impl From<&Value> for SerializableValue {
+	fn from(value: &Value) -> Self {
+		match *value {
+			Value::Bool(value) => Self::Boolean(value),
+			Value::Unicode(value) => Self::Unicode(value),
+			Value::Float(value) => Self::Float(value),
+			Value::Int(value) => Self::Integer(value),
+			Value::Rgba(value) => Self::Rgba([value.r, value.g, value.b, value.a]),
+			Value::Vector2(value) => Self::Vector2([value.x, value.y]),
+			Value::Vector3(value) => Self::Vector3([value.x, value.y, value.z]),
+			Value::Quaternion(value) => Self::Quaternion([value.x, value.y, value.z, value.w]),
+		}
+	}
 }
 
 impl From<bool> for Value {
@@ -324,6 +373,9 @@ impl From<Value> for ValueMapping {
 
 #[derive(Clone, Debug)]
 /// The `ActionEvent` struct carries resolved action input to application code.
+///
+/// Inspector clients can target a named action with a reflected [`Value`]
+/// payload. Those posts use the same event channel as physical input.
 pub struct ActionEvent {
 	/// The seat that triggered the action event.
 	seat_handle: SeatHandle,
@@ -356,5 +408,18 @@ impl ActionEvent {
 	/// Returns the resolved action value.
 	pub fn value(&self) -> Value {
 		self.value
+	}
+}
+
+/// The stable inspection-protocol name for a posted [`ActionEvent`].
+pub const TRIGGER_ACTION_MESSAGE_TYPE: &str = "TriggerAction";
+
+impl crate::core::message::Message for ActionEvent {}
+
+impl crate::core::targeted_message::TargetedMessage for ActionEvent {
+	type Payload = Value;
+
+	fn from_handle_and_payload(handle: Handle, value: Self::Payload) -> Self {
+		Self::new(SeatHandle::stub(), handle, value)
 	}
 }

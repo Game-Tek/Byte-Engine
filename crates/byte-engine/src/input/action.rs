@@ -88,6 +88,11 @@ impl InputValue for RGBA {
 }
 
 impl Action {
+	/// Returns the stable name used to identify this action in tooling.
+	pub fn name(&self) -> &'static str {
+		self.name
+	}
+
 	pub fn new(name: &'static str, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
 			name,

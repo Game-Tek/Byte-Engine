@@ -66,8 +66,11 @@ pub trait Inspectable: Send + Sync {
 /// Register supported messages on a concrete implementation before sharing it
 /// as `dyn Inspector`, then pass the same handle to each protocol transport.
 pub trait Inspector: Send + Sync {
-	/// Registers one reflected targeted message for protocol posting.
-	fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
+	/// Registers one reflected targeted message and its destination channel for protocol posting.
+	///
+	/// Create the channel's listeners before registration. The channel may belong
+	/// to any scope on the shared message bus.
+	fn register_message<M>(&mut self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
 	where
 		Self: Sized,
 		M: TargetedMessage + Clone + Send + Sync + 'static,
@@ -151,7 +154,6 @@ impl InspectedEntity {
 pub struct DefaultInspector {
 	events: DefaultChannel<Events>,
 	configuration: Configuration,
-	messages: MessageScope,
 	serializable_messages: HashMap<&'static str, SerializableMessage>,
 	message_bus: MessageBus,
 	message_observer: MessageObserver,
@@ -166,7 +168,7 @@ impl DefaultInspector {
 	/// Register the application and world listeners before passing their routes so
 	/// inspector requests cannot be published without a consumer. Attach message
 	/// observation before acquiring any routes in `messages`. Next, call
-	/// [`Inspector::register_message`] for each supported post type before sharing
+	/// [`Inspector::register_message`] with each supported destination channel before sharing
 	/// the inspector with a protocol adapter. Spawn named entities after
 	/// construction because name collection is future-only.
 	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
@@ -192,7 +194,6 @@ impl DefaultInspector {
 		Self {
 			events,
 			configuration,
-			messages,
 			serializable_messages: HashMap::new(),
 			message_bus,
 			message_observer,
@@ -210,12 +211,12 @@ impl DefaultInspector {
 }
 
 impl Inspector for DefaultInspector {
-	fn register_message<M>(&mut self, message_type: &'static str) -> Result<(), String>
+	fn register_message<M>(&mut self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
 	where
 		M: TargetedMessage + Clone + Send + Sync + 'static,
 		M::Payload: Facet<'static>,
 	{
-		self.register_reflected_message::<M>(message_type)
+		self.register_reflected_message(message_type, channel)
 	}
 
 	fn configuration_events(&self) -> Vec<ConfigurationEvent> {

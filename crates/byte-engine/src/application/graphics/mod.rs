@@ -118,13 +118,8 @@ impl Application for GraphicsApplication {
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		let action_factory = messages.factory();
-
-		let input_system = {
-			let action_listener = action_factory.listener();
-			let event_channel = messages.channel();
-
-			input::InputManager::new(action_listener, event_channel)
-		};
+		let action_events = messages.channel();
+		let input_system = input::InputManager::new(action_factory.listener(), action_events.clone());
 		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
 		// the first frame has reached the screen.
 		let gamepad_system = None;
@@ -164,13 +159,16 @@ impl Application for GraphicsApplication {
 		let mut inspector =
 			DefaultInspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
 		inspector
-			.register_message::<TransformationUpdate>(TRANSFORMATION_UPDATE_MESSAGE_TYPE)
+			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, world.transforms_channel().clone())
 			.unwrap_or_else(|error| panic!("{error}"));
 		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 			inspector
-				.register_message::<DeleteMessage>(message_type)
+				.register_message(message_type, world.messages().channel::<DeleteMessage>())
 				.unwrap_or_else(|error| panic!("{error}"));
 		}
+		inspector
+			.register_message(input::TRIGGER_ACTION_MESSAGE_TYPE, action_events)
+			.unwrap_or_else(|error| panic!("{error}"));
 		let inspector = EntityHandle::from(inspector);
 		let screenshot_broker = inspector.screenshot_broker();
 		let inspector: EntityHandle<dyn Inspector> = inspector;
@@ -492,9 +490,24 @@ impl GraphicsApplication {
 		&self.window_factory.0
 	}
 
-	/// Returns the factory used to register input actions.
+	/// Returns the low-level factory used to register input actions without inspector names.
+	///
+	/// Prefer [`Self::create_action`] when external tools should discover and
+	/// trigger the action by its declared name.
 	pub fn action_factory(&self) -> &Factory<Action> {
 		&self.action_factory
+	}
+
+	/// Creates an input action and exposes its declared name to inspection tools.
+	///
+	/// Use the returned handle as the target of a reflected [`input::ActionEvent`].
+	/// Applications that need only the raw creation stream can continue to use
+	/// [`Self::action_factory`].
+	pub fn create_action(&self, action: Action) -> crate::core::factory::Handle {
+		let name = crate::gameplay::Name::new(action.name());
+		let handle = self.action_factory.create(action);
+		self.world.factory().derive(handle, name);
+		handle
 	}
 
 	/// Returns the application-owned namespace used by headed-runtime channels and factories.

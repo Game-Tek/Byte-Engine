@@ -384,7 +384,7 @@ impl<C: 'static> Engine<C> {
 					version: image.version(),
 					source_width: image.width_pixels(),
 					source_height: image.height_pixels(),
-					pixels: std::sync::Arc::from(image.pixels()),
+					pixels: std::sync::Arc::clone(image.pixels()),
 					position: element.position,
 					size: element.size,
 					clip,

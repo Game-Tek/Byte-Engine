@@ -121,7 +121,8 @@ impl Image {
 		self.height_pixels
 	}
 
-	pub fn pixels(&self) -> &[u8] {
+	/// Returns shared RGBA pixels. Clone the owner to retain this version across [`Self::set_rgba`] calls.
+	pub fn pixels(&self) -> &Arc<[u8]> {
 		&self.pixels
 	}
 
@@ -135,5 +136,23 @@ impl Image {
 
 	pub fn visual_ref(&self) -> &Visual {
 		&self.visual
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Image;
+
+	#[test]
+	fn retained_pixels_preserve_their_version_after_replacement() {
+		let mut image = Image::from_rgba(1, 1, vec![255, 0, 0, 255]);
+		let previous = image.pixels().clone();
+		let version = image.version();
+
+		image.set_rgba(1, 1, vec![0, 255, 0, 255]);
+
+		assert_eq!(&*previous, &[255, 0, 0, 255]);
+		assert_eq!(&**image.pixels(), &[0, 255, 0, 255]);
+		assert_ne!(image.version(), version);
 	}
 }

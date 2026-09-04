@@ -830,8 +830,16 @@ mod tests {
 			positions: stream(Streams::Vertices(VertexSemantics::Position), vertices * 12, 12),
 			normals: stream(Streams::Vertices(VertexSemantics::Normal), vertices * 12, 12),
 			uvs: stream(Streams::Vertices(VertexSemantics::UV), vertices * 8, 8),
-			vertex_indices: stream(Streams::Indices(resource_management::types::IndexStreamTypes::Vertices), vertices * 2, 2),
-			meshlet_indices: stream(Streams::Indices(resource_management::types::IndexStreamTypes::Triangles), 3, 1),
+			vertex_indices: stream(
+				Streams::Indices(resource_management::types::IndexStreamTypes::Vertices),
+				vertices * 2,
+				2,
+			),
+			meshlet_indices: stream(
+				Streams::Indices(resource_management::types::IndexStreamTypes::Triangles),
+				3,
+				1,
+			),
 			meshlets: stream(Streams::Meshlets, RESOURCE_MESHLET_STRIDE, RESOURCE_MESHLET_STRIDE),
 			skinning: Some((
 				stream(Streams::Vertices(VertexSemantics::Joints), vertices * 8, 8),

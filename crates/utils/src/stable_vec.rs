@@ -1,3 +1,5 @@
+use std::alloc::{Allocator, Global};
+
 /// The `StableVecHandle` struct provides generation-aware access to a live [`StableVec`] slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StableVecHandle {
@@ -31,28 +33,53 @@ struct Entry<T> {
 }
 
 /// The `StableVec` struct provides vector-like storage whose handles reject stale slot reuse.
-#[derive(Debug, Clone)]
-pub struct StableVec<T> {
-	entries: Vec<Entry<T>>,
+#[derive(Clone)]
+pub struct StableVec<T, A: Allocator = Global> {
+	entries: Vec<Entry<T>, A>,
 	first_free: Option<usize>,
 	len: usize,
 }
 
 impl<T> StableVec<T> {
 	pub fn new() -> Self {
+		Self::new_in(Global)
+	}
+
+	pub fn with_capacity(capacity: usize) -> Self {
+		Self::with_capacity_in(capacity, Global)
+	}
+}
+
+impl<T, A: Allocator> StableVec<T, A> {
+	pub fn new_in(allocator: A) -> Self {
 		Self {
-			entries: Vec::new(),
+			entries: Vec::new_in(allocator),
 			first_free: None,
 			len: 0,
 		}
 	}
 
-	pub fn with_capacity(capacity: usize) -> Self {
+	pub fn with_capacity_in(capacity: usize, allocator: A) -> Self {
 		Self {
-			entries: Vec::with_capacity(capacity),
+			entries: Vec::with_capacity_in(capacity, allocator),
 			first_free: None,
 			len: 0,
 		}
+	}
+
+	/// Collects an iterator into a new `StableVec` backed by `allocator`.
+	pub fn from_iter_in<I: IntoIterator<Item = T>>(iter: I, allocator: A) -> Self {
+		let mut values = Self::new_in(allocator);
+
+		for value in iter {
+			values.push(value);
+		}
+
+		values
+	}
+
+	pub fn allocator(&self) -> &A {
+		self.entries.allocator()
 	}
 
 	pub fn len(&self) -> usize {
@@ -201,13 +228,23 @@ impl<T> StableVec<T> {
 	}
 }
 
-impl<T> Default for StableVec<T> {
-	fn default() -> Self {
-		Self::new()
+impl<T: std::fmt::Debug, A: Allocator> std::fmt::Debug for StableVec<T, A> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("StableVec")
+			.field("entries", &self.entries)
+			.field("first_free", &self.first_free)
+			.field("len", &self.len)
+			.finish()
 	}
 }
 
-impl<T> std::ops::Index<StableVecHandle> for StableVec<T> {
+impl<T, A: Allocator + Default> Default for StableVec<T, A> {
+	fn default() -> Self {
+		Self::new_in(A::default())
+	}
+}
+
+impl<T, A: Allocator> std::ops::Index<StableVecHandle> for StableVec<T, A> {
 	type Output = T;
 
 	fn index(&self, handle: StableVecHandle) -> &Self::Output {
@@ -217,7 +254,7 @@ impl<T> std::ops::Index<StableVecHandle> for StableVec<T> {
 	}
 }
 
-impl<T> std::ops::IndexMut<StableVecHandle> for StableVec<T> {
+impl<T, A: Allocator> std::ops::IndexMut<StableVecHandle> for StableVec<T, A> {
 	fn index_mut(&mut self, handle: StableVecHandle) -> &mut Self::Output {
 		self.get_mut(handle).expect(
 			"StableVec handle does not contain a value. The most likely cause is that the handle was removed or belongs to another StableVec.",
@@ -227,21 +264,7 @@ impl<T> std::ops::IndexMut<StableVecHandle> for StableVec<T> {
 
 impl<T> FromIterator<T> for StableVec<T> {
 	fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-		let entries = iter
-			.into_iter()
-			.map(|value| Entry {
-				value: Some(value),
-				generation: 0,
-				next_free: None,
-			})
-			.collect::<Vec<_>>();
-		let len = entries.len();
-
-		Self {
-			entries,
-			first_free: None,
-			len,
-		}
+		Self::from_iter_in(iter, Global)
 	}
 }
 

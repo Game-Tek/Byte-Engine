@@ -283,9 +283,9 @@ fn assert_affine_matrix(matrix: &Matrix) {
 }
 
 /// Applies one update to every live scene instance registered for one renderable.
-fn update_renderable_instances<T>(
+fn update_renderable_instances<T, A: std::alloc::Allocator>(
 	render_entity_handles: &HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
-	render_entities: &mut StableVec<T>,
+	render_entities: &mut StableVec<T, A>,
 	handle: Handle,
 	mut update: impl FnMut(&mut T),
 ) {

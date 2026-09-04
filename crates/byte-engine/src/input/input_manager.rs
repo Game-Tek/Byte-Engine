@@ -215,57 +215,62 @@ impl InputManager {
 			let handle = message.handle();
 			let action = message.into_data();
 
-			let (r#type, input_events, tick_policy) = (action.r#type, action.bindings, action.tick_policy);
-
-			let input_event = InputAction {
-				r#type,
-				trigger_mappings: input_events
-					.iter()
-					.filter_map(|input_event| {
-						Some(TriggerMapping {
-							trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-							mapping: input_event.mapping.value,
-							function: Some(input_event.mapping.function),
-						})
-					})
-					.collect(),
-				handle: Some(handle),
-				tick_policy,
-			};
-
-			self.actions.push(input_event);
+			let index = self.create_action_with_tick_policy(action.r#type, &action.bindings, action.tick_policy);
+			self.actions[index.0 as usize].handle = Some(handle);
 		}
 
 		// Phase A: Process new records (if any) and resolve actions that received input.
 		if !self.records.is_empty() {
-			let records = frame_allocator.alloc_slice_fill_iter(self.records.drain(..));
+			let records = self.records.as_mut_slice();
+
+			let has_snapshots = self
+				.actions
+				.iter()
+				.any(|action| action.trigger_mappings.iter().any(|mapping| mapping.trigger.is_some()));
+			// Update sources in queue order so later motion or releases cannot overwrite a click.
+			for record in records.iter() {
+				self.trigger_values
+					.insert((record.seat_handle, record.device_handle, record.trigger_handle), *record);
+				if !has_snapshots || record.value != Value::Bool(true) {
+					continue;
+				}
+				for (i, action) in self.actions.iter().enumerate() {
+					for mapping in action
+						.trigger_mappings
+						.iter()
+						.filter(|mapping| mapping.trigger == Some(record.trigger_handle))
+					{
+						let Some(value) = resolve_action_value(action, mapping, record, &self.trigger_values, frame_allocator)
+						else {
+							continue;
+						};
+						self.action_values
+							.insert((record.seat_handle, record.device_handle, ActionHandle(i as u32)), value);
+						if let Some(handle) = action.handle {
+							self.event_channel.send(ActionEvent::new(record.seat_handle, handle, value));
+						}
+					}
+				}
+			}
 
 			// Sort records by source first and time second so each source's last record is the most recent.
 			records.sort_by(compare_source_then_time);
 			let record_count = compact_latest_by_source(records);
 			let records = &records[..record_count];
 
-			for record in records {
-				self.trigger_values
-					.insert((record.seat_handle, record.device_handle, record.trigger_handle), *record);
-			}
-
 			for (i, action) in self.actions.iter().enumerate() {
-				let action_records = records
-					.iter()
-					.filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
-
-				let most_recent_record = action_records.max_by_key(|r| r.time);
-
-				let record = if let Some(record) = most_recent_record {
-					record
-				} else {
+				let action_records = records.iter().filter_map(|record| {
+					action
+						.trigger_mappings
+						.iter()
+						.find(|mapping| mapping.trigger.is_none() && mapping.trigger_handle == record.trigger_handle)
+						.map(|mapping| (record, mapping))
+				});
+				let Some((record, mapping)) = action_records.max_by_key(|(record, _)| record.time) else {
 					continue;
 				};
 
-				let value = if let Some(value) = resolve_action_value(action, record, &self.trigger_values, frame_allocator) {
-					value
-				} else {
+				let Some(value) = resolve_action_value(action, mapping, record, &self.trigger_values, frame_allocator) else {
 					continue;
 				};
 
@@ -288,6 +293,8 @@ impl InputManager {
 			}
 		}
 
+		self.records.clear();
+
 		// Manual actions enter the same state table as physical actions, using the
 		// reserved device because they do not originate from a concrete device.
 		for (seat_handle, action_handle, value) in self.pending_manual_actions.drain(..) {
@@ -305,43 +312,30 @@ impl InputManager {
 		// Iterates all actions and emits events based on their tick policy using the
 		// most recently resolved value. Only emits for devices that have previously
 		// interacted with the action.
-		let entries = frame_allocator.alloc_slice_fill_iter(self.action_values.iter().map(|(key, value)| (*key, *value)));
-		for &((seat_handle, device_handle, action_handle), value) in entries.iter() {
+		for (&(seat_handle, device_handle, action_handle), &value) in &self.action_values {
 			let action = &self.actions[action_handle.0 as usize];
+			// Snapshot actions emit only in response to their explicit triggers.
+			if action.trigger_mappings.iter().any(|mapping| mapping.trigger.is_some()) {
+				continue;
+			}
 
 			let handle = match &action.handle {
 				Some(h) => *h,
 				None => continue,
 			};
 
-			match action.tick_policy {
-				TickPolicy::OnChange => {} // Already handled in Phase A.
-				TickPolicy::WhileActive => {
-					if !value.is_default() {
-						log::debug!(
-							target: "byte_engine::input::actions",
-							"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
-							action.tick_policy,
-							handle,
-							seat_handle,
-							device_handle,
-							value
-						);
-						self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
-					}
-				}
-				TickPolicy::Always => {
-					log::debug!(
-						target: "byte_engine::input::actions",
-						"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
-						action.tick_policy,
-						handle,
-						seat_handle,
-						device_handle,
-						value
-					);
-					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
-				}
+			let emit = match action.tick_policy {
+				TickPolicy::OnChange => false,
+				TickPolicy::WhileActive => !value.is_default(),
+				TickPolicy::Always => true,
+			};
+			if emit {
+				log::debug!(
+					target: "byte_engine::input::actions",
+					"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+					action.tick_policy, handle, seat_handle, device_handle, value
+				);
+				self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 			}
 		}
 	}
@@ -399,13 +393,7 @@ impl InputManager {
 			r#type,
 			trigger_mappings: action_binding_descriptions
 				.iter()
-				.filter_map(|input_event| {
-					Some(TriggerMapping {
-						trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-						mapping: input_event.mapping.value,
-						function: Some(input_event.mapping.function),
-					})
-				})
+				.filter_map(|binding| self.resolve_binding(binding))
 				.collect(),
 			handle: None,
 			tick_policy,
@@ -415,6 +403,31 @@ impl InputManager {
 		self.actions.push(input_event);
 
 		handle
+	}
+
+	/// Resolves source names and rejects unsupported snapshot triggers.
+	fn resolve_binding(&self, binding: &ActionBindingDescription) -> Option<TriggerMapping> {
+		let trigger_handle = self.to_trigger_handle(&binding.input_source)?;
+		let trigger = if let Some(reference) = &binding.trigger {
+			let handle = self.to_trigger_handle(reference)?;
+			let source = &self.triggers[trigger_handle.0 as usize];
+			let gate = &self.triggers[handle.0 as usize];
+			if gate.r#type != Types::Boolean || gate.device_class_handle != source.device_class_handle {
+				warn!(
+					"Input snapshot binding is invalid. The trigger must be boolean and belong to the value source's device class."
+				);
+				return None;
+			}
+			Some(handle)
+		} else {
+			None
+		};
+		Some(TriggerMapping {
+			trigger_handle,
+			trigger,
+			mapping: binding.mapping.value,
+			function: Some(binding.mapping.function),
+		})
 	}
 
 	/// Returns all devices that belong to the named class.
@@ -1187,6 +1200,73 @@ mod tests {
 		fn next_event(&mut self) -> Option<ActionEvent> {
 			Listener::read(&mut self.event_listener)
 		}
+	}
+
+	#[test]
+	fn triggered_binding_snapshots_each_press_in_queue_order() {
+		let mut fixture = InputFixture::new();
+		let class = crate::input::utils::register_mouse_device_class(&mut fixture.input_manager);
+		let mouse = fixture.input_manager.create_device(&class);
+		let other_mouse = fixture.input_manager.create_device(&class);
+		fixture.factory.create(
+			Action::new(
+				&[ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")],
+				Types::Vector2,
+			)
+			.tick_policy(TickPolicy::Always),
+		);
+		// Neither a missing sample nor another device's position supplies a snapshot.
+		for (device, source, value) in [
+			(other_mouse, "Mouse.Position", Value::Vector2(Axis2::new(99.0, 99.0))),
+			(mouse, "Mouse.LeftButton", Value::Bool(true)),
+		] {
+			fixture
+				.input_manager
+				.record_trigger_value_for_device(fixture.seat, device, TriggerReference::Name(source), value);
+		}
+		assert_eq!(fixture.tick(), 0);
+		for (source, value) in [
+			("Mouse.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
+			("Mouse.LeftButton", Value::Bool(true)),
+			("Mouse.LeftButton", Value::Bool(false)),
+			("Mouse.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
+			("Mouse.LeftButton", Value::Bool(true)),
+			("Mouse.Position", Value::Vector2(Axis2::new(5.0, 6.0))),
+			("Mouse.LeftButton", Value::Bool(false)),
+		] {
+			fixture
+				.input_manager
+				.record_trigger_value_for_device(fixture.seat, mouse, TriggerReference::Name(source), value);
+		}
+		fixture.update();
+		assert_eq!(fixture.next_event().unwrap().value(), Value::Vector2(Axis2::new(1.0, 2.0)));
+		assert_eq!(fixture.next_event().unwrap().value(), Value::Vector2(Axis2::new(3.0, 4.0)));
+		assert!(fixture.next_event().is_none());
+		assert_eq!(fixture.tick(), 0);
+		// A later press samples the retained position without requiring more motion.
+		fixture.input_manager.record_trigger_value_for_device(
+			fixture.seat,
+			mouse,
+			TriggerReference::Name("Mouse.LeftButton"),
+			Value::Bool(true),
+		);
+		fixture.update();
+		assert_eq!(fixture.next_event().unwrap().value(), Value::Vector2(Axis2::new(5.0, 6.0)));
+		assert!(fixture.next_event().is_none());
+		// Motion alone stays silent, and another seat cannot sample this seat's value.
+		fixture.input_manager.record_trigger_value_for_device(
+			fixture.seat,
+			mouse,
+			TriggerReference::Name("Mouse.Position"),
+			Value::Vector2(Axis2::new(7.0, 8.0)),
+		);
+		fixture.input_manager.record_trigger_value_for_device(
+			SeatHandle(42),
+			mouse,
+			TriggerReference::Name("Mouse.LeftButton"),
+			Value::Bool(true),
+		);
+		assert_eq!(fixture.tick(), 0);
 	}
 
 	#[test]

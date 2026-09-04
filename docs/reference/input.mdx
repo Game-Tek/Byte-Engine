@@ -89,6 +89,21 @@ Follow this flow:
 Most headed applications use `setup_default_input` for the first two steps and `process_default_window_input` for platform window events.
 That default path installs the standard mouse, keyboard, and gamepad names used by action bindings.
 
+## Publish a value when a button is pressed
+
+A binding can publish one source's value when another source records a positive
+boolean value. For example, a mouse click can publish the current cursor position.
+The application receives the position in one action without maintaining a
+separate cursor action or cached position.
+
+The trigger must be boolean and belong to the value source's device class.
+The input manager samples the latest recorded value from the same seat and device
+at each positive trigger record. Releases and movement alone do not emit this
+binding. If no value has been recorded yet, the trigger produces no event.
+Records are processed in queue order, so multiple presses in one update retain
+their own positions. Actions containing these bindings bypass their tick policy
+to avoid repeating a captured value on later ticks.
+
 ## Value mapping
 
 Bindings can map a trigger value into the action's output type.
@@ -142,31 +157,13 @@ Raw devices stay behind the input manager.
 
 ## Trigger actions from the inspector
 
-Create the action through `GraphicsApplication::world` and attach a `Name`, then
-query its target by name:
+An inspector-triggered action must be created through `GraphicsApplication::world`
+and have a `Name` so tools can find its target through the entity query endpoint.
 
-```http
-GET /entities?name=Zoom
-```
-
-Post a `TriggerAction` message with a value that matches the action type. This
-example supplies one positive float step to `Zoom`:
-
-```json
-{
-  "type": "TriggerAction",
-  "target": 47,
-  "payload": {
-    "type": "Float",
-    "value": 1.0
-  }
-}
-```
-
-Send this object to `POST /messages`. The inspector publishes the canonical
-`ActionEvent` directly to the same channel used by physical input. Query
-`GET /messages/types` when a tool needs to discover all supported value
-variants and their payload shapes.
+The message endpoint accepts a `TriggerAction` message containing the target and
+a value that matches the action's type. The inspector publishes the canonical
+`ActionEvent` directly to the same channel used by physical input. The message-type
+endpoint describes the supported value variants and their payload shapes.
 
 ## Practical guidance
 

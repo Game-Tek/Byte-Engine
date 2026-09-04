@@ -110,6 +110,7 @@ impl Action {
 #[derive(Copy, Clone, Debug)]
 pub struct ActionBindingDescription {
 	pub(crate) input_source: TriggerReference,
+	pub(crate) trigger: Option<TriggerReference>,
 	pub(crate) mapping: ValueMapping,
 }
 
@@ -117,8 +118,18 @@ impl ActionBindingDescription {
 	pub fn new(input_source: &'static str) -> Self {
 		ActionBindingDescription {
 			input_source: TriggerReference::Name(input_source),
+			trigger: None,
 			mapping: false.into(),
 		}
+	}
+
+	/// Samples this source whenever `trigger` records `true`, using the same seat
+	/// and device. Missing source values produce no event; releases are ignored.
+	/// Actions containing triggered bindings bypass their tick policy; each
+	/// positive record emits one snapshot. Next, pass this binding to [`Action::new`].
+	pub fn triggered_by(mut self, trigger: &'static str) -> Self {
+		self.trigger = Some(TriggerReference::Name(trigger));
+		self
 	}
 
 	pub fn mapped(mut self, mapping: ValueMapping) -> Self {
@@ -133,6 +144,8 @@ impl ActionBindingDescription {
 pub struct TriggerMapping {
 	/// The handle to the trigger that this mapping is for.
 	pub(crate) trigger_handle: TriggerHandle,
+	/// The optional boolean source that requests a snapshot.
+	pub(crate) trigger: Option<TriggerHandle>,
 	/// The value that this trigger maps to.
 	pub(crate) mapping: Value,
 	/// The function that this mapping uses to convert the trigger value to the action value.

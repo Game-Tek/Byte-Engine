@@ -17,15 +17,17 @@ pub struct InputEventState {
 /// Resolves one action value from the latest trigger record and current trigger state.
 pub(super) fn resolve_action_value(
 	action: &InputAction,
+	mapping: &TriggerMapping,
 	record: &Record,
 	values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
 	frame_allocator: &bumpalo::Bump,
 ) -> Option<Value> {
-	let mapping = action
-		.trigger_mappings
-		.iter()
-		.find(|mapping| mapping.trigger_handle == record.trigger_handle)?;
-
+	// Snapshot bindings convert the retained source value at the trigger's place in the queue.
+	let record = if mapping.trigger.is_some() {
+		values.get(&(record.seat_handle, record.device_handle, mapping.trigger_handle))?
+	} else {
+		record
+	};
 	match action.r#type {
 		Types::Boolean => match record.value {
 			Value::Bool(value) => Some(Value::Bool(value)),

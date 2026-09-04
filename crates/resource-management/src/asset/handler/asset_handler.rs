@@ -173,7 +173,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 /// The `BakeContext` struct provides format handlers with the shared facilities used during one asset bake.
 #[derive(Clone, Copy)]
 pub struct BakeContext<'a> {
-	asset_manager: &'a AssetManagerState,
+	asset_manager: &'a Arc<AssetManagerState>,
 	resource_storage_backend: &'a dyn resource::DynStorageBackend,
 	asset_storage_backend: &'a dyn asset::DynStorageBackend,
 	asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
@@ -186,7 +186,7 @@ pub struct BakeContext<'a> {
 
 impl<'a> BakeContext<'a> {
 	pub(in crate::asset) fn new(
-		asset_manager: &'a AssetManagerState,
+		asset_manager: &'a Arc<AssetManagerState>,
 		resource_storage_backend: &'a dyn resource::DynStorageBackend,
 		asset_storage_backend: &'a dyn asset::DynStorageBackend,
 		asset_dependencies: &'a Mutex<Vec<AssetDependency>>,
@@ -530,7 +530,7 @@ async fn write_complete_owned_resource<'a, T: compio::buf::IoBuf>(
 	.map_err(|_| LoadErrors::FailedToStore)
 }
 
-use std::{alloc::Allocator, cell::Cell, fmt, future::Future};
+use std::{alloc::Allocator, cell::Cell, fmt, future::Future, sync::Arc};
 
 use utils::sync::Mutex;
 

@@ -17,7 +17,6 @@ pub(crate) struct AssetManagerState {
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
 	dispatcher: compio::dispatcher::Dispatcher,
-	self_weak: std::sync::OnceLock<std::sync::Weak<AssetManagerState>>, // TODO: what is this?
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
 	#[cfg(debug_assertions)]
@@ -70,7 +69,6 @@ impl AssetManager {
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity(32))),
 				bake_memory_budget: None,
 				dispatcher,
-				self_weak: std::sync::OnceLock::new(),
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
 				#[cfg(debug_assertions)]
@@ -185,7 +183,7 @@ impl AssetManager {
 	/// Next, await [`crate::ResourceManager::request`] for the stored output or
 	/// inspect it through the storage backend.
 	pub async fn bake(&self, id: &str) -> Result<(), LoadMessages> {
-		self.dispatch_bake(id, false).await
+		self.state.dispatch_bake_in_scope(id, false, None).await
 	}
 
 	/// Returns the stored asset, or bakes it when it is missing or its recorded source versions changed.
@@ -195,7 +193,7 @@ impl AssetManager {
 
 	/// Returns the stored resource after ensuring its complete source provenance is current.
 	pub(crate) async fn bake_if_not_exists_serialized(&self, id: &str) -> Result<crate::SerializableResource, LoadMessages> {
-		self.dispatch_bake(id, true).await?;
+		self.state.dispatch_bake_in_scope(id, true, None).await?;
 
 		self.state
 			.resource_storage_backend
@@ -217,8 +215,6 @@ impl AssetManager {
 		let Some(root) = self.state.storage_backend.watch_root() else {
 			return;
 		};
-
-		let _ = self.state.self_weak.set(Arc::downgrade(&self.state));
 
 		let weak = Arc::downgrade(&self.state);
 
@@ -275,13 +271,6 @@ impl AssetManager {
 		hot_reload.updates = Some(updates);
 
 		hot_reload.watcher = Some(watcher);
-	}
-
-	/// Runs one owned bake request on the asset worker pool.
-	async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
-		let _ = self.state.self_weak.set(Arc::downgrade(&self.state));
-
-		self.state.dispatch_bake(id, only_when_stale).await
 	}
 }
 
@@ -490,24 +479,13 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Runs one owned bake request on the asset worker pool.
-	pub(crate) async fn dispatch_bake(&self, id: &str, only_when_stale: bool) -> Result<(), LoadMessages> {
-		self.dispatch_bake_in_scope(id, only_when_stale, None).await
-	}
-
-	/// Runs one dependency request in its root bake's memory scope.
+	/// Runs a bake with an explicit owner, inheriting the root memory scope for dependencies.
 	pub(super) async fn dispatch_bake_in_scope(
-		&self,
+		self: &Arc<Self>,
 		id: &str,
 		only_when_stale: bool,
 		memory_scope: Option<Arc<BakeMemoryScope>>,
 	) -> Result<(), LoadMessages> {
-		let state = self
-			.self_weak
-			.get()
-			.and_then(std::sync::Weak::upgrade)
-			.ok_or(LoadMessages::ExecutionUnavailable)?;
-
 		if let Some(notification) = self.bake_listener(id) {
 			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 		}
@@ -533,6 +511,8 @@ impl AssetManagerState {
 
 		let registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, &id);
 
+		// Only the leader needs an owned reference for the queued worker future.
+		let state = Arc::clone(self);
 		let task = self
 			.dispatcher
 			.dispatch(move || async move {
@@ -596,7 +576,7 @@ impl AssetManagerState {
 	/// Runs one asset handler invocation without consulting the in-flight registry.
 	///
 	/// Call this method directly when no coalescing is desired.
-	async fn bake_uncoalesced(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	async fn bake_uncoalesced(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		#[cfg(debug_assertions)]
@@ -728,7 +708,7 @@ impl AssetManagerState {
 
 	/// Bakes an asset with the provided allocator when the resource is missing or stale.
 	pub(super) async fn bake_if_not_exists_in(
-		&self,
+		self: &Arc<Self>,
 		id: &str,
 		allocator: &BakeAllocator,
 	) -> Result<crate::SerializableResource, LoadMessages> {
@@ -742,7 +722,7 @@ impl AssetManagerState {
 	}
 
 	/// Ensures that the requested resource exists and reflects its current source versions.
-	async fn ensure_baked_in(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	async fn ensure_baked_in(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		match self.register_bake(id) {
 			InFlightBakeRole::Leader(notification) => {
 				let _registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, id);
@@ -760,7 +740,7 @@ impl AssetManagerState {
 	}
 
 	/// Checks freshness and runs one bake without consulting the in-flight registry.
-	async fn ensure_baked_uncoalesced(&self, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	async fn ensure_baked_uncoalesced(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		if let Some((resource, _)) = self.resource_storage_backend.read(id).await {

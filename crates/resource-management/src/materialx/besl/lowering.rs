@@ -7,39 +7,28 @@ use besl::parser::Node;
 use crate::materialx::{Dag, DataType, DeclarationId, GraphId, Input, NodeId, PortIndex, Source, Value};
 
 use super::Texture;
-use super::error::{INLINING_LIMIT, LowerError};
+use super::error::LowerError;
 use super::nodes;
 use super::syntax::{self, Expression};
 
+/// The deepest chain of node graph instantiations the lowering follows before it gives up.
+///
+/// MaterialX forbids a node graph from instantiating itself, so this only trips on a document that
+/// nests graphs far past anything an authoring tool writes. It also bounds every walk that follows a
+/// connection across scopes, because a chain of those cannot be longer than the nesting itself.
+const INLINING_LIMIT: usize = 64;
+
 /// The `Argument` struct holds one interface input of an instantiated node scope.
 ///
-/// The binding is kept as written rather than lowered on the spot, because a node definition
-/// declares inputs its implementation may never read, and some of them, such as a file name, carry
-/// no value a shader can compute with at all.
-#[derive(Clone)]
+/// The binding is kept as written rather than lowered on the spot, because a node definition declares
+/// inputs its implementation may never read, and some of them, such as a file name, carry no value a
+/// shader can compute with at all.
+#[derive(Clone, Default)]
 pub(super) struct Argument<'a> {
 	/// The frame the binding was written in, and the port that wrote it.
 	binding: Option<(usize, Input<'a>)>,
 	/// The lowered binding, kept so an input read more than once is computed once.
 	value: Option<Expression<'a>>,
-}
-
-impl<'a> Argument<'a> {
-	/// Binds one interface input to the port an instantiation wrote for it.
-	pub fn bound(frame: usize, input: &Input<'a>) -> Self {
-		Argument {
-			binding: Some((frame, input.clone())),
-			value: None,
-		}
-	}
-
-	/// Leaves one interface input to whatever the scope itself writes for it.
-	pub fn unbound() -> Self {
-		Argument {
-			binding: None,
-			value: None,
-		}
-	}
 }
 
 /// The `Frame` struct records one instantiation of a node scope so reads of its interface resolve.
@@ -108,11 +97,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	/// Every node lands in a local so that component access, which repeats its operand once per
 	/// component, never repeats the work behind it.
 	pub fn bind(&mut self, hint: &str, data_type: DataType<'a>, syntax: Node<'a>) -> Result<Expression<'a>, LowerError> {
-		let type_name = syntax::besl_type(data_type).ok_or_else(|| LowerError::UnsupportedType {
-			node: hint.to_string(),
-			data_type: data_type.name().to_string(),
-		})?;
-
+		let type_name = syntax::type_name(data_type, hint)?;
 		let name = self.local(hint);
 
 		self.statements.push(Node::let_assignment(name.clone(), type_name, syntax));
@@ -128,7 +113,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 		);
 
 		// A one-component value is never read through a component, so repeating it costs nothing either.
-		if readable || value.width() == Some(1) {
+		if readable || value.width() == 1 {
 			return Ok(value);
 		}
 
@@ -196,8 +181,8 @@ impl<'a, 'd> Lowering<'a, 'd> {
 
 	/// Reads one input of a node, following its declaration when the document leaves the input out.
 	///
-	/// Returns nothing when neither the document nor the declaration says what the input carries,
-	/// which lets the caller supply the constant the node's own semantics fall back to.
+	/// Returns nothing when neither the document nor the declaration says what the input carries, which
+	/// lets the caller supply the constant the node's own semantics fall back to.
 	pub fn input(&mut self, frame: usize, node: NodeId, name: &str) -> Result<Option<Expression<'a>>, LowerError> {
 		let dag = self.dag;
 		let instance = dag.node(node);
@@ -210,12 +195,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 			return Ok(None);
 		};
 
-		let Some(port) = dag
-			.declaration(declaration)
-			.inputs
-			.iter()
-			.find(|port| port.name == name)
-		else {
+		let Some(port) = dag.declaration(declaration).inputs.iter().find(|port| port.name == name) else {
 			return Ok(None);
 		};
 
@@ -244,14 +224,8 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	}
 
 	/// Lowers the node behind one of a scope's outputs, in a frame that scope was instantiated into.
-	pub fn graph_result(
-		&mut self,
-		instance: usize,
-		graph: GraphId,
-		output: PortIndex,
-	) -> Result<Expression<'a>, LowerError> {
+	pub fn graph_result(&mut self, instance: usize, graph: GraphId, output: PortIndex) -> Result<Expression<'a>, LowerError> {
 		let scope = self.dag.graph(graph);
-
 		let port = scope.outputs.get(output.index()).ok_or_else(|| LowerError::UnknownOutput {
 			node: scope.name.to_string(),
 			output: output.index() as u32,
@@ -262,8 +236,8 @@ impl<'a, 'd> Lowering<'a, 'd> {
 
 	/// Opens the chain of scopes a node was written inside, and returns the frame it belongs to.
 	///
-	/// A node written inside a node graph reads that graph's interface, so it can only be lowered from
-	/// a frame that graph has been instantiated into.
+	/// A node written inside a node graph reads that graph's interface, so it can only be lowered from a
+	/// frame that graph has been instantiated into.
 	pub fn enter(&mut self, graph: GraphId) -> Result<usize, LowerError> {
 		if graph == GraphId::ROOT {
 			return Ok(Self::ROOT_FRAME);
@@ -295,23 +269,30 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	///
 	/// Two nodes of the same category bind the same graph differently, so an expansion is keyed by the
 	/// node rather than by the graph.
-	pub fn expansion(
-		&mut self,
-		frame: usize,
-		node: NodeId,
-		graph: GraphId,
-		arguments: Vec<Argument<'a>>,
-	) -> Result<usize, LowerError> {
+	pub fn expansion(&mut self, frame: usize, node: NodeId, graph: GraphId) -> Result<usize, LowerError> {
 		if let Some(instance) = self.expansions.get(&(frame, node)) {
 			return Ok(*instance);
 		}
 
-		let name = self.dag.node(node).name;
-		let instance = self.open(frame, graph, arguments, name)?;
+		let dag = self.dag;
+		let instance = dag.node(node);
+		let name = instance.name;
+		// The node's own inputs bind the graph's interface; anything it leaves out keeps the declared default.
+		let arguments = dag
+			.graph(graph)
+			.interface
+			.iter()
+			.map(|port| Argument {
+				binding: instance.input(port.name).map(|input| (frame, input.clone())),
+				value: None,
+			})
+			.collect();
 
-		self.expansions.insert((frame, node), instance);
+		let expansion = self.open(frame, graph, arguments, name)?;
 
-		Ok(instance)
+		self.expansions.insert((frame, node), expansion);
+
+		Ok(expansion)
 	}
 
 	/// Opens a frame for one instantiation of a node scope.
@@ -348,6 +329,33 @@ impl<'a, 'd> Lowering<'a, 'd> {
 			.or_insert_with(|| dag.implementation(declaration))
 	}
 
+	/// Resolves one read of a node scope's interface to the port that binds it and the frame it was written in.
+	///
+	/// The binding is the one the instantiation wrote; when it wrote none, the scope's own port applies,
+	/// and that was written one frame further out. Nothing at all means the input has no default, which
+	/// is what a node definition's own interface says about every input it declares.
+	fn binding<'s>(&'s self, frame: usize, graph: GraphId, input: PortIndex) -> Option<(usize, &'s Input<'a>)> {
+		// The read may come from a node nested below the scope that declares the interface.
+		let owner = self.owner(frame, graph).unwrap_or(frame);
+
+		if let Some(Argument {
+			binding: Some((caller, port)),
+			..
+		}) = self.frames[owner].arguments.get(input.index())
+		{
+			return Some((*caller, port));
+		}
+
+		let declared = self.dag.graph(graph).interface.get(input.index())?;
+
+		// An interface resolving to itself is how a node definition spells an input with no default.
+		if matches!(declared.source, Source::Interface { .. }) {
+			return None;
+		}
+
+		Some((self.frames[owner].parent.unwrap_or(Self::ROOT_FRAME), declared))
+	}
+
 	/// Lowers a read of one of the enclosing scope's interface inputs.
 	fn interface(
 		&mut self,
@@ -356,94 +364,64 @@ impl<'a, 'd> Lowering<'a, 'd> {
 		input: PortIndex,
 		hint: &str,
 	) -> Result<Expression<'a>, LowerError> {
-		// The read may come from a node nested below the scope that declares the interface.
 		let owner = self.owner(frame, graph).unwrap_or(frame);
 		let port = input.index();
 
-		match self.frames[owner].arguments.get(port).cloned() {
-			Some(Argument { value: Some(value), .. }) => return Ok(value),
-			Some(Argument {
-				binding: Some((caller, input)),
-				..
-			}) => {
-				let value = self.port(caller, &input)?;
-
-				self.frames[owner].arguments[port].value = Some(value.clone());
-
-				return Ok(value);
-			}
-			_ => {}
+		if let Some(value) = self.frames[owner].arguments.get(port).and_then(|argument| argument.value.clone()) {
+			return Ok(value);
 		}
 
-		let scope = self.dag.graph(graph);
+		let Some((caller, bound)) = self.binding(frame, graph, input) else {
+			let scope = self.dag.graph(graph);
+			let declared = scope.interface.get(port).ok_or_else(|| LowerError::UnknownOutput {
+				node: scope.name.to_string(),
+				output: port as u32,
+			})?;
 
-		let declared = scope.interface.get(port).ok_or_else(|| LowerError::UnknownOutput {
-			node: scope.name.to_string(),
-			output: port as u32,
-		})?;
-
-		// Nothing bound the input, so whatever the scope itself wrote applies, and it was written outside.
-		let outer = self.frames[owner].parent.unwrap_or(Self::ROOT_FRAME);
-
-		if matches!(declared.source, Source::Interface { .. }) {
-			// The interface would resolve to itself, which is how a node definition spells no default.
 			return Ok(Expression::new(zero(declared.data_type, hint)?, declared.data_type));
+		};
+
+		let bound = bound.clone();
+		let value = self.port(caller, &bound)?;
+
+		if let Some(argument) = self.frames[owner].arguments.get_mut(port) {
+			argument.value = Some(value.clone());
 		}
 
-		self.port(outer, declared)
+		Ok(value)
 	}
 
 	/// Returns the constant one input of a node carries, following interface bindings to reach it.
 	///
-	/// File names, channel strings and indices are read rather than computed, so they are traced
-	/// through a node graph's interface without lowering anything.
+	/// File names, channel strings and indices are read rather than computed, so they are traced through
+	/// a node graph's interface without lowering anything.
 	pub fn parameter<'s>(&'s self, frame: usize, node: NodeId, name: &str) -> Option<&'s Value<'a>> {
 		let instance = self.dag.node(node);
 
-		if let Some(input) = instance.input(name) {
-			return self.written(frame, &input.source);
-		}
+		let Some(input) = instance.input(name) else {
+			// The document wrote nothing on the input, so the declaration's own default is the constant.
+			return self
+				.dag
+				.declaration(instance.declaration?)
+				.inputs
+				.iter()
+				.find(|port| port.name == name)?
+				.default
+				.as_ref();
+		};
 
-		self.dag
-			.declaration(instance.declaration?)
-			.inputs
-			.iter()
-			.find(|port| port.name == name)?
-			.default
-			.as_ref()
-	}
-
-	/// Follows a connection to the constant written behind it.
-	fn written<'s>(&'s self, frame: usize, source: &'s Source<'a>) -> Option<&'s Value<'a>> {
 		let mut frame = frame;
-		let mut source = source;
+		let mut source = &input.source;
 
-		// A binding may pass through any number of node graph interfaces; the frame count bounds the chain.
+		// A binding may pass through any number of interfaces; the nesting limit bounds the chain.
 		for _ in 0..INLINING_LIMIT {
 			match source {
 				Source::Value(value) => return Some(value),
 				Source::Interface { graph, input } => {
-					let owner = self.owner(frame, *graph).unwrap_or(frame);
+					let (caller, bound) = self.binding(frame, *graph, *input)?;
 
-					match self.frames[owner].arguments.get(input.index()) {
-						Some(Argument {
-							binding: Some((caller, bound)),
-							..
-						}) => {
-							frame = *caller;
-							source = &bound.source;
-						}
-						_ => {
-							let declared = self.dag.graph(*graph).interface.get(input.index())?;
-
-							if matches!(declared.source, Source::Interface { .. }) {
-								return None;
-							}
-
-							frame = self.frames[owner].parent.unwrap_or(Self::ROOT_FRAME);
-							source = &declared.source;
-						}
-					}
+					frame = caller;
+					source = &bound.source;
 				}
 				_ => return None,
 			}
@@ -454,30 +432,17 @@ impl<'a, 'd> Lowering<'a, 'd> {
 
 	/// Finds the frame that instantiated one node scope, starting from a frame nested inside it.
 	fn owner(&self, frame: usize, graph: GraphId) -> Option<usize> {
-		let mut current = Some(frame);
-
-		while let Some(index) = current {
-			if self.frames[index].graph == graph {
-				return Some(index);
-			}
-
-			current = self.frames[index].parent;
-		}
-
-		None
+		self.ancestry(frame).find(|index| self.frames[*index].graph == graph)
 	}
 
 	/// Counts how many scopes a frame is nested inside.
 	fn depth(&self, frame: usize) -> usize {
-		let mut depth = 0;
-		let mut current = self.frames[frame].parent;
+		self.ancestry(frame).count() - 1
+	}
 
-		while let Some(index) = current {
-			depth += 1;
-			current = self.frames[index].parent;
-		}
-
-		depth
+	/// Walks a frame and every frame it was instantiated from, outermost last.
+	fn ancestry(&self, frame: usize) -> impl Iterator<Item = usize> + '_ {
+		std::iter::successors(Some(frame), |index| self.frames[*index].parent)
 	}
 
 	/// Follows a shader-semantic connection to the node that produces it, and to the frame it lives in.
@@ -488,55 +453,33 @@ impl<'a, 'd> Lowering<'a, 'd> {
 		let mut frame = frame;
 		let mut source = source.clone();
 
-		// A shader may sit behind any number of node graphs; the instantiation limit bounds the chain.
+		// A shader may sit behind any number of node graphs; the nesting limit bounds the chain.
 		for _ in 0..INLINING_LIMIT {
-			match source {
+			let behind = match source {
 				Source::Node { node, output } => match self.through(frame, node, output.index())? {
-					Some((expansion, behind)) => {
-						frame = expansion;
-						source = behind;
-					}
+					Some(behind) => behind,
 					None => return Ok(Some((frame, node))),
 				},
 				Source::Graph { graph, output } => {
 					let instance = self.scope(frame, graph)?;
-
 					let Some(port) = self.dag.graph(graph).outputs.get(output.index()) else {
 						return Ok(None);
 					};
 
-					frame = instance;
-					source = port.source.clone();
+					(instance, port.source.clone())
 				}
 				// A material written inside a node graph takes its shader from that graph's interface.
 				Source::Interface { graph, input } => {
-					let owner = self.owner(frame, graph).unwrap_or(frame);
+					let Some((caller, bound)) = self.binding(frame, graph, input) else {
+						return Ok(None);
+					};
 
-					match self.frames[owner]
-						.arguments
-						.get(input.index())
-						.and_then(|argument| argument.binding.clone())
-					{
-						Some((caller, bound)) => {
-							frame = caller;
-							source = bound.source;
-						}
-						None => {
-							let Some(declared) = self.dag.graph(graph).interface.get(input.index()) else {
-								return Ok(None);
-							};
-
-							if matches!(declared.source, Source::Interface { .. }) {
-								return Ok(None);
-							}
-
-							source = declared.source.clone();
-							frame = self.frames[owner].parent.unwrap_or(Self::ROOT_FRAME);
-						}
-					}
+					(caller, bound.source.clone())
 				}
 				_ => return Ok(None),
-			}
+			};
+
+			(frame, source) = behind;
 		}
 
 		Ok(None)
@@ -556,7 +499,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	}
 
 	/// Expands a node the document defines with a node graph, returning what sits behind one output.
-	fn through(
+	pub fn through(
 		&mut self,
 		frame: usize,
 		node: NodeId,
@@ -572,8 +515,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 			return Ok(None);
 		};
 
-		let arguments = self.bindings(frame, graph, node);
-		let expansion = self.expansion(frame, node, graph, arguments)?;
+		let expansion = self.expansion(frame, node, graph)?;
 
 		let Some(port) = self.dag.graph(graph).outputs.get(output) else {
 			return Ok(None);
@@ -582,33 +524,15 @@ impl<'a, 'd> Lowering<'a, 'd> {
 		Ok(Some((expansion, port.source.clone())))
 	}
 
-	/// Binds a node graph's interface from the inputs of the node that instantiates it.
-	pub fn bindings(&self, frame: usize, graph: GraphId, node: NodeId) -> Vec<Argument<'a>> {
-		let instance = self.dag.node(node);
-
-		self.dag
-			.graph(graph)
-			.interface
-			.iter()
-			.map(|port| match instance.input(port.name) {
-				Some(input) => Argument::bound(frame, input),
-				None => Argument::unbound(),
-			})
-			.collect()
-	}
-
 	/// Records one image and returns the BESL variable the renderer binds it to.
 	///
 	/// Images naming the same file in the same colour space share one slot, because the renderer binds
 	/// one texture per slot and sampling it twice would cost two descriptors.
 	pub fn texture(&mut self, texture: Texture<'a>) -> Node<'a> {
-		let slot = match self.textures.iter().position(|entry| *entry == texture) {
-			Some(slot) => slot,
-			None => {
-				self.textures.push(texture);
-				self.textures.len() - 1
-			}
-		};
+		let slot = self.textures.iter().position(|entry| *entry == texture).unwrap_or_else(|| {
+			self.textures.push(texture);
+			self.textures.len() - 1
+		});
 
 		Node::member_expression(crate::pbr::material_texture_variable_name(slot as u32))
 	}
@@ -616,24 +540,14 @@ impl<'a, 'd> Lowering<'a, 'd> {
 
 /// Writes the value a type falls back to when nothing drives it.
 fn zero<'a>(data_type: DataType<'a>, hint: &str) -> Result<Node<'a>, LowerError> {
-	let width = syntax::width(data_type).ok_or_else(|| LowerError::UnsupportedType {
-		node: hint.to_string(),
-		data_type: data_type.name().to_string(),
-	})?;
-
-	Ok(syntax::splat(0.0, width))
+	Ok(syntax::splat_literal(0.0, syntax::width(data_type, hint)?))
 }
 
 /// Writes one MaterialX constant as a BESL expression.
 fn constant<'a>(value: &Value<'a>, data_type: DataType<'a>, hint: &str) -> Result<Node<'a>, LowerError> {
-	let unsupported = || LowerError::UnsupportedType {
-		node: hint.to_string(),
-		data_type: data_type.name().to_string(),
-	};
-
 	Ok(match value {
 		// A boolean lowers to the number a comparison would produce, so nothing has to convert it.
-		Value::Boolean(value) => syntax::signed_literal(if *value { 1.0 } else { 0.0 }),
+		Value::Boolean(value) => syntax::literal(if *value { 1.0 } else { 0.0 }),
 		Value::Integer(value) => Node::literal_expression(value.to_string()),
 		Value::Float(_)
 		| Value::Color3(_)
@@ -641,13 +555,19 @@ fn constant<'a>(value: &Value<'a>, data_type: DataType<'a>, hint: &str) -> Resul
 		| Value::Vector2(_)
 		| Value::Vector3(_)
 		| Value::Vector4(_) => {
-			let components = value.components().ok_or_else(unsupported)?;
+			// Every one of these arms carries its components, so the fallback never fires.
+			let components = value.components().unwrap_or(&[0.0]);
 
-			syntax::construct(components.iter().copied().map(syntax::signed_literal).collect())
+			syntax::construct(components.iter().copied().map(syntax::literal).collect())
 		}
 		// A shader-semantic input written as the empty string is how MaterialX leaves it unplugged.
 		Value::Opaque("") => zero(data_type, hint)?,
-		_ => return Err(unsupported()),
+		_ => {
+			return Err(LowerError::UnsupportedType {
+				node: hint.to_string(),
+				data_type: data_type.name().to_string(),
+			});
+		}
 	})
 }
 

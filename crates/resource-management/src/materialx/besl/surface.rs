@@ -154,27 +154,12 @@ pub(super) fn lower<'a>(
 
 	let mut statements = Vec::with_capacity(6);
 
-	let base = match model.base_color {
-		Some(color) => {
-			let base = property(lowering, frame, shader, color, DataType::Color3)?;
-
-			match model.base_weight {
-				Some(weight) => {
-					let weight = property(lowering, frame, shader, weight, DataType::Float)?;
-
-					lowering.bind(name, DataType::Color3, Node::operator("*", base.syntax, weight.syntax))?
-				}
-				None => base,
-			}
-		}
-		None => Expression::new(syntax::splat(0.0, 3), DataType::Color3),
-	};
-
+	let base = weighted(lowering, frame, shader, model.base_color, model.base_weight)?;
 	let opacity = property(lowering, frame, shader, model.opacity, DataType::Float)?;
 	let opacity = lowering.addressable(name, opacity)?;
-	let alpha = syntax::component(&opacity.syntax, 0, opacity.width().unwrap_or(1));
+	let alpha = syntax::component(&opacity.syntax, 0, opacity.width());
 	let base = lowering.addressable(name, base)?;
-	let base_width = base.width().unwrap_or(3);
+	let base_width = base.width();
 
 	let albedo = Node::call(
 		"vec4f",
@@ -194,16 +179,8 @@ pub(super) fn lower<'a>(
 	let roughness = property(lowering, frame, shader, model.roughness, DataType::Float)?;
 	statements.push(Node::member_assignment("roughness", roughness.syntax));
 
-	if let Some(color) = model.emission_color {
-		let emission = property(lowering, frame, shader, color, DataType::Color3)?;
-		let emission = match model.emission_weight {
-			Some(weight) => {
-				let weight = property(lowering, frame, shader, weight, DataType::Float)?;
-
-				lowering.bind(name, DataType::Color3, Node::operator("*", emission.syntax, weight.syntax))?
-			}
-			None => emission,
-		};
+	if model.emission_color.is_some() {
+		let emission = weighted(lowering, frame, shader, model.emission_color, model.emission_weight)?;
 
 		statements.push(Node::member_assignment("emission", emission.syntax));
 	}
@@ -219,6 +196,33 @@ pub(super) fn lower<'a>(
 	}
 
 	Ok(statements)
+}
+
+/// Lowers a colour of a shading model together with the weight that scales it.
+///
+/// Models differ in whether they separate the two, and an unlit model has no reflected colour at all,
+/// so both are optional and a model that names neither contributes black.
+fn weighted<'a>(
+	lowering: &mut Lowering<'a, '_>,
+	frame: usize,
+	shader: NodeId,
+	color: Option<Property>,
+	weight: Option<Property>,
+) -> Result<Expression<'a>, LowerError> {
+	let Some(color) = color else {
+		return Ok(Expression::new(syntax::splat_literal(0.0, 3), DataType::Color3));
+	};
+
+	let name = lowering.dag.node(shader).name;
+	let color = property(lowering, frame, shader, color, DataType::Color3)?;
+
+	let Some(weight) = weight else {
+		return Ok(color);
+	};
+
+	let weight = property(lowering, frame, shader, weight, DataType::Float)?;
+
+	lowering.bind(name, DataType::Color3, Node::operator("*", color.syntax, weight.syntax))
 }
 
 /// Lowers one input of a shading model, converting it to the type the material property carries.
@@ -268,9 +272,9 @@ fn shading_normal<'a>(
 	Ok(Some(Node::call(
 		"vec3f",
 		vec![
-			syntax::call("dot", vec![world.syntax.clone(), Node::member_expression("T")]),
-			syntax::call("dot", vec![world.syntax.clone(), Node::member_expression("B")]),
-			syntax::call("dot", vec![world.syntax, Node::member_expression("N")]),
+			Node::call("dot", vec![world.syntax.clone(), Node::member_expression("T")]),
+			Node::call("dot", vec![world.syntax.clone(), Node::member_expression("B")]),
+			Node::call("dot", vec![world.syntax, Node::member_expression("N")]),
 		],
 	)))
 }

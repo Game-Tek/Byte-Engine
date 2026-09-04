@@ -4,6 +4,8 @@ use besl::parser::Node;
 
 use crate::materialx::DataType;
 
+use super::error::LowerError;
+
 /// The `Expression` struct carries one lowered value: its BESL syntax and the MaterialX type it holds.
 ///
 /// The type travels with the syntax because MaterialX nodes are polymorphic over width, so the same
@@ -21,36 +23,22 @@ impl<'a> Expression<'a> {
 		Expression { syntax, data_type }
 	}
 
-	/// Returns how many float components this value holds, or `None` when it is not a float value.
-	pub fn width(&self) -> Option<usize> {
-		width(self.data_type)
+	/// Returns how many float components this value holds.
+	///
+	/// Anything BESL does not read component by component, such as an integer, counts as one, so a
+	/// caller that repeats a value across lanes needs no special case for it. Use
+	/// [`width`] instead where a value that has no components at all has to be reported.
+	pub fn width(&self) -> usize {
+		components(self.data_type).unwrap_or(1)
 	}
-}
-
-/// Returns the BESL type that holds a MaterialX type, or `None` when no BESL type does.
-///
-/// Colours and vectors of the same width share one BESL type, because BESL draws no distinction
-/// between them and MaterialX only uses it to pick node overloads.
-pub(super) fn besl_type(data_type: DataType<'_>) -> Option<&'static str> {
-	Some(match data_type {
-		DataType::Float => "f32",
-		DataType::Integer => "i32",
-		// A MaterialX boolean is only ever compared, and comparing it as a number needs no conversion.
-		DataType::Boolean => "f32",
-		DataType::Vector2 => "vec2f",
-		DataType::Color3 | DataType::Vector3 => "vec3f",
-		DataType::Color4 | DataType::Vector4 => "vec4f",
-		DataType::Matrix44 => "mat4f",
-		_ => return None,
-	})
 }
 
 /// Returns how many float components a MaterialX type holds, or `None` when it holds none.
 ///
-/// Only the types a shading network computes with have a width; matrices, strings and closures do
-/// not, because no node lowers them component by component. A boolean counts as one component,
-/// because it lowers to the number a comparison produces.
-pub(super) fn width(data_type: DataType<'_>) -> Option<usize> {
+/// Only the types a shading network computes with have components; matrices, strings and closures do
+/// not, because no node lowers them lane by lane. A boolean counts as one, because it lowers to the
+/// number a comparison produces.
+pub(super) fn components(data_type: DataType<'_>) -> Option<usize> {
 	Some(match data_type {
 		DataType::Float | DataType::Boolean => 1,
 		DataType::Vector2 => 2,
@@ -58,6 +46,31 @@ pub(super) fn width(data_type: DataType<'_>) -> Option<usize> {
 		DataType::Color4 | DataType::Vector4 => 4,
 		_ => return None,
 	})
+}
+
+/// Returns how many float components a MaterialX type holds, or reports that a shader cannot hold it.
+pub(super) fn width(data_type: DataType<'_>, hint: &str) -> Result<usize, LowerError> {
+	components(data_type).ok_or_else(|| unsupported(data_type, hint))
+}
+
+/// Returns the BESL type that holds a MaterialX type, or reports that no BESL type does.
+///
+/// Colours and vectors of the same width share one BESL type, because BESL draws no distinction
+/// between them and MaterialX only uses it to pick node overloads.
+pub(super) fn type_name(data_type: DataType<'_>, hint: &str) -> Result<&'static str, LowerError> {
+	// A MaterialX boolean is only ever compared, and comparing it as a number needs no conversion.
+	match data_type {
+		DataType::Integer => Ok("i32"),
+		_ => Ok(float_type(width(data_type, hint)?)),
+	}
+}
+
+/// Reports that a MaterialX type has no place in a shader.
+fn unsupported(data_type: DataType<'_>, hint: &str) -> LowerError {
+	LowerError::UnsupportedType {
+		node: hint.to_string(),
+		data_type: data_type.name().to_string(),
+	}
 }
 
 /// Returns the float type of the given width.
@@ -72,8 +85,8 @@ pub(super) fn float_type(width: usize) -> &'static str {
 
 /// Returns the MaterialX type a float value of the given width lowers through.
 ///
-/// Widths pick a vector type rather than a colour type; the two share a BESL type, so the choice
-/// only matters to the node overloads that read the result back.
+/// Widths pick a vector type rather than a colour type; the two share a BESL type, so the choice only
+/// matters to the node overloads that read the result back.
 pub(super) fn float_data_type<'a>(width: usize) -> DataType<'a> {
 	match width {
 		1 => DataType::Float,
@@ -87,8 +100,8 @@ const COMPONENT_NAMES: [&str; 4] = ["x", "y", "z", "w"];
 
 /// Reads one float component out of a value.
 ///
-/// A one-component value is its own only component, so it is returned untouched rather than
-/// accessed through `.x`, which BESL does not define for `f32`.
+/// A one-component value is its own only component, so it is returned untouched rather than accessed
+/// through `.x`, which BESL does not define for `f32`.
 pub(super) fn component<'a>(value: &Node<'a>, index: usize, width: usize) -> Node<'a> {
 	if width <= 1 {
 		return value.clone();
@@ -110,8 +123,8 @@ pub(super) fn construct<'a>(mut components: Vec<Node<'a>>) -> Node<'a> {
 ///
 /// BESL literals hold digits and one optional point, so this expands the exponent that Rust's
 /// shortest representation reaches for on very small and very large values. It never writes a sign,
-/// because BESL has no unary minus; [`signed_literal`] subtracts from zero instead.
-pub(super) fn float_literal(value: f32) -> String {
+/// because BESL has no unary minus; [`literal`] subtracts from zero instead.
+fn digits(value: f32) -> String {
 	// A shading network has no meaningful infinite or undefined value, so fold both into a finite one.
 	let value = if value.is_finite() { value.abs() } else { 0.0 };
 
@@ -130,31 +143,26 @@ pub(super) fn float_literal(value: f32) -> String {
 }
 
 /// Writes a float as a BESL expression, subtracting from zero when it is negative.
-pub(super) fn signed_literal<'a>(value: f32) -> Node<'a> {
-	let literal = Node::literal_expression(float_literal(value));
+pub(super) fn literal<'a>(value: f32) -> Node<'a> {
+	let digits = Node::literal_expression(digits(value));
 
 	if value.is_sign_negative() && value != 0.0 {
 		// BESL has no unary minus, so a negative value is written as a subtraction.
-		return Node::operator("-", Node::literal_expression("0.0"), literal);
+		return Node::operator("-", Node::literal_expression("0.0"), digits);
 	}
 
-	literal
-}
-
-/// Writes a float value of the given width, repeating one component across every lane.
-pub(super) fn splat<'a>(value: f32, width: usize) -> Node<'a> {
-	construct((0..width).map(|_| signed_literal(value)).collect())
-}
-
-/// Writes a call to a BESL intrinsic or constructor.
-pub(super) fn call<'a>(name: &'static str, arguments: Vec<Node<'a>>) -> Node<'a> {
-	Node::call(name, arguments)
+	digits
 }
 
 /// Writes a value of the given width, repeating one expression across every lane.
 ///
-/// The expression is repeated verbatim, so it has to be a name or a literal; bind it to a local
-/// first when it is anything else.
-pub(super) fn splat_of<'a>(value: &Node<'a>, width: usize) -> Node<'a> {
+/// The expression is repeated verbatim, so it has to be a name or a literal; bind it to a local first
+/// when it is anything else.
+pub(super) fn splat<'a>(value: &Node<'a>, width: usize) -> Node<'a> {
 	construct((0..width).map(|_| value.clone()).collect())
+}
+
+/// Writes a constant of the given width, repeating one number across every lane.
+pub(super) fn splat_literal<'a>(value: f32, width: usize) -> Node<'a> {
+	splat(&literal(value), width)
 }

@@ -32,12 +32,6 @@ pub enum LowerError {
 	InliningLimitExceeded { node: String },
 }
 
-/// The deepest chain of node graph instantiations the lowering follows before it gives up.
-///
-/// MaterialX forbids a node graph from instantiating itself, so this only trips on a document that
-/// nests graphs far past anything an authoring tool writes.
-pub(super) const INLINING_LIMIT: usize = 64;
-
 impl Display for LowerError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 		match self {

@@ -91,7 +91,10 @@ fn calls(node: &Node<'_>, name: &str) -> bool {
 		Nodes::Expression(Expressions::Call {
 			name: called,
 			parameters,
-		}) => called.to_string() == name || parameters.iter().any(|parameter| calls(parameter, name)),
+		}) => {
+			matches!(called, besl::parser::TypeName::Named(called) if *called == name)
+				|| parameters.iter().any(|parameter| calls(parameter, name))
+		}
 		Nodes::Expression(Expressions::Operator { left, right, .. })
 		| Nodes::Expression(Expressions::Accessor { left, right }) => calls(left, name) || calls(right, name),
 		Nodes::Expression(Expressions::Expression(elements)) => elements.iter().any(|element| calls(element, name)),

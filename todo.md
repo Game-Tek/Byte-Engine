@@ -98,6 +98,12 @@
 
 - Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
 
+## MaterialX lowering
+
+- Reduce MaterialX scattering closures onto the renderer's metallic-roughness BRDF, so a `<surface>` node built from `oren_nayar_diffuse_bsdf`, `dielectric_bsdf`, `conductor_bsdf`, `layer` and `mix` lowers instead of reporting an unsupported shading model. This is most of the MaterialX pbrlib test suite and the pbrlib-native way to write a surface.
+- Let a MaterialX `<image>` sample with transformed texture coordinates. This needs `sample_material` to take a coordinate argument and the visibility material stage to carry the matching texture-coordinate derivatives, otherwise a tiled or placed image picks the wrong mip level. Until then `place2d`, `tiledimage` and `hextiledimage` are reported as unsupported.
+- Add the MaterialX procedural and colour-conversion nodes the standard library defines with source code rather than node graphs: `noise2d`, `noise3d`, `fractal3d`, `cellnoise2d`, `worleynoise2d`, `flake2d`, `flake3d`, `hsvtorgb`, `rgbtohsv` and `blackbody`.
+
 # P2 - BESL architecture
 
 - Add explicit interpolation syntax and a generic texture/sampler resource model.

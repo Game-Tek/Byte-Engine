@@ -317,6 +317,17 @@ impl<'a> Dag<'a> {
 		&self.declarations[id.index()]
 	}
 
+	/// Returns the node graph implementing one declaration, when the document carries one.
+	///
+	/// A declaration implemented this way is a node built out of other nodes, so a consumer that
+	/// evaluates the graph itself expands the returned scope in place of the node.
+	pub fn implementation(&self, declaration: DeclarationId) -> Option<GraphId> {
+		self.graphs
+			.iter()
+			.position(|graph| graph.declaration == Some(declaration))
+			.map(GraphId::new)
+	}
+
 	/// Returns the material nodes, which are the graph's entry points.
 	pub fn materials(&self) -> &[NodeId] {
 		&self.materials

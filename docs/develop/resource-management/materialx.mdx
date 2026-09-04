@@ -103,6 +103,74 @@ Load the libraries a document depends on before you resolve it. Without them a
 node keeps the inputs the document wrote but has no declaration, so its defaults
 and its extra outputs are unknown.
 
+## Turn a material into a shader
+
+`materialx::besl::lower` takes the resolved graph and gives back the BESL
+program that shades one of its materials, together with the images that program
+samples:
+
+```rust
+use resource_management::materialx;
+
+let dag = materialx::parse(&source, allocator)?;
+let program = materialx::besl::lower(&dag)?;
+```
+
+`program.root` is a root scope holding one `main` function that writes the
+material properties the renderer's BRDF reads: `albedo`, `metalness`,
+`roughness`, `emission`, `occlusion` and `normal`. Hand it to the shader
+pipeline's program generator, which adds the stage interface and the bindings
+around it.
+
+`program.textures` lists the images in slot order. Declare one `Texture2D`
+material variable per entry, named `material_texture_0`, `material_texture_1`
+and so on, so the program's sampling calls resolve. Each entry keeps the file
+exactly as the document wrote it, next to the prefix and colour space the
+document declared, because resolving a reference against the document's location
+is your asset pipeline's decision.
+
+Every MaterialX node the material reaches becomes one local, in the order the
+values have to be computed. A node nothing reads is never emitted, so a document
+that carries a whole library of unused networks costs nothing.
+
+Call `materialx::besl::lower_material` instead when a document holds several
+materials and you want to pick one out of `Dag::materials`.
+
+### Which materials Byte Engine shades
+
+Four shading models reach the renderer's BRDF directly: `standard_surface`,
+`open_pbr_surface`, `UsdPreviewSurface` and `gltf_pbr`. Two more are read as
+special cases: Disney's `disney_principled`, and `surface_unlit`, whose emission
+carries everything it shows. A model you define yourself works too, as long as
+its node graph produces one of those.
+
+Behind the shading model, the network may use the standard library's value,
+channel, geometric, texture, math, adjustment and compositing nodes, and any
+node graph the document defines.
+
+Byte Engine reports anything else rather than approximating it, because a
+material that renders wrong is harder to notice than one that fails to bake. In
+particular, a surface built out of individual scattering closures, such as a
+`<surface>` node fed by `dielectric_bsdf` and `oren_nayar_diffuse_bsdf`, does
+not map onto the renderer's fixed BRDF. Rebuild it on one of the models above,
+or bake the network into textures with the MaterialX tools.
+
+### Where the shaded surface differs from the document
+
+Three things behave differently, because the material stage carries less than a
+full renderer does:
+
+- Object-space and model-space geometric properties read their world-space
+  value. The stage reconstructs the shaded point in world space alone.
+- Images sample with the mesh's own texture coordinates. An `<image>` whose
+  `texcoord` is driven by anything else, such as a `place2d` or a `tiledimage`,
+  is reported instead of being sampled at the wrong place.
+- Shading models take a world-space normal, which is projected onto the stage's
+  tangent frame. The projection is exact, because the frame is orthonormal.
+
+Coat, sheen, transmission and subsurface inputs are read but not shaded, because
+the renderer's BRDF has no parameter for them.
+
 ## Fix a document that fails to load
 
 ### Unknown nodedef, unknown nodegraph, or unknown outputs
@@ -131,6 +199,13 @@ the cycle in the order it walked them. Break the loop in the authoring tool.
 A value does not match the type its element declares, such as a `color3` written
 with two components. Every parse error carries the line and column of the markup
 that caused it, so report it next to the document name and fix the markup.
+
+### Unsupported shading model, or unsupported MaterialX node
+
+The material reached something the renderer does not evaluate. The error names
+the node and its category. See
+[which materials Byte Engine shades](#which-materials-byte-engine-shades) for
+what to rebuild it on.
 
 ## What Byte Engine reads
 

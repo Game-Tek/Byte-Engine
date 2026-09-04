@@ -85,6 +85,7 @@
 //!
 //! Next, convert the resolved [`Dag`] into whatever your renderer evaluates.
 
+pub mod besl;
 pub mod dag;
 pub mod document;
 pub mod error;

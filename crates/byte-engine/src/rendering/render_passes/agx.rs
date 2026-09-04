@@ -58,7 +58,7 @@ mod tests {
 	use resource_management::shader::{besl::backends::msl::MSLTranspiler, generator::ShaderGenerationSettings};
 
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, run_tone_mapping_vm};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
 	const TONE_MAPPING_SHADER: &str = include_str!("../../../assets/rendering/agx/tone-mapping.besl");
 
@@ -68,23 +68,23 @@ mod tests {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(TONE_MAPPING_SHADER));
 
 		assert_rgba_close(
-			run_tone_mapping_vm(&program, [0.0, 0.0, 0.0, 0.25]),
+			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
 			[0.0, 0.0, 0.0, 1.0],
 			1e-6,
 		);
 		assert_rgba_close(
-			run_tone_mapping_vm(&program, [1.0, 1.0, 1.0, 0.25]),
+			run_image_transform_vm(&program, [1.0, 1.0, 1.0, 0.25]),
 			[0.7919241, 0.7918683, 0.7918481, 1.0],
 			2e-5,
 		);
-		let highlight = run_tone_mapping_vm(&program, [16.0, 16.0, 16.0, 0.0]);
+		let highlight = run_image_transform_vm(&program, [16.0, 16.0, 16.0, 0.0]);
 
 		assert!(
 			highlight[0] > 0.98 && (highlight[0] - highlight[1]).abs() < 2e-4 && (highlight[1] - highlight[2]).abs() < 2e-4,
 			"Invalid AGX neutral highlight. The most likely cause is missing display encoding or an incorrect color-space transform: {highlight:?}"
 		);
 
-		let warm = run_tone_mapping_vm(&program, [1.0, 0.5, 0.25, 0.0]);
+		let warm = run_image_transform_vm(&program, [1.0, 0.5, 0.25, 0.0]);
 
 		assert!(
 			warm[0] > warm[1] && warm[1] > warm[2],

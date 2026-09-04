@@ -425,6 +425,23 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
+/// Installs display sRGB encoding without applying a tone-mapping curve.
+///
+/// Use this as the final post-scene pass for SDR scenes whose colors already
+/// fit in the display range. Omit this setup when a tone mapper or color-grading
+/// pass already produces display-encoded output. Register it before creating a
+/// window; use `render.pass.srgb-display` to enable or bypass it at runtime.
+pub fn setup_srgb_display_render_pass(application: &mut GraphicsApplication) {
+	defaults::setup_default_pipeline_compilation(application);
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
+			Box::new(rendering::render_passes::srgb_display::SrgbDisplayPass::new(
+				render_pass_builder,
+			))
+		});
+}
+
 /// Installs the ACES v1 tonemapping pass for post-scene color mapping.
 pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;

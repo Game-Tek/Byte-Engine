@@ -62,7 +62,7 @@ mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
 
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, run_tone_mapping_vm};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
 
 	const TONE_MAPPING_SHADER: &str = include_str!("../../../assets/rendering/aces/tone-mapping.besl");
 
@@ -72,18 +72,18 @@ mod tests {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(TONE_MAPPING_SHADER));
 
 		assert_rgba_close(
-			run_tone_mapping_vm(&program, [0.0, 0.0, 0.0, 0.25]),
+			run_image_transform_vm(&program, [0.0, 0.0, 0.0, 0.25]),
 			[0.0, 0.0, 0.0, 1.0],
 			1e-6,
 		);
 		assert_rgba_close(
-			run_tone_mapping_vm(&program, [1.0, 1.0, 1.0, 0.25]),
+			run_image_transform_vm(&program, [1.0, 1.0, 1.0, 0.25]),
 			[0.9054924, 0.9054924, 0.9054924, 1.0],
 			1e-5,
 		);
 
 		for input in [0.18, 4.0, 16.0] {
-			let output = run_tone_mapping_vm(&program, [input, input, input, 0.0]);
+			let output = run_image_transform_vm(&program, [input, input, input, 0.0]);
 
 			assert!(
 				output[..3]

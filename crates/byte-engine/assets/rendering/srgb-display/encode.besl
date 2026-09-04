@@ -1,0 +1,24 @@
+source: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
+
+linear_srgb_channel_to_srgb: fn(channel: f32) -> f32 {
+	let bounded: f32 = clamp(channel, 0.0, 1.0);
+	if (bounded <= 0.0031308) {
+		return 12.92 * bounded;
+	}
+	return 1.055 * pow(bounded, 1.0 / 2.4) - 0.055;
+}
+
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+
+	guard_image_bounds(source, coord);
+	source_color = image_load(source, coord);
+	write(result, coord, vec4f(
+		linear_srgb_channel_to_srgb(source_color.x),
+		linear_srgb_channel_to_srgb(source_color.y),
+		linear_srgb_channel_to_srgb(source_color.z),
+		source_color.w
+	));
+}

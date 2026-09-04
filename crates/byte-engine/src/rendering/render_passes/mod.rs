@@ -16,6 +16,7 @@ pub mod color_grading;
 pub mod lut;
 pub mod sky;
 pub mod smaa;
+pub mod srgb_display;
 
 pub mod serial;
 

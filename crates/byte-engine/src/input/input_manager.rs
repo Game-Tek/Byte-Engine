@@ -156,10 +156,8 @@ impl InputManager {
 		trigger_reference: TriggerReference,
 		value: Value,
 	) {
-		let trigger = if let Some(trigger) = self.get_trigger_from_trigger_reference(&trigger_reference) {
-			trigger
-		} else {
-			warn!("Tried to record an input source action that doesn't exist");
+		let Some((trigger_handle, trigger)) = self.resolve_trigger(&trigger_reference) else {
+			warn!("Input trigger is unknown. The most likely cause is an unregistered trigger name or handle.");
 			return;
 		};
 
@@ -167,13 +165,6 @@ impl InputManager {
 			warn!("Tried to record an extraneous type into input source: {}", trigger.name);
 			return; // Value type does not match input source declared type, so don't record.
 		}
-
-		let trigger_handle = if let Some(input_source_handle) = self.to_trigger_handle(&trigger_reference) {
-			input_source_handle
-		} else {
-			warn!("Tried to record an input source action that doesn't exist");
-			return;
-		};
 
 		let time = std::time::SystemTime::now();
 
@@ -440,9 +431,7 @@ impl InputManager {
 		device_handle: DeviceHandle,
 		trigger_reference: TriggerReference,
 	) -> Result<Value, ()> {
-		let trigger_handle = self.to_trigger_handle(&trigger_reference).ok_or(())?;
-
-		let trigger = self.get_trigger_from_trigger_reference(&trigger_reference).ok_or(())?;
+		let (trigger_handle, trigger) = self.resolve_trigger(&trigger_reference).ok_or(())?;
 
 		Ok(self
 			.trigger_values
@@ -458,40 +447,22 @@ impl InputManager {
 		action_handle: ActionHandle,
 		device_handle: DeviceHandle,
 	) -> InputEventState {
-		self.action_values
-			.get(&(seat_handle, device_handle, action_handle))
-			.map(|record| InputEventState {
-				seat_handle,
-				device_handle,
-				input_event_handle: action_handle,
-				value: *record,
-			})
-			.unwrap_or_else(|| {
-				let action = self.actions.get(action_handle.0 as usize).unwrap();
-				let default_value = match action.r#type {
-					Types::Boolean => Value::Bool(false),
-					Types::Float => Value::Float(0f32),
-					Types::Vector2 => Value::Vector2(Axis2 { x: 0f32, y: 0f32 }),
-					Types::Vector3 => Value::Vector3(Axis3 {
-						x: 0f32,
-						y: 0f32,
-						z: 0f32,
-					}),
-					_ => panic!("Not implemented!"),
-				};
-
-				InputEventState {
-					seat_handle,
-					device_handle,
-					input_event_handle: action_handle,
-					value: default_value,
-				}
-			})
+		InputEventState {
+			seat_handle,
+			device_handle,
+			input_event_handle: action_handle,
+			value: self
+				.action_values
+				.get(&(seat_handle, device_handle, action_handle))
+				.copied()
+				.unwrap_or_else(|| self.actions[action_handle.0 as usize].r#type.default_value()),
+		}
 	}
 
-	fn get_trigger_from_trigger_reference(&self, trigger_reference: &TriggerReference) -> Option<&Trigger> {
-		self.to_trigger_handle(trigger_reference)
-			.and_then(|trigger_handle| self.triggers.get(trigger_handle.0 as usize))
+	/// Resolves a name or handle once and checks that its trigger is registered.
+	fn resolve_trigger(&self, reference: &TriggerReference) -> Option<(TriggerHandle, &Trigger)> {
+		let handle = self.to_trigger_handle(reference)?;
+		self.triggers.get(handle.0 as usize).map(|trigger| (handle, trigger))
 	}
 
 	fn get_device(&self, device_handle: &DeviceHandle) -> &Device {
@@ -650,6 +621,29 @@ mod tests {
 	fn update_input_manager(input_manager: &mut InputManager) {
 		let frame_allocator = bumpalo::Bump::new();
 		input_manager.update(&frame_allocator);
+	}
+
+	#[test]
+	fn untriggered_actions_have_neutral_values_for_every_input_type() {
+		let mut input = build_input_manager();
+		for (kind, expected) in [
+			(Types::Boolean, Value::Bool(false)),
+			(Types::Unicode, Value::Unicode('\0')),
+			(Types::Int, Value::Int(0)),
+			(Types::Float, Value::Float(0.0)),
+			(Types::Rgba, Value::Rgba(RGBA::new(0.0, 0.0, 0.0, 1.0))),
+			(Types::Vector2, Value::Vector2(Axis2::zero())),
+			(Types::Vector3, Value::Vector3(Axis3::zero())),
+			(Types::Quaternion, Value::Quaternion(Quaternion::identity())),
+		] {
+			let action = input.create_action(kind, &[]);
+			assert_eq!(
+				input
+					.get_action_state(SeatHandle(0), action, InputManager::manual_action_device_handle())
+					.value,
+				expected
+			);
+		}
 	}
 
 	#[test]

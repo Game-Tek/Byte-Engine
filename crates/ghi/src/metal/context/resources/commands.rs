@@ -13,7 +13,8 @@ impl Context {
 		graphics_hardware_interface::CommandBufferHandle((self.command_buffers.len() - 1) as u64)
 	}
 
-	pub(crate) fn create_command_buffer_recording<'a>(
+	/// Creates a recording that belongs to no frame, for transfers submitted outside the render loop.
+	pub fn create_command_buffer_recording<'a>(
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::super::CommandBufferRecording<'a> {

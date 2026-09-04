@@ -1,8 +1,5 @@
 //! Shared allocation, callable, collection, and data-conversion utilities for Byte-Engine crates.
 
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
-
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 pub type SendSyncBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
 pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

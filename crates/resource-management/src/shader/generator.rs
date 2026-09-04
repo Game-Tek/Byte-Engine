@@ -338,6 +338,16 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 }
 
 /// Returns the vector that carries a short scalar array through backends that cannot return native arrays.
+/// Splits an array type name into its element type and its element count.
+///
+/// BESL writes an array type as `element[count]`, so `vec4f[3]` splits into `vec4f` and `3`. A backend whose
+/// language declares arrays in C position uses this to place the count after the variable name. Returns
+/// `None` for a type that is not an array.
+pub(crate) fn array_type_parts(source: &str) -> Option<(&str, &str)> {
+	let (element_type, count) = source.split_once('[')?;
+	Some((element_type, count.trim_end_matches(']')))
+}
+
 pub(crate) fn scalar_array_vector_type(source: &str) -> Option<&'static str> {
 	match source {
 		"f32[2]" => Some("vec2f"),
@@ -626,6 +636,16 @@ pub(crate) trait NodeEmitter {
 		string.push_str(name);
 	}
 
+	/// Emits a local variable's type and name.
+	///
+	/// The default places an array dimension on the type, as GLSL writes `float[3] values`. A backend whose
+	/// language declares arrays in C position overrides this to write `float values[3]` instead.
+	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
+		Self::emit_type_name(string, type_name);
+		string.push(' ');
+		string.push_str(name);
+	}
+
 	/// Gives a backend the opportunity to replace expression syntax before portable lowering.
 	fn emit_expression_override(&mut self, _string: &mut String, _expression: &besl::Expressions) -> bool {
 		false
@@ -705,9 +725,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::VariableDeclaration { name, r#type } => {
-				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-				string.push(' ');
-				string.push_str(name);
+				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap());
 			}
 			besl::Expressions::Literal { value } => string.push_str(value),
 			besl::Expressions::Return { value } => {

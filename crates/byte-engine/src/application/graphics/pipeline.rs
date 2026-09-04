@@ -20,7 +20,7 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 	let listener = factory.listener();
 	let delete_listener = application.world().deletions_listener();
 	let scene = std::rc::Rc::new(std::cell::RefCell::new(rendering::DebugSceneManager::new(
-		application.renderer.context_mut(),
+		&mut application.renderer.context_mut(),
 		listener,
 		delete_listener,
 	)));
@@ -40,12 +40,12 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 /// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
 ///
 /// This setup is the smallest end-to-end implementation of
-/// [`rendering::resource_loading`]. It creates one mapped staging arena, one
-/// preparation server, and a Simple-owned store whose position and index
-/// streams intentionally differ from Visibility storage. The supplied callback
-/// owns task placement so this function does not impose an executor or thread
-/// policy on the application. Simple's shaders use the renderer's asynchronous
-/// pipeline compilation servers; this setup never waits for shader resources.
+/// [`rendering::loading`]. It creates one mapped staging arena, one loader lane,
+/// and a Simple-owned store whose position and index streams intentionally
+/// differ from Visibility storage. The supplied callback owns task placement so
+/// this function does not impose an executor or thread policy on the
+/// application. Simple's shaders use the renderer's asynchronous pipeline
+/// compilation servers; this setup never waits for shader resources.
 ///
 /// Add the supplied task to a queue from [`defaults::build_deferred_tasks_queue`],
 /// then start that queue with [`defaults::launch_deferred_tasks_thread`] after
@@ -63,29 +63,27 @@ pub fn setup_simple_render_pipeline(
 
 	let renderer = &mut application.renderer;
 	let pipeline_compiler = renderer.pipeline_manager_client();
-	let context = renderer.context_mut();
-	let upload_buffer: ghi::BufferHandle<[u8; rendering::pipelines::simple::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT]> =
-		context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
-				.name("Simple Async Upload Buffer")
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
-		);
-	// SAFETY: The application-owned worker keeps this exclusive mapping alive until
-	// shutdown, while submitted staging leases stay retained by the upload queue.
-	#[allow(unsafe_code)]
-	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
-	let (upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::new(upload_mapping);
-	let (resource_loader, loading_endpoint) = rendering::resource_loading::ResourceLoader::<
-		rendering::pipelines::simple::resource_manager::SimpleMeshResource,
-	>::new(4096, 64);
-	let loading_server = loading_endpoint.server(rendering::pipelines::simple::resource_manager::SimpleMeshPreparer::new(
+	let mut context = renderer.context_mut();
+	let (upload_buffer, upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::create::<
+		{ rendering::pipelines::simple::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT },
+	>(&mut context, "Simple Async Upload Buffer");
+	let resource_store = std::sync::Arc::new(std::sync::Mutex::new(
+		rendering::pipelines::simple::resource_manager::SimpleResourceStore::new(&mut context, upload_buffer),
+	));
+	drop(context);
+	let (simple_loader, simple_loader_lanes) = rendering::pipelines::simple::resource_manager::SimpleLoader::spawn(
+		&renderer.shared_context(),
+		renderer.graphics_queue(),
 		application_resources,
 		upload_staging,
-	));
+		resource_store.clone(),
+	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
 		runtime.spawn(upload_staging_worker.run()).detach();
-		runtime.spawn(loading_server.run()).detach();
+		for lane in simple_loader_lanes {
+			runtime.spawn(lane.run()).detach();
+		}
 	}));
 
 	struct CustomPipelineManager {
@@ -96,18 +94,6 @@ pub fn setup_simple_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
-		fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
-			self.pipeline_manager.begin_frame(completed_frame)
-		}
-
-		fn record_frame_uploads(
-			&mut self,
-			frame: ghi::FrameKey,
-			recording: &mut ghi::implementation::CommandBufferRecording<'_>,
-		) {
-			self.pipeline_manager.record_frame_uploads(frame, recording);
-		}
-
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -142,10 +128,10 @@ pub fn setup_simple_render_pipeline(
 	let sm = {
 		CustomPipelineManager {
 			pipeline_manager: SimplePipelineManager::new(
-				renderer.context_mut(),
+				&mut renderer.context_mut(),
 				pipeline_compiler,
-				resource_loader,
-				upload_buffer.into(),
+				simple_loader,
+				resource_store,
 			),
 			mesh_receiver: listener,
 			mesh_delete_receiver: delete_listener,
@@ -158,16 +144,17 @@ pub fn setup_simple_render_pipeline(
 
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
 ///
-/// Visibility demonstrates the same shared lifecycle with four preparation
-/// lanes, meshlets and parallel vertex streams, material and bindless texture
-/// slots, CPU texture transfers, and native GPU-I/O adoption. Those choices are
-/// implemented by Visibility's preparer and store; they are not requirements of
-/// the shared loader.
+/// Visibility gives meshes, materials, and textures independent loader lanes.
+/// Mesh loaders append parallel geometry streams and request discovered
+/// materials. Material loaders assign table slots and request discovered
+/// textures. Texture loaders finish CPU or native GPU-I/O transfers before
+/// publishing residency. These choices belong to Visibility; they are not
+/// requirements of the shared loader.
 ///
-/// The supplied callback must run the staging worker and every preparation
-/// server on application-owned async tasks. Join those tasks before renderer
-/// shutdown so no worker retains a mapping or detached GHI factory after its
-/// context is dropped.
+/// The supplied callback must run the staging worker and every loader lane on
+/// application-owned async tasks. Join those tasks before renderer shutdown so
+/// no worker retains a mapping or detached GHI factory after its context is
+/// dropped.
 ///
 /// Next, create an [`Environment`] through
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
@@ -214,38 +201,37 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	let application_resource_manager = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
 	let pipeline_manager = renderer.pipeline_manager_client();
-	let context = renderer.context_mut();
+	let mut context = renderer.context_mut();
 	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
 		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 		pipeline_manager.clone(),
 	);
 
-	let upload_buffer: ghi::BufferHandle<[u8; rendering::pipelines::visibility::ASYNC_UPLOAD_BUFFER_BYTE_COUNT]> = context
-		.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
-				.name("Renderer Async Upload Buffer")
-				// The upload arena is itself the GPU copy source. Host-only access keeps
-				// backends from inserting a second full-buffer staging copy.
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
-		);
-	// SAFETY: The arena becomes the only CPU owner of this fixed mapping. Application
-	// shutdown joins its worker before the renderer drops the backing GHI context.
-	#[allow(unsafe_code)]
-	let upload_mapping = unsafe { context.transfer_buffer_mapping(upload_buffer) };
-	let (upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::new(upload_mapping);
+	let (upload_buffer, upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::create::<
+		{ rendering::pipelines::visibility::ASYNC_UPLOAD_BUFFER_BYTE_COUNT },
+	>(&mut context, "Renderer Async Upload Buffer");
 
-	let (resource_manager_client, resource_servers) = VisibilityResourcePreparer::spawn(
-		context,
+	let geometry = rendering::pipelines::visibility::GeometryHandles::new(&mut context);
+
+	drop(context);
+
+	let shared_context = renderer.shared_context();
+	let graphics_queue = renderer.graphics_queue();
+
+	let (visibility_loader, visibility_loader_lanes) = rendering::pipelines::visibility::spawn_loader(
+		&shared_context,
+		graphics_queue,
 		application_resource_manager,
 		upload_staging,
-		upload_buffer.into(),
+		upload_buffer,
+		geometry,
 		material_pipeline_config,
 	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
 		runtime.spawn(upload_staging_worker.run()).detach();
-		for server in resource_servers {
-			runtime.spawn(server.run()).detach();
+		for lane in visibility_loader_lanes {
+			runtime.spawn(lane.run()).detach();
 		}
 	}));
 
@@ -318,18 +304,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
-		fn begin_frame(&mut self, completed_frame: Option<ghi::FrameKey>) -> bool {
-			self.visibility_pipeline_manager.begin_frame(completed_frame)
-		}
-
-		fn record_frame_uploads(
-			&mut self,
-			frame: ghi::FrameKey,
-			recording: &mut ghi::implementation::CommandBufferRecording<'_>,
-		) {
-			self.visibility_pipeline_manager.record_frame_uploads(frame, recording);
-		}
-
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -365,8 +339,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let renderer = &mut application.renderer;
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
-				renderer.context_mut(),
-				resource_manager_client,
+				&mut renderer.context_mut(),
+				geometry,
+				visibility_loader,
 				pipeline_manager,
 				transforms_listener,
 				gtao_configuration,

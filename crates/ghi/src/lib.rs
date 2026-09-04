@@ -72,6 +72,11 @@ pub mod implementation {
 	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
 	pub use crate::vulkan::*;
+
+	/// A context may be moved between threads, which is what lets a renderer put resource loading on threads of
+	/// its own. Every backend must uphold this. Concurrent use is not implied: a shared context needs a lock.
+	const fn _context_moves_between_threads<T: Send>() {}
+	const _: () = _context_moves_between_threads::<Context>();
 }
 
 #[cfg(target_os = "windows")]

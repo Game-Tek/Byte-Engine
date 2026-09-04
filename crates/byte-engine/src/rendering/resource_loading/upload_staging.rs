@@ -1,12 +1,14 @@
 use std::{collections::VecDeque, sync::Arc};
 
-/// The `UploadStagingArena` struct gives preparers exclusive regions of one persistently mapped transfer buffer.
+use ghi::Device as _;
+
+/// The `UploadStagingArena` struct gives loader lanes exclusive regions of one persistently mapped transfer buffer.
 ///
-/// Share this lightweight client with asynchronous preparers. Request a
+/// Share this lightweight client with asynchronous loader lanes. Request a
 /// [`StagingLease`] with [`Self::allocate`], load or convert directly into its
-/// bytes, and move the lease inside the prepared upload. The reverse path is
-/// automatic: when the frame upload queue drops the lease after GPU completion,
-/// its region returns to [`UploadStagingWorker`] for coalescing and reuse.
+/// bytes, and keep the lease alive through the loader transfer. When the loader
+/// drops the lease after GPU completion, its region returns to
+/// [`UploadStagingWorker`] for coalescing and reuse.
 ///
 /// The arena owns raw access transferred from one GHI mapping, not the backing
 /// buffer or context. Keep the GHI context and mapped buffer alive until the
@@ -20,7 +22,7 @@ pub struct UploadStagingArena {
 /// The `UploadStagingWorker` struct serializes allocation and reclamation for one mapped staging arena.
 ///
 /// Run one worker per [`UploadStagingArena`] on an application-owned async task.
-/// Keeping free-region state here lets preparers share the arena without
+/// Keeping free-region state here lets loader lanes share the arena without
 /// placing synchronization inside GHI or exposing mapped pointers across the
 /// public allocation API. The worker exits after every arena client and lease
 /// return channel has been dropped.
@@ -48,13 +50,34 @@ enum StagingCommand {
 }
 
 impl UploadStagingArena {
+	/// Creates a host-mapped GHI upload buffer and its staging client and worker.
+	///
+	/// Run the returned worker on an application-owned task. Pass the returned
+	/// buffer and arena to the pipeline loader that records transfers.
+	pub fn create<const BYTE_COUNT: usize>(
+		context: &mut ghi::implementation::Context,
+		name: &str,
+	) -> (ghi::BaseBufferHandle, Arc<Self>, UploadStagingWorker) {
+		let buffer: ghi::BufferHandle<[u8; BYTE_COUNT]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+				.name(name)
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
+		);
+		// SAFETY: The arena becomes the only CPU owner of this mapping and keeps
+		// each leased region exclusive until its GPU transfer completes.
+		#[allow(unsafe_code)]
+		let mapping = unsafe { context.transfer_buffer_mapping(buffer) };
+		let (arena, worker) = Self::new(mapping);
+		(buffer.into(), arena, worker)
+	}
+
 	/// Creates the client and worker halves for one transferred GHI buffer mapping.
 	///
 	/// The mapping must cover the upload buffer used as the source in the
-	/// renderer's [`super::ResourceUploadStore`]. Next, run
+	/// renderer's loader transfer commands. Next, run
 	/// [`UploadStagingWorker::run`] on an application-owned task and retain the
 	/// mapped buffer handle in the renderer that records copies.
-	pub fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
+	fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
 		let (address, byte_count) = mapping.into_raw_parts();
 		Self::from_region(StagingRegion {
 			offset: 0,
@@ -124,8 +147,8 @@ impl UploadStagingArena {
 impl UploadStagingWorker {
 	/// Serves allocation and return messages until every staging client is dropped.
 	///
-	/// Move this future to the same application-owned runtime as resource loading
-	/// servers. Do not run two workers for one arena because this value is the
+	/// Move this future to the same application-owned runtime as loader lanes. Do
+	/// not run two workers for one arena because this value is the
 	/// exclusive owner of free-region state.
 	pub async fn run(mut self) {
 		while let Ok(command) = self.commands.recv().await {
@@ -217,8 +240,7 @@ impl UploadStagingWorker {
 /// Fill the region through [`Self::bytes_mut`], use [`Self::offset`] when
 /// recording a copy from the arena's backing buffer, and move the lease into
 /// the prepared upload. Do not free it manually. Dropping the lease returns the
-/// region to the worker, so the frame upload queue should own it until the exact
-/// transfer frame completes.
+/// region to the worker, so the loader must keep it until the transfer completes.
 pub struct StagingLease {
 	region: Option<StagingRegion>,
 	returner: kanal::Sender<StagingCommand>,
@@ -238,7 +260,7 @@ impl StagingLease {
 
 	/// Returns exclusive CPU access to the persistently mapped region.
 	///
-	/// Finish all writes before handing the lease to the render thread. The
+	/// Finish all writes before recording the loader transfer. The
 	/// exclusive borrow prevents concurrent safe access through this lease.
 	#[allow(unsafe_code)]
 	pub fn bytes_mut(&mut self) -> &mut [u8] {

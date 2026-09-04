@@ -26,6 +26,7 @@ pub mod debug;
 
 #[doc(hidden)]
 pub mod lights;
+pub mod loading;
 #[doc(hidden)]
 pub mod window;
 
@@ -60,6 +61,7 @@ pub(crate) mod shader_vm_test;
 pub mod pipelines;
 
 /// Per-output render target state passed to render passes.
+pub mod shared_context;
 pub mod sink;
 /// Projection and view matrix construction for cameras and lights.
 pub mod view;
@@ -87,6 +89,7 @@ pub use render_pass::{
 };
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer, Settings};
+pub use shared_context::SharedContext;
 pub use sink::Sink;
 pub use view::View;
 pub use window::{Features, Window};

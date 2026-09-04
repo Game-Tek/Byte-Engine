@@ -81,6 +81,15 @@ pub struct Context {
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
 }
 
+// SAFETY: Retained Metal objects are only `!Send` because objc2 cannot know an object's thread rules; Metal
+// documents devices, queues, buffers, textures, samplers, and pipeline states as usable from any thread, and
+// this backend already relies on that for the detached objects a factory hands to worker threads. The context
+// itself adds no thread affinity: it stores those objects in plain collections and holds no thread-local state.
+//
+// Ownership may move between threads; concurrent use may not. `Sync` is deliberately not claimed, so sharing a
+// context requires a lock that hands out one borrow at a time.
+unsafe impl Send for Context {}
+
 impl Drop for Context {
 	fn drop(&mut self) {
 		// Metal 4 command buffers do not retain resources, so all queue work must finish before context-owned resources drop.

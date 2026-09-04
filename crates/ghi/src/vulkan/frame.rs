@@ -662,16 +662,7 @@ impl<'a> Frame<'a> {
 
 	/// Interns a factory-built image through this frame's device.
 	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
-		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
-			.extent(image.extent)
-			.device_accesses(image.device_accesses)
-			.use_case(image.use_case);
-		builder.name = image.name.as_deref();
-		builder.array_layers = image.array_layers;
-		builder.cube_compatible = image.cube_compatible;
-		builder.cube_array_compatible = image.cube_array_compatible;
-
-		self.device.build_image(builder)
+		self.device.intern_image(image)
 	}
 
 	/// Updates retained descriptor-set state before command recording.
@@ -684,18 +675,7 @@ impl<'a> Frame<'a> {
 		&mut self,
 		sampler: crate::implementation::FactorySampler,
 	) -> graphics_hardware_interface::SamplerHandle {
-		let mut builder = crate::sampler::Builder::new()
-			.filtering_mode(sampler.filtering_mode)
-			.reduction_mode(sampler.reduction_mode)
-			.mip_map_mode(sampler.mip_map_mode)
-			.addressing_mode(sampler.addressing_mode)
-			.min_lod(sampler.min_lod)
-			.max_lod(sampler.max_lod);
-		if let Some(anisotropy) = sampler.anisotropy {
-			builder = builder.anisotropy(anisotropy);
-		}
-
-		self.device.build_sampler(builder)
+		self.device.intern_sampler(sampler)
 	}
 
 	pub(crate) fn get_synchronizer(
@@ -716,5 +696,40 @@ impl<'a> Frame<'a> {
 	) -> ImageHandle {
 		let swapchain = self.get_swapchain(present_key.swapchain);
 		swapchain.native_images[present_key.image_index as usize]
+	}
+}
+
+impl Context {
+	/// Interns a factory-built image into this context, for loader threads that create objects outside a frame.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
+			.extent(image.extent)
+			.device_accesses(image.device_accesses)
+			.use_case(image.use_case);
+		builder.name = image.name.as_deref();
+		builder.array_layers = image.array_layers;
+		builder.cube_compatible = image.cube_compatible;
+		builder.cube_array_compatible = image.cube_array_compatible;
+
+		self.build_image(builder)
+	}
+
+	/// Interns a factory-built sampler into this context, for loader threads that create objects outside a frame.
+	pub fn intern_sampler(
+		&mut self,
+		sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		let mut builder = crate::sampler::Builder::new()
+			.filtering_mode(sampler.filtering_mode)
+			.reduction_mode(sampler.reduction_mode)
+			.mip_map_mode(sampler.mip_map_mode)
+			.addressing_mode(sampler.addressing_mode)
+			.min_lod(sampler.min_lod)
+			.max_lod(sampler.max_lod);
+		if let Some(anisotropy) = sampler.anisotropy {
+			builder = builder.anisotropy(anisotropy);
+		}
+
+		self.build_sampler(builder)
 	}
 }

@@ -69,7 +69,7 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		vec4f(0.0, 0.0, 0.0, 1.0),
 		vec4f(0.0, 0.0, 0.0, 1.0)
 	);
-	let vertex_normals: vec4f[3] = vec4f[3](
+	let model_space_vertex_normals: vec4f[3] = vec4f[3](
 		vec4f(0.0, 0.0, 1.0, 0.0),
 		vec4f(0.0, 0.0, 1.0, 0.0),
 		vec4f(0.0, 0.0, 1.0, 0.0)
@@ -89,9 +89,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
 		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
 		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-		vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
-		vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
-		vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
+		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
+		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
+		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
 	}
 	if (setup_lane && mesh.skinned_base_vertex_index == 4294967295) {
 		let position0: vec3f = vertex_positions.positions[triangle_vertex_indices[0]];
@@ -103,9 +103,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
 		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
 		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
-		vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
-		vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
-		vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+		model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
+		model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
+		model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
 	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let model: mat4x3f = mesh.model;
@@ -123,9 +123,9 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		clip_space_vertex_positions[0] = view_projection * vec4f(world_space_vertex_positions[0].x, world_space_vertex_positions[0].y, world_space_vertex_positions[0].z, 1.0);
 		clip_space_vertex_positions[1] = view_projection * vec4f(world_space_vertex_positions[1].x, world_space_vertex_positions[1].y, world_space_vertex_positions[1].z, 1.0);
 		clip_space_vertex_positions[2] = view_projection * vec4f(world_space_vertex_positions[2].x, world_space_vertex_positions[2].y, world_space_vertex_positions[2].z, 1.0);
-		world_space_vertex_normals[0] = normalize(model * vertex_normals[0]);
-		world_space_vertex_normals[1] = normalize(model * vertex_normals[1]);
-		world_space_vertex_normals[2] = normalize(model * vertex_normals[2]);
+		world_space_vertex_normals[0] = normalize(model * model_space_vertex_normals[0]);
+		world_space_vertex_normals[1] = normalize(model * model_space_vertex_normals[1]);
+		world_space_vertex_normals[2] = normalize(model * model_space_vertex_normals[2]);
 	}
 
 	// Share perspective-correct interpolation planes instead of only transformed vertices. The

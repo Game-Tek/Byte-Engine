@@ -73,6 +73,25 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 			}
 		}
 	}
+	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
+		// Metal declares an array in C position, so the count follows the variable name rather than the
+		// element type. A short scalar array stays a vector type and keeps the portable spelling.
+		if crate::shader::generator::scalar_array_vector_type(type_name).is_none()
+			&& let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name)
+		{
+			string.push_str(Self::translate_type(element_type));
+			string.push(' ');
+			string.push_str(name);
+			string.push('[');
+			string.push_str(count);
+			string.push(']');
+			return;
+		}
+
+		Self::emit_type_name(string, type_name);
+		string.push(' ');
+		string.push_str(name);
+	}
 	fn emit_function_call(
 		&mut self,
 		string: &mut String,
@@ -80,6 +99,19 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		parameters: &[besl::NodeReference],
 	) -> bool {
 		let function_node = function.borrow();
+
+		// An array constructor has the array type for its name. Metal has no `float4[3](...)` constructor
+		// syntax, so the elements lower to a brace initializer instead.
+		if let Some(type_name) = function_node.get_name()
+			&& crate::shader::generator::scalar_array_vector_type(type_name).is_none()
+			&& crate::shader::generator::array_type_parts(type_name).is_some()
+		{
+			string.push('{');
+			self.emit_call_arguments(string, parameters);
+			string.push('}');
+			return true;
+		}
+
 		let besl::Nodes::Struct {
 			name,
 			fields,

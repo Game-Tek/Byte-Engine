@@ -334,6 +334,30 @@ fn material_evaluation_with_skinning_produces_valid_besl() {
 	besl::lex(shader).expect("generated program should link");
 }
 
+/// Verifies the generated material evaluation program lowers to the running platform's shader language.
+///
+/// Linking only proves the BESL is well formed. The generated program reaches the GPU through a platform
+/// backend, and defects that BESL accepts — an array local the backend must place in C position, or a local
+/// that shadows a binding of the same name — surface only when the platform compiler runs.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn material_evaluation_lowers_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	let material = material_metadata! { "variables": [] };
+	let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
+	let shader = material_generator().transform(shader_node, &material);
+	let root = besl::lex(shader).expect("generated program should link");
+
+	let settings = ShaderGenerationSettings::compute(utils::Extent::line(128)).name("material_evaluation".to_string());
+
+	PlatformShaderCompiler::new()
+		.generate(&settings, &root)
+		.await
+		.expect("generated material evaluation program should compile for the platform shader language");
+}
+
 /// Verifies cone PCF evaluates its receiver plane at each fetched shadow texel center.
 #[test]
 fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {

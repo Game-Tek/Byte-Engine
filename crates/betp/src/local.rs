@@ -1,14 +1,16 @@
 /// The number of recently sent packets retained for acknowledgment tracking.
 const PACKET_HISTORY: usize = 1024;
+// Keep the packed byte count explicit so `BitArray` does not require a generic-const expression.
+const PACKET_HISTORY_BYTES: usize = PACKET_HISTORY.div_ceil(8);
 
 /// The `Local` struct preserves the bounded send history used to interpret peer acknowledgements.
 #[derive(Debug, Clone, Copy)]
 pub struct Local {
 	// The sequence is a 16-bit number that is incremented for each packet sent.
 	sequence: u16,
-	packet_data: BitArray<PACKET_HISTORY>,
+	packet_data: BitArray<PACKET_HISTORY, PACKET_HISTORY_BYTES>,
 	// Validity is tracked independently because every `u16`, including `u16::MAX`, is a valid sequence number.
-	packet_valid: BitArray<PACKET_HISTORY>,
+	packet_valid: BitArray<PACKET_HISTORY, PACKET_HISTORY_BYTES>,
 	sequence_buffer: [u16; PACKET_HISTORY],
 }
 

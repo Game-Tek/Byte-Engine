@@ -60,9 +60,9 @@ impl RenderPass {
 			vp: sink.view_projection().into(),
 		};
 
-		let vertex_buffer = sm.resource_store.vertex_positions_buffer;
+		let vertex_buffer = sm.vertex_positions_buffer;
 
-		let index_buffer = sm.resource_store.indices_buffer;
+		let index_buffer = sm.indices_buffer;
 
 		let descriptor_set = self.descriptor_set;
 

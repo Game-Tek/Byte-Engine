@@ -96,9 +96,12 @@ pub(crate) struct MeshPrimitive {
 	pub(crate) skin: Option<Arc<SkinBinding>>,
 }
 
-/// The `GeometryBuffers` struct owns the append-only GPU streams every visibility stage reads.
-pub(crate) struct GeometryBuffers {
-	counts: GeometryCounts,
+/// The `GeometryHandles` struct names the GPU streams every visibility stage reads.
+///
+/// Handles are stable for the life of the pipeline, so the render thread copies this value at construction
+/// while the loader retains the allocation cursors that decide where the next mesh lands.
+#[derive(Clone, Copy)]
+pub(crate) struct GeometryHandles {
 	pub(crate) vertex_positions: ghi::BufferHandle<[[f32; 3]; MAX_VERTICES]>,
 	/// Octahedrally encoded normals, two UNORM16 components each.
 	pub(crate) vertex_normals: ghi::BufferHandle<[RuntimeVertexNormal; MAX_VERTICES]>,
@@ -115,7 +118,13 @@ pub(crate) struct GeometryBuffers {
 	pub(crate) skinning_weights: ghi::BufferHandle<[[f32; 4]; MAX_VERTICES]>,
 }
 
-impl GeometryBuffers {
+/// The `GeometryBuffers` struct appends meshes to the geometry streams in the order they become resident.
+pub(crate) struct GeometryBuffers {
+	counts: GeometryCounts,
+	handles: GeometryHandles,
+}
+
+impl GeometryHandles {
 	pub(crate) fn new(context: &mut ghi::implementation::Context) -> Self {
 		let geometry = ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage;
 		let indices = ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage;
@@ -125,7 +134,6 @@ impl GeometryBuffers {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 		};
 		Self {
-			counts: GeometryCounts::default(),
 			vertex_positions: context.build_buffer(build("Visibility Vertex Positions Buffer", geometry)),
 			vertex_normals: context.build_buffer(build("Visibility Vertex Normals Buffer", geometry)),
 			vertex_uvs: context.build_buffer(build("Visibility Vertex UV Buffer", geometry)),
@@ -136,6 +144,16 @@ impl GeometryBuffers {
 			skinning_rest_normals: context.build_buffer(build("Visibility Skinning Rest Normals", ghi::Uses::Storage)),
 			skinning_joints: context.build_buffer(build("Visibility Skinning Joints", ghi::Uses::Storage)),
 			skinning_weights: context.build_buffer(build("Visibility Skinning Weights", ghi::Uses::Storage)),
+		}
+	}
+}
+
+impl GeometryBuffers {
+	/// Creates the append cursor over already-created geometry streams.
+	pub(crate) fn new(handles: GeometryHandles) -> Self {
+		Self {
+			counts: GeometryCounts::default(),
+			handles,
 		}
 	}
 
@@ -164,30 +182,34 @@ impl GeometryBuffers {
 			)
 		};
 		c.copy_buffers(&[
-			copy(&streams.positions, self.vertex_positions.into(), base.vertices as usize * 12),
+			copy(
+				&streams.positions,
+				self.handles.vertex_positions.into(),
+				base.vertices as usize * 12,
+			),
 			copy(
 				&streams.normals,
-				self.vertex_normals.into(),
+				self.handles.vertex_normals.into(),
 				base.vertices as usize * VERTEX_NORMAL_BUFFER_STRIDE as usize,
 			),
 			copy(
 				&streams.uvs,
-				self.vertex_uvs.into(),
+				self.handles.vertex_uvs.into(),
 				base.vertices as usize * VERTEX_UV_BUFFER_STRIDE as usize,
 			),
 			copy(
 				&streams.vertex_indices,
-				self.vertex_indices.into(),
+				self.handles.vertex_indices.into(),
 				base.primitive_indices as usize * 2,
 			),
 			copy(
 				&streams.primitive_indices,
-				self.primitive_indices.into(),
+				self.handles.primitive_indices.into(),
 				base.triangles as usize * 3,
 			),
 			copy(
 				&streams.meshlets,
-				self.meshlets.into(),
+				self.handles.meshlets.into(),
 				base.meshlets as usize * std::mem::size_of::<ShaderMeshletData>(),
 			),
 		]);
@@ -207,22 +229,22 @@ impl GeometryBuffers {
 					c.copy_buffers(&[
 						copy(
 							&skinning.positions,
-							self.skinning_rest_positions.into(),
+							self.handles.skinning_rest_positions.into(),
 							destination_vertex * SKINNING_POSITION_STRIDE,
 						),
 						copy(
 							&skinning.normals,
-							self.skinning_rest_normals.into(),
+							self.handles.skinning_rest_normals.into(),
 							destination_vertex * SKINNING_NORMAL_STRIDE,
 						),
 						copy(
 							&skinning.joints,
-							self.skinning_joints.into(),
+							self.handles.skinning_joints.into(),
 							destination_vertex * SKINNING_JOINTS_STRIDE,
 						),
 						copy(
 							&skinning.weights,
-							self.skinning_weights.into(),
+							self.handles.skinning_weights.into(),
 							destination_vertex * SKINNING_WEIGHTS_STRIDE,
 						),
 					]);

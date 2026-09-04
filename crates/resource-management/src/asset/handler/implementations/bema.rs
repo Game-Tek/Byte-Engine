@@ -311,9 +311,10 @@ pub(crate) async fn compile_shader_program(
 		.generate(&settings, &root_node)
 		.await
 		.map_err(|error| {
+			// The BESL program already linked and reflected, so the platform compiler rejected shader code the
+			// engine generated. No BESL reference link belongs here: the defect is in the backend, not the source.
 			log::error!(
-				"Failed to compile shader '{name}' for stage '{stage}': {error}. See {}.",
-				online_docs_url(BESL_DOCS_PATH)
+				"Failed to compile shader '{name}' for stage '{stage}': {error}. The most likely cause is a defect in the platform shader backend. Report this with the shader name and the compiler output above."
 			);
 		})?;
 

@@ -38,6 +38,15 @@ pub struct ResourceIoTicket {
 	cancellation_requested: AtomicBool,
 }
 
+// SAFETY: Metal I/O queues, file handles, and I/O command buffers are `!Send` only because objc2 cannot know an
+// object's thread rules. Metal documents these as usable from any thread, and the engine's resource loaders create
+// and submit batches away from the render thread.
+//
+// Ownership may move between threads; concurrent use may not. `Sync` is deliberately not claimed, so sharing either
+// value requires a lock that hands out one borrow at a time.
+unsafe impl Send for ResourceIoQueue {}
+unsafe impl Send for ResourceIoTicket {}
+
 impl ResourceIoQueue {
 	/// Creates the native queue used by later file batches.
 	fn new(context: &mut context::Context, descriptor: ResourceIoQueueDescriptor<'_>) -> Result<Self, ResourceIoError> {

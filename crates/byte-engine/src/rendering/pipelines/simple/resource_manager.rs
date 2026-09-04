@@ -1,40 +1,33 @@
-//! Asynchronous mesh preparation and renderer-owned storage for the Simple pipeline.
+//! Loader-thread mesh residency and shared scene storage for the Simple pipeline.
 //!
 //! Use this module as the smallest concrete guide for implementing
-//! [`crate::rendering::resource_loading`] in another renderer. Simple supports
+//! [`crate::rendering::loading`] in another renderer. Simple supports
 //! generated meshes and baked static meshes. It consumes only `vec3f` positions
 //! and triangle indices, converts indices to one mesh-local `u16` stream, and
 //! has no texture path. These are renderer capabilities, not restrictions of
 //! the shared loader.
 //!
-//! # From scene request to prepared bytes
+//! # From scene request to residency
 //!
 //! [`super::PipelineManager::request_mesh`] derives a renderer-independent
-//! [`MeshKey`], coalesces it through the shared loader, and retains each scene
-//! instance as pending. A [`SimpleMeshPreparer`] then resolves the owned
-//! [`MeshSource`] off-thread and writes only Simple's required streams
-//! into a [`StagingLease`]. [`PreparedSimpleMesh`] describes subranges relative
-//! to that lease; it does not choose resident buffer offsets.
-//!
-//! # From prepared bytes back to the scene
-//!
-//! The pipeline manager drains the completion into a frame upload queue. That
-//! queue calls [`SimpleResourceStore::record`] on the render thread, where
-//! fixed buffer capacities, append offsets, and [`ResidentSimpleMesh`] identity
-//! belong. After the matching GPU frame completes, the manager publishes the
-//! resident by logical key and creates every pending instance. Keeping instance
-//! creation last prevents draw construction from observing incomplete geometry.
+//! [`MeshKey`], coalesces it through [`SimpleLoader`], and retains each scene
+//! instance as pending. A loader lane resolves the owned [`MeshSource`], writes
+//! Simple's streams into a [`StagingLease`], reserves renderer-owned buffer
+//! offsets, and waits for the transfer before reporting [`ResidentSimpleMesh`].
+//! The manager then creates every pending instance for that key.
 //!
 //! # Adapt this example
 //!
-//! Replace [`MeshSource`] and [`PreparedSimpleMesh`] with the inputs and
-//! transfer description your renderer needs. Replace [`SimpleResourceStore`]
-//! with its exact storage layout. Keep the loader token, frame queue, and
-//! staging lease flow unchanged unless the resource uses native GPU I/O. Wire
-//! the resulting manager during application startup as shown by
+//! Replace [`MeshSource`] and the private prepared value with the inputs and
+//! transfer layout your renderer needs. Keep GPU placement inside the loader
+//! integration and publish only values whose transfers have completed. Wire the
+//! resulting manager during application startup as shown by
 //! [`crate::application::graphics::setup_simple_render_pipeline`].
 
-use std::{future::Future, ops::Range, sync::Arc};
+use std::{
+	ops::Range,
+	sync::{Arc, Mutex},
+};
 
 use ghi::{
 	command_buffer::CommandBufferRecording as _,
@@ -50,40 +43,29 @@ use resource_management::{
 use crate::{
 	core::{EntityHandle, factory::Handle},
 	rendering::{
+		SharedContext,
+		loading::{LoadError, LoadPipeline, Loaded, LoaderClient, LoaderLane, spawn},
 		mesh::generator::MeshGenerator,
 		renderable::mesh::{MeshKey, MeshSource},
-		resource_loading::{RenderResource, ResourcePreparer, ResourceUploadStore, StagingLease, UploadStagingArena},
+		resource_loading::{StagingLease, UploadStagingArena},
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 	},
 };
 
-const SIMPLE_VERTEX_CAPACITY: usize = 1024 * 1024;
-const SIMPLE_INDEX_CAPACITY: usize = 1024 * 1024;
+pub(super) const SIMPLE_VERTEX_CAPACITY: usize = 1024 * 1024;
+pub(super) const SIMPLE_INDEX_CAPACITY: usize = 1024 * 1024;
 pub(crate) const ASYNC_UPLOAD_BUFFER_BYTE_COUNT: usize = 1024 * 1024 * 16;
 const POSITION_STRIDE: usize = std::mem::size_of::<(f32, f32, f32)>();
 const INDEX_STRIDE: usize = std::mem::size_of::<u16>();
+const SIMPLE_LOADER_LANE_COUNT: usize = 1;
+const SIMPLE_LOADER_RESULT_CAPACITY: usize = 64;
 
-/// The `SimpleMeshResource` enum binds the shared lifecycle to Simple's mesh-only protocol.
+/// The `PreparedSimpleMesh` struct keeps Simple-formatted transfer bytes alive until its lane finishes the copies.
 ///
-/// It is an uninhabited marker because requests, prepared values, and failures
-/// live in the associated [`RenderResource`] types. Add a separate protocol or
-/// widen these associated types when Simple gains independently loaded resource
-/// families such as textures.
-pub(crate) enum SimpleMeshResource {}
-
-impl RenderResource for SimpleMeshResource {
-	type Key = MeshKey;
-	type Request = MeshSource;
-	type Prepared = PreparedSimpleMesh;
-	type Error = SimpleMeshError;
-}
-
-/// The `PreparedSimpleMesh` struct keeps Simple-formatted transfer bytes alive without choosing resident offsets.
-///
-/// The staging ranges are relative to the lease. The frame upload queue retains
-/// this complete value until the GPU stops reading it, then returns its
-/// [`StagingLease`] automatically.
-pub(crate) struct PreparedSimpleMesh {
+/// The staging ranges are relative to the lease. The loader retains this value
+/// until the GPU stops reading it, then returns its [`StagingLease`]
+/// automatically.
+struct PreparedSimpleMesh {
 	staging: StagingLease,
 	positions: Range<usize>,
 	indices: Range<usize>,
@@ -91,64 +73,88 @@ pub(crate) struct PreparedSimpleMesh {
 	index_count: usize,
 }
 
-/// The `ResidentSimpleMesh` struct identifies geometry allocated by the Simple renderer store.
-///
-/// This renderer-local value is created during transfer recording but becomes
-/// scene-visible only after frame completion. A different renderer should
-/// define the resident representation its draw path needs.
+/// The `ResidentSimpleMesh` struct identifies geometry whose loader transfer has completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResidentSimpleMesh {
 	mesh_id: usize,
 }
 
-/// The `SimpleMeshPreparer` struct isolates resource I/O and Simple-format conversion from render-thread storage.
-///
-/// Give one preparer to each loading server lane. It shares only the resource
-/// service and staging client, so no worker can assign offsets in
-/// [`SimpleResourceStore`].
-pub(crate) struct SimpleMeshPreparer {
+/// The `SimpleLoader` struct owns all resource loading and GPU placement for the Simple pipeline.
+pub(crate) struct SimpleLoader {
 	resources: EntityHandle<resource_management::ResourceManager>,
-	staging: Arc<UploadStagingArena>,
+	store: SharedSimpleResourceStore,
 }
 
-impl SimpleMeshPreparer {
-	/// Creates one worker-side preparer over shared resource and staging services.
+pub(crate) type SimpleLoaderClient = LoaderClient<SimpleLoader>;
+pub(crate) type SimpleLoaderLane = LoaderLane<SimpleLoader>;
+pub(crate) type SharedSimpleResourceStore = Arc<Mutex<SimpleResourceStore>>;
+
+impl SimpleLoader {
+	/// Creates the Simple pipeline's loader client and lane.
 	///
-	/// Next, attach this value to a
-	/// [`crate::rendering::resource_loading::ResourceLoadingEndpoint`] and run the
-	/// resulting server on an application-owned task.
-	pub(crate) fn new(resources: EntityHandle<resource_management::ResourceManager>, staging: Arc<UploadStagingArena>) -> Self {
-		Self { resources, staging }
+	/// `store` owns the destination buffers backed by `staging_buffer`. Run the
+	/// returned lane on the same application-owned runtime as the staging worker.
+	pub(crate) fn spawn(
+		context: &SharedContext,
+		queue: ghi::QueueHandle,
+		resources: EntityHandle<resource_management::ResourceManager>,
+		staging: Arc<UploadStagingArena>,
+		store: SharedSimpleResourceStore,
+	) -> (SimpleLoaderClient, Vec<SimpleLoaderLane>) {
+		spawn(
+			context,
+			queue,
+			Self { resources, store },
+			staging,
+			SIMPLE_LOADER_LANE_COUNT,
+			SIMPLE_LOADER_RESULT_CAPACITY,
+		)
 	}
 }
 
-impl ResourcePreparer<SimpleMeshResource> for SimpleMeshPreparer {
-	/// Resolves and prepares one mesh without accessing render-thread storage.
-	///
-	/// Generated geometry is converted directly. Baked geometry is validated
-	/// against Simple's static `vec3f`/`u16` contract before its required streams
-	/// are loaded into staging.
-	async fn prepare(&mut self, request: MeshSource) -> Result<PreparedSimpleMesh, SimpleMeshError> {
-		match request {
-			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), self.staging.clone()).await,
+impl LoadPipeline for SimpleLoader {
+	type Key = MeshKey;
+	type Request = MeshSource;
+	type Resident = ResidentSimpleMesh;
+
+	fn key(request: &Self::Request) -> Self::Key {
+		request.key()
+	}
+
+	/// Resolves, converts, places, and transfers one mesh before publishing it.
+	async fn load(&self, request: MeshSource, lane: &mut LoaderLane<Self>) -> Result<Loaded<Self>, LoadError> {
+		let staging = lane.staging().clone();
+		let prepared = match request {
+			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), staging).await,
 			MeshSource::Resource(id) => {
 				let resource = self
 					.resources
 					.request::<ResourceMesh>(id)
 					.await
-					.map_err(|reason| SimpleMeshError::ResourceRequest { id, reason })?;
-				prepare_resource_mesh(resource, self.staging.clone()).await
+					.map_err(|reason| LoadError(SimpleMeshError::ResourceRequest { id, reason }.to_string()))?;
+				prepare_resource_mesh(resource, staging).await
 			}
 		}
+		.map_err(|error| LoadError(error.to_string()))?;
+
+		// The transfer must complete before `prepared` drops and returns its staging lease.
+		let resident = lane
+			.transfer(|recording| {
+				self.store
+					.lock()
+					.unwrap_or_else(|error| error.into_inner())
+					.write_mesh(recording, &prepared)
+			})
+			.map_err(|error| LoadError(error.to_string()))?;
+		Ok(Loaded::new(resident))
 	}
 }
 
 /// The `SimpleResourceStore` struct centralizes Simple's GPU placement and scene-instance allocation policy.
 ///
-/// This is the seam a future renderer replaces. Simple chooses fixed,
-/// append-only parallel position and index buffers; it does not ask the shared
-/// loader to understand those buffers. Keep this store on the render thread and
-/// pass it to [`crate::rendering::resource_loading::FrameUploadQueue::record_frame`].
+/// Simple chooses fixed, append-only parallel position and index buffers. Loader
+/// lanes reserve mesh ranges while the render thread uses the same store for
+/// scene instances and draw batches.
 pub(crate) struct SimpleResourceStore {
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; SIMPLE_INDEX_CAPACITY]>,
@@ -160,7 +166,7 @@ impl SimpleResourceStore {
 	/// Creates fixed renderer-owned geometry buffers and empty allocation state.
 	///
 	/// `staging_buffer` must be the backing buffer mapped by the shared staging
-	/// arena. Next, keep this store beside the loader and frame upload queue.
+	/// arena. Share this store between the loader and pipeline manager.
 	pub(crate) fn new(context: &mut ghi::implementation::Context, staging_buffer: ghi::BaseBufferHandle) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::TransferDestination)
@@ -183,8 +189,7 @@ impl SimpleResourceStore {
 
 	/// Creates one scene instance after its mesh upload is visible to rendering.
 	///
-	/// Call this only for a [`ResidentSimpleMesh`] returned from a completed frame
-	/// upload, never from the recording-time store result directly.
+	/// Call this only for a [`ResidentSimpleMesh`] returned by the loader.
 	pub(crate) fn add_instance(&mut self, mesh: &ResidentSimpleMesh, handle: Handle) -> utils::StableVecHandle {
 		self.mesh_buffers_stats.add_instance(mesh.mesh_id, handle)
 	}
@@ -207,21 +212,17 @@ impl SimpleResourceStore {
 	}
 }
 
-impl ResourceUploadStore for SimpleResourceStore {
-	type Upload = PreparedSimpleMesh;
-	type Resident = ResidentSimpleMesh;
-	type Error = SimpleMeshError;
-
+impl SimpleResourceStore {
 	/// Records one prepared mesh into Simple's parallel position and index streams.
 	///
 	/// Both capacities are checked before allocation metadata changes or commands
-	/// are recorded. The returned resident reserves the final mesh offsets, but
-	/// the pipeline manager publishes it only after transfer-frame completion.
-	fn record(
+	/// are recorded. The loader publishes the returned resident only after its
+	/// transfer synchronizer completes.
+	fn write_mesh(
 		&mut self,
 		recording: &mut ghi::implementation::CommandBufferRecording<'_>,
-		prepared: &Self::Upload,
-	) -> Result<Self::Resident, Self::Error> {
+		prepared: &PreparedSimpleMesh,
+	) -> Result<ResidentSimpleMesh, SimpleMeshError> {
 		let vertex_offset = self.mesh_buffers_stats.vertex_offset();
 		let index_offset = self.mesh_buffers_stats.index_offset();
 		if vertex_offset

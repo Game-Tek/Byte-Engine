@@ -2,6 +2,8 @@
 
 /// The number of recently received packets retained for acknowledgment tracking.
 const PACKET_HISTORY: usize = 1024;
+// Keep the packed byte count explicit so `BitArray` does not require a generic-const expression.
+const PACKET_HISTORY_BYTES: usize = PACKET_HISTORY.div_ceil(8);
 
 /// The `Remote` struct preserves the bounded receive history used to construct wire acknowledgements.
 #[derive(Debug, Clone, Copy)]
@@ -11,9 +13,9 @@ pub struct Remote {
 	/// The 32-packet acknowledgment window relative to `ack`.
 	ack_bitfield: u32,
 	/// The receive status of packets in retained history.
-	packet_data: BitArray<PACKET_HISTORY>,
+	packet_data: BitArray<PACKET_HISTORY, PACKET_HISTORY_BYTES>,
 	// Validity is tracked independently because every `u16`, including `u16::MAX`, is a valid sequence number.
-	packet_valid: BitArray<PACKET_HISTORY>,
+	packet_valid: BitArray<PACKET_HISTORY, PACKET_HISTORY_BYTES>,
 	/// The sequence numbers stored in retained history.
 	receive_sequence_buffer: [u16; PACKET_HISTORY],
 }

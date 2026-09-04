@@ -168,7 +168,8 @@ impl Context {
 		}
 	}
 
-	pub(crate) fn create_command_buffer_recording(
+	/// Creates a recording that belongs to no frame, for transfers submitted outside the render loop.
+	pub fn create_command_buffer_recording(
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> crate::vulkan::CommandBufferRecording<'_> {

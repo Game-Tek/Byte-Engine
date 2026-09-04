@@ -59,13 +59,12 @@ pub struct Renderer {
 	graphics_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
-	resource_upload_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
 	defer_first_frame_sink_setup: bool,
 
 	/// The GHI context where all rendering resources and operations are performed.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
-	context: ghi::implementation::Context,
+	context: crate::rendering::SharedContext,
 }
 
 impl Renderer {
@@ -193,13 +192,10 @@ impl Renderer {
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 
 		let render_command_buffer = context.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
-		let resource_upload_command_buffer = context
-			.queue(graphics_queue_handle)
-			.create_command_buffer(Some("Resource Upload"));
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
-			context,
+			context: crate::rendering::SharedContext::new(context),
 			instance,
 
 			started_frame_count: 0,
@@ -234,7 +230,6 @@ impl Renderer {
 			graphics_queue_handle,
 
 			render_command_buffer,
-			resource_upload_command_buffer,
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
 		}
@@ -262,11 +257,9 @@ impl Renderer {
 
 	/// Registers a scene pipeline manager with the renderer.
 	///
-	/// The renderer calls [`PipelineManager::begin_frame`] before frame
-	/// preparation and calls [`PipelineManager::record_frame_uploads`] only when
-	/// that boundary reports pending upload work. This makes a pipeline manager
-	/// the render-thread owner of the shared resource loader, upload queue, and
-	/// implementation-specific store.
+	/// The renderer calls [`PipelineManager::prepare`] once per frame before it
+	/// records scene commands. A manager should drain resident loader events there
+	/// before it builds draws.
 	///
 	/// Next, add post-scene passes with
 	/// [`Self::add_post_scene_render_pass_for_all_sinks`] or create a window with
@@ -274,6 +267,8 @@ impl Renderer {
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
 		{
+			let shared_context = self.context.clone();
+			let mut context = shared_context.lock();
 			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
 				.sink_cameras
 				.iter()
@@ -285,7 +280,7 @@ impl Renderer {
 				}
 
 				let mut rpb = RenderPassBuilder::new(
-					&mut self.context,
+					&mut context,
 					&mut self.render_targets,
 					sink_id,
 					swapchain,
@@ -322,9 +317,11 @@ impl Renderer {
 				..
 			} = self;
 
+			let mut context = context.lock();
+
 			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
 				let mut rpb = RenderPassBuilder::new(
-					context,
+					&mut context,
 					render_targets,
 					sink_id,
 					swapchain,
@@ -403,6 +400,8 @@ impl Renderer {
 
 	/// Instantiates all registered post-scene render pass factories for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
+		let shared_context = self.context.clone();
+		let mut context = shared_context.lock();
 		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::ImageOrSwapchain)>); 16]> =
 			SmallVec::new();
 
@@ -414,7 +413,7 @@ impl Renderer {
 			let render_pass = {
 				let mut render_pass_builder = if Some(factory_index) == final_factory_index {
 					RenderPassBuilder::new_for_final_pass(
-						&mut self.context,
+						&mut context,
 						&mut self.render_targets,
 						sink_id,
 						swapchain,
@@ -422,7 +421,7 @@ impl Renderer {
 					)
 				} else {
 					RenderPassBuilder::new(
-						&mut self.context,
+						&mut context,
 						&mut self.render_targets,
 						sink_id,
 						swapchain,
@@ -447,7 +446,7 @@ impl Renderer {
 			// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
 			if self.render_targets.get("main", sink_id).is_some() {
 				let mut builder = RenderPassBuilder::new(
-					&mut self.context,
+					&mut context,
 					&mut self.render_targets,
 					sink_id,
 					swapchain,
@@ -505,7 +504,10 @@ impl Renderer {
 			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
 			.collect::<Vec<_>>();
 
-		self.context.start_frame_capture();
+		let shared_context = self.context.clone();
+		let mut context = shared_context.lock();
+
+		context.start_frame_capture();
 
 		{
 			let span = debug_span!("Renderer::update_camera_transforms");
@@ -524,14 +526,13 @@ impl Renderer {
 			}
 		}
 
-		let mut queue = self.context.queue(self.graphics_queue_handle);
+		let mut queue = context.queue(self.graphics_queue_handle);
 		let frame =
 			ghi::queue::FrameRequest::new_in(self.started_frame_count, self.render_finished_synchronizer, &frame_allocator);
 
 		self.started_frame_count += 1;
 
 		let command_buffer = self.render_command_buffer;
-		let resource_upload_command_buffer = self.resource_upload_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
 		let wait_for = &[];
 		let windows = &self.windows;
@@ -555,24 +556,6 @@ impl Renderer {
 			let span = debug_span!("Renderer::queue_execute");
 			let _enter = span.enter();
 			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
-				let completed_graphics_frame = execution.completed_frame();
-				let frame_key = execution
-					.frame()
-					.expect(
-						"Frame is required to record renderer uploads. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
-					)
-					.key();
-				let mut has_frame_uploads = false;
-				for pipeline_manager in pipeline_managers.iter_mut() {
-					has_frame_uploads |= pipeline_manager.begin_frame(completed_graphics_frame);
-				}
-				if has_frame_uploads {
-					execution.record(resource_upload_command_buffer, |recording| {
-						for pipeline_manager in pipeline_managers.iter_mut() {
-							pipeline_manager.record_frame_uploads(frame_key, &mut *recording);
-						}
-					});
-				}
 				#[cfg(debug_assertions)]
 				if let Some(resource_updates) = resource_updates {
 					while let Some(update) = resource_updates.read() {
@@ -769,14 +752,14 @@ impl Renderer {
 		}
 
 		if screenshot_transfers.iter().any(|transfer| matches!(transfer, Some(Ok(_)))) {
-			self.context.wait_for_synchronizer(self.render_finished_synchronizer);
+			context.wait_for_synchronizer(self.render_finished_synchronizer);
 		}
 
 		screenshot_transfers
 			.into_iter()
 			.map(|transfer| {
 				let handle = transfer.unwrap_or(Err(RendererScreenshotError::SinkUnavailable))?;
-				self.context
+				context
 					.get_image_data(handle)
 					.map(|readback| (submitted_frame, readback))
 					.map_err(RendererScreenshotError::Transfer)
@@ -815,8 +798,21 @@ impl Renderer {
 		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, target })
 	}
 
-	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
-		&mut self.context
+	/// Borrows the GHI context for setup work that must run before the first frame.
+	pub fn context_mut(&self) -> impl std::ops::DerefMut<Target = ghi::implementation::Context> + '_ {
+		self.context.lock()
+	}
+
+	/// Returns the queue where rendering and resource transfers are submitted.
+	#[must_use]
+	pub fn graphics_queue(&self) -> ghi::QueueHandle {
+		self.graphics_queue_handle
+	}
+
+	/// Returns shared ownership of the GHI context for loader threads.
+	#[must_use]
+	pub fn shared_context(&self) -> crate::rendering::SharedContext {
+		self.context.clone()
 	}
 
 	/// Returns a client for requesting renderer-owned asynchronous pipelines.
@@ -850,12 +846,17 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				let swapchain_handle = self.context.bind_to_window(
-					&os_handles,
-					ghi::PresentationModes::FIFO,
-					extent,
-					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
-				);
+				// Hold the context only for the swapchain binding. The sink initialization below
+				// takes the same lock, and `SharedContext` is a plain mutex that does not re-enter.
+				let swapchain_handle = {
+					let mut context = self.context.lock();
+					context.bind_to_window(
+						&os_handles,
+						ghi::PresentationModes::FIFO,
+						extent,
+						ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
+					)
+				};
 
 				let sink_id = self.windows.len();
 

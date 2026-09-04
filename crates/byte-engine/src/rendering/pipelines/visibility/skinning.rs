@@ -5,7 +5,7 @@ use ghi::frame::Frame as _;
 use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use utils::Extent;
 
-use super::geometry::GeometryBuffers;
+use super::geometry::GeometryHandles;
 use crate::rendering::PipelineManagerClient;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -75,7 +75,7 @@ impl SkinningPass {
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		sources: &GeometryBuffers,
+		sources: GeometryHandles,
 	) -> Self {
 		let dynamic = |name, accesses| {
 			ghi::buffer::Builder::new(ghi::Uses::Storage)

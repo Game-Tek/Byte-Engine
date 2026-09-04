@@ -68,6 +68,18 @@ pub(super) struct SkinningCopy {
 	pub(super) weights: Range<usize>,
 }
 
+/// The `SkinningStagingBases` struct locates the start of each bind-pose source stream in the staging lease.
+///
+/// A baked primitive records its stream offsets relative to its semantic's aggregate stream, while the copies in
+/// [`GeometryBuffers::write_mesh`] address the staging lease. These bases convert between the two.
+#[derive(Clone)]
+struct SkinningStagingBases {
+	positions: Range<usize>,
+	normals: Range<usize>,
+	joints: Range<usize>,
+	weights: Range<usize>,
+}
+
 /// Reserves one 4-byte aligned range in a staging layout.
 fn take_range(cursor: &mut usize, size: usize) -> Range<usize> {
 	let start = cursor.next_multiple_of(4);
@@ -166,7 +178,13 @@ impl PreparedMesh {
 				None
 			})?;
 		let meshlet_bytes = loaded.stream("Meshlets").expect("requested meshlet stream").buffer();
-		let (primitives, meshlets) = build_resource_primitives(resource.resource(), meshlet_bytes, &skins, layout.counts)?;
+		let (primitives, meshlets) = build_resource_primitives(
+			resource.resource(),
+			meshlet_bytes,
+			&skins,
+			layout.counts,
+			layout.skinning_bases.clone(),
+		)?;
 
 		// Converted streams live after every loaded source stream, so their ranges are rebased into `output`.
 		let rebase = |range: &Range<usize>| range.start - layout.source_byte_count..range.end - layout.source_byte_count;
@@ -222,6 +240,8 @@ struct ResourceStreams {
 /// The `ResourceLayout` struct places loaded source streams and converted runtime streams in one staging lease.
 struct ResourceLayout {
 	streams: PreparedStreams,
+	/// Present when any primitive is skinned.
+	skinning_bases: Option<SkinningStagingBases>,
 	source_normals: Range<usize>,
 	source_uvs: Range<usize>,
 	uvs_are_f32: bool,
@@ -230,7 +250,49 @@ struct ResourceLayout {
 	counts: GeometryCounts,
 }
 
+/// The `SourceStagingLayout` struct places every loaded source stream in the front of a staging lease.
+///
+/// [`ResourceStreams::read_targets`] loads the streams in this order, so a copy that reads a source stream
+/// addresses it through these ranges rather than through the baked resource's own offsets.
+struct SourceStagingLayout {
+	positions: Range<usize>,
+	normals: Range<usize>,
+	uvs: Range<usize>,
+	vertex_indices: Range<usize>,
+	primitive_indices: Range<usize>,
+	/// Joint indices and weights, present when at least one primitive is skinned.
+	skinning: Option<(Range<usize>, Range<usize>)>,
+	byte_count: usize,
+}
+
 impl ResourceStreams {
+	/// Reserves the source region in the order [`Self::read_targets`] loads it.
+	fn source_staging_layout(&self) -> SourceStagingLayout {
+		let mut cursor = 0;
+		let positions = take_range(&mut cursor, self.positions.size);
+		let normals = take_range(&mut cursor, self.normals.size);
+		let uvs = take_range(&mut cursor, self.uvs.size);
+		let vertex_indices = take_range(&mut cursor, self.vertex_indices.size);
+		let primitive_indices = take_range(&mut cursor, self.meshlet_indices.size);
+		// Source meshlets are only read on the CPU; they need no copy alignment.
+		cursor += self.meshlets.size;
+		let skinning = self.skinning.as_ref().map(|(joints, weights)| {
+			let joints = take_range(&mut cursor, joints.size);
+			let weights = take_range(&mut cursor, weights.size);
+			(joints, weights)
+		});
+
+		SourceStagingLayout {
+			positions,
+			normals,
+			uvs,
+			vertex_indices,
+			primitive_indices,
+			skinning,
+			byte_count: cursor,
+		}
+	}
+
 	fn new(mesh: &Mesh) -> Option<Self> {
 		let require = |stream: Option<Stream>, name: &str| {
 			stream.or_else(|| {
@@ -297,19 +359,15 @@ impl ResourceStreams {
 		let meshlet_count = stream_count(&self.meshlets, "meshlet", RESOURCE_MESHLET_STRIDE)?;
 		let skinning_vertices = self.validate_skinning(mesh)?;
 
-		let mut cursor = 0;
-		let positions = take_range(&mut cursor, self.positions.size);
-		let source_normals = take_range(&mut cursor, self.normals.size);
-		let source_uvs = take_range(&mut cursor, self.uvs.size);
-		let vertex_indices = take_range(&mut cursor, self.vertex_indices.size);
-		let primitive_indices = take_range(&mut cursor, self.meshlet_indices.size);
-		// Source meshlets are only read on the CPU; they need no copy alignment.
-		cursor += self.meshlets.size;
-		if let Some((joints, weights)) = &self.skinning {
-			take_range(&mut cursor, joints.size);
-			take_range(&mut cursor, weights.size);
-		}
-		let source_byte_count = cursor;
+		let source = self.source_staging_layout();
+		let positions = source.positions;
+		let source_normals = source.normals;
+		let source_uvs = source.uvs;
+		let vertex_indices = source.vertex_indices;
+		let primitive_indices = source.primitive_indices;
+		let skinning_sources = source.skinning;
+		let source_byte_count = source.byte_count;
+		let mut cursor = source_byte_count;
 		let normals = take_range(&mut cursor, vertex_count * VERTEX_NORMAL_BUFFER_STRIDE as usize);
 		let uvs = if uvs_are_f32 {
 			take_range(&mut cursor, vertex_count * VERTEX_UV_BUFFER_STRIDE as usize)
@@ -317,6 +375,13 @@ impl ResourceStreams {
 			source_uvs.clone()
 		};
 		let meshlets = take_range(&mut cursor, meshlet_count * std::mem::size_of::<ShaderMeshletData>());
+
+		let skinning_bases = skinning_sources.map(|(joints, weights)| SkinningStagingBases {
+			positions: positions.clone(),
+			normals: source_normals.clone(),
+			joints,
+			weights,
+		});
 
 		Some(ResourceLayout {
 			streams: PreparedStreams {
@@ -327,6 +392,7 @@ impl ResourceStreams {
 				primitive_indices,
 				meshlets,
 			},
+			skinning_bases,
 			source_normals,
 			source_uvs,
 			uvs_are_f32,
@@ -441,6 +507,7 @@ fn build_resource_primitives(
 	meshlet_bytes: &[u8],
 	skins: &[Arc<SkinBinding>],
 	expected: GeometryCounts,
+	skinning_bases: Option<SkinningStagingBases>,
 ) -> Option<(Vec<PreparedPrimitive>, Vec<ShaderMeshletData>)> {
 	let mut primitives = Vec::with_capacity(mesh.primitives.len());
 	let mut meshlets = Vec::with_capacity(expected.meshlets as usize);
@@ -480,18 +547,29 @@ fn build_resource_primitives(
 
 		let skinning = match primitive.skin {
 			Some(_) => {
-				let range = |semantic| {
+				let bases = skinning_bases
+					.as_ref()
+					.expect("a skinned primitive requires skinning staging bases");
+				// A baked stream offset is relative to its semantic's aggregate stream, so rebase it onto
+				// where that stream was loaded in the staging lease. Without the rebase every primitive
+				// would copy from the front of the lease, which holds the position stream.
+				let range = |semantic, base: &Range<usize>| {
 					// Stream presence and bounds were validated by `ResourceStreams::validate_skinning`.
 					let stream = primitive
 						.stream(Streams::Vertices(semantic))
 						.expect("validated skinning stream");
-					stream.offset..stream.offset + stream.size
+					let range = base.start + stream.offset..base.start + stream.offset + stream.size;
+					debug_assert!(
+						range.start >= base.start && range.end <= base.end,
+						"Skinned primitive {semantic:?} copy leaves its staging stream. The most likely cause is a baked offset used without rebasing it onto the staging lease."
+					);
+					range
 				};
 				Some(SkinningCopy {
-					positions: range(VertexSemantics::Position),
-					normals: range(VertexSemantics::Normal),
-					joints: range(VertexSemantics::Joints),
-					weights: range(VertexSemantics::Weights),
+					positions: range(VertexSemantics::Position, &bases.positions),
+					normals: range(VertexSemantics::Normal, &bases.normals),
+					joints: range(VertexSemantics::Joints, &bases.joints),
+					weights: range(VertexSemantics::Weights, &bases.weights),
 				})
 			}
 			None => None,
@@ -732,6 +810,51 @@ mod tests {
 		assert_eq!(prepared.primitives.len(), 1);
 		assert_eq!(prepared.primitives[0].primitive.meshlet_count, 1);
 		assert_eq!(prepared.primitives[0].material_id, GENERATED_MESH_MATERIAL);
+	}
+
+	/// Verifies each skinned source stream is copied from its own staging range.
+	///
+	/// A baked primitive records stream offsets relative to its semantic's aggregate stream, while the copies in
+	/// `write_mesh` address the staging lease. Using a baked offset directly aliased every skinned stream onto the
+	/// front of the lease, so joints and weights read position bytes and the mesh rendered in its bind pose.
+	#[test]
+	fn skinned_source_streams_occupy_distinct_staging_ranges() {
+		let stream = |stream_type, size, stride| Stream {
+			stream_type,
+			offset: 0,
+			size,
+			stride,
+		};
+		let vertices = 8;
+		let streams = ResourceStreams {
+			positions: stream(Streams::Vertices(VertexSemantics::Position), vertices * 12, 12),
+			normals: stream(Streams::Vertices(VertexSemantics::Normal), vertices * 12, 12),
+			uvs: stream(Streams::Vertices(VertexSemantics::UV), vertices * 8, 8),
+			vertex_indices: stream(Streams::Indices(resource_management::types::IndexStreamTypes::Vertices), vertices * 2, 2),
+			meshlet_indices: stream(Streams::Indices(resource_management::types::IndexStreamTypes::Triangles), 3, 1),
+			meshlets: stream(Streams::Meshlets, RESOURCE_MESHLET_STRIDE, RESOURCE_MESHLET_STRIDE),
+			skinning: Some((
+				stream(Streams::Vertices(VertexSemantics::Joints), vertices * 8, 8),
+				stream(Streams::Vertices(VertexSemantics::Weights), vertices * 16, 16),
+			)),
+		};
+
+		let layout = streams.source_staging_layout();
+		let (joints, weights) = layout.skinning.expect("a skinned mesh reserves joint and weight staging");
+
+		// Every skinned source must have its own bytes; aliasing is what produced the bind-pose regression.
+		let ranges = [&layout.positions, &layout.normals, &joints, &weights];
+		for (index, first) in ranges.iter().enumerate() {
+			assert!(!first.is_empty(), "skinned source stream {index} reserved no staging bytes");
+			for second in &ranges[index + 1..] {
+				assert!(
+					first.end <= second.start || second.end <= first.start,
+					"skinned source streams overlap in the staging lease: {first:?} and {second:?}"
+				);
+			}
+		}
+		assert_eq!(joints.len(), vertices * 8);
+		assert_eq!(weights.len(), vertices * 16);
 	}
 
 	#[test]

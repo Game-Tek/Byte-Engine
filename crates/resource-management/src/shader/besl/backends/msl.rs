@@ -790,6 +790,68 @@ mod tests {
 		);
 	}
 
+	#[compio::test]
+	async fn local_array_variables_declare_and_initialize_in_metal_syntax() {
+		// Metal has neither GLSL's `float4[3] name` declaration nor its `float4[3](..)` constructor, so a local
+		// array declares its count after the name and initializes from braces.
+		let source = r#"
+		main: fn () -> void {
+			let positions: vec4f[3] = vec4f[3](
+				vec4f(0.0, 0.0, 0.0, 1.0),
+				vec4f(1.0, 0.0, 0.0, 1.0),
+				vec4f(0.0, 1.0, 0.0, 1.0)
+			);
+			positions[0] = positions[1];
+		}
+		"#;
+
+		let root = besl::compile_to_besl(source, None)
+			.expect("Expected local array shader source to compile. The most likely cause is invalid BESL syntax.");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(1)), &main)
+			.expect("Expected local array MSL generation");
+
+		assert_string_contains!(shader, "float4 positions[3]={");
+		assert!(
+			!shader.contains("float4[3]"),
+			"Expected no GLSL array type spelling in MSL output, got: {shader}"
+		);
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-local-array")
+			.await
+			.expect("Expected local array MSL to compile natively");
+	}
+
+	#[compio::test]
+	async fn short_scalar_local_arrays_stay_vector_types() {
+		// `u32[3]` maps to a vector type, so it must keep the vector spelling instead of becoming `uint x[3]`.
+		let source = r#"
+		main: fn () -> void {
+			let indices: u32[3] = u32[3](0, 1, 2);
+			indices[0] = indices[2];
+		}
+		"#;
+
+		let root = besl::compile_to_besl(source, None)
+			.expect("Expected scalar array shader source to compile. The most likely cause is invalid BESL syntax.");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(1)), &main)
+			.expect("Expected scalar array MSL generation");
+
+		assert_string_contains!(shader, "uint3 indices=uint3(");
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-scalar-local-array")
+			.await
+			.expect("Expected scalar array MSL to compile natively");
+	}
+
 	#[test]
 	fn intrinsics_lower_to_valid_msl_names() {
 		let source = r#"

@@ -71,32 +71,14 @@ impl Frame<'_> {
 		))
 	}
 
+	/// Interns a factory-built image through this frame's device.
 	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> crate::ImageHandle {
-		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
-			.extent(image.extent)
-			.device_accesses(image.device_accesses)
-			.use_case(image.use_case)
-			.mip_levels(image.mip_levels)
-			.array_layers(image.array_layers);
-		builder.optimized_clear_value = image.optimized_clear_value;
-		if let Some(name) = image.name.as_deref() {
-			builder = builder.name(name);
-		}
-		self.device.build_image(builder)
+		self.device.intern_image(image)
 	}
 
+	/// Interns a factory-built sampler through this frame's device.
 	pub fn intern_sampler(&mut self, sampler: crate::implementation::FactorySampler) -> crate::SamplerHandle {
-		let mut builder = crate::sampler::Builder::new()
-			.filtering_mode(sampler.filtering_mode)
-			.reduction_mode(sampler.reduction_mode)
-			.mip_map_mode(sampler.mip_map_mode)
-			.addressing_mode(sampler.addressing_mode)
-			.min_lod(sampler.min_lod)
-			.max_lod(sampler.max_lod);
-		if let Some(anisotropy) = sampler.anisotropy {
-			builder = builder.anisotropy(anisotropy);
-		}
-		self.device.build_sampler(builder)
+		self.device.intern_sampler(sampler)
 	}
 
 	fn intern_factory_shaders(&mut self, shaders: &[crate::dx12::factory::Shader]) -> Vec<crate::ShaderHandle> {
@@ -358,5 +340,37 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> crate::SynchronizerHandle {
 		self.device.create_synchronizer(name, signaled)
+	}
+}
+
+impl super::Device {
+	/// Interns a factory-built image into this context, for loader threads that create objects outside a frame.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> crate::ImageHandle {
+		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
+			.extent(image.extent)
+			.device_accesses(image.device_accesses)
+			.use_case(image.use_case)
+			.mip_levels(image.mip_levels)
+			.array_layers(image.array_layers);
+		builder.optimized_clear_value = image.optimized_clear_value;
+		if let Some(name) = image.name.as_deref() {
+			builder = builder.name(name);
+		}
+		self.build_image(builder)
+	}
+
+	/// Interns a factory-built sampler into this context, for loader threads that create objects outside a frame.
+	pub fn intern_sampler(&mut self, sampler: crate::implementation::FactorySampler) -> crate::SamplerHandle {
+		let mut builder = crate::sampler::Builder::new()
+			.filtering_mode(sampler.filtering_mode)
+			.reduction_mode(sampler.reduction_mode)
+			.mip_map_mode(sampler.mip_map_mode)
+			.addressing_mode(sampler.addressing_mode)
+			.min_lod(sampler.min_lod)
+			.max_lod(sampler.max_lod);
+		if let Some(anisotropy) = sampler.anisotropy {
+			builder = builder.anisotropy(anisotropy);
+		}
+		self.build_sampler(builder)
 	}
 }

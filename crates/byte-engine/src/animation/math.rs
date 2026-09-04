@@ -1,4 +1,4 @@
-//! Quaternion operations shared by animation utilities.
+//! Quaternion and curve operations shared by animation utilities.
 
 const QUATERNION_EPSILON: f32 = 1.0e-8;
 
@@ -67,4 +67,29 @@ pub(crate) fn quaternion_exp(value: [f32; 3]) -> [f32; 4] {
 	let half_angle = angle * 0.5;
 	let scale = half_angle.sin() / angle;
 	[value[0] * scale, value[1] * scale, value[2] * scale, half_angle.cos()]
+}
+
+/// Evaluates one cubic Hermite span, scaling the tangents by the span duration.
+///
+/// Both the packed and the unpacked samplers use this to interpolate a keyframe pair.
+pub(crate) fn hermite<const N: usize>(
+	start: [f32; N],
+	start_tangent: [f32; N],
+	end: [f32; N],
+	end_tangent: [f32; N],
+	factor: f32,
+	span: f32,
+) -> [f32; N] {
+	let factor_squared = factor * factor;
+	let factor_cubed = factor_squared * factor;
+	let start_value_weight = 2.0 * factor_cubed - 3.0 * factor_squared + 1.0;
+	let start_tangent_weight = factor_cubed - 2.0 * factor_squared + factor;
+	let end_value_weight = -2.0 * factor_cubed + 3.0 * factor_squared;
+	let end_tangent_weight = factor_cubed - factor_squared;
+	std::array::from_fn(|component| {
+		start[component] * start_value_weight
+			+ start_tangent[component] * span * start_tangent_weight
+			+ end[component] * end_value_weight
+			+ end_tangent[component] * span * end_tangent_weight
+	})
 }

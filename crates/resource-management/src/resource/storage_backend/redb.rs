@@ -589,7 +589,7 @@ impl ReDBStorageBackend {
 			}
 
 			let resource_key = entry.1.value();
-			let serialized = resources_table.get(&resource_key).map_err(|_| QueryError::StorageFailure)?;
+			let serialized = resources_table.get(resource_key).map_err(|_| QueryError::StorageFailure)?;
 			let Some(serialized) = serialized else {
 				continue;
 			};

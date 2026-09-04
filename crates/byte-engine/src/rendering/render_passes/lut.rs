@@ -164,14 +164,7 @@ impl RenderPass for LutRenderPass {
 		self.pass.prepare(frame, sink, frame_allocator)
 	}
 
-	fn bypass<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.bypass_pass.prepare(frame, sink, frame_allocator)
-	}
+	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 /// Reads the baked LUT payload into owned worker-side bytes.

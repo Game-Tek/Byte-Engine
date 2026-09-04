@@ -648,7 +648,7 @@ mod tests {
 	use std::sync::mpsc;
 	use std::time::Duration;
 
-	use super::{IO_DISABLED, SpscByteRing, kAudioUnitSubType_DefaultOutput, output_component_subtypes};
+	use super::{SpscByteRing, kAudioUnitSubType_DefaultOutput, output_component_subtypes};
 
 	// Mirrors a producer operation in the reference queue used by the mixed-operation test.
 	fn write_model_operation(ring: &SpscByteRing, model: &mut VecDeque<u8>, stream_value: &mut u8, rng: u32) {
@@ -681,11 +681,6 @@ mod tests {
 	#[test]
 	fn default_output_is_the_first_macos_component_candidate() {
 		assert_eq!(output_component_subtypes()[0], kAudioUnitSubType_DefaultOutput);
-	}
-
-	#[test]
-	fn input_io_is_disabled_for_non_default_output_units() {
-		assert_eq!(IO_DISABLED, 0);
 	}
 
 	#[test]

@@ -283,16 +283,6 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	fn end_region(&mut self) {
 		self.device.end_debug_region(self.command_buffer);
 	}
-
-	fn region(
-		&mut self,
-		write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result,
-		f: impl FnOnce(&mut Self),
-	) {
-		self.start_region(write_label);
-		f(self);
-		self.end_region();
-	}
 }
 
 impl RasterizationRenderPassMode for CommandBufferRecording<'_> {

@@ -106,3 +106,18 @@ pub(crate) fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4], tolerance:
 		);
 	}
 }
+
+/// Runs a one-texel image-to-image compute program and returns the written color.
+///
+/// The tone-mapping passes share this: each binds a 1x1 source at slot 0 and a 1x1 result at slot 1,
+/// then reads the single output texel back.
+pub(crate) fn run_tone_mapping_vm(program: &ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
+	let mut source = texture_2d(1, 1, &[source_color]);
+	let mut result = empty_image(1, 1);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_image(ResourceSlot::new(0), &mut source);
+	descriptors.bind_image(ResourceSlot::new(1), &mut result);
+	run_at(program, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	rgba(&result, [0, 0])
+}

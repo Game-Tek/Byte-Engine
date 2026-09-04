@@ -2,8 +2,8 @@ use ::utils::{Extent, hash::HashMap};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
-	MTL4ArgumentTable, MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTL4RenderCommandEncoder, MTLArgumentEncoder, MTLBuffer,
-	MTLDevice, MTLTexture,
+	MTL4ArgumentTable, MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTL4RenderCommandEncoder, MTLBuffer, MTLDevice,
+	MTLTexture,
 };
 use smallvec::SmallVec;
 

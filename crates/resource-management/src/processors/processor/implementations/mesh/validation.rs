@@ -215,7 +215,7 @@ impl std::error::Error for MeshProcessingError {}
 pub(super) fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshProcessingError> {
 	let mut seen = [false; 8];
 	for component in vertex_layout {
-		let index = semantic_index(component.semantic);
+		let index = super::vertex_semantic_order(component.semantic);
 		if seen[index] {
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
@@ -368,19 +368,6 @@ pub(super) fn validate_vertex_skin(
 		return Err(MeshProcessingError::NonNormalizedSkinWeights { primitive, vertex });
 	}
 	Ok(())
-}
-
-const fn semantic_index(semantic: VertexSemantics) -> usize {
-	match semantic {
-		VertexSemantics::Position => 0,
-		VertexSemantics::Normal => 1,
-		VertexSemantics::Tangent => 2,
-		VertexSemantics::BiTangent => 3,
-		VertexSemantics::UV => 4,
-		VertexSemantics::Color => 5,
-		VertexSemantics::Joints => 6,
-		VertexSemantics::Weights => 7,
-	}
 }
 
 use super::source::VertexSkin;

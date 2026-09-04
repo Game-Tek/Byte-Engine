@@ -42,21 +42,15 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 	/// Adds a packet and gives reliable packets replacement priority.
 	pub fn add(&mut self, packet: DataPacket<S>, connection_id: u64, reliable: bool) {
 		// Try to find an empty slot in the buffer.
-		for i in 0..N {
-			if self.buffer[i].is_none() {
-				self.buffer[i] = Some(BufferedPacket::new(packet, connection_id, reliable));
-				return;
-			}
+		if let Some(slot) = self.buffer.iter_mut().find(|slot| slot.is_none()) {
+			*slot = Some(BufferedPacket::new(packet, connection_id, reliable));
+			return;
 		}
 
 		// If the buffer is full, replace the first unreliable packet.
-		for i in 0..N {
-			if let Some(p) = self.buffer[i]
-				&& !p.reliable
-			{
-				self.buffer[i] = Some(BufferedPacket::new(packet, connection_id, reliable));
-				return;
-			}
+		if let Some(slot) = self.buffer.iter_mut().find(|slot| slot.as_ref().is_some_and(|p| !p.reliable)) {
+			*slot = Some(BufferedPacket::new(packet, connection_id, reliable));
+			return;
 		}
 
 		// If the buffer is full and the packet is reliable, replace the oldest packet with the most retries.
@@ -83,13 +77,12 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 
 	/// Removes the packet with the given sequence number.
 	pub fn remove(&mut self, sequence: u16) {
-		for i in 0..N {
-			if let Some(packet) = self.buffer[i]
-				&& packet.packet.connection_status.sequence == sequence
-			{
-				self.buffer[i] = None;
-				break;
-			}
+		if let Some(slot) = self
+			.buffer
+			.iter_mut()
+			.find(|slot| slot.as_ref().is_some_and(|p| p.packet.connection_status.sequence == sequence))
+		{
+			*slot = None;
 		}
 	}
 

@@ -162,16 +162,14 @@ pub(crate) const CONE_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 pub(crate) const POINT_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1065).texture_view_type(TextureViewTypes::TextureCubeArray);
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn shader_meshlet_data_matches_packed_buffer_layout() {
-		assert_eq!(std::mem::align_of::<ShaderMeshletData>(), 4);
-		assert_eq!(std::mem::size_of::<ShaderMeshletData>(), 52);
-		assert_eq!(std::mem::offset_of!(ShaderMeshletData, center_radius), 16);
-		assert_eq!(std::mem::offset_of!(ShaderMeshletData, cone_apex_cutoff), 32);
-		assert_eq!(std::mem::offset_of!(ShaderMeshletData, cone_axis), 48);
-	}
-}
+/// `ShaderMeshletData` must keep the packed layout the meshlet buffer is read with.
+///
+/// The culling shaders index this buffer by stride and read each field at a fixed offset.
+///
+/// These are compile-time checks so a layout change fails the build at the definition rather than
+/// later in a shader that silently reads the wrong bytes.
+const _: () = assert!(std::mem::align_of::<ShaderMeshletData>() == 4);
+const _: () = assert!(std::mem::size_of::<ShaderMeshletData>() == 52);
+const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, center_radius) == 16);
+const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, cone_apex_cutoff) == 32);
+const _: () = assert!(std::mem::offset_of!(ShaderMeshletData, cone_axis) == 48);

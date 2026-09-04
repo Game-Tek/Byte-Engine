@@ -57,6 +57,47 @@ pub trait RenderPass {
 	) -> Option<RenderPassReturn<'a>>;
 }
 
+/// Implements a [`RenderPass`] method that only hands the frame to an inner pass.
+///
+/// Composite passes keep their real work in a field: an effect pass forwards `prepare` to the compute
+/// pass it wraps, and bypasses by forwarding to an
+/// [`ImageBypassPass`](crate::rendering::render_passes::blit::ImageBypassPass) so later passes still see
+/// an image. Name the field once instead of repeating the signature:
+///
+/// ```ignore
+/// impl RenderPass for AgxToneMapPass {
+///     fn name(&self) -> &'static str { "agx" }
+///     crate::rendering::render_pass::forward_to_inner_pass!(prepare = render_pass);
+///     crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
+/// }
+/// ```
+///
+/// A pass that must also do maintenance work on one of these paths writes that method out itself.
+macro_rules! forward_to_inner_pass {
+	(prepare = $field:ident) => {
+		fn prepare<'a>(
+			&mut self,
+			frame: &mut ::ghi::implementation::Frame,
+			sink: &$crate::rendering::Sink,
+			frame_allocator: &'a bumpalo::Bump,
+		) -> Option<$crate::rendering::render_pass::RenderPassReturn<'a>> {
+			self.$field.prepare(frame, sink, frame_allocator)
+		}
+	};
+	(bypass = $field:ident) => {
+		fn bypass<'a>(
+			&mut self,
+			frame: &mut ::ghi::implementation::Frame,
+			sink: &$crate::rendering::Sink,
+			frame_allocator: &'a bumpalo::Bump,
+		) -> Option<$crate::rendering::render_pass::RenderPassReturn<'a>> {
+			self.$field.prepare(frame, sink, frame_allocator)
+		}
+	};
+}
+
+pub(crate) use forward_to_inner_pass;
+
 /// The `RenderPassState` enum identifies which preparation path a [`RenderPassHarness`] uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderPassState {

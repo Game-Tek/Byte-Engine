@@ -306,6 +306,16 @@ struct PreparedDraw {
 	push_constants: DebugPushConstants,
 }
 
+/// `DebugPushConstants` must keep the size the pipeline's push-constant range is created with.
+///
+/// The debug raster pipeline declares this byte range up front, so a struct that grows past it would be
+/// truncated on the way to the shader.
+///
+/// These are compile-time checks so a layout change fails the build at the definition rather than later
+/// in a shader that silently reads the wrong bytes.
+const _: () = assert!(std::mem::size_of::<DebugPushConstants>() == 80);
+const _: () = assert!(std::mem::align_of::<DebugPushConstants>() == 16);
+
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, Value, builtin_position_slot, input_slot, output_slot};
@@ -431,12 +441,6 @@ mod tests {
 		assert_eq!(segment[0].0, MeshKind::Cylinder);
 		assert_transformed_point(segment[0].1, [0.0, 0.0, -1.0], segment_start);
 		assert_transformed_point(segment[0].1, [0.0, 0.0, 1.0], segment_end);
-	}
-
-	#[test]
-	fn debug_push_constants_match_the_persisted_pipeline_range() {
-		assert_eq!(std::mem::size_of::<DebugPushConstants>(), 80);
-		assert_eq!(std::mem::align_of::<DebugPushConstants>(), 16);
 	}
 
 	#[test]

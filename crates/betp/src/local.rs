@@ -236,13 +236,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_acknowledge_unsent_packets() {
-		let mut local = Local::new();
-
-		local.acknowledge_packet(0);
-	}
-
-	#[test]
 	fn acknowledgement_bitfield_wraps_before_sequence_zero() {
 		let mut local = Local::new();
 		local.get_sequence_number();

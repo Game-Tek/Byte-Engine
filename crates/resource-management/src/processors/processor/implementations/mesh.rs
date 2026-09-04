@@ -2,6 +2,24 @@ mod packing;
 mod source;
 mod validation;
 
+use crate::types::VertexSemantics;
+
+/// Returns the position of one vertex semantic in the canonical interleaved vertex layout.
+///
+/// Validation and packing both order streams by this, so the layout they agree on is defined once.
+const fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
+	match semantic {
+		VertexSemantics::Position => 0,
+		VertexSemantics::Normal => 1,
+		VertexSemantics::Tangent => 2,
+		VertexSemantics::BiTangent => 3,
+		VertexSemantics::UV => 4,
+		VertexSemantics::Color => 5,
+		VertexSemantics::Joints => 6,
+		VertexSemantics::Weights => 7,
+	}
+}
+
 #[cfg(test)]
 use packing::MESHLET_STREAM_STRIDE;
 pub use packing::{

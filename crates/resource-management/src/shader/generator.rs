@@ -7,7 +7,7 @@ use std::{
 use utils::Extent;
 
 use crate::shader::besl::{
-	evaluation::BindingKind,
+	evaluation::{BindingKind, BindingUsage},
 	graph::{build_graph_in, topological_sort_in},
 };
 
@@ -23,6 +23,20 @@ pub struct CompiledShaderBinding {
 	pub buffer_stride: Option<u32>,
 	pub read: bool,
 	pub write: bool,
+}
+
+impl From<BindingUsage> for CompiledShaderBinding {
+	/// Drops the reflection-only binding name and keeps the flat interface a backend shader needs.
+	fn from(binding: BindingUsage) -> Self {
+		Self {
+			slot: binding.slot,
+			kind: binding.kind,
+			count: binding.count,
+			buffer_stride: binding.buffer_stride,
+			read: binding.read,
+			write: binding.write,
+		}
+	}
 }
 
 impl CompiledShaderBinding {

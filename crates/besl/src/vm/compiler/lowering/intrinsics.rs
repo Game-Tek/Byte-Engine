@@ -217,26 +217,7 @@ impl<'a> Compiler<'a> {
 					});
 				}
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					if target.value_type != return_type {
-						return Err(VmError::TypeMismatch {
-							expected: return_type.name().to_string(),
-							found: target.value_type.name().to_string(),
-						});
-					}
-					let index = target
-						.index_expression
-						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
-						.transpose()?;
-					let register = self.allocate_register();
-					self.instructions.push(Instruction::LoadWorkgroup {
-						register,
-						name: target.name,
-						index,
-						count: target.count,
-						value_type: target.value_type,
-					});
-					return Ok(register);
+					return self.compile_workgroup_load(target, &return_type, descriptor_layouts);
 				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
 				if target.value_type != return_type {

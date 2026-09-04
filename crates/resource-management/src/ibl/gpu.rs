@@ -838,13 +838,17 @@ fn copy_output_region(atlas: &[u8], atlas_width: u32, atlas_y_offset: u32, face_
 	}
 }
 
+/// `GPUIBLPushConstants` must keep the size every native IBL shader declares.
+///
+/// The prefilter, irradiance, and BRDF shaders all bind this one push-constant block, so its size is a
+/// shared ABI rather than an internal detail.
+///
+/// This is a compile-time check so a layout change fails the build at the definition rather than later
+/// in a shader that silently reads the wrong bytes.
+const _: () = assert!(std::mem::size_of::<GPUIBLPushConstants>() == 112);
+
 #[cfg(test)]
 mod tests {
-	#[test]
-	fn push_constants_match_every_native_shader_layout() {
-		assert_eq!(std::mem::size_of::<GPUIBLPushConstants>(), 112);
-	}
-
 	#[test]
 	fn gpu_client_can_cross_asset_worker_threads() {
 		fn assert_send_sync<T: Send + Sync>() {}

@@ -6,7 +6,7 @@ use dispatch2::DispatchData;
 use objc2::ClassType;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSString};
-use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLDevice, MTLResource};
+use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLResource};
 use smallvec::SmallVec;
 
 use super::*;

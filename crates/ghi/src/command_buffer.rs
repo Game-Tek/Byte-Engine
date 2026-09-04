@@ -152,7 +152,14 @@ pub trait CommonCommandBufferMode {
 	fn end_region(&mut self);
 
 	/// Starts a debug region on the GPU and executes the closure.
-	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self));
+	///
+	/// Every backend scopes a region the same way, so this pairs [`Self::start_region`] with
+	/// [`Self::end_region`] here instead of asking each backend to repeat it.
+	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self)) {
+		self.start_region(write_label);
+		f(self);
+		self.end_region();
+	}
 }
 
 /// The `RasterizationRenderPassMode` trait provides commands valid inside an active raster render pass.

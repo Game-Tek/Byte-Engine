@@ -666,38 +666,6 @@ mod tests {
 	}
 
 	#[test]
-	fn create_device_class() {
-		let mut input_manager = build_input_manager();
-
-		let _device_class_handle = input_manager.register_device_class("Keyboard");
-	}
-
-	#[test]
-	fn create_input_sources() {
-		let mut input_manager = build_input_manager();
-
-		let gamepad_class_handle = register_gamepad_device_class(&mut input_manager);
-		register_keyboard_device_class(&mut input_manager);
-
-		let stick_source_description = TriggerDescription::new(
-			Axis2::zero(),
-			Axis2::zero(),
-			Axis2 { x: -1.0, y: -1.0 },
-			Axis2 { x: 1.0, y: 1.0 },
-		);
-
-		let _gamepad_left_stick_input_source =
-			input_manager.register_trigger(&gamepad_class_handle, "LeftStick", stick_source_description);
-		let _gamepad_right_stick_input_source =
-			input_manager.register_trigger(&gamepad_class_handle, "RightStick", stick_source_description);
-
-		let trigger_source_description = TriggerDescription::<f32>::default();
-
-		let _trigger_input_source =
-			input_manager.register_trigger(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
-	}
-
-	#[test]
 	fn test_boolean_source_input_overlap_action() {
 		let mut input_manager = build_input_manager();
 

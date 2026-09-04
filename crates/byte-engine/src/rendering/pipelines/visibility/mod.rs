@@ -15,7 +15,6 @@
 
 mod geometry;
 mod layout;
-pub mod load;
 mod loader;
 mod manager;
 mod mesh_dispatch;

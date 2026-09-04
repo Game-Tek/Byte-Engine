@@ -52,23 +52,9 @@ impl RenderPass for AcesToneMapPass {
 		"aces"
 	}
 
-	fn prepare<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.render_pass.prepare(frame, sink, frame_allocator)
-	}
+	crate::rendering::render_pass::forward_to_inner_pass!(prepare = render_pass);
 
-	fn bypass<'a>(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>> {
-		self.bypass_pass.prepare(frame, sink, frame_allocator)
-	}
+	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 #[cfg(test)]
@@ -76,36 +62,28 @@ mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
 
 	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, run_tone_mapping_vm};
 
 	const TONE_MAPPING_SHADER: &str = include_str!("../../../assets/rendering/aces/tone-mapping.besl");
-
-	/// Executes the compiled ACES program for one source color.
-	fn run_aces_vm(program: &besl::vm::ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
-		let mut source = texture_2d(1, 1, &[source_color]);
-		let mut result = empty_image(1, 1);
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(ResourceSlot::new(0), &mut source);
-		descriptors.bind_image(ResourceSlot::new(1), &mut result);
-		run_at(program, &mut descriptors, [0, 0]);
-		drop(descriptors);
-		rgba(&result, [0, 0])
-	}
 
 	/// Verifies reference colors and bounded high-dynamic-range behavior through the VM.
 	#[test]
 	fn aces_tonemap_besl_vm_produces_bounded_reference_colors() {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(TONE_MAPPING_SHADER));
 
-		assert_rgba_close(run_aces_vm(&program, [0.0, 0.0, 0.0, 0.25]), [0.0, 0.0, 0.0, 1.0], 1e-6);
 		assert_rgba_close(
-			run_aces_vm(&program, [1.0, 1.0, 1.0, 0.25]),
+			run_tone_mapping_vm(&program, [0.0, 0.0, 0.0, 0.25]),
+			[0.0, 0.0, 0.0, 1.0],
+			1e-6,
+		);
+		assert_rgba_close(
+			run_tone_mapping_vm(&program, [1.0, 1.0, 1.0, 0.25]),
 			[0.9054924, 0.9054924, 0.9054924, 1.0],
 			1e-5,
 		);
 
 		for input in [0.18, 4.0, 16.0] {
-			let output = run_aces_vm(&program, [input, input, input, 0.0]);
+			let output = run_tone_mapping_vm(&program, [input, input, input, 0.0]);
 
 			assert!(
 				output[..3]

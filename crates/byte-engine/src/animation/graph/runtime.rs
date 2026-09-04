@@ -511,6 +511,33 @@ pub use player::{
 	RootMotionSettings, RootMotionTranslation,
 };
 
+/// Builds a pool backed by a detached load queue, for tests that cannot supply a real
+/// [`ResourceManager`] handle to [`AnimationPool::new`].
+///
+/// Shared with the [`player`] tests so both exercise one arena setup.
+#[cfg(test)]
+pub(crate) fn test_pool(byte_budget: usize) -> AnimationPool {
+	let (commands, _command_receiver) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
+	let (_completion_sender, completions) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
+	let word_capacity = byte_budget / std::mem::size_of::<u32>();
+	AnimationPool {
+		commands: commands.to_sync(),
+		completions: completions.to_sync(),
+		storage: vec![0; word_capacity].into_boxed_slice(),
+		free_regions: vec![AnimationArenaRegion {
+			offset: 0,
+			word_count: word_capacity,
+		}],
+		entries: HashMap::new(),
+		events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
+		byte_budget,
+		resident_bytes: 0,
+		next_use: std::cell::Cell::new(0),
+		commands_closed: false,
+		completions_closed: false,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::collections::{HashMap, VecDeque};
@@ -558,34 +585,12 @@ mod tests {
 		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
 	}
 
-	fn pool(byte_budget: usize) -> AnimationPool {
-		let (commands, _command_receiver) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
-		let (_completion_sender, completions) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
-		let word_capacity = byte_budget / std::mem::size_of::<u32>();
-		AnimationPool {
-			commands: commands.to_sync(),
-			completions: completions.to_sync(),
-			storage: vec![0; word_capacity].into_boxed_slice(),
-			free_regions: vec![AnimationArenaRegion {
-				offset: 0,
-				word_count: word_capacity,
-			}],
-			entries: HashMap::new(),
-			events: VecDeque::with_capacity(super::ANIMATION_POOL_EVENT_CAPACITY),
-			byte_budget,
-			resident_bytes: 0,
-			next_use: std::cell::Cell::new(0),
-			commands_closed: false,
-			completions_closed: false,
-		}
-	}
-
 	#[test]
 	fn pool_evicts_lru_entries_and_evaluation_leases_pin_arena_regions() {
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
 		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
-		let mut first_pool = pool(budget);
+		let mut first_pool = test_pool(budget);
 
 		first_pool.admit("idle.animation".into(), idle);
 		first_pool.admit("walk.animation".into(), walk);
@@ -607,7 +612,7 @@ mod tests {
 		let idle = test_animation("idle", 1.0);
 		let walk = test_animation("walk", 2.0);
 		let budget = packed_test_animation_bytes("idle", 1.0).max(packed_test_animation_bytes("walk", 2.0));
-		let mut pool = pool(budget);
+		let mut pool = test_pool(budget);
 		pool.admit("idle.animation".into(), idle);
 		let idle_lease = AnimationLease::new("idle.animation");
 		let walk_lease = AnimationLease::new("walk.animation");
@@ -635,7 +640,7 @@ mod tests {
 	#[test]
 	fn pool_entries_follow_lru_eviction() {
 		let clip_bytes = packed_test_animation_bytes("first", 1.0);
-		let mut pool = pool(clip_bytes * 2);
+		let mut pool = test_pool(clip_bytes * 2);
 		let first = AnimationLease::new("first.animation");
 		let second = AnimationLease::new("second.animation");
 		let third = AnimationLease::new("third.animation");
@@ -653,7 +658,7 @@ mod tests {
 	#[test]
 	fn oversized_clips_fail_once_until_the_caller_explicitly_retries_them() {
 		let animation = test_animation("oversized", 1.0);
-		let mut pool = pool(packed_test_animation_bytes("oversized", 1.0) - 1);
+		let mut pool = test_pool(packed_test_animation_bytes("oversized", 1.0) - 1);
 		pool.admit("oversized.animation".into(), animation);
 
 		assert!(matches!(

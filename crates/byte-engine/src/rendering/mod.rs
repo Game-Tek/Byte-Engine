@@ -47,7 +47,6 @@ mod pose;
 pub mod renderer;
 
 #[doc(hidden)]
-pub mod framebuffer;
 #[doc(hidden)]
 pub mod render_pass;
 #[doc(hidden)]

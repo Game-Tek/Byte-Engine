@@ -552,6 +552,122 @@ pub trait ContextCreate {
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 }
 
+/// Forwards every [`ContextCreate`] method to the `device` field of the implementing type.
+///
+/// Each backend's per-frame recorder owns a `device` and adds no behavior of its own on the
+/// resource-creation path, so the backends share this one delegation body instead of keeping three
+/// copies that drift apart whenever [`ContextCreate`] gains a method. Invoke it inside the impl
+/// block so each backend still states the type it implements the trait for:
+///
+/// ```ignore
+/// impl<'a> crate::context::ContextCreate for Frame<'a> {
+///     crate::context::delegate_context_create_to_device!();
+/// }
+/// ```
+macro_rules! delegate_context_create_to_device {
+	() => {
+		fn create_allocation(
+			&mut self,
+			size: usize,
+			resource_uses: $crate::Uses,
+			resource_device_accesses: $crate::DeviceAccesses,
+		) -> $crate::AllocationHandle {
+			self.device
+				.create_allocation(size, resource_uses, resource_device_accesses)
+		}
+
+		fn add_mesh_from_vertices_and_indices(
+			&mut self,
+			vertex_count: u32,
+			index_count: u32,
+			vertices: &[u8],
+			indices: &[u8],
+			vertex_layout: &[$crate::pipelines::VertexElement],
+		) -> $crate::MeshHandle {
+			self.device
+				.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
+		}
+
+		fn create_shader(
+			&mut self,
+			name: Option<&str>,
+			shader_source_type: $crate::shader::Sources,
+			stage: $crate::ShaderTypes,
+			shader_resource_descriptors: impl IntoIterator<Item = $crate::shader::ShaderResourceDescriptor>,
+		) -> Result<$crate::ShaderHandle, ()> {
+			self.device
+				.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
+		}
+
+		fn create_descriptor_set(&mut self, name: Option<&str>) -> $crate::DescriptorSetHandle {
+			self.device.create_descriptor_set(name)
+		}
+
+		fn create_raster_pipeline(&mut self, builder: $crate::pipelines::raster::Builder) -> $crate::PipelineHandle {
+			self.device.create_raster_pipeline(builder)
+		}
+
+		fn create_compute_pipeline(&mut self, builder: $crate::pipelines::compute::Builder) -> $crate::PipelineHandle {
+			self.device.create_compute_pipeline(builder)
+		}
+
+		fn create_ray_tracing_pipeline(&mut self, builder: $crate::pipelines::ray_tracing::Builder) -> $crate::PipelineHandle {
+			self.device.create_ray_tracing_pipeline(builder)
+		}
+
+		fn build_buffer<T: $crate::Pod>(&mut self, builder: $crate::buffer::Builder) -> $crate::BufferHandle<T> {
+			self.device.build_buffer(builder)
+		}
+
+		fn build_dynamic_buffer<T: $crate::Pod>(&mut self, builder: $crate::buffer::Builder) -> $crate::DynamicBufferHandle<T> {
+			self.device.build_dynamic_buffer(builder)
+		}
+
+		fn build_dynamic_image(&mut self, builder: $crate::image::Builder) -> $crate::DynamicImageHandle {
+			self.device.build_dynamic_image(builder)
+		}
+
+		fn build_image(&mut self, builder: $crate::image::Builder) -> $crate::ImageHandle {
+			self.device.build_image(builder)
+		}
+
+		fn build_sampler(&mut self, builder: $crate::sampler::Builder) -> $crate::SamplerHandle {
+			self.device.build_sampler(builder)
+		}
+
+		fn create_acceleration_structure_instance_buffer(
+			&mut self,
+			name: Option<&str>,
+			max_instance_count: u32,
+		) -> $crate::BaseBufferHandle {
+			self.device
+				.create_acceleration_structure_instance_buffer(name, max_instance_count)
+		}
+
+		fn create_top_level_acceleration_structure(
+			&mut self,
+			name: Option<&str>,
+			max_instance_count: u32,
+		) -> $crate::TopLevelAccelerationStructureHandle {
+			self.device
+				.create_top_level_acceleration_structure(name, max_instance_count)
+		}
+
+		fn create_bottom_level_acceleration_structure(
+			&mut self,
+			description: &$crate::BottomLevelAccelerationStructure,
+		) -> $crate::BottomLevelAccelerationStructureHandle {
+			self.device.create_bottom_level_acceleration_structure(description)
+		}
+
+		fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> $crate::SynchronizerHandle {
+			self.device.create_synchronizer(name, signaled)
+		}
+	};
+}
+
+pub(crate) use delegate_context_create_to_device;
+
 #[cfg(test)]
 mod texture_transfer_tests {
 	use super::*;

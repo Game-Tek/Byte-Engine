@@ -104,14 +104,6 @@ pub enum IndexStreamTypes {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct IndexStream {
-	pub stream_type: IndexStreamTypes,
-	pub offset: usize,
-	pub count: u32,
-	pub data_type: IntegralTypes,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Stream {
 	pub stream_type: Streams,
 	pub offset: usize,
@@ -137,12 +129,6 @@ pub enum Streams {
 	Vertices(VertexSemantics),
 	Indices(IndexStreamTypes),
 	Meshlets,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct MeshletStream {
-	pub offset: usize,
-	pub count: u32,
 }
 
 pub trait Size {

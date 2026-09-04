@@ -4,7 +4,7 @@ use resource_management::resources::{
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
-use super::math::{nlerp_quaternion, normalize_quaternion};
+use super::math::{hermite, nlerp_quaternion, normalize_quaternion};
 
 /// Samples one clip into a complete source-skeleton local pose.
 ///
@@ -249,7 +249,7 @@ fn sample_vector3(curve: &Vector3Curve, time: f32) -> [f32; 3] {
 			out_tangents,
 		} => {
 			let (lower, upper, factor, span) = interpolation_segment(times, time);
-			hermite_vector(
+			hermite(
 				values[lower],
 				out_tangents[lower],
 				values[upper],
@@ -276,7 +276,7 @@ fn sample_rotation(curve: &QuaternionCurve, time: f32) -> [f32; 4] {
 			out_tangents,
 		} => {
 			let (lower, upper, factor, span) = interpolation_segment(times, time);
-			let value = hermite_vector(
+			let value = hermite(
 				values[lower],
 				out_tangents[lower],
 				values[upper],
@@ -301,28 +301,6 @@ fn interpolation_segment(times: &[f32], time: f32) -> (usize, usize, f32, f32) {
 	let span = times[upper] - times[lower];
 	let factor = if span > 0.0 { (time - times[lower]) / span } else { 0.0 }.clamp(0.0, 1.0);
 	(lower, upper, factor, span)
-}
-
-fn hermite_vector<const N: usize>(
-	start: [f32; N],
-	start_tangent: [f32; N],
-	end: [f32; N],
-	end_tangent: [f32; N],
-	factor: f32,
-	span: f32,
-) -> [f32; N] {
-	let factor_squared = factor * factor;
-	let factor_cubed = factor_squared * factor;
-	let start_value_weight = 2.0 * factor_cubed - 3.0 * factor_squared + 1.0;
-	let start_tangent_weight = factor_cubed - 2.0 * factor_squared + factor;
-	let end_value_weight = -2.0 * factor_cubed + 3.0 * factor_squared;
-	let end_tangent_weight = factor_cubed - factor_squared;
-	std::array::from_fn(|component| {
-		start[component] * start_value_weight
-			+ start_tangent[component] * span * start_tangent_weight
-			+ end[component] * end_value_weight
-			+ end_tangent[component] * span * end_tangent_weight
-	})
 }
 
 /// The `PoseError` enum identifies local poses that cannot be converted to global matrices.

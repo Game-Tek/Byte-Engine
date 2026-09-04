@@ -1,6 +1,38 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
+	/// Emits a workgroup-storage load after checking the slot holds the type the caller expects.
+	///
+	/// Both accessor lowering and the `atomic_load` intrinsic read workgroup storage this way, so the
+	/// type check and the [`Instruction::LoadWorkgroup`] emission live here once.
+	pub(super) fn compile_workgroup_load(
+		&mut self,
+		target: ResolvedWorkgroupAccess,
+		expected_type: &ValueType,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<usize, VmError> {
+		if &target.value_type != expected_type {
+			return Err(VmError::TypeMismatch {
+				expected: expected_type.name().to_string(),
+				found: target.value_type.name().to_string(),
+			});
+		}
+		let index = target
+			.index_expression
+			.as_ref()
+			.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+			.transpose()?;
+		let register = self.allocate_register();
+		self.instructions.push(Instruction::LoadWorkgroup {
+			register,
+			name: target.name,
+			index,
+			count: target.count,
+			value_type: target.value_type,
+		});
+		Ok(register)
+	}
+
 	/// Compiles a scalar BESL expression into one register-producing VM instruction sequence.
 	// Expression lowering is an exhaustive AST dispatcher; branch-local validation remains next to emitted instructions.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
@@ -236,26 +268,7 @@ impl<'a> Compiler<'a> {
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if let Some(target) = resolve_workgroup_access(expression)? {
-			if &target.value_type != expected_type {
-				return Err(VmError::TypeMismatch {
-					expected: expected_type.name().to_string(),
-					found: target.value_type.name().to_string(),
-				});
-			}
-			let index = target
-				.index_expression
-				.as_ref()
-				.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
-				.transpose()?;
-			let register = self.allocate_register();
-			self.instructions.push(Instruction::LoadWorkgroup {
-				register,
-				name: target.name,
-				index,
-				count: target.count,
-				value_type: target.value_type,
-			});
-			return Ok(register);
+			return self.compile_workgroup_load(target, expected_type, descriptor_layouts);
 		}
 		if let Some(target) = resolve_task_payload_access(expression)? {
 			if &target.value_type != expected_type {

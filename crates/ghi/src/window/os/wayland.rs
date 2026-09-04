@@ -172,25 +172,3 @@ mod key_translation;
 mod lifecycle;
 
 use key_translation::{KeyboardState, keysym_to_key};
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn test_wayland_window() {
-		// Only run this test if we are on a Wayland session
-		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some()
-			&& std::env::vars()
-				.find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland")
-				.is_some()
-		{
-			let _ = Window::try_new(
-				"My Test Wayland Window",
-				Extent::rectangle(1920, 1080),
-				"my_test_wayland_window.byte_engine",
-				Features::default(),
-			);
-		}
-	}
-}

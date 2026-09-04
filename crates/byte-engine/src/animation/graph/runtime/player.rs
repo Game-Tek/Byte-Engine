@@ -861,28 +861,6 @@ mod tests {
 		}
 	}
 
-	fn pool(byte_budget: usize) -> AnimationPool {
-		let (commands, _command_receiver) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
-		let (_completion_sender, completions) = kanal::bounded_async(super::ANIMATION_LOAD_QUEUE_CAPACITY);
-		let word_capacity = byte_budget / std::mem::size_of::<u32>();
-		AnimationPool {
-			commands: commands.to_sync(),
-			completions: completions.to_sync(),
-			storage: vec![0; word_capacity].into_boxed_slice(),
-			free_regions: vec![AnimationArenaRegion {
-				offset: 0,
-				word_count: word_capacity,
-			}],
-			entries: HashMap::new(),
-			events: VecDeque::with_capacity(super::ANIMATION_POOL_EVENT_CAPACITY),
-			byte_budget,
-			resident_bytes: 0,
-			next_use: std::cell::Cell::new(0),
-			commands_closed: false,
-			completions_closed: false,
-		}
-	}
-
 	#[test]
 	fn player_prefetches_direct_neighbors_as_it_enters_graph_states() {
 		let idle_animation = test_animation("idle", 0.0);
@@ -891,7 +869,7 @@ mod tests {
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0)
 			+ packed_test_animation_bytes("backward", -1.0);
-		let mut pool = pool(byte_budget);
+		let mut pool = super::super::test_pool(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 
 		let builder = AnimationGraph::builder();
@@ -932,7 +910,7 @@ mod tests {
 		let idle = test_animation("idle", 1.0);
 		let run = test_animation("run", 3.0);
 		let byte_budget = packed_test_animation_bytes("idle", 1.0).saturating_add(packed_test_animation_bytes("run", 3.0));
-		let mut pool = pool(byte_budget);
+		let mut pool = super::super::test_pool(byte_budget);
 		pool.admit("idle.animation".into(), idle);
 		pool.admit("run.animation".into(), run);
 
@@ -980,7 +958,7 @@ mod tests {
 		let byte_budget = packed_test_animation_bytes("idle", 0.0)
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = pool(byte_budget);
+		let mut pool = super::super::test_pool(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 
 		let builder = AnimationGraph::builder();
@@ -1036,7 +1014,7 @@ mod tests {
 			+ packed_test_animation_bytes("start", 1.0)
 			+ packed_test_animation_bytes("stop", 1.0)
 			+ packed_test_animation_bytes("walk", 2.0);
-		let mut pool = pool(byte_budget);
+		let mut pool = super::super::test_pool(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 		pool.admit("start.animation".into(), start_animation);
 		pool.admit("stop.animation".into(), stop_animation);
@@ -1085,7 +1063,7 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let graph = builder.build(idle).expect("graph should build");
 		let animation = test_animation("idle", 0.0);
-		let mut pool = pool(PackedAnimationData::resident_bytes(&animation));
+		let mut pool = super::super::test_pool(PackedAnimationData::resident_bytes(&animation));
 		let mut player = pool.create_player(&graph, None);
 
 		assert!(matches!(
@@ -1108,7 +1086,7 @@ mod tests {
 			.state("second")
 			.with(AnimationClip::looping("second.animation"));
 		let second_graph = second_builder.build(second).expect("second graph should build");
-		let mut pool = pool(1);
+		let mut pool = super::super::test_pool(1);
 		let mut player = pool.create_player(&first_graph, None);
 
 		assert_eq!(
@@ -1123,7 +1101,7 @@ mod tests {
 		let state = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let graph = builder.build(state).expect("graph should build");
 		let missing_animation = test_animation("missing", 0.0);
-		let mut missing_pool = pool(PackedAnimationData::resident_bytes(&missing_animation));
+		let mut missing_pool = super::super::test_pool(PackedAnimationData::resident_bytes(&missing_animation));
 		missing_pool.admit("idle.animation".into(), missing_animation);
 		let mut missing_player = missing_pool.create_player(&graph, Some(RootMotionSettings::full("Hips")));
 
@@ -1147,7 +1125,7 @@ mod tests {
 			],
 		};
 		let duplicate_animation = test_animation_with_skeleton("duplicate", 0.0, duplicate_skeleton);
-		let mut duplicate_pool = pool(PackedAnimationData::resident_bytes(&duplicate_animation));
+		let mut duplicate_pool = super::super::test_pool(PackedAnimationData::resident_bytes(&duplicate_animation));
 		duplicate_pool.admit("idle.animation".into(), duplicate_animation);
 		let mut duplicate_player = duplicate_pool.create_player(&graph, Some(RootMotionSettings::full("Hips")));
 
@@ -1238,7 +1216,7 @@ mod tests {
 			tracks: Vec::new(),
 		};
 		let byte_budget = idle_animation.estimated_resident_bytes() + animation.estimated_resident_bytes();
-		let mut pool = pool(byte_budget);
+		let mut pool = super::super::test_pool(byte_budget);
 		pool.admit("idle.animation".into(), idle_animation);
 		pool.admit("walk.animation".into(), animation);
 		let builder = AnimationGraph::builder();

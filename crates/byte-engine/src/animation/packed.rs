@@ -6,7 +6,7 @@ use resource_management::{
 	},
 };
 
-use super::math::{nlerp_quaternion, normalize_quaternion};
+use super::math::{hermite, nlerp_quaternion, normalize_quaternion};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
@@ -422,28 +422,6 @@ fn push_curve<T>(
 	times.extend(curve_times);
 	values.extend(curve_values);
 	index
-}
-
-fn hermite<const N: usize>(
-	start: [f32; N],
-	start_tangent: [f32; N],
-	end: [f32; N],
-	end_tangent: [f32; N],
-	factor: f32,
-	span: f32,
-) -> [f32; N] {
-	let factor_squared = factor * factor;
-	let factor_cubed = factor_squared * factor;
-	let start_value_weight = 2.0 * factor_cubed - 3.0 * factor_squared + 1.0;
-	let start_tangent_weight = factor_cubed - 2.0 * factor_squared + factor;
-	let end_value_weight = -2.0 * factor_cubed + 3.0 * factor_squared;
-	let end_tangent_weight = factor_cubed - factor_squared;
-	std::array::from_fn(|component| {
-		start[component] * start_value_weight
-			+ start_tangent[component] * span * start_tangent_weight
-			+ end[component] * end_value_weight
-			+ end_tangent[component] * span * end_tangent_weight
-	})
 }
 
 #[cfg(test)]

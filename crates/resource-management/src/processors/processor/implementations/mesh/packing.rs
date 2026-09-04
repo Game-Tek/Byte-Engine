@@ -44,7 +44,7 @@ impl MeshProcessor {
 			.map(|component| Streams::Vertices(component.semantic))
 			.collect::<Vec<_>>();
 		stream_order.sort_by_key(|stream| match stream {
-			Streams::Vertices(semantic) => vertex_semantic_order(*semantic),
+			Streams::Vertices(semantic) => super::vertex_semantic_order(*semantic),
 			_ => usize::MAX,
 		});
 		stream_order.extend([
@@ -612,19 +612,6 @@ fn stream_name(stream_type: Streams) -> &'static str {
 		Streams::Indices(IndexStreamTypes::Triangles) => "TriangleIndices",
 		Streams::Indices(IndexStreamTypes::Meshlets) => "MeshletIndices",
 		Streams::Meshlets => "Meshlets",
-	}
-}
-
-const fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
-	match semantic {
-		VertexSemantics::Position => 0,
-		VertexSemantics::Normal => 1,
-		VertexSemantics::Tangent => 2,
-		VertexSemantics::BiTangent => 3,
-		VertexSemantics::UV => 4,
-		VertexSemantics::Color => 5,
-		VertexSemantics::Joints => 6,
-		VertexSemantics::Weights => 7,
 	}
 }
 

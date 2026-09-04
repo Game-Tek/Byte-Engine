@@ -175,52 +175,55 @@ impl MaterialData {
 	}
 }
 
+/// The shader-facing structs must keep the exact layouts their GPU buffers are read with.
+///
+/// The visibility shaders index each buffer by a fixed stride and read fields at fixed offsets, and the
+/// stride constants in [`layout`](crate::rendering::pipelines::visibility::layout) must agree with the
+/// Rust types that fill them.
+///
+/// These are compile-time checks so a layout change fails the build at the definition rather than later
+/// in a shader that silently reads the wrong bytes.
+const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 80);
+const _: () = assert!(
+	std::mem::size_of::<ShaderMesh>() as u32 == crate::rendering::pipelines::visibility::layout::MESH_DATA_BUFFER_STRIDE
+);
+const _: () = assert!(std::mem::align_of::<ShaderMesh>() == 16);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
+
+const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);
+const _: () = assert!(
+	std::mem::size_of::<ShaderViewData>() as u32 == crate::rendering::pipelines::visibility::layout::VIEW_DATA_BUFFER_STRIDE
+);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, view) == 0);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, view_projection) == 48);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, inverse_view) == 112);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, fov) == 160);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, near) == 168);
+const _: () = assert!(std::mem::offset_of!(ShaderViewData, far) == 172);
+
+const _: () = assert!(std::mem::size_of::<LightData>() == 112);
+const _: () = assert!(std::mem::align_of::<LightData>() == 16);
+const _: () = assert!(std::mem::offset_of!(LightData, position) == 0);
+const _: () = assert!(std::mem::offset_of!(LightData, color) == 16);
+const _: () = assert!(std::mem::offset_of!(LightData, direction) == 32);
+const _: () = assert!(std::mem::offset_of!(LightData, cone_cosines) == 48);
+const _: () = assert!(std::mem::offset_of!(LightData, light_type) == 56);
+const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 60);
+const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 92);
+const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 96);
+const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 100);
+const _: () = assert!(std::mem::offset_of!(LightData, _ies_padding) == 104);
+
+const _: () = assert!(std::mem::size_of::<LightingData>() == 1808);
+const _: () = assert!(std::mem::align_of::<LightingData>() == 16);
+const _: () = assert!(std::mem::offset_of!(LightingData, count) == 0);
+const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 4);
+const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 16);
+
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rendering::pipelines::visibility::layout::{MESH_DATA_BUFFER_STRIDE, VIEW_DATA_BUFFER_STRIDE};
-
-	#[test]
-	fn shader_mesh_matches_gpu_buffer_layout() {
-		assert_eq!(std::mem::size_of::<ShaderMesh>(), 80);
-		assert_eq!(std::mem::size_of::<ShaderMesh>() as u32, MESH_DATA_BUFFER_STRIDE);
-		assert_eq!(std::mem::align_of::<ShaderMesh>(), 16);
-		assert_eq!(std::mem::offset_of!(ShaderMesh, material_index), 48);
-		assert_eq!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index), 72);
-	}
-
-	#[test]
-	fn shader_view_data_matches_compact_gpu_buffer_layout() {
-		assert_eq!(std::mem::size_of::<ShaderViewData>(), 176);
-		assert_eq!(std::mem::size_of::<ShaderViewData>() as u32, VIEW_DATA_BUFFER_STRIDE);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, view), 0);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, view_projection), 48);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, inverse_view), 112);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, fov), 160);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, near), 168);
-		assert_eq!(std::mem::offset_of!(ShaderViewData, far), 172);
-	}
-
-	#[test]
-	fn lighting_data_matches_gpu_buffer_layout() {
-		assert_eq!(std::mem::size_of::<LightData>(), 112);
-		assert_eq!(std::mem::align_of::<LightData>(), 16);
-		assert_eq!(std::mem::offset_of!(LightData, position), 0);
-		assert_eq!(std::mem::offset_of!(LightData, color), 16);
-		assert_eq!(std::mem::offset_of!(LightData, direction), 32);
-		assert_eq!(std::mem::offset_of!(LightData, cone_cosines), 48);
-		assert_eq!(std::mem::offset_of!(LightData, light_type), 56);
-		assert_eq!(std::mem::offset_of!(LightData, shadow_views), 60);
-		assert_eq!(std::mem::offset_of!(LightData, shadow_layer), 92);
-		assert_eq!(std::mem::offset_of!(LightData, ies_profile_texture), 96);
-		assert_eq!(std::mem::offset_of!(LightData, ies_c0_tangent), 100);
-		assert_eq!(std::mem::offset_of!(LightData, _ies_padding), 104);
-		assert_eq!(std::mem::size_of::<LightingData>(), 1808);
-		assert_eq!(std::mem::align_of::<LightingData>(), 16);
-		assert_eq!(std::mem::offset_of!(LightingData, count), 0);
-		assert_eq!(std::mem::offset_of!(LightingData, _padding), 4);
-		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
-	}
 
 	#[test]
 	fn material_texture_updates_replace_the_complete_record() {

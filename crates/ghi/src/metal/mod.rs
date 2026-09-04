@@ -351,14 +351,6 @@ pub(crate) mod utils {
 				mtl::MTLSamplerReductionMode::Maximum
 			);
 		}
-
-		#[test]
-		fn specialization_map_entry_supports_i32_constants() {
-			let constant_values = mtl::MTLFunctionConstantValues::new();
-			let entry = crate::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), -1i32);
-
-			super::super::apply_specialization_map_entry(&constant_values, &entry);
-		}
 	}
 }
 

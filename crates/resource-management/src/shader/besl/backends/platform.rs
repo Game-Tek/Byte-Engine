@@ -142,14 +142,7 @@ impl Generator {
 				let bindings = ProgramEvaluation::from_program(program)?
 					.into_bindings()
 					.into_iter()
-					.map(|binding| CompiledShaderBinding {
-						slot: binding.slot,
-						kind: binding.kind,
-						count: binding.count,
-						buffer_stride: binding.buffer_stride,
-						read: binding.read,
-						write: binding.write,
-					})
+					.map(CompiledShaderBinding::from)
 					.collect();
 
 				Ok(GeneratedCompiledPlatformShader {
@@ -184,18 +177,7 @@ impl Generator {
 				let evaluation = ProgramEvaluation::from_program(program)?;
 				Ok(GeneratedCompiledPlatformShader {
 					binary: source.into_bytes().into_boxed_slice(),
-					bindings: evaluation
-						.into_bindings()
-						.into_iter()
-						.map(|binding| CompiledShaderBinding {
-							slot: binding.slot,
-							kind: binding.kind,
-							count: binding.count,
-							buffer_stride: binding.buffer_stride,
-							read: binding.read,
-							write: binding.write,
-						})
-						.collect(),
+					bindings: evaluation.into_bindings().into_iter().map(CompiledShaderBinding::from).collect(),
 					extent: match shader_generation_settings.stage {
 						crate::shader::generator::Stages::Compute { local_size }
 						| crate::shader::generator::Stages::Task { local_size, .. }

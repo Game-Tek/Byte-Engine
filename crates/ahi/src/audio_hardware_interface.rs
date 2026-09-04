@@ -84,11 +84,6 @@ impl std::fmt::Display for AudioPlayError {
 
 impl std::error::Error for AudioPlayError {}
 
-pub trait Mono16BitBufferPlayFunction = FnOnce(Mono16Bit);
-pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
-pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
-pub trait StereoFloat32BufferPlayFunction = FnOnce(StereoFloat32);
-
 /// The `WritePlayFunction` trait lets clients write audio into a hardware-owned buffer.
 pub trait WritePlayFunction = FnOnce(Streams);
 

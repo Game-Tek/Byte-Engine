@@ -1,5 +1,5 @@
 {
 	"title": "Resource Management",
 	"icon": "Storage",
-	"pages": ["assets", "resources", "bema", "beld", "install-beld", "baking-app-resources", "debug-loading"]
+	"pages": ["assets", "resources", "bema", "materialx", "beld", "install-beld", "baking-app-resources", "debug-loading"]
 }

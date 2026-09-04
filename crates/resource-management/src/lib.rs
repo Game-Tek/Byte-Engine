@@ -71,6 +71,7 @@ pub mod resources;
 pub mod shader;
 
 pub mod ibl;
+pub mod materialx;
 pub mod pbr;
 
 pub mod processors;

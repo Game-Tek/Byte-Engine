@@ -1,0 +1,143 @@
+---
+title: MaterialX documents
+description: Read MaterialX shading graphs into Byte Engine and fix documents that fail to load.
+icon: Network
+---
+
+Use this page when you load a `.mtlx` file, split material libraries across
+files, or diagnose a document that Byte Engine refuses. Read the
+[asset processing](/docs/develop/resource-management/assets) page first if you
+are adding a new source format rather than working with MaterialX.
+
+Byte Engine reads
+[MaterialX](https://materialx.org) version 1.39. A document arrives as a
+directed acyclic graph of nodes: every reference is resolved to an edge, every
+node is matched to its declaration, and connected ports are checked to agree on
+their type.
+
+## Read a document
+
+Reading takes an arena and the source text. Nothing is copied out of the source,
+so the graph costs one allocation block that you release in a single step:
+
+```rust
+use resource_management::materialx;
+
+let arena = bumpalo::Bump::new();
+// A bump arena is an allocator through its reference, so pass it by double reference.
+let allocator = &&arena;
+
+let dag = materialx::parse(&source, allocator)?;
+
+for id in dag.materials() {
+    println!("{}", dag.node(*id).name);
+}
+```
+
+Materials are the entry points. Walk upstream from them through each node's
+inputs, or take the whole graph in dependency order with
+`Dag::topological_order`, which puts every node after the nodes it reads.
+
+Every name and value in the graph borrows from `source`, and every collection
+lives in `arena`, so keep both alive for as long as you use the graph. Nothing
+else needs to be kept: the XML tree and the intermediate document are dropped
+before `parse` returns. Pass `&std::alloc::Global` instead of an arena when a
+document is small enough not to warrant one.
+
+Errors are the exception: they own their text, so you can report a failure after
+the arena and the source are gone.
+
+## Load libraries that a document includes
+
+MaterialX splits node libraries across files and pulls them in with
+`<xi:include>`. Byte Engine reports the references instead of reading them, so
+your code decides where the files come from:
+
+```rust
+use std::collections::HashSet;
+
+use resource_management::materialx::{Dag, Document};
+
+let arena = bumpalo::Bump::new();
+let allocator = &&arena;
+
+// Every document borrows from the text it was read from, so the sources are kept for
+// as long as the graph is.
+let mut sources = Vec::new();
+let mut read = HashSet::new();
+let mut pending = vec![root_path];
+
+while let Some(path) = pending.pop() {
+    if !read.insert(path.clone()) {
+        continue;
+    }
+
+    sources.push((path, std::fs::read_to_string(&path)?));
+
+    // Merging brings the included document's own references along, so keep draining.
+    let (path, source) = sources.last().unwrap();
+
+    for include in Document::parse(source, allocator)?.includes {
+        pending.push(resolve_against(path, include.href));
+    }
+}
+
+let mut document = Document::parse(&sources[0].1, allocator)?;
+
+for (_, source) in &sources[1..] {
+    document.merge(Document::parse(source, allocator)?);
+}
+
+let dag = Dag::resolve(&document, allocator)?;
+```
+
+Resolve each `href` against the directory of the document that names it. Nothing
+in the parser touches the file system, so relative paths mean whatever your
+storage backend decides they mean.
+
+`Document::merge` drops elements whose name is already taken, so including the
+same library twice, directly and through another file, gives the same result as
+including it once.
+
+Load the libraries a document depends on before you resolve it. Without them a
+node keeps the inputs the document wrote but has no declaration, so its defaults
+and its extra outputs are unknown.
+
+## Fix a document that fails to load
+
+### Unknown nodedef, unknown nodegraph, or unknown outputs
+
+A declaration the document needs is missing. Resolve the document's
+`<xi:include>` references and merge them in, as shown above.
+
+### Unsupported MaterialX version
+
+The document was written for a specification older than 1.38. Convert it with
+the MaterialX tools, which upgrade older documents to the current version, and
+load the result.
+
+### Removed MaterialX element
+
+The document still uses `<parameter>`, `<shaderref>` or `<bindinput>`, which
+version 1.38 removed. Convert it with the MaterialX tools.
+
+### Cycle in MaterialX graph
+
+A node network feeds one of its own upstream nodes. The error names the nodes on
+the cycle in the order it walked them. Break the loop in the authoring tool.
+
+### Malformed value
+
+A value does not match the type its element declares, such as a `color3` written
+with two components. Every parse error carries the line and column of the markup
+that caused it, so report it next to the document name and fix the markup.
+
+## What Byte Engine reads
+
+Everything that shapes the graph: nodes, nodegraphs both functional and
+compound, node declarations and their inheritance, implementations, custom
+types, geometric property declarations, units, and material variants.
+
+Elements that assign materials to geometry, `<look>` and its companions, and
+elements that only describe how a graph is drawn in an editor are recognised and
+skipped, because neither changes the graph.

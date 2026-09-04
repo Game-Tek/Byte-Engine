@@ -35,10 +35,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// reflected [`Transform`](crate::gameplay::Transform) payload. To remove an
 /// entity, send `type: "Delete"` or `type: "Destroy"` with its target and a
 /// reflected unit payload represented by JSON `null`.
-/// To drive an action created with
-/// [`GraphicsApplication::create_action`](crate::application::graphics::GraphicsApplication::create_action),
-/// resolve its target with `GET /entities?name=<action>` and send
-/// `type: "TriggerAction"` with a reflected [`Value`](crate::input::Value).
+/// To drive a named action created through
+/// [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world),
+/// resolve its target with `GET /entities?name=<action>` and send `type:
+/// "TriggerAction"` with a reflected [`Value`](crate::input::Value).
 ///
 /// The server retains only an [`Inspector`] trait object. Pass the same inspector
 /// handle to another transport when clients need a second protocol surface.

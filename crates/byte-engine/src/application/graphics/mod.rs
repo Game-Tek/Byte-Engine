@@ -61,7 +61,6 @@ pub struct GraphicsApplication {
 	configuration: Configuration,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
-	action_factory: Factory<Action>,
 
 	generator_factory: Factory<Arc<dyn Generator>>,
 
@@ -117,9 +116,9 @@ impl Application for GraphicsApplication {
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
-		let action_factory = messages.factory();
-		let action_events = messages.channel();
-		let input_system = input::InputManager::new(action_factory.listener(), action_events.clone());
+		let world = DefaultWorld::with_messages(world_messages);
+		let action_events = world.messages().channel();
+		let input_system = input::InputManager::new(world.factory::<Action>().listener(), action_events.clone());
 		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
 		// the first frame has reached the screen.
 		let gamepad_system = None;
@@ -150,7 +149,6 @@ impl Application for GraphicsApplication {
 		})
 		.unwrap();
 
-		let world = DefaultWorld::with_messages(world_messages);
 		let cameras_listener = world.factory::<Camera>().listener();
 		let physics_transforms_listener = world.transforms_channel().listener();
 		let renderer_transforms_listener = world.transforms_channel().listener();
@@ -167,7 +165,7 @@ impl Application for GraphicsApplication {
 				.unwrap_or_else(|error| panic!("{error}"));
 		}
 		inspector
-			.register_message(input::TRIGGER_ACTION_MESSAGE_TYPE, action_events)
+			.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
 			.unwrap_or_else(|error| panic!("{error}"));
 		let inspector = EntityHandle::from(inspector);
 		let screenshot_broker = inspector.screenshot_broker();
@@ -190,7 +188,6 @@ impl Application for GraphicsApplication {
 			configuration,
 
 			window_factory: (window_factory, window_factory_listener),
-			action_factory,
 
 			generator_factory,
 
@@ -490,26 +487,6 @@ impl GraphicsApplication {
 		&self.window_factory.0
 	}
 
-	/// Returns the low-level factory used to register input actions without inspector names.
-	///
-	/// Prefer [`Self::create_action`] when external tools should discover and
-	/// trigger the action by its declared name.
-	pub fn action_factory(&self) -> &Factory<Action> {
-		&self.action_factory
-	}
-
-	/// Creates an input action and exposes its declared name to inspection tools.
-	///
-	/// Use the returned handle as the target of a reflected [`input::ActionEvent`].
-	/// Applications that need only the raw creation stream can continue to use
-	/// [`Self::action_factory`].
-	pub fn create_action(&self, action: Action) -> crate::core::factory::Handle {
-		let name = crate::gameplay::Name::new(action.name());
-		let handle = self.action_factory.create(action);
-		self.world.factory().derive(handle, name);
-		handle
-	}
-
 	/// Returns the application-owned namespace used by headed-runtime channels and factories.
 	///
 	/// Next, call [`MessageScope::channel`] or [`MessageScope::factory`] to add an
@@ -741,6 +718,36 @@ mod tests {
 		assert!(port.read().is_none());
 		assert_eq!(configuration.events().len(), 1);
 	}
+
+	#[test]
+	fn world_actions_reach_the_input_manager_with_their_entity_handle() {
+		let message_bus = MessageBus::default();
+		let world = DefaultWorld::with_messages(message_bus.new_scope("world"));
+		let action_events = world.messages().channel();
+		let mut action_listener = action_events.listener();
+		let mut input_manager = input::InputManager::new(world.factory::<Action>().listener(), action_events);
+		let mouse_class = input::utils::register_mouse_device_class(&mut input_manager);
+		let mouse = input_manager.create_device(&mouse_class);
+		let action = world
+			.create(Action::new(
+				&[input::ActionBindingDescription::new("Mouse.Scroll")],
+				input::Types::Float,
+			))
+			.with(crate::gameplay::Name::new("Zoom"));
+		let action_handle = action.handle();
+		let frame_allocator = bumpalo::Bump::new();
+
+		input_manager.update(&frame_allocator);
+		input_manager.record_trigger_value_for_device(
+			input::SeatHandle::stub(),
+			mouse,
+			input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+			input::Value::Float(1.0),
+		);
+		input_manager.update(&frame_allocator);
+
+		assert_eq!(action_listener.read().expect("action event").handle(), action_handle);
+	}
 }
 
 use core::time;
@@ -780,7 +787,7 @@ use crate::{
 	input::{Action, input_trigger},
 	inspector::{
 		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-		http::HttpInspectorServer,
+		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{

@@ -1,6 +1,5 @@
 /// The `InputAction` struct stores resolved trigger mappings and emission policy for one action.
 pub(super) struct InputAction {
-	pub(super) name: String,
 	pub(super) r#type: Types,
 	pub(super) trigger_mappings: SmallVec<[TriggerMapping; 8]>, // TODO: wire allocator
 	pub(super) handle: Option<Handle>,

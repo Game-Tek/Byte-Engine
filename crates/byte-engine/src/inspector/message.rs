@@ -39,6 +39,8 @@ pub const TRANSFORMATION_UPDATE_MESSAGE_TYPE: &str = "TransformationUpdate";
 pub const DELETE_MESSAGE_TYPE: &str = "Delete";
 /// The alternate inspection-protocol name for a terminal entity deletion.
 pub const DESTROY_MESSAGE_TYPE: &str = "Destroy";
+/// The stable inspection-protocol name for a posted input action.
+pub const TRIGGER_ACTION_MESSAGE_TYPE: &str = "TriggerAction";
 
 impl DefaultInspector {
 	/// Adds one reflected targeted message and its destination channel to the transport-neutral registry.
@@ -136,7 +138,7 @@ mod tests {
 			message_observer::MessageObserver,
 		},
 		gameplay::TransformationUpdate,
-		input::{ActionEvent, SeatHandle, TRIGGER_ACTION_MESSAGE_TYPE, Value as InputValue},
+		input::{ActionEvent, SeatHandle, Value as InputValue},
 		inspector::{DefaultInspector, Inspector},
 	};
 

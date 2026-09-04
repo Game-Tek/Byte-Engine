@@ -2,8 +2,9 @@
 //!
 //! Actions decouple gameplay concepts from physical controls. Create an
 //! [`Action`] with bindings such as `Keyboard.W` or `Gamepad.LeftStick`, then
-//! submit it through the headed graphics application's action factory. The
-//! standard trigger names are defined by [`crate::input::utils`].
+//! submit it through
+//! [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world).
+//! The standard trigger names are defined by [`crate::input::utils`].
 
 trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
@@ -14,7 +15,6 @@ trait ActionLike {
 /// The [`Action`] struct describes an application-level input value and the
 /// physical trigger bindings that can produce it.
 pub struct Action {
-	pub(crate) name: &'static str,
 	pub(crate) bindings: SmallVec<[ActionBindingDescription; 8]>,
 	pub(crate) inputs: SmallVec<[TriggerMapping; 8]>,
 	pub(crate) r#type: Types,
@@ -88,14 +88,9 @@ impl InputValue for RGBA {
 }
 
 impl Action {
-	/// Returns the stable name used to identify this action in tooling.
-	pub fn name(&self) -> &'static str {
-		self.name
-	}
-
-	pub fn new(name: &'static str, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
+	/// Creates an action from its physical trigger bindings and output type.
+	pub fn new(bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
-			name,
 			bindings: bindings.into(),
 			inputs: SmallVec::new(),
 			r#type,

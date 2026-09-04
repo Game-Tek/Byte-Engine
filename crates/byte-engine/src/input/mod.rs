@@ -2,9 +2,10 @@
 //!
 //! Typical headed applications call `setup_default_input`, translate window
 //! events with `process_default_window_input`, and create application-level
-//! [`Action`] values through the graphics application's action factory. Use
-//! [`utils`] when registering the standard mouse, keyboard, or gamepad classes
-//! in a custom application.
+//! [`Action`] values through
+//! [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world).
+//! Use [`utils`] when registering the standard mouse, keyboard, or gamepad
+//! classes in a custom application.
 //!
 //! [`InputManager`] owns device and action state. [`Value`] is the erased value
 //! passed through that runtime; typed action declarations use
@@ -410,9 +411,6 @@ impl ActionEvent {
 		self.value
 	}
 }
-
-/// The stable inspection-protocol name for a posted [`ActionEvent`].
-pub const TRIGGER_ACTION_MESSAGE_TYPE: &str = "TriggerAction";
 
 impl crate::core::message::Message for ActionEvent {}
 

@@ -8,10 +8,9 @@
 /// Installs the standard assets, input devices, audio worker, visibility
 /// rendering pipeline, and window.
 ///
-/// After setup, create application actions through
-/// [`GraphicsApplication::action_factory`], select scene lighting through
-/// [`crate::gameplay::world::DefaultWorld::factory`], and run
-/// the application with [`GraphicsApplication::do_loop`].
+/// After setup, create application actions and select scene lighting through
+/// [`crate::gameplay::world::DefaultWorld`], then run the application with
+/// [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
@@ -239,9 +238,9 @@ fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 
 /// Installs the device classes expected by [`super::process_default_window_input`].
 ///
-/// Next, create application-level actions through
-/// [`GraphicsApplication::action_factory`]. The application tick translates
-/// window events and emits their resolved action values.
+/// Next, create application-level actions through [`GraphicsApplication::world`].
+/// The application tick translates window events and emits their resolved action
+/// values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let input_system = &mut application.input_system;
 

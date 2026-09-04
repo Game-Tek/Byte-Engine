@@ -32,7 +32,10 @@ use crate::{
 pub mod http;
 mod message;
 use message::SerializableMessage;
-pub use message::{DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType, TRANSFORMATION_UPDATE_MESSAGE_TYPE};
+pub use message::{
+	DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, RegisteredMessageType, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+	TRIGGER_ACTION_MESSAGE_TYPE,
+};
 #[cfg(feature = "headed")]
 pub(crate) mod screenshot;
 #[cfg(feature = "headed")]

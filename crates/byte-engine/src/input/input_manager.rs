@@ -215,10 +215,9 @@ impl InputManager {
 			let handle = message.handle();
 			let action = message.into_data();
 
-			let (name, r#type, input_events, tick_policy) = (action.name, action.r#type, action.bindings, action.tick_policy);
+			let (r#type, input_events, tick_policy) = (action.r#type, action.bindings, action.tick_policy);
 
 			let input_event = InputAction {
-				name: name.to_string(),
 				r#type,
 				trigger_mappings: input_events
 					.iter()
@@ -277,9 +276,8 @@ impl InputManager {
 				if let Some(handle) = &action.handle {
 					log::debug!(
 						target: "byte_engine::input::actions",
-						"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+						"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
 						action.tick_policy,
-						action.name,
 						handle,
 						record.seat_handle,
 						record.device_handle,
@@ -322,9 +320,8 @@ impl InputManager {
 					if !value.is_default() {
 						log::debug!(
 							target: "byte_engine::input::actions",
-							"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+							"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
 							action.tick_policy,
-							action.name,
 							handle,
 							seat_handle,
 							device_handle,
@@ -336,9 +333,8 @@ impl InputManager {
 				TickPolicy::Always => {
 					log::debug!(
 						target: "byte_engine::input::actions",
-						"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+						"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
 						action.tick_policy,
-						action.name,
 						handle,
 						seat_handle,
 						device_handle,
@@ -385,13 +381,8 @@ impl InputManager {
 	///
 	/// Next, record values for one of the action's trigger mappings and call
 	/// [`Self::update`]. Use [`Self::event_channel`] to receive the result.
-	pub fn create_action(
-		&mut self,
-		name: &str,
-		r#type: Types,
-		action_binding_descriptions: &[ActionBindingDescription],
-	) -> ActionHandle {
-		self.create_action_with_tick_policy(name, r#type, action_binding_descriptions, TickPolicy::OnChange)
+	pub fn create_action(&mut self, r#type: Types, action_binding_descriptions: &[ActionBindingDescription]) -> ActionHandle {
+		self.create_action_with_tick_policy(r#type, action_binding_descriptions, TickPolicy::OnChange)
 	}
 
 	/// Creates an action with a specific tick policy controlling how frequently events are emitted.
@@ -400,13 +391,11 @@ impl InputManager {
 	/// and call [`Self::update`] once per tick.
 	pub fn create_action_with_tick_policy(
 		&mut self,
-		name: &str,
 		r#type: Types,
 		action_binding_descriptions: &[ActionBindingDescription],
 		tick_policy: TickPolicy,
 	) -> ActionHandle {
 		let input_event = InputAction {
-			name: name.to_string(),
 			r#type,
 			trigger_mappings: action_binding_descriptions
 				.iter()
@@ -672,7 +661,6 @@ mod tests {
 		let x = register_keyboard_device_class(&mut input_manager);
 
 		let action = input_manager.create_action(
-			"MoveLongitudinally",
 			Types::Float,
 			&[
 				ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)),
@@ -766,7 +754,6 @@ mod tests {
 		let x = register_keyboard_device_class(&mut input_manager);
 
 		let action = input_manager.create_action(
-			"Move",
 			Types::Vector2,
 			&[
 				ActionBindingDescription::new("Keyboard.Up")
@@ -922,7 +909,6 @@ mod tests {
 	fn unicode_action_emits_character_events() {
 		let mut fixture = InputFixture::with_keyboard();
 		let handle = fixture.factory.create(Action::new(
-			"KeyboardCharacter",
 			&[ActionBindingDescription::new("Keyboard.Character")],
 			Types::Unicode,
 		));
@@ -1047,7 +1033,6 @@ mod tests {
 		input_manager: &mut InputManager,
 		device: DeviceHandle,
 		handle: TriggerReference,
-		action_name: &str,
 		input_source_name: &'static str,
 		a: T,
 		b: T,
@@ -1055,7 +1040,6 @@ mod tests {
 		T: InputValue + Into<Value> + Into<ValueMapping> + Copy,
 	{
 		let action = input_manager.create_action(
-			action_name,
 			T::get_type(),
 			&[ActionBindingDescription::new(input_source_name).mapped(b.into())],
 		);
@@ -1086,7 +1070,6 @@ mod tests {
 			&mut input_manager,
 			device,
 			handle,
-			"MoveForward",
 			"Keyboard.Up",
 			0f32,
 			1f32,
@@ -1103,7 +1086,6 @@ mod tests {
 			&mut input_manager,
 			device,
 			handle,
-			"MoveForward",
 			"Keyboard.Up",
 			Axis2::zero(),
 			Axis2::new(0f32, 1f32),
@@ -1120,7 +1102,6 @@ mod tests {
 			&mut input_manager,
 			device,
 			handle,
-			"MoveForward",
 			"Keyboard.Up",
 			Axis3::zero(),
 			Axis3::new(0f32, 0f32, 1f32),
@@ -1178,7 +1159,6 @@ mod tests {
 
 		fn register_tick_action(&mut self, policy: TickPolicy) {
 			let action = Action::new(
-				"MoveForward",
 				&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
 				Types::Float,
 			)
@@ -1232,7 +1212,7 @@ mod tests {
 	fn manual_action_is_queued_and_updates_synthetic_state() {
 		let mut fixture = InputFixture::new();
 		fixture.seat = SeatHandle(7);
-		let event_handle = fixture.factory.create(Action::new("Manual", &[], Types::Float));
+		let event_handle = fixture.factory.create(Action::new(&[], Types::Float));
 		fixture.update();
 		let action_handle = ActionHandle(0);
 
@@ -1261,7 +1241,7 @@ mod tests {
 	#[test]
 	fn manual_action_rejects_unknown_handles_and_wrong_values() {
 		let mut fixture = InputFixture::new();
-		fixture.factory.create(Action::new("Manual", &[], Types::Float));
+		fixture.factory.create(Action::new(&[], Types::Float));
 		fixture.update();
 
 		assert!(matches!(
@@ -1287,7 +1267,7 @@ mod tests {
 	#[test]
 	fn manual_actions_preserve_queue_order() {
 		let mut fixture = InputFixture::new();
-		fixture.factory.create(Action::new("Manual", &[], Types::Int));
+		fixture.factory.create(Action::new(&[], Types::Int));
 		fixture.update();
 
 		fixture

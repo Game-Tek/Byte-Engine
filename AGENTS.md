@@ -24,6 +24,7 @@ When an error or warning has a documented recovery workflow, include a direct li
 
 # API Design
 
+- Delete first. If the task can be accomplished without adding a new function, do so.
 - Prefer composition over inheritance. Use traits to define shared behavior and structs to encapsulate data.
 - Prefer pure functions. Just inputs and outputs.
 - Keep mutability at higher call sites.
@@ -32,6 +33,7 @@ When an error or warning has a documented recovery workflow, include a direct li
 
 # Working
 
+- Delete first.
 - If I ask you to defer any task, write that into the todo.md file
 - Always leave comments for any non-trivial code
 - Always prefer breaking APIs to ad-hoc changes. The app is not shipped yet. We can make all breaking changes.

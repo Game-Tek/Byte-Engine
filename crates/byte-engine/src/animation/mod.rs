@@ -1,4 +1,6 @@
-//! Skeletal animation sampling, pose blending, and transition utilities.
+//! Flipbook playback, skeletal animation sampling, and pose blending.
+//!
+//! Use [`flipbook::Flipbook`] to select images from a timed sequence.
 //!
 //! Use [`sample_local_pose`] to sample clips before applying [`blend`] or
 //! [`inertialization`]. Build renderer-facing matrices with
@@ -6,6 +8,7 @@
 //! `UpdatePose` message.
 
 pub mod blend;
+pub mod flipbook;
 pub mod graph;
 pub mod inertialization;
 mod math;

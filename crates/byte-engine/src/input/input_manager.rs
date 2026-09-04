@@ -113,18 +113,6 @@ impl InputManager {
 		TriggerHandle(insert_return_length(&mut self.triggers, input_source) as u32)
 	}
 
-	/// Reserves an output destination on a device class.
-	///
-	/// Input destinations represent device feedback, such as gamepad rumble.
-	pub fn register_input_destination<T: InputValue>(
-		&mut self,
-		_device_class_handle: &DeviceClassHandle,
-		_name: &str,
-		_value_type: TriggerDescription<T>,
-	) -> TriggerHandle {
-		TriggerHandle(0)
-	}
-
 	/// Creates one concrete device from a registered class.
 	///
 	/// Call this once for each physical or virtual device, such as each connected

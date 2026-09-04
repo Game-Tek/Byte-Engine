@@ -8,7 +8,6 @@
 /// class.
 pub(super) struct Device {
 	pub(super) device_class_handle: DeviceClassHandle,
-	pub(super) index: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -16,6 +15,4 @@ pub(super) struct Device {
 /// is being read or updated.
 pub struct DeviceHandle(pub(super) u32);
 
-use utils::hash::HashMap;
-
-use super::{TriggerHandle, device_class::DeviceClassHandle};
+use super::device_class::DeviceClassHandle;

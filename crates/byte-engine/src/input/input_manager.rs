@@ -138,25 +138,8 @@ impl InputManager {
 			self.devices.len() < u32::MAX as usize,
 			"Device handle space is exhausted. The most likely cause is creating devices without retiring old state."
 		);
-		let other_device = self
-			.devices
-			.iter()
-			.filter(|d| d.device_class_handle.0 == device_class_handle.0)
-			.min_by_key(|d| d.index);
-
-		let index = match other_device {
-			Some(device) => device.index + 1,
-			None => 0,
-		};
-
-		assert_ne!(
-			index, MANUAL_ACTION_DEVICE.0,
-			"Physical device index exhausted reserved manual action handle"
-		);
-
 		let device = Device {
 			device_class_handle: *device_class_handle,
-			index,
 		};
 
 		DeviceHandle(insert_return_length(&mut self.devices, device) as u32)
@@ -440,8 +423,10 @@ impl InputManager {
 		Some(
 			self.devices
 				.iter()
-				.filter(|d| d.device_class_handle == device_class_handle)
-				.map(|d| DeviceHandle(d.index))
+				.enumerate()
+				.filter_map(|(index, device)| {
+					(device.device_class_handle == device_class_handle).then_some(DeviceHandle(index as u32))
+				})
 				.collect(),
 		)
 	}
@@ -665,6 +650,28 @@ mod tests {
 	fn update_input_manager(input_manager: &mut InputManager) {
 		let frame_allocator = bumpalo::Bump::new();
 		input_manager.update(&frame_allocator);
+	}
+
+	#[test]
+	fn device_queries_preserve_handles_across_classes_and_instances() {
+		let mut input = build_input_manager();
+		let keyboard = register_keyboard_device_class(&mut input);
+		let mouse = register_mouse_device_class(&mut input);
+		let first_keyboard = input.create_device(&keyboard);
+		let first_mouse = input.create_device(&mouse);
+		let second_keyboard = input.create_device(&keyboard);
+		let second_mouse = input.create_device(&mouse);
+		let third_keyboard = input.create_device(&keyboard);
+
+		assert_eq!(
+			input.get_devices_by_class_name("Keyboard"),
+			Some(vec![first_keyboard, second_keyboard, third_keyboard])
+		);
+		assert_eq!(
+			input.get_devices_by_class_name("Mouse"),
+			Some(vec![first_mouse, second_mouse])
+		);
+		assert_eq!(input.get_devices_by_class_name("Unknown"), None);
 	}
 
 	#[test]

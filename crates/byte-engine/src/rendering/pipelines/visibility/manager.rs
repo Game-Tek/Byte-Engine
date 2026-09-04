@@ -308,6 +308,8 @@ fn resolved_ies_profile_texture(light: &Lights, profiles: &HashMap<String, IesPr
 pub struct VisibilityPipelineManager {
 	/// Domain façade for requesting resources and consuming readiness changes.
 	loader: VisibilityLoaderClient,
+	/// Retained storage for readiness events awaiting renderer adoption.
+	resource_events: Vec<VisibilityLoaderEvent>,
 	pipeline_manager: PipelineManagerClient,
 	/// Transform updates consumed after resource completions and before instance rebuilds.
 	transforms_listener: DefaultListener<TransformationUpdate>,
@@ -377,6 +379,7 @@ impl VisibilityPipelineManager {
 		]);
 		Self {
 			loader,
+			resource_events: Vec::new(),
 			pipeline_manager,
 			transforms_listener,
 			materials: Box::new([MaterialData::default(); MAX_MATERIALS]),
@@ -488,7 +491,9 @@ impl VisibilityPipelineManager {
 
 	/// Finishes renderer-specific adoption of loaded resources and publishes only fully usable ones.
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
-		while let Some(event) = self.loader.poll() {
+		let mut events = std::mem::take(&mut self.resource_events);
+		self.loader.update(&mut events);
+		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh),
 				VisibilityLoaderEvent::MaterialReady(material) => self.adopt_material(material),
@@ -507,6 +512,7 @@ impl VisibilityPipelineManager {
 				}
 			}
 		}
+		self.resource_events = events;
 		if self.environment.descriptors_dirty {
 			self.environment.descriptors_dirty = false;
 			for sink_state in &self.scene.sink_states {

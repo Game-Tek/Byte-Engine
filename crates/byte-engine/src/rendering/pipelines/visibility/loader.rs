@@ -224,13 +224,12 @@ impl VisibilityLoaderClient {
 		resident
 	}
 
-	/// Returns the next renderer-facing readiness change.
-	pub(crate) fn poll(&mut self) -> Option<VisibilityLoaderEvent> {
-		loop {
-			let Some(event) = self.client.poll() else {
-				return self.poll_material();
-			};
-			return Some(match event {
+	/// Appends readiness changes once per frame, after pipeline publication.
+	///
+	/// Drain and retain `events` after renderer adoption to reuse its allocation next frame.
+	pub(crate) fn update(&mut self, events: &mut Vec<VisibilityLoaderEvent>) {
+		while let Some(event) = self.client.poll() {
+			events.push(match event {
 				LoaderEvent::Ready {
 					key: VisibilityLoadKey::Mesh(key),
 					resident: VisibilityResident::Mesh(mesh),
@@ -274,10 +273,8 @@ impl VisibilityLoaderClient {
 				),
 			});
 		}
-	}
 
-	/// Publishes the next material whose compiled pipeline state changed.
-	fn poll_material(&mut self) -> Option<VisibilityLoaderEvent> {
+		// Visit each material once, even when many compilation results arrive together.
 		for publication in self.materials.values_mut() {
 			let state = self.pipeline_manager.get(publication.material.pipeline);
 			if publication.published == Some(state) {
@@ -287,14 +284,14 @@ impl VisibilityLoaderClient {
 			publication.published = Some(state);
 			match state {
 				PipelineState::Pending if was_ready => {
-					return Some(VisibilityLoaderEvent::MaterialUnavailable {
+					events.push(VisibilityLoaderEvent::MaterialUnavailable {
 						index: publication.material.index,
 					});
 				}
 				PipelineState::Pending => {}
 				PipelineState::Ready(pipeline) => {
 					let material = &publication.material;
-					return Some(VisibilityLoaderEvent::MaterialReady(ResidentMaterial {
+					events.push(VisibilityLoaderEvent::MaterialReady(ResidentMaterial {
 						id: material.id.clone(),
 						index: material.index,
 						pipeline,
@@ -304,13 +301,12 @@ impl VisibilityLoaderClient {
 					}));
 				}
 				PipelineState::Failed => {
-					return Some(VisibilityLoaderEvent::MaterialUnavailable {
+					events.push(VisibilityLoaderEvent::MaterialUnavailable {
 						index: publication.material.index,
 					});
 				}
 			}
 		}
-		None
 	}
 }
 
